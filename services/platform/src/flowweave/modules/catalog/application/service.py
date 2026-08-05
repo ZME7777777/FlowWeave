@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from flowweave.shared.application.transactions import finish
+from flowweave.shared.errors import DomainError, conflict, not_found
+from flowweave.shared.models import (
+    CapabilityImport,
+    ModelProvider,
+    NodeAsset,
+    NodeCapabilityRef,
+    NodeDirectory,
+    NodeExecutorConfig,
+    NodeIOField,
+    ProviderModel,
+)
+from flowweave.shared.schemas import DirectoryWrite, NodeAssetWrite
+
+
+def _time(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def directory_dict(item: NodeDirectory) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "parent_id": item.parent_id,
+        "name": item.name,
+        "position": item.position,
+        "row_version": item.row_version,
+        "created_at": _time(item.created_at),
+        "updated_at": _time(item.updated_at),
+    }
+
+
+def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
+    fields = db.scalars(
+        select(NodeIOField)
+        .where(NodeIOField.node_asset_id == item.id)
+        .order_by(NodeIOField.direction, NodeIOField.position)
+    ).all()
+    executor = db.get(NodeExecutorConfig, item.id)
+    capabilities = db.scalars(
+        select(NodeCapabilityRef)
+        .where(NodeCapabilityRef.node_asset_id == item.id)
+        .order_by(NodeCapabilityRef.position)
+    ).all()
+
+    def field_dict(x: NodeIOField) -> dict[str, Any]:
+        return {
+            "id": x.id,
+            "field_key": x.field_key,
+            "display_name": x.display_name,
+            "data_type": x.data_type,
+            "description": x.description,
+            "position": x.position,
+        }
+
+    return {
+        "id": item.id,
+        "directory_id": item.directory_id,
+        "name": item.name,
+        "description": item.description,
+        "icon_kind": item.icon_kind,
+        "icon_value": item.icon_value,
+        "default_skill_ref": item.default_skill_ref,
+        "row_version": item.row_version,
+        "inputs": [field_dict(x) for x in fields if x.direction == "INPUT"],
+        "outputs": [field_dict(x) for x in fields if x.direction == "OUTPUT"],
+        "executor": {
+            "model_provider_id": executor.model_provider_id,
+            "model_name": executor.model_name,
+            "startup_prompt": executor.startup_prompt,
+            "context_prompt": executor.context_prompt,
+            "timeout_seconds": executor.timeout_seconds,
+            "max_iterations": executor.max_iterations,
+        }
+        if executor
+        else None,
+        "capabilities": [
+            {
+                "id": x.id,
+                "capability_type": x.capability_type,
+                "capability_key": x.capability_key,
+                "normalized_config": x.normalized_config,
+                "position": x.position,
+            }
+            for x in capabilities
+        ],
+        "created_at": _time(item.created_at),
+        "updated_at": _time(item.updated_at),
+    }
+
+
+def list_directories(db: Session) -> list[dict[str, Any]]:
+    return [
+        directory_dict(x)
+        for x in db.scalars(
+            select(NodeDirectory).order_by(NodeDirectory.position, NodeDirectory.name)
+        )
+    ]
+
+
+def create_directory(db: Session, payload: DirectoryWrite) -> dict[str, Any]:
+    if payload.parent_id and not db.get(NodeDirectory, payload.parent_id):
+        raise not_found("node_directory", payload.parent_id)
+    item = NodeDirectory(**payload.model_dump())
+    db.add(item)
+    finish(db)
+    return directory_dict(item)
+
+
+def list_assets(
+    db: Session, directory_id: str | None = None, query: str | None = None
+) -> list[dict[str, Any]]:
+    stmt = select(NodeAsset).where(NodeAsset.deleted_at.is_(None))
+    if directory_id:
+        stmt = stmt.where(NodeAsset.directory_id == directory_id)
+    if query:
+        stmt = stmt.where(NodeAsset.name.ilike(f"%{query}%"))
+    return [asset_dict(db, x) for x in db.scalars(stmt.order_by(NodeAsset.updated_at.desc()))]
+
+
+def get_asset(db: Session, asset_id: str) -> NodeAsset:
+    item = db.get(NodeAsset, asset_id)
+    if not item or item.deleted_at:
+        raise not_found("node_asset", asset_id)
+    return item
+
+
+def _validate_executor(db: Session, payload: NodeAssetWrite) -> None:
+    executor = payload.executor
+    if not executor.model_provider_id:
+        if executor.model_name:
+            raise DomainError("INVALID_COMMAND", "model_name requires model_provider_id", 400)
+        return
+    provider = db.get(ModelProvider, executor.model_provider_id)
+    if not provider:
+        raise not_found("model_provider", executor.model_provider_id)
+    if executor.model_name:
+        model = db.scalar(
+            select(ProviderModel).where(
+                ProviderModel.provider_id == provider.id,
+                ProviderModel.model_name == executor.model_name,
+                ProviderModel.enabled.is_(True),
+            )
+        )
+        if not model:
+            raise DomainError(
+                "INVALID_COMMAND",
+                "node executor must reference an enabled provider model",
+                400,
+                {"model_name": executor.model_name},
+            )
+    else:
+        default = db.scalar(
+            select(ProviderModel).where(
+                ProviderModel.provider_id == provider.id,
+                ProviderModel.enabled.is_(True),
+                ProviderModel.is_default.is_(True),
+            )
+        )
+        if not default:
+            raise DomainError(
+                "INVALID_COMMAND",
+                "node executor provider requires an enabled default model",
+                400,
+            )
+
+
+def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> None:
+    _validate_executor(db, payload)
+    db.execute(delete(NodeIOField).where(NodeIOField.node_asset_id == item.id))
+    db.execute(delete(NodeCapabilityRef).where(NodeCapabilityRef.node_asset_id == item.id))
+    db.execute(delete(NodeExecutorConfig).where(NodeExecutorConfig.node_asset_id == item.id))
+    for direction, fields in (("INPUT", payload.inputs), ("OUTPUT", payload.outputs)):
+        for position, field in enumerate(fields):
+            db.add(
+                NodeIOField(
+                    node_asset_id=item.id,
+                    direction=direction,
+                    position=position,
+                    **field.model_dump(),
+                )
+            )
+    db.add(NodeExecutorConfig(node_asset_id=item.id, **payload.executor.model_dump()))
+    for position, capability in enumerate(payload.capabilities):
+        import_id = capability.normalized_config.get("import_id")
+        imported = db.get(CapabilityImport, import_id) if isinstance(import_id, str) else None
+        if not imported or imported.state != "COMMITTED":
+            raise DomainError(
+                "CAPABILITY_IMPORT_REQUIRED",
+                "Node capabilities must come from a committed import",
+                422,
+                {"capability_key": capability.capability_key},
+            )
+        if imported.capability_type != capability.capability_type:
+            raise DomainError(
+                "CAPABILITY_IMPORT_INVALID", "Capability type does not match import", 422
+            )
+        canonical = next(
+            (
+                entry
+                for entry in imported.preview_json.get("capabilities", [])
+                if entry.get("capability_key") == capability.capability_key
+            ),
+            None,
+        )
+        if canonical is None:
+            raise DomainError(
+                "CAPABILITY_IMPORT_INVALID", "Capability is not present in import", 422
+            )
+        normalized = {
+            **canonical.get("normalized_config", {}),
+            "import_id": imported.id,
+            "filename": imported.filename,
+            "content_hash": imported.content_hash,
+            "storage_key": imported.storage_key,
+        }
+        db.add(
+            NodeCapabilityRef(
+                node_asset_id=item.id,
+                position=position,
+                capability_type=imported.capability_type,
+                capability_key=canonical["capability_key"],
+                normalized_config=normalized,
+            )
+        )
+
+
+def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None) -> dict[str, Any]:
+    if payload.directory_id and not db.get(NodeDirectory, payload.directory_id):
+        raise not_found("node_directory", payload.directory_id)
+    if asset_id:
+        item = get_asset(db, asset_id)
+        if payload.row_version != item.row_version:
+            raise conflict(
+                "node asset was modified", expected=payload.row_version, actual=item.row_version
+            )
+        item.row_version += 1
+        item.updated_at = datetime.now(UTC)
+    else:
+        item = NodeAsset(
+            directory_id=payload.directory_id,
+            name=payload.name,
+            description=payload.description,
+            icon_kind=payload.icon_kind,
+            icon_value=payload.icon_value,
+            default_skill_ref=payload.default_skill_ref,
+        )
+        db.add(item)
+        # AsyncSession compatibility uses autoflush=False. Materialize the
+        # parent key before constructing child rows in the same transaction.
+        db.flush()
+    for key in (
+        "directory_id",
+        "name",
+        "description",
+        "icon_kind",
+        "icon_value",
+        "default_skill_ref",
+    ):
+        setattr(item, key, getattr(payload, key))
+    _replace_children(db, item, payload)
+    finish(db)
+    return asset_dict(db, item)
+
+
+def delete_asset(db: Session, asset_id: str) -> None:
+    item = get_asset(db, asset_id)
+    item.deleted_at = datetime.now(UTC)
+    item.row_version += 1
+    finish(db)

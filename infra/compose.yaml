@@ -1,0 +1,103 @@
+name: flowweave
+x-platform-env: &platform-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flowweave}:${POSTGRES_PASSWORD:-flowweave_dev}@postgres:5432/${POSTGRES_DB:-flowweave}
+  RUNTIME_ADAPTER: ${RUNTIME_ADAPTER:-mock}
+  EXECUTION_MODE: worker
+  RUNTIME_POLL_SECONDS: ${RUNTIME_POLL_SECONDS:-1}
+  OPENHANDS_BASE_URL: http://openhands-agent-server:8000
+  OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
+  HUMAN_WRITE_TOKEN: ${HUMAN_WRITE_TOKEN:-flowweave-human-dev}
+  CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+  ARTIFACT_ROOT: /data/artifacts
+  WORKSPACE_ROOT: /data/workspaces
+  INLINE_ARTIFACT_LIMIT: ${INLINE_ARTIFACT_LIMIT:-65536}
+  CAPABILITY_IMPORT_TTL_SECONDS: ${CAPABILITY_IMPORT_TTL_SECONDS:-900}
+  TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-30}
+
+services:
+  postgres:
+    image: postgres:16.9-alpine3.21
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-flowweave}
+      POSTGRES_USER: ${POSTGRES_USER:-flowweave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowweave_dev}
+    ports: ["${POSTGRES_PORT:-55432}:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migration:
+    build: { context: .., dockerfile: services/platform/Dockerfile }
+    command: ["alembic", "upgrade", "head"]
+    environment: *platform-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  openhands-agent-server:
+    profiles: ["openhands"]
+    build: { context: .., dockerfile: infra/openhands/Dockerfile }
+    environment:
+      SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
+      OH_SESSION_API_KEYS_0: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
+    volumes:
+      - agent-workspaces:/workspaces
+      - openhands-state:/root/.openhands
+      - ../agent-packages:/agent-packages:ro
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "/runtime/.venv/bin/python", "-c", "import os,urllib.request;r=urllib.request.Request('http://localhost:8000/openapi.json',headers={'X-Session-API-Key':os.environ['SESSION_API_KEY']});assert urllib.request.urlopen(r,timeout=3).status==200"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  api:
+    build: { context: .., dockerfile: services/platform/Dockerfile }
+    command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory"]
+    environment: *platform-env
+    ports: ["8080:8080"]
+    volumes:
+      - artifacts:/data/artifacts
+      - agent-workspaces:/data/workspaces
+    depends_on:
+      migration: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build: { context: .., dockerfile: services/platform/Dockerfile }
+    command: ["python", "-m", "flowweave.bootstrap.worker"]
+    environment:
+      <<: *platform-env
+      SANDBOX_BACKEND: docker
+      SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
+      SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
+    # Docker Desktop exposes this socket as root:root 0660. The process remains
+    # UID 10001 and receives only supplemental GID 0 for local daemon access.
+    group_add: ["0"]
+    volumes:
+      - artifacts:/data/artifacts
+      - agent-workspaces:/data/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      migration: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    build: { context: .., dockerfile: apps/web/Dockerfile }
+    ports: ["5173:80"]
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  artifacts:
+  agent-workspaces:
+  openhands-state:

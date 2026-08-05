@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from flowweave.modules.catalog.public import cleanup_capability_import
+from flowweave.modules.orchestration import public as orchestration
+from flowweave.modules.tasks.public import Lease, lease_is_current
+from flowweave.shared.models import BackgroundTask
+
+Handler = Callable[[Session, str, dict[str, Any], Lease], None]
+
+
+def _readiness(db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease) -> None:
+    orchestration.process_readiness(db, aggregate_id, commit=False)
+
+
+def _gates(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
+    orchestration.process_gate_stage(db, aggregate_id, str(payload["stage"]), lease, commit=False)
+
+
+def _start_runtime(db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease) -> None:
+    orchestration.process_start_runtime(db, aggregate_id, lease, commit=False)
+
+
+def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
+    orchestration.process_poll_runtime(
+        db, aggregate_id, int(payload.get("poll_no", 1)), lease, commit=False
+    )
+
+
+def _resume_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
+    orchestration.process_resume_runtime(
+        db, aggregate_id, str(payload["action_id"]), lease, commit=False
+    )
+
+
+def _cancel_runtime(db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease) -> None:
+    orchestration.process_cancel_runtime(db, aggregate_id, lease, commit=False)
+
+
+def _cleanup_capability_import(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    cleanup_capability_import(db, aggregate_id)
+
+
+HANDLERS: dict[str, Handler] = {
+    "EVALUATE_READINESS": _readiness,
+    "RUN_GATE_POLICY": _gates,
+    "START_RUNTIME": _start_runtime,
+    "POLL_RUNTIME": _poll_runtime,
+    "RESUME_RUNTIME": _resume_runtime,
+    "CANCEL_RUNTIME": _cancel_runtime,
+    "CLEANUP_CAPABILITY_IMPORT": _cleanup_capability_import,
+}
+
+
+def handle(db: Session, task: BackgroundTask, lease: Lease) -> None:
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost before handler execution")
+    handler = HANDLERS.get(task.task_type)
+    if handler is None:
+        raise ValueError(f"Unknown task type: {task.task_type}")
+    handler(db, task.aggregate_id, dict(task.payload_json or {}), lease)

@@ -1,0 +1,49 @@
+{
+  "$id": "https://flowweave.local/contracts/run-event.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cursor": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "event_type": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "flow_run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "node_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "cursor",
+    "flow_run_id",
+    "node_run_id",
+    "attempt_id",
+    "event_type",
+    "payload",
+    "occurred_at"
+  ],
+  "title": "RunEventV1",
+  "type": "object"
+}

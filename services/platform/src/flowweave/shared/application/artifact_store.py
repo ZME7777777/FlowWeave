@@ -1,0 +1,19 @@
+from __future__ import annotations
+
+from typing import Protocol
+
+
+class ArtifactStorePort(Protocol):
+    """Object storage boundary used by artifacts and capability imports."""
+
+    def put_temporary(self, namespace: str, content: bytes) -> str: ...
+
+    def finalize(self, temporary_key: str, final_key: str) -> str: ...
+
+    def put(self, key: str, content: bytes) -> str: ...
+
+    def read(self, key: str) -> bytes: ...
+
+    def exists(self, key: str) -> bool: ...
+
+    def delete(self, key: str) -> None: ...

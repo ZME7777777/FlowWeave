@@ -1,0 +1,10 @@
+[project]
+name = "flowweave-openhands-runtime"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "openhands-agent-server==1.40.0",
+  "openhands-sdk==1.40.0",
+  "litellm==1.93.1",
+  "libtmux==0.62.0",
+]

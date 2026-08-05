@@ -1,0 +1,1016 @@
+from datetime import UTC, datetime, timedelta
+from time import sleep
+
+from sqlalchemy import select
+
+from flowweave.modules.tasks.application.service import (
+    claim,
+    enqueue,
+    heartbeat,
+    recover_expired,
+    succeed,
+)
+from flowweave.shared.models import BackgroundTask, FlowDefinition, TaskState
+
+
+def test_task_lease_generation_fences_late_worker(db_session_factory):
+    with db_session_factory() as db:
+        task = enqueue(
+            db,
+            task_type="START_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id="attempt-1",
+            idempotency_key="start:attempt-1",
+        )
+        db.commit()
+        task_id = task.id
+    with db_session_factory() as db:
+        task, lease1 = claim(db, "worker-a", lease_seconds=30)
+        assert task.id == task_id
+        task.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+    with db_session_factory() as db:
+        assert recover_expired(db) == 1
+    with db_session_factory() as db:
+        task, lease2 = claim(db, "worker-b", lease_seconds=30)
+        assert lease2.generation == lease1.generation + 1
+    with db_session_factory() as db:
+        assert heartbeat(db, lease1, lease_seconds=30) is False
+        assert succeed(db, lease1) is False
+    with db_session_factory() as db:
+        assert succeed(db, lease2) is True
+        assert db.get(BackgroundTask, task_id).state == TaskState.SUCCEEDED
+
+
+def test_expired_lease_cannot_be_revived_by_heartbeat(db_session_factory):
+    with db_session_factory() as db:
+        task = enqueue(
+            db,
+            task_type="START_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id="expired-heartbeat",
+            idempotency_key="expired-heartbeat",
+        )
+        db.commit()
+        task_id = task.id
+    with db_session_factory() as db:
+        claimed = claim(db, "worker-a", lease_seconds=5)
+        assert claimed is not None
+        _task, lease = claimed
+        row = db.get(BackgroundTask, task_id)
+        assert row is not None
+        row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+    with db_session_factory() as db:
+        assert heartbeat(db, lease, lease_seconds=5) is False
+        assert recover_expired(db) == 1
+
+
+def test_lease_heartbeat_prevents_recovery_and_second_claim(db_session_factory, settings):
+    from flowweave.bootstrap.worker import LeaseHeartbeat
+
+    with db_session_factory() as db:
+        task = enqueue(
+            db,
+            task_type="START_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id="long-task",
+            idempotency_key="long-task",
+        )
+        db.commit()
+        task_id = task.id
+    with db_session_factory() as db:
+        claimed = claim(db, "worker-a", lease_seconds=2)
+        assert claimed is not None
+        _task, lease = claimed
+
+    renewer = LeaseHeartbeat(
+        settings,
+        lease,
+        interval_seconds=1,
+        lease_seconds=2,
+    )
+    renewer.start()
+    try:
+        sleep(2.4)
+        with db_session_factory() as db:
+            assert recover_expired(db) == 0
+            assert claim(db, "worker-b", lease_seconds=2) is None
+            row = db.get(BackgroundTask, task_id)
+            assert row is not None
+            assert row.state == TaskState.RUNNING
+            assert row.lease_owner == "worker-a"
+        assert renewer.lost.is_set() is False
+    finally:
+        renewer.stop()
+    with db_session_factory() as db:
+        assert succeed(db, lease) is True
+
+
+def test_late_worker_success_rolls_back_uncommitted_business_writes(db_session_factory):
+    with db_session_factory() as db:
+        flow = FlowDefinition(name="before-lost-lease")
+        db.add(flow)
+        task = enqueue(
+            db,
+            task_type="START_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id="late-worker",
+            idempotency_key="late-worker",
+        )
+        db.commit()
+        flow_id = flow.id
+        task_id = task.id
+    with db_session_factory() as db:
+        claimed = claim(db, "worker-a", lease_seconds=30)
+        assert claimed is not None
+        _task, stale_lease = claimed
+        row = db.get(BackgroundTask, task_id)
+        assert row is not None
+        row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+    with db_session_factory() as db:
+        assert recover_expired(db) == 1
+        claimed = claim(db, "worker-b", lease_seconds=30)
+        assert claimed is not None
+
+    with db_session_factory() as late_db:
+        flow = late_db.get(FlowDefinition, flow_id)
+        assert flow is not None
+        flow.name = "must-not-commit"
+        assert succeed(late_db, stale_lease) is False
+
+    with db_session_factory() as db:
+        flow = db.get(FlowDefinition, flow_id)
+        assert flow is not None
+        assert flow.name == "before-lost-lease"
+
+
+def test_idempotent_enqueue_returns_same_task(db_session_factory):
+    with db_session_factory() as db:
+        one = enqueue(
+            db,
+            task_type="CLEANUP_WORKSPACE",
+            aggregate_type="ATTEMPT",
+            aggregate_id="a",
+            idempotency_key="cleanup:a",
+        )
+        db.commit()
+        two = enqueue(
+            db,
+            task_type="CLEANUP_WORKSPACE",
+            aggregate_type="ATTEMPT",
+            aggregate_id="a",
+            idempotency_key="cleanup:a",
+        )
+        assert one.id == two.id
+
+
+def _asset_payload(skill):
+    return {
+        "name": "异步执行节点",
+        "inputs": [{"field_key": "prd", "display_name": "需求", "data_type": "DOCUMENT"}],
+        "outputs": [{"field_key": "design", "display_name": "方案", "data_type": "DOCUMENT"}],
+        "capabilities": [skill],
+        "default_skill_ref": skill["capability_key"],
+        "executor": {
+            "startup_prompt": "生成方案",
+            "context_prompt": "保留证据",
+            "timeout_seconds": 120,
+            "max_iterations": 20,
+        },
+    }
+
+
+def test_worker_executes_readiness_gates_and_runtime_tasks(
+    worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "异步执行流程",
+            "default_entry_key": "design",
+            "nodes": [
+                {
+                    "instance_key": "design",
+                    "node_asset_id": asset["id"],
+                    "gates": [
+                        {
+                            "stage": "START",
+                            "position": 0,
+                            "gate_type": "JAVASCRIPT",
+                            "config": {
+                                "code": (
+                                    "return {decision: 'PASS', summary: '输入可用', "
+                                    "reasons: [], evidence: [], details: {}};"
+                                )
+                            },
+                        },
+                        {
+                            "stage": "END",
+                            "position": 0,
+                            "gate_type": "PYTHON",
+                            "config": {
+                                "code": (
+                                    "result = {'decision': 'PASS', 'summary': '输出可用', "
+                                    "'reasons': [], 'evidence': [], 'details': {}}"
+                                )
+                            },
+                        },
+                    ],
+                }
+            ],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "异步输入",
+                }
+            ]
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    assert started["node_runs"][0]["attempts"][0]["state"] == "WAITING_INPUT"
+    worker = TaskWorker(worker_container)
+
+    assert worker._run_once_sync() is True  # readiness
+    assert worker._run_once_sync() is True  # START gates
+    ready = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    assert ready["node_runs"][0]["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
+
+    queued = worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+        json={"expected_state_version": ready["node_runs"][0]["attempts"][0]["state_version"]},
+        headers={"Idempotency-Key": "async-confirm"},
+    ).json()
+    assert queued["state"] == "EXECUTING"
+    assert queued["runtime_phase"] == "STARTING"
+    assert queued["runtime_job_id"] is None
+
+    assert worker._run_once_sync() is True  # runtime start
+    assert worker._run_once_sync() is True  # runtime poll/result
+    assert worker._run_once_sync() is True  # END gates
+    finished = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    attempt = finished["node_runs"][0]["attempts"][0]
+    assert attempt["state"] == "WAITING_ACCEPTANCE"
+    assert attempt["runtime_phase"] == "COMPLETED"
+    assert attempt["runtime_job_id"].startswith("mock-job-")
+    assert attempt["artifacts"][0]["field_key"] == "design"
+
+    with db_session_factory() as db:
+        types = list(
+            db.scalars(select(BackgroundTask.task_type).order_by(BackgroundTask.created_at))
+        )
+        states = list(db.scalars(select(BackgroundTask.state)))
+    assert types == [
+        "CLEANUP_CAPABILITY_IMPORT",
+        "EVALUATE_READINESS",
+        "RUN_GATE_POLICY",
+        "START_RUNTIME",
+        "POLL_RUNTIME",
+        "RUN_GATE_POLICY",
+    ]
+    assert states.count(TaskState.SUCCEEDED) == 5
+    assert states.count(TaskState.PENDING) == 1
+
+
+def _prepare_starting_attempt(worker_client, worker_container, skill):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    asset = worker_client.post("/api/v1/node-assets", json=_asset_payload(skill)).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "Worker 恢复流程",
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "恢复测试输入",
+                }
+            ]
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # readiness
+    assert worker._run_once_sync() is True  # empty START gates
+    ready = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    confirmed = worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+        json={"expected_state_version": ready["node_runs"][0]["attempts"][0]["state_version"]},
+        headers={"Idempotency-Key": f"recover-confirm:{attempt_id}"},
+    ).json()
+    assert confirmed["runtime_phase"] == "STARTING"
+    return worker, started["id"], attempt_id
+
+
+def test_worker_startup_recovers_deleted_runtime_delivery_and_advances_attempt(
+    worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    from sqlalchemy import delete
+
+    worker, run_id, attempt_id = _prepare_starting_attempt(
+        worker_client, worker_container, worker_skill_capability
+    )
+    with db_session_factory() as db:
+        db.execute(
+            delete(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "START_RUNTIME",
+            )
+        )
+        db.commit()
+
+    worker._recover_startup()
+    with db_session_factory() as db:
+        recovered = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "START_RUNTIME",
+            )
+        )
+        assert recovered is not None
+        assert recovered.state == TaskState.PENDING
+        assert recovered.idempotency_key.startswith("recovery:start_runtime:")
+
+    assert worker._run_once_sync() is True
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["runtime_phase"] == "RUNNING"
+    assert attempt["runtime_job_id"].startswith("mock-job-")
+
+
+def test_worker_startup_retries_terminal_recovery_delivery(
+    worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    from sqlalchemy import delete
+
+    worker, run_id, attempt_id = _prepare_starting_attempt(
+        worker_client, worker_container, worker_skill_capability
+    )
+    with db_session_factory() as db:
+        db.execute(
+            delete(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "START_RUNTIME",
+            )
+        )
+        db.commit()
+
+    worker._recover_startup()
+    with db_session_factory() as db:
+        recovered = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "START_RUNTIME",
+            )
+        )
+        assert recovered is not None
+        recovered.state = TaskState.SUCCEEDED
+        db.commit()
+        recovery_id = recovered.id
+
+    worker._recover_startup()
+    with db_session_factory() as db:
+        retried = db.get(BackgroundTask, recovery_id)
+        assert retried is not None
+        assert retried.state == TaskState.RETRY
+        assert retried.last_error == "STARTUP_RECOVERY"
+
+    assert worker._run_once_sync() is True
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    assert detail["node_runs"][0]["attempts"][0]["runtime_phase"] == "RUNNING"
+
+
+def test_cancelled_run_stops_started_runtime_through_worker(
+    worker_client, worker_container, worker_skill_capability
+):
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.runtime.base import RuntimeHandle
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "取消 Runtime 流程",
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "取消测试输入",
+                }
+            ]
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # readiness
+    assert worker._run_once_sync() is True  # empty START gate stage
+    ready = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    assert ready["node_runs"][0]["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
+    worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+        json={"expected_state_version": ready["node_runs"][0]["attempts"][0]["state_version"]},
+        headers={"Idempotency-Key": "cancel-confirm"},
+    )
+    assert worker._run_once_sync() is True  # runtime start
+    running = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    attempt = running["node_runs"][0]["attempts"][0]
+    handle = RuntimeHandle(
+        attempt["runtime_job_id"], attempt["conversation_id"], attempt["runtime_cursor"]
+    )
+
+    cancelled = worker_client.post(
+        f"/api/v1/flow-runs/{started['id']}/cancel",
+        headers={"Idempotency-Key": "cancel-run"},
+    ).json()
+    assert cancelled["state"] == "CANCELLED"
+    assert cancelled["node_runs"][0]["attempts"][0]["runtime_phase"] == "CANCELLING"
+
+    assert worker._run_once_sync() is True  # stale poll becomes a no-op
+    assert worker._run_once_sync() is True  # CANCEL_RUNTIME
+    final = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    assert final["node_runs"][0]["attempts"][0]["runtime_phase"] == "CANCELLED"
+    assert worker_container.runtime.inspect(handle).status == "CANCELLED"
+
+
+def test_terminal_runtime_event_batch_skips_inspect_and_persists_events(
+    worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.runtime.base import (
+        RuntimeEvent,
+        RuntimeEventBatch,
+        RuntimeHandle,
+        RuntimeResult,
+        StartAttemptRequest,
+    )
+
+    class EventTerminalRuntime:
+        def start(self, _request: StartAttemptRequest) -> RuntimeHandle:
+            raise AssertionError("runtime was already started by the previous adapter")
+
+        def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
+            result = RuntimeResult(
+                status="COMPLETED",
+                outputs={"design": ("DOCUMENT", "event result")},
+                cursor="event-2",
+            )
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent("event-1", "MESSAGE", {"content": "working"}),
+                    RuntimeEvent("event-2", "COMPLETED", {"reason": "done"}),
+                ),
+                cursor="event-2",
+                result=result,
+            )
+
+        def inspect(self, _handle: RuntimeHandle) -> RuntimeResult:
+            raise AssertionError("terminal event batches must not fall back to inspect")
+
+        def resume(self, _handle: RuntimeHandle, _content: str) -> RuntimeResult:
+            raise AssertionError("not used")
+
+        def cancel(self, _handle: RuntimeHandle) -> None:
+            raise AssertionError("not used")
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "Runtime 事件流程",
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "事件输入",
+                }
+            ]
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # readiness
+    assert worker._run_once_sync() is True  # empty START gates
+    ready = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+        json={"expected_state_version": ready["node_runs"][0]["attempts"][0]["state_version"]},
+        headers={"Idempotency-Key": "event-confirm"},
+    )
+    assert worker._run_once_sync() is True  # runtime start via MockRuntime
+
+    previous_runtime = worker_container.runtime
+    worker_container.runtime = EventTerminalRuntime()
+    try:
+        assert worker._run_once_sync() is True  # terminal event batch
+    finally:
+        worker_container.runtime = previous_runtime
+
+    detail = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["runtime_cursor"] == "event-2"
+    assert attempt["runtime_phase"] == "COMPLETED"
+    assert attempt["artifacts"][0]["inline_content"] == "event result"
+    history = worker_client.get(f"/api/v1/flow-runs/{started['id']}/event-history").json()
+    runtime_events = [item for item in history if item["event_type"].startswith("RUNTIME_EVENT_")]
+    assert [item["event_type"] for item in runtime_events] == [
+        "RUNTIME_EVENT_MESSAGE",
+        "RUNTIME_EVENT_COMPLETED",
+    ]
+    assert [item["payload"]["runtime_cursor"] for item in runtime_events] == [
+        "event-1",
+        "event-2",
+    ]
+
+
+def test_worker_rolls_back_business_result_when_task_success_is_fenced(
+    monkeypatch, worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    """Business writes and task success share one transaction after handler execution."""
+
+    from sqlalchemy import func
+
+    from flowweave.bootstrap import worker as worker_module
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.shared.models import NodeAttempt, RunEvent
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "Worker 原子提交流程",
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "原子提交输入",
+                }
+            ]
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+
+    # Simulate lease fencing between a successful handler flush and task completion.
+    monkeypatch.setattr(worker_module, "succeed", lambda *_args, **_kwargs: False)
+    assert TaskWorker(worker_container)._run_once_sync() is True
+
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        assert attempt.state == "WAITING_INPUT"
+        assert (
+            db.scalar(
+                select(func.count(RunEvent.cursor)).where(
+                    RunEvent.attempt_id == attempt_id,
+                    RunEvent.event_type == "READINESS_EVALUATED",
+                )
+            )
+            == 0
+        )
+        assert (
+            db.scalar(
+                select(func.count(BackgroundTask.id)).where(
+                    BackgroundTask.aggregate_id == attempt_id,
+                    BackgroundTask.task_type == "RUN_GATE_POLICY",
+                )
+            )
+            == 0
+        )
+
+
+def test_late_poll_result_is_discarded_after_concurrent_cancel(
+    worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    """A runtime result cannot overwrite an Attempt changed while I/O was in flight."""
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from sqlalchemy import func
+
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.modules.orchestration.application.service import process_poll_runtime
+    from flowweave.runtime.base import (
+        RuntimeEvent,
+        RuntimeEventBatch,
+        RuntimeHandle,
+        RuntimeResult,
+        StartAttemptRequest,
+    )
+    from flowweave.runtime.dependencies import runtime_context
+    from flowweave.shared.models import ArtifactVersion, BackgroundTask, RunEvent
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "Runtime CAS 迟到结果流程",
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "Runtime CAS 输入",
+                }
+            ]
+        },
+    ).json()
+    run_id = started["id"]
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # readiness
+    assert worker._run_once_sync() is True  # START gates
+    ready = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    ready_attempt = ready["node_runs"][0]["attempts"][0]
+    worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+        json={"expected_state_version": ready_attempt["state_version"]},
+        headers={"Idempotency-Key": "runtime-cas-confirm"},
+    )
+    assert worker._run_once_sync() is True  # START_RUNTIME; leaves POLL_RUNTIME pending
+
+    entered = Event()
+    release = Event()
+
+    class BlockingTerminalRuntime:
+        def start(self, _request: StartAttemptRequest) -> RuntimeHandle:
+            raise AssertionError("runtime is already running")
+
+        def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
+            entered.set()
+            assert release.wait(timeout=5)
+            return RuntimeEventBatch(
+                events=(RuntimeEvent("late-1", "COMPLETED", {"reason": "late"}),),
+                cursor="late-1",
+                result=RuntimeResult(
+                    status="COMPLETED",
+                    outputs={"design": ("DOCUMENT", "must be discarded")},
+                    cursor="late-1",
+                ),
+            )
+
+        def inspect(self, _handle: RuntimeHandle) -> RuntimeResult:
+            raise AssertionError("terminal event batch must not inspect")
+
+        def resume(self, _handle: RuntimeHandle, _content: str) -> RuntimeResult:
+            raise AssertionError("not used")
+
+        def cancel(self, _handle: RuntimeHandle) -> None:
+            return None
+
+    def poll() -> None:
+        from flowweave.shared.artifact_store import artifact_store_context
+        from flowweave.shared.settings import settings_context
+
+        with (
+            runtime_context(BlockingTerminalRuntime()),
+            settings_context(worker_container.settings),
+            artifact_store_context(worker_container.artifact_store),
+            db_session_factory() as db,
+        ):
+            process_poll_runtime(db, attempt_id, 1)
+
+    with db_session_factory() as db:
+        artifacts_before = db.scalar(
+            select(func.count(ArtifactVersion.id)).where(
+                ArtifactVersion.producer_attempt_id == attempt_id
+            )
+        )
+        events_before = db.scalar(
+            select(func.count(RunEvent.cursor)).where(RunEvent.attempt_id == attempt_id)
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(poll)
+        assert entered.wait(timeout=5)
+        cancelled = worker_client.post(
+            f"/api/v1/flow-runs/{run_id}/cancel",
+            headers={"Idempotency-Key": "runtime-cas-cancel"},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        release.set()
+        future.result(timeout=5)
+
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["state"] == "CANCELLED"
+    assert attempt["runtime_phase"] == "CANCELLING"
+    assert attempt["runtime_cursor"] != "late-1"
+
+    with db_session_factory() as db:
+        assert (
+            db.scalar(
+                select(func.count(ArtifactVersion.id)).where(
+                    ArtifactVersion.producer_attempt_id == attempt_id
+                )
+            )
+            == artifacts_before
+        )
+        assert (
+            db.scalar(select(func.count(RunEvent.cursor)).where(RunEvent.attempt_id == attempt_id))
+            == events_before  # FLOW_RUN_CANCELLED is run-scoped; no late attempt event.
+        )
+        assert (
+            db.scalar(
+                select(func.count(BackgroundTask.id)).where(
+                    BackgroundTask.aggregate_id == attempt_id,
+                    BackgroundTask.task_type == "RUN_GATE_POLICY",
+                    BackgroundTask.payload_json["stage"].as_string() == "END",
+                )
+            )
+            == 0
+        )
+
+
+def test_worker_runtime_io_runs_without_database_transaction(
+    worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    """Worker freezes runtime input, ends the read transaction, then performs external I/O."""
+
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.modules.orchestration.public import process_poll_runtime
+    from flowweave.modules.tasks.application.service import claim, succeed
+    from flowweave.runtime.base import (
+        RuntimeEventBatch,
+        RuntimeHandle,
+        RuntimeResult,
+        StartAttemptRequest,
+    )
+    from flowweave.runtime.dependencies import runtime_context
+    from flowweave.shared.settings import settings_context
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "Runtime 短事务流程",
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "短事务输入",
+                }
+            ]
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # readiness
+    assert worker._run_once_sync() is True  # START gates
+    ready = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+        json={"expected_state_version": ready["node_runs"][0]["attempts"][0]["state_version"]},
+        headers={"Idempotency-Key": "runtime-short-transaction-confirm"},
+    )
+    assert worker._run_once_sync() is True  # START_RUNTIME creates POLL_RUNTIME
+
+    with db_session_factory() as claim_db:
+        claimed = claim(claim_db, "io-boundary-worker", lease_seconds=30)
+    assert claimed is not None
+    task, lease = claimed
+    assert task.task_type == "POLL_RUNTIME"
+
+    transaction_states: list[bool] = []
+
+    with db_session_factory() as db:
+
+        class InspectingRuntime:
+            def start(self, _request: StartAttemptRequest) -> RuntimeHandle:
+                raise AssertionError("runtime is already running")
+
+            def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
+                transaction_states.append(db.in_transaction())
+                return RuntimeEventBatch(
+                    events=(),
+                    cursor=handle.cursor,
+                    result=RuntimeResult(status="RUNNING", cursor=handle.cursor),
+                )
+
+            def inspect(self, _handle: RuntimeHandle) -> RuntimeResult:
+                raise AssertionError("event batch already contains a result")
+
+            def resume(self, _handle: RuntimeHandle, _content: str) -> RuntimeResult:
+                raise AssertionError("not used")
+
+            def cancel(self, _handle: RuntimeHandle) -> None:
+                raise AssertionError("not used")
+
+        with (
+            settings_context(worker_container.settings),
+            runtime_context(InspectingRuntime()),
+        ):
+            process_poll_runtime(db, attempt_id, 1, lease, commit=False)
+        assert succeed(db, lease, commit=False) is True
+        db.commit()
+
+    assert transaction_states == [False]
+    with db_session_factory() as db:
+        persisted = db.get(BackgroundTask, task.id)
+        assert persisted is not None
+        assert persisted.state == TaskState.SUCCEEDED
+        next_poll = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "POLL_RUNTIME",
+                BackgroundTask.state == TaskState.PENDING,
+            )
+        )
+        assert next_poll is not None
+
+
+def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
+    worker_client, db_session_factory, worker_container, worker_skill_capability
+):
+    """Gate I/O holds no DB transaction and CAS discards a concurrently stale result."""
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from sqlalchemy import func, update
+
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.modules.orchestration.public import process_gate_stage
+    from flowweave.modules.tasks.application.service import claim, succeed
+    from flowweave.shared.application.sandbox import SandboxExecution
+    from flowweave.shared.models import GateEvaluation, NodeAttempt, RunEvent
+    from flowweave.shared.sandbox import sandbox_context
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "Gate CAS 短事务流程",
+            "default_entry_key": "design",
+            "nodes": [
+                {
+                    "instance_key": "design",
+                    "node_asset_id": asset["id"],
+                    "gates": [
+                        {
+                            "stage": "START",
+                            "position": 0,
+                            "gate_type": "PYTHON",
+                            "config": {
+                                "code": (
+                                    "result = {'decision': 'PASS', 'summary': 'ok', "
+                                    "'reasons': [], 'evidence': [], 'details': {}}"
+                                )
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "DOCUMENT",
+                    "inline_content": "Gate CAS 输入",
+                }
+            ]
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True  # readiness; queues START gates
+
+    with db_session_factory() as claim_db:
+        claimed = claim(claim_db, "gate-io-boundary-worker", lease_seconds=30)
+    assert claimed is not None
+    task, lease = claimed
+    assert task.task_type == "RUN_GATE_POLICY"
+
+    entered = Event()
+    release = Event()
+    transaction_states: list[bool] = []
+
+    with db_session_factory() as db:
+
+        class BlockingSandbox:
+            def execute(self, _language, _code, _context, _timeout_seconds):
+                transaction_states.append(db.in_transaction())
+                entered.set()
+                assert release.wait(timeout=5)
+                return SandboxExecution(
+                    "COMPLETED",
+                    result={
+                        "decision": "PASS",
+                        "summary": "late pass",
+                        "reasons": [],
+                        "evidence": [],
+                        "details": {},
+                    },
+                )
+
+        def execute_gate() -> None:
+            with sandbox_context(BlockingSandbox()):
+                process_gate_stage(db, attempt_id, "START", lease, commit=False)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(execute_gate)
+            assert entered.wait(timeout=5)
+            with db_session_factory() as concurrent_db:
+                changed = concurrent_db.execute(
+                    update(NodeAttempt)
+                    .where(NodeAttempt.id == attempt_id)
+                    .values(state_version=NodeAttempt.state_version + 1)
+                )
+                assert changed.rowcount == 1
+                concurrent_db.commit()
+            release.set()
+            future.result(timeout=5)
+
+        # The delivery may complete as a stale no-op, but no business result is persisted.
+        assert succeed(db, lease, commit=False) is True
+        db.commit()
+
+    assert transaction_states == [False]
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        assert attempt.state == "START_GATES"
+        assert (
+            db.scalar(
+                select(func.count(GateEvaluation.id)).where(GateEvaluation.attempt_id == attempt_id)
+            )
+            == 0
+        )
+        assert (
+            db.scalar(
+                select(func.count(RunEvent.cursor)).where(
+                    RunEvent.attempt_id == attempt_id,
+                    RunEvent.event_type == "GATE_STAGE_FINISHED",
+                )
+            )
+            == 0
+        )

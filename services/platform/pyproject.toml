@@ -1,0 +1,50 @@
+[project]
+name = "flowweave-platform"
+version = "1.0.0"
+description = "FlowWeave product-driven workflow platform"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic==1.16.1",
+  "boto3==1.38.46",
+  "cryptography==45.0.5",
+  "fastapi==0.115.12",
+  "greenlet==3.5.4",
+  "httpx==0.28.1",
+  "psycopg[binary]==3.2.9",
+  "pydantic-settings==2.9.1",
+  "PyYAML==6.0.2",
+  "quickjs==1.19.4",
+  "sqlalchemy==2.0.41",
+  "uvicorn[standard]==0.34.2",
+]
+[dependency-groups]
+dev = [
+    "jsonschema==4.24.0",
+    "pyright==1.1.405",
+    "pytest==8.3.5",
+    "pytest-asyncio==1.0.0",
+    "ruff==0.11.11",
+    "testcontainers[postgres]==4.10.0",
+]
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+[tool.hatch.build.targets.wheel]
+packages = ["src/flowweave"]
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["src"]
+stubPath = "typings"
+exclude = ["**/__pycache__"]
+reportMissingTypeStubs = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

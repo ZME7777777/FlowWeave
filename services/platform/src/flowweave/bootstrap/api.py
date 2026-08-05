@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import hmac
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from typing import Any
+from uuid import uuid4
+
+from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
+
+from flowweave.bootstrap.container import Container, build_container
+from flowweave.bootstrap.settings import Settings
+from flowweave.modules.catalog.presentation.router import router as catalog_router
+from flowweave.modules.flows.presentation.router import router as flows_router
+from flowweave.modules.model_providers.presentation.router import router as providers_router
+from flowweave.modules.runs.presentation.router import router as runs_router
+from flowweave.runtime.dependencies import bind_runtime, reset_runtime
+from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
+from flowweave.shared.errors import DomainError
+from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
+from flowweave.shared.settings import bind_settings, reset_settings
+
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def error_body(code: str, message: str, request_id: str, details: object = None) -> dict[str, Any]:
+    return {
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or {},
+            "request_id": request_id,
+        }
+    }
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    configured = settings or Settings()
+    container = build_container(configured, role="api")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.container = container
+        try:
+            yield
+        finally:
+            await container.close()
+
+    app = FastAPI(title="FlowWeave Platform API", version="1.0.0", lifespan=lifespan)
+    app.state.container = container
+
+    async def request_context(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        request.state.request_id = request_id
+        settings_token = bind_settings(container.settings)
+        runtime_token = bind_runtime(container.runtime)
+        store_token = bind_artifact_store(container.artifact_store)
+        sandbox_token = bind_sandbox(container.sandbox)
+        try:
+            if request.method in WRITE_METHODS and request.url.path.startswith("/api/v1"):
+                authorization = request.headers.get("Authorization", "")
+                expected = f"Bearer {container.settings.human_write_token}"
+                if not hmac.compare_digest(authorization, expected):
+                    return JSONResponse(
+                        status_code=401,
+                        content=error_body(
+                            "HUMAN_TOKEN_REQUIRED",
+                            "A valid Human Write Token is required",
+                            request_id,
+                        ),
+                    )
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            reset_sandbox(sandbox_token)
+            reset_artifact_store(store_token)
+            reset_runtime(runtime_token)
+            reset_settings(settings_token)
+
+    async def domain_error(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, DomainError):
+            raise exc
+        return JSONResponse(
+            status_code=exc.status,
+            content=error_body(exc.code, exc.message, request.state.request_id, exc.details),
+        )
+
+    async def validation_error(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, RequestValidationError):
+            raise exc
+        return JSONResponse(
+            status_code=422,
+            content=error_body(
+                "INVALID_COMMAND",
+                "Request validation failed",
+                request.state.request_id,
+                {"errors": exc.errors()},
+            ),
+        )
+
+    async def integrity_error(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, IntegrityError):
+            raise exc
+        return JSONResponse(
+            status_code=409,
+            content=error_body(
+                "VERSION_CONFLICT",
+                "The resource conflicts with existing data",
+                request.state.request_id,
+            ),
+        )
+
+    async def liveness() -> dict[str, str]:
+        return {"status": "ok"}
+
+    async def readiness(request: Request) -> dict[str, str]:
+        active: Container = request.app.state.container
+        await active.database.ping()
+        return {"status": "ready"}
+
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    async def verify() -> Response:
+        return Response(status_code=204)
+
+    app.middleware("http")(request_context)
+    app.add_exception_handler(DomainError, domain_error)
+    app.add_exception_handler(RequestValidationError, validation_error)
+    app.add_exception_handler(IntegrityError, integrity_error)
+    app.add_api_route("/health/live", liveness, methods=["GET"])
+    app.add_api_route("/health/ready", readiness, methods=["GET"])
+    app.add_api_route("/health", health, methods=["GET"])
+    app.add_api_route(
+        "/api/v1/auth/verify", verify, methods=["POST"], status_code=204, response_class=Response
+    )
+
+    for router in (catalog_router, providers_router, flows_router, runs_router):
+        app.include_router(router, prefix="/api/v1")
+    return app

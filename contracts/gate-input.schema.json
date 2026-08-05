@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "byte_size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "field_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "inline_content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "mime_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version_no": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "field_key",
+        "version_no",
+        "artifact_type",
+        "inline_content",
+        "uri",
+        "content_hash",
+        "byte_size",
+        "mime_type",
+        "source",
+        "metadata"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://flowweave.local/contracts/gate-input.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "type": "array"
+    },
+    "attempt": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_no": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "attempt_no"
+      ],
+      "type": "object"
+    },
+    "input_bindings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "$ref": "#/$defs/artifact"
+          },
+          "binding_source": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "input_field_key": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "input_field_key",
+          "binding_source",
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "node": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "asset_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputs": {
+          "type": "array"
+        },
+        "instance_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "outputs": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "instance_key",
+        "alias",
+        "asset_name",
+        "inputs",
+        "outputs"
+      ],
+      "type": "object"
+    },
+    "outputs": {
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "stage": {
+      "enum": [
+        "START",
+        "END"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "stage",
+    "attempt",
+    "node",
+    "input_bindings",
+    "outputs",
+    "artifacts"
+  ],
+  "title": "GateInputV1",
+  "type": "object"
+}

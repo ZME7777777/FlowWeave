@@ -1,0 +1,60 @@
+from enum import StrEnum
+
+
+class Direction(StrEnum):
+    INPUT = "INPUT"
+    OUTPUT = "OUTPUT"
+
+
+class CapabilityType(StrEnum):
+    SKILL = "SKILL"
+    MCP = "MCP"
+    HOOK = "HOOK"
+
+
+class GateStage(StrEnum):
+    START = "START"
+    END = "END"
+
+
+class GateType(StrEnum):
+    PROMPT = "PROMPT"
+    PYTHON = "PYTHON"
+    JAVASCRIPT = "JAVASCRIPT"
+
+
+class FlowRunState(StrEnum):
+    ACTIVE = "ACTIVE"
+    WAITING_HUMAN = "WAITING_HUMAN"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class NodeRunState(StrEnum):
+    ACTIVE = "ACTIVE"
+    ACCEPTED = "ACCEPTED"
+    CANCELLED = "CANCELLED"
+
+
+class AttemptState(StrEnum):
+    WAITING_INPUT = "WAITING_INPUT"
+    START_GATES = "START_GATES"
+    START_BLOCKED = "START_BLOCKED"
+    WAITING_START_CONFIRMATION = "WAITING_START_CONFIRMATION"
+    EXECUTING = "EXECUTING"
+    WAITING_HUMAN = "WAITING_HUMAN"
+    END_GATES = "END_GATES"
+    END_BLOCKED = "END_BLOCKED"
+    WAITING_ACCEPTANCE = "WAITING_ACCEPTANCE"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+class TaskState(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    RETRY = "RETRY"
+    DEAD = "DEAD"

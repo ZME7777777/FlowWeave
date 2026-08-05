@@ -1,0 +1,65 @@
+{
+  "$id": "https://flowweave.local/contracts/runtime-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "human_question": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outputs": {
+      "additionalProperties": {
+        "items": false,
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "type": "array"
+      },
+      "type": "object"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "RUNNING",
+        "HUMAN_INPUT_REQUIRED",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "status",
+    "outputs",
+    "human_question",
+    "cursor",
+    "error"
+  ],
+  "title": "RuntimeResultV1",
+  "type": "object"
+}

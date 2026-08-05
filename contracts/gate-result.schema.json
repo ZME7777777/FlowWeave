@@ -1,0 +1,45 @@
+{
+  "$id": "https://flowweave.local/contracts/gate-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "decision": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR"
+      ]
+    },
+    "details": {
+      "type": "object"
+    },
+    "evidence": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "reasons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "decision",
+    "summary",
+    "reasons",
+    "evidence",
+    "details"
+  ],
+  "title": "GateResultV1",
+  "type": "object"
+}

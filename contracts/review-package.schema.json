@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowweave.local/contracts/review-package.schema.json",
+  "title": "ReviewPackage",
+  "type": "object",
+  "required": ["phase", "data"],
+  "properties": {
+    "phase": {"enum": ["INPUT", "OUTPUT"]},
+    "data": {
+      "type": "object",
+      "properties": {
+        "summary": {"type": "array", "items": {"type": "string"}},
+        "key_points": {"type": "array", "items": {"type": "string"}},
+        "context_found": {"type": "array"},
+        "unknowns": {"type": "array", "items": {"type": "string"}},
+        "conflicts": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "questions": {"type": "array", "items": {"type": "string"}},
+        "suggestions": {"type": "array", "items": {"type": "string"}},
+        "changes": {"type": "array", "items": {"type": "string"}},
+        "review_focus": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "raw_response": {"type": ["string", "null"]},
+    "parse_error": {"type": ["string", "null"]}
+  }
+}
