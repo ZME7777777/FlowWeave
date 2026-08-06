@@ -14,6 +14,15 @@ class MockRuntime:
     def __init__(self) -> None:
         self._results: dict[str, RuntimeResult] = {}
 
+    def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
+        handle = RuntimeHandle(
+            job_id=f"mock-job-{request.attempt_id}",
+            conversation_id=f"mock-conversation-{request.attempt_id}",
+            cursor="1",
+        )
+        self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
+        return handle
+
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
             job_id=f"mock-job-{request.attempt_id}",
@@ -45,7 +54,7 @@ class MockRuntime:
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         return self._results.get(handle.job_id, RuntimeResult(status="FAILED", error="UNKNOWN_JOB"))
 
-    def resume(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+    def send_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
         result = RuntimeResult(
             status="COMPLETED",
             outputs={"result": ("TEXT", f"Mock response: {content}")},
@@ -53,6 +62,9 @@ class MockRuntime:
         )
         self._results[handle.job_id] = result
         return result
+
+    def resume(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        return self.send_message(handle, content)
 
     def cancel(self, handle: RuntimeHandle) -> None:
         self._results[handle.job_id] = RuntimeResult(status="CANCELLED")

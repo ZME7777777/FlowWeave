@@ -9,6 +9,7 @@ from flowweave.shared.schemas import (
     CapabilityCommitWrite,
     CapabilityValidateWrite,
     DirectoryWrite,
+    NodeAssetBulkDeleteWrite,
     NodeAssetWrite,
 )
 
@@ -52,6 +53,12 @@ async def update_asset(asset_id: str, payload: NodeAssetWrite, db: Db) -> dict[s
 @router.delete("/node-assets/{asset_id}", status_code=204, response_class=Response)
 async def delete_asset(asset_id: str, db: Db) -> Response:
     await run_sync(db, lambda session: service.delete_asset(session, asset_id))
+    return Response(status_code=204)
+
+
+@router.delete("/node-assets", status_code=204, response_class=Response)
+async def delete_assets(payload: NodeAssetBulkDeleteWrite, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_assets(session, payload.ids))
     return Response(status_code=204)
 
 

@@ -1,12 +1,10 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
-const token = process.env.E2E_HUMAN_WRITE_TOKEN ?? 'flowweave-human-dev';
-const headers = { Authorization: `Bearer ${token}` };
 const apiBase = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
 const suffix = Date.now().toString(36);
 
 async function post(request: APIRequestContext, path: string, data: unknown) {
-  const response = await request.post(`${apiBase}/api/v1${path}`, { data, headers });
+  const response = await request.post(`${apiBase}/api/v1${path}`, { data });
   expect(response.ok(), await response.text()).toBeTruthy();
   return response.json();
 }
@@ -67,7 +65,6 @@ async function createFlow(request: APIRequestContext, assetId: string, name: str
 }
 
 async function login(page: Page) {
-  await page.addInitScript(value => sessionStorage.setItem('flowweave-human-write-token', value), token);
   await page.goto('/');
   await page.evaluate(() => localStorage.removeItem('flowweave-workbench'));
   await page.reload();
@@ -201,7 +198,6 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
 
   const changedFlow = await request.put(`${apiBase}/api/v1/flows/${flow.id}`, {
-    headers,
     data: {
       name: flow.name,
       description: '运行中发布的新流程配置',

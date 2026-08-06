@@ -13,6 +13,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.public import describe_asset
+from flowweave.modules.conversations import public as conversations
 from flowweave.modules.flows.public import describe_flow, load_flow
 from flowweave.modules.gates.public import (
     GateExecutionPlan,
@@ -37,6 +38,8 @@ from flowweave.shared.application.transactions import (
 from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.models import (
+    AgentConversation,
+    AgentMessage,
     ArtifactVersion,
     AttemptInputBinding,
     AttemptState,
@@ -919,6 +922,7 @@ def confirm_start(
         attempt_id=attempt.id,
     )
     run.state = FlowRunState.ACTIVE
+    conversations.ensure_auto_conversation(db, attempt)
     _event(db, run.id, "ATTEMPT_EXECUTING", {}, node_run.id, attempt.id)
     if not _inline_execution():
         enqueue(
@@ -1139,6 +1143,13 @@ def process_start_runtime(
         get_runtime().cancel(handle)
         _require_current_lease(db, lease)
         return
+    conversations.bind_auto_runtime(
+        db,
+        claimed.id,
+        runtime_job_id=handle.job_id,
+        runtime_conversation_id=handle.conversation_id,
+        runtime_cursor=handle.cursor,
+    )
     if _inline_execution():
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
     else:
@@ -1152,13 +1163,18 @@ def _apply_runtime_result(
     result: RuntimeResult,
     *,
     prepared_outputs: list[PreparedArtifact],
+    result_key: str,
     commit: bool = True,
 ) -> dict[str, Any]:
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
     attempt.runtime_cursor = result.cursor
+    conversations.project_auto_runtime_result(db, attempt.id, result, result_key=result_key)
     if result.status == "HUMAN_INPUT_REQUIRED":
         attempt.state = AttemptState.WAITING_HUMAN
+        conversations.set_auto_conversation_state(
+            db, attempt.id, conversations.ConversationState.WAITING_HUMAN
+        )
         attempt.error_detail = result.human_question
         run.state = FlowRunState.WAITING_HUMAN
         _event(
@@ -1170,6 +1186,9 @@ def _apply_runtime_result(
             attempt.id,
         )
     elif result.status == "COMPLETED":
+        conversations.set_auto_conversation_state(
+            db, attempt.id, conversations.ConversationState.IDLE
+        )
         for prepared in prepared_outputs:
             _register_artifact(
                 db,
@@ -1183,7 +1202,13 @@ def _apply_runtime_result(
         _dispatch_gates(db, attempt, "END")
     elif result.status == "RUNNING":
         attempt.runtime_phase = "RUNNING"
+        conversations.set_auto_conversation_state(
+            db, attempt.id, conversations.ConversationState.GENERATING
+        )
     elif result.status == "FAILED":
+        conversations.set_auto_conversation_state(
+            db, attempt.id, conversations.ConversationState.FAILED
+        )
         attempt.state = AttemptState.END_BLOCKED
         attempt.runtime_phase = "FAILED"
         attempt.error_code = "RUNTIME_FAILED"
@@ -1257,6 +1282,13 @@ def process_poll_runtime(
             node_run.id,
             claimed.id,
         )
+        conversations.project_runtime_event(
+            db,
+            claimed.id,
+            cursor=runtime_event.cursor,
+            event_type=runtime_event.event_type,
+            payload=runtime_event.payload,
+        )
     if result.cursor is None and batch.cursor is not None:
         result = RuntimeResult(
             status=result.status,
@@ -1265,7 +1297,14 @@ def process_poll_runtime(
             cursor=batch.cursor,
             error=result.error,
         )
-    _apply_runtime_result(db, claimed, result, prepared_outputs=prepared_outputs, commit=commit)
+    _apply_runtime_result(
+        db,
+        claimed,
+        result,
+        prepared_outputs=prepared_outputs,
+        result_key=f"poll:{poll_no}:{result.cursor or batch.cursor or '0'}",
+        commit=commit,
+    )
     if result.status == "RUNNING":
         _dispatch_poll(db, claimed, poll_no + 1, delayed=True)
         _finish_transaction(db, commit)
@@ -1291,6 +1330,9 @@ def human_input(
         {"content": payload.content},
         node_run.id,
         attempt.id,
+    )
+    conversations.record_auto_human_input(
+        db, attempt.id, action_id=action.id, content=payload.content
     )
     if not _inline_execution():
         enqueue(
@@ -1346,7 +1388,15 @@ def process_resume_runtime(
     if claimed is None:
         discard_prepared_artifacts(prepared_outputs)
         return
-    _apply_runtime_result(db, claimed, result, prepared_outputs=prepared_outputs, commit=commit)
+    conversations.mark_auto_human_input_delivered(db, claimed.id, action_id=action.id)
+    _apply_runtime_result(
+        db,
+        claimed,
+        result,
+        prepared_outputs=prepared_outputs,
+        result_key=f"resume:{action.id}",
+        commit=commit,
+    )
     if result.status == "RUNNING":
         _dispatch_poll(db, claimed, 1, delayed=True)
         _finish_transaction(db, commit)
@@ -1461,6 +1511,9 @@ def accept_attempt(
         node_run_id=node_run.id,
         attempt_id=attempt.id,
     )
+    conversations.set_attempt_conversations_state(
+        db, attempt.id, conversations.ConversationState.READ_ONLY
+    )
     node_run.state = NodeRunState.ACCEPTED
     node_run.accepted_attempt_id = attempt.id
     _event(db, run.id, "NODE_RUN_ACCEPTED", {}, node_run.id, attempt.id)
@@ -1490,6 +1543,9 @@ def reject_attempt(
         {"reason": payload.reason},
         node_run.id,
         attempt.id,
+    )
+    conversations.set_attempt_conversations_state(
+        db, attempt.id, conversations.ConversationState.READ_ONLY
     )
     next_no = (
         db.scalar(
@@ -1607,6 +1663,9 @@ def complete_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, An
             AttemptState.CANCELLED,
         }:
             attempt.state = AttemptState.CANCELLED
+        conversations.set_attempt_conversations_state(
+            db, attempt.id, conversations.ConversationState.READ_ONLY
+        )
     run.state = FlowRunState.COMPLETED
     run.completion_mode = "HUMAN"
     run.finished_at = now()
@@ -1643,8 +1702,14 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
             AttemptState.REJECTED,
             AttemptState.CANCELLED,
         }:
+            conversations.set_attempt_conversations_state(
+                db, attempt.id, conversations.ConversationState.READ_ONLY
+            )
             continue
         attempt.state = AttemptState.CANCELLED
+        conversations.set_attempt_conversations_state(
+            db, attempt.id, conversations.ConversationState.READ_ONLY
+        )
         attempt.state_version += 1
         if attempt.runtime_job_id and attempt.conversation_id:
             attempt.runtime_phase = "CANCELLING"
@@ -1682,6 +1747,16 @@ def delete_run(db: Session, run_id: str) -> None:
         if attempt_ids
         else []
     )
+    agent_conversations = (
+        list(
+            db.scalars(
+                select(AgentConversation).where(AgentConversation.attempt_id.in_(attempt_ids))
+            )
+        )
+        if attempt_ids
+        else []
+    )
+    attempt_runtime_ids = {attempt.conversation_id for attempt in attempts}
     for attempt in attempts:
         if attempt.runtime_job_id and attempt.conversation_id:
             get_runtime().cancel(
@@ -1689,6 +1764,18 @@ def delete_run(db: Session, run_id: str) -> None:
                     job_id=attempt.runtime_job_id,
                     conversation_id=attempt.conversation_id,
                     cursor=attempt.runtime_cursor,
+                )
+            )
+    for conversation in agent_conversations:
+        if (
+            conversation.runtime_conversation_id
+            and conversation.runtime_conversation_id not in attempt_runtime_ids
+        ):
+            get_runtime().cancel(
+                RuntimeHandle(
+                    job_id=conversation.runtime_job_id or conversation.runtime_conversation_id,
+                    conversation_id=conversation.runtime_conversation_id,
+                    cursor=conversation.runtime_cursor,
                 )
             )
 
@@ -1704,14 +1791,30 @@ def delete_run(db: Session, run_id: str) -> None:
         path = Path(attempt.workspace_ref).resolve()
         if path != workspace_root and path.is_relative_to(workspace_root):
             workspace_paths.add(path)
+    conversation_ids = [item.id for item in agent_conversations]
+    message_ids = (
+        list(
+            db.scalars(
+                select(AgentMessage.id).where(AgentMessage.conversation_id.in_(conversation_ids))
+            )
+        )
+        if conversation_ids
+        else []
+    )
+    task_aggregate_ids = [*attempt_ids, *conversation_ids, *message_ids]
+    if task_aggregate_ids:
+        db.execute(
+            delete(BackgroundTask).where(BackgroundTask.aggregate_id.in_(task_aggregate_ids))
+        )
     if attempt_ids:
-        db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id.in_(attempt_ids)))
         db.execute(
             delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids))
         )
         db.execute(delete(GateEvaluation).where(GateEvaluation.attempt_id.in_(attempt_ids)))
     db.execute(delete(HumanAction).where(HumanAction.flow_run_id == run.id))
     db.execute(delete(RunEvent).where(RunEvent.flow_run_id == run.id))
+    if conversation_ids:
+        db.execute(delete(AgentConversation).where(AgentConversation.id.in_(conversation_ids)))
     db.execute(delete(ArtifactVersion).where(ArtifactVersion.flow_run_id == run.id))
     if attempt_ids:
         db.execute(delete(NodeAttempt).where(NodeAttempt.id.in_(attempt_ids)))

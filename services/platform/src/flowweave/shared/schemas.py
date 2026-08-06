@@ -90,10 +90,18 @@ class NodeAssetWrite(ApiModel):
         return self
 
 
+class NodeAssetBulkDeleteWrite(ApiModel):
+    ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class ProviderModelWrite(ApiModel):
     model_name: str = Field(min_length=1, max_length=240)
     enabled: bool = True
     is_default: bool = False
+
+
+class ModelProviderBulkDeleteWrite(ApiModel):
+    ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class ModelProviderWrite(ApiModel):
@@ -227,3 +235,26 @@ class CapabilityValidateWrite(ApiModel):
 
 class CapabilityCommitWrite(ApiModel):
     import_token: str
+
+
+class ConversationCreateWrite(ApiModel):
+    title: str | None = Field(default=None, max_length=160)
+    expected_attempt_state_version: int = Field(ge=1)
+    baseline: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class ConversationPatchWrite(ApiModel):
+    title: str = Field(min_length=1, max_length=160)
+    expected_conversation_version: int = Field(ge=1)
+
+
+class TextPartWrite(ApiModel):
+    type: Literal["text"] = "text"
+    text: str = Field(min_length=1)
+
+
+class MessageSendWrite(ApiModel):
+    client_message_id: str = Field(min_length=1, max_length=100)
+    content: list[TextPartWrite] = Field(min_length=1)
+    delivery_mode: Literal["QUEUE_AFTER_TURN"] = "QUEUE_AFTER_TURN"
+    expected_conversation_version: int = Field(ge=1)

@@ -1,925 +1,106 @@
 {
-  "components": {
-    "schemas": {
-      "ArtifactWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "artifact_type": {
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Artifact Type",
-            "type": "string"
-          },
-          "field_key": {
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Field Key",
-            "type": "string"
-          },
-          "inline_content": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Inline Content"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "title": "Metadata",
-            "type": "object"
-          },
-          "mime_type": {
-            "default": "text/plain",
-            "title": "Mime Type",
-            "type": "string"
-          },
-          "uri": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Uri"
-          }
-        },
-        "required": [
-          "field_key",
-          "artifact_type"
-        ],
-        "title": "ArtifactWrite",
-        "type": "object"
-      },
-      "AttemptVersionWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "expected_state_version": {
-            "minimum": 1.0,
-            "title": "Expected State Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "expected_state_version"
-        ],
-        "title": "AttemptVersionWrite",
-        "type": "object"
-      },
-      "CapabilityCommitWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "import_token": {
-            "title": "Import Token",
-            "type": "string"
-          }
-        },
-        "required": [
-          "import_token"
-        ],
-        "title": "CapabilityCommitWrite",
-        "type": "object"
-      },
-      "CapabilityValidateWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "capability_type": {
-            "enum": [
-              "SKILL",
-              "MCP",
-              "HOOK"
-            ],
-            "title": "Capability Type",
-            "type": "string"
-          },
-          "content_base64": {
-            "title": "Content Base64",
-            "type": "string"
-          },
-          "filename": {
-            "title": "Filename",
-            "type": "string"
-          }
-        },
-        "required": [
-          "capability_type",
-          "filename",
-          "content_base64"
-        ],
-        "title": "CapabilityValidateWrite",
-        "type": "object"
-      },
-      "CapabilityWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "capability_key": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Capability Key",
-            "type": "string"
-          },
-          "capability_type": {
-            "enum": [
-              "SKILL",
-              "MCP",
-              "HOOK"
-            ],
-            "title": "Capability Type",
-            "type": "string"
-          },
-          "normalized_config": {
-            "additionalProperties": true,
-            "title": "Normalized Config",
-            "type": "object"
-          }
-        },
-        "required": [
-          "capability_type",
-          "capability_key"
-        ],
-        "title": "CapabilityWrite",
-        "type": "object"
-      },
-      "DirectoryWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "maxLength": 160,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "parent_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Parent Id"
-          },
-          "position": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Position",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "DirectoryWrite",
-        "type": "object"
-      },
-      "EdgeMappingWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "source_output_key": {
-            "title": "Source Output Key",
-            "type": "string"
-          },
-          "target_input_key": {
-            "title": "Target Input Key",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_output_key",
-          "target_input_key"
-        ],
-        "title": "EdgeMappingWrite",
-        "type": "object"
-      },
-      "ExecutorWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "context_prompt": {
-            "default": "",
-            "title": "Context Prompt",
-            "type": "string"
-          },
-          "max_iterations": {
-            "default": 100,
-            "maximum": 1000.0,
-            "minimum": 1.0,
-            "title": "Max Iterations",
-            "type": "integer"
-          },
-          "model_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Name"
-          },
-          "model_provider_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Provider Id"
-          },
-          "startup_prompt": {
-            "default": "",
-            "title": "Startup Prompt",
-            "type": "string"
-          },
-          "timeout_seconds": {
-            "default": 900,
-            "maximum": 86400.0,
-            "minimum": 1.0,
-            "title": "Timeout Seconds",
-            "type": "integer"
-          }
-        },
-        "title": "ExecutorWrite",
-        "type": "object"
-      },
-      "FlowEdgeWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "mappings": {
-            "items": {
-              "$ref": "#/components/schemas/EdgeMappingWrite"
-            },
-            "title": "Mappings",
-            "type": "array"
-          },
-          "position": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Position",
-            "type": "integer"
-          },
-          "source_instance_key": {
-            "title": "Source Instance Key",
-            "type": "string"
-          },
-          "target_instance_key": {
-            "title": "Target Instance Key",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_instance_key",
-          "target_instance_key"
-        ],
-        "title": "FlowEdgeWrite",
-        "type": "object"
-      },
-      "FlowNodeWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "alias": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Alias"
-          },
-          "config_override": {
-            "additionalProperties": true,
-            "title": "Config Override",
-            "type": "object"
-          },
-          "gates": {
-            "items": {
-              "$ref": "#/components/schemas/GateWrite"
-            },
-            "title": "Gates",
-            "type": "array"
-          },
-          "instance_key": {
-            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$",
-            "title": "Instance Key",
-            "type": "string"
-          },
-          "node_asset_id": {
-            "title": "Node Asset Id",
-            "type": "string"
-          },
-          "position_x": {
-            "default": 0,
-            "title": "Position X",
-            "type": "integer"
-          },
-          "position_y": {
-            "default": 0,
-            "title": "Position Y",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "instance_key",
-          "node_asset_id"
-        ],
-        "title": "FlowNodeWrite",
-        "type": "object"
-      },
-      "FlowWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "default_entry_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Entry Key"
-          },
-          "description": {
-            "default": "",
-            "title": "Description",
-            "type": "string"
-          },
-          "edges": {
-            "items": {
-              "$ref": "#/components/schemas/FlowEdgeWrite"
-            },
-            "title": "Edges",
-            "type": "array"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "nodes": {
-            "items": {
-              "$ref": "#/components/schemas/FlowNodeWrite"
-            },
-            "minItems": 1,
-            "title": "Nodes",
-            "type": "array"
-          },
-          "row_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Row Version"
-          }
-        },
-        "required": [
-          "name",
-          "nodes"
-        ],
-        "title": "FlowWrite",
-        "type": "object"
-      },
-      "GateWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "config": {
-            "additionalProperties": true,
-            "title": "Config",
-            "type": "object"
-          },
-          "enabled": {
-            "default": true,
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "gate_type": {
-            "enum": [
-              "PROMPT",
-              "PYTHON",
-              "JAVASCRIPT"
-            ],
-            "title": "Gate Type",
-            "type": "string"
-          },
-          "position": {
-            "minimum": 0.0,
-            "title": "Position",
-            "type": "integer"
-          },
-          "stage": {
-            "enum": [
-              "START",
-              "END"
-            ],
-            "title": "Stage",
-            "type": "string"
-          },
-          "timeout_seconds": {
-            "default": 30,
-            "maximum": 300.0,
-            "minimum": 1.0,
-            "title": "Timeout Seconds",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "stage",
-          "position",
-          "gate_type"
-        ],
-        "title": "GateWrite",
-        "type": "object"
-      },
-      "HTTPValidationError": {
-        "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "title": "Detail",
-            "type": "array"
-          }
-        },
-        "title": "HTTPValidationError",
-        "type": "object"
-      },
-      "HumanInputWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "content": {
-            "minLength": 1,
-            "title": "Content",
-            "type": "string"
-          },
-          "expected_state_version": {
-            "minimum": 1.0,
-            "title": "Expected State Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "expected_state_version",
-          "content"
-        ],
-        "title": "HumanInputWrite",
-        "type": "object"
-      },
-      "IOFieldWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "data_type": {
-            "enum": [
-              "TEXT",
-              "MARKDOWN",
-              "JSON_OBJECT",
-              "JSON_ARRAY",
-              "FILE",
-              "FILE_COLLECTION",
-              "DOCUMENT",
-              "URL",
-              "REPOSITORY_REF"
-            ],
-            "title": "Data Type",
-            "type": "string"
-          },
-          "description": {
-            "default": "",
-            "title": "Description",
-            "type": "string"
-          },
-          "display_name": {
-            "maxLength": 160,
-            "minLength": 1,
-            "title": "Display Name",
-            "type": "string"
-          },
-          "field_key": {
-            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$",
-            "title": "Field Key",
-            "type": "string"
-          }
-        },
-        "required": [
-          "field_key",
-          "display_name",
-          "data_type"
-        ],
-        "title": "IOFieldWrite",
-        "type": "object"
-      },
-      "InputBindingsWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "bindings": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Bindings",
-            "type": "object"
-          },
-          "expected_state_version": {
-            "minimum": 1.0,
-            "title": "Expected State Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "expected_state_version",
-          "bindings"
-        ],
-        "title": "InputBindingsWrite",
-        "type": "object"
-      },
-      "ModelProviderWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "api_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Api Key"
-          },
-          "base_url": {
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
-          },
-          "models": {
-            "items": {
-              "$ref": "#/components/schemas/ProviderModelWrite"
-            },
-            "minItems": 1,
-            "title": "Models",
-            "type": "array"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "row_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Row Version"
-          }
-        },
-        "required": [
-          "name",
-          "base_url",
-          "models"
-        ],
-        "title": "ModelProviderWrite",
-        "type": "object"
-      },
-      "NodeAssetWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "capabilities": {
-            "items": {
-              "$ref": "#/components/schemas/CapabilityWrite"
-            },
-            "title": "Capabilities",
-            "type": "array"
-          },
-          "default_skill_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Skill Ref"
-          },
-          "description": {
-            "default": "",
-            "title": "Description",
-            "type": "string"
-          },
-          "directory_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Directory Id"
-          },
-          "executor": {
-            "$ref": "#/components/schemas/ExecutorWrite"
-          },
-          "icon_kind": {
-            "default": "LUCIDE",
-            "title": "Icon Kind",
-            "type": "string"
-          },
-          "icon_value": {
-            "default": "bot",
-            "title": "Icon Value",
-            "type": "string"
-          },
-          "inputs": {
-            "items": {
-              "$ref": "#/components/schemas/IOFieldWrite"
-            },
-            "title": "Inputs",
-            "type": "array"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "outputs": {
-            "items": {
-              "$ref": "#/components/schemas/IOFieldWrite"
-            },
-            "title": "Outputs",
-            "type": "array"
-          },
-          "row_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Row Version"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "NodeAssetWrite",
-        "type": "object"
-      },
-      "NodeRunStart": {
-        "additionalProperties": false,
-        "properties": {
-          "artifact_ids": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Artifact Ids",
-            "type": "object"
-          }
-        },
-        "title": "NodeRunStart",
-        "type": "object"
-      },
-      "ProviderModelWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "default": true,
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "is_default": {
-            "default": false,
-            "title": "Is Default",
-            "type": "boolean"
-          },
-          "model_name": {
-            "maxLength": 240,
-            "minLength": 1,
-            "title": "Model Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "model_name"
-        ],
-        "title": "ProviderModelWrite",
-        "type": "object"
-      },
-      "RejectWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "copy_input_bindings": {
-            "default": true,
-            "title": "Copy Input Bindings",
-            "type": "boolean"
-          },
-          "expected_state_version": {
-            "minimum": 1.0,
-            "title": "Expected State Version",
-            "type": "integer"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "expected_state_version",
-          "reason"
-        ],
-        "title": "RejectWrite",
-        "type": "object"
-      },
-      "RunStart": {
-        "additionalProperties": false,
-        "properties": {
-          "artifacts": {
-            "items": {
-              "$ref": "#/components/schemas/ArtifactWrite"
-            },
-            "title": "Artifacts",
-            "type": "array"
-          },
-          "flow_node_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Flow Node Key"
-          },
-          "input_bindings": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Input Bindings",
-            "type": "object"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
-          }
-        },
-        "title": "RunStart",
-        "type": "object"
-      },
-      "SyncSnapshotWrite": {
-        "additionalProperties": false,
-        "properties": {
-          "expected_active_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expected Active Version"
-          }
-        },
-        "title": "SyncSnapshotWrite",
-        "type": "object"
-      },
-      "ValidationError": {
-        "properties": {
-          "loc": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                }
-              ]
-            },
-            "title": "Location",
-            "type": "array"
-          },
-          "msg": {
-            "title": "Message",
-            "type": "string"
-          },
-          "type": {
-            "title": "Error Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "loc",
-          "msg",
-          "type"
-        ],
-        "title": "ValidationError",
-        "type": "object"
-      }
-    }
-  },
+  "openapi": "3.1.0",
   "info": {
     "title": "FlowWeave Platform API",
     "version": "1.0.0"
   },
-  "openapi": "3.1.0",
   "paths": {
-    "/api/v1/artifact-versions/{artifact_id}/content": {
+    "/health/live": {
       "get": {
-        "operationId": "artifact_content_api_v1_artifact_versions__artifact_id__content_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "download",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Download",
-              "type": "boolean"
-            }
-          }
-        ],
+        "summary": "Liveness",
+        "operationId": "liveness_health_live_get",
         "responses": {
           "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Liveness Health Live Get"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Artifact Content"
+        }
       }
     },
-    "/api/v1/auth/verify": {
-      "post": {
-        "operationId": "verify_api_v1_auth_verify_post",
+    "/health/ready": {
+      "get": {
+        "summary": "Readiness",
+        "operationId": "readiness_health_ready_get",
         "responses": {
-          "204": {
-            "description": "Successful Response"
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Readiness Health Ready Get"
+                }
+              }
+            }
           }
-        },
-        "summary": "Verify"
+        }
       }
     },
-    "/api/v1/capability-imports": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-directories": {
+      "get": {
+        "summary": "Directories",
+        "operationId": "directories_api_v1_node_directories_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response Directories Api V1 Node Directories Get"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
-        "operationId": "commit_capability_api_v1_capability_imports_post",
+        "summary": "Create Directory",
+        "operationId": "create_directory_api_v1_node_directories_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CapabilityCommitWrite"
+                "$ref": "#/components/schemas/DirectoryWrite"
               }
             }
           },
@@ -927,33 +108,288 @@
         },
         "responses": {
           "201": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Commit Capability Api V1 Capability Imports Post",
-                  "type": "object"
+                  "type": "object",
+                  "title": "Response Create Directory Api V1 Node Directories Post"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-assets": {
+      "get": {
+        "summary": "Assets",
+        "operationId": "assets_api_v1_node_assets_get",
+        "parameters": [
+          {
+            "name": "directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Directory Id"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Assets Api V1 Node Assets Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Asset",
+        "operationId": "create_asset_api_v1_node_assets_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeAssetWrite"
+              }
+            }
           }
         },
-        "summary": "Commit Capability"
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Asset Api V1 Node Assets Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Assets",
+        "operationId": "delete_assets_api_v1_node_assets_delete",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeAssetBulkDeleteWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-assets/{asset_id}": {
+      "get": {
+        "summary": "Asset",
+        "operationId": "asset_api_v1_node_assets__asset_id__get",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Asset Api V1 Node Assets  Asset Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Asset",
+        "operationId": "update_asset_api_v1_node_assets__asset_id__put",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeAssetWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Asset Api V1 Node Assets  Asset Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Asset",
+        "operationId": "delete_asset_api_v1_node_assets__asset_id__delete",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/capability-imports/validate": {
       "post": {
+        "summary": "Validate Capability",
         "operationId": "validate_capability_api_v1_capability_imports_validate_post",
         "requestBody": {
           "content": {
@@ -967,36 +403,77 @@
         },
         "responses": {
           "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Validate Capability Api V1 Capability Imports Validate Post",
-                  "type": "object"
+                  "type": "object",
+                  "title": "Response Validate Capability Api V1 Capability Imports Validate Post"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Validate Capability"
+        }
       }
     },
-    "/api/v1/flow-runs": {
+    "/api/v1/capability-imports": {
+      "post": {
+        "summary": "Commit Capability",
+        "operationId": "commit_capability_api_v1_capability_imports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityCommitWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Commit Capability Api V1 Capability Imports Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/model-providers": {
       "get": {
-        "operationId": "list_flow_runs_api_v1_flow_runs_get",
+        "summary": "Providers",
+        "operationId": "providers_api_v1_model_providers_get",
         "responses": {
           "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
@@ -1004,28 +481,143 @@
                     "additionalProperties": true,
                     "type": "object"
                   },
-                  "title": "Response List Flow Runs Api V1 Flow Runs Get",
-                  "type": "array"
+                  "type": "array",
+                  "title": "Response Providers Api V1 Model Providers Get"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           }
+        }
+      },
+      "post": {
+        "summary": "Create Provider",
+        "operationId": "create_provider_api_v1_model_providers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelProviderWrite"
+              }
+            }
+          },
+          "required": true
         },
-        "summary": "List Flow Runs"
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Provider Api V1 Model Providers Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Providers",
+        "operationId": "delete_providers_api_v1_model_providers_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelProviderBulkDeleteWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
-    "/api/v1/flow-runs/{run_id}": {
-      "delete": {
-        "operationId": "delete_flow_run_api_v1_flow_runs__run_id__delete",
+    "/api/v1/model-providers/{provider_id}": {
+      "put": {
+        "summary": "Update Provider",
+        "operationId": "update_provider_api_v1_model_providers__provider_id__put",
         "parameters": [
           {
+            "name": "provider_id",
             "in": "path",
-            "name": "run_id",
             "required": true,
             "schema": {
-              "title": "Run Id",
-              "type": "string"
+              "type": "string",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelProviderWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Provider Api V1 Model Providers  Provider Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Provider",
+        "operationId": "delete_provider_api_v1_model_providers__provider_id__delete",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider Id"
             }
           }
         ],
@@ -1034,250 +626,107 @@
             "description": "Successful Response"
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Delete Flow Run"
-      },
+        }
+      }
+    },
+    "/api/v1/model-providers/{provider_id}/test": {
+      "post": {
+        "summary": "Test Provider",
+        "operationId": "test_provider_api_v1_model_providers__provider_id__test_post",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Test Provider Api V1 Model Providers  Provider Id  Test Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/model-providers/{provider_id}/discover-models": {
+      "post": {
+        "summary": "Discover Models",
+        "operationId": "discover_models_api_v1_model_providers__provider_id__discover_models_post",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Discover Models Api V1 Model Providers  Provider Id  Discover Models Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flows": {
       "get": {
-        "operationId": "flow_run_api_v1_flow_runs__run_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          }
-        ],
+        "summary": "Flows",
+        "operationId": "flows_api_v1_flows_get",
         "responses": {
           "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Flow Run Api V1 Flow Runs  Run Id  Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Flow Run"
-      }
-    },
-    "/api/v1/flow-runs/{run_id}/artifacts": {
-      "post": {
-        "operationId": "add_artifact_api_v1_flow_runs__run_id__artifacts_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ArtifactWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Add Artifact Api V1 Flow Runs  Run Id  Artifacts Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Add Artifact"
-      }
-    },
-    "/api/v1/flow-runs/{run_id}/cancel": {
-      "post": {
-        "operationId": "cancel_api_v1_flow_runs__run_id__cancel_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Cancel Api V1 Flow Runs  Run Id  Cancel Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Cancel"
-      }
-    },
-    "/api/v1/flow-runs/{run_id}/complete": {
-      "post": {
-        "operationId": "complete_api_v1_flow_runs__run_id__complete_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Complete Api V1 Flow Runs  Run Id  Complete Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Complete"
-      }
-    },
-    "/api/v1/flow-runs/{run_id}/event-history": {
-      "get": {
-        "operationId": "event_history_api_v1_flow_runs__run_id__event_history_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "after",
-            "required": false,
-            "schema": {
-              "default": 0,
-              "minimum": 0,
-              "title": "After",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
@@ -1285,54 +734,1201 @@
                     "additionalProperties": true,
                     "type": "object"
                   },
-                  "title": "Response Event History Api V1 Flow Runs  Run Id  Event History Get",
-                  "type": "array"
+                  "type": "array",
+                  "title": "Response Flows Api V1 Flows Get"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Flow",
+        "operationId": "create_flow_api_v1_flows_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Flow Api V1 Flows Post"
+                }
+              }
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flows/{flow_id}": {
+      "get": {
+        "summary": "Flow",
+        "operationId": "flow_api_v1_flows__flow_id__get",
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Flow Api V1 Flows  Flow Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Flow",
+        "operationId": "update_flow_api_v1_flows__flow_id__put",
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowWrite"
+              }
+            }
           }
         },
-        "summary": "Event History"
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Flow Api V1 Flows  Flow Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Flow",
+        "operationId": "delete_flow_api_v1_flows__flow_id__delete",
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flows/{flow_id}/validate": {
+      "post": {
+        "summary": "Validate Saved Flow",
+        "operationId": "validate_saved_flow_api_v1_flows__flow_id__validate_post",
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Validate Saved Flow Api V1 Flows  Flow Id  Validate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flows/{flow_id}/runs": {
+      "post": {
+        "summary": "Start Flow",
+        "operationId": "start_flow_api_v1_flows__flow_id__runs_post",
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Start Flow Api V1 Flows  Flow Id  Runs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs": {
+      "get": {
+        "summary": "List Flow Runs",
+        "operationId": "list_flow_runs_api_v1_flow_runs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response List Flow Runs Api V1 Flow Runs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}": {
+      "get": {
+        "summary": "Flow Run",
+        "operationId": "flow_run_api_v1_flow_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Flow Run Api V1 Flow Runs  Run Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Flow Run",
+        "operationId": "delete_flow_run_api_v1_flow_runs__run_id__delete",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/nodes/{node_run_id}": {
+      "get": {
+        "summary": "Node Run",
+        "operationId": "node_run_api_v1_flow_runs__run_id__nodes__node_run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "node_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Run Api V1 Flow Runs  Run Id  Nodes  Node Run Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/artifacts": {
+      "post": {
+        "summary": "Add Artifact",
+        "operationId": "add_artifact_api_v1_flow_runs__run_id__artifacts_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Add Artifact Api V1 Flow Runs  Run Id  Artifacts Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/artifact-versions/{artifact_id}/content": {
+      "get": {
+        "summary": "Artifact Content",
+        "operationId": "artifact_content_api_v1_artifact_versions__artifact_id__content_get",
+        "parameters": [
+          {
+            "name": "artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Artifact Id"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/nodes/{flow_node_key}/runs": {
+      "post": {
+        "summary": "Activate Node",
+        "operationId": "activate_node_api_v1_flow_runs__run_id__nodes__flow_node_key__runs_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "flow_node_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Node Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeRunStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Activate Node Api V1 Flow Runs  Run Id  Nodes  Flow Node Key  Runs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-attempts/{attempt_id}/input-bindings": {
+      "put": {
+        "summary": "Update Bindings",
+        "operationId": "update_bindings_api_v1_node_attempts__attempt_id__input_bindings_put",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputBindingsWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Bindings Api V1 Node Attempts  Attempt Id  Input Bindings Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-attempts/{attempt_id}/confirm-start": {
+      "post": {
+        "summary": "Confirm Start",
+        "operationId": "confirm_start_api_v1_node_attempts__attempt_id__confirm_start_post",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttemptVersionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Confirm Start Api V1 Node Attempts  Attempt Id  Confirm Start Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-attempts/{attempt_id}/human-input": {
+      "post": {
+        "summary": "Human Input",
+        "operationId": "human_input_api_v1_node_attempts__attempt_id__human_input_post",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HumanInputWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Human Input Api V1 Node Attempts  Attempt Id  Human Input Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-attempts/{attempt_id}/accept": {
+      "post": {
+        "summary": "Accept",
+        "operationId": "accept_api_v1_node_attempts__attempt_id__accept_post",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttemptVersionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Accept Api V1 Node Attempts  Attempt Id  Accept Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-attempts/{attempt_id}/reject": {
+      "post": {
+        "summary": "Reject",
+        "operationId": "reject_api_v1_node_attempts__attempt_id__reject_post",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Reject Api V1 Node Attempts  Attempt Id  Reject Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-attempts/{attempt_id}/retry-gates": {
+      "post": {
+        "summary": "Retry Gates",
+        "operationId": "retry_gates_api_v1_node_attempts__attempt_id__retry_gates_post",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttemptVersionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Retry Gates Api V1 Node Attempts  Attempt Id  Retry Gates Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/sync-snapshot": {
+      "post": {
+        "summary": "Sync Snapshot",
+        "operationId": "sync_snapshot_api_v1_flow_runs__run_id__sync_snapshot_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncSnapshotWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Sync Snapshot Api V1 Flow Runs  Run Id  Sync Snapshot Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/complete": {
+      "post": {
+        "summary": "Complete",
+        "operationId": "complete_api_v1_flow_runs__run_id__complete_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Complete Api V1 Flow Runs  Run Id  Complete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/cancel": {
+      "post": {
+        "summary": "Cancel",
+        "operationId": "cancel_api_v1_flow_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cancel Api V1 Flow Runs  Run Id  Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/event-history": {
+      "get": {
+        "summary": "Event History",
+        "operationId": "event_history_api_v1_flow_runs__run_id__event_history_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Event History Api V1 Flow Runs  Run Id  Event History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/flow-runs/{run_id}/events": {
       "get": {
+        "summary": "Event Stream",
         "operationId": "event_stream_api_v1_flow_runs__run_id__events_get",
         "parameters": [
           {
-            "in": "path",
             "name": "run_id",
+            "in": "path",
             "required": true,
             "schema": {
-              "title": "Run Id",
-              "type": "string"
+              "type": "string",
+              "title": "Run Id"
             }
           },
           {
-            "in": "query",
             "name": "after",
+            "in": "query",
             "required": false,
             "schema": {
-              "default": 0,
+              "type": "integer",
               "minimum": 0,
-              "title": "After",
-              "type": "integer"
+              "default": 0,
+              "title": "After"
             }
           },
           {
-            "in": "header",
             "name": "Last-Event-ID",
+            "in": "header",
             "required": false,
             "schema": {
               "anyOf": [
@@ -1349,153 +1945,85 @@
         ],
         "responses": {
           "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {}
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Event Stream"
+        }
       }
     },
-    "/api/v1/flow-runs/{run_id}/nodes/{flow_node_key}/runs": {
-      "post": {
-        "operationId": "activate_node_api_v1_flow_runs__run_id__nodes__flow_node_key__runs_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "flow_node_key",
-            "required": true,
-            "schema": {
-              "title": "Flow Node Key",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NodeRunStart"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Activate Node Api V1 Flow Runs  Run Id  Nodes  Flow Node Key  Runs Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Activate Node"
-      }
-    },
-    "/api/v1/flow-runs/{run_id}/nodes/{node_run_id}": {
+    "/api/v1/node-attempts/{attempt_id}/conversations": {
       "get": {
-        "operationId": "node_run_api_v1_flow_runs__run_id__nodes__node_run_id__get",
+        "summary": "Conversations",
+        "operationId": "conversations_api_v1_node_attempts__attempt_id__conversations_get",
         "parameters": [
           {
+            "name": "attempt_id",
             "in": "path",
-            "name": "run_id",
             "required": true,
             "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "node_run_id",
-            "required": true,
-            "schema": {
-              "title": "Node Run Id",
-              "type": "string"
+              "type": "string",
+              "title": "Attempt Id"
             }
           }
         ],
         "responses": {
           "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Node Run Api V1 Flow Runs  Run Id  Nodes  Node Run Id  Get",
-                  "type": "object"
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Conversations Api V1 Node Attempts  Attempt Id  Conversations Get"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Node Run"
-      }
-    },
-    "/api/v1/flow-runs/{run_id}/sync-snapshot": {
+        }
+      },
       "post": {
-        "operationId": "sync_snapshot_api_v1_flow_runs__run_id__sync_snapshot_post",
+        "summary": "Create Conversation",
+        "operationId": "create_conversation_api_v1_node_attempts__attempt_id__conversations_post",
         "parameters": [
           {
+            "name": "attempt_id",
             "in": "path",
-            "name": "run_id",
             "required": true,
             "schema": {
-              "title": "Run Id",
-              "type": "string"
+              "type": "string",
+              "title": "Attempt Id"
             }
           },
           {
-            "in": "header",
             "name": "Idempotency-Key",
+            "in": "header",
             "required": false,
             "schema": {
               "anyOf": [
@@ -1511,751 +2039,229 @@
           }
         ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SyncSnapshotWrite"
+                "$ref": "#/components/schemas/ConversationCreateWrite"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
-          "200": {
+          "202": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Sync Snapshot Api V1 Flow Runs  Run Id  Sync Snapshot Post",
-                  "type": "object"
+                  "title": "Response Create Conversation Api V1 Node Attempts  Attempt Id  Conversations Post"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Sync Snapshot"
+        }
       }
     },
-    "/api/v1/flows": {
+    "/api/v1/agent-conversations/{conversation_id}": {
       "get": {
-        "operationId": "flows_api_v1_flows_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "title": "Response Flows Api V1 Flows Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Flows"
-      },
-      "post": {
-        "operationId": "create_flow_api_v1_flows_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FlowWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Flow Api V1 Flows Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Flow"
-      }
-    },
-    "/api/v1/flows/{flow_id}": {
-      "delete": {
-        "operationId": "delete_flow_api_v1_flows__flow_id__delete",
+        "summary": "Conversation",
+        "operationId": "conversation_api_v1_agent_conversations__conversation_id__get",
         "parameters": [
           {
+            "name": "conversation_id",
             "in": "path",
-            "name": "flow_id",
             "required": true,
             "schema": {
-              "title": "Flow Id",
-              "type": "string"
+              "type": "string",
+              "title": "Conversation Id"
             }
           }
         ],
         "responses": {
-          "204": {
-            "description": "Successful Response"
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Conversation Api V1 Agent Conversations  Conversation Id  Get"
+                }
+              }
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch Conversation",
+        "operationId": "patch_conversation_api_v1_agent_conversations__conversation_id__patch",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationPatchWrite"
+              }
+            }
           }
         },
-        "summary": "Delete Flow"
-      },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Patch Conversation Api V1 Agent Conversations  Conversation Id  Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-conversations/{conversation_id}/messages": {
       "get": {
-        "operationId": "flow_api_v1_flows__flow_id__get",
+        "summary": "Messages",
+        "operationId": "messages_api_v1_agent_conversations__conversation_id__messages_get",
         "parameters": [
           {
+            "name": "conversation_id",
             "in": "path",
-            "name": "flow_id",
             "required": true,
             "schema": {
-              "title": "Flow Id",
-              "type": "string"
+              "type": "string",
+              "title": "Conversation Id"
             }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Flow Api V1 Flows  Flow Id  Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Flow"
-      },
-      "put": {
-        "operationId": "update_flow_api_v1_flows__flow_id__put",
-        "parameters": [
           {
-            "in": "path",
-            "name": "flow_id",
-            "required": true,
-            "schema": {
-              "title": "Flow Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FlowWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Update Flow Api V1 Flows  Flow Id  Put",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Flow"
-      }
-    },
-    "/api/v1/flows/{flow_id}/runs": {
-      "post": {
-        "operationId": "start_flow_api_v1_flows__flow_id__runs_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "flow_id",
-            "required": true,
-            "schema": {
-              "title": "Flow Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RunStart"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Start Flow Api V1 Flows  Flow Id  Runs Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Start Flow"
-      }
-    },
-    "/api/v1/flows/{flow_id}/validate": {
-      "post": {
-        "operationId": "validate_saved_flow_api_v1_flows__flow_id__validate_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "flow_id",
-            "required": true,
-            "schema": {
-              "title": "Flow Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Validate Saved Flow Api V1 Flows  Flow Id  Validate Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Validate Saved Flow"
-      }
-    },
-    "/api/v1/model-providers": {
-      "get": {
-        "operationId": "providers_api_v1_model_providers_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "title": "Response Providers Api V1 Model Providers Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Providers"
-      },
-      "post": {
-        "operationId": "create_provider_api_v1_model_providers_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ModelProviderWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Provider Api V1 Model Providers Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Provider"
-      }
-    },
-    "/api/v1/model-providers/{provider_id}": {
-      "put": {
-        "operationId": "update_provider_api_v1_model_providers__provider_id__put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "provider_id",
-            "required": true,
-            "schema": {
-              "title": "Provider Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ModelProviderWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Update Provider Api V1 Model Providers  Provider Id  Put",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Provider"
-      }
-    },
-    "/api/v1/model-providers/{provider_id}/discover-models": {
-      "post": {
-        "operationId": "discover_models_api_v1_model_providers__provider_id__discover_models_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "provider_id",
-            "required": true,
-            "schema": {
-              "title": "Provider Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Discover Models Api V1 Model Providers  Provider Id  Discover Models Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Discover Models"
-      }
-    },
-    "/api/v1/model-providers/{provider_id}/test": {
-      "post": {
-        "operationId": "test_provider_api_v1_model_providers__provider_id__test_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "provider_id",
-            "required": true,
-            "schema": {
-              "title": "Provider Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Test Provider Api V1 Model Providers  Provider Id  Test Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Test Provider"
-      }
-    },
-    "/api/v1/node-assets": {
-      "get": {
-        "operationId": "assets_api_v1_node_assets_get",
-        "parameters": [
-          {
+            "name": "after_sequence",
             "in": "query",
-            "name": "directory_id",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Directory Id"
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After Sequence"
             }
           },
           {
+            "name": "limit",
             "in": "query",
-            "name": "q",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 200,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Q"
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
             }
           }
         ],
         "responses": {
           "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "array",
                   "items": {
-                    "additionalProperties": true,
-                    "type": "object"
+                    "type": "object",
+                    "additionalProperties": true
                   },
-                  "title": "Response Assets Api V1 Node Assets Get",
-                  "type": "array"
+                  "title": "Response Messages Api V1 Agent Conversations  Conversation Id  Messages Get"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Assets"
+        }
       },
       "post": {
-        "operationId": "create_asset_api_v1_node_assets_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NodeAssetWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Asset Api V1 Node Assets Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Asset"
-      }
-    },
-    "/api/v1/node-assets/{asset_id}": {
-      "delete": {
-        "operationId": "delete_asset_api_v1_node_assets__asset_id__delete",
+        "summary": "Send Message",
+        "operationId": "send_message_api_v1_agent_conversations__conversation_id__messages_post",
         "parameters": [
           {
+            "name": "conversation_id",
             "in": "path",
-            "name": "asset_id",
             "required": true,
             "schema": {
-              "title": "Asset Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Delete Asset"
-      },
-      "get": {
-        "operationId": "asset_api_v1_node_assets__asset_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "asset_id",
-            "required": true,
-            "schema": {
-              "title": "Asset Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Asset Api V1 Node Assets  Asset Id  Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Asset"
-      },
-      "put": {
-        "operationId": "update_asset_api_v1_node_assets__asset_id__put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "asset_id",
-            "required": true,
-            "schema": {
-              "title": "Asset Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NodeAssetWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Update Asset Api V1 Node Assets  Asset Id  Put",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Asset"
-      }
-    },
-    "/api/v1/node-attempts/{attempt_id}/accept": {
-      "post": {
-        "operationId": "accept_api_v1_node_attempts__attempt_id__accept_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "attempt_id",
-            "required": true,
-            "schema": {
-              "title": "Attempt Id",
-              "type": "string"
+              "type": "string",
+              "title": "Conversation Id"
             }
           },
           {
+            "name": "X-Actor-ID",
             "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Actor-Id"
+            }
+          },
+          {
             "name": "Idempotency-Key",
+            "in": "header",
             "required": false,
             "schema": {
               "anyOf": [
@@ -2271,58 +2277,58 @@
           }
         ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AttemptVersionWrite"
+                "$ref": "#/components/schemas/MessageSendWrite"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
-          "200": {
+          "202": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Accept Api V1 Node Attempts  Attempt Id  Accept Post",
-                  "type": "object"
+                  "title": "Response Send Message Api V1 Agent Conversations  Conversation Id  Messages Post"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Accept"
+        }
       }
     },
-    "/api/v1/node-attempts/{attempt_id}/confirm-start": {
+    "/api/v1/agent-messages/{message_id}/retry": {
       "post": {
-        "operationId": "confirm_start_api_v1_node_attempts__attempt_id__confirm_start_post",
+        "summary": "Retry Message",
+        "operationId": "retry_message_api_v1_agent_messages__message_id__retry_post",
         "parameters": [
           {
+            "name": "message_id",
             "in": "path",
-            "name": "attempt_id",
             "required": true,
             "schema": {
-              "title": "Attempt Id",
-              "type": "string"
+              "type": "string",
+              "title": "Message Id"
             }
           },
           {
-            "in": "header",
             "name": "Idempotency-Key",
+            "in": "header",
             "required": false,
             "schema": {
               "anyOf": [
@@ -2337,404 +2343,1029 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AttemptVersionWrite"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
+          "202": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Confirm Start Api V1 Node Attempts  Attempt Id  Confirm Start Post",
-                  "type": "object"
+                  "title": "Response Retry Message Api V1 Agent Messages  Message Id  Retry Post"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ArtifactWrite": {
+        "properties": {
+          "field_key": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Field Key"
+          },
+          "artifact_type": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Artifact Type"
+          },
+          "inline_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inline Content"
+          },
+          "uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri"
+          },
+          "mime_type": {
+            "type": "string",
+            "title": "Mime Type",
+            "default": "text/plain"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
           }
         },
-        "summary": "Confirm Start"
-      }
-    },
-    "/api/v1/node-attempts/{attempt_id}/human-input": {
-      "post": {
-        "operationId": "human_input_api_v1_node_attempts__attempt_id__human_input_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "attempt_id",
-            "required": true,
-            "schema": {
-              "title": "Attempt Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
-            }
-          }
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field_key",
+          "artifact_type"
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HumanInputWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Human Input Api V1 Node Attempts  Attempt Id  Human Input Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Human Input"
-      }
-    },
-    "/api/v1/node-attempts/{attempt_id}/input-bindings": {
-      "put": {
-        "operationId": "update_bindings_api_v1_node_attempts__attempt_id__input_bindings_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "attempt_id",
-            "required": true,
-            "schema": {
-              "title": "Attempt Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InputBindingsWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Update Bindings Api V1 Node Attempts  Attempt Id  Input Bindings Put",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Bindings"
-      }
-    },
-    "/api/v1/node-attempts/{attempt_id}/reject": {
-      "post": {
-        "operationId": "reject_api_v1_node_attempts__attempt_id__reject_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "attempt_id",
-            "required": true,
-            "schema": {
-              "title": "Attempt Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RejectWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Reject Api V1 Node Attempts  Attempt Id  Reject Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Reject"
-      }
-    },
-    "/api/v1/node-attempts/{attempt_id}/retry-gates": {
-      "post": {
-        "operationId": "retry_gates_api_v1_node_attempts__attempt_id__retry_gates_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "attempt_id",
-            "required": true,
-            "schema": {
-              "title": "Attempt Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AttemptVersionWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Retry Gates Api V1 Node Attempts  Attempt Id  Retry Gates Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Retry Gates"
-      }
-    },
-    "/api/v1/node-directories": {
-      "get": {
-        "operationId": "directories_api_v1_node_directories_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "title": "Response Directories Api V1 Node Directories Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Directories"
+        "title": "ArtifactWrite"
       },
-      "post": {
-        "operationId": "create_directory_api_v1_node_directories_post",
-        "requestBody": {
+      "AttemptVersionWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version"
+        ],
+        "title": "AttemptVersionWrite"
+      },
+      "CapabilityCommitWrite": {
+        "properties": {
+          "import_token": {
+            "type": "string",
+            "title": "Import Token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "import_token"
+        ],
+        "title": "CapabilityCommitWrite"
+      },
+      "CapabilityValidateWrite": {
+        "properties": {
+          "capability_type": {
+            "type": "string",
+            "enum": [
+              "SKILL",
+              "MCP",
+              "HOOK"
+            ],
+            "title": "Capability Type"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_base64": {
+            "type": "string",
+            "title": "Content Base64"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capability_type",
+          "filename",
+          "content_base64"
+        ],
+        "title": "CapabilityValidateWrite"
+      },
+      "CapabilityWrite": {
+        "properties": {
+          "capability_type": {
+            "type": "string",
+            "enum": [
+              "SKILL",
+              "MCP",
+              "HOOK"
+            ],
+            "title": "Capability Type"
+          },
+          "capability_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Capability Key"
+          },
+          "normalized_config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Normalized Config"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capability_type",
+          "capability_key"
+        ],
+        "title": "CapabilityWrite"
+      },
+      "ConversationCreateWrite": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "expected_attempt_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Attempt State Version"
+          },
+          "baseline": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Baseline"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_attempt_state_version"
+        ],
+        "title": "ConversationCreateWrite"
+      },
+      "ConversationPatchWrite": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "expected_conversation_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Conversation Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "expected_conversation_version"
+        ],
+        "title": "ConversationPatchWrite"
+      },
+      "DirectoryWrite": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "DirectoryWrite"
+      },
+      "EdgeMappingWrite": {
+        "properties": {
+          "source_output_key": {
+            "type": "string",
+            "title": "Source Output Key"
+          },
+          "target_input_key": {
+            "type": "string",
+            "title": "Target Input Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_output_key",
+          "target_input_key"
+        ],
+        "title": "EdgeMappingWrite"
+      },
+      "ExecutorWrite": {
+        "properties": {
+          "model_provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Provider Id"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "startup_prompt": {
+            "type": "string",
+            "title": "Startup Prompt",
+            "default": ""
+          },
+          "context_prompt": {
+            "type": "string",
+            "title": "Context Prompt",
+            "default": ""
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "maximum": 86400.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "default": 900
+          },
+          "max_iterations": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Max Iterations",
+            "default": 100
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExecutorWrite"
+      },
+      "FlowEdgeWrite": {
+        "properties": {
+          "source_instance_key": {
+            "type": "string",
+            "title": "Source Instance Key"
+          },
+          "target_instance_key": {
+            "type": "string",
+            "title": "Target Instance Key"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position",
+            "default": 0
+          },
+          "mappings": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeMappingWrite"
+            },
+            "type": "array",
+            "title": "Mappings"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_instance_key",
+          "target_instance_key"
+        ],
+        "title": "FlowEdgeWrite"
+      },
+      "FlowNodeWrite": {
+        "properties": {
+          "instance_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$",
+            "title": "Instance Key"
+          },
+          "node_asset_id": {
+            "type": "string",
+            "title": "Node Asset Id"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "position_x": {
+            "type": "integer",
+            "title": "Position X",
+            "default": 0
+          },
+          "position_y": {
+            "type": "integer",
+            "title": "Position Y",
+            "default": 0
+          },
+          "config_override": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config Override"
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/GateWrite"
+            },
+            "type": "array",
+            "title": "Gates"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "instance_key",
+          "node_asset_id"
+        ],
+        "title": "FlowNodeWrite"
+      },
+      "FlowWrite": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "default_entry_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Entry Key"
+          },
+          "row_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Version"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/FlowNodeWrite"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/FlowEdgeWrite"
+            },
+            "type": "array",
+            "title": "Edges"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "nodes"
+        ],
+        "title": "FlowWrite"
+      },
+      "GateWrite": {
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": [
+              "START",
+              "END"
+            ],
+            "title": "Stage"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position"
+          },
+          "gate_type": {
+            "type": "string",
+            "enum": [
+              "PROMPT",
+              "PYTHON",
+              "JAVASCRIPT"
+            ],
+            "title": "Gate Type"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "default": 30
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "stage",
+          "position",
+          "gate_type"
+        ],
+        "title": "GateWrite"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HumanInputWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          },
           "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DirectoryWrite"
-              }
-            }
+            "type": "string",
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version",
+          "content"
+        ],
+        "title": "HumanInputWrite"
+      },
+      "IOFieldWrite": {
+        "properties": {
+          "field_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$",
+            "title": "Field Key"
           },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Directory Api V1 Node Directories Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
+          "display_name": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Display Name"
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+          "data_type": {
+            "type": "string",
+            "enum": [
+              "TEXT",
+              "MARKDOWN",
+              "JSON_OBJECT",
+              "JSON_ARRAY",
+              "FILE",
+              "FILE_COLLECTION",
+              "DOCUMENT",
+              "URL",
+              "REPOSITORY_REF"
+            ],
+            "title": "Data Type"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
           }
         },
-        "summary": "Create Directory"
-      }
-    },
-    "/health": {
-      "get": {
-        "operationId": "health_health_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Health Health Get",
-                  "type": "object"
-                }
-              }
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field_key",
+          "display_name",
+          "data_type"
+        ],
+        "title": "IOFieldWrite"
+      },
+      "InputBindingsWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          },
+          "bindings": {
+            "additionalProperties": {
+              "type": "string"
             },
-            "description": "Successful Response"
+            "type": "object",
+            "title": "Bindings"
           }
         },
-        "summary": "Health"
-      }
-    },
-    "/health/live": {
-      "get": {
-        "operationId": "liveness_health_live_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Liveness Health Live Get",
-                  "type": "object"
-                }
-              }
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version",
+          "bindings"
+        ],
+        "title": "InputBindingsWrite"
+      },
+      "MessageSendWrite": {
+        "properties": {
+          "client_message_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Client Message Id"
+          },
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/TextPartWrite"
             },
-            "description": "Successful Response"
+            "type": "array",
+            "minItems": 1,
+            "title": "Content"
+          },
+          "delivery_mode": {
+            "type": "string",
+            "const": "QUEUE_AFTER_TURN",
+            "title": "Delivery Mode",
+            "default": "QUEUE_AFTER_TURN"
+          },
+          "expected_conversation_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Conversation Version"
           }
         },
-        "summary": "Liveness"
-      }
-    },
-    "/health/ready": {
-      "get": {
-        "operationId": "readiness_health_ready_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Readiness Health Ready Get",
-                  "type": "object"
-                }
-              }
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "client_message_id",
+          "content",
+          "expected_conversation_version"
+        ],
+        "title": "MessageSendWrite"
+      },
+      "ModelProviderBulkDeleteWrite": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
             },
-            "description": "Successful Response"
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Ids"
           }
         },
-        "summary": "Readiness"
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "title": "ModelProviderBulkDeleteWrite"
+      },
+      "ModelProviderWrite": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "base_url": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Base Url"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "row_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Version"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderModelWrite"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Models"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "base_url",
+          "models"
+        ],
+        "title": "ModelProviderWrite"
+      },
+      "NodeAssetBulkDeleteWrite": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "title": "NodeAssetBulkDeleteWrite"
+      },
+      "NodeAssetWrite": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "directory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directory Id"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "icon_kind": {
+            "type": "string",
+            "title": "Icon Kind",
+            "default": "LUCIDE"
+          },
+          "icon_value": {
+            "type": "string",
+            "title": "Icon Value",
+            "default": "bot"
+          },
+          "default_skill_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Skill Ref"
+          },
+          "row_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Version"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/IOFieldWrite"
+            },
+            "type": "array",
+            "title": "Inputs"
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/IOFieldWrite"
+            },
+            "type": "array",
+            "title": "Outputs"
+          },
+          "executor": {
+            "$ref": "#/components/schemas/ExecutorWrite"
+          },
+          "capabilities": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityWrite"
+            },
+            "type": "array",
+            "title": "Capabilities"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "NodeAssetWrite"
+      },
+      "NodeRunStart": {
+        "properties": {
+          "artifact_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Artifact Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NodeRunStart"
+      },
+      "ProviderModelWrite": {
+        "properties": {
+          "model_name": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Model Name"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "is_default": {
+            "type": "boolean",
+            "title": "Is Default",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "model_name"
+        ],
+        "title": "ProviderModelWrite"
+      },
+      "RejectWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason"
+          },
+          "copy_input_bindings": {
+            "type": "boolean",
+            "title": "Copy Input Bindings",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version",
+          "reason"
+        ],
+        "title": "RejectWrite"
+      },
+      "RunStart": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "flow_node_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Node Key"
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactWrite"
+            },
+            "type": "array",
+            "title": "Artifacts"
+          },
+          "input_bindings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Input Bindings"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RunStart"
+      },
+      "SyncSnapshotWrite": {
+        "properties": {
+          "expected_active_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Active Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SyncSnapshotWrite"
+      },
+      "TextPartWrite": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "text",
+            "title": "Type",
+            "default": "text"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "TextPartWrite"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
       }
     }
   }

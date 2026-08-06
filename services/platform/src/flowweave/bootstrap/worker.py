@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.conversations.public import recover_conversation_tasks
 from flowweave.modules.orchestration.public import recover_runtime_deliveries
 from flowweave.modules.tasks.application.handlers import handle
 from flowweave.modules.tasks.application.service import (
@@ -122,6 +123,9 @@ class TaskWorker:
                     )
                     await session.run_sync(
                         lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
+                    )
+                    await session.run_sync(
+                        lambda db: (mark_uow_owned(db), recover_conversation_tasks(db))[1]
                     )
                     await session.commit()
                 except BaseException:

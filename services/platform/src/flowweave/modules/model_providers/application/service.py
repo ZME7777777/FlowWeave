@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 from dataclasses import dataclass
 from typing import Any
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.shared.application.transactions import finish
@@ -15,13 +13,12 @@ from flowweave.shared.models import ModelProvider, NodeAsset, NodeExecutorConfig
 from flowweave.shared.schemas import ModelProviderWrite, ProviderModelWrite
 from flowweave.shared.settings import get_settings
 
+_DEVELOPMENT_CREDENTIALS_KEY = b"I84eBL_TIqLl5IVk_DTjGPtUDyVz3pl6pVCHyT8woaE="
+
 
 def _fernet() -> Fernet:
     configured = get_settings().credentials_master_key.encode()
-    key = configured or base64.urlsafe_b64encode(
-        hashlib.sha256(get_settings().human_write_token.encode()).digest()
-    )
-    return Fernet(key)
+    return Fernet(configured or _DEVELOPMENT_CREDENTIALS_KEY)
 
 
 def provider_auth_headers(item: ModelProvider) -> dict[str, str]:
@@ -103,6 +100,54 @@ def _validate_referenced_models(
             "models referenced by node assets cannot be disabled or removed",
             models=unavailable,
         )
+
+
+def delete_providers(db: Session, provider_ids: list[str]) -> None:
+    ids = list(dict.fromkeys(provider_ids))
+    items = [get_provider(db, provider_id) for provider_id in ids]
+    reference_counts: dict[str, int] = {}
+    reference_rows = db.execute(
+        select(
+            NodeExecutorConfig.model_provider_id,
+            func.count(NodeExecutorConfig.node_asset_id),
+        )
+        .join(NodeAsset, NodeAsset.id == NodeExecutorConfig.node_asset_id)
+        .where(
+            NodeExecutorConfig.model_provider_id.in_(ids),
+            NodeAsset.deleted_at.is_(None),
+        )
+        .group_by(NodeExecutorConfig.model_provider_id)
+    ).tuples()
+    for referenced_provider_id, reference_count in reference_rows:
+        if referenced_provider_id is not None:
+            reference_counts[referenced_provider_id] = reference_count
+    blocked = [
+        {
+            "id": item.id,
+            "name": item.name,
+            "reference_node_count": reference_counts[item.id],
+        }
+        for item in items
+        if item.id in reference_counts
+    ]
+    if blocked:
+        raise conflict(
+            "model providers referenced by node assets cannot be deleted",
+            providers=blocked,
+        )
+
+    deleted_asset_ids = select(NodeAsset.id).where(NodeAsset.deleted_at.is_not(None))
+    db.execute(
+        update(NodeExecutorConfig)
+        .where(
+            NodeExecutorConfig.model_provider_id.in_(ids),
+            NodeExecutorConfig.node_asset_id.in_(deleted_asset_ids),
+        )
+        .values(model_provider_id=None, model_name=None)
+    )
+    db.execute(delete(ProviderModel).where(ProviderModel.provider_id.in_(ids)))
+    db.execute(delete(ModelProvider).where(ModelProvider.id.in_(ids)))
+    finish(db)
 
 
 def save_provider(

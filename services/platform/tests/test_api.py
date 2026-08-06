@@ -118,20 +118,67 @@ def create_flow(client, asset_id):
     return response.json()
 
 
-def test_auth_error_contract_and_public_reads(public_client):
+def test_public_reads_and_writes_require_no_human_token(public_client):
     assert public_client.get("/api/v1/node-assets").status_code == 200
-    denied = public_client.post("/api/v1/node-assets", json=asset_payload())
-    assert denied.status_code == 401
-    body = denied.json()["error"]
-    assert body["code"] == "HUMAN_TOKEN_REQUIRED"
-    assert body["request_id"]
-    assert (
-        public_client.post(
-            "/api/v1/auth/verify",
-            headers={"Authorization": "Bearer test-human-token"},
-        ).status_code
-        == 204
+    created = public_client.post("/api/v1/node-directories", json={"name": "公开写入"})
+    assert created.status_code == 201, created.text
+    assert created.json()["name"] == "公开写入"
+
+
+def test_node_asset_delete_is_blocked_by_active_flow(client, skill_capability):
+    asset = create_asset(client, skill_capability, "被流程引用节点")
+    flow = create_flow(client, asset["id"])
+
+    rejected = client.delete(f"/api/v1/node-assets/{asset['id']}")
+
+    assert rejected.status_code == 409, rejected.text
+    error = rejected.json()["error"]
+    assert error["code"] == "NODE_ASSET_IN_USE"
+    assert error["details"]["assets"] == [
+        {
+            "id": asset["id"],
+            "name": asset["name"],
+            "flows": [
+                {
+                    "id": flow["id"],
+                    "name": flow["name"],
+                    "reference_count": 2,
+                }
+            ],
+        }
+    ]
+    assert any(item["id"] == asset["id"] for item in client.get("/api/v1/node-assets").json())
+    persisted_flow = client.get(f"/api/v1/flows/{flow['id']}")
+    assert persisted_flow.status_code == 200, persisted_flow.text
+    assert {node["node_asset_id"] for node in persisted_flow.json()["nodes"]} == {asset["id"]}
+
+    assert client.delete(f"/api/v1/flows/{flow['id']}").status_code == 204
+    assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
+
+
+def test_node_asset_bulk_delete_is_atomic_when_referenced(client, skill_capability):
+    referenced = create_asset(client, skill_capability, "批删被引用节点")
+    unreferenced = create_asset(client, skill_capability, "批删未引用节点")
+    flow = create_flow(client, referenced["id"])
+
+    rejected = client.request(
+        "DELETE",
+        "/api/v1/node-assets",
+        json={"ids": [unreferenced["id"], referenced["id"]]},
     )
+
+    assert rejected.status_code == 409, rejected.text
+    error = rejected.json()["error"]
+    assert error["code"] == "NODE_ASSET_IN_USE"
+    assert error["details"]["flows"] == [
+        {
+            "id": flow["id"],
+            "name": flow["name"],
+            "reference_count": 2,
+        }
+    ]
+    listed_ids = {item["id"] for item in client.get("/api/v1/node-assets").json()}
+    assert {referenced["id"], unreferenced["id"]} <= listed_ids
 
 
 def test_catalog_model_provider_and_optimistic_concurrency(client, skill_capability):
@@ -215,6 +262,76 @@ def test_model_provider_node_references_require_enabled_models(client, skill_cap
     assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
     listed = client.get("/api/v1/model-providers").json()[0]
     assert listed["reference_node_count"] == 0
+
+
+def _create_model_provider(client, name: str) -> dict:
+    response = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": name,
+            "base_url": "https://models.example.test/v1",
+            "models": [{"model_name": "gpt-delete", "enabled": True, "is_default": True}],
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_model_provider_single_and_bulk_delete(client):
+    first = _create_model_provider(client, "待单删模型服务")
+    second = _create_model_provider(client, "待批删模型服务 A")
+    third = _create_model_provider(client, "待批删模型服务 B")
+
+    assert client.delete(f"/api/v1/model-providers/{first['id']}").status_code == 204
+    assert {item["id"] for item in client.get("/api/v1/model-providers").json()} == {
+        second["id"],
+        third["id"],
+    }
+
+    deleted = client.request(
+        "DELETE",
+        "/api/v1/model-providers",
+        json={"ids": [second["id"], third["id"]]},
+    )
+    assert deleted.status_code == 204, deleted.text
+    assert client.get("/api/v1/model-providers").json() == []
+
+
+def test_model_provider_bulk_delete_is_atomic_when_referenced(client, skill_capability):
+    referenced = _create_model_provider(client, "被引用模型服务")
+    unreferenced = _create_model_provider(client, "未引用模型服务")
+    payload = asset_payload("引用模型服务节点", skill_capability)
+    payload["executor"]["model_provider_id"] = referenced["id"]
+    payload["executor"]["model_name"] = "gpt-delete"
+    asset_response = client.post("/api/v1/node-assets", json=payload)
+    assert asset_response.status_code == 201, asset_response.text
+    asset = asset_response.json()
+
+    rejected = client.request(
+        "DELETE",
+        "/api/v1/model-providers",
+        json={"ids": [referenced["id"], unreferenced["id"]]},
+    )
+    assert rejected.status_code == 409, rejected.text
+    error = rejected.json()["error"]
+    assert error["code"] == "VERSION_CONFLICT"
+    assert error["details"]["providers"] == [
+        {
+            "id": referenced["id"],
+            "name": referenced["name"],
+            "reference_node_count": 1,
+        }
+    ]
+    assert {item["id"] for item in client.get("/api/v1/model-providers").json()} == {
+        referenced["id"],
+        unreferenced["id"],
+    }
+
+    assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
+    assert client.delete(f"/api/v1/model-providers/{referenced['id']}").status_code == 204
+    assert [item["id"] for item in client.get("/api/v1/model-providers").json()] == [
+        unreferenced["id"]
+    ]
 
 
 @pytest.mark.asyncio

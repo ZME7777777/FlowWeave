@@ -62,7 +62,6 @@ def test_database_url() -> Iterator[str]:
 def settings(test_database_url: str) -> Settings:
     return Settings(
         database_url=test_database_url,
-        human_write_token="test-human-token",
         credentials_master_key="Qy0d9T_0Y4GxN31PqYqzRo6YD_s-hnbJFRb_v8xQwFc=",
         runtime_adapter="mock",
         execution_mode="inline",
@@ -135,14 +134,12 @@ def database(container: Container, sync_session_factory: sessionmaker[Session]) 
 @pytest.fixture
 def client(settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as value:
-        value.headers["Authorization"] = "Bearer test-human-token"
         yield value
 
 
 @pytest.fixture
 def worker_client(worker_settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(worker_settings)) as value:
-        value.headers["Authorization"] = "Bearer test-human-token"
         yield value
 
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypedDict
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     CapabilityImport,
+    FlowDefinition,
+    FlowNode,
     ModelProvider,
     NodeAsset,
     NodeCapabilityRef,
@@ -19,6 +21,18 @@ from flowweave.shared.models import (
     ProviderModel,
 )
 from flowweave.shared.schemas import DirectoryWrite, NodeAssetWrite
+
+
+class FlowReference(TypedDict):
+    id: str
+    name: str
+    reference_count: int
+
+
+class BlockedAsset(TypedDict):
+    id: str
+    name: str
+    flows: list[FlowReference]
 
 
 def _time(value: datetime | None) -> str | None:
@@ -270,8 +284,75 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
     return asset_dict(db, item)
 
 
-def delete_asset(db: Session, asset_id: str) -> None:
-    item = get_asset(db, asset_id)
-    item.deleted_at = datetime.now(UTC)
-    item.row_version += 1
+def delete_assets(db: Session, asset_ids: list[str]) -> None:
+    ids = sorted(set(asset_ids))
+    items = db.scalars(
+        select(NodeAsset)
+        .where(NodeAsset.id.in_(ids), NodeAsset.deleted_at.is_(None))
+        .order_by(NodeAsset.id)
+        .with_for_update()
+    ).all()
+    items_by_id = {item.id: item for item in items}
+    missing = next((asset_id for asset_id in ids if asset_id not in items_by_id), None)
+    if missing is not None:
+        raise not_found("node_asset", missing)
+
+    references: dict[str, list[FlowReference]] = {asset_id: [] for asset_id in ids}
+    rows = db.execute(
+        select(
+            FlowNode.node_asset_id,
+            FlowDefinition.id,
+            FlowDefinition.name,
+            func.count(FlowNode.id),
+        )
+        .join(FlowDefinition, FlowDefinition.id == FlowNode.flow_id)
+        .where(
+            FlowNode.node_asset_id.in_(ids),
+            FlowDefinition.deleted_at.is_(None),
+        )
+        .group_by(FlowNode.node_asset_id, FlowDefinition.id, FlowDefinition.name)
+        .order_by(FlowDefinition.name, FlowDefinition.id)
+    ).tuples()
+    for asset_id, flow_id, flow_name, reference_count in rows:
+        references[asset_id].append(
+            {
+                "id": flow_id,
+                "name": flow_name,
+                "reference_count": reference_count,
+            }
+        )
+
+    blocked: list[BlockedAsset] = [
+        {
+            "id": item.id,
+            "name": item.name,
+            "flows": references[item.id],
+        }
+        for item in items
+        if references[item.id]
+    ]
+    if blocked:
+        unique_flows: dict[str, FlowReference] = {}
+        for asset in blocked:
+            for flow in asset["flows"]:
+                existing = unique_flows.setdefault(
+                    flow["id"],
+                    {"id": flow["id"], "name": flow["name"], "reference_count": 0},
+                )
+                existing["reference_count"] += flow["reference_count"]
+        raise DomainError(
+            "NODE_ASSET_IN_USE",
+            "Node assets referenced by active flows cannot be deleted",
+            409,
+            {"assets": blocked, "flows": list(unique_flows.values())},
+        )
+
+    deleted_at = datetime.now(UTC)
+    for item in items:
+        item.deleted_at = deleted_at
+        item.row_version += 1
     finish(db)
+
+
+def delete_asset(db: Session, asset_id: str) -> None:
+    delete_assets(db, [asset_id])

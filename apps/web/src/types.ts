@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'models' | 'flows' | 'runs' | 'workbench';
+export type ViewName = 'nodes' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-chat';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -137,4 +137,30 @@ export interface RunEvent {
 export interface ArtifactInput {
   field_key: string; artifact_type: string; inline_content?: string; uri?: string;
   mime_type?: string; metadata?: Record<string, unknown>;
+}
+
+
+export type ConversationState = 'CREATING' | 'IDLE' | 'GENERATING' | 'WAITING_HUMAN' | 'FAILED' | 'READ_ONLY';
+export type MessageDeliveryState = 'QUEUED' | 'DELIVERING' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
+export interface AgentMessageContent {
+  parts?: Array<{ type: 'text'; text: string }>;
+  tool?: Record<string, unknown>;
+  error?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+export interface AgentMessage {
+  id: string; conversation_id: string; sequence_no: number;
+  source: 'PROGRAM' | 'HUMAN' | 'AGENT'; transport_role: 'user' | 'assistant';
+  message_type: 'TEXT' | 'TOOL_CALL' | 'TOOL_RESULT' | 'STATE' | 'ERROR';
+  content: AgentMessageContent; delivery_state: MessageDeliveryState;
+  delivery_mode?: 'QUEUE_AFTER_TURN' | null; client_message_id?: string | null;
+  runtime_cursor?: string | null; error_code?: string | null; error_detail?: string | null;
+  created_by?: string | null; created_at: string; delivered_at?: string | null;
+}
+export interface AgentConversation {
+  id: string; attempt_id: string; conversation_no: number;
+  kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
+  state_version: number; runtime_conversation_id?: string | null;
+  context_baseline: Record<string, unknown>; message_count: number;
+  last_message?: AgentMessage | null; created_at: string; updated_at: string;
 }

@@ -11,6 +11,11 @@ from flowweave.modules.catalog.infrastructure.models import (
     NodeExecutorConfig,
     NodeIOField,
 )
+from flowweave.modules.conversations.infrastructure.models import (
+    AgentConversation,
+    AgentMessage,
+    MessageArtifactRef,
+)
 from flowweave.modules.flows.infrastructure.models import (
     FlowDefinition,
     FlowEdge,
@@ -40,6 +45,8 @@ from flowweave.shared.database import now, uid
 from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunState, TaskState
 
 __all__ = (
+    "AgentConversation",
+    "AgentMessage",
     "ArtifactVersion",
     "AttemptInputBinding",
     "AttemptState",
@@ -54,6 +61,7 @@ __all__ = (
     "GateEvaluation",
     "GatePolicy",
     "HumanAction",
+    "MessageArtifactRef",
     "ModelProvider",
     "NodeAsset",
     "NodeAttempt",

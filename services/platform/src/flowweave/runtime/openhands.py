@@ -57,7 +57,7 @@ class OpenHandsRuntime:
         except (httpx.HTTPError, ValueError) as exc:
             raise DomainError("EXECUTOR_UNAVAILABLE", "OpenHands is unavailable", 503) from exc
 
-    def start(self, request: StartAttemptRequest) -> RuntimeHandle:
+    def _create(self, request: StartAttemptRequest, *, run: bool) -> RuntimeHandle:
         asset = cast(dict[str, Any], request.node["asset"])
         executor = cast(dict[str, Any], asset.get("executor") or {})
         payload: dict[str, Any] = {
@@ -78,8 +78,15 @@ class OpenHandsRuntime:
         conversation_id = str(created.get("id") or created.get("conversation_id"))
         if not conversation_id or conversation_id == "None":
             raise DomainError("RUNTIME_PROTOCOL_ERROR", "Missing conversation id", 502)
-        self._request("POST", f"/api/conversations/{conversation_id}/run", json={})
+        if run:
+            self._request("POST", f"/api/conversations/{conversation_id}/run", json={})
         return RuntimeHandle(job_id=conversation_id, conversation_id=conversation_id)
+
+    def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
+        return self._create(request, run=False)
+
+    def start(self, request: StartAttemptRequest) -> RuntimeHandle:
+        return self._create(request, run=True)
 
     @staticmethod
     def _cursor(value: object, fallback: str) -> str:
@@ -184,13 +191,16 @@ class OpenHandsRuntime:
         cursor = str(cursor_value) if cursor_value is not None else handle.cursor
         return self._result_from_status(data, cursor)
 
-    def resume(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+    def send_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/messages",
             json={"content": content},
         )
         return self.inspect(handle)
+
+    def resume(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        return self.send_message(handle, content)
 
     def cancel(self, handle: RuntimeHandle) -> None:
         self._request("POST", f"/api/conversations/{handle.conversation_id}/stop", json={})

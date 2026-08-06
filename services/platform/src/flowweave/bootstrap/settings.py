@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     pool_size: int = Field(default=10, ge=1, le=100)
     statement_timeout_ms: int = Field(default=30_000, ge=100)
 
-    human_write_token: str = "flowweave-human-dev"
     credentials_master_key: str = ""
 
     runtime_adapter: str = "mock"
@@ -35,6 +34,8 @@ class Settings(BaseSettings):
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
     openhands_base_url: str = "http://openhands-agent-server:8000"
     openhands_session_api_key: str = "flowweave-internal"
+    conversation_limit_per_attempt: int = Field(default=20, ge=1, le=100)
+    conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
 
     artifact_backend: str = "local"
     artifact_root: Path = Path("./var/artifacts")
@@ -71,6 +72,4 @@ class Settings(BaseSettings):
         if self.app_env == "production":
             if not self.credentials_master_key:
                 raise ValueError("CREDENTIALS_MASTER_KEY is required in production")
-            if self.human_write_token == "flowweave-human-dev":
-                raise ValueError("HUMAN_WRITE_TOKEN must not use the development default")
         return self

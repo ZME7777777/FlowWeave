@@ -16,7 +16,7 @@ Web：`pnpm --filter @flowweave/web dev`。
 
 ## 认证与接口
 
-所有公共接口使用 `/api/v1`。GET 和 SSE 匿名可读；POST/PUT/PATCH/DELETE 必须携带 `Authorization: Bearer <HUMAN_WRITE_TOKEN>`。命令支持 `Idempotency-Key`，错误体统一为 `{"error":{"code","message","details","request_id"}}`。
+所有公共接口使用 `/api/v1`，读写接口均可直接访问。命令支持 `Idempotency-Key`，错误体统一为 `{"error":{"code","message","details","request_id"}}`。
 
 ## 数据库和迁移
 
@@ -32,11 +32,11 @@ Web：`pnpm --filter @flowweave/web dev`。
 
 ## 浏览器端到端测试
 
-隔离 E2E API 与 Playwright 必须显式使用同一人工写令牌，例如：
+隔离 E2E API 与 Playwright 可直接使用同一套本地服务，例如：
 
 ```bash
-HUMAN_WRITE_TOKEN=test-human-token EXECUTION_MODE=inline make api-dev
-E2E_HUMAN_WRITE_TOKEN=test-human-token pnpm --filter @flowweave/web e2e
+EXECUTION_MODE=inline make api-dev
+pnpm --filter @flowweave/web e2e
 ```
 
 ## 本地 Docker Sandbox

@@ -1,66 +1,50 @@
 import type {
-  ArtifactInput, ArtifactVersion, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite,
+  AgentConversation, AgentMessage, ArtifactInput, ArtifactVersion, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite,
   ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
   NodeDirectory, NodeRun, RunEvent,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 const ROOT = '/api/v1';
-const TOKEN_KEY = 'flowweave-human-write-token';
-export const AUTH_REQUIRED_EVENT = 'flowweave-auth-required';
-export interface AuthRequestDetail { resolve: () => void; reject: (reason: Error) => void }
-let pendingAuthentication: Promise<void> | undefined;
 
-function requireAuthentication(): Promise<void> {
-  if (!pendingAuthentication) {
-    pendingAuthentication = new Promise<void>((resolve, reject) => {
-      window.dispatchEvent(new CustomEvent<AuthRequestDetail>(AUTH_REQUIRED_EVENT, {
-        detail: { resolve, reject },
-      }));
-    }).finally(() => { pendingAuthentication = undefined; });
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly details: Record<string, unknown>,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
   }
-  return pendingAuthentication;
 }
-export const getHumanWriteToken = () => sessionStorage.getItem(TOKEN_KEY);
-export const clearHumanWriteToken = () => sessionStorage.removeItem(TOKEN_KEY);
 
+async function responseError(response: Response): Promise<ApiError> {
+  const body = await response.json().catch(() => ({}));
+  return new ApiError(
+    body?.error?.message ?? response.statusText ?? '请求失败',
+    body?.error?.code ?? 'REQUEST_FAILED',
+    body?.error?.details ?? {},
+    response.status,
+  );
+}
 export const artifactContentUrl = (artifactId: string, download = false) =>
   `${API_BASE}${ROOT}/artifact-versions/${artifactId}/content${download ? '?download=true' : ''}`;
 
 async function requestText(path: string): Promise<string> {
   const response = await fetch(`${API_BASE}${ROOT}${path}`);
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body?.error?.message ?? response.statusText ?? '请求失败');
+    throw await responseError(response);
   }
   return response.text();
 }
-export async function verifyHumanWriteToken(token: string): Promise<void> {
-  const response = await fetch(`${API_BASE}${ROOT}/auth/verify`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) throw new Error('人工操作令牌无效');
-  sessionStorage.setItem(TOKEN_KEY, token);
-}
-
-async function request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
-  const write = !['GET', 'HEAD', 'OPTIONS'].includes((init.method ?? 'GET').toUpperCase());
-  if (write && !getHumanWriteToken()) await requireAuthentication();
-  const token = getHumanWriteToken();
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${ROOT}${path}`, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init.headers,
-    },
+    headers: { 'Content-Type': 'application/json', ...init.headers },
   });
-  if (response.status === 401 && write && !retried) {
-    clearHumanWriteToken(); await requireAuthentication(); return request<T>(path, init, true);
-  }
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body?.error?.message ?? response.statusText ?? '请求失败');
+    throw await responseError(response);
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
@@ -79,6 +63,7 @@ export const api = {
   createNode: (body: NodeAssetWrite) => request<NodeAsset>('/node-assets', json('POST', body)),
   updateNode: (id: string, body: NodeAssetWrite) => request<NodeAsset>(`/node-assets/${id}`, json('PUT', body)),
   deleteNode: (id: string) => request<void>(`/node-assets/${id}`, json('DELETE')),
+  deleteNodes: (ids: string[]) => request<void>('/node-assets', json('DELETE', { ids })),
   validateCapability: (body: { capability_type: string; filename: string; content_base64: string }) =>
     request<{ import_token: string; preview: unknown; content_hash: string }>('/capability-imports/validate', json('POST', body)),
   commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
@@ -86,6 +71,8 @@ export const api = {
   providers: () => request<ModelProvider[]>('/model-providers'),
   createProvider: (body: ModelProviderWrite) => request<ModelProvider>('/model-providers', json('POST', body)),
   updateProvider: (id: string, body: ModelProviderWrite) => request<ModelProvider>(`/model-providers/${id}`, json('PUT', body)),
+  deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, json('DELETE')),
+  deleteProviders: (ids: string[]) => request<void>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
   discoverProviderModels: (id: string) => request<{ models: string[] }>(`/model-providers/${id}/discover-models`, json('POST')),
 
@@ -116,12 +103,29 @@ export const api = {
   syncSnapshot: (runId: string, version: number) => request<FlowRun>(`/flow-runs/${runId}/sync-snapshot`, json('POST', { expected_active_version: version }, true)),
   completeRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/complete`, json('POST', undefined, true)),
   cancelRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/cancel`, json('POST', undefined, true)),
+  conversations: (attemptId: string) => request<AgentConversation[]>(`/node-attempts/${attemptId}/conversations`),
+  createConversation: (attemptId: string, version: number, title?: string) =>
+    request<AgentConversation>(`/node-attempts/${attemptId}/conversations`, json('POST', {
+      title, expected_attempt_state_version: version, baseline: { include_current_artifacts: true },
+    }, true)),
+  conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
+  conversationMessages: (conversationId: string, afterSequence = 0) =>
+    request<AgentMessage[]>(`/agent-conversations/${conversationId}/messages?after_sequence=${afterSequence}&limit=200`),
+  sendConversationMessage: (conversationId: string, content: string, version: number, clientMessageId = crypto.randomUUID()) =>
+    request<AgentMessage>(`/agent-conversations/${conversationId}/messages`, json('POST', {
+      client_message_id: clientMessageId,
+      content: [{ type: 'text', text: content }],
+      delivery_mode: 'QUEUE_AFTER_TURN',
+      expected_conversation_version: version,
+    }, true)),
+  retryConversationMessage: (messageId: string) =>
+    request<AgentMessage>(`/agent-messages/${messageId}/retry`, json('POST', undefined, true)),
   flowEvents: (runId: string, after = 0) => request<RunEvent[]>(`/flow-runs/${runId}/event-history?after=${after}`),
 };
 
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`);
   source.onmessage = onEvent;
-  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
+  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED', 'CONVERSATION_CREATED', 'CONVERSATION_STATE_CHANGED', 'AGENT_MESSAGE_CREATED', 'AGENT_MESSAGE_DELIVERY_CHANGED'].forEach(type => source.addEventListener(type, onEvent));
   return () => source.close();
 }

@@ -1,12 +1,12 @@
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.model_providers.application import service
 from flowweave.modules.model_providers.infrastructure.client import discover_provider_models
 from flowweave.shared.http import Db, get_container, run_sync
-from flowweave.shared.schemas import ModelProviderWrite
+from flowweave.shared.schemas import ModelProviderBulkDeleteWrite, ModelProviderWrite
 
 router = APIRouter()
 
@@ -24,6 +24,18 @@ async def create_provider(payload: ModelProviderWrite, db: Db) -> dict[str, Any]
 @router.put("/model-providers/{provider_id}")
 async def update_provider(provider_id: str, payload: ModelProviderWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.save_provider(session, payload, provider_id))
+
+
+@router.delete("/model-providers/{provider_id}", status_code=204, response_class=Response)
+async def delete_provider(provider_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_providers(session, [provider_id]))
+    return Response(status_code=204)
+
+
+@router.delete("/model-providers", status_code=204, response_class=Response)
+async def delete_providers(payload: ModelProviderBulkDeleteWrite, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_providers(session, payload.ids))
+    return Response(status_code=204)
 
 
 ContainerDep = Annotated[Container, Depends(get_container)]

@@ -53,4 +53,4 @@ make migration-check
 make e2e
 ```
 
-公共接口统一位于 `/api/v1`。GET/SSE 可匿名，所有写操作要求 `HUMAN_WRITE_TOKEN`；令牌仅保存在浏览器当前标签页，不会注入 Runtime。模型密钥加密保存且不进入 API 响应、运行快照、Prompt 或事件。
+公共接口统一位于 `/api/v1`，读写接口均可直接访问；命令通过 `Idempotency-Key` 保证幂等。模型密钥加密保存且不进入 API 响应、运行快照、Prompt 或事件。

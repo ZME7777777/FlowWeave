@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.public import cleanup_capability_import
+from flowweave.modules.conversations import public as conversations
 from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.tasks.public import Lease, lease_is_current
 from flowweave.shared.models import BackgroundTask
@@ -41,6 +42,26 @@ def _cancel_runtime(db: Session, aggregate_id: str, _payload: dict[str, Any], le
     orchestration.process_cancel_runtime(db, aggregate_id, lease, commit=False)
 
 
+def _create_conversation(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    conversations.process_create_conversation(db, aggregate_id, lease, commit=False)
+
+
+def _deliver_conversation_message(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    conversations.process_deliver_message(db, aggregate_id, lease, commit=False)
+
+
+def _poll_conversation(
+    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
+) -> None:
+    conversations.process_poll_conversation(
+        db, aggregate_id, int(payload.get("poll_no", 1)), lease, commit=False
+    )
+
+
 def _cleanup_capability_import(
     db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
 ) -> None:
@@ -54,6 +75,9 @@ HANDLERS: dict[str, Handler] = {
     "POLL_RUNTIME": _poll_runtime,
     "RESUME_RUNTIME": _resume_runtime,
     "CANCEL_RUNTIME": _cancel_runtime,
+    "CREATE_CONVERSATION": _create_conversation,
+    "DELIVER_CONVERSATION_MESSAGE": _deliver_conversation_message,
+    "POLL_CONVERSATION": _poll_conversation,
     "CLEANUP_CAPABILITY_IMPORT": _cleanup_capability_import,
 }
 

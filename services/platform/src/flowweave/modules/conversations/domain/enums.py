@@ -1,0 +1,56 @@
+from enum import StrEnum
+
+
+class ConversationKind(StrEnum):
+    AUTO = "AUTO"
+    HUMAN_CREATED = "HUMAN_CREATED"
+
+
+class ConversationState(StrEnum):
+    CREATING = "CREATING"
+    IDLE = "IDLE"
+    GENERATING = "GENERATING"
+    WAITING_HUMAN = "WAITING_HUMAN"
+    FAILED = "FAILED"
+    READ_ONLY = "READ_ONLY"
+
+
+class MessageSource(StrEnum):
+    PROGRAM = "PROGRAM"
+    HUMAN = "HUMAN"
+    AGENT = "AGENT"
+
+
+class MessageType(StrEnum):
+    TEXT = "TEXT"
+    TOOL_CALL = "TOOL_CALL"
+    TOOL_RESULT = "TOOL_RESULT"
+    STATE = "STATE"
+    ERROR = "ERROR"
+
+
+class DeliveryState(StrEnum):
+    QUEUED = "QUEUED"
+    DELIVERING = "DELIVERING"
+    DELIVERED = "DELIVERED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class DeliveryMode(StrEnum):
+    QUEUE_AFTER_TURN = "QUEUE_AFTER_TURN"
+    INTERRUPT_AND_RESUME = "INTERRUPT_AND_RESUME"
+
+
+TERMINAL_ATTEMPT_STATES = {"ACCEPTED", "REJECTED", "CANCELLED"}
+CONVERSATION_ENABLED_ATTEMPT_STATES = {
+    "EXECUTING",
+    "WAITING_HUMAN",
+    "END_GATES",
+    "END_BLOCKED",
+    "WAITING_ACCEPTANCE",
+}
+
+
+def transport_role(source: str) -> str:
+    return "assistant" if source == MessageSource.AGENT else "user"

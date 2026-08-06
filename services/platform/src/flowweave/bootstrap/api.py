@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -14,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.catalog.presentation.router import router as catalog_router
+from flowweave.modules.conversations.presentation.router import router as conversations_router
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
 from flowweave.modules.runs.presentation.router import router as runs_router
@@ -22,8 +22,6 @@ from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_
 from flowweave.shared.errors import DomainError
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.settings import bind_settings, reset_settings
-
-WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def error_body(code: str, message: str, request_id: str, details: object = None) -> dict[str, Any]:
@@ -62,18 +60,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         store_token = bind_artifact_store(container.artifact_store)
         sandbox_token = bind_sandbox(container.sandbox)
         try:
-            if request.method in WRITE_METHODS and request.url.path.startswith("/api/v1"):
-                authorization = request.headers.get("Authorization", "")
-                expected = f"Bearer {container.settings.human_write_token}"
-                if not hmac.compare_digest(authorization, expected):
-                    return JSONResponse(
-                        status_code=401,
-                        content=error_body(
-                            "HUMAN_TOKEN_REQUIRED",
-                            "A valid Human Write Token is required",
-                            request_id,
-                        ),
-                    )
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
             return response
@@ -127,9 +113,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    async def verify() -> Response:
-        return Response(status_code=204)
-
     app.middleware("http")(request_context)
     app.add_exception_handler(DomainError, domain_error)
     app.add_exception_handler(RequestValidationError, validation_error)
@@ -137,10 +120,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route("/health/live", liveness, methods=["GET"])
     app.add_api_route("/health/ready", readiness, methods=["GET"])
     app.add_api_route("/health", health, methods=["GET"])
-    app.add_api_route(
-        "/api/v1/auth/verify", verify, methods=["POST"], status_code=204, response_class=Response
-    )
 
-    for router in (catalog_router, providers_router, flows_router, runs_router):
+    for router in (
+        catalog_router,
+        providers_router,
+        flows_router,
+        runs_router,
+        conversations_router,
+    ):
         app.include_router(router, prefix="/api/v1")
     return app

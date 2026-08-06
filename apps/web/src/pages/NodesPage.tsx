@@ -1,9 +1,22 @@
 import { CheckSquare, ChevronRight, Copy, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState, type MouseEvent } from 'react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import { NodeEditor } from '../components/NodeEditor';
 import type { ModelProvider, NodeAsset, NodeAssetWrite, NodeDirectory } from '../types';
+import { useWorkbenchStore } from '../store/workbench';
+
+interface ReferencingFlow { id: string; name: string; reference_count: number }
+interface BlockedAsset { id: string; name: string; flows: ReferencingFlow[] }
+
+function DeleteBlockedDialog({ assets, onClose, onOpenFlows }: { assets: BlockedAsset[]; onClose: () => void; onOpenFlows: () => void }) {
+  return <div className="modal-backdrop"><section className="modal node-delete-blocked" role="dialog" aria-modal="true" aria-label="节点正在被流程引用">
+    <header><div><span className="eyebrow">DELETE BLOCKED</span><h2>无法删除节点</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
+    <p>以下节点仍被有效流程引用。请先在流程编排中移除或替换节点，再重新删除。</p>
+    <div className="node-reference-list">{assets.map(asset => <section key={asset.id}><b>{asset.name}</b>{asset.flows.map(flow => <div key={flow.id}><span>{flow.name}</span><small>引用 {flow.reference_count} 次</small></div>)}</section>)}</div>
+    <footer><button className="secondary" onClick={onClose}>取消</button><button className="primary" onClick={onOpenFlows}>前往流程编排</button></footer>
+  </section></div>;
+}
 
 interface FolderRowProps {
   item: NodeDirectory;
@@ -48,6 +61,7 @@ function NodeDetail({ node, directories, providers, onClose, onEdit }: { node: N
 
 export function NodesPage() {
   const qc = useQueryClient();
+  const setView = useWorkbenchStore(state => state.setView);
   const { data: directories = [] } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
   const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: api.providers });
   const { data: nodes = [], isLoading } = useQuery({ queryKey: ['nodes'], queryFn: () => api.nodes() });
@@ -59,6 +73,7 @@ export function NodesPage() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [blockedAssets, setBlockedAssets] = useState<BlockedAsset[]>([]);
   const visible = useMemo(() => nodes.filter(item => (directory === 'all' || item.directory_id === directory) && (!search || `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()))), [nodes, directory, search]);
   const visibleIds = visible.map(item => item.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
@@ -78,15 +93,22 @@ export function NodesPage() {
   const removeMany = async (ids: string[], label: string) => {
     if (!ids.length || !window.confirm(`确定删除${label}吗？删除后将不再出现在资产目录中。`)) return;
     setDeleting(true); setError(''); setNotice('');
-    const results = await Promise.allSettled(ids.map(id => api.deleteNode(id)));
-    const failed = ids.filter((_, index) => results[index].status === 'rejected');
-    const succeeded = ids.length - failed.length;
-    setSelectedIds(new Set(failed));
-    if (detail && ids.includes(detail.id) && !failed.includes(detail.id)) setDetail(undefined);
-    if (failed.length) setError(`已删除 ${succeeded} 个节点，${failed.length} 个失败：${results.find(item => item.status === 'rejected')?.reason instanceof Error ? (results.find(item => item.status === 'rejected') as PromiseRejectedResult).reason.message : '请求失败'}`);
-    else setNotice(`已删除 ${succeeded} 个节点资产。`);
-    await qc.invalidateQueries({ queryKey: ['nodes'] });
-    setDeleting(false);
+    try {
+      await api.deleteNodes(ids);
+      setSelectedIds(new Set());
+      if (detail && ids.includes(detail.id)) setDetail(undefined);
+      setNotice(`已删除 ${ids.length} 个节点资产。`);
+      await qc.invalidateQueries({ queryKey: ['nodes'] });
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === 'NODE_ASSET_IN_USE') {
+        const assets = reason.details.assets;
+        if (Array.isArray(assets)) setBlockedAssets(assets as BlockedAsset[]);
+      } else {
+        setError(reason instanceof Error ? reason.message : '删除节点失败');
+      }
+    } finally {
+      setDeleting(false);
+    }
   };
   const createDirectory = async () => {
     const directoryName = prompt('目录名称'); if (!directoryName) return;
@@ -103,5 +125,6 @@ export function NodesPage() {
         {isLoading ? <div className="empty">加载中…</div> : <div className="card-grid">{visible.map(node => <article tabIndex={0} className={`node-card product-card ${selectedIds.has(node.id) ? 'selected' : ''}`} data-testid="node-card" key={node.id} onClick={() => setDetail(node)} onKeyDown={event => { if (event.key === 'Enter') setDetail(node); }}><div className="node-card-head"><label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择节点 ${node.name}`} checked={selectedIds.has(node.id)} onChange={() => toggle(node.id)}/><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span></label><div className="card-actions"><button title="复制" onClick={event => action(event, () => setEditing({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }))}><Copy size={15}/></button><button title="编辑" onClick={event => action(event, () => setEditing(node))}><Pencil size={15}/></button><button title="删除" aria-label={`删除节点资产 ${node.name}`} onClick={event => action(event, () => void removeMany([node.id], `节点“${node.name}”`))}><Trash2 size={15}/></button></div></div><h3>{node.name}</h3><p>{node.description || '暂无说明'}</p><div className="chip-row"><span>Skills {node.capabilities.filter(item => item.capability_type === 'SKILL').length}</span><span>MCP {node.capabilities.filter(item => item.capability_type === 'MCP').length}</span><span>Hooks {node.capabilities.filter(item => item.capability_type === 'HOOK').length}</span></div><dl><div><dt>默认</dt><dd>{node.default_skill_ref}</dd></div><div><dt>输入 / 输出</dt><dd>{node.inputs.length} / {node.outputs.length}</dd></div></dl></article>)}</div>}
         {!isLoading && !visible.length && <div className="empty">当前目录没有匹配节点。</div>}
       </main></div>
+    {blockedAssets.length > 0 && <DeleteBlockedDialog assets={blockedAssets} onClose={() => setBlockedAssets([])} onOpenFlows={() => { setBlockedAssets([]); setView('flows'); }}/>}
     {detail && <NodeDetail node={detail} directories={directories} providers={providers} onClose={() => setDetail(undefined)} onEdit={() => { setEditing(detail); setDetail(undefined); }}/>} {editing !== undefined && <NodeEditor node={editing?.id ? editing : undefined} onClose={() => setEditing(undefined)} onSave={data => save.mutateAsync({ node: editing?.id ? editing : undefined, data }).then(() => undefined)}/>} </section>;
 }

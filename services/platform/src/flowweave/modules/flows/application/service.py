@@ -24,13 +24,17 @@ from flowweave.shared.models import (
 from flowweave.shared.schemas import FlowWrite
 
 
-def _ports(db: Session, asset_ids: set[str]) -> dict[str, dict[str, dict[str, str]]]:
-    assets = {
-        x.id
-        for x in db.scalars(
-            select(NodeAsset).where(NodeAsset.id.in_(asset_ids), NodeAsset.deleted_at.is_(None))
-        )
-    }
+def _ports(
+    db: Session, asset_ids: set[str], *, lock_assets: bool = False
+) -> dict[str, dict[str, dict[str, str]]]:
+    asset_query = (
+        select(NodeAsset)
+        .where(NodeAsset.id.in_(asset_ids), NodeAsset.deleted_at.is_(None))
+        .order_by(NodeAsset.id)
+    )
+    if lock_assets:
+        asset_query = asset_query.with_for_update()
+    assets = {x.id for x in db.scalars(asset_query)}
     if assets != asset_ids:
         raise not_found("node_asset", next(iter(asset_ids - assets)))
     result: dict[str, dict[str, dict[str, str]]] = {
@@ -150,7 +154,7 @@ def validate_saved_flow(db: Session, flow_id: str) -> dict[str, Any]:
 
 
 def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> dict[str, Any]:
-    ports = _ports(db, {x.node_asset_id for x in payload.nodes})
+    ports = _ports(db, {x.node_asset_id for x in payload.nodes}, lock_assets=True)
     validate_flow(payload.model_dump(), ports)
     if flow_id:
         item = get_flow(db, flow_id)

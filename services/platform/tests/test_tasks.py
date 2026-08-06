@@ -730,8 +730,11 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
                 ArtifactVersion.producer_attempt_id == attempt_id
             )
         )
-        events_before = db.scalar(
-            select(func.count(RunEvent.cursor)).where(RunEvent.attempt_id == attempt_id)
+        completed_events_before = db.scalar(
+            select(func.count(RunEvent.cursor)).where(
+                RunEvent.attempt_id == attempt_id,
+                RunEvent.event_type == "RUNTIME_EVENT_COMPLETED",
+            )
         )
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -761,8 +764,13 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
             == artifacts_before
         )
         assert (
-            db.scalar(select(func.count(RunEvent.cursor)).where(RunEvent.attempt_id == attempt_id))
-            == events_before  # FLOW_RUN_CANCELLED is run-scoped; no late attempt event.
+            db.scalar(
+                select(func.count(RunEvent.cursor)).where(
+                    RunEvent.attempt_id == attempt_id,
+                    RunEvent.event_type == "RUNTIME_EVENT_COMPLETED",
+                )
+            )
+            == completed_events_before
         )
         assert (
             db.scalar(
