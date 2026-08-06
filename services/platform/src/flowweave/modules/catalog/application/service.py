@@ -6,6 +6,7 @@ from typing import Any, TypedDict
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from flowweave.runtime.workspace import materialize_node_workspace, node_workspace_relative
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
@@ -82,6 +83,7 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
         "icon_kind": item.icon_kind,
         "icon_value": item.icon_value,
         "default_skill_ref": item.default_skill_ref,
+        "workspace_ref": str(node_workspace_relative(item.id)),
         "row_version": item.row_version,
         "inputs": [field_dict(x) for x in fields if x.direction == "INPUT"],
         "outputs": [field_dict(x) for x in fields if x.direction == "OUTPUT"],
@@ -136,7 +138,16 @@ def list_assets(
         stmt = stmt.where(NodeAsset.directory_id == directory_id)
     if query:
         stmt = stmt.where(NodeAsset.name.ilike(f"%{query}%"))
-    return [asset_dict(db, x) for x in db.scalars(stmt.order_by(NodeAsset.updated_at.desc()))]
+    result = [asset_dict(db, x) for x in db.scalars(stmt.order_by(NodeAsset.updated_at.desc()))]
+    for asset in result:
+        materialize_node_workspace(asset)
+    return result
+
+
+def read_asset(db: Session, asset_id: str) -> dict[str, Any]:
+    result = asset_dict(db, get_asset(db, asset_id))
+    materialize_node_workspace(result)
+    return result
 
 
 def get_asset(db: Session, asset_id: str) -> NodeAsset:
@@ -280,8 +291,11 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
     ):
         setattr(item, key, getattr(payload, key))
     _replace_children(db, item, payload)
+    db.flush()
+    result = asset_dict(db, item)
+    materialize_node_workspace(result)
     finish(db)
-    return asset_dict(db, item)
+    return result
 
 
 def delete_assets(db: Session, asset_ids: list[str]) -> None:

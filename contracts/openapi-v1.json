@@ -2513,6 +2513,31 @@
         ],
         "title": "CapabilityCommitWrite"
       },
+      "CapabilityInvocationWrite": {
+        "properties": {
+          "capability_type": {
+            "type": "string",
+            "enum": [
+              "SKILL",
+              "MCP"
+            ],
+            "title": "Capability Type"
+          },
+          "capability_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Capability Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capability_type",
+          "capability_key"
+        ],
+        "title": "CapabilityInvocationWrite"
+      },
       "CapabilityValidateWrite": {
         "properties": {
           "capability_type": {
@@ -3042,6 +3067,14 @@
             "type": "array",
             "minItems": 1,
             "title": "Content"
+          },
+          "capability_refs": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityInvocationWrite"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Capability Refs"
           },
           "delivery_mode": {
             "type": "string",

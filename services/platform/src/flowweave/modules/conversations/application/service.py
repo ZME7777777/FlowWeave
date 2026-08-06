@@ -123,6 +123,79 @@ def _message_text(content: dict[str, Any]) -> str:
     return "\n".join(str(part.get("text", "")) for part in parts if part.get("type") == "text")
 
 
+def _runtime_message_text(content: dict[str, Any]) -> str:
+    text = _message_text(content)
+    raw_refs = content.get("capability_refs")
+    refs = (
+        [
+            cast(dict[str, Any], item)
+            for item in cast(list[object], raw_refs)
+            if isinstance(item, dict)
+        ]
+        if isinstance(raw_refs, list)
+        else []
+    )
+    if not refs:
+        return text
+    directives = ["用户显式指定本条消息必须调用以下能力："]
+    for ref in refs:
+        capability_type = str(ref.get("capability_type") or "")
+        capability_key = str(ref.get("capability_key") or "")
+        if capability_type == "SKILL":
+            directives.append(f'- Skill "{capability_key}"：先读取并遵循该 Skill，再完成请求。')
+        else:
+            directives.append(
+                f'- MCP "{capability_key}"：优先使用该 Server 暴露的合适工具完成请求。'
+            )
+    directives.append("以下是用户原始消息：")
+    directives.append(text)
+    return "\n".join(directives)
+
+
+def _validated_capability_refs(
+    db: Session, attempt: NodeAttempt, payload: MessageSendWrite
+) -> list[dict[str, str]]:
+    requested = [item.model_dump() for item in payload.capability_refs]
+    if not requested:
+        return []
+    snapshot = db.get(RunSnapshot, attempt.snapshot_id)
+    node_run, _ = _context(db, attempt)
+    raw_nodes: object = snapshot.definition_json.get("nodes", []) if snapshot else []
+    nodes = cast(list[dict[str, Any]], raw_nodes) if isinstance(raw_nodes, list) else []
+    node = next(
+        (item for item in nodes if item.get("instance_key") == node_run.flow_node_snapshot_key),
+        None,
+    )
+    asset = cast(dict[str, Any], node.get("asset") or {}) if node else {}
+    raw_capabilities: object = asset.get("capabilities")
+    capabilities = (
+        [
+            cast(dict[str, Any], item)
+            for item in cast(list[object], raw_capabilities)
+            if isinstance(item, dict)
+        ]
+        if isinstance(raw_capabilities, list)
+        else []
+    )
+    available = {
+        (str(item.get("capability_type") or ""), str(item.get("capability_key") or ""))
+        for item in capabilities
+    }
+    missing = [
+        item
+        for item in requested
+        if (item["capability_type"], item["capability_key"]) not in available
+    ]
+    if missing:
+        raise DomainError(
+            "CAPABILITY_NOT_AVAILABLE",
+            "Selected capability is not available in this node snapshot",
+            422,
+            {"capability_refs": missing},
+        )
+    return requested
+
+
 def _message_dict(item: AgentMessage) -> dict[str, Any]:
     return {
         "id": item.id,
@@ -795,6 +868,7 @@ def send_message(
     text = "\n".join(part.text for part in payload.content)
     if len(text) > get_settings().conversation_message_max_chars:
         raise DomainError("MESSAGE_TOO_LARGE", "Message is too large", 422)
+    capability_refs = _validated_capability_refs(db, attempt, payload)
     queued_during_turn = item.state == ConversationState.GENERATING
     message = _append(
         db,
@@ -803,6 +877,7 @@ def send_message(
         message_type=MessageType.TEXT,
         content={
             "parts": [part.model_dump() for part in payload.content],
+            "capability_refs": capability_refs,
             "presentation": "queued" if queued_during_turn else "chat",
         },
         delivery_state=DeliveryState.QUEUED,
@@ -824,6 +899,7 @@ def send_message(
                 "message_id": message.id,
                 "client_message_id": payload.client_message_id,
                 "content_length": len(text),
+                "capability_refs": capability_refs,
             },
         )
     )
@@ -1432,7 +1508,7 @@ def process_deliver_message(
         conversation.runtime_conversation_id,
         conversation.runtime_cursor,
     )
-    content = _message_text(message.content_json)
+    content = _runtime_message_text(message.content_json)
     steering = message.delivery_mode == DeliveryMode.INTERRUPT_AND_RESUME
     db.flush()
     db.rollback()

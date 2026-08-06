@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import io
-import zipfile
 from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
 from flowweave.modules.model_providers.application.service import prompt_provider_snapshot
-from flowweave.runtime.base import RuntimeProvider, RuntimeSkill, StartAttemptRequest
-from flowweave.shared.artifact_store import get_artifact_store
+from flowweave.runtime.base import RuntimeProvider, StartAttemptRequest
+from flowweave.runtime.workspace import materialize_node_workspace
 from flowweave.shared.errors import DomainError
 from flowweave.shared.settings import get_settings
 
@@ -44,38 +42,6 @@ def _provider(db: Session, node: dict[str, Any]) -> RuntimeProvider:
     )
 
 
-def _skill_from_capability(capability: dict[str, Any]) -> RuntimeSkill | None:
-    if str(capability.get("capability_type") or "") != "SKILL":
-        return None
-    normalized = cast(dict[str, Any], capability.get("normalized_config") or {})
-    storage_key = str(normalized.get("storage_key") or "")
-    entry = str(normalized.get("entry") or "")
-    if not storage_key or not entry:
-        raise DomainError(
-            "RUNTIME_CAPABILITY_UNAVAILABLE",
-            "A selected Skill does not have a persisted package",
-            422,
-            {"capability_key": capability.get("capability_key")},
-        )
-    try:
-        archive = get_artifact_store().read(storage_key)
-        with zipfile.ZipFile(io.BytesIO(archive)) as package:
-            content = package.read(entry).decode("utf-8")
-    except (FileNotFoundError, KeyError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
-        raise DomainError(
-            "RUNTIME_CAPABILITY_UNAVAILABLE",
-            "A selected Skill package cannot be loaded",
-            422,
-            {"capability_key": capability.get("capability_key")},
-        ) from exc
-    return RuntimeSkill(
-        name=str(capability.get("capability_key") or entry.rsplit("/", 1)[0]),
-        content=content,
-        description=str(normalized.get("description") or ""),
-        source=entry,
-    )
-
-
 def build_runtime_request(
     db: Session,
     *,
@@ -86,27 +52,15 @@ def build_runtime_request(
     workspace_ref: str,
 ) -> StartAttemptRequest:
     asset = cast(dict[str, Any], node.get("asset") or {})
-    raw_capabilities: object = asset.get("capabilities") or []
-    capabilities = (
-        [
-            cast(dict[str, Any], item)
-            for item in cast(list[object], raw_capabilities)
-            if isinstance(item, dict)
-        ]
-        if isinstance(raw_capabilities, list)
-        else []
-    )
-    skills = tuple(
-        skill
-        for capability in capabilities
-        if (skill := _skill_from_capability(capability)) is not None
-    )
+    skills, mcp_servers, node_workspace_ref = materialize_node_workspace(asset)
     return StartAttemptRequest(
         attempt_id=attempt_id,
         execution_key=execution_key,
         node=node,
         bindings=bindings,
         workspace_ref=workspace_ref,
+        node_workspace_ref=node_workspace_ref,
         provider=_provider(db, node) if get_settings().runtime_adapter != "mock" else None,
         skills=skills,
+        mcp_servers=mcp_servers,
     )

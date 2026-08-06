@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flowweave.runtime.base import (
     RuntimeHandle,
+    RuntimeMCP,
     RuntimeProvider,
     RuntimeSkill,
     StartAttemptRequest,
@@ -50,6 +51,15 @@ def _request() -> StartAttemptRequest:
                 content="# Requirements\nAnalyze the requirement.",
                 description="Requirement analysis",
                 source="requirements/SKILL.md",
+                workspace_path="/workspaces/nodes/node-1/skills/requirements",
+            ),
+        ),
+        node_workspace_ref="/workspaces/nodes/node-1",
+        mcp_servers=(
+            RuntimeMCP(
+                name="docs",
+                config={"url": "https://mcp.example.test", "transport": "http"},
+                workspace_path="/workspaces/nodes/node-1/mcp/docs",
             ),
         ),
     )
@@ -87,6 +97,12 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
         "task_tracker",
     ]
     assert payload["agent"]["agent_context"]["skills"][0]["content"].startswith("# Requirements")
+    assert payload["agent"]["mcp_config"] == {
+        "docs": {"url": "https://mcp.example.test", "transport": "http"}
+    }
+    initial_text = payload["initial_message"]["content"][0]["text"]
+    assert "/workspaces/nodes/node-1/skills/requirements" in initial_text
+    assert "MCP Servers" in initial_text
 
 
 def test_openhands_normalizes_incremental_events_and_terminal_result(settings, monkeypatch):

@@ -25,6 +25,10 @@ apps/web/vite.config.d.ts
 services/platform/*.db
 services/platform/var/
 .flowweave/
+var/workspaces/*
+!var/workspaces/.gitkeep
+var/tool-state/lark-cli/*
+!var/tool-state/lark-cli/.gitkeep
 apps/web/test-results/
 
 # Generated local artifacts

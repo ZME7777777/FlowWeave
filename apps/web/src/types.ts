@@ -25,6 +25,7 @@ export interface CapabilityImportResult {
 export interface NodeAsset {
   id: string; directory_id?: string | null; name: string; description: string;
   icon_kind: string; icon_value: string; default_skill_ref?: string | null; row_version: number;
+  workspace_ref?: string;
   inputs: IOField[]; outputs: IOField[]; executor: ExecutorConfig | null;
   capabilities: CapabilityRef[]; created_at: string; updated_at: string;
 }
@@ -148,6 +149,7 @@ export interface AgentMessageContent {
   state?: Record<string, unknown>;
   error?: Record<string, unknown>;
   presentation?: 'final' | 'question' | 'queued' | 'chat';
+  capability_refs?: Array<Pick<CapabilityRef, 'capability_type' | 'capability_key'>>;
   [key: string]: unknown;
 }
 export interface AgentMessage {

@@ -50,7 +50,7 @@ function NodeDetail({ node, directories, providers, onClose, onEdit }: { node: N
   return <div className="detail-drawer-backdrop" onClick={onClose}><aside className="node-detail-drawer" role="dialog" aria-modal="true" aria-label={`节点详情 ${node.name}`} onClick={event => event.stopPropagation()}>
     <header><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span><div><h2>{node.name}</h2><small>节点资产 · AGENT</small></div><button className="ghost" aria-label="关闭节点详情" onClick={onClose}><X size={17}/></button></header>
     <section><h3>资产摘要</h3><p>{node.description || '暂无说明'}</p><dl><dt>分类</dt><dd>{directories.find(item => item.id === node.directory_id)?.name || '未分类'}</dd><dt>最近更新</dt><dd>{new Date(node.updated_at).toLocaleString()}</dd></dl></section>
-    <section><h3>Agent 能力</h3><dl><dt>模型</dt><dd>{provider?.name || '未配置'} · {node.executor?.model_name || '服务默认'}</dd><dt>默认 Skill</dt><dd>{node.default_skill_ref}</dd></dl>
+    <section><h3>Agent 能力</h3><dl><dt>模型</dt><dd>{provider?.name || '未配置'} · {node.executor?.model_name || '服务默认'}</dd><dt>默认 Skill</dt><dd>{node.default_skill_ref}</dd><dt>宿主工作区</dt><dd>{node.workspace_ref ? `var/workspaces/${node.workspace_ref}` : '创建后生成'}</dd></dl>
       {(['SKILL', 'MCP', 'HOOK'] as const).map(type => <div className="detail-capability" key={type}><b>{type === 'SKILL' ? 'Skills' : type}</b><span>{capabilities(type).length} 项</span><small>{capabilities(type).map(item => item.capability_key).join('、') || '无'}</small></div>)}
     </section>
     <section><h3>提示词上下文</h3><p><b>启动入口：</b>{node.executor?.startup_prompt || '未配置'}</p><p><b>上下文：</b>{node.executor?.context_prompt || '未配置'}</p></section>

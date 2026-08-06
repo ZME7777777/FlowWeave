@@ -15,6 +15,18 @@ x-platform-env: &platform-env
   TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-30}
 
 services:
+  workspace-init:
+    image: alpine:3.22
+    command: ["sh", "-c", "mkdir -p /data/workspaces/nodes /data/lark-cli && chmod 0777 /data/workspaces /data/workspaces/nodes /data/lark-cli"]
+    volumes:
+      - type: bind
+        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        target: /data/workspaces
+      - type: bind
+        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-../var/tool-state/lark-cli}
+        target: /data/lark-cli
+    restart: "no"
+
   postgres:
     image: postgres:16.9-alpine3.21
     environment:
@@ -43,7 +55,12 @@ services:
       SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OH_SESSION_API_KEYS_0: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
     volumes:
-      - agent-workspaces:/workspaces
+      - type: bind
+        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        target: /workspaces
+      - type: bind
+        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-../var/tool-state/lark-cli}
+        target: /root/.lark-cli
       - openhands-state:/root/.openhands
       - ../agent-packages:/agent-packages:ro
     expose: ["8000"]
@@ -53,6 +70,8 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    depends_on:
+      workspace-init: { condition: service_completed_successfully }
 
   api:
     build: { context: .., dockerfile: services/platform/Dockerfile }
@@ -61,10 +80,13 @@ services:
     ports: ["8080:8080"]
     volumes:
       - artifacts:/data/artifacts
-      - agent-workspaces:/data/workspaces
+      - type: bind
+        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        target: /data/workspaces
     depends_on:
       migration: { condition: service_completed_successfully }
       openhands-agent-server: { condition: service_healthy }
+      workspace-init: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 5s
@@ -84,11 +106,14 @@ services:
     group_add: ["0"]
     volumes:
       - artifacts:/data/artifacts
-      - agent-workspaces:/data/workspaces
+      - type: bind
+        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        target: /data/workspaces
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migration: { condition: service_completed_successfully }
       openhands-agent-server: { condition: service_healthy }
+      workspace-init: { condition: service_completed_successfully }
     restart: unless-stopped
 
   web:
@@ -100,5 +125,4 @@ services:
 volumes:
   postgres-data:
   artifacts:
-  agent-workspaces:
   openhands-state:

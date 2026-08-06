@@ -99,6 +99,28 @@ class OpenHandsRuntime:
         ]
         if context:
             sections.append(f"任务上下文：\n{context}")
+        if request.node_workspace_ref:
+            resource_lines = [
+                f"节点持久工作目录：{request.node_workspace_ref}",
+                f"文本与附件目录：{request.node_workspace_ref}/files",
+                f"代码仓库目录：{request.node_workspace_ref}/repositories",
+            ]
+            if request.skills:
+                resource_lines.append("可用 Skills：")
+                resource_lines.extend(
+                    f"- {skill.name}: {skill.source}（脚本目录 {skill.workspace_path}）"
+                    for skill in request.skills
+                )
+            if request.mcp_servers:
+                resource_lines.append("可用 MCP Servers：")
+                resource_lines.extend(
+                    f"- {server.name}: {server.workspace_path}" for server in request.mcp_servers
+                )
+            resource_lines.append(
+                "用户在消息中显式选择 Skill 或 MCP 时，必须优先调用所选能力；"
+                "Skill 附带脚本可直接从上述目录执行。"
+            )
+            sections.append("运行资源：\n" + "\n".join(resource_lines))
         sections.append("流程输入：\n" + json.dumps(inputs, ensure_ascii=False, default=str))
         if outputs:
             sections.append(
@@ -144,6 +166,8 @@ class OpenHandsRuntime:
         }
         if skills:
             agent["agent_context"] = {"skills": skills}
+        if request.mcp_servers:
+            agent["mcp_config"] = {server.name: server.config for server in request.mcp_servers}
         payload: dict[str, Any] = {
             "workspace": {
                 "kind": "LocalWorkspace",

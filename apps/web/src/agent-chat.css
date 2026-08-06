@@ -1,0 +1,113 @@
+.composer-capabilities {
+  margin: 0 0 10px;
+  padding: 10px;
+  border: 1px solid #dce4df;
+  border-radius: 8px;
+  background: #f6f9f7;
+}
+
+.composer-capabilities header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.composer-capabilities b {
+  font-size: 10px;
+}
+
+.composer-capabilities small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.composer-capabilities code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #e5ece7;
+  color: var(--green);
+  font: 9px 'DM Mono', monospace;
+}
+
+.composer-capabilities > div {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 1px;
+}
+
+.composer-capabilities button {
+  flex: 0 0 auto;
+  border: 1px solid #cfdad3;
+  border-radius: 14px;
+  background: #fff;
+  padding: 6px 9px;
+  color: #59665e;
+  font-size: 9px;
+}
+
+.composer-capabilities button.active {
+  border-color: #4d906e;
+  background: #e4f1e8;
+  color: #236142;
+  box-shadow: inset 0 0 0 1px #70a78a;
+}
+
+.message-capability-refs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.message-capability-refs span {
+  padding: 4px 7px;
+  border-radius: 10px;
+  background: #f2e4d6;
+  color: #815025;
+  font-size: 9px;
+}
+
+.capability-command-menu {
+  display: grid !important;
+  position: relative;
+  z-index: 3;
+  gap: 4px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0 0 8px !important;
+  padding: 6px;
+  border: 1px solid #c9d7cf;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 30px #1838271f;
+}
+
+.capability-command-menu button {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 10px;
+  align-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.capability-command-menu button.active,
+.capability-command-menu button:hover {
+  background: #eaf2ed;
+}
+
+.capability-command-menu b {
+  color: var(--green);
+  font: 10px 'DM Mono', monospace;
+}
+
+.capability-command-menu span {
+  color: var(--muted);
+  font-size: 9px;
+}

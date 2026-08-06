@@ -4,7 +4,25 @@
 
 FlowWeave 由独立的 migration、API、Worker、Web 和 PostgreSQL 进程组成。服务不会在启动时自动改 Schema；Compose 先运行 migration job，再启动 API/Worker。
 
-标准 Compose 环境同时启动 OpenHands Agent Server。Worker 会在创建会话时读取节点选择的模型服务、默认/指定模型及加密 API Key，并注入节点的提示词、输入产物和 Skill；`RUNTIME_ADAPTER=mock` 仅供测试显式使用。OpenHands 容器与 API/Worker 共享工作区卷，默认提供终端、文件编辑和任务跟踪工具。
+标准 Compose 环境同时启动 OpenHands Agent Server。Worker 会在创建会话时读取节点选择的模型服务、默认/指定模型及加密 API Key，并注入节点的提示词、输入产物、完整 Skill 包和 MCP Server；`RUNTIME_ADAPTER=mock` 仅供测试显式使用。OpenHands 容器与 API/Worker 通过宿主机 bind mount 共享工作区，默认提供终端、文件编辑和任务跟踪工具。
+
+## 节点宿主工作区
+
+默认根目录为 `var/workspaces`，可用 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 覆盖。每个节点资产拥有 `nodes/<node-asset-id>`，其中：
+
+- `skills/<能力名>`：从导入 ZIP 完整解压的 `SKILL.md`、scripts、references 和资源文件。
+- `mcp/<能力名>`：规范化后的 `config.json`，也可放置本地 MCP Server 脚本。
+- `files`：用户自行放置的文本、附件或其他上下文。
+- `repositories`：节点长期使用的代码仓库。
+- `sessions/<run-id>/<node-run-id>/<attempt-no>`：各执行轮次的隔离工作目录。
+
+Agent 启动时会收到上述容器内绝对路径，MCP 配置通过 OpenHands `mcp_config` 注册为真实工具。聊天输入框用统一的 `$能力名` 引用 Skill 或 MCP，消息会保存结构化 `capability_refs`，不依赖模型自行猜测文本。
+
+OpenHands 镜像提供 shell、Python、Node.js/npm/npx、uv/uvx、Git/SSH 与 `lark-cli`。Lark CLI 状态通过 `FLOWWEAVE_HOST_LARK_CLI_HOME` 持久化，默认是 `var/tool-state/lark-cli`；本地首次授权使用：
+
+```bash
+docker compose -f infra/compose.yaml exec openhands-agent-server lark-cli auth login
+```
 
 ```bash
 cd services/platform

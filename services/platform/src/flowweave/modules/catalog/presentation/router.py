@@ -40,9 +40,7 @@ async def create_asset(payload: NodeAssetWrite, db: Db) -> dict[str, Any]:
 
 @router.get("/node-assets/{asset_id}")
 async def asset(asset_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: service.asset_dict(session, service.get_asset(session, asset_id))
-    )
+    return await run_sync(db, lambda session: service.read_asset(session, asset_id))
 
 
 @router.put("/node-assets/{asset_id}")

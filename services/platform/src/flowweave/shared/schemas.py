@@ -78,11 +78,9 @@ class NodeAssetWrite(ApiModel):
 
     @model_validator(mode="after")
     def validate_default_skill(self) -> NodeAssetWrite:
-        capability_keys = [
-            (item.capability_type, item.capability_key) for item in self.capabilities
-        ]
+        capability_keys = [item.capability_key for item in self.capabilities]
         if len(capability_keys) != len(set(capability_keys)):
-            raise ValueError("capability keys must be unique per type")
+            raise ValueError("capability keys must be unique within a node")
         skill_keys = {
             item.capability_key for item in self.capabilities if item.capability_type == "SKILL"
         }
@@ -258,8 +256,29 @@ class TextPartWrite(ApiModel):
     text: str = Field(min_length=1)
 
 
+class CapabilityInvocationWrite(ApiModel):
+    capability_type: Literal["SKILL", "MCP"]
+    capability_key: str = Field(min_length=1, max_length=200)
+
+
+def _empty_capability_invocations() -> list[CapabilityInvocationWrite]:
+    return []
+
+
 class MessageSendWrite(ApiModel):
     client_message_id: str = Field(min_length=1, max_length=100)
     content: list[TextPartWrite] = Field(min_length=1)
+    capability_refs: list[CapabilityInvocationWrite] = Field(
+        default_factory=_empty_capability_invocations, max_length=50
+    )
     delivery_mode: Literal["QUEUE_AFTER_TURN", "INTERRUPT_AND_RESUME"] = "QUEUE_AFTER_TURN"
     expected_conversation_version: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_capability_refs(self) -> MessageSendWrite:
+        refs = [
+            (item.capability_type, item.capability_key.strip()) for item in self.capability_refs
+        ]
+        if len(refs) != len(set(refs)):
+            raise ValueError("capability_refs must be unique")
+        return self

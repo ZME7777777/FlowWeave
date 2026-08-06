@@ -111,10 +111,11 @@ export const api = {
   conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
   conversationMessages: (conversationId: string, afterSequence = 0) =>
     request<AgentMessage[]>(`/agent-conversations/${conversationId}/messages?after_sequence=${afterSequence}&limit=200`),
-  sendConversationMessage: (conversationId: string, content: string, version: number, clientMessageId = crypto.randomUUID()) =>
+  sendConversationMessage: (conversationId: string, content: string, version: number, capabilityRefs: Array<{ capability_type: 'SKILL' | 'MCP'; capability_key: string }> = [], clientMessageId = crypto.randomUUID()) =>
     request<AgentMessage>(`/agent-conversations/${conversationId}/messages`, json('POST', {
       client_message_id: clientMessageId,
       content: [{ type: 'text', text: content }],
+      capability_refs: capabilityRefs,
       delivery_mode: 'QUEUE_AFTER_TURN',
       expected_conversation_version: version,
     }, true)),

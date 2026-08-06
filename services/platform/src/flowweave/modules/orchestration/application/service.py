@@ -6,7 +6,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
@@ -31,6 +31,7 @@ from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.request import build_runtime_request
+from flowweave.runtime.workspace import attempt_workspace_path
 from flowweave.shared.application.transactions import (
     finish,
     register_commit_action,
@@ -716,7 +717,11 @@ def _create_node_run(
     created_from: str,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
-    _node(snapshot, instance_key)
+    node = _node(snapshot, instance_key)
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    asset_id = str(asset.get("id") or "")
+    if not asset_id:
+        raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
     sequence = (
         db.scalar(select(func.max(NodeRun.sequence_no)).where(NodeRun.flow_run_id == run.id)) or 0
     ) + 1
@@ -732,7 +737,14 @@ def _create_node_run(
         node_run_id=node_run.id,
         attempt_no=1,
         snapshot_id=snapshot.id,
-        workspace_ref=str(Path(get_settings().workspace_root) / run.id / node_run.id / "1"),
+        workspace_ref=str(
+            attempt_workspace_path(
+                asset_id=asset_id,
+                run_id=run.id,
+                node_run_id=node_run.id,
+                attempt_no=1,
+            )
+        ),
     )
     db.add(attempt)
     db.flush()
@@ -1555,12 +1567,24 @@ def reject_attempt(
         )
         or 0
     ) + 1
+    if not run.active_snapshot_id:
+        raise DomainError("SNAPSHOT_INVALID", "active snapshot is missing", 409)
+    next_node = _node(_snapshot(db, run.active_snapshot_id), node_run.flow_node_snapshot_key)
+    next_asset = cast(dict[str, Any], next_node.get("asset") or {})
+    next_asset_id = str(next_asset.get("id") or "")
+    if not next_asset_id:
+        raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
     next_attempt = NodeAttempt(
         node_run_id=node_run.id,
         attempt_no=next_no,
         snapshot_id=run.active_snapshot_id,
         workspace_ref=str(
-            Path(get_settings().workspace_root) / run.id / node_run.id / str(next_no)
+            attempt_workspace_path(
+                asset_id=next_asset_id,
+                run_id=run.id,
+                node_run_id=node_run.id,
+                attempt_no=next_no,
+            )
         ),
     )
     db.add(next_attempt)

@@ -155,9 +155,23 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
 
     conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert conversation["state"] == "IDLE"
+    unavailable = worker_client.post(
+        f"/api/v1/agent-conversations/{conversation['id']}/messages",
+        json={
+            "client_message_id": "client-message-unavailable-capability",
+            "content": [{"type": "text", "text": "$missing 执行任务"}],
+            "capability_refs": [{"capability_type": "MCP", "capability_key": "missing"}],
+            "delivery_mode": "QUEUE_AFTER_TURN",
+            "expected_conversation_version": conversation["state_version"],
+        },
+        headers={"Idempotency-Key": "send-unavailable-capability"},
+    )
+    assert unavailable.status_code == 422, unavailable.text
+    assert unavailable.json()["error"]["code"] == "CAPABILITY_NOT_AVAILABLE"
     payload = {
         "client_message_id": "client-message-1",
-        "content": [{"type": "text", "text": "请复核异常处理。"}],
+        "content": [{"type": "text", "text": "$test-skill 请复核异常处理。"}],
+        "capability_refs": [{"capability_type": "SKILL", "capability_key": "test-skill"}],
         "delivery_mode": "QUEUE_AFTER_TURN",
         "expected_conversation_version": conversation["state_version"],
     }
@@ -183,7 +197,11 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert [message["source"] for message in messages] == ["PROGRAM", "HUMAN", "AGENT"]
     assert [message["sequence_no"] for message in messages] == [1, 2, 3]
     assert messages[1]["delivery_state"] == "DELIVERED"
+    assert messages[1]["content"]["capability_refs"] == [
+        {"capability_type": "SKILL", "capability_key": "test-skill"}
+    ]
     assert "Mock response" in messages[2]["content"]["parts"][0]["text"]
+    assert 'Skill "test-skill"' in messages[2]["content"]["parts"][0]["text"]
 
     with db_session_factory() as db:
         generating = db.get(AgentConversation, conversation["id"])

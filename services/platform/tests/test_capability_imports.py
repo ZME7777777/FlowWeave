@@ -2,6 +2,7 @@ import base64
 import io
 import zipfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -55,6 +56,7 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
                 "# Technical design\n"
             ),
             "skills/technical-design/scripts/validate.py": "print('ok')\n",
+            "skills/technical-design/scripts/check.sh": "#!/bin/sh\necho ready\n",
         }
     )
     validated = client.post(
@@ -87,6 +89,22 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
         "skills/technical-design/SKILL.md",
     }
 
+    mcp_validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json=_validate_payload(
+            "MCP",
+            "mcp.json",
+            '{"mcpServers":{"local-review":{"command":"python","args":["server.py"]}}}',
+        ),
+    )
+    assert mcp_validated.status_code == 200, mcp_validated.text
+    mcp_committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": mcp_validated.json()["import_token"]},
+    )
+    assert mcp_committed.status_code == 201, mcp_committed.text
+    capabilities = [*capabilities, *mcp_committed.json()["capabilities"]]
+
     saved = client.post(
         "/api/v1/node-assets",
         json={
@@ -100,7 +118,21 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
     assert [item["capability_key"] for item in saved.json()["capabilities"]] == [
         "requirements-analysis",
         "technical-design",
+        "local-review",
     ]
+    workspace = Path("test-workspaces") / saved.json()["workspace_ref"]
+    assert (workspace / "skills/requirements-analysis/references/checklist.md").read_text() == (
+        "# Checklist\n"
+    )
+    assert (workspace / "skills/technical-design/scripts/validate.py").read_text() == (
+        "print('ok')\n"
+    )
+    assert (workspace / "skills/technical-design/scripts/check.sh").stat().st_mode & 0o111
+    mcp_config = (workspace / "mcp/local-review/config.json").read_text()
+    assert '"command": "python"' in mcp_config
+    assert '"cwd": "/workspaces/nodes/' in mcp_config
+    assert (workspace / "files").is_dir()
+    assert (workspace / "repositories").is_dir()
 
     duplicate = client.post(
         "/api/v1/node-assets",

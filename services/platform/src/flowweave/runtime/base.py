@@ -22,6 +22,14 @@ class RuntimeSkill:
     content: str
     description: str = ""
     source: str = ""
+    workspace_path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMCP:
+    name: str
+    config: dict[str, Any]
+    workspace_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +39,10 @@ class StartAttemptRequest:
     node: dict[str, Any]
     bindings: list[dict[str, Any]]
     workspace_ref: str
+    node_workspace_ref: str = ""
     provider: RuntimeProvider | None = None
     skills: tuple[RuntimeSkill, ...] = ()
+    mcp_servers: tuple[RuntimeMCP, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
