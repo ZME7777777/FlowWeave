@@ -104,7 +104,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByLabel('模型', { exact: true }).selectOption('gpt-e2e');
   await editor.getByLabel('启动触发提示词').fill('读取输入并执行默认 Skill');
   await editor.getByRole('button', { name: '下一步' }).click();
-  const skillInput = editor.locator('label.file-button').filter({ hasText: '导入 SKILL' }).locator('input');
+  const skillInput = editor.locator('label.file-button').filter({ hasText: '批量导入 Skill ZIP' }).locator('input');
   await skillInput.setInputFiles('e2e/fixtures/ui-product-skill.zip');
   await expect(editor.getByTestId('capability-key')).toHaveText('ui-product-skill');
   await editor.getByRole('button', { name: '下一步' }).click();
@@ -193,7 +193,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   const activeNodeDialog = page.getByRole('dialog', { name: '运行节点详情 首轮方案' });
   await expect(activeNodeDialog).toContainText('运行次数');
   await expect(activeNodeDialog).toContainText('WAITING_START_CONFIRMATION');
-  await expect(activeNodeDialog).toContainText('1 Attempts');
+  await expect(activeNodeDialog).toContainText('1 轮');
   await activeNodeDialog.getByRole('button', { name: '查看最新运行' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
 
@@ -226,7 +226,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   expect(changedFlow.ok(), await changedFlow.text()).toBeTruthy();
   await expect(page.getByTestId('snapshot-sync')).toBeVisible();
   await page.getByRole('button', { name: '同步最新配置' }).click();
-  await expect(page.locator('.run-title')).toContainText('Active Snapshot v2');
+  await expect(page.locator('.run-title')).toContainText('流程快照 v2');
   await expect(page.getByTestId('snapshot-sync')).toBeHidden();
 
   await page.getByLabel('重新运行节点').selectOption('design_b');
@@ -251,10 +251,10 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('design-v1.txt');
   await page.getByLabel('验收意见').fill('补充恢复策略');
-  await page.getByRole('button', { name: /退回修改并创建 Attempt 2/ }).click();
+  await page.getByRole('button', { name: /退回修改并进入第 2 轮/ }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
-  await expect(page.locator('.attempt-tabs')).toContainText('Attempt 1');
-  await expect(page.locator('.attempt-tabs')).toContainText('Attempt 2');
+  await expect(page.locator('.attempt-tabs')).toContainText('第 1 轮');
+  await expect(page.locator('.attempt-tabs')).toContainText('第 2 轮');
   await page.getByRole('button', { name: '确认开始执行' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_ACCEPTANCE');
   await page.getByRole('button', { name: '确认完成' }).click();
@@ -281,6 +281,39 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   const detail = await request.get(`${apiBase}/api/v1/flow-runs`);
   expect(detail.ok()).toBeTruthy();
   expect((await detail.json()).some((item: { flow_definition_id: string }) => item.flow_definition_id === flow.id)).toBeTruthy();
+});
+
+test('cancelled run becomes read-only and can be permanently deleted', async ({ page, request }) => {
+  const asset = await createAsset(request, `终态资产-${suffix}`);
+  const flow = await createFlow(request, asset.id, `终态流程-${suffix}`);
+  const started = await post(request, `/flows/${flow.id}/runs`, { name: `终态运行-${suffix}` });
+  await post(request, `/flow-runs/${started.id}/nodes/design_a/runs`, { artifact_ids: {} });
+  await post(request, `/flow-runs/${started.id}/nodes/design_b/runs`, { artifact_ids: {} });
+
+  await login(page);
+  await page.getByRole('button', { name: '流程运行' }).click();
+  await page.getByLabel('搜索流程或运行').fill(`终态运行-${suffix}`);
+  await page.locator('.run-open').click();
+  await expect(page.locator('.timeline button')).toHaveCount(3);
+
+  page.once('dialog', dialog => {
+    expect(dialog.message()).toContain('所有尚未结束的节点运行都会被取消');
+    dialog.accept();
+  });
+  await page.getByRole('button', { name: '取消整个流程' }).click();
+  await expect(page.getByTestId('flow-run-state')).toHaveText('已取消');
+  await expect(page.locator('.run-progress')).toContainText('0 已验收');
+  await expect(page.locator('.run-progress')).toContainText('3 已结束');
+  await expect(page.locator('.run-progress')).toContainText('0 进行中');
+  await expect(page.locator('.terminal-run-panel')).toContainText('流程已取消');
+  await expect(page.getByRole('button', { name: '从此节点运行' })).toBeHidden();
+  await expect(page.getByRole('button', { name: '取消整个流程' })).toBeHidden();
+
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: '永久删除此运行' }).click();
+  await expect(page.getByRole('heading', { name: '流程运行', exact: true })).toBeVisible();
+  const listed = await request.get(`${apiBase}/api/v1/flow-runs`);
+  expect((await listed.json()).some((item: { id: string }) => item.id === started.id)).toBeFalsy();
 });
 
 test('corrupt and legacy browser state recover without a blank page', async ({ page }) => {

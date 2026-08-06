@@ -2368,6 +2368,63 @@
           }
         }
       }
+    },
+    "/api/v1/agent-messages/{message_id}/steer": {
+      "post": {
+        "summary": "Steer Message",
+        "operationId": "steer_message_api_v1_agent_messages__message_id__steer_post",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Steer Message Api V1 Agent Messages  Message Id  Steer Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2988,7 +3045,10 @@
           },
           "delivery_mode": {
             "type": "string",
-            "const": "QUEUE_AFTER_TURN",
+            "enum": [
+              "QUEUE_AFTER_TURN",
+              "INTERRUPT_AND_RESUME"
+            ],
             "title": "Delivery Mode",
             "default": "QUEUE_AFTER_TURN"
           },

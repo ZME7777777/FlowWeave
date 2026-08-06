@@ -50,7 +50,7 @@ export function RunsPage() {
   const toggleRun = (id: string) => setSelectedIds(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const toggleVisible = () => setSelectedIds(old => { const next = new Set(old); if (allVisibleSelected) visibleIds.forEach(id => next.delete(id)); else visibleIds.forEach(id => next.add(id)); return next; });
   const removeMany = async (ids: string[], label: string) => {
-    if (!ids.length || !window.confirm(`确定永久删除${label}吗？相关 Attempt、门禁结果、事件和产物也会被清理，此操作不可撤销。`)) return;
+    if (!ids.length || !window.confirm(`确定永久删除${label}吗？相关执行轮次、对话、门禁结果、事件和产物也会被清理，此操作不可撤销。`)) return;
     setDeleting(true); setError(''); setNotice('');
     const results = await Promise.allSettled(ids.map(id => api.deleteRun(id)));
     const failed = ids.filter((_, index) => results[index].status === 'rejected');
@@ -64,7 +64,7 @@ export function RunsPage() {
     setDeleting(false);
   };
 
-  return <section className="page runs-page"><div className="page-head"><div><span className="eyebrow">FLOW RUNS</span><h1>流程运行</h1><p>按流程编排查看运行实例，跟踪激活节点、Attempt、门禁结果和产物版本。</p></div><button className="primary" disabled={!flows.length} onClick={() => setStarting(flows[0])}><Plus size={16}/>启动流程</button></div>
+  return <section className="page runs-page"><div className="page-head"><div><span className="eyebrow">FLOW RUNS</span><h1>流程运行</h1><p>一次流程运行包含多次节点执行；每次节点执行可因退回产生多个修订轮次，每轮拥有独立的 Agent 对话。</p></div><button className="primary" disabled={!flows.length} onClick={() => setStarting(flows[0])}><Plus size={16}/>启动流程</button></div>
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
     <div className="run-list-tools"><label><Search size={14}/><input aria-label="搜索流程或运行" value={search} placeholder="搜索流程、运行或当前节点" onChange={event => setSearch(event.target.value)}/></label><label><Filter size={14}/><select aria-label="运行状态筛选" value={status} onChange={event => setStatus(event.target.value)}><option value="ALL">全部状态</option>{statuses.map(value => <option key={value} value={value}>{STATUS_LABELS[value] ?? value}</option>)}</select></label><div className="bulk-actions"><button className="secondary" disabled={!visibleIds.length || deleting} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前结果'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个运行`)}><Trash2 size={14}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></div><span>{groups.length} 个流程 · {visibleIds.length} 个运行</span></div>
     {!runs.length && <div className="empty"><Play size={26}/><b>暂无流程运行</b><span>先创建流程编排，再启动第一个运行。</span></div>}{!!runs.length && !groups.length && <div className="empty"><Search size={24}/><b>没有匹配的流程运行</b><span>调整搜索关键词或状态筛选。</span></div>}

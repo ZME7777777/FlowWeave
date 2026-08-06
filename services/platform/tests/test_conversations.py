@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import delete, select
 
 from flowweave.bootstrap.worker import TaskWorker
-from flowweave.shared.models import BackgroundTask
+from flowweave.shared.models import AgentConversation, BackgroundTask
 
 
 def _asset_payload(skill: dict[str, object]) -> dict[str, object]:
@@ -184,3 +184,45 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert [message["sequence_no"] for message in messages] == [1, 2, 3]
     assert messages[1]["delivery_state"] == "DELIVERED"
     assert "Mock response" in messages[2]["content"]["parts"][0]["text"]
+
+    with db_session_factory() as db:
+        generating = db.get(AgentConversation, conversation["id"])
+        assert generating is not None
+        generating.state = "GENERATING"
+        generating.state_version += 1
+        db.commit()
+    conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
+    queued = worker_client.post(
+        f"/api/v1/agent-conversations/{conversation['id']}/messages",
+        json={
+            "client_message_id": "client-message-steer",
+            "content": [{"type": "text", "text": "优先检查并发安全。"}],
+            "delivery_mode": "QUEUE_AFTER_TURN",
+            "expected_conversation_version": conversation["state_version"],
+        },
+        headers={"Idempotency-Key": "queue-steer-message"},
+    )
+    assert queued.status_code == 202, queued.text
+    queued_message = queued.json()
+    assert queued_message["delivery_state"] == "QUEUED"
+    assert queued_message["content"]["presentation"] == "queued"
+    assert queued_message["conversation_state_version"] == conversation["state_version"] + 1
+
+    steered = worker_client.post(
+        f"/api/v1/agent-messages/{queued_message['id']}/steer",
+        headers={"Idempotency-Key": "steer-now"},
+    )
+    assert steered.status_code == 202, steered.text
+    assert steered.json()["delivery_state"] == "DELIVERING"
+    assert steered.json()["delivery_mode"] == "INTERRUPT_AND_RESUME"
+    assert steered.json()["content"]["presentation"] == "chat"
+    assert worker._run_once_sync() is True
+
+    messages = worker_client.get(
+        f"/api/v1/agent-conversations/{conversation['id']}/messages"
+    ).json()
+    assert messages[-2]["source"] == "HUMAN"
+    assert messages[-2]["delivery_state"] == "DELIVERED"
+    assert messages[-2]["content"]["presentation"] == "chat"
+    assert messages[-1]["source"] == "AGENT"
+    assert "优先检查并发安全" in messages[-1]["content"]["parts"][0]["text"]

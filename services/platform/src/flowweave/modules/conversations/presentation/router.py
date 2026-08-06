@@ -106,3 +106,19 @@ async def retry_message(
             _key(idempotency_key, "retry-message", message_id),
         ),
     )
+
+
+@router.post("/agent-messages/{message_id}/steer", status_code=202)
+async def steer_message(
+    message_id: str,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.steer_message(
+            session,
+            message_id,
+            _key(idempotency_key, "steer-message", message_id),
+        ),
+    )

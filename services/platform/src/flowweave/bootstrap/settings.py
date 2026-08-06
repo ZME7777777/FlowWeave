@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     credentials_master_key: str = ""
 
-    runtime_adapter: str = "mock"
+    runtime_adapter: str = "openhands"
     # Transitional switch used only until synchronous orchestration is removed.
     execution_mode: str = "worker"
     runtime_poll_seconds: float = Field(default=1.0, gt=0)
@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
     openhands_base_url: str = "http://openhands-agent-server:8000"
     openhands_session_api_key: str = "flowweave-internal"
+    openhands_workspace_root: Path = Path("/workspaces")
     conversation_limit_per_attempt: int = Field(default=20, ge=1, le=100)
     conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
 
@@ -65,6 +66,8 @@ class Settings(BaseSettings):
             raise ValueError("TASK_HEARTBEAT_SECONDS must be less than TASK_LEASE_SECONDS")
         if self.sandbox_backend not in {"process", "docker"}:
             raise ValueError("SANDBOX_BACKEND must be process or docker")
+        if self.runtime_adapter not in {"openhands", "mock"}:
+            raise ValueError("RUNTIME_ADAPTER must be openhands or mock")
         if self.artifact_backend not in {"local", "s3"}:
             raise ValueError("ARTIFACT_BACKEND must be local or s3")
         if self.artifact_backend == "s3" and not self.artifact_s3_bucket:

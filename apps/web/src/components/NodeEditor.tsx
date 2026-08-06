@@ -52,6 +52,7 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
   const [form, setForm] = useState<NodeAssetWrite>(emptyNode());
   const [tab, setTab] = useState(0);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const submitting = useRef(false);
@@ -93,11 +94,16 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
     };
   });
   const importFile = async (file: File, type: CapabilityRef['capability_type']) => {
-    setImporting(true); setError('');
+    setImporting(true); setError(''); setNotice('');
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       let binary = ''; bytes.forEach(byte => { binary += String.fromCharCode(byte); });
       const validated = await api.validateCapability({ capability_type: type, filename: file.name, content_base64: btoa(binary) });
+      const preview = validated.preview as { capabilities?: Array<{ capability_key?: string }> };
+      const incomingKeys = (preview.capabilities ?? []).map(item => item.capability_key).filter((key): key is string => Boolean(key));
+      const existingKeys = new Set(form.capabilities.filter(item => item.capability_type === type).map(item => item.capability_key));
+      const conflicts = incomingKeys.filter(key => existingKeys.has(key));
+      if (conflicts.length) throw new Error(`以下 ${type} 已存在：${[...new Set(conflicts)].join('、')}`);
       const committed = await api.commitCapability(validated.import_token);
       setForm(old => {
         const capabilities = [...old.capabilities, ...committed.capabilities];
@@ -108,6 +114,9 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
           default_skill_ref: old.default_skill_ref || firstImportedSkill?.capability_key || '',
         };
       });
+      setNotice(type === 'SKILL'
+        ? `已从 ${file.name} 批量导入 ${committed.capabilities.length} 个 Skill。`
+        : `已从 ${file.name} 导入 ${committed.capabilities.length} 项 ${type}。`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : '导入失败'); }
     finally { setImporting(false); }
   };
@@ -142,8 +151,9 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       <label>最大迭代<input type="number" min="1" value={form.executor.max_iterations} onChange={e => setForm({ ...form, executor: { ...form.executor, max_iterations: Number(e.target.value) } })}/></label>
     </section>}
     {tab === 2 && <section className="form-pane">
-      <div className="capability-toolbar">{(['SKILL', 'MCP', 'HOOK'] as const).map(type => <label className="secondary file-button" key={type}><Upload size={14}/>{importing ? '导入中…' : `导入 ${type}`}<input type="file" accept={type === 'SKILL' ? '.zip' : '.json,.yaml,.yml'} onChange={e => { const file = e.target.files?.[0]; if (file) void importFile(file, type); }}/></label>)}</div>
-      <p className="capability-help">至少导入一个 Skill，并指定默认 Skill。能力来源由服务端回查，不能手工伪造。</p>
+      <div className="capability-toolbar">{(['SKILL', 'MCP', 'HOOK'] as const).map(type => <label className="secondary file-button" key={type}><Upload size={14}/>{importing ? '导入中…' : type === 'SKILL' ? '批量导入 Skill ZIP' : `导入 ${type}`}<input type="file" disabled={importing} accept={type === 'SKILL' ? '.zip' : '.json,.yaml,.yml'} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void importFile(file, type); }}/></label>)}</div>
+      <p className="capability-help">一个 ZIP 可包含多个 Skill；每个 Skill 放在独立目录中并包含 <code>SKILL.md</code>，例如 ZIP 内的 <code>skill-a/SKILL.md</code>。导入后请选择默认 Skill。</p>
+      {notice && <div className="notice success" role="status">{notice}</div>}
       {skills.length > 0 && <label className="default-skill-control">默认 Skill<select aria-label="默认 Skill" required value={form.default_skill_ref} onChange={e => setForm({ ...form, default_skill_ref: e.target.value })}>{skills.map(item => <option key={item.capability_key}>{item.capability_key}</option>)}</select></label>}
       <div className="capability-list">{form.capabilities.map((item, index) => <article key={`${item.capability_type}-${index}`}><span className="cap-type">{item.capability_type}</span><b data-testid="capability-key">{item.capability_key}</b><code>{JSON.stringify(item.normalized_config).slice(0, 120)}</code><button type="button" className="ghost" aria-label={`移除能力 ${item.capability_key}`} onClick={() => removeCapability(index)}><Trash2 size={14}/></button></article>)}</div>
     </section>}

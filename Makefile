@@ -52,7 +52,7 @@ infra-up: sandbox-images
 	docker compose -f infra/compose.yaml up -d --build postgres migration api worker web
 
 infra-up-openhands: sandbox-images
-	docker compose -f infra/compose.yaml --profile openhands up -d --build postgres migration openhands-agent-server api worker web
+	docker compose -f infra/compose.yaml up -d --build postgres migration openhands-agent-server api worker web
 
 infra-down:
 	docker compose -f infra/compose.yaml down

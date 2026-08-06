@@ -4,6 +4,8 @@
 
 FlowWeave 由独立的 migration、API、Worker、Web 和 PostgreSQL 进程组成。服务不会在启动时自动改 Schema；Compose 先运行 migration job，再启动 API/Worker。
 
+标准 Compose 环境同时启动 OpenHands Agent Server。Worker 会在创建会话时读取节点选择的模型服务、默认/指定模型及加密 API Key，并注入节点的提示词、输入产物和 Skill；`RUNTIME_ADAPTER=mock` 仅供测试显式使用。OpenHands 容器与 API/Worker 共享工作区卷，默认提供终端、文件编辑和任务跟踪工具。
+
 ```bash
 cd services/platform
 uv sync --frozen

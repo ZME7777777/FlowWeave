@@ -147,6 +147,21 @@ def _frontmatter(text: str) -> dict[str, Any]:
     return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
 
+def _ensure_unique_capability_keys(capabilities: list[dict[str, Any]]) -> None:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for capability in capabilities:
+        key = str(capability.get("capability_key") or "")
+        if key in seen:
+            duplicates.add(key)
+        seen.add(key)
+    if duplicates:
+        raise _reject(
+            "Capability names must be unique within one import",
+            capability_keys=sorted(duplicates),
+        )
+
+
 def _validate_skill(content: bytes) -> dict[str, Any]:
     if len(content) > ZIP_MAX_COMPRESSED_BYTES:
         raise _reject("ZIP exceeds 5 MiB")
@@ -205,6 +220,7 @@ def _validate_skill(content: bytes) -> dict[str, Any]:
                         },
                     }
                 )
+            _ensure_unique_capability_keys(capabilities)
             return {
                 "capabilities": capabilities,
                 "skill_files": skill_files,
@@ -282,8 +298,10 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
         raise _reject("Config root must be an object")
     parsed = cast(dict[str, Any], parsed_object)
     _reject_sensitive(parsed)
+    capabilities = _config_capabilities(payload.capability_type, parsed)
+    _ensure_unique_capability_keys(capabilities)
     return content, {
-        "capabilities": _config_capabilities(payload.capability_type, parsed),
+        "capabilities": capabilities,
         "config": parsed,
     }
 

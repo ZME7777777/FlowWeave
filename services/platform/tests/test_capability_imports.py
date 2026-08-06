@@ -42,6 +42,97 @@ def test_import_is_persistent_hashed_one_time_and_stores_source(client, db_sessi
     assert replay.status_code == 422
 
 
+def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
+    encoded = _zip_content(
+        {
+            "skills/requirements-analysis/SKILL.md": (
+                "---\nname: requirements-analysis\ndescription: Analyze requirements\n---\n"
+                "# Requirements analysis\n"
+            ),
+            "skills/requirements-analysis/references/checklist.md": "# Checklist\n",
+            "skills/technical-design/SKILL.md": (
+                "---\nname: technical-design\ndescription: Create a technical design\n---\n"
+                "# Technical design\n"
+            ),
+            "skills/technical-design/scripts/validate.py": "print('ok')\n",
+        }
+    )
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "team-skills.zip",
+            "content_base64": encoded,
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    preview = validated.json()["preview"]
+    assert [item["capability_key"] for item in preview["capabilities"]] == [
+        "requirements-analysis",
+        "technical-design",
+    ]
+
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": validated.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+    capabilities = committed.json()["capabilities"]
+    assert len(capabilities) == 2
+    assert {item["normalized_config"]["import_id"] for item in capabilities} == {
+        committed.json()["id"]
+    }
+    assert {item["normalized_config"]["entry"] for item in capabilities} == {
+        "skills/requirements-analysis/SKILL.md",
+        "skills/technical-design/SKILL.md",
+    }
+
+    saved = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "batch imported skills",
+            "executor": {},
+            "default_skill_ref": "requirements-analysis",
+            "capabilities": capabilities,
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    assert [item["capability_key"] for item in saved.json()["capabilities"]] == [
+        "requirements-analysis",
+        "technical-design",
+    ]
+
+    duplicate = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "duplicate capability refs",
+            "executor": {},
+            "default_skill_ref": "requirements-analysis",
+            "capabilities": [capabilities[0], capabilities[0]],
+        },
+    )
+    assert duplicate.status_code == 422, duplicate.text
+
+
+def test_skill_zip_rejects_duplicate_skill_names_atomically(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "duplicate-skills.zip",
+            "content_base64": _zip_content(
+                {
+                    "skill-a/SKILL.md": "---\nname: duplicate\n---\n# A\n",
+                    "skill-b/SKILL.md": "---\nname: duplicate\n---\n# B\n",
+                }
+            ),
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "IMPORT_REJECTED"
+    assert response.json()["error"]["details"]["capability_keys"] == ["duplicate"]
+
+
 def test_expired_import_cannot_be_committed(client, db_session_factory):
     body = client.post(
         "/api/v1/capability-imports/validate",

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
@@ -86,7 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "INVALID_COMMAND",
                 "Request validation failed",
                 request.state.request_id,
-                {"errors": exc.errors()},
+                {"errors": jsonable_encoder(exc.errors())},
             ),
         )
 

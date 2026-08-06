@@ -9,12 +9,30 @@ def _empty_outputs() -> dict[str, tuple[str, str]]:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeProvider:
+    provider_id: str
+    base_url: str
+    model: str
+    api_key: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSkill:
+    name: str
+    content: str
+    description: str = ""
+    source: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class StartAttemptRequest:
     attempt_id: str
     execution_key: str
     node: dict[str, Any]
     bindings: list[dict[str, Any]]
     workspace_ref: str
+    provider: RuntimeProvider | None = None
+    skills: tuple[RuntimeSkill, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +45,9 @@ class RuntimeHandle:
 RuntimeEventType = Literal[
     "MESSAGE",
     "TOOL",
+    "TOOL_CALL",
+    "TOOL_RESULT",
+    "THOUGHT",
     "STATE",
     "OUTPUT",
     "ERROR",

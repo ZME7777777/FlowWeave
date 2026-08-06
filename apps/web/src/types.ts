@@ -145,7 +145,9 @@ export type MessageDeliveryState = 'QUEUED' | 'DELIVERING' | 'DELIVERED' | 'FAIL
 export interface AgentMessageContent {
   parts?: Array<{ type: 'text'; text: string }>;
   tool?: Record<string, unknown>;
+  state?: Record<string, unknown>;
   error?: Record<string, unknown>;
+  presentation?: 'final' | 'question' | 'queued' | 'chat';
   [key: string]: unknown;
 }
 export interface AgentMessage {
@@ -153,9 +155,10 @@ export interface AgentMessage {
   source: 'PROGRAM' | 'HUMAN' | 'AGENT'; transport_role: 'user' | 'assistant';
   message_type: 'TEXT' | 'TOOL_CALL' | 'TOOL_RESULT' | 'STATE' | 'ERROR';
   content: AgentMessageContent; delivery_state: MessageDeliveryState;
-  delivery_mode?: 'QUEUE_AFTER_TURN' | null; client_message_id?: string | null;
+  delivery_mode?: 'QUEUE_AFTER_TURN' | 'INTERRUPT_AND_RESUME' | null; client_message_id?: string | null;
   runtime_cursor?: string | null; error_code?: string | null; error_detail?: string | null;
   created_by?: string | null; created_at: string; delivered_at?: string | null;
+  conversation_state_version?: number;
 }
 export interface AgentConversation {
   id: string; attempt_id: string; conversation_no: number;

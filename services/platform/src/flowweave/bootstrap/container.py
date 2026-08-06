@@ -35,14 +35,18 @@ class Container:
 
 def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Container:
     timeout = httpx.Timeout(connect=5, read=30, write=30, pool=5)
+    if settings.runtime_adapter == "openhands":
+        runtime: RuntimePort = OpenHandsRuntime(settings)
+    elif settings.runtime_adapter == "mock":
+        runtime = MockRuntime()
+    else:
+        raise ValueError(f"Unsupported runtime adapter: {settings.runtime_adapter}")
     return Container(
         settings=settings,
         role=role,
         database=Database(settings),
         http=httpx.AsyncClient(timeout=timeout, follow_redirects=False),
-        runtime=(
-            OpenHandsRuntime(settings) if settings.runtime_adapter == "openhands" else MockRuntime()
-        ),
+        runtime=runtime,
         artifact_store=build_artifact_store(settings),
         sandbox=build_sandbox(settings),
         run_event_listener=RunEventListener(settings.database_url),

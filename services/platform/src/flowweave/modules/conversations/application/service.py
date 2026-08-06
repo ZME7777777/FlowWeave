@@ -12,6 +12,7 @@ from flowweave.modules.conversations.domain.enums import (
     TERMINAL_ATTEMPT_STATES,
     ConversationKind,
     ConversationState,
+    DeliveryMode,
     DeliveryState,
     MessageSource,
     MessageType,
@@ -19,8 +20,9 @@ from flowweave.modules.conversations.domain.enums import (
 )
 from flowweave.modules.conversations.infrastructure.models import AgentConversation, AgentMessage
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
-from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
+from flowweave.runtime.base import RuntimeHandle, RuntimeResult
 from flowweave.runtime.dependencies import get_runtime
+from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
@@ -347,9 +349,12 @@ def project_runtime_event(
             )
             content = {"parts": [{"type": "text", "text": rendered}]}
         kind = MessageType.TEXT
-    elif event_type == "TOOL":
+    elif event_type in {"TOOL", "TOOL_CALL", "TOOL_RESULT"}:
         content = {"tool": payload}
-        kind = MessageType.TOOL_CALL
+        kind = MessageType.TOOL_RESULT if event_type == "TOOL_RESULT" else MessageType.TOOL_CALL
+    elif event_type == "THOUGHT":
+        content = {"state": payload}
+        kind = MessageType.STATE
     elif event_type == "ERROR":
         content = {"error": payload}
         kind = MessageType.ERROR
@@ -464,12 +469,13 @@ def project_auto_runtime_result(
     elif result.status == "COMPLETED" and result.outputs:
         message_type = MessageType.TEXT
         content = {
+            "presentation": "final",
             "parts": [
                 {
                     "type": "text",
                     "text": "\n".join(value[1] for value in result.outputs.values()),
                 }
-            ]
+            ],
         }
     else:
         return
@@ -765,7 +771,11 @@ def send_message(
     )
     if existing:
         return _message_dict(existing)
-    if item.state_version != payload.expected_conversation_version:
+    allow_stale_queue = (
+        item.state == ConversationState.GENERATING
+        and payload.delivery_mode == DeliveryMode.QUEUE_AFTER_TURN
+    )
+    if item.state_version != payload.expected_conversation_version and not allow_stale_queue:
         raise conflict(
             "conversation was modified",
             expected=payload.expected_conversation_version,
@@ -785,12 +795,16 @@ def send_message(
     text = "\n".join(part.text for part in payload.content)
     if len(text) > get_settings().conversation_message_max_chars:
         raise DomainError("MESSAGE_TOO_LARGE", "Message is too large", 422)
+    queued_during_turn = item.state == ConversationState.GENERATING
     message = _append(
         db,
         item,
         source=MessageSource.HUMAN,
         message_type=MessageType.TEXT,
-        content={"parts": [part.model_dump() for part in payload.content]},
+        content={
+            "parts": [part.model_dump() for part in payload.content],
+            "presentation": "queued" if queued_during_turn else "chat",
+        },
         delivery_state=DeliveryState.QUEUED,
         delivery_mode=payload.delivery_mode,
         client_message_id=payload.client_message_id,
@@ -815,6 +829,7 @@ def send_message(
     )
     if item.state in {ConversationState.IDLE, ConversationState.WAITING_HUMAN}:
         item.state = ConversationState.GENERATING
+        message.delivery_state = DeliveryState.DELIVERING
         enqueue(
             db,
             task_type="DELIVER_CONVERSATION_MESSAGE",
@@ -822,6 +837,57 @@ def send_message(
             aggregate_id=message.id,
             idempotency_key=f"deliver-conversation-message:{message.id}",
         )
+    finish(db)
+    result = _message_dict(message)
+    result["conversation_state_version"] = item.state_version
+    return result
+
+
+def steer_message(db: Session, message_id: str, idempotency_key: str) -> dict[str, Any]:
+    existing_action = db.scalar(
+        select(HumanAction).where(HumanAction.idempotency_key == idempotency_key)
+    )
+    if existing_action is not None:
+        existing = db.get(AgentMessage, message_id)
+        if existing is not None:
+            return _message_dict(existing)
+    message = db.scalar(select(AgentMessage).where(AgentMessage.id == message_id).with_for_update())
+    if message is None:
+        raise not_found("agent_message", message_id)
+    conversation = _conversation(db, message.conversation_id, lock=True)
+    attempt = _attempt(db, conversation.attempt_id)
+    if (
+        conversation.state == ConversationState.READ_ONLY
+        or attempt.state in TERMINAL_ATTEMPT_STATES
+    ):
+        raise DomainError("CONVERSATION_READ_ONLY", "Conversation is read only", 409)
+    if message.source != MessageSource.HUMAN:
+        raise DomainError("MESSAGE_NOT_STEERABLE", "Only human messages can steer the Agent", 409)
+    if message.delivery_mode == DeliveryMode.INTERRUPT_AND_RESUME:
+        return _message_dict(message)
+    if message.delivery_state not in {DeliveryState.QUEUED, DeliveryState.DELIVERING}:
+        return _message_dict(message)
+    message.delivery_mode = DeliveryMode.INTERRUPT_AND_RESUME
+    message.delivery_state = DeliveryState.DELIVERING
+    message.content_json = {**message.content_json, "presentation": "chat"}
+    node_run, run_id = _context(db, attempt)
+    db.add(
+        HumanAction(
+            flow_run_id=run_id,
+            node_run_id=node_run.id,
+            attempt_id=attempt.id,
+            action_type="STEER_AGENT_MESSAGE",
+            idempotency_key=idempotency_key,
+            payload_json={"conversation_id": conversation.id, "message_id": message.id},
+        )
+    )
+    enqueue(
+        db,
+        task_type="DELIVER_CONVERSATION_MESSAGE",
+        aggregate_type="MESSAGE",
+        aggregate_id=message.id,
+        idempotency_key=f"steer-conversation-message:{message.id}:{idempotency_key}",
+    )
     finish(db)
     return _message_dict(message)
 
@@ -1049,7 +1115,8 @@ def process_create_conversation(
                     },
                 }
             )
-    request = StartAttemptRequest(
+    request = build_runtime_request(
+        db,
         attempt_id=f"{attempt.id}:{item.id}",
         execution_key=f"conversation:{item.id}:create",
         node=node,
@@ -1133,9 +1200,14 @@ def _append_runtime_payload(
         )
         content: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         message_type = MessageType.TEXT
-    elif event_type == "TOOL":
+    elif event_type in {"TOOL", "TOOL_CALL", "TOOL_RESULT"}:
         content = {"tool": payload}
-        message_type = MessageType.TOOL_CALL
+        message_type = (
+            MessageType.TOOL_RESULT if event_type == "TOOL_RESULT" else MessageType.TOOL_CALL
+        )
+    elif event_type == "THOUGHT":
+        content = {"state": payload}
+        message_type = MessageType.STATE
     elif event_type == "ERROR":
         content = {"error": payload}
         message_type = MessageType.ERROR
@@ -1197,7 +1269,10 @@ def _apply_conversation_result(
                 conversation,
                 source=MessageSource.AGENT,
                 message_type=MessageType.TEXT,
-                content={"parts": [{"type": "text", "text": text}]},
+                content={
+                    "presentation": "final",
+                    "parts": [{"type": "text", "text": text}],
+                },
                 delivery_state=DeliveryState.DELIVERED,
                 runtime_event_id=f"delivery-result:{message_id}:{result.cursor or ''}",
                 runtime_cursor=result.cursor,
@@ -1358,10 +1433,15 @@ def process_deliver_message(
         conversation.runtime_cursor,
     )
     content = _message_text(message.content_json)
+    steering = message.delivery_mode == DeliveryMode.INTERRUPT_AND_RESUME
     db.flush()
     db.rollback()
     try:
-        result = get_runtime().send_message(handle, content)
+        result = (
+            get_runtime().resume(handle, content)
+            if steering
+            else get_runtime().send_message(handle, content)
+        )
     except DomainError as exc:
         failed = db.get(AgentMessage, message_id)
         current = _conversation(db, current_conversation_id, lock=True)
@@ -1392,6 +1472,7 @@ def process_deliver_message(
         db.rollback()
         return
     current_message.delivery_state = DeliveryState.DELIVERED
+    current_message.content_json = {**current_message.content_json, "presentation": "chat"}
     current_message.delivered_at = now()
     current_message.runtime_cursor = result.cursor
     current.runtime_cursor = result.cursor
@@ -1401,8 +1482,9 @@ def process_deliver_message(
         "AGENT_MESSAGE_DELIVERY_CHANGED",
         {"message_id": message_id, "delivery_state": current_message.delivery_state},
     )
-    _apply_conversation_result(db, current, result, message_id=message_id)
-    if result.status == "RUNNING":
+    if not steering or result.status != "RUNNING":
+        _apply_conversation_result(db, current, result, message_id=message_id)
+    if result.status == "RUNNING" and not steering:
         enqueue(
             db,
             task_type="POLL_CONVERSATION",

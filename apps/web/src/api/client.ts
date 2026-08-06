@@ -118,6 +118,8 @@ export const api = {
       delivery_mode: 'QUEUE_AFTER_TURN',
       expected_conversation_version: version,
     }, true)),
+  steerConversationMessage: (messageId: string) =>
+    request<AgentMessage>(`/agent-messages/${messageId}/steer`, json('POST', undefined, true)),
   retryConversationMessage: (messageId: string) =>
     request<AgentMessage>(`/agent-messages/${messageId}/retry`, json('POST', undefined, true)),
   flowEvents: (runId: string, after = 0) => request<RunEvent[]>(`/flow-runs/${runId}/event-history?after=${after}`),

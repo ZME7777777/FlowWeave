@@ -4,7 +4,7 @@ FlowWeave 是面向内部研发流程的 Agent 工作台：可复用节点资产
 
 ## 产品能力
 
-- 节点目录与节点资产：模型、提示词、Skill/MCP/Hook、输入输出契约。
+- 节点目录与节点资产：模型、提示词、Skill/MCP/Hook、输入输出契约；支持从一个 ZIP 批量导入多个 Skill（每个 Skill 目录包含一个 `SKILL.md`）。
 - 模型服务：加密 API Key、模型发现、启用模型和默认模型。
 - 流程编排：同一资产可重复放置为不同 Flow Node，边提供产物映射候选，节点拥有多条 START/END 门禁。
 - 流程运行：任意节点启动、人工产物、显式 Input Binding、Node Run/Attempt 分离、不可变 Artifact Version。
@@ -31,7 +31,7 @@ make install
 make infra-up
 ```
 
-访问 <http://localhost:5173>。默认使用确定性 Mock Runtime；真实 OpenHands 模式使用：
+访问 <http://localhost:5173>。默认使用 OpenHands Agent Server，并在每次执行时读取节点所选模型服务、模型和加密保存的 API Key。Mock Runtime 只用于自动化测试；如需显式启动完整服务：
 
 ```bash
 RUNTIME_ADAPTER=openhands make infra-up-openhands

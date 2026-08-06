@@ -30,6 +30,7 @@ from flowweave.modules.runs.public import (
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
 from flowweave.runtime.dependencies import get_runtime
+from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.application.transactions import (
     finish,
     register_commit_action,
@@ -1043,7 +1044,8 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         bindings.append(
             {"field_key": binding.input_field_key, "artifact": _artifact_dict(artifact)}
         )
-    return StartAttemptRequest(
+    return build_runtime_request(
+        db,
         attempt_id=attempt.id,
         execution_key=f"attempt:{attempt.id}:start",
         node=node,

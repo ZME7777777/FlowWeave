@@ -1,11 +1,12 @@
 name: flowweave
 x-platform-env: &platform-env
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flowweave}:${POSTGRES_PASSWORD:-flowweave_dev}@postgres:5432/${POSTGRES_DB:-flowweave}
-  RUNTIME_ADAPTER: ${RUNTIME_ADAPTER:-mock}
+  RUNTIME_ADAPTER: ${RUNTIME_ADAPTER:-openhands}
   EXECUTION_MODE: worker
   RUNTIME_POLL_SECONDS: ${RUNTIME_POLL_SECONDS:-1}
   OPENHANDS_BASE_URL: http://openhands-agent-server:8000
   OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
+  OPENHANDS_WORKSPACE_ROOT: /workspaces
   CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
   ARTIFACT_ROOT: /data/artifacts
   WORKSPACE_ROOT: /data/workspaces
@@ -37,7 +38,6 @@ services:
     restart: "no"
 
   openhands-agent-server:
-    profiles: ["openhands"]
     build: { context: .., dockerfile: infra/openhands/Dockerfile }
     environment:
       SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
@@ -64,6 +64,7 @@ services:
       - agent-workspaces:/data/workspaces
     depends_on:
       migration: { condition: service_completed_successfully }
+      openhands-agent-server: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 5s
@@ -87,6 +88,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migration: { condition: service_completed_successfully }
+      openhands-agent-server: { condition: service_healthy }
     restart: unless-stopped
 
   web:

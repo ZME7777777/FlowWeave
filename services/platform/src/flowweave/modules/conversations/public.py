@@ -19,6 +19,7 @@ from flowweave.modules.conversations.application.service import (
     send_message,
     set_attempt_conversations_state,
     set_auto_conversation_state,
+    steer_message,
 )
 from flowweave.modules.conversations.domain.enums import ConversationState
 
@@ -42,6 +43,7 @@ __all__ = (
     "retry_message",
     "schedule_next_queued_message",
     "send_message",
+    "steer_message",
     "set_attempt_conversations_state",
     "set_auto_conversation_state",
 )

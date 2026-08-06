@@ -7,4 +7,5 @@ dependencies = [
   "openhands-sdk==1.40.0",
   "litellm==1.93.1",
   "libtmux==0.62.0",
+  "openhands-tools==1.40.0",
 ]

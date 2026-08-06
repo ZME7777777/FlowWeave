@@ -78,6 +78,11 @@ class NodeAssetWrite(ApiModel):
 
     @model_validator(mode="after")
     def validate_default_skill(self) -> NodeAssetWrite:
+        capability_keys = [
+            (item.capability_type, item.capability_key) for item in self.capabilities
+        ]
+        if len(capability_keys) != len(set(capability_keys)):
+            raise ValueError("capability keys must be unique per type")
         skill_keys = {
             item.capability_key for item in self.capabilities if item.capability_type == "SKILL"
         }
@@ -256,5 +261,5 @@ class TextPartWrite(ApiModel):
 class MessageSendWrite(ApiModel):
     client_message_id: str = Field(min_length=1, max_length=100)
     content: list[TextPartWrite] = Field(min_length=1)
-    delivery_mode: Literal["QUEUE_AFTER_TURN"] = "QUEUE_AFTER_TURN"
+    delivery_mode: Literal["QUEUE_AFTER_TURN", "INTERRUPT_AND_RESUME"] = "QUEUE_AFTER_TURN"
     expected_conversation_version: int = Field(ge=1)
