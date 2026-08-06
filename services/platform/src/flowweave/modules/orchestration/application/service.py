@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -28,7 +29,7 @@ from flowweave.modules.runs.public import (
     evaluate_readiness,
 )
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
-from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
+from flowweave.runtime.base import RuntimeHandle, RuntimePort, RuntimeResult, StartAttemptRequest
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.request import build_runtime_request
 from flowweave.runtime.workspace import attempt_workspace_path
@@ -70,6 +71,8 @@ from flowweave.shared.schemas import (
     SyncSnapshotWrite,
 )
 from flowweave.shared.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _hash(value: Any) -> str:
@@ -1756,9 +1759,9 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
 def delete_run(db: Session, run_id: str) -> None:
     """Permanently remove a run and all durable execution data it owns.
 
-    Runtime jobs are cancelled before their durable Attempt rows disappear. Object
-    storage is cleaned only after the database transaction commits, so rollback
-    cannot leave artifact metadata pointing at deleted content.
+    Runtime jobs and object storage are cleaned only after the database transaction
+    commits. Runtime cleanup is best-effort because an unavailable executor must not
+    prevent deletion of an already-terminal durable run.
     """
 
     run = _run(db, run_id)
@@ -1782,10 +1785,11 @@ def delete_run(db: Session, run_id: str) -> None:
         if attempt_ids
         else []
     )
+    runtime_handles: list[RuntimeHandle] = []
     attempt_runtime_ids = {attempt.conversation_id for attempt in attempts}
     for attempt in attempts:
         if attempt.runtime_job_id and attempt.conversation_id:
-            get_runtime().cancel(
+            runtime_handles.append(
                 RuntimeHandle(
                     job_id=attempt.runtime_job_id,
                     conversation_id=attempt.conversation_id,
@@ -1797,7 +1801,7 @@ def delete_run(db: Session, run_id: str) -> None:
             conversation.runtime_conversation_id
             and conversation.runtime_conversation_id not in attempt_runtime_ids
         ):
-            get_runtime().cancel(
+            runtime_handles.append(
                 RuntimeHandle(
                     job_id=conversation.runtime_job_id or conversation.runtime_conversation_id,
                     conversation_id=conversation.runtime_conversation_id,
@@ -1848,12 +1852,30 @@ def delete_run(db: Session, run_id: str) -> None:
         db.execute(delete(NodeRun).where(NodeRun.id.in_(node_run_ids)))
     db.execute(delete(RunSnapshot).where(RunSnapshot.flow_run_id == run.id))
     db.delete(run)
+    runtime = get_runtime()
+    for handle in runtime_handles:
+        register_commit_action(
+            db,
+            lambda handle=handle: _cancel_runtime_after_delete(runtime, handle, run_id),
+        )
     store = get_artifact_store()
     for key in storage_keys:
         register_commit_action(db, lambda key=key: store.delete(key))
     for path in workspace_paths:
         register_commit_action(db, lambda path=path: shutil.rmtree(path, ignore_errors=True))
     finish(db)
+
+
+def _cancel_runtime_after_delete(runtime: RuntimePort, handle: RuntimeHandle, run_id: str) -> None:
+    try:
+        runtime.cancel(handle)
+    except Exception:
+        logger.warning(
+            "Runtime cleanup failed after flow run %s was permanently deleted (conversation_id=%s)",
+            run_id,
+            handle.conversation_id,
+            exc_info=True,
+        )
 
 
 def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     ArtifactVersion,
     AttemptInputBinding,
@@ -623,3 +624,38 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
             ).all()
             == []
         )
+
+
+def test_hard_delete_is_not_blocked_when_runtime_cleanup_is_unavailable(
+    client, skill_capability, db_session_factory, monkeypatch
+):
+    asset = create_asset(client, skill_capability, "运行时清理容错节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"flow_node_key": "design_a"},
+    ).json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    cancelled = client.post(f"/api/v1/flow-runs/{run['id']}/cancel")
+    assert cancelled.status_code == 200, cancelled.text
+
+    with db_session_factory() as db:
+        stored_attempt = db.get(NodeAttempt, attempt["id"])
+        assert stored_attempt is not None
+        stored_attempt.runtime_job_id = "unavailable-runtime-job"
+        stored_attempt.conversation_id = "unavailable-runtime-conversation"
+        db.commit()
+
+    cleanup_calls = []
+
+    def unavailable(handle):
+        cleanup_calls.append(handle)
+        raise DomainError("EXECUTOR_UNAVAILABLE", "Runtime is unavailable", 503)
+
+    monkeypatch.setattr(client.app.state.container.runtime, "cancel", unavailable)
+    deleted = client.delete(f"/api/v1/flow-runs/{run['id']}")
+
+    assert deleted.status_code == 204, deleted.text
+    assert len(cleanup_calls) == 1
+    assert cleanup_calls[0].conversation_id == "unavailable-runtime-conversation"
+    assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
