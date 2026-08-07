@@ -17,14 +17,17 @@ x-platform-env: &platform-env
 services:
   workspace-init:
     image: alpine:3.22
-    command: ["sh", "-c", "mkdir -p /data/workspaces/nodes /data/lark-cli && chmod 0777 /data/workspaces /data/workspaces/nodes /data/lark-cli"]
+    command: ["sh", "-c", "mkdir -p /data/workspaces/nodes /data/lark-cli /data/lark-cli-key && chmod 0777 /data/workspaces /data/workspaces/nodes && if [ -f /data/lark-cli-key/master.key.file ]; then ln -sf master.key.file /data/lark-cli-key/master.key; fi"]
     volumes:
       - type: bind
         source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
         target: /data/workspaces
       - type: bind
-        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-../var/tool-state/lark-cli}
+        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-${HOME}/.lark-cli}
         target: /data/lark-cli
+      - type: bind
+        source: ${FLOWWEAVE_HOST_LARK_CLI_KEY_HOME:-${HOME}/Library/Application Support/lark-cli}
+        target: /data/lark-cli-key
     restart: "no"
 
   postgres:
@@ -54,13 +57,17 @@ services:
     environment:
       SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OH_SESSION_API_KEYS_0: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
+      LARKSUITE_CLI_CONFIG_DIR: /root/.lark-cli
     volumes:
       - type: bind
         source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
         target: /workspaces
       - type: bind
-        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-../var/tool-state/lark-cli}
+        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-${HOME}/.lark-cli}
         target: /root/.lark-cli
+      - type: bind
+        source: ${FLOWWEAVE_HOST_LARK_CLI_KEY_HOME:-${HOME}/Library/Application Support/lark-cli}
+        target: /root/.local/share/lark-cli
       - openhands-state:/root/.openhands
       - ../agent-packages:/agent-packages:ro
     expose: ["8000"]

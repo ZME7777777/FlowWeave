@@ -170,6 +170,7 @@ def save_provider(
         db.flush()
     item.name = payload.name.strip()
     item.base_url = payload.base_url.strip().rstrip("/")
+    item.connection_state = "UNTESTED"
     if payload.api_key:
         item.encrypted_api_key = _fernet().encrypt(payload.api_key.encode())
         item.api_key_hint = f"••••{payload.api_key[-4:]}"
@@ -237,9 +238,9 @@ def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConne
     )
 
 
-def mark_provider_connected(db: Session, provider_id: str) -> None:
-    """Persist a successful probe in a separate short write transaction."""
+def mark_provider_connection_state(db: Session, provider_id: str, state: str) -> None:
+    """Persist a probe result in a separate short write transaction."""
 
     item = get_provider(db, provider_id)
-    item.connection_state = "CONNECTED"
+    item.connection_state = state
     finish(db)

@@ -18,11 +18,18 @@ FlowWeave 由独立的 migration、API、Worker、Web 和 PostgreSQL 进程组�
 
 Agent 启动时会收到上述容器内绝对路径，MCP 配置通过 OpenHands `mcp_config` 注册为真实工具。聊天输入框用统一的 `$能力名` 引用 Skill 或 MCP，消息会保存结构化 `capability_refs`，不依赖模型自行猜测文本。
 
-OpenHands 镜像提供 shell、Python、Node.js/npm/npx、uv/uvx、Git/SSH 与 `lark-cli`。Lark CLI 状态通过 `FLOWWEAVE_HOST_LARK_CLI_HOME` 持久化，默认是 `var/tool-state/lark-cli`；本地首次授权使用：
+Skill ZIP 的压缩包上限为 25 MiB、解压后总量上限为 100 MiB、单文件上限为 25 MiB。单 Skill 可把 `SKILL.md` 直接放在 ZIP 根目录；批量导入时，每个 Skill 目录各自包含一个 `SKILL.md`。Web 代理允许 40 MiB 请求体，用于容纳 Base64 编码产生的额外体积。
+
+OpenHands 镜像提供 shell、Python、Node.js/npm/npx、uv/uvx、Git/SSH 与 `lark-cli`。Lark CLI 状态默认直接挂载宿主机 `~/.lark-cli`，加密凭据目录默认把宿主机 `~/Library/Application Support/lark-cli` 挂载到 Session 的 Linux 数据目录，并由 `workspace-init` 将 macOS 的 `master.key.file` 链接为 Linux 使用的 `master.key`。因此宿主机与所有 Session 使用同一份配置、登录态和 token 刷新结果。macOS 首次共享前使用：
 
 ```bash
-docker compose -f infra/compose.yaml exec openhands-agent-server lark-cli auth login
+lark-cli config keychain-downgrade
+lark-cli auth login --domain all
 ```
+
+两个目录可分别用 `FLOWWEAVE_HOST_LARK_CLI_HOME`、`FLOWWEAVE_HOST_LARK_CLI_KEY_HOME` 覆盖。授权目录是敏感凭据，只能映射到可信环境；若需要隔离身份，应为该 FlowWeave 实例指定独立目录并在对应目录下单独完成授权。
+
+Agent 消息中的 `file:///workspaces/...`、`/workspaces/...` 或相对 Markdown 图片会通过消息级工作区图片接口转换为浏览器可访问的 HTTP 地址。接口将文件限定在该消息所属 Attempt 的工作目录内，只允许常见图片格式，阻止目录穿越和跨 Attempt 读取。
 
 ```bash
 cd services/platform
@@ -34,13 +41,19 @@ uv run python -m flowweave.bootstrap.worker
 
 Web：`pnpm --filter @flowweave/web dev`。
 
+## Runtime 取消生命周期
+
+取消流程会先把业务运行置为只读终态，再由持久化 `CANCEL_RUNTIME` 任务停止活动轮次拥有的全部 Runtime 会话。轮次通过独立的 `runtime_phase` 展示停止进度：`CANCELLING` 表示正在确认，`CANCELLED` 表示原 Runtime 已确认 Agent 不再运行，`CANCEL_FAILED` 表示重试耗尽。失败后可调用 `POST /api/v1/node-attempts/{attempt_id}/retry-runtime-cancel` 重试。
+
+轮次和 Agent 会话都会持久化 `runtime_adapter`，避免配置切换后把旧 Mock 或 OpenHands 句柄发送给错误的执行器。OpenHands 返回会话不存在时按“已经停止”处理，使重复取消保持幂等。
+
 ## 认证与接口
 
 所有公共接口使用 `/api/v1`，读写接口均可直接访问。命令支持 `Idempotency-Key`，错误体统一为 `{"error":{"code","message","details","request_id"}}`。
 
 ## 数据库和迁移
 
-迁移链以 `0001_catalog`、`0002_flows`、`0003_runs`、`0004_artifacts`、`0005_execution` 为五段核心基线，并以前向迁移 `0006_capability_imports`、`0007_run_event_notify` 分别增加持久化导入会话和提交后通知。运行 `make migration-check` 验证空库升级、回退到 `0005` 和再次升级。生产、单元、集成、架构与契约测试统一使用 PostgreSQL；生产包和测试均不包含 SQLite 兼容路径。未显式设置 `TEST_DATABASE_URL`/`DATABASE_URL` 时，pytest 与迁移检查自动使用固定镜像 `postgres:16.9-alpine3.21` 的 Testcontainer；设置 URL 时可复用外部 PostgreSQL 进行诊断。
+迁移链以 `0001_catalog`、`0002_flows`、`0003_runs`、`0004_artifacts`、`0005_execution` 为五段核心基线，并以前向迁移 `0006_capability_imports`、`0007_run_event_notify`、`0008_agent_conversations`、`0009_runtime_cancellation` 增加持久化导入、提交后通知、Agent 会话和 Runtime 取消闭环。运行 `make migration-check` 验证空库升级、回退到 `0005` 和再次升级。生产、单元、集成、架构与契约测试统一使用 PostgreSQL；生产包和测试均不包含 SQLite 兼容路径。未显式设置 `TEST_DATABASE_URL`/`DATABASE_URL` 时，pytest 与迁移检查自动使用固定镜像 `postgres:16.9-alpine3.21` 的 Testcontainer；设置 URL 时可复用外部 PostgreSQL 进行诊断。
 
 ## 验证
 

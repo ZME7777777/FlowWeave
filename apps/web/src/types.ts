@@ -31,7 +31,7 @@ export interface NodeAsset {
 }
 export interface NodeAssetWrite {
   directory_id?: string | null; name: string; description: string;
-  icon_kind: string; icon_value: string; default_skill_ref: string;
+  icon_kind: string; icon_value: string; default_skill_ref?: string | null;
   row_version?: number | null; inputs: IOField[]; outputs: IOField[];
   executor: ExecutorConfig; capabilities: CapabilityRef[];
 }
@@ -98,6 +98,7 @@ export type AttemptState =
 export interface NodeAttempt {
   id: string; node_run_id: string; attempt_no: number; snapshot_id: string;
   state: AttemptState; state_version: number; runtime_phase?: string | null;
+  runtime_adapter?: string | null;
   runtime_job_id?: string | null; conversation_id?: string | null; runtime_cursor?: string | null;
   workspace_ref?: string | null; error_code?: string | null; error_detail?: string | null;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
@@ -143,12 +144,21 @@ export interface ArtifactInput {
 
 export type ConversationState = 'CREATING' | 'IDLE' | 'GENERATING' | 'WAITING_HUMAN' | 'FAILED' | 'READ_ONLY';
 export type MessageDeliveryState = 'QUEUED' | 'DELIVERING' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
+export interface AgentMessageTextPart { type: 'text'; text: string }
+export interface AgentMessageAttachmentPart {
+  type: 'attachment'; attachment_id: string; filename: string; mime_type: string;
+  byte_size: number; content_hash: string; runtime_path: string;
+}
+export type AgentMessagePart = AgentMessageTextPart | AgentMessageAttachmentPart;
+export interface MessageAttachmentInput {
+  filename: string; mime_type: string; content_base64: string; byte_size: number;
+}
 export interface AgentMessageContent {
-  parts?: Array<{ type: 'text'; text: string }>;
+  parts?: AgentMessagePart[];
   tool?: Record<string, unknown>;
   state?: Record<string, unknown>;
   error?: Record<string, unknown>;
-  presentation?: 'final' | 'question' | 'queued' | 'chat';
+  presentation?: 'final' | 'question' | 'queued' | 'cancelled-queue' | 'chat';
   capability_refs?: Array<Pick<CapabilityRef, 'capability_type' | 'capability_key'>>;
   [key: string]: unknown;
 }
@@ -165,7 +175,7 @@ export interface AgentMessage {
 export interface AgentConversation {
   id: string; attempt_id: string; conversation_no: number;
   kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
-  state_version: number; runtime_conversation_id?: string | null;
+  state_version: number; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
   context_baseline: Record<string, unknown>; message_count: number;
   last_message?: AgentMessage | null; created_at: string; updated_at: string;
 }

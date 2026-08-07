@@ -84,11 +84,7 @@ class NodeAssetWrite(ApiModel):
         skill_keys = {
             item.capability_key for item in self.capabilities if item.capability_type == "SKILL"
         }
-        if not skill_keys:
-            raise ValueError("at least one imported SKILL is required")
-        if not self.default_skill_ref:
-            raise ValueError("default_skill_ref is required")
-        if self.default_skill_ref not in skill_keys:
+        if self.default_skill_ref and self.default_skill_ref not in skill_keys:
             raise ValueError("default_skill_ref must reference an imported SKILL")
         return self
 
@@ -256,6 +252,13 @@ class TextPartWrite(ApiModel):
     text: str = Field(min_length=1)
 
 
+class AttachmentPartWrite(ApiModel):
+    type: Literal["attachment"] = "attachment"
+    filename: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(default="application/octet-stream", min_length=1, max_length=160)
+    content_base64: str = Field(min_length=1)
+
+
 class CapabilityInvocationWrite(ApiModel):
     capability_type: Literal["SKILL", "MCP"]
     capability_key: str = Field(min_length=1, max_length=200)
@@ -267,7 +270,7 @@ def _empty_capability_invocations() -> list[CapabilityInvocationWrite]:
 
 class MessageSendWrite(ApiModel):
     client_message_id: str = Field(min_length=1, max_length=100)
-    content: list[TextPartWrite] = Field(min_length=1)
+    content: list[TextPartWrite | AttachmentPartWrite] = Field(min_length=1, max_length=8)
     capability_refs: list[CapabilityInvocationWrite] = Field(
         default_factory=_empty_capability_invocations, max_length=50
     )
@@ -281,4 +284,6 @@ class MessageSendWrite(ApiModel):
         ]
         if len(refs) != len(set(refs)):
             raise ValueError("capability_refs must be unique")
+        if sum(item.type == "attachment" for item in self.content) > 4:
+            raise ValueError("a message may contain at most 4 attachments")
         return self

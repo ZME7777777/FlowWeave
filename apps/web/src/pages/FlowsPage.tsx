@@ -17,7 +17,7 @@ import '@xyflow/react/dist/style.css';
 import { CheckSquare, GitBranch, LayoutDashboard, Plus, Save, Search, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type DragEvent } from 'react';
-import { api } from '../api/client';
+import { api, randomId } from '../api/client';
 import type {
   FlowDefinition,
   FlowEdge,
@@ -93,7 +93,7 @@ function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNo
       };
     }),
     flow.edges.map(item => ({
-      id: item.id ?? crypto.randomUUID(),
+      id: item.id ?? randomId(),
       source: item.source_instance_key,
       target: item.target_instance_key,
       data: { mappings: item.mappings },
@@ -282,7 +282,7 @@ export function FlowsPage() {
 
   const addAsset = (asset: NodeAsset, position?: { x: number; y: number }) => {
     const count = nodes.filter(item => item.data.assetId === asset.id).length;
-    const id = `node_${count + 1}_${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
+    const id = `node_${count + 1}_${randomId().replaceAll('-', '').slice(0, 8)}`;
     setNodes(old => [...old, {
       id,
       type: 'flowAsset',
@@ -303,7 +303,7 @@ export function FlowsPage() {
       : [];
     setEdges(old => addEdge({
       ...connection,
-      id: crypto.randomUUID(),
+      id: randomId(),
       data: { mappings },
       label: mappings.map(item => `${item.source_output_key} → ${item.target_input_key}`).join(', '),
     }, old));
@@ -378,7 +378,7 @@ export function FlowsPage() {
   }, [filteredAssets, directories]);
 
   return <section className="page flow-page"><div className="page-head"><div><span className="eyebrow">FLOW DESIGN</span><h1>流程编排</h1><p>从资产目录拖入节点；连线只提供产物绑定候选，每个实例独立配置多条门禁。</p></div><button className="primary" onClick={() => { setSelected(undefined); setIsNew(true); setNodes([]); setEdges([]); setName('新流程'); setDescription(''); setEntry(''); setNotice(''); }}><Plus size={16}/>新建流程</button></div>
-    <div className="flow-product-layout"><aside className="flow-library" data-testid="flow-library"><h3>流程</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索流程" placeholder="搜索流程" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><div className="flow-list-actions"><button type="button" className="secondary" disabled={!filteredFlows.length || deletingFlows} onClick={toggleVisibleFlows}><CheckSquare size={13}/>{allVisibleFlowsSelected ? '取消全选' : '全选'}</button><button type="button" className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={13}/>{deletingFlows ? '删除中' : `删除 (${selectedFlowIds.size})`}</button></div><div className="flow-definition-list">{filteredFlows.map(flow => <div className={`flow-definition-row ${selected?.id === flow.id ? 'active' : ''}`} key={flow.id}><label className="resource-check"><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-select" onClick={() => { setSelected(flow); setIsNew(false); }}>{flow.name}</button><button type="button" className="flow-definition-delete" aria-label={`删除流程 ${flow.name}`} title="删除流程" onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={13}/></button></div>)}</div>{!filteredFlows.length && <div className="flow-list-empty">没有匹配流程</div>}<h3>节点资产目录</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索节点资产" placeholder="搜索当前资产库" value={assetSearch} onChange={event => setAssetSearch(event.target.value)}/></label>{groupedAssets.map(([directory, items]) => <section className="flow-asset-group" key={directory}><h4>{directory}</h4>{items.map(asset => <button draggable key={asset.id} aria-label={asset.name} title="拖入画布或点击添加" onDragStart={event => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/flowweave-node-asset', asset.id); }} onClick={() => addAsset(asset)}><span className="flow-library-icon">{asset.icon_value.slice(0, 2).toUpperCase()}</span><span><b>{asset.name}</b><small>{asset.default_skill_ref}</small></span></button>)}</section>)}</aside>
+    <div className="flow-product-layout"><aside className="flow-library" data-testid="flow-library"><h3>流程</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索流程" placeholder="搜索流程" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><div className="flow-list-actions"><button type="button" className="secondary" disabled={!filteredFlows.length || deletingFlows} onClick={toggleVisibleFlows}><CheckSquare size={13}/>{allVisibleFlowsSelected ? '取消全选' : '全选'}</button><button type="button" className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={13}/>{deletingFlows ? '删除中' : `删除 (${selectedFlowIds.size})`}</button></div><div className="flow-definition-list">{filteredFlows.map(flow => <div className={`flow-definition-row ${selected?.id === flow.id ? 'active' : ''}`} key={flow.id}><label className="resource-check"><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-select" onClick={() => { setSelected(flow); setIsNew(false); }}>{flow.name}</button><button type="button" className="flow-definition-delete" aria-label={`删除流程 ${flow.name}`} title="删除流程" onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={13}/></button></div>)}</div>{!filteredFlows.length && <div className="flow-list-empty">没有匹配流程</div>}<h3>节点资产目录</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索节点资产" placeholder="搜索当前资产库" value={assetSearch} onChange={event => setAssetSearch(event.target.value)}/></label>{groupedAssets.map(([directory, items]) => <section className="flow-asset-group" key={directory}><h4>{directory}</h4>{items.map(asset => <button draggable key={asset.id} aria-label={asset.name} title="拖入画布或点击添加" onDragStart={event => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/flowweave-node-asset', asset.id); }} onClick={() => addAsset(asset)}><span className="flow-library-icon">{asset.icon_value.slice(0, 2).toUpperCase()}</span><span><b>{asset.name}</b><small>{asset.default_skill_ref || '无默认 Skill'}</small></span></button>)}</section>)}</aside>
       <main className="flow-designer" data-testid="flow-designer" onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropAsset}><div className="designer-toolbar"><input aria-label="流程名称" value={name} placeholder="流程名称" onChange={event => setName(event.target.value)}/><input aria-label="流程说明" value={description} placeholder="说明" onChange={event => setDescription(event.target.value)}/><select aria-label="默认入口" value={entry} onChange={event => setEntry(event.target.value)}><option value="">默认入口</option>{nodes.map(item => <option key={item.id} value={item.id}>{item.data.label}</option>)}</select><button className="secondary" aria-label="自动布局" onClick={() => { setNodes(old => autoLayout(old, edges)); window.setTimeout(() => void flowInstance?.fitView({ padding: 0.2 }), 0); }}><LayoutDashboard size={14}/>自动布局</button><button className="primary" onClick={() => save.mutate()} disabled={!name.trim() || !nodes.length}><Save size={14}/>保存流程</button></div>{error && <div className="canvas-error">{error}</div>}{notice && <div className="canvas-notice" role="status">{notice}</div>}<ReactFlow nodeTypes={nodeTypes} nodes={nodes.map(item => ({ ...item, data: { ...item.data, onDelete: removeNode }, className: item.id === entry ? 'start-flow-node' : '' }))} edges={edges} onInit={setFlowInstance} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={connect} onNodeClick={(_, node) => setSelectedNode(node.id)} fitView><Background/><Controls/></ReactFlow><small className="canvas-help"><GitBranch size={12}/>连线表示产物映射候选；点击节点配置门禁。</small></main>
       {currentNode ? <GateEditor node={currentNode} providers={providers.filter(provider => provider.available_for_nodes)} onChange={updateCurrent} onDelete={() => removeNode(currentNode.id)}/> : <aside className="flow-inspector empty compact">选择画布节点以编辑别名和门禁。</aside>}
     </div>

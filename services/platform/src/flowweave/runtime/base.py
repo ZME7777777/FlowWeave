@@ -43,6 +43,7 @@ class StartAttemptRequest:
     provider: RuntimeProvider | None = None
     skills: tuple[RuntimeSkill, ...] = ()
     mcp_servers: tuple[RuntimeMCP, ...] = ()
+    interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,8 +111,12 @@ class RuntimePort(Protocol):
 
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult: ...
 
-    def send_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult: ...
+    def send_message(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult: ...
 
-    def resume(self, handle: RuntimeHandle, content: str) -> RuntimeResult: ...
+    def resume(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult: ...
 
     def cancel(self, handle: RuntimeHandle) -> None: ...

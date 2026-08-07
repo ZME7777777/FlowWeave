@@ -90,6 +90,14 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   const providerCard = page.locator('.model-config-card').filter({ hasText: providerName });
   await expect(providerCard).toContainText('可用于节点');
   await expect(providerCard).toContainText('0 个');
+  await page.route('**/api/v1/model-providers/*/test', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ connection_state: 'CONNECTED', model_count: 1 }),
+  }));
+  await providerCard.getByRole('button', { name: '测试连接' }).click();
+  await expect(providerCard.getByRole('status')).toContainText('连接成功，服务返回 1 个模型');
+  await page.unroute('**/api/v1/model-providers/*/test');
 
   await page.getByRole('button', { name: '节点资产' }).click();
   await expect(page.getByRole('heading', { name: '节点资产', exact: true })).toBeVisible();
@@ -102,14 +110,17 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByRole('button', { name: '下一步' }).click();
   await editor.getByLabel('模型服务').selectOption({ label: providerName });
   await editor.getByLabel('模型', { exact: true }).selectOption('gpt-e2e');
-  await editor.getByLabel('启动触发提示词').fill('读取输入并执行默认 Skill');
+  await editor.getByLabel('启动触发提示词').fill('读取输入并执行节点任务');
   await editor.getByRole('button', { name: '下一步' }).click();
-  const skillInput = editor.locator('label.file-button').filter({ hasText: '批量导入 Skill ZIP' }).locator('input');
+  const skillInput = editor.locator('label.file-button').filter({ hasText: '导入 Skill ZIP' }).locator('input');
   await skillInput.setInputFiles('e2e/fixtures/ui-product-skill.zip');
   await expect(editor.getByTestId('capability-key')).toHaveText('ui-product-skill');
   await editor.getByRole('button', { name: '下一步' }).click();
-  await expect(editor.getByRole('heading', { name: '输入定义' })).toBeVisible();
-  await expect(editor.getByRole('heading', { name: '输出定义' })).toBeVisible();
+  await expect(editor.getByRole('heading', { name: '输入字段' })).toBeVisible();
+  await expect(editor.getByRole('heading', { name: '输出字段' })).toBeVisible();
+  await expect(editor.locator('.io-empty')).toHaveCount(2);
+  await editor.getByRole('button', { name: '添加输入' }).click();
+  await editor.getByRole('button', { name: '添加输出' }).click();
   await expect(editor.getByLabel('inputs key 0')).toHaveValue('input_1');
   await expect(editor.getByLabel('outputs key 0')).toHaveValue('output_1');
   const card = page.getByTestId('node-card').filter({ hasText: assetName }).last();

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,17 +29,35 @@ class OpenHandsRuntime:
         self.openhands_workspace_root = settings.openhands_workspace_root
         self._contracts: dict[str, list[dict[str, str]]] = {}
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    def _request(
+        self, method: str, path: str, *, missing_ok: bool = False, **kwargs: Any
+    ) -> dict[str, Any]:
         try:
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.request(
                     method, f"{self.base_url}{path}", headers=self.headers, **kwargs
                 )
+                if missing_ok and response.status_code == 404:
+                    return {"_flowweave_missing": True}
                 response.raise_for_status()
                 value = cast(object, response.json())
                 if not isinstance(value, dict):
                     raise ValueError("OpenHands response must be an object")
                 return cast(dict[str, Any], value)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404 and path.startswith("/api/conversations/"):
+                raise DomainError(
+                    "RUNTIME_CONVERSATION_MISSING",
+                    "Agent Runtime conversation no longer exists; retry will rebuild it",
+                    409,
+                    {"status_code": 404},
+                ) from exc
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "OpenHands Agent Server is unavailable or rejected the request",
+                503,
+                {"status_code": exc.response.status_code},
+            ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
@@ -71,6 +90,8 @@ class OpenHandsRuntime:
 
     @staticmethod
     def _output_contract(request: StartAttemptRequest) -> list[dict[str, str]]:
+        if request.interaction_mode == "COLLABORATION":
+            return []
         asset = cast(dict[str, Any], request.node.get("asset") or {})
         raw_outputs: object = asset.get("outputs") or []
         if not isinstance(raw_outputs, list):
@@ -94,11 +115,22 @@ class OpenHandsRuntime:
         context = str(executor.get("context_prompt") or "").strip()
         inputs = [self._artifact_input(item) for item in request.bindings]
         outputs = self._output_contract(request)
-        sections = [
-            startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}",
-        ]
+        collaboration = request.interaction_mode == "COLLABORATION"
+        sections = (
+            [
+                "你正在一个由人工新建的独立协作会话中。等待并响应用户在本会话中的请求。"
+                "节点默认 Skill 和启动提示词只用于流程自动执行，不是本会话的预设任务。"
+                "可用 Skill 与 MCP 均为候选能力：先理解用户意图，再自行选择真正相关的能力；"
+                "用户通过 $ 显式指定能力时必须优先遵循。不要仅因某项能力是节点默认值就调用它。"
+            ]
+            if collaboration
+            else [
+                startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}"
+            ]
+        )
         if context:
-            sections.append(f"任务上下文：\n{context}")
+            heading = "节点背景上下文（仅作协作参考）" if collaboration else "任务上下文"
+            sections.append(f"{heading}：\n{context}")
         if request.node_workspace_ref:
             resource_lines = [
                 f"节点持久工作目录：{request.node_workspace_ref}",
@@ -117,11 +149,16 @@ class OpenHandsRuntime:
                     f"- {server.name}: {server.workspace_path}" for server in request.mcp_servers
                 )
             resource_lines.append(
-                "用户在消息中显式选择 Skill 或 MCP 时，必须优先调用所选能力；"
+                "这些 Skill 与 MCP 是可选能力，不预设默认 Skill；根据用户当前消息动态选择。"
+                "用户显式选择时必须优先调用；Skill 附带脚本可直接从上述目录执行。"
+                if collaboration
+                else "用户在消息中显式选择 Skill 或 MCP 时，必须优先调用所选能力；"
                 "Skill 附带脚本可直接从上述目录执行。"
             )
             sections.append("运行资源：\n" + "\n".join(resource_lines))
-        sections.append("流程输入：\n" + json.dumps(inputs, ensure_ascii=False, default=str))
+        input_heading = "当前 Attempt 输入（协作参考）" if collaboration else "流程输入"
+        rendered_inputs = json.dumps(inputs, ensure_ascii=False, default=str)
+        sections.append(f"{input_heading}：\n{rendered_inputs}")
         if outputs:
             sections.append(
                 "完成任务后，请调用 finish，并将 message 严格写成 JSON 对象。"
@@ -424,21 +461,48 @@ class OpenHandsRuntime:
             )
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
-    def send_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+    def send_message(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult:
+        parts: list[dict[str, Any]] = []
+        if content:
+            parts.append({"type": "text", "text": content})
+        if image_urls:
+            parts.append({"type": "image", "image_urls": list(image_urls)})
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/events",
             json={
                 "role": "user",
-                "content": [{"type": "text", "text": content}],
+                "content": parts,
                 "run": True,
             },
         )
         return RuntimeResult(status="RUNNING", cursor=handle.cursor)
 
-    def resume(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+    def resume(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult:
         self._request("POST", f"/api/conversations/{handle.conversation_id}/interrupt", json={})
-        return self.send_message(handle, content)
+        return self.send_message(handle, content, image_urls)
 
     def cancel(self, handle: RuntimeHandle) -> None:
-        self._request("POST", f"/api/conversations/{handle.conversation_id}/interrupt", json={})
+        path = f"/api/conversations/{handle.conversation_id}"
+        interrupted = self._request("POST", f"{path}/interrupt", missing_ok=True, json={})
+        if interrupted.get("_flowweave_missing"):
+            return
+        for poll_no in range(10):
+            data = self._request("GET", path, missing_ok=True)
+            if data.get("_flowweave_missing"):
+                return
+            status = str(data.get("execution_status") or "").lower()
+            if status not in {"starting", "running", "executing", "stopping"}:
+                return
+            if poll_no < 9:
+                time.sleep(0.1)
+        raise DomainError(
+            "EXECUTOR_CANCEL_UNCONFIRMED",
+            "OpenHands accepted the interrupt but the Agent is still running",
+            503,
+            {"conversation_id": handle.conversation_id},
+        )

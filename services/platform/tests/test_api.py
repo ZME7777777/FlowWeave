@@ -18,6 +18,7 @@ from flowweave.shared.models import (
     NodeRun,
     RunEvent,
     RunSnapshot,
+    TaskState,
 )
 
 
@@ -42,6 +43,13 @@ def create_asset(client, skill, name="方案生成"):
     response = client.post("/api/v1/node-assets", json=asset_payload(name, skill))
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_node_asset_can_be_saved_without_skill_or_default_skill(client):
+    response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
+    assert response.status_code == 201, response.text
+    assert response.json()["capabilities"] == []
+    assert response.json()["default_skill_ref"] is None
 
 
 def flow_payload(asset_id, name="需求到方案"):
@@ -373,6 +381,33 @@ async def test_model_discovery_performs_network_io_outside_database_transaction(
     assert transaction_states == [False]
 
 
+def test_model_provider_connection_test_reports_result_and_persists_failure(
+    monkeypatch, client
+):
+    from flowweave.modules.model_providers.presentation import router as provider_router
+    from flowweave.shared.errors import DomainError
+
+    provider = _create_model_provider(client, "连接测试模型服务")
+
+    async def successful_probe(*_args):
+        return ["gpt-one", "gpt-two"]
+
+    monkeypatch.setattr(provider_router, "_discover", successful_probe)
+    connected = client.post(f"/api/v1/model-providers/{provider['id']}/test")
+    assert connected.status_code == 200, connected.text
+    assert connected.json() == {"connection_state": "CONNECTED", "model_count": 2}
+    assert client.get("/api/v1/model-providers").json()[0]["connection_state"] == "CONNECTED"
+
+    async def failed_probe(*_args):
+        raise DomainError("EXECUTOR_UNAVAILABLE", "model discovery failed", 503)
+
+    monkeypatch.setattr(provider_router, "_discover", failed_probe)
+    failed = client.post(f"/api/v1/model-providers/{provider['id']}/test")
+    assert failed.status_code == 503, failed.text
+    assert failed.json()["error"]["code"] == "EXECUTOR_UNAVAILABLE"
+    assert client.get("/api/v1/model-providers").json()[0]["connection_state"] == "FAILED"
+
+
 def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_capability):
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
@@ -644,6 +679,7 @@ def test_hard_delete_is_not_blocked_when_runtime_cleanup_is_unavailable(
         assert stored_attempt is not None
         stored_attempt.runtime_job_id = "unavailable-runtime-job"
         stored_attempt.conversation_id = "unavailable-runtime-conversation"
+        stored_attempt.runtime_adapter = "mock"
         db.commit()
 
     cleanup_calls = []
@@ -659,3 +695,61 @@ def test_hard_delete_is_not_blocked_when_runtime_cleanup_is_unavailable(
     assert len(cleanup_calls) == 1
     assert cleanup_calls[0].conversation_id == "unavailable-runtime-conversation"
     assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
+
+
+def test_failed_runtime_cancel_is_visible_and_can_be_retried(
+    client, skill_capability, db_session_factory
+):
+    from flowweave.modules.tasks.application.handlers import record_terminal_failure
+
+    asset = create_asset(client, skill_capability, "取消失败重试节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"flow_node_key": "design_a"},
+    ).json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    cancelled = client.post(f"/api/v1/flow-runs/{run['id']}/cancel").json()
+    version = cancelled["node_runs"][0]["attempts"][0]["state_version"]
+
+    with db_session_factory() as db:
+        stored_attempt = db.get(NodeAttempt, attempt["id"])
+        assert stored_attempt is not None
+        stored_attempt.runtime_phase = "CANCELLING"
+        task = BackgroundTask(
+            task_type="CANCEL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=stored_attempt.id,
+            idempotency_key=f"failed-cancel:{stored_attempt.id}",
+            state=TaskState.DEAD,
+            attempts=3,
+            max_attempts=3,
+        )
+        db.add(task)
+        db.flush()
+        record_terminal_failure(db, task.id, "OpenHands unavailable")
+        db.commit()
+
+    failed = client.get(f"/api/v1/flow-runs/{run['id']}").json()
+    failed_attempt = failed["node_runs"][0]["attempts"][0]
+    assert failed_attempt["runtime_phase"] == "CANCEL_FAILED"
+    assert failed_attempt["error_code"] == "EXECUTOR_CANCEL_FAILED"
+    assert failed_attempt["state_version"] == version + 1
+
+    retried = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/retry-runtime-cancel",
+        json={"expected_state_version": failed_attempt["state_version"]},
+        headers={"Idempotency-Key": "retry-failed-runtime-cancel"},
+    )
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["runtime_phase"] == "CANCELLING"
+    assert retried.json()["error_code"] is None
+    with db_session_factory() as db:
+        retry_task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt["id"],
+                BackgroundTask.task_type == "CANCEL_RUNTIME",
+                BackgroundTask.state == TaskState.PENDING,
+            )
+        )
+        assert retry_task is not None

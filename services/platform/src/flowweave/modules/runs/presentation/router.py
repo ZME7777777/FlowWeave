@@ -188,6 +188,24 @@ async def retry_gates(attempt_id: str, payload: AttemptVersionWrite, db: Db) -> 
     return await run_sync(db, lambda session: service.retry_gates(session, attempt_id, payload))
 
 
+@router.post("/node-attempts/{attempt_id}/retry-runtime-cancel")
+async def retry_runtime_cancel(
+    attempt_id: str,
+    payload: AttemptVersionWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.retry_runtime_cancel(
+            session,
+            attempt_id,
+            payload,
+            _key(idempotency_key, "retry-runtime-cancel", attempt_id),
+        ),
+    )
+
+
 @router.post("/flow-runs/{run_id}/sync-snapshot")
 async def sync_snapshot(
     run_id: str,

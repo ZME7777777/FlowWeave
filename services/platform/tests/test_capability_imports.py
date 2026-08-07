@@ -43,6 +43,36 @@ def test_import_is_persistent_hashed_one_time_and_stores_source(client, db_sessi
     assert replay.status_code == 422
 
 
+def test_single_skill_zip_accepts_skill_files_at_archive_root(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "root-skill.zip",
+            "content_base64": _zip_content(
+                {
+                    "SKILL.md": "# Root Skill\n",
+                    "scripts/run.py": "print('ok')\n",
+                    "references/guide.md": "# Guide\n",
+                    "__MACOSX/._SKILL.md": b"metadata",
+                    ".DS_Store": b"metadata",
+                }
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["preview"]["capabilities"] == [
+        {
+            "capability_key": "root-skill",
+            "normalized_config": {
+                "entry": "SKILL.md",
+                "description": "",
+                "version": "",
+            },
+        }
+    ]
+
+
 def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
     encoded = _zip_content(
         {
@@ -273,7 +303,7 @@ def test_skill_import_rejects_nested_archives_extensions_depth_and_large_files(c
         _zip_content({"sample/SKILL.md": "# Sample", "sample/program.exe": b"binary"}),
         _zip_content({"a/b/c/d/e/f/g/h/SKILL.md": "# Too deep"}),
         _zip_content(
-            {"sample/SKILL.md": "# Sample", "sample/large.txt": b"x" * (2 * 1024 * 1024 + 1)}
+            {"sample/SKILL.md": "# Sample", "sample/large.txt": b"x" * (25 * 1024 * 1024 + 1)}
         ),
     ]
     for encoded in cases:
@@ -287,6 +317,45 @@ def test_skill_import_rejects_nested_archives_extensions_depth_and_large_files(c
         )
         assert response.status_code == 422, response.text
         assert response.json()["error"]["code"] == "IMPORT_REJECTED"
+
+
+def test_skill_import_accepts_files_larger_than_two_mib(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "large-reference.zip",
+            "content_base64": _zip_content(
+                {
+                    "large-reference/SKILL.md": "# Large reference\n",
+                    "large-reference/references/data.txt": b"x" * (2 * 1024 * 1024 + 1),
+                }
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_skill_zip_entry_limit_is_reported_with_actual_and_maximum(client):
+    entries: dict[str, bytes | str] = {"sample/SKILL.md": "# Sample\n"}
+    entries.update(
+        {f"sample/references/reference-{index}.txt": "" for index in range(1000)}
+    )
+
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "too-many-entries.zip",
+            "content_base64": _zip_content(entries),
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "IMPORT_REJECTED"
+    assert error["message"] == "ZIP contains 1001 entries; maximum is 1000"
+    assert error["details"] == {"actual_entries": 1001, "max_entries": 1000}
 
 
 def test_config_import_rejects_alias_bombs_recursive_aliases_and_deep_values(client):

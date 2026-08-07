@@ -1665,6 +1665,73 @@
         }
       }
     },
+    "/api/v1/node-attempts/{attempt_id}/retry-runtime-cancel": {
+      "post": {
+        "summary": "Retry Runtime Cancel",
+        "operationId": "retry_runtime_cancel_api_v1_node_attempts__attempt_id__retry_runtime_cancel_post",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttemptVersionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Retry Runtime Cancel Api V1 Node Attempts  Attempt Id  Retry Runtime Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs/{run_id}/sync-snapshot": {
       "post": {
         "summary": "Sync Snapshot",
@@ -2162,6 +2229,36 @@
             }
           }
         }
+      },
+      "delete": {
+        "summary": "Delete Conversation",
+        "operationId": "delete_conversation_api_v1_agent_conversations__conversation_id__delete",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/agent-conversations/{conversation_id}/messages": {
@@ -2312,6 +2409,98 @@
         }
       }
     },
+    "/api/v1/agent-messages/{message_id}/workspace-image": {
+      "get": {
+        "summary": "Workspace Image",
+        "operationId": "workspace_image_api_v1_agent_messages__message_id__workspace_image_get",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-messages/{message_id}/attachments/{attachment_id}": {
+      "get": {
+        "summary": "Message Attachment",
+        "operationId": "message_attachment_api_v1_agent_messages__message_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent-messages/{message_id}/retry": {
       "post": {
         "summary": "Retry Message",
@@ -2425,6 +2614,63 @@
           }
         }
       }
+    },
+    "/api/v1/agent-messages/{message_id}/cancel-queued": {
+      "post": {
+        "summary": "Cancel Queued Message",
+        "operationId": "cancel_queued_message_api_v1_agent_messages__message_id__cancel_queued_post",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cancel Queued Message Api V1 Agent Messages  Message Id  Cancel Queued Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2483,6 +2729,41 @@
           "artifact_type"
         ],
         "title": "ArtifactWrite"
+      },
+      "AttachmentPartWrite": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "attachment",
+            "title": "Type",
+            "default": "attachment"
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "mime_type": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Mime Type",
+            "default": "application/octet-stream"
+          },
+          "content_base64": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Content Base64"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "filename",
+          "content_base64"
+        ],
+        "title": "AttachmentPartWrite"
       },
       "AttemptVersionWrite": {
         "properties": {
@@ -3062,9 +3343,17 @@
           },
           "content": {
             "items": {
-              "$ref": "#/components/schemas/TextPartWrite"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TextPartWrite"
+                },
+                {
+                  "$ref": "#/components/schemas/AttachmentPartWrite"
+                }
+              ]
             },
             "type": "array",
+            "maxItems": 8,
             "minItems": 1,
             "title": "Content"
           },

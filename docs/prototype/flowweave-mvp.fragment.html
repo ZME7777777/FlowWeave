@@ -29,18 +29,30 @@
     #fw-prototype * { box-sizing: border-box; }
     #fw-prototype button, #fw-prototype input, #fw-prototype select, #fw-prototype textarea { font: inherit; color: inherit; }
     #fw-prototype button { cursor: pointer; }
-    #fw-prototype .fw-app { position: relative; overflow: hidden; min-height: 760px; background: var(--fw-page); border: 1px solid var(--fw-line); border-radius: 14px; box-shadow: 0 18px 50px var(--fw-shadow); }
-    #fw-prototype .fw-topbar { min-height: 66px; display: flex; align-items: center; gap: 24px; padding: 0 22px; background: var(--fw-shell); border-bottom: 1px solid var(--fw-line); }
+    #fw-prototype .fw-app { position: relative; overflow: hidden; min-height: 760px; background: var(--fw-page); border: 1px solid var(--fw-line); }
+    #fw-prototype .fw-topbar { min-height: 64px; display: flex; align-items: center; gap: 30px; padding: 0 28px; color: #fff; background: #102119; border-bottom: 1px solid #24372f; }
     #fw-prototype .fw-brand { display: flex; align-items: center; gap: 10px; min-width: max-content; }
-    #fw-prototype .fw-logo { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; color: var(--fw-brand-ink); background: var(--fw-brand); font-weight: 500; }
+    #fw-prototype .fw-logo { width: 24px; height: 24px; display: grid; place-items: center; color: #d8f256; }
+    #fw-prototype .fw-logo svg { width: 24px; height: 24px; }
     #fw-prototype .fw-brand-copy strong, #fw-prototype .fw-brand-copy small { display: block; }
-    #fw-prototype .fw-brand-copy strong { font-weight: 500; }
-    #fw-prototype .fw-brand-copy small { color: var(--fw-muted); }
+    #fw-prototype .fw-brand-copy strong { font-size: 17px; font-weight: 650; }
+    #fw-prototype .fw-brand-copy small { color: #aebcb5; }
     #fw-prototype .fw-mainnav { display: flex; align-self: stretch; gap: 4px; }
-    #fw-prototype .fw-navbtn { min-width: 104px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--fw-muted); }
-    #fw-prototype .fw-navbtn[aria-selected="true"] { color: var(--fw-brand); border-color: var(--fw-brand); background: var(--fw-brand-soft); }
+    #fw-prototype .fw-navbtn { min-width: 108px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #aebcb5; }
+    #fw-prototype .fw-navbtn[aria-selected="true"] { color: #fff; border-color: #d8f256; background: rgba(255,255,255,.035); }
+    #fw-prototype .fw-kernelstatus { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: #aebcb5; white-space: nowrap; }
+    #fw-prototype .fw-kernelstatus svg { width: 15px; height: 15px; }
+    #fw-prototype .fw-principlebar { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 14px; padding: 5px 28px; color: #52615a; background: #eef2df; border-bottom: 1px solid var(--fw-line); font-size: 12px; }
+    #fw-prototype .fw-principlebar > span:first-child { text-align: center; }
+    #fw-prototype .fw-prototypemode { margin-left: auto; display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid #c9d3c8; border-radius: 8px; background: rgba(255,255,255,.72); }
+    #fw-prototype .fw-modebtn { min-height: 30px; padding: 5px 9px; border: 0; border-radius: 6px; color: #aebcb5; background: transparent; font-size: 11px; }
+    #fw-prototype .fw-modebtn[aria-selected="true"] { color: #14241e; background: #d8f256; box-shadow: none; }
+    #fw-prototype .fw-app[data-prototype-mode="baseline"] [data-proposal-only] { display: none !important; }
+    #fw-prototype .fw-app[data-prototype-mode="proposal"] [data-baseline-only] { display: none !important; }
+    #fw-prototype .fw-deltaflag { padding: 4px 7px; border-radius: 6px; color: var(--fw-blue); background: var(--fw-blue-soft); font-size: 10px; }
     #fw-prototype .fw-view { display: none; }
     #fw-prototype .fw-view.fw-active { display: block; }
+    #fw-prototype .fw-eyebrow { display: block; margin-bottom: 6px; color: var(--fw-brand); font-size: 10px; font-weight: 700; letter-spacing: .15em; }
     #fw-prototype .fw-pagehead { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; padding: 26px 28px 20px; }
     #fw-prototype h1, #fw-prototype h2, #fw-prototype h3, #fw-prototype p { margin: 0; }
     #fw-prototype h1 { font-size: 24px; font-weight: 500; letter-spacing: -.02em; }
@@ -78,6 +90,11 @@
     #fw-prototype .fw-library { border-right: 1px solid var(--fw-line); }
     #fw-prototype .fw-inspector { border-left: 1px solid var(--fw-line); }
     #fw-prototype .fw-sectionlabel { color: var(--fw-muted); margin-bottom: 10px; }
+    #fw-prototype .fw-flowassets { display: grid; gap: 8px; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--fw-line); }
+    #fw-prototype .fw-flowassethead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    #fw-prototype .fw-flowassethead .fw-sectionlabel { margin: 0; }
+    #fw-prototype .fw-flowasset { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid var(--fw-brand); border-radius: 8px; text-align: left; color: var(--fw-brand); background: var(--fw-brand-soft); }
+    #fw-prototype .fw-flowasset small { color: var(--fw-muted); }
     #fw-prototype .fw-libitem { width: 100%; display: grid; grid-template-columns: 32px 1fr; gap: 9px; align-items: center; margin-bottom: 8px; padding: 9px; border: 1px solid var(--fw-line); border-radius: 8px; text-align: left; background: var(--fw-surface); }
     #fw-prototype .fw-libitem span:first-child { width: 32px; height: 32px; display: grid; place-items: center; background: var(--fw-brand-soft); border-radius: 7px; }
     #fw-prototype .fw-libitem small { display: block; margin-top: 2px; color: var(--fw-muted); }
@@ -414,6 +431,75 @@
     #fw-prototype .fw-gatedel { width: 30px; height: 30px; padding: 0; border: 1px solid var(--fw-line); border-radius: 6px; background: var(--fw-surface); }
     #fw-prototype .fw-gatejoin { margin-top: 10px; color: var(--fw-muted); }
 
+    /* Artifact-driven orchestration */
+    #fw-prototype .fw-contracthint { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid var(--fw-blue); border-radius: 8px; color: var(--fw-blue); background: var(--fw-blue-soft); }
+    #fw-prototype .fw-contractports { width: 100%; display: grid; gap: 5px; margin-top: 4px; }
+    #fw-prototype .fw-contractport { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 4px 6px; border-radius: 5px; background: var(--fw-surface-soft); color: var(--fw-muted); font-size: 11px; }
+    #fw-prototype .fw-contractport strong { color: var(--fw-ink); font-weight: 500; }
+    #fw-prototype .fw-mappinglabel { position: absolute; z-index: 4; width: 168px; padding: 8px 9px; border: 1px solid var(--fw-blue); border-radius: 8px; text-align: left; color: var(--fw-blue); background: var(--fw-blue-soft); box-shadow: 0 5px 14px var(--fw-shadow); }
+    #fw-prototype .fw-mappinglabel strong, #fw-prototype .fw-mappinglabel small { display: block; }
+    #fw-prototype .fw-mappinglabel strong { font-size: 11px; font-weight: 500; }
+    #fw-prototype .fw-mappinglabel small { margin-top: 3px; color: var(--fw-muted); }
+    #fw-prototype .fw-inputrules { display: grid; gap: 8px; margin-top: 10px; }
+    #fw-prototype .fw-inputrule { padding: 10px; border: 1px solid var(--fw-line); border-radius: 8px; background: var(--fw-surface-soft); }
+    #fw-prototype .fw-inputrule header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    #fw-prototype .fw-inputrule strong, #fw-prototype .fw-inputrule small { display: block; }
+    #fw-prototype .fw-inputrule small { margin-top: 4px; color: var(--fw-muted); }
+    #fw-prototype .fw-rulekind { padding: 3px 6px; border-radius: 5px; color: var(--fw-blue); background: var(--fw-blue-soft); font-size: 10px; }
+
+    #fw-prototype .fw-artifactworkspace { display: grid; grid-template-columns: 230px minmax(0, 1fr) 290px; min-height: 610px; margin-top: 14px; overflow: hidden; border: 1px solid var(--fw-line); border-radius: 11px; background: var(--fw-surface); }
+    #fw-prototype .fw-workitemrail, #fw-prototype .fw-artifactpool { padding: 14px; background: var(--fw-shell); }
+    #fw-prototype .fw-workitemrail { border-right: 1px solid var(--fw-line); }
+    #fw-prototype .fw-artifactpool { border-left: 1px solid var(--fw-line); }
+    #fw-prototype .fw-panehead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 11px; }
+    #fw-prototype .fw-panehead strong { font-weight: 500; }
+    #fw-prototype .fw-workitemlist { display: grid; gap: 7px; }
+    #fw-prototype .fw-workitem { width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 9px; padding: 10px; border: 1px solid transparent; border-radius: 8px; text-align: left; background: transparent; }
+    #fw-prototype .fw-workitem:hover, #fw-prototype .fw-workitem[aria-selected="true"] { border-color: var(--fw-line); background: var(--fw-surface); }
+    #fw-prototype .fw-workitem i { width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--fw-line-strong); }
+    #fw-prototype .fw-workitem[data-state="ready"] i { background: var(--fw-blue); }
+    #fw-prototype .fw-workitem[data-state="review"] i { background: var(--fw-warn); }
+    #fw-prototype .fw-workitem[data-state="accepted"] i { background: var(--fw-brand); }
+    #fw-prototype .fw-workitem strong, #fw-prototype .fw-workitem small { display: block; }
+    #fw-prototype .fw-workitem strong { font-weight: 500; }
+    #fw-prototype .fw-workitem small { margin-top: 3px; color: var(--fw-muted); }
+    #fw-prototype .fw-workitemmain { min-width: 0; padding: 18px; }
+    #fw-prototype .fw-workitemhero { display: flex; align-items: flex-start; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--fw-line); }
+    #fw-prototype .fw-workitemhero > span:nth-child(2) { min-width: 0; flex: 1; }
+    #fw-prototype .fw-workitemhero strong, #fw-prototype .fw-workitemhero small { display: block; }
+    #fw-prototype .fw-workitemhero strong { font-size: 17px; font-weight: 500; }
+    #fw-prototype .fw-workitemhero small { margin-top: 4px; color: var(--fw-muted); }
+    #fw-prototype .fw-readiness { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 7px; color: var(--fw-blue); background: var(--fw-blue-soft); white-space: nowrap; }
+    #fw-prototype .fw-slotlist { display: grid; gap: 8px; margin-top: 11px; }
+    #fw-prototype .fw-inputslot { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 11px; border: 1px solid var(--fw-line); border-radius: 8px; background: var(--fw-surface-soft); }
+    #fw-prototype .fw-inputslot strong, #fw-prototype .fw-inputslot small { display: block; }
+    #fw-prototype .fw-inputslot small { margin-top: 3px; color: var(--fw-muted); }
+    #fw-prototype .fw-provenance { margin-top: 5px; color: var(--fw-brand); font-size: 10px; }
+    #fw-prototype .fw-attemptlist { display: grid; gap: 7px; margin-top: 10px; }
+    #fw-prototype .fw-attemptrow { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 9px; border: 1px solid var(--fw-line); border-radius: 8px; }
+    #fw-prototype .fw-attemptrow > span:first-child { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; background: var(--fw-brand-soft); color: var(--fw-brand); }
+    #fw-prototype .fw-attemptrow strong, #fw-prototype .fw-attemptrow small { display: block; }
+    #fw-prototype .fw-attemptrow small { margin-top: 3px; color: var(--fw-muted); }
+    #fw-prototype .fw-poolintro { margin-bottom: 11px; color: var(--fw-muted); line-height: 1.45; }
+    #fw-prototype .fw-poollist { display: grid; gap: 8px; }
+    #fw-prototype .fw-poolartifact { padding: 10px; border: 1px solid var(--fw-line); border-radius: 8px; background: var(--fw-surface); }
+    #fw-prototype .fw-poolartifact header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    #fw-prototype .fw-poolartifact strong, #fw-prototype .fw-poolartifact small { display: block; }
+    #fw-prototype .fw-poolartifact small { margin-top: 4px; color: var(--fw-muted); }
+    #fw-prototype .fw-artifactstate { padding: 3px 6px; border-radius: 5px; color: var(--fw-brand); background: var(--fw-brand-soft); font-size: 10px; white-space: nowrap; }
+    #fw-prototype .fw-artifactstate.fw-draft { color: var(--fw-warn); background: var(--fw-warn-soft); }
+    #fw-prototype .fw-lineage { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--fw-line); color: var(--fw-muted); font-size: 10px; }
+    #fw-prototype .fw-runprinciple { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--fw-brand); border-radius: 8px; color: var(--fw-brand); background: var(--fw-brand-soft); }
+    #fw-prototype .fw-emptyrun { display: grid; gap: 10px; padding: 13px; border: 1px dashed var(--fw-line-strong); border-radius: 9px; background: var(--fw-surface-soft); }
+    #fw-prototype .fw-emptyrun strong { font-weight: 500; }
+    #fw-prototype .fw-emptyrun small { color: var(--fw-muted); }
+
+    #fw-prototype .fw-bindgrid { display: grid; grid-template-columns: 1fr 52px 1fr; align-items: center; gap: 10px; margin-top: 14px; }
+    #fw-prototype .fw-bindport { padding: 12px; border: 1px solid var(--fw-line); border-radius: 8px; background: var(--fw-surface-soft); }
+    #fw-prototype .fw-bindport strong, #fw-prototype .fw-bindport small { display: block; }
+    #fw-prototype .fw-bindport small { margin-top: 4px; color: var(--fw-muted); }
+    #fw-prototype .fw-bindarrow { text-align: center; color: var(--fw-blue); font-size: 20px; }
+
     @media (max-width: 980px) {
       #fw-prototype .fw-cardgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       #fw-prototype .fw-designer { grid-template-columns: 170px minmax(0, 1fr); }
@@ -424,6 +510,8 @@
       #fw-prototype .fw-contractgrid { grid-template-columns: 1fr; }
       #fw-prototype .fw-chatlayout { grid-template-columns: 210px minmax(0, 1fr); }
       #fw-prototype .fw-contextpanel { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--fw-line); }
+      #fw-prototype .fw-artifactworkspace { grid-template-columns: 210px minmax(0, 1fr); }
+      #fw-prototype .fw-artifactpool { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--fw-line); }
     }
     @media (max-width: 980px) {
       #fw-prototype .fw-assetlayout { grid-template-columns: 190px minmax(0, 1fr); }
@@ -448,6 +536,10 @@
       #fw-prototype .fw-runchildren { min-width: 760px; }
       #fw-prototype .fw-runboard { min-height: 650px; overflow-x: auto; }
       #fw-prototype .fw-noderungrid { grid-template-columns: 1fr; }
+      #fw-prototype .fw-artifactworkspace { display: block; }
+      #fw-prototype .fw-workitemrail, #fw-prototype .fw-artifactpool { border: 0; border-bottom: 1px solid var(--fw-line); }
+      #fw-prototype .fw-bindgrid { grid-template-columns: 1fr; }
+      #fw-prototype .fw-bindarrow { transform: rotate(90deg); }
       #fw-prototype .fw-assetlayout { display: block; margin: 0 16px 22px; }
       #fw-prototype .fw-folderpane { border-right: 0; border-bottom: 1px solid var(--fw-line); }
       #fw-prototype .fw-foldertree { display: flex; overflow-x: auto; gap: 6px; }
@@ -581,26 +673,28 @@
 
   </style>
 
-  <section class="fw-app" aria-label="FlowWeave 产品原型">
+  <section class="fw-app" aria-label="FlowWeave 产品原型" data-prototype-mode="baseline">
     <header class="fw-topbar">
-      <div class="fw-brand"><span class="fw-logo">FW</span><span class="fw-brand-copy"><strong>FlowWeave</strong><small>Agent 流程工作台</small></span></div>
+      <div class="fw-brand"><span class="fw-logo"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8 20.8 6.9v10.2L12 22.2l-8.8-5.1V6.9L12 1.8Z"></path></svg></span><span class="fw-brand-copy"><strong>FlowWeave</strong></span></div>
       <nav class="fw-mainnav" aria-label="主导航">
         <button class="fw-navbtn" data-view="nodes" aria-selected="true">节点资产</button>
-        <button class="fw-navbtn" data-view="models" aria-selected="false">大模型配置</button>
         <button class="fw-navbtn" data-view="flows" aria-selected="false">流程编排</button>
         <button class="fw-navbtn" data-view="runs" aria-selected="false">流程运行</button>
+        <button class="fw-navbtn" data-view="models" aria-selected="false">大模型配置</button>
       </nav>
+      <span class="fw-kernelstatus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path></svg>产物驱动运行 · 人工最终决策</span>
     </header>
+    <div class="fw-principlebar"><span data-baseline-only>一次流程运行包含多次节点执行；退回会在同一次节点执行中形成新轮次，每轮保留独立的 Agent 对话与产物历史。</span><span data-proposal-only>本模式只展示待确认的增量产品形态；任务围绕产物池和稳定节点工作项运转。</span><div class="fw-prototypemode" aria-label="原型版本"><button class="fw-modebtn" data-prototype-mode="baseline" aria-selected="true">当前实现</button><button class="fw-modebtn" data-prototype-mode="proposal" aria-selected="false">产物驱动提案</button></div></div>
 
     <main>
       <section class="fw-view fw-active" data-view-panel="nodes">
         <div class="fw-pagehead">
-          <div><h1>Agent 节点</h1><p>每个节点都由 Agent 执行；配置默认 Skill、启动提示词、上下文以及 Skill / MCP / Hooks 能力列表。</p></div>
+          <div><span class="fw-eyebrow">NODE ASSETS</span><h1>节点资产</h1><p>按目录维护可复用 Agent 节点、能力、提示词和输入输出契约。</p></div>
           <div class="fw-actions">
-            <button class="fw-btn fw-btn-primary" id="fw-open-create"><svg class="fw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-width="1.8" stroke-linecap="round"/></svg>新建 Agent 节点</button>
+            <button class="fw-btn fw-btn-primary" id="fw-open-create"><svg class="fw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-width="1.8" stroke-linecap="round"></path></svg>新建节点</button>
           </div>
         </div>
-        <div class="fw-toolbar"><input class="fw-search" id="fw-node-search" aria-label="搜索节点" placeholder="搜索当前目录或全部节点"><span class="fw-count" id="fw-node-count">6 个节点</span></div>
+        <div class="fw-toolbar"><input class="fw-search" id="fw-node-search" aria-label="搜索节点" placeholder="搜索 全部节点"><span class="fw-count" id="fw-node-count">6 个节点</span><button class="fw-btn">全选当前结果</button><button class="fw-btn fw-btn-danger" disabled>批量删除 (0)</button></div>
         <div class="fw-assetlayout">
           <aside class="fw-folderpane"><div class="fw-folderhead"><strong>节点目录</strong><button class="fw-btn" id="fw-new-folder">＋</button></div><div class="fw-foldertree">
             <button class="fw-folderbtn" data-folder="all" aria-selected="true"><span>▾</span><span>全部节点</span><small>6</small></button>
@@ -646,10 +740,10 @@
 
       <section class="fw-view" data-view-panel="models">
         <div class="fw-pagehead">
-          <div><h1>大模型配置</h1><p>统一维护 Agent 可使用的模型服务；节点只引用服务和模型，不接触 API Key。</p></div>
+          <div><span class="fw-eyebrow">MODEL PROVIDERS</span><h1>大模型配置</h1><p>统一维护模型服务、连接状态、启用模型和默认模型；节点不接触 API Key。</p></div>
           <div class="fw-actions"><button class="fw-btn fw-btn-primary" id="fw-open-model-config">＋ 新增模型服务</button></div>
         </div>
-        <div class="fw-modelsummary"><strong>平台默认：</strong><span>OpenAI 内部网关 · GPT-5.2</span><span class="fw-connection">连接正常</span></div>
+        <div class="fw-toolbar"><span class="fw-count">共 2 个模型服务</span><button class="fw-btn">全选</button><button class="fw-btn fw-btn-danger" disabled>批量删除 (0)</button></div>
         <div class="fw-modelgrid">
           <article class="fw-modelcard" data-model-service="openai">
             <div class="fw-modelcardhead"><span class="fw-providericon">OA</span><span class="fw-modelidentity"><strong>OpenAI 内部网关</strong><small>https://ai-gateway.example.com/v1</small></span><span class="fw-badge">平台默认</span></div>
@@ -668,11 +762,12 @@
 
       <section class="fw-view" data-view-panel="flows">
         <div class="fw-pagehead">
-          <div><h1>流程编排</h1><p>从目录中拖入节点，自由摆放并连接；每个节点可配置多条开始门禁和结束门禁。</p></div>
-          <div class="fw-actions"><button class="fw-btn" id="fw-auto-layout">自动布局</button><button class="fw-btn fw-btn-primary" id="fw-save-flow">保存流程</button></div>
+          <div><span class="fw-eyebrow">FLOW DESIGN</span><h1 data-baseline-only>流程编排</h1><h1 data-proposal-only>能力与产物编排 <span class="fw-deltaflag">增量方案</span></h1><p data-baseline-only>从资产目录拖入节点；连线只提供产物绑定候选，每个实例独立配置多条门禁。</p><p data-proposal-only>流程是推荐的产物依赖图，不限定固定执行顺序；每个必填输入必须声明来源规则。</p></div>
+          <div class="fw-actions"><button class="fw-btn fw-btn-primary">＋ 新建流程</button></div>
         </div>
         <div class="fw-designer">
           <aside class="fw-library">
+            <div class="fw-flowassets"><div class="fw-flowassethead"><div class="fw-sectionlabel">流程</div><button class="fw-btn">全选</button></div><input class="fw-input" aria-label="搜索流程" placeholder="搜索流程"><button class="fw-flowasset"><strong>需求到技术方案</strong><small>v12</small></button></div>
             <div class="fw-sectionlabel">节点资产目录</div><input class="fw-input fw-libsearch" id="fw-lib-search" placeholder="搜索节点">
             <div class="fw-libfolder"><div class="fw-libfolderhead"><span>产品与需求</span><small>1</small></div><button class="fw-libitem" draggable="true" data-library-node="需求分析" data-icon="⌕" data-skill="requirements-analysis"><span>⌕</span><span>需求分析<small>拖到画布</small></span></button></div>
             <div class="fw-libfolder"><div class="fw-libfolderhead"><span>研发设计</span><small>2</small></div><button class="fw-libitem" draggable="true" data-library-node="技术方案生成" data-icon="⌘" data-skill="technical-design"><span>⌘</span><span>技术方案生成<small>拖到画布</small></span></button><button class="fw-libitem" draggable="true" data-library-node="技术方案校验" data-icon="✓" data-skill="architecture-review"><span>✓</span><span>技术方案校验<small>拖到画布</small></span></button></div>
@@ -680,18 +775,26 @@
             <div class="fw-libfolder"><div class="fw-libfolderhead"><span>质量验证</span><small>1</small></div><button class="fw-libitem" draggable="true" data-library-node="自动化测试" data-icon="⚙" data-skill="test-runner"><span>⚙</span><span>自动化测试<small>拖到画布</small></span></button></div>
           </aside>
           <div class="fw-canvas" id="fw-flow-canvas">
-            <div class="fw-canvasbar"><strong>需求到技术方案</strong><span class="fw-badge">拖拽编辑</span><span class="fw-canvashint">拖动节点 · 连线定义产物映射，不绑定节点执行状态</span><button class="fw-btn">−</button><button class="fw-btn">＋</button></div>
+            <div class="fw-canvasbar"><strong>需求到技术方案</strong><span class="fw-badge" data-baseline-only>拖拽编辑</span><span class="fw-badge" data-proposal-only>产物依赖图</span><span class="fw-canvashint" data-baseline-only>连线表示产物映射候选；点击节点配置门禁</span><span class="fw-canvashint" data-proposal-only>连线表达推荐来源；运行时可由人工替换为任意兼容产物</span><button class="fw-btn" id="fw-auto-layout">自动布局</button><button class="fw-btn fw-btn-primary" id="fw-save-flow">保存流程</button></div>
             <div class="fw-flowboard" id="fw-flow-board">
               <svg class="fw-flowedges" id="fw-flow-edges" aria-hidden="true"><defs><marker id="fw-arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="currentColor"/></marker></defs></svg>
-              <button class="fw-flow-node" data-flow-node="需求分析" data-skill="requirements-analysis" aria-pressed="true" style="left:50px;top:165px"><span class="fw-port fw-port-in"></span><span class="fw-miniicon">⌕</span><strong>需求分析</strong><small>requirements-analysis</small><span class="fw-gatepins"><span class="fw-gatepin">开始 2</span><span class="fw-gatepin">结束 2</span></span><span class="fw-port fw-port-out"></span></button>
-              <button class="fw-flow-node" data-flow-node="技术方案生成" data-skill="technical-design" aria-pressed="false" style="left:300px;top:80px"><span class="fw-port fw-port-in"></span><span class="fw-miniicon">⌘</span><strong>技术方案生成</strong><small>technical-design</small><span class="fw-gatepins"><span class="fw-gatepin">开始 1</span><span class="fw-gatepin">结束 3</span></span><span class="fw-port fw-port-out"></span></button>
-              <button class="fw-flow-node" data-flow-node="代码实现" data-skill="coding-agent" aria-pressed="false" style="left:545px;top:230px"><span class="fw-port fw-port-in"></span><span class="fw-miniicon">&lt;/&gt;</span><strong>代码实现</strong><small>coding-agent</small><span class="fw-gatepins"><span class="fw-gatepin">开始 2</span><span class="fw-gatepin">结束 1</span></span><span class="fw-port fw-port-out"></span></button>
+              <button class="fw-flow-node" data-flow-node="需求分析" data-skill="requirements-analysis" aria-pressed="false" style="left:34px;top:160px"><span class="fw-port fw-port-in"></span><span class="fw-miniicon">⌕</span><strong>需求分析</strong><small data-baseline-only>requirements-analysis</small><small data-proposal-only>可从人工 PRD 直接启动</small><span class="fw-contractports" data-proposal-only><span class="fw-contractport"><span>OUT</span><strong>requirements</strong></span></span><span class="fw-port fw-port-out"></span></button>
+              <button class="fw-flow-node" data-flow-node="技术方案生成" data-skill="technical-design" aria-pressed="true" style="left:316px;top:82px"><span class="fw-port fw-port-in"></span><span class="fw-miniicon">⌘</span><strong>技术方案生成</strong><small data-baseline-only>technical-design</small><small data-proposal-only>输入满足即可独立运行</small><span class="fw-contractports" data-proposal-only><span class="fw-contractport"><span>IN</span><strong>prd</strong></span><span class="fw-contractport"><span>OUT</span><strong>design</strong></span></span><span class="fw-port fw-port-out"></span></button>
+              <button class="fw-flow-node" data-flow-node="技术方案校验" data-skill="architecture-review" aria-pressed="false" style="left:608px;top:220px"><span class="fw-port fw-port-in"></span><span class="fw-miniicon">✓</span><strong>技术方案校验</strong><small data-baseline-only>architecture-review</small><small data-proposal-only>人工审核流转后可运行</small><span class="fw-contractports" data-proposal-only><span class="fw-contractport"><span>IN</span><strong>design</strong></span><span class="fw-contractport"><span>OUT</span><strong>review</strong></span></span><span class="fw-port fw-port-out"></span></button>
+              <button class="fw-mappinglabel" data-proposal-only data-open-binding="requirements-prd" style="left:185px;top:250px"><strong>requirements → prd</strong><small>推荐来源 · 运行时允许人工替换</small></button>
+              <button class="fw-mappinglabel" data-proposal-only data-open-binding="design-review" style="left:485px;top:205px"><strong>design → design</strong><small>验收后仅使下游变为 READY</small></button>
             </div><div class="fw-dropcue">松开以添加节点</div>
           </div>
           <aside class="fw-inspector">
-            <div class="fw-inspectorhead"><span class="fw-nodeicon" id="fw-inspector-icon">⌕</span><span><h3 id="fw-inspector-title">需求分析</h3><small>流程节点配置</small></span><button class="fw-btn fw-btn-danger fw-delete-flow-node" id="fw-delete-flow-node">删除节点</button></div>
-            <div class="fw-field"><label for="fw-alias">节点名称</label><input class="fw-input" id="fw-alias" value="需求分析"></div>
-            <div class="fw-field"><label for="fw-flow-skill">节点默认 Skill</label><input class="fw-input" id="fw-flow-skill" value="requirements-analysis" readonly></div>
+            <div class="fw-inspectorhead"><span class="fw-nodeicon" id="fw-inspector-icon">⌘</span><span><h3 id="fw-inspector-title">技术方案生成</h3><small>输入契约与运行策略</small></span><button class="fw-btn fw-btn-danger fw-delete-flow-node" id="fw-delete-flow-node">删除节点</button></div>
+            <div class="fw-field"><label for="fw-alias">节点名称</label><input class="fw-input" id="fw-alias" value="技术方案生成"></div>
+            <div class="fw-field"><label for="fw-flow-skill">节点默认 Skill</label><input class="fw-input" id="fw-flow-skill" value="technical-design" readonly></div>
+            <div class="fw-contracthint" data-proposal-only><strong>就绪规则</strong><span>所有必填输入绑定到已验收且类型兼容的产物</span></div>
+            <section class="fw-gatesection" data-proposal-only><div class="fw-gatesectionhead"><strong>输入来源规则</strong><button class="fw-btn" data-open-binding="requirements-prd">编辑映射</button></div><div class="fw-inputrules">
+              <article class="fw-inputrule"><header><strong>prd · MARKDOWN</strong><span class="fw-rulekind">推荐上游</span></header><small>需求分析.requirements；运行时允许选择产物池中的其他 MARKDOWN</small></article>
+              <article class="fw-inputrule"><header><strong>repository · REPOSITORY</strong><span class="fw-rulekind">人工选择</span></header><small>启动 Attempt 前由人从产物池选择或新增</small></article>
+              <article class="fw-inputrule"><header><strong>constraints · MARKDOWN</strong><span class="fw-rulekind">可选</span></header><small>无绑定时不阻止节点进入 READY</small></article>
+            </div></section>
             <section class="fw-gatesection"><div class="fw-gatesectionhead"><strong>开始门禁 <span id="fw-start-gate-count">2</span></strong><button class="fw-btn" data-add-gate="start">＋ 添加</button></div><div class="fw-gatelist" id="fw-start-gates">
               <div class="fw-gaterow"><div class="fw-gaterowhead"><strong>输入完整性</strong><select class="fw-select"><option>提示词</option><option>JavaScript</option><option>Python</option></select><button class="fw-gatedel" data-remove-gate aria-label="删除门禁">×</button></div><small>检查业务目标、范围和验收标准</small></div>
               <div class="fw-gaterow"><div class="fw-gaterowhead"><strong>上下文可访问</strong><select class="fw-select"><option>JavaScript</option><option>Python</option><option>提示词</option></select><button class="fw-gatedel" data-remove-gate aria-label="删除门禁">×</button></div><small>确认需求文档与仓库引用可读取</small></div>
@@ -705,7 +808,7 @@
       </section>
 
       <section class="fw-view" data-view-panel="runs">
-        <div class="fw-pagehead"><div><h1>流程运行</h1><p>查看和管理流程的每次运行，跟踪节点进度、门禁结果与输出产物。</p></div><div class="fw-actions"><button class="fw-btn fw-btn-primary" id="fw-start-run">启动流程</button></div></div>
+        <div class="fw-pagehead"><div><span class="fw-eyebrow">FLOW RUNS</span><h1>流程运行</h1><p data-baseline-only>一次流程运行包含多次节点执行；每次节点执行可因退回产生多个修订轮次，每轮拥有独立的 Agent 对话。</p><p data-proposal-only>一次运行是任务上下文与产物池；节点没有固定先后顺序，输入满足后由人选择启动。</p></div><div class="fw-actions"><button class="fw-btn fw-btn-primary" id="fw-start-run"><span data-baseline-only>启动流程</span><span data-proposal-only>创建任务运行</span></button></div></div>
         <div class="fw-run-listview" id="fw-run-list-view">
           <div class="fw-runfilters"><input class="fw-search" id="fw-run-search" aria-label="搜索流程或运行" placeholder="搜索流程名称或运行编号"><select class="fw-select" id="fw-run-status-filter" aria-label="运行状态" style="width:auto"><option value="all">全部状态</option><option value="running">运行中</option><option value="review">等待人工</option><option value="done">已完成</option><option value="failed">失败</option></select><span class="fw-count" id="fw-run-count">3 个流程 · 5 个运行</span></div>
           <div class="fw-rungroups" id="fw-run-groups">
@@ -735,7 +838,7 @@
           <div class="fw-rundetailhead"><button class="fw-btn" id="fw-back-to-runs">← 返回运行列表</button><span class="fw-rundetailtitle"><strong id="fw-run-detail-name">需求到技术方案</strong><small id="fw-run-detail-meta">Run #FW-2048 · 流程快照 v12 · 启动于今天 13:48</small></span><span class="fw-runstatus fw-runstatus-review" id="fw-run-detail-status">等待人工</span><button class="fw-btn fw-btn-danger" id="fw-cancel-run">取消运行</button></div>
           <div class="fw-runsummary"><span>进度 <strong id="fw-run-summary-progress">1 / 3 节点完成</strong></span><span>当前节点 <strong id="fw-run-summary-node">技术方案生成</strong></span><span>总耗时 <strong>46 分钟</strong></span><span>流程快照 <strong id="fw-run-snapshot">v12</strong></span></div>
           <div class="fw-syncbar" id="fw-syncbar"><span><strong>发现节点配置更新：</strong>技术方案生成已发布 v7，本次运行仍使用快照中的 v6。</span><button class="fw-btn" id="fw-view-sync-diff">查看差异</button><button class="fw-btn" id="fw-sync-run-snapshot">同步到本次运行</button></div>
-          <div class="fw-runboard" id="fw-run-board">
+          <div class="fw-runboard" id="fw-run-board" data-baseline-only>
             <div class="fw-runboardbar"><strong>运行流程图</strong><span class="fw-canvashint">连线表示产物传递；点击节点查看输入来源、执行记录与产物版本</span></div>
             <svg class="fw-runflowedges" viewBox="0 0 820 560" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="fw-run-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"></path></marker></defs><path class="fw-runedge" marker-end="url(#fw-run-arrow)" d="M 234 255 C 280 255, 284 160, 326 160"></path><path class="fw-runedge" marker-end="url(#fw-run-arrow)" d="M 510 160 C 560 160, 570 305, 612 305"></path></svg>
             <button class="fw-runnode fw-runnode-done" data-run-node="需求分析" data-node-state="已完成" style="left:50px;top:190px"><span class="fw-miniicon">⌕</span><strong>需求分析</strong><small>完成于 14:08 · 20 分钟</small><span class="fw-runnodestate fw-state-pass">✓ 已完成</span></button>
@@ -743,18 +846,49 @@
             <button class="fw-runnode fw-runnode-ready" data-run-node="代码实现" data-node-state="输入已满足，可运行" style="left:612px;top:240px"><span class="fw-miniicon">&lt;/&gt;</span><strong>代码实现</strong><small>technical-design.md v3 · 人工提供 repository</small><span class="fw-runnodestate" style="color:var(--fw-blue)">▶ 输入已满足，可运行</span></button>
             <div class="fw-runlegend"><span class="fw-state-pass"><i></i>已完成</span><span class="fw-state-warn"><i></i>等待人工</span><span style="color:var(--fw-blue)"><i></i>可运行</span><span class="fw-state-warn">◆ 门禁</span></div>
           </div>
+          <div data-proposal-only>
+            <div class="fw-runprinciple"><strong>运行规则</strong><span>节点只依赖输入产物，不依赖上游节点是否执行；下游就绪后不会自动启动。</span></div>
+            <div class="fw-artifactworkspace">
+              <aside class="fw-workitemrail"><div class="fw-panehead"><strong>节点工作项</strong><span class="fw-count">3 个</span></div><div class="fw-workitemlist">
+                <button class="fw-workitem" data-state="accepted" data-select-workitem="requirements" aria-selected="false"><i></i><span><strong>需求分析</strong><small>已验收 · 2 个 Attempt</small></span></button>
+                <button class="fw-workitem" data-state="ready" data-select-workitem="design" aria-selected="true"><i></i><span><strong>技术方案生成</strong><small>READY · 输入 2 / 2</small></span></button>
+                <button class="fw-workitem" data-state="review" data-select-workitem="review" aria-selected="false"><i></i><span><strong>技术方案校验</strong><small>尚未就绪 · 输入 0 / 1</small></span></button>
+              </div><div class="fw-startpoint"><strong>一个节点一个工作项</strong><br>重新执行在当前工作项内新增 Attempt，不再重复创建 Node Run。</div></aside>
+              <main class="fw-workitemmain">
+                <div class="fw-workitemhero"><span class="fw-nodeicon">⌘</span><span><strong id="fw-workitem-title">技术方案生成</strong><small id="fw-workitem-meta">节点工作项 · 尚未执行 · 运行快照 v12</small></span><span class="fw-readiness" id="fw-workitem-state">● READY</span></div>
+                <section class="fw-noderunsection"><div class="fw-gatesectionhead"><h3>本次输入绑定</h3><button class="fw-btn" id="fw-rebind-all">调整绑定</button></div><div class="fw-slotlist" id="fw-workitem-slots">
+                  <article class="fw-inputslot"><span><strong>prd · MARKDOWN</strong><small>requirements-summary.md · v2</small><span class="fw-provenance">推荐来源：需求分析.requirements · 已验收</span></span><button class="fw-btn" data-bind-input="prd">更换</button></article>
+                  <article class="fw-inputslot"><span><strong>repository · REPOSITORY</strong><small>service-api · main · 8f31a2c</small><span class="fw-provenance">人工从产物池选择</span></span><button class="fw-btn" data-bind-input="repository">更换</button></article>
+                </div></section>
+                <section class="fw-noderunsection"><div class="fw-gatesectionhead"><h3>执行轮次</h3><button class="fw-btn" id="fw-open-ready-node">启动 Attempt 1</button></div><div class="fw-attemptlist" id="fw-workitem-attempts"><div class="fw-emptyrun"><strong>尚未运行</strong><small>输入已经满足。启动后会创建 Attempt 1、独立工作目录和主 Agent 会话。</small></div></div></section>
+                <section class="fw-noderunsection"><h3>输出契约</h3><div class="fw-inputrules"><article class="fw-inputrule"><header><strong>design · MARKDOWN</strong><span class="fw-rulekind">必需</span></header><small>缺少该正式产物时禁止验收本轮执行</small></article><article class="fw-inputrule"><header><strong>risk_list · JSON</strong><span class="fw-rulekind">必需</span></header><small>必须通过 JSON Schema 与结束门禁</small></article></div></section>
+              </main>
+              <aside class="fw-artifactpool"><div class="fw-panehead"><strong>任务产物池</strong><button class="fw-btn" id="fw-add-run-artifact">＋ 添加</button></div><p class="fw-poolintro">节点只选择兼容的已验收版本；产物来源仅用于血缘和审计。</p><div class="fw-poollist">
+                <article class="fw-poolartifact"><header><span><strong>原始 PRD · v1</strong><small>URL · 人工提供</small></span><span class="fw-artifactstate">已验收</span></header><div class="fw-lineage">未绑定节点输出 · 任务初始产物</div></article>
+                <article class="fw-poolartifact"><header><span><strong>requirements-summary.md · v2</strong><small>MARKDOWN · 需求分析 Attempt 2</small></span><span class="fw-artifactstate">已验收</span></header><div class="fw-lineage">已绑定：技术方案生成.prd</div></article>
+                <article class="fw-poolartifact"><header><span><strong>service-api · main</strong><small>REPOSITORY · 人工添加</small></span><span class="fw-artifactstate">已验收</span></header><div class="fw-lineage">已绑定：技术方案生成.repository</div></article>
+                <article class="fw-poolartifact"><header><span><strong>requirements-summary.md · v3</strong><small>MARKDOWN · 需求分析 Attempt 3</small></span><span class="fw-artifactstate fw-draft">候选</span></header><div class="fw-lineage">尚未审核，不可绑定到新 Attempt</div></article>
+              </div></aside>
+            </div>
+          </div>
         </div>
 
         <div class="fw-agent-chatview" id="fw-agent-chat-view" hidden>
-          <div class="fw-chathead"><button class="fw-btn" id="fw-back-to-run-detail">← 返回运行详情</button><span class="fw-chatheadcopy"><strong id="fw-chat-node-title">技术方案生成</strong><small>Run #FW-2048 · Node Run #2 · Attempt 1 · Agent 协作空间</small></span><span class="fw-chatlive">Agent 在线</span></div>
+          <div class="fw-chathead"><button class="fw-btn" id="fw-back-to-run-detail">← 返回运行详情</button><span class="fw-chatheadcopy"><strong id="fw-chat-node-title">技术方案生成</strong><small data-baseline-only>Run #FW-2048 · Node Run #2 · Attempt 1 · Agent 协作空间</small><small data-proposal-only>Run #FW-2048 · 节点工作项 · Attempt 2 · Agent 协作空间</small></span><span class="fw-chatlive">Agent 在线</span></div>
           <div class="fw-chatlayout">
-            <aside class="fw-chatrail"><div class="fw-chatrailhead"><strong>节点会话</strong><span id="fw-session-count">2 个</span></div><button class="fw-btn fw-btn-primary fw-chatnew" id="fw-new-chat-session">＋ 新建会话</button><div class="fw-chatlist" id="fw-chat-session-list"></div><div class="fw-chatscope"><strong>作用范围</strong>会话属于当前 Node Run / Attempt；不会改变节点资产的原始提示词。</div></aside>
+            <aside class="fw-chatrail"><div class="fw-chatrailhead"><strong>节点会话</strong><span id="fw-session-count">2 个</span></div><button class="fw-btn fw-btn-primary fw-chatnew" id="fw-new-chat-session">＋ 新建会话</button><div class="fw-chatlist" id="fw-chat-session-list"></div><div class="fw-chatscope"><strong>作用范围</strong><span data-baseline-only>会话属于当前 Node Run / Attempt；不会改变节点资产的原始提示词。</span><span data-proposal-only>会话属于当前节点工作项的执行轮次；更换输入或验收后重做会创建新 Attempt。</span></div></aside>
             <section class="fw-chatmain"><header class="fw-chatbar"><span><strong id="fw-current-chat-title">自动执行 · Attempt 1</strong><small id="fw-current-chat-meta">流程启动时自动创建 · 当前执行上下文</small></span><span class="fw-runstatus fw-runstatus-running">进行中</span></header><div class="fw-chatmessages" id="fw-chat-messages" aria-live="polite"></div><form class="fw-chatcomposer" id="fw-chat-form"><div class="fw-composebox"><textarea id="fw-chat-input" aria-label="向 Agent 发送消息" placeholder="补充约束、纠正方向，或要求 Agent 调整产物……"></textarea><div class="fw-composefoot"><span>Enter 发送 · Shift + Enter 换行</span><button class="fw-btn fw-btn-primary" id="fw-send-chat" type="submit">发送</button></div></div><div class="fw-composerhint">人工消息作为 <code>user</code> role 追加到当前会话，不覆盖节点原始提示词。</div></form></section>
             <aside class="fw-contextpanel"><h3>执行上下文</h3><section class="fw-contextblock"><h4>当前状态</h4><div class="fw-statusbanner"><strong>等待人工确认</strong><div style="margin-top:4px">Attempt 1 · 结束门禁 3 / 3</div></div></section><section class="fw-contextblock"><h4>节点启动指令</h4><div class="fw-contextprompt">调用 technical-design Skill，读取需求摘要和仓库信息，生成可评审、可追溯的技术方案。</div></section><section class="fw-contextblock"><h4>可用能力</h4><div class="fw-contextitem"><span>S</span><span><strong>technical-design</strong><small>默认 Skill</small></span></div><div class="fw-contextitem"><span>M</span><span><strong>git-readonly</strong><small>MCP Server</small></span></div><div class="fw-contextitem"><span>H</span><span><strong>collect-artifacts</strong><small>PostToolUse Hook</small></span></div></section><section class="fw-contextblock"><h4>输入与输出</h4><div class="fw-contextitem"><span>IN</span><span><strong>requirements-summary.json · v2</strong><small>上游节点产物</small></span></div><div class="fw-contextitem"><span>OUT</span><span><strong>technical-design.md · v3</strong><small>当前候选产物</small></span></div></section><div class="fw-roleexplain"><strong>“程序”不是 system role</strong>程序与人工消息在调用模型时都以 <code>user</code> role 发送；“程序 / 人工”只是来源标识，用于展示和审计。真正的 system prompt 不在消息流中展示。</div></aside>
           </div>
         </div>
       </section>
     </main>
+
+    <div class="fw-overlay" id="fw-start-run-modal" role="dialog" aria-modal="true" aria-labelledby="fw-start-run-title"><div class="fw-modal"><div class="fw-modalhead"><span><h2 id="fw-start-run-title">创建任务运行</h2><p class="fw-subtle">创建时不强制填写入口节点输入；可先建立空任务，再添加产物并选择任意节点。</p></span><button class="fw-close" data-close="fw-start-run-modal" aria-label="关闭">×</button></div><div class="fw-modalbody"><div class="fw-formgrid"><div class="fw-field"><label>流程模板</label><select class="fw-select"><option>需求到技术方案</option></select></div><div class="fw-field"><label>任务名称</label><input class="fw-input" value="行情体验优化"></div><div class="fw-field fw-span2"><label>任务说明</label><textarea class="fw-textarea">围绕行情页面体验进行需求澄清和技术方案设计。</textarea></div></div><div class="fw-emptyrun"><strong>初始产物（可选）</strong><small>可以现在上传，也可以创建后在任务产物池中添加。没有初始产物不会阻止创建 Flow Run。</small><div class="fw-actions"><button class="fw-btn">上传文件</button><button class="fw-btn">引用历史产物</button><button class="fw-btn">添加 URL</button></div></div><div class="fw-startpoint">流程模板只提供节点集合与推荐绑定。任务创建后，系统按产物池计算 READY 节点，不会自动运行默认入口。</div></div><div class="fw-modalfoot"><button class="fw-btn" data-close="fw-start-run-modal">取消</button><button class="fw-btn fw-btn-primary" id="fw-create-empty-run">创建空任务</button></div></div></div>
+
+    <div class="fw-overlay" id="fw-input-binding-modal" role="dialog" aria-modal="true" aria-labelledby="fw-input-binding-title"><div class="fw-modal"><div class="fw-modalhead"><span><h2 id="fw-input-binding-title">准备节点输入</h2><p class="fw-subtle">技术方案生成 · 所有必填输入满足后进入 READY，仍由人工决定何时启动。</p></span><button class="fw-close" data-close="fw-input-binding-modal" aria-label="关闭">×</button></div><div class="fw-modalbody"><div class="fw-inputrules"><article class="fw-inputrule"><header><strong>prd · MARKDOWN · 必填</strong><span class="fw-rulekind">已满足</span></header><div class="fw-field"><label>绑定产物</label><select class="fw-select"><option>requirements-summary.md · v2 · 已验收</option><option>原始 PRD · v1 · 类型不兼容</option></select></div><small>编排推荐：需求分析.requirements；允许人工替换为其他兼容产物。</small></article><article class="fw-inputrule"><header><strong>repository · REPOSITORY · 必填</strong><span class="fw-rulekind">已满足</span></header><div class="fw-field"><label>绑定产物</label><select class="fw-select"><option>service-api · main · 人工添加</option></select></div><small>没有可用版本时，可先关闭窗口并在任务产物池新增产物。</small></article></div><div class="fw-contracthint" style="margin-top:14px"><strong>校验通过</strong><span>2 / 2 个必填输入已绑定到已验收且类型兼容的 ArtifactVersion。</span></div></div><div class="fw-modalfoot"><button class="fw-btn" id="fw-binding-add-artifact">＋ 新增产物</button><button class="fw-btn" data-close="fw-input-binding-modal">取消</button><button class="fw-btn fw-btn-primary" id="fw-confirm-input-binding">确认绑定</button></div></div></div>
+
+    <div class="fw-overlay" id="fw-flow-binding-modal" role="dialog" aria-modal="true" aria-labelledby="fw-flow-binding-title"><div class="fw-modal"><div class="fw-modalhead"><span><h2 id="fw-flow-binding-title">编辑输入来源规则</h2><p class="fw-subtle">编排态只定义推荐来源和约束；运行态绑定具体 ArtifactVersion。</p></span><button class="fw-close" data-close="fw-flow-binding-modal" aria-label="关闭">×</button></div><div class="fw-modalbody"><div class="fw-bindgrid"><div class="fw-bindport"><strong>需求分析.requirements</strong><small>OUTPUT · MARKDOWN</small></div><div class="fw-bindarrow">→</div><div class="fw-bindport"><strong>技术方案生成.prd</strong><small>INPUT · MARKDOWN · 必填</small></div></div><div class="fw-formgrid" style="margin-top:14px"><div class="fw-field"><label>来源策略</label><select class="fw-select"><option>推荐上游产物</option><option>运行时人工选择</option><option>使用默认值</option><option>可选输入</option></select></div><div class="fw-field"><label>运行时替换</label><select class="fw-select"><option>允许人工替换为兼容产物</option><option>强制使用该上游输出</option></select></div></div><div class="fw-startpoint">该规则不会自动启动下游。上游产物验收后，只会成为输入候选；人工确认具体绑定后，下游节点进入 READY。</div></div><div class="fw-modalfoot"><button class="fw-btn" data-close="fw-flow-binding-modal">取消</button><button class="fw-btn fw-btn-primary" id="fw-save-flow-binding">保存来源规则</button></div></div></div>
 
     <div class="fw-overlay" id="fw-create-modal" role="dialog" aria-modal="true" aria-labelledby="fw-create-title">
       <div class="fw-modal"><div class="fw-modalhead"><span><h2 id="fw-create-title">新建 Agent 节点</h2><p class="fw-subtle">Skill、MCP 与 Hooks 必须通过文件导入并解析，不手填能力名称</p></span><button class="fw-close" data-close="fw-create-modal" aria-label="关闭">×</button></div>
@@ -840,7 +974,7 @@
     </div>
 
 
-    <div class="fw-overlay" id="fw-run-node-modal" role="dialog" aria-modal="true" aria-labelledby="fw-run-node-title"><div class="fw-modal fw-noderunmodal"><div class="fw-modalhead"><span><h2 id="fw-run-node-title">技术方案生成</h2><p class="fw-subtle" id="fw-run-node-subtitle">Run #FW-2048 · Attempt 1 · 等待人工确认</p></span><button class="fw-close" data-close="fw-run-node-modal" aria-label="关闭">×</button></div><div class="fw-modalbody"><div class="fw-noderungrid"><section><div class="fw-noderunsection"><h3>执行概况</h3><div class="fw-kv"><span>状态</span><span id="fw-run-node-state">等待人工确认</span><span>执行模型</span><span>OpenAI 内部网关 · GPT-5.2</span><span>开始时间</span><span>今天 14:09</span><span>执行耗时</span><span>23 分 18 秒</span></div></div><div class="fw-noderunsection"><h3>本次输入</h3><div class="fw-sourcelist" id="fw-run-input-sources"><div class="fw-sourcerow"><span><strong>requirement_summary</strong><small>requirements-summary.json · v2</small></span><span class="fw-sourcebadge">节点产物</span></div><div class="fw-sourcerow"><span><strong>repository</strong><small>git://workspace/service-api@main</small></span><span class="fw-sourcebadge">人工提供</span></div></div><div class="fw-startpoint">节点是否可运行只取决于输入定义与开始门禁；不要求上一个节点处于“已完成”状态。</div></div><div class="fw-noderunsection"><h3>门禁结果</h3><div class="fw-gateresult"><span><strong>输出契约校验</strong><small>全部输出字段及标准类型匹配</small></span><span class="fw-state-pass">通过</span></div><div class="fw-gateresult"><span><strong>架构完整性检查</strong><small>目标、边界、数据流与异常处理已覆盖</small></span><span class="fw-state-pass">通过</span></div><div class="fw-gateresult"><span><strong>风险项检查</strong><small>脚本超时后的处理方式需要人工确认</small></span><span class="fw-state-warn">需确认</span></div></div><div class="fw-noderunsection"><h3>节点输出</h3><div class="fw-artifactlist"><div class="fw-artifactrow"><span class="fw-artifacticon">{ }</span><span class="fw-artifactcopy"><strong>review-result.json</strong><small>JSON Object · 12.4 KB</small></span><span class="fw-artifactactions"><button class="fw-btn" data-view-artifact="json">查看</button><button class="fw-btn" data-download-artifact="review-result.json">下载</button></span></div><div class="fw-artifactrow"><span class="fw-artifacticon">MD</span><span class="fw-artifactcopy"><strong>technical-design.md</strong><small>Markdown · 48.7 KB</small></span><span class="fw-artifactactions"><button class="fw-btn" data-view-artifact="markdown">查看</button><button class="fw-btn" data-download-artifact="technical-design.md">下载</button></span></div></div><div class="fw-noderunsection"><h3>产物版本</h3><div class="fw-versionlist"><div class="fw-versionrow"><span><strong>v3 · 当前版本</strong><small>Attempt 1 · 今天 14:32 · 2 个产物</small></span><button class="fw-btn" data-view-version="v3">查看</button></div><div class="fw-versionrow"><span><strong>v2</strong><small>历史产物 · 今天 14:18 · 2 个产物</small></span><button class="fw-btn" data-view-version="v2">查看</button></div></div></div></section><aside class="fw-nodeaside"><div class="fw-statusbanner" id="fw-run-status"><strong>结束门禁已通过，等待人工确认</strong></div><div class="fw-asideblock"><h3>人工决定</h3><div class="fw-decision"><label><input type="radio" name="decision" value="accept" checked><span><strong>确认完成</strong><small class="fw-subtle">接受产物并进入下一节点</small></span></label><label><input type="radio" name="decision" value="revise"><span><strong>退回修改</strong><small class="fw-subtle">保留当前版本并生成新尝试</small></span></label></div></div><div class="fw-field"><label for="fw-human-note">确认备注</label><textarea class="fw-textarea" id="fw-human-note">脚本超时按一次自动重试处理，仍失败则转人工判断。</textarea></div><div class="fw-asideactions"><button class="fw-btn fw-btn-primary" id="fw-open-agent-chat">💬 进入 Agent 对话</button><button class="fw-btn fw-btn-primary" id="fw-confirm-run">确认并继续</button><button class="fw-btn" id="fw-request-revision">基于当前节点修订</button><button class="fw-btn" id="fw-run-from-node">从此节点重新运行</button><button class="fw-btn" id="fw-replace-node-input">提供或替换输入产物</button></div></aside></div></div><div class="fw-modalfoot"><button class="fw-btn" data-close="fw-run-node-modal">关闭</button></div></div></div>
+    <div class="fw-overlay" id="fw-run-node-modal" role="dialog" aria-modal="true" aria-labelledby="fw-run-node-title"><div class="fw-modal fw-noderunmodal"><div class="fw-modalhead"><span><h2 id="fw-run-node-title">技术方案生成</h2><p class="fw-subtle" id="fw-run-node-subtitle">Run #FW-2048 · 节点工作项 · Attempt 2 · 等待产物审核</p></span><button class="fw-close" data-close="fw-run-node-modal" aria-label="关闭">×</button></div><div class="fw-modalbody"><div class="fw-noderungrid"><section><div class="fw-noderunsection"><h3>执行概况</h3><div class="fw-kv"><span>状态</span><span id="fw-run-node-state">等待产物审核</span><span>执行模型</span><span>OpenAI 内部网关 · GPT-5.2</span><span>开始时间</span><span>今天 14:09</span><span>执行耗时</span><span>23 分 18 秒</span></div></div><div class="fw-noderunsection"><h3>本次输入</h3><div class="fw-sourcelist" id="fw-run-input-sources"><div class="fw-sourcerow"><span><strong>requirement_summary</strong><small>requirements-summary.json · v2</small></span><span class="fw-sourcebadge">节点产物</span></div><div class="fw-sourcerow"><span><strong>repository</strong><small>git://workspace/service-api@main</small></span><span class="fw-sourcebadge">人工提供</span></div></div><div class="fw-startpoint">输入绑定在 Attempt 创建时冻结；来源不影响运行逻辑，只有类型、Schema 和审核状态决定是否可用。</div></div><div class="fw-noderunsection"><h3>门禁结果</h3><div class="fw-gateresult"><span><strong>输出契约校验</strong><small>全部必需输出字段及标准类型匹配</small></span><span class="fw-state-pass">通过</span></div><div class="fw-gateresult"><span><strong>架构完整性检查</strong><small>目标、边界、数据流与异常处理已覆盖</small></span><span class="fw-state-pass">通过</span></div><div class="fw-gateresult"><span><strong>风险项检查</strong><small>脚本超时后的处理方式需要人工确认</small></span><span class="fw-state-warn">需确认</span></div></div><div class="fw-noderunsection"><h3>候选产物</h3><div class="fw-artifactlist"><div class="fw-artifactrow"><span class="fw-artifacticon">{ }</span><span class="fw-artifactcopy"><strong>review-result.json</strong><small>JSON Object · 12.4 KB · 候选</small></span><span class="fw-artifactactions"><button class="fw-btn" data-view-artifact="json">查看</button><button class="fw-btn" data-download-artifact="review-result.json">下载</button></span></div><div class="fw-artifactrow"><span class="fw-artifacticon">MD</span><span class="fw-artifactcopy"><strong>technical-design.md</strong><small>Markdown · 48.7 KB · 候选</small></span><span class="fw-artifactactions"><button class="fw-btn" data-view-artifact="markdown">查看</button><button class="fw-btn" data-download-artifact="technical-design.md">下载</button></span></div></div><div class="fw-noderunsection"><h3>产物版本</h3><div class="fw-versionlist"><div class="fw-versionrow"><span><strong>v3 · 当前候选</strong><small>Attempt 2 · 今天 14:32 · 2 个产物</small></span><button class="fw-btn" data-view-version="v3">查看</button></div><div class="fw-versionrow"><span><strong>v2 · 已验收</strong><small>Attempt 1 · 今天 14:18 · 2 个产物</small></span><button class="fw-btn" data-view-version="v2">查看</button></div></div></div></section><aside class="fw-nodeaside"><div class="fw-statusbanner" id="fw-run-status"><strong>必需输出齐全，等待人工审核</strong></div><div class="fw-asideblock"><h3>人工决定</h3><div class="fw-decision"><label><input type="radio" name="decision" value="accept" checked><span><strong>接受正式产物</strong><small class="fw-subtle">将候选版本写入任务产物池；下游只变为 READY</small></span></label><label><input type="radio" name="decision" value="revise"><span><strong>退回修改</strong><small class="fw-subtle">继续当前执行上下文或创建新的 Attempt</small></span></label></div></div><div class="fw-field"><label for="fw-human-note">审核备注</label><textarea class="fw-textarea" id="fw-human-note">脚本超时按一次自动重试处理，仍失败则转人工判断。</textarea></div><div class="fw-asideactions"><button class="fw-btn fw-btn-primary" id="fw-open-agent-chat">💬 进入 Agent 对话</button><button class="fw-btn fw-btn-primary" id="fw-confirm-run">接受为正式产物</button><button class="fw-btn" id="fw-request-revision">退回当前候选</button><button class="fw-btn" id="fw-run-from-node">新建执行轮次</button><button class="fw-btn" id="fw-replace-node-input">查看冻结的输入绑定</button></div></aside></div></div><div class="fw-modalfoot"><button class="fw-btn" data-close="fw-run-node-modal">关闭</button></div></div></div>
 
     <div class="fw-overlay" id="fw-sync-modal" role="dialog" aria-modal="true" aria-labelledby="fw-sync-title"><div class="fw-modal"><div class="fw-modalhead"><span><h2 id="fw-sync-title">同步节点配置</h2><p class="fw-subtle">仅更新本次运行选中的节点快照，不修改已有执行记录和产物版本</p></span><button class="fw-close" data-close="fw-sync-modal" aria-label="关闭">×</button></div><div class="fw-modalbody"><div class="fw-capdetail-list"><div class="fw-capdetail-row"><span><strong>技术方案生成</strong><small>节点配置 v6 → v7</small></span><span class="fw-capdetail-meta">可同步</span></div><div class="fw-capdetail-row"><span><strong>变更内容</strong><small>提示词、technical-design Skill 与结束门禁</small></span><span class="fw-capdetail-meta">3 项</span></div><div class="fw-capdetail-row"><span><strong>影响范围</strong><small>仅后续新建 Attempt 使用 v7；历史 Attempt 保持 v6</small></span><span class="fw-capdetail-meta">版本隔离</span></div></div></div><div class="fw-modalfoot"><button class="fw-btn" data-close="fw-sync-modal">取消</button><button class="fw-btn fw-btn-primary" id="fw-confirm-sync">确认同步</button></div></div></div>
 
@@ -863,12 +997,23 @@
       };
       var fwPrototypeOpenLayer = (id) => fwPrototypeQuery('#' + id).classList.add('fw-open');
       var fwPrototypeCloseLayer = (id) => fwPrototypeQuery('#' + id).classList.remove('fw-open');
+      var fwPrototypeResetScroll = () => {
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+      };
       var fwPrototypeSwitchView = (view) => {
         fwPrototypeQueryAll('.fw-navbtn').forEach(btn => btn.setAttribute('aria-selected', String(btn.dataset.view === view)));
         fwPrototypeQueryAll('.fw-view').forEach(panel => panel.classList.toggle('fw-active', panel.dataset.viewPanel === view));
+        fwPrototypeResetScroll();
         if (view === 'flows') window.requestAnimationFrame(() => window.requestAnimationFrame(fwPrototypeDrawEdges));
       };
       fwPrototypeQueryAll('.fw-navbtn').forEach(btn => btn.addEventListener('click', () => fwPrototypeSwitchView(btn.dataset.view)));
+      fwPrototypeQueryAll('.fw-modebtn').forEach(btn => btn.addEventListener('click', () => {
+        fwPrototypeQuery('.fw-app').dataset.prototypeMode = btn.dataset.prototypeMode;
+        fwPrototypeQueryAll('.fw-modebtn').forEach(item => item.setAttribute('aria-selected', String(item === btn)));
+        fwPrototypeToast(btn.dataset.prototypeMode === 'baseline' ? '已切换到当前前端实现基线' : '已切换到产物驱动增量提案');
+        if (fwPrototypeQuery('[data-view-panel="flows"]').classList.contains('fw-active')) window.requestAnimationFrame(fwPrototypeDrawEdges);
+      }));
       fwPrototypeQueryAll('[data-close]').forEach(btn => btn.addEventListener('click', () => fwPrototypeCloseLayer(btn.dataset.close)));
       fwPrototypeQuery('#fw-open-create').addEventListener('click', () => fwPrototypeOpenLayer('fw-create-modal'));
       fwPrototypeQuery('#fw-open-model-config').addEventListener('click', () => {
@@ -1129,6 +1274,7 @@
         fwPrototypeQuery('#fw-run-detail-meta').textContent = 'Run #' + id + ' · ' + row.querySelector('.fw-runid small').textContent + ' · 启动于今天 13:48';
         fwPrototypeQuery('#fw-run-detail-status').className = row.querySelector('.fw-runstatus').className;
         fwPrototypeQuery('#fw-run-detail-status').textContent = row.querySelector('.fw-runstatus').textContent;
+        fwPrototypeResetScroll();
       };
       fwPrototypeQueryAll('.fw-runrow').forEach(row => row.addEventListener('click', () => fwPrototypeOpenRun(row)));
       fwPrototypeQueryAll('[data-run-group-toggle]').forEach(button => button.addEventListener('click', () => {
@@ -1159,7 +1305,26 @@
       };
       fwPrototypeQuery('#fw-run-search').addEventListener('input', fwPrototypeFilterRuns);
       fwPrototypeQuery('#fw-run-status-filter').addEventListener('change', fwPrototypeFilterRuns);
-      fwPrototypeQuery('#fw-start-run').addEventListener('click', () => fwPrototypeToast('请选择流程并填写启动输入'));
+      fwPrototypeQuery('#fw-start-run').addEventListener('click', () => {
+        if (fwPrototypeQuery('.fw-app').dataset.prototypeMode === 'proposal') fwPrototypeOpenLayer('fw-start-run-modal');
+        else fwPrototypeToast('当前实现：请选择流程，并为默认入口节点填写启动输入');
+      });
+      fwPrototypeQuery('#fw-create-empty-run').addEventListener('click', () => { fwPrototypeCloseLayer('fw-start-run-modal'); fwPrototypeToast('任务运行已创建；当前没有节点自动执行'); });
+      fwPrototypeQueryAll('[data-open-binding]').forEach(button => button.addEventListener('click', event => { event.stopPropagation(); fwPrototypeOpenLayer('fw-flow-binding-modal'); }));
+      fwPrototypeQuery('#fw-save-flow-binding').addEventListener('click', () => { fwPrototypeCloseLayer('fw-flow-binding-modal'); fwPrototypeToast('输入来源规则已保存'); });
+      fwPrototypeQueryAll('[data-bind-input]').forEach(button => button.addEventListener('click', () => fwPrototypeOpenLayer('fw-input-binding-modal')));
+      fwPrototypeQuery('#fw-rebind-all').addEventListener('click', () => fwPrototypeOpenLayer('fw-input-binding-modal'));
+      fwPrototypeQuery('#fw-confirm-input-binding').addEventListener('click', () => { fwPrototypeCloseLayer('fw-input-binding-modal'); fwPrototypeToast('输入绑定已冻结；节点保持 READY，等待人工启动'); });
+      fwPrototypeQuery('#fw-binding-add-artifact').addEventListener('click', () => fwPrototypeToast('可上传文件、添加 URL、仓库或引用历史产物'));
+      fwPrototypeQuery('#fw-add-run-artifact').addEventListener('click', () => fwPrototypeToast('添加到任务产物池：上传文件、URL、代码仓库或历史产物'));
+      fwPrototypeQuery('#fw-open-ready-node').addEventListener('click', () => { fwPrototypeQuery('#fw-run-node-title').textContent = '技术方案生成'; fwPrototypeQuery('#fw-run-node-subtitle').textContent = '节点工作项 · 即将创建 Attempt 1'; fwPrototypeQuery('#fw-run-node-state').textContent = '输入已满足，等待人工启动'; fwPrototypeOpenLayer('fw-run-node-modal'); });
+      fwPrototypeQueryAll('[data-select-workitem]').forEach(button => button.addEventListener('click', () => {
+        fwPrototypeQueryAll('[data-select-workitem]').forEach(item => item.setAttribute('aria-selected', String(item === button)));
+        var names = { requirements: ['需求分析', '已验收 · 2 个 Attempt', '✓ ACCEPTED'], design: ['技术方案生成', '节点工作项 · 尚未执行 · 运行快照 v12', '● READY'], review: ['技术方案校验', '等待 design 输入产物', '○ NOT READY'] };
+        var value = names[button.dataset.selectWorkitem];
+        fwPrototypeQuery('#fw-workitem-title').textContent = value[0]; fwPrototypeQuery('#fw-workitem-meta').textContent = value[1]; fwPrototypeQuery('#fw-workitem-state').textContent = value[2];
+        fwPrototypeToast('已切换节点工作项：' + value[0]);
+      }));
       fwPrototypeQuery('#fw-view-sync-diff').addEventListener('click', () => fwPrototypeOpenLayer('fw-sync-modal'));
       fwPrototypeQuery('#fw-sync-run-snapshot').addEventListener('click', () => fwPrototypeOpenLayer('fw-sync-modal'));
       fwPrototypeQuery('#fw-confirm-sync').addEventListener('click', () => {
@@ -1169,8 +1334,8 @@
         fwPrototypeToast('节点配置已同步到本次运行');
       });
       fwPrototypeQuery('#fw-run-from-node').addEventListener('click', () => {
-        fwPrototypeQuery('#fw-run-status').innerHTML = '<strong>已从当前节点创建新的 Attempt</strong>';
-        fwPrototypeToast('已从当前节点重新运行，历史产物版本已保留');
+        fwPrototypeQuery('#fw-run-status').innerHTML = '<strong>将在当前节点工作项下创建新的 Attempt</strong>';
+        fwPrototypeToast('新执行轮次不会创建重复的节点工作项');
       });
       fwPrototypeQuery('#fw-replace-node-input').addEventListener('click', () => fwPrototypeToast('请选择已有产物版本或上传新的输入产物'));
       fwPrototypeQueryAll('[data-view-version]').forEach(btn => btn.addEventListener('click', () => fwPrototypeToast('正在查看产物版本 ' + btn.dataset.viewVersion)));
@@ -1178,13 +1343,14 @@
       fwPrototypeQueryAll('[data-run-node]').forEach(node => node.addEventListener('click', () => {
         fwPrototypeQuery('#fw-run-node-title').textContent = node.dataset.runNode;
         fwPrototypeQuery('#fw-run-node-state').textContent = node.dataset.nodeState;
-        fwPrototypeQuery('#fw-run-node-subtitle').textContent = 'Run #FW-2048 · Attempt 1 · ' + node.dataset.nodeState;
+        fwPrototypeQuery('#fw-run-node-subtitle').textContent = 'Run #FW-2048 · 节点工作项 · Attempt 2 · ' + node.dataset.nodeState;
         fwPrototypeOpenLayer('fw-run-node-modal');
       }));
       fwPrototypeQuery('#fw-confirm-run').addEventListener('click', () => {
-        fwPrototypeQuery('#fw-run-status').innerHTML = '<strong>人工已确认，流程正在进入下一节点</strong>';
-        fwPrototypeQuery('.fw-runnode-current .fw-runnodestate').textContent = '✓ 已确认完成';
-        fwPrototypeToast('确认已记录，流程继续执行');
+        fwPrototypeQuery('#fw-run-status').innerHTML = '<strong>候选版本已验收并写入任务产物池；下游仅变为 READY</strong>';
+        var current = fwPrototypeQuery('.fw-runnode-current .fw-runnodestate');
+        if (current) current.textContent = '✓ 产物已验收';
+        fwPrototypeToast('正式产物已保存；没有节点被自动启动');
       });
       fwPrototypeQuery('#fw-request-revision').addEventListener('click', () => {
         fwPrototypeRoot.querySelector('input[name="decision"][value="revise"]').checked = true;
@@ -1233,6 +1399,7 @@
         fwPrototypeQuery('#fw-run-list-view').hidden = true;
         fwPrototypeQuery('#fw-run-detail-view').hidden = true;
         fwPrototypeQuery('#fw-agent-chat-view').hidden = false;
+        fwPrototypeResetScroll();
         fwPrototypeRenderChat();
       });
       fwPrototypeQuery('#fw-back-to-run-detail').addEventListener('click', () => {

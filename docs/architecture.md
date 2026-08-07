@@ -14,7 +14,7 @@ flowchart LR
 ## 领域不变量
 
 1. Node Asset 是复用定义，Flow Node 是一次画布放置；同一资产可重复放置。
-2. 边只表达候选产物映射；节点就绪只依赖显式 Input Binding 和类型，不依赖上游状态。
+2. 边只表达候选产物映射；节点就绪只依赖显式 Input Binding 和类型，不依赖上游状态，也不依赖产物来源。来源仅用于血缘追踪和审计。
 3. Flow Run 启动产生 Snapshot v1；同步只追加 v2/v3，旧 Attempt 始终引用旧 Snapshot。
 4. Node Run 是逻辑运行，修订创建新 Attempt；Artifact Version、Binding、Gate Evaluation、Human Action 和 Event 只追加。
 5. START 门禁全部通过后仍等待人工开始；END 门禁全部通过后仍等待人工验收。

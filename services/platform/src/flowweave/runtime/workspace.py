@@ -107,6 +107,12 @@ def _extract_skill(capability: dict[str, Any], host_root: Path, runtime_root: Pa
                 source = PurePosixPath(item.filename.replace("\\", "/"))
                 if source.is_absolute() or ".." in source.parts:
                     raise ValueError("unsafe skill package path")
+                if (
+                    "__MACOSX" in source.parts
+                    or source.name == ".DS_Store"
+                    or source.name.startswith("._")
+                ):
+                    continue
                 if prefix != PurePosixPath("."):
                     try:
                         relative = source.relative_to(prefix)

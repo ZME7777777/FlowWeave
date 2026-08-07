@@ -29,9 +29,10 @@ from flowweave.modules.runs.public import (
     evaluate_readiness,
 )
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
-from flowweave.runtime.base import RuntimeHandle, RuntimePort, RuntimeResult, StartAttemptRequest
+from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.request import build_runtime_request
+from flowweave.runtime.routing import runtime_for
 from flowweave.runtime.workspace import attempt_workspace_path
 from flowweave.shared.application.transactions import (
     finish,
@@ -1153,6 +1154,7 @@ def process_start_runtime(
         runtime_job_id=handle.job_id,
         conversation_id=handle.conversation_id,
         runtime_cursor=handle.cursor,
+        runtime_adapter=get_settings().runtime_adapter,
         runtime_phase="RUNNING",
     )
     if claimed is None:
@@ -1166,6 +1168,7 @@ def process_start_runtime(
         runtime_job_id=handle.job_id,
         runtime_conversation_id=handle.conversation_id,
         runtime_cursor=handle.cursor,
+        runtime_adapter=get_settings().runtime_adapter,
     )
     if _inline_execution():
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
@@ -1419,6 +1422,41 @@ def process_resume_runtime(
         _finish_transaction(db, commit)
 
 
+def _runtime_cancel_targets(
+    db: Session, attempt: NodeAttempt
+) -> list[tuple[str | None, RuntimeHandle]]:
+    targets: list[tuple[str | None, RuntimeHandle]] = []
+    seen: set[str] = set()
+    if attempt.runtime_job_id and attempt.conversation_id:
+        seen.add(attempt.conversation_id)
+        targets.append(
+            (
+                attempt.runtime_adapter,
+                RuntimeHandle(
+                    attempt.runtime_job_id, attempt.conversation_id, attempt.runtime_cursor
+                ),
+            )
+        )
+    for conversation in db.scalars(
+        select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
+    ):
+        conversation_id = conversation.runtime_conversation_id
+        if not conversation_id or conversation_id in seen:
+            continue
+        seen.add(conversation_id)
+        targets.append(
+            (
+                conversation.runtime_adapter,
+                RuntimeHandle(
+                    conversation.runtime_job_id or conversation_id,
+                    conversation_id,
+                    conversation.runtime_cursor,
+                ),
+            )
+        )
+    return targets
+
+
 def process_cancel_runtime(
     db: Session,
     attempt_id: str,
@@ -1431,12 +1469,11 @@ def process_cancel_runtime(
         return
     expected_version = attempt.state_version
     current_attempt_id = attempt.id
-    if attempt.runtime_job_id and attempt.conversation_id:
-        handle = RuntimeHandle(
-            attempt.runtime_job_id, attempt.conversation_id, attempt.runtime_cursor
-        )
+    targets = _runtime_cancel_targets(db, attempt)
+    if targets:
         _release_worker_read_transaction(db, lease)
-        get_runtime().cancel(handle)
+        for adapter, handle in targets:
+            runtime_for(adapter, handle).cancel(handle)
         _require_current_lease(db, lease)
     claimed = _claim_runtime_phase(
         db,
@@ -1447,7 +1484,90 @@ def process_cancel_runtime(
         runtime_phase="CANCELLED",
     )
     if claimed is not None:
+        claimed.error_code = None
+        claimed.error_detail = None
         _finish_transaction(db, commit)
+
+
+def record_runtime_task_failure(
+    db: Session, attempt_id: str, error: str, *, terminal: bool
+) -> None:
+    if not terminal:
+        return
+    attempt = _attempt(db, attempt_id)
+    if attempt.state != AttemptState.CANCELLED or attempt.runtime_phase != "CANCELLING":
+        return
+    attempt.runtime_phase = "CANCEL_FAILED"
+    attempt.error_code = "EXECUTOR_CANCEL_FAILED"
+    attempt.error_detail = error[:2000]
+    attempt.state_version += 1
+    node_run = _node_run(db, attempt.node_run_id)
+    _event(
+        db,
+        node_run.flow_run_id,
+        "ATTEMPT_CANCEL_FAILED",
+        {"error": attempt.error_detail},
+        node_run.id,
+        attempt.id,
+    )
+    db.flush()
+
+
+def retry_runtime_cancel(
+    db: Session, attempt_id: str, payload: AttemptVersionWrite, idempotency_key: str
+) -> dict[str, Any]:
+    attempt = _attempt(db, attempt_id)
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    _action(
+        db,
+        run.id,
+        "RETRY_RUNTIME_CANCEL",
+        idempotency_key,
+        node_run_id=node_run.id,
+        attempt_id=attempt.id,
+    )
+    claimed_id = db.scalar(
+        update(NodeAttempt)
+        .where(
+            NodeAttempt.id == attempt.id,
+            NodeAttempt.state == AttemptState.CANCELLED,
+            NodeAttempt.runtime_phase == "CANCEL_FAILED",
+            NodeAttempt.state_version == payload.expected_state_version,
+        )
+        .values(
+            runtime_phase="CANCELLING",
+            error_code=None,
+            error_detail=None,
+            state_version=NodeAttempt.state_version + 1,
+        )
+        .returning(NodeAttempt.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_id is None:
+        db.rollback()
+        current = _attempt(db, attempt_id)
+        if current.state_version != payload.expected_state_version:
+            raise conflict(
+                "attempt was modified",
+                expected=payload.expected_state_version,
+                actual=current.state_version,
+            )
+        raise illegal(
+            "attempt runtime cancellation is not retryable", runtime_phase=current.runtime_phase
+        )
+    db.expire_all()
+    claimed = _attempt(db, attempt_id)
+    enqueue(
+        db,
+        task_type="CANCEL_RUNTIME",
+        aggregate_type="ATTEMPT",
+        aggregate_id=claimed.id,
+        idempotency_key=f"retry-cancel-runtime:{claimed.id}:v{claimed.state_version}",
+    )
+    _event(db, run.id, "ATTEMPT_CANCEL_RETRIED", {}, node_run.id, claimed.id)
+    finish(db)
+    return attempt_detail(db, claimed.id)
 
 
 def _recompute_run(db: Session, run: FlowRun) -> None:
@@ -1740,7 +1860,7 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
             db, attempt.id, conversations.ConversationState.READ_ONLY
         )
         attempt.state_version += 1
-        if attempt.runtime_job_id and attempt.conversation_id:
+        if _runtime_cancel_targets(db, attempt):
             attempt.runtime_phase = "CANCELLING"
             enqueue(
                 db,
@@ -1785,15 +1905,18 @@ def delete_run(db: Session, run_id: str) -> None:
         if attempt_ids
         else []
     )
-    runtime_handles: list[RuntimeHandle] = []
+    runtime_handles: list[tuple[str | None, RuntimeHandle]] = []
     attempt_runtime_ids = {attempt.conversation_id for attempt in attempts}
     for attempt in attempts:
         if attempt.runtime_job_id and attempt.conversation_id:
             runtime_handles.append(
-                RuntimeHandle(
-                    job_id=attempt.runtime_job_id,
-                    conversation_id=attempt.conversation_id,
-                    cursor=attempt.runtime_cursor,
+                (
+                    attempt.runtime_adapter,
+                    RuntimeHandle(
+                        job_id=attempt.runtime_job_id,
+                        conversation_id=attempt.conversation_id,
+                        cursor=attempt.runtime_cursor,
+                    ),
                 )
             )
     for conversation in agent_conversations:
@@ -1802,10 +1925,13 @@ def delete_run(db: Session, run_id: str) -> None:
             and conversation.runtime_conversation_id not in attempt_runtime_ids
         ):
             runtime_handles.append(
-                RuntimeHandle(
-                    job_id=conversation.runtime_job_id or conversation.runtime_conversation_id,
-                    conversation_id=conversation.runtime_conversation_id,
-                    cursor=conversation.runtime_cursor,
+                (
+                    conversation.runtime_adapter,
+                    RuntimeHandle(
+                        job_id=conversation.runtime_job_id or conversation.runtime_conversation_id,
+                        conversation_id=conversation.runtime_conversation_id,
+                        cursor=conversation.runtime_cursor,
+                    ),
                 )
             )
 
@@ -1852,11 +1978,12 @@ def delete_run(db: Session, run_id: str) -> None:
         db.execute(delete(NodeRun).where(NodeRun.id.in_(node_run_ids)))
     db.execute(delete(RunSnapshot).where(RunSnapshot.flow_run_id == run.id))
     db.delete(run)
-    runtime = get_runtime()
-    for handle in runtime_handles:
+    for adapter, handle in runtime_handles:
         register_commit_action(
             db,
-            lambda handle=handle: _cancel_runtime_after_delete(runtime, handle, run_id),
+            lambda adapter=adapter, handle=handle: _cancel_runtime_after_delete(
+                adapter, handle, run_id
+            ),
         )
     store = get_artifact_store()
     for key in storage_keys:
@@ -1866,9 +1993,9 @@ def delete_run(db: Session, run_id: str) -> None:
     finish(db)
 
 
-def _cancel_runtime_after_delete(runtime: RuntimePort, handle: RuntimeHandle, run_id: str) -> None:
+def _cancel_runtime_after_delete(adapter: str | None, handle: RuntimeHandle, run_id: str) -> None:
     try:
-        runtime.cancel(handle)
+        runtime_for(adapter, handle).cancel(handle)
     except Exception:
         logger.warning(
             "Runtime cleanup failed after flow run %s was permanently deleted (conversation_id=%s)",
@@ -1903,6 +2030,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "state": attempt.state,
         "state_version": attempt.state_version,
         "runtime_phase": attempt.runtime_phase,
+        "runtime_adapter": attempt.runtime_adapter,
         "runtime_job_id": attempt.runtime_job_id,
         "conversation_id": attempt.conversation_id,
         "runtime_cursor": attempt.runtime_cursor,

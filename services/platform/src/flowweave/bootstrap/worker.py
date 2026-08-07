@@ -11,7 +11,7 @@ from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.conversations.public import recover_conversation_tasks
 from flowweave.modules.orchestration.public import recover_runtime_deliveries
-from flowweave.modules.tasks.application.handlers import handle
+from flowweave.modules.tasks.application.handlers import handle, record_terminal_failure
 from flowweave.modules.tasks.application.service import (
     Lease,
     claim,
@@ -168,8 +168,16 @@ class TaskWorker:
                     await session.rollback()
                     await session.run_sync(run_rollback_actions)
                     if not renewer.lost.is_set():
-                        await session.run_sync(lambda db: fail(db, lease, error, commit=False))
-                        await session.commit()
+                        failed = await session.run_sync(
+                            lambda db: fail(db, lease, error, commit=False)
+                        )
+                        if failed:
+                            await session.run_sync(
+                                lambda db: record_terminal_failure(db, lease.task_id, error)
+                            )
+                            await session.commit()
+                        else:
+                            await session.rollback()
                 else:
                     renewer.stop()
                     if renewer.lost.is_set():

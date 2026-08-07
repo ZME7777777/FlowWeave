@@ -28,10 +28,10 @@ from flowweave.shared.schemas import CapabilityValidateWrite
 from flowweave.shared.settings import get_settings
 
 SENSITIVE = {"api_key", "apikey", "token", "secret", "password", "authorization"}
-ZIP_MAX_COMPRESSED_BYTES = 5 * 1024 * 1024
-ZIP_MAX_EXPANDED_BYTES = 20 * 1024 * 1024
-ZIP_MAX_FILE_BYTES = 2 * 1024 * 1024
-ZIP_MAX_FILES = 200
+ZIP_MAX_COMPRESSED_BYTES = 25 * 1024 * 1024
+ZIP_MAX_EXPANDED_BYTES = 100 * 1024 * 1024
+ZIP_MAX_FILE_BYTES = 25 * 1024 * 1024
+ZIP_MAX_FILES = 1000
 ZIP_MAX_DEPTH = 8
 CONFIG_MAX_BYTES = 1024 * 1024
 CONFIG_MAX_ALIASES = 20
@@ -69,6 +69,10 @@ SKILL_ALLOWED_SUFFIXES = {
     ".gif",
 }
 SKILL_ALLOWED_EXTENSIONLESS = {"license", "notice"}
+
+
+def _ignored_archive_entry(path: PurePosixPath) -> bool:
+    return "__MACOSX" in path.parts or path.name == ".DS_Store" or path.name.startswith("._")
 
 
 def _reject(message: str, **details: Any) -> DomainError:
@@ -162,14 +166,18 @@ def _ensure_unique_capability_keys(capabilities: list[dict[str, Any]]) -> None:
         )
 
 
-def _validate_skill(content: bytes) -> dict[str, Any]:
+def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
     if len(content) > ZIP_MAX_COMPRESSED_BYTES:
-        raise _reject("ZIP exceeds 5 MiB")
+        raise _reject("ZIP exceeds 25 MiB", max_bytes=ZIP_MAX_COMPRESSED_BYTES)
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             files = archive.infolist()
             if len(files) > ZIP_MAX_FILES:
-                raise _reject("ZIP has too many files")
+                raise _reject(
+                    f"ZIP contains {len(files)} entries; maximum is {ZIP_MAX_FILES}",
+                    actual_entries=len(files),
+                    max_entries=ZIP_MAX_FILES,
+                )
             names: list[str] = []
             total = 0
             for item in files:
@@ -177,15 +185,21 @@ def _validate_skill(content: bytes) -> dict[str, Any]:
                 path = PurePosixPath(name)
                 if path.is_absolute() or ".." in path.parts:
                     raise _reject("Unsafe ZIP path")
+                if _ignored_archive_entry(path):
+                    continue
                 if len(path.parts) > ZIP_MAX_DEPTH:
                     raise _reject("ZIP path nesting exceeds limit", filename=name)
                 if (item.external_attr >> 16) & 0o170000 == 0o120000:
                     raise _reject("Symbolic links are not allowed")
                 if item.file_size > ZIP_MAX_FILE_BYTES:
-                    raise _reject("ZIP file exceeds per-file limit", filename=name)
+                    raise _reject(
+                        "ZIP file exceeds 25 MiB per-file limit",
+                        filename=name,
+                        max_bytes=ZIP_MAX_FILE_BYTES,
+                    )
                 total += item.file_size
                 if total > ZIP_MAX_EXPANDED_BYTES:
-                    raise _reject("Expanded ZIP exceeds limit")
+                    raise _reject("Expanded ZIP exceeds 100 MiB", max_bytes=ZIP_MAX_EXPANDED_BYTES)
                 if not item.is_dir():
                     suffix = path.suffix.lower()
                     if suffix in NESTED_ARCHIVE_SUFFIXES:
@@ -207,7 +221,7 @@ def _validate_skill(content: bytes) -> dict[str, Any]:
                     raise _reject("SKILL.md must be UTF-8") from exc
                 metadata = _frontmatter(text)
                 parent = PurePosixPath(skill_file).parent.name
-                key = str(metadata.get("name") or parent or "skill").strip()
+                key = str(metadata.get("name") or parent or fallback_name or "skill").strip()
                 if not key or len(key) > 200:
                     raise _reject("Skill name is invalid", skill_file=skill_file)
                 capabilities.append(
@@ -279,7 +293,7 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     if payload.capability_type == "SKILL":
         if not filename.lower().endswith(".zip"):
             raise _reject("Skill must be a ZIP")
-        return content, _validate_skill(content)
+        return content, _validate_skill(content, Path(filename).stem)
     suffix = Path(filename).suffix.lower()
     if suffix not in {".json", ".yaml", ".yml"}:
         raise _reject("Config must be JSON or YAML")

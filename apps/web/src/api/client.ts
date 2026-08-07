@@ -1,11 +1,14 @@
 import type {
-  AgentConversation, AgentMessage, ArtifactInput, ArtifactVersion, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite,
+  AgentConversation, AgentMessage, ArtifactInput, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput,
   ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
   NodeDirectory, NodeRun, RunEvent,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 const ROOT = '/api/v1';
+export const randomId = () => typeof crypto.randomUUID === 'function'
+  ? crypto.randomUUID()
+  : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 
 export class ApiError extends Error {
   constructor(
@@ -30,6 +33,10 @@ async function responseError(response: Response): Promise<ApiError> {
 }
 export const artifactContentUrl = (artifactId: string, download = false) =>
   `${API_BASE}${ROOT}/artifact-versions/${artifactId}/content${download ? '?download=true' : ''}`;
+export const workspaceImageUrl = (messageId: string, source: string) =>
+  `${API_BASE}${ROOT}/agent-messages/${messageId}/workspace-image?source=${encodeURIComponent(source)}`;
+export const messageAttachmentUrl = (messageId: string, attachmentId: string, download = false) =>
+  `${API_BASE}${ROOT}/agent-messages/${messageId}/attachments/${attachmentId}${download ? '?download=true' : ''}`;
 
 async function requestText(path: string): Promise<string> {
   const response = await fetch(`${API_BASE}${ROOT}${path}`);
@@ -51,7 +58,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 const json = (method: string, body?: unknown, idempotent = false): RequestInit => ({
   method,
   body: body === undefined ? undefined : JSON.stringify(body),
-  headers: idempotent ? { 'Idempotency-Key': crypto.randomUUID() } : undefined,
+  headers: idempotent ? { 'Idempotency-Key': randomId() } : undefined,
 });
 
 export const api = {
@@ -89,7 +96,6 @@ export const api = {
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
-  createArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
   artifactContent: (artifactId: string) => requestText(`/artifact-versions/${artifactId}/content`),
   activateNode: (runId: string, key: string, artifact_ids: Record<string, string>) =>
     request<NodeRun>(`/flow-runs/${runId}/nodes/${key}/runs`, json('POST', { artifact_ids })),
@@ -100,6 +106,7 @@ export const api = {
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   rejectAttempt: (attemptId: string, reason: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reject`, json('POST', { reason, copy_input_bindings: true, expected_state_version: version }, true)),
   retryGates: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-gates`, json('POST', { expected_state_version: version })),
+  retryRuntimeCancel: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-runtime-cancel`, json('POST', { expected_state_version: version }, true)),
   syncSnapshot: (runId: string, version: number) => request<FlowRun>(`/flow-runs/${runId}/sync-snapshot`, json('POST', { expected_active_version: version }, true)),
   completeRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/complete`, json('POST', undefined, true)),
   cancelRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/cancel`, json('POST', undefined, true)),
@@ -109,18 +116,24 @@ export const api = {
       title, expected_attempt_state_version: version, baseline: { include_current_artifacts: true },
     }, true)),
   conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
+  deleteConversation: (conversationId: string) => request<void>(`/agent-conversations/${conversationId}`, json('DELETE')),
   conversationMessages: (conversationId: string, afterSequence = 0) =>
     request<AgentMessage[]>(`/agent-conversations/${conversationId}/messages?after_sequence=${afterSequence}&limit=200`),
-  sendConversationMessage: (conversationId: string, content: string, version: number, capabilityRefs: Array<{ capability_type: 'SKILL' | 'MCP'; capability_key: string }> = [], clientMessageId = crypto.randomUUID()) =>
+  sendConversationMessage: (conversationId: string, content: string, version: number, capabilityRefs: Array<{ capability_type: 'SKILL' | 'MCP'; capability_key: string }> = [], attachments: MessageAttachmentInput[] = [], clientMessageId = randomId()) =>
     request<AgentMessage>(`/agent-conversations/${conversationId}/messages`, json('POST', {
       client_message_id: clientMessageId,
-      content: [{ type: 'text', text: content }],
+      content: [
+        ...(content ? [{ type: 'text', text: content }] : []),
+        ...attachments.map(item => ({ type: 'attachment', filename: item.filename, mime_type: item.mime_type, content_base64: item.content_base64 })),
+      ],
       capability_refs: capabilityRefs,
       delivery_mode: 'QUEUE_AFTER_TURN',
       expected_conversation_version: version,
     }, true)),
   steerConversationMessage: (messageId: string) =>
     request<AgentMessage>(`/agent-messages/${messageId}/steer`, json('POST', undefined, true)),
+  cancelQueuedConversationMessage: (messageId: string) =>
+    request<AgentMessage>(`/agent-messages/${messageId}/cancel-queued`, json('POST', undefined, true)),
   retryConversationMessage: (messageId: string) =>
     request<AgentMessage>(`/agent-messages/${messageId}/retry`, json('POST', undefined, true)),
   flowEvents: (runId: string, after = 0) => request<RunEvent[]>(`/flow-runs/${runId}/event-history?after=${after}`),

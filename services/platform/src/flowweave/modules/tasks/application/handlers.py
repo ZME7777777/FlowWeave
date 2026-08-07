@@ -9,7 +9,7 @@ from flowweave.modules.catalog.public import cleanup_capability_import
 from flowweave.modules.conversations import public as conversations
 from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.tasks.public import Lease, lease_is_current
-from flowweave.shared.models import BackgroundTask
+from flowweave.shared.models import BackgroundTask, TaskState
 
 Handler = Callable[[Session, str, dict[str, Any], Lease], None]
 
@@ -89,3 +89,11 @@ def handle(db: Session, task: BackgroundTask, lease: Lease) -> None:
     if handler is None:
         raise ValueError(f"Unknown task type: {task.task_type}")
     handler(db, task.aggregate_id, dict(task.payload_json or {}), lease)
+
+
+def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
+    task = db.get(BackgroundTask, task_id)
+    if task is None or task.state != TaskState.DEAD:
+        return
+    if task.task_type == "CANCEL_RUNTIME":
+        orchestration.record_runtime_task_failure(db, task.aggregate_id, error, terminal=True)

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Response
 from flowweave.bootstrap.container import Container
 from flowweave.modules.model_providers.application import service
 from flowweave.modules.model_providers.infrastructure.client import discover_provider_models
+from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
 from flowweave.shared.schemas import ModelProviderBulkDeleteWrite, ModelProviderWrite
 
@@ -50,8 +51,18 @@ async def _discover(provider_id: str, db: Db, container: Container) -> list[str]
 
 @router.post("/model-providers/{provider_id}/test")
 async def test_provider(provider_id: str, db: Db, container: ContainerDep) -> dict[str, Any]:
-    models = await _discover(provider_id, db, container)
-    await run_sync(db, lambda session: service.mark_provider_connected(session, provider_id))
+    try:
+        models = await _discover(provider_id, db, container)
+    except DomainError:
+        await run_sync(
+            db,
+            lambda session: service.mark_provider_connection_state(session, provider_id, "FAILED"),
+        )
+        raise
+    await run_sync(
+        db,
+        lambda session: service.mark_provider_connection_state(session, provider_id, "CONNECTED"),
+    )
     return {"connection_state": "CONNECTED", "model_count": len(models)}
 
 

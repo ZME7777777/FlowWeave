@@ -54,17 +54,22 @@ class MockRuntime:
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         return self._results.get(handle.job_id, RuntimeResult(status="FAILED", error="UNKNOWN_JOB"))
 
-    def send_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+    def send_message(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult:
+        image_note = f" · {len(image_urls)} image(s)" if image_urls else ""
         result = RuntimeResult(
             status="COMPLETED",
-            outputs={"result": ("TEXT", f"Mock response: {content}")},
+            outputs={"result": ("TEXT", f"Mock response: {content}{image_note}")},
             cursor="3",
         )
         self._results[handle.job_id] = result
         return result
 
-    def resume(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
-        return self.send_message(handle, content)
+    def resume(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult:
+        return self.send_message(handle, content, image_urls)
 
     def cancel(self, handle: RuntimeHandle) -> None:
         self._results[handle.job_id] = RuntimeResult(status="CANCELLED")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from sqlalchemy.orm import Session
 
@@ -50,6 +50,7 @@ def build_runtime_request(
     node: dict[str, Any],
     bindings: list[dict[str, Any]],
     workspace_ref: str,
+    interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION",
 ) -> StartAttemptRequest:
     asset = cast(dict[str, Any], node.get("asset") or {})
     skills, mcp_servers, node_workspace_ref = materialize_node_workspace(asset)
@@ -63,4 +64,5 @@ def build_runtime_request(
         provider=_provider(db, node) if get_settings().runtime_adapter != "mock" else None,
         skills=skills,
         mcp_servers=mcp_servers,
+        interaction_mode=interaction_mode,
     )

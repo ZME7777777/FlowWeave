@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from flowweave.runtime.base import (
     RuntimeHandle,
     RuntimeMCP,
@@ -105,6 +107,29 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
     assert "MCP Servers" in initial_text
 
 
+def test_openhands_human_conversation_uses_dynamic_capability_selection(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "collaboration-1", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    runtime.create_conversation(replace(_request(), interaction_mode="COLLABORATION"))
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["initial_message"]["run"] is False
+    initial_text = payload["initial_message"]["content"][0]["text"]
+    assert "生成技术方案" not in initial_text
+    assert "完成任务后，请调用 finish" not in initial_text
+    assert "不预设默认 Skill" in initial_text
+    assert "根据用户当前消息动态选择" in initial_text
+    assert "需求正文" in initial_text
+    assert runtime._contracts["collaboration-1"] == []
+
+
 def test_openhands_normalizes_incremental_events_and_terminal_result(settings, monkeypatch):
     runtime = OpenHandsRuntime(settings)
     runtime._contracts["conversation-1"] = [
@@ -198,7 +223,11 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(settings, m
         return {}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    result = runtime.resume(RuntimeHandle("job-1", "conversation-1", "cursor-1"), "新的约束")
+    result = runtime.resume(
+        RuntimeHandle("job-1", "conversation-1", "cursor-1"),
+        "新的约束",
+        ("data:image/png;base64,aW1hZ2U=",),
+    )
 
     assert result.status == "RUNNING"
     assert requests == [
@@ -208,8 +237,40 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(settings, m
             "/api/conversations/conversation-1/events",
             {
                 "role": "user",
-                "content": [{"type": "text", "text": "新的约束"}],
+                "content": [
+                    {"type": "text", "text": "新的约束"},
+                    {"type": "image", "image_urls": ["data:image/png;base64,aW1hZ2U="]},
+                ],
                 "run": True,
             },
         ),
     ]
+
+
+def test_openhands_cancel_waits_until_agent_is_no_longer_running(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+    responses = iter([{"ok": True}, {"execution_status": "running"}, {"execution_status": "idle"}])
+    requests: list[tuple[str, str, bool]] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, bool(kwargs.get("missing_ok"))))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    runtime.cancel(RuntimeHandle("job-1", "conversation-1", "cursor-1"))
+
+    assert requests == [
+        ("POST", "/api/conversations/conversation-1/interrupt", True),
+        ("GET", "/api/conversations/conversation-1", True),
+        ("GET", "/api/conversations/conversation-1", True),
+    ]
+
+
+def test_openhands_cancel_treats_missing_conversation_as_already_stopped(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+
+    def fake_request(_method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+        return {"_flowweave_missing": True}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    runtime.cancel(RuntimeHandle("job-1", "missing-conversation", None))

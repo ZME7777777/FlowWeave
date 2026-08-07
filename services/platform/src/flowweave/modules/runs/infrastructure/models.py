@@ -86,6 +86,7 @@ class NodeAttempt(Base):
     state: Mapped[str] = mapped_column(String(40), default=AttemptState.WAITING_INPUT)
     state_version: Mapped[int] = mapped_column(Integer, default=1)
     runtime_phase: Mapped[str | None] = mapped_column(String(30))
+    runtime_adapter: Mapped[str | None] = mapped_column(String(30))
     runtime_job_id: Mapped[str | None] = mapped_column(String(100))
     conversation_id: Mapped[str | None] = mapped_column(String(100))
     runtime_cursor: Mapped[str | None] = mapped_column(String(200))

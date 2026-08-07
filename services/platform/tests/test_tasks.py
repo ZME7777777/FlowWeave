@@ -443,6 +443,7 @@ def test_cancelled_run_stops_started_runtime_through_worker(
     assert worker._run_once_sync() is True  # runtime start
     running = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
     attempt = running["node_runs"][0]["attempts"][0]
+    assert attempt["runtime_adapter"] == "mock"
     handle = RuntimeHandle(
         attempt["runtime_job_id"], attempt["conversation_id"], attempt["runtime_cursor"]
     )
