@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from typing import Annotated, Any
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, Query, Response
+from fastapi import APIRouter, Depends, Header, Query, Response, WebSocket, WebSocketDisconnect
 
+from flowweave.bootstrap.container import Container
 from flowweave.modules.conversations import public as service
-from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
+from flowweave.modules.environments.infrastructure import docker
+from flowweave.shared.errors import DomainError
+from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
 from flowweave.shared.schemas import (
     ConversationCreateWrite,
     ConversationPatchWrite,
     MessageSendWrite,
 )
+from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
 Actor = Annotated[str | None, Header(alias="X-Actor-ID")]
+ContainerDep = Annotated[Container, Depends(get_container)]
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -49,6 +56,82 @@ async def create_conversation(
 @router.get("/agent-conversations/{conversation_id}")
 async def conversation(conversation_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.get_conversation(session, conversation_id))
+
+
+@router.websocket("/agent-conversations/{conversation_id}/terminal")
+async def conversation_terminal(
+    websocket: WebSocket, conversation_id: str, container: ContainerDep
+) -> None:
+    """Attach a shell to the exact container backing the selected Agent conversation."""
+
+    settings_token = bind_settings(container.settings)
+    master = -1
+    process = None
+    try:
+        async with container.database.session() as db:
+            try:
+                container_id = await db.run_sync(
+                    lambda session: service.terminal_container_id(session, conversation_id)
+                )
+                await db.commit()
+            except DomainError as exc:
+                await db.rollback()
+                await websocket.close(code=4409, reason=exc.message)
+                return
+
+        master, process = await asyncio.to_thread(
+            docker.open_terminal,
+            container_id,
+            session_name=f"flowweave-{conversation_id}",
+        )
+        await websocket.accept()
+
+        async def forward_output() -> None:
+            while process.poll() is None:
+                try:
+                    chunk = await asyncio.to_thread(os.read, master, 8192)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                await websocket.send_bytes(chunk)
+
+        output = asyncio.create_task(forward_output())
+        try:
+            while process.poll() is None:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                text = message.get("text")
+                if not isinstance(text, str):
+                    continue
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError:
+                    value = {"type": "input", "data": text}
+                if value.get("type") == "resize":
+                    rows = max(2, min(int(value.get("rows", 24)), 200))
+                    columns = max(2, min(int(value.get("columns", 80)), 400))
+                    await asyncio.to_thread(docker.resize_terminal, master, rows, columns)
+                elif value.get("type") == "input":
+                    await asyncio.to_thread(os.write, master, str(value.get("data", "")).encode())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            output.cancel()
+            await asyncio.gather(output, return_exceptions=True)
+    finally:
+        # This stops only the docker/tmux attachment. The named tmux session and
+        # commands running inside it remain alive for the next browser connection.
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                await asyncio.to_thread(process.wait, 2)
+            except TimeoutError:
+                process.kill()
+        if master >= 0:
+            os.close(master)
+        reset_settings(settings_token)
 
 
 @router.patch("/agent-conversations/{conversation_id}")
@@ -97,17 +180,13 @@ async def workspace_image(message_id: str, source: str, db: Db) -> Response:
     )
 
 
-@router.get(
-    "/agent-messages/{message_id}/attachments/{attachment_id}", response_class=Response
-)
+@router.get("/agent-messages/{message_id}/attachments/{attachment_id}", response_class=Response)
 async def message_attachment(
     message_id: str, attachment_id: str, db: Db, download: bool = False
 ) -> Response:
     reference = await run_sync(
         db,
-        lambda session: service.message_attachment_reference(
-            session, message_id, attachment_id
-        ),
+        lambda session: service.message_attachment_reference(session, message_id, attachment_id),
     )
     content = await asyncio.to_thread(reference.path.read_bytes)
     disposition = "attachment" if download else "inline"

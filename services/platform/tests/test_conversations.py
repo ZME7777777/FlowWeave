@@ -2,21 +2,43 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import delete, select
 
 from flowweave.bootstrap.worker import TaskWorker
 from flowweave.modules.conversations.application.service import recover_conversation_tasks
-from flowweave.shared.models import AgentConversation, BackgroundTask, NodeAttempt
+from flowweave.runtime.base import StartAttemptRequest
+from flowweave.runtime.mock import MockRuntime
+from flowweave.shared.models import (
+    AgentConversation,
+    BackgroundTask,
+    EnvironmentVersion,
+    NodeAttempt,
+    TerminalEnvironment,
+)
 
 
-def _asset_payload(skill: dict[str, object]) -> dict[str, object]:
+def _asset_payload(skill: dict[str, object] | None) -> dict[str, object]:
     return {
         "name": "Agent 协作节点",
-        "inputs": [{"field_key": "prd", "display_name": "需求", "data_type": "DOCUMENT"}],
-        "outputs": [{"field_key": "design", "display_name": "方案", "data_type": "DOCUMENT"}],
-        "capabilities": [skill],
-        "default_skill_ref": skill["capability_key"],
+        "inputs": [
+            {
+                "field_key": "prd",
+                "display_name": "需求",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/prd-template",
+            }
+        ],
+        "outputs": [
+            {
+                "field_key": "design",
+                "display_name": "方案",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/design-template",
+            }
+        ],
+        "capabilities": [skill] if skill else [],
         "executor": {
             "startup_prompt": "生成方案",
             "context_prompt": "保留证据",
@@ -26,7 +48,7 @@ def _asset_payload(skill: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _create_run(api_client, skill: dict[str, object]) -> tuple[str, str]:
+def _create_run(api_client, skill: dict[str, object] | None) -> tuple[str, str]:
     asset_response = api_client.post("/api/v1/node-assets", json=_asset_payload(skill))
     assert asset_response.status_code == 201, asset_response.text
     asset = asset_response.json()
@@ -34,6 +56,7 @@ def _create_run(api_client, skill: dict[str, object]) -> tuple[str, str]:
         "/api/v1/flows",
         json={
             "name": "Agent 协作流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/test-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -43,13 +66,14 @@ def _create_run(api_client, skill: dict[str, object]) -> tuple[str, str]:
     run_response = api_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "会话测试输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/conversation-input",
                 }
-            ]
+            ],
         },
     )
     assert run_response.status_code == 201, run_response.text
@@ -57,10 +81,115 @@ def _create_run(api_client, skill: dict[str, object]) -> tuple[str, str]:
     return run["id"], run["node_runs"][0]["attempts"][0]["id"]
 
 
+def test_run_environment_is_used_by_execution_and_collaboration_runtime(
+    worker_client, db_session_factory, worker_container
+):
+    digest = "sha256:" + "e" * 64
+    with db_session_factory() as db:
+        environment = TerminalEnvironment(
+            id=str(uuid4()),
+            name="运行级环境",
+            description="",
+            base_image="flowweave-openhands-runtime:1",
+        )
+        db.add(environment)
+        db.flush()
+        version = EnvironmentVersion(
+            id=str(uuid4()),
+            environment_id=environment.id,
+            version_no=1,
+            state="READY",
+            image_reference="flowweave/test-environment:v1",
+            image_digest=digest,
+            manifest_json={},
+        )
+        db.add(version)
+        db.commit()
+        version_id = version.id
+
+    asset = worker_client.post("/api/v1/node-assets", json=_asset_payload(None)).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "运行环境传递流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/test-root",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "environment_version_id": version_id,
+            "flow_node_key": "design",
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/environment-input",
+                }
+            ],
+        },
+    )
+    assert started.status_code == 201, started.text
+    run = started.json()
+    attempt_id = run["node_runs"][0]["attempts"][0]["id"]
+
+    class CapturingRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.execution_requests: list[StartAttemptRequest] = []
+            self.collaboration_requests: list[StartAttemptRequest] = []
+
+        def start(self, request: StartAttemptRequest):
+            self.execution_requests.append(request)
+            return super().start(request)
+
+        def create_conversation(self, request: StartAttemptRequest):
+            self.collaboration_requests.append(request)
+            return super().create_conversation(request)
+
+    runtime = CapturingRuntime()
+    previous_runtime = worker_container.runtime
+    worker_container.runtime = runtime
+    try:
+        worker = TaskWorker(worker_container)
+        assert worker._run_once_sync() is True  # readiness
+        assert worker._run_once_sync() is True  # empty START gates
+        ready = worker_client.get(f"/api/v1/flow-runs/{run['id']}").json()
+        attempt = ready["node_runs"][0]["attempts"][0]
+        confirmed = worker_client.post(
+            f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+            json={"expected_state_version": attempt["state_version"]},
+            headers={"Idempotency-Key": "environment-runtime-start"},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        assert worker._run_once_sync() is True  # START_RUNTIME
+        assert runtime.execution_requests[0].environment_image == digest
+        assert worker._run_once_sync() is True  # POLL_RUNTIME
+        assert worker._run_once_sync() is True  # empty END gates
+
+        current = worker_client.get(f"/api/v1/flow-runs/{run['id']}").json()
+        attempt = current["node_runs"][0]["attempts"][0]
+        conversation = worker_client.post(
+            f"/api/v1/node-attempts/{attempt_id}/conversations",
+            json={
+                "title": "镜像传递验证",
+                "expected_attempt_state_version": attempt["state_version"],
+            },
+            headers={"Idempotency-Key": "environment-collaboration-start"},
+        )
+        assert conversation.status_code == 202, conversation.text
+        assert worker._run_once_sync() is True  # CREATE_CONVERSATION
+        assert runtime.collaboration_requests[0].environment_image == digest
+    finally:
+        worker_container.runtime = previous_runtime
+
+
 def test_auto_conversation_records_runtime_result_and_becomes_read_only(
     client, skill_capability, settings, db_session_factory
 ):
-    run_id, attempt_id = _create_run(client, skill_capability)
+    # This scenario verifies automatic conversation projection, not Skill loading.
+    run_id, attempt_id = _create_run(client, None)
     run = client.get(f"/api/v1/flow-runs/{run_id}").json()
     attempt = run["node_runs"][0]["attempts"][0]
 
@@ -69,8 +198,11 @@ def test_auto_conversation_records_runtime_result_and_becomes_read_only(
         json={"expected_attempt_state_version": attempt["state_version"]},
         headers={"Idempotency-Key": "conversation-before-start"},
     )
-    assert before_start.status_code == 409
-    assert before_start.json()["error"]["code"] == "ATTEMPT_NOT_STARTED"
+    assert before_start.status_code == 202, before_start.text
+    assert before_start.json()["kind"] == "HUMAN_CREATED"
+    assert (
+        client.delete(f"/api/v1/agent-conversations/{before_start.json()['id']}").status_code == 204
+    )
 
     execution = client.post(
         f"/api/v1/node-attempts/{attempt_id}/confirm-start",
@@ -138,12 +270,15 @@ def test_auto_conversation_records_runtime_result_and_becomes_read_only(
     assert queued.status_code == 202, queued.text
     with db_session_factory() as db:
         assert recover_conversation_tasks(db) == 0
-        assert db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.aggregate_id == queued.json()["id"],
-                BackgroundTask.task_type == "DELIVER_CONVERSATION_MESSAGE",
+        assert (
+            db.scalar(
+                select(BackgroundTask).where(
+                    BackgroundTask.aggregate_id == queued.json()["id"],
+                    BackgroundTask.task_type == "DELIVER_CONVERSATION_MESSAGE",
+                )
             )
-        ) is None
+            is None
+        )
         runtime_attempt = db.get(NodeAttempt, attempt_id)
         assert runtime_attempt is not None
         runtime_attempt.state = "WAITING_ACCEPTANCE"
@@ -334,9 +469,7 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert cancelled.json()["delivery_state"] == "CANCELLED"
     assert cancelled.json()["content"]["presentation"] == "cancelled-queue"
 
-    conversation = worker_client.get(
-        f"/api/v1/agent-conversations/{conversation['id']}"
-    ).json()
+    conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     queued = worker_client.post(
         f"/api/v1/agent-conversations/{conversation['id']}/messages",
         json={
@@ -376,9 +509,7 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert messages[-1]["source"] == "AGENT"
     assert "优先检查并发安全" in messages[-1]["content"]["parts"][0]["text"]
 
-    conversation = worker_client.get(
-        f"/api/v1/agent-conversations/{conversation['id']}"
-    ).json()
+    conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     attachment_bytes = b"\x89PNG\r\n\x1a\nflowweave-chat-image"
     attached = worker_client.post(
         f"/api/v1/agent-conversations/{conversation['id']}/messages",
@@ -423,9 +554,7 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
         failed.state = "FAILED"
         failed.state_version += 1
         db.commit()
-    conversation = worker_client.get(
-        f"/api/v1/agent-conversations/{conversation['id']}"
-    ).json()
+    conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     recovery = worker_client.post(
         f"/api/v1/agent-conversations/{conversation['id']}/messages",
         json={
@@ -462,27 +591,17 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
             f"deliver-conversation-message:{recovery.json()['id']}:v"
         )
     assert worker._run_once_sync() is True  # deliver queued message
-    recovered = worker_client.get(
-        f"/api/v1/agent-conversations/{conversation['id']}"
-    ).json()
+    recovered = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert recovered["state"] == "IDLE"
 
     automatic = next(
         item
-        for item in worker_client.get(
-            f"/api/v1/node-attempts/{attempt_id}/conversations"
-        ).json()
+        for item in worker_client.get(f"/api/v1/node-attempts/{attempt_id}/conversations").json()
         if item["kind"] == "AUTO"
     )
-    blocked_delete = worker_client.delete(
-        f"/api/v1/agent-conversations/{automatic['id']}"
-    )
+    blocked_delete = worker_client.delete(f"/api/v1/agent-conversations/{automatic['id']}")
     assert blocked_delete.status_code == 409
-    deleted = worker_client.delete(
-        f"/api/v1/agent-conversations/{conversation['id']}"
-    )
+    deleted = worker_client.delete(f"/api/v1/agent-conversations/{conversation['id']}")
     assert deleted.status_code == 204, deleted.text
-    remaining = worker_client.get(
-        f"/api/v1/node-attempts/{attempt_id}/conversations"
-    ).json()
+    remaining = worker_client.get(f"/api/v1/node-attempts/{attempt_id}/conversations").json()
     assert all(item["id"] != conversation["id"] for item in remaining)

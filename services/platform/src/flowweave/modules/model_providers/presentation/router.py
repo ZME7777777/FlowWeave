@@ -29,14 +29,20 @@ async def update_provider(provider_id: str, payload: ModelProviderWrite, db: Db)
 
 @router.delete("/model-providers/{provider_id}", status_code=204, response_class=Response)
 async def delete_provider(provider_id: str, db: Db) -> Response:
-    await run_sync(db, lambda session: service.delete_providers(session, [provider_id]))
+    result = await run_sync(db, lambda session: service.delete_providers(session, [provider_id]))
+    if result["blocked"]:
+        raise DomainError(
+            "MODEL_PROVIDER_IN_USE",
+            "Model provider is referenced by active nodes",
+            409,
+            {"blocked": result["blocked"]},
+        )
     return Response(status_code=204)
 
 
-@router.delete("/model-providers", status_code=204, response_class=Response)
-async def delete_providers(payload: ModelProviderBulkDeleteWrite, db: Db) -> Response:
-    await run_sync(db, lambda session: service.delete_providers(session, payload.ids))
-    return Response(status_code=204)
+@router.delete("/model-providers")
+async def delete_providers(payload: ModelProviderBulkDeleteWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.delete_providers(session, payload.ids))
 
 
 ContainerDep = Annotated[Container, Depends(get_container)]

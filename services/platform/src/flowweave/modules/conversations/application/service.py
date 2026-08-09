@@ -39,6 +39,8 @@ from flowweave.shared.models import (
     ArtifactVersion,
     AttemptInputBinding,
     BackgroundTask,
+    EnvironmentVersion,
+    FlowRun,
     HumanAction,
     NodeAttempt,
     NodeRun,
@@ -416,6 +418,7 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
         "state": item.state,
         "state_version": item.state_version,
         "runtime_adapter": item.runtime_adapter,
+        "runtime_job_id": item.runtime_job_id,
         "runtime_conversation_id": item.runtime_conversation_id,
         "context_baseline": item.context_baseline_json,
         "message_count": count,
@@ -423,6 +426,19 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
+
+
+def terminal_container_id(db: Session, conversation_id: str) -> str:
+    item = _conversation(db, conversation_id)
+    job_id = item.runtime_job_id or ""
+    for prefix in ("env-exec:", "env-chat:"):
+        if job_id.startswith(prefix) and job_id.removeprefix(prefix):
+            return job_id.removeprefix(prefix)
+    raise DomainError(
+        "AGENT_TERMINAL_UNAVAILABLE",
+        "This Agent conversation is not running in a terminal environment",
+        409,
+    )
 
 
 def _append(
@@ -938,7 +954,7 @@ def create_conversation(
                     "type": "text",
                     "text": (
                         "当前 Attempt 的快照、输入绑定、候选能力与产物已挂载；"
-                        "本会话不包含其他会话消息，也不继承自动执行的启动任务或默认 Skill。"
+                        "本会话不包含其他会话消息，也不继承自动执行的启动任务。"
                         "Agent 将根据本会话中的消息动态选择能力。"
                     ),
                 }
@@ -1599,7 +1615,13 @@ def process_create_conversation(
         set_attempt_conversations_state(db, attempt.id, ConversationState.READ_ONLY)
         return
     snapshot = db.get(RunSnapshot, attempt.snapshot_id)
-    node_run, _ = _context(db, attempt)
+    node_run, run_id = _context(db, attempt)
+    run = db.get(FlowRun, run_id)
+    environment = (
+        db.get(EnvironmentVersion, run.environment_version_id)
+        if run and run.environment_version_id
+        else None
+    )
     raw_nodes: object = snapshot.definition_json.get("nodes", []) if snapshot else []
     nodes = cast(list[dict[str, Any]], raw_nodes) if isinstance(raw_nodes, list) else []
     node = next(
@@ -1629,6 +1651,7 @@ def process_create_conversation(
         bindings=bindings,
         workspace_ref=attempt.workspace_ref or "",
         interaction_mode="COLLABORATION",
+        environment_image=environment.image_digest if environment else None,
     )
     expected_version = item.state_version
     db.rollback()

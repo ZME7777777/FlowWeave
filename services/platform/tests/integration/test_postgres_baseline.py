@@ -45,10 +45,19 @@ async def test_run_event_trigger_notifies_after_commit(container, db_session_fac
     from flowweave.shared.models import FlowDefinition, FlowRun, RunEvent
 
     with db_session_factory() as db:
-        flow = FlowDefinition(name="notify-flow")
+        flow = FlowDefinition(
+            name="notify-flow",
+            lark_root_folder_url="https://example.feishu.cn/drive/folder/notify-root",
+        )
         db.add(flow)
         db.flush()
-        run = FlowRun(flow_definition_id=flow.id, run_no=1, name="notify-run")
+        run = FlowRun(
+            flow_definition_id=flow.id,
+            run_no=1,
+            name="notify-run",
+            lark_folder_token="notify-run-folder",
+            lark_folder_url="https://example.feishu.cn/drive/folder/notify-run-folder",
+        )
         db.add(run)
         db.commit()
         run_id = run.id
@@ -74,10 +83,19 @@ def test_run_event_cursor_compensation_and_bounded_batches(db_session_factory) -
     from flowweave.shared.models import FlowDefinition, FlowRun, RunEvent
 
     with db_session_factory() as db:
-        flow = FlowDefinition(name="cursor-flow")
+        flow = FlowDefinition(
+            name="cursor-flow",
+            lark_root_folder_url="https://example.feishu.cn/drive/folder/cursor-root",
+        )
         db.add(flow)
         db.flush()
-        run = FlowRun(flow_definition_id=flow.id, run_no=1, name="cursor-run")
+        run = FlowRun(
+            flow_definition_id=flow.id,
+            run_no=1,
+            name="cursor-run",
+            lark_folder_token="cursor-run-folder",
+            lark_folder_url="https://example.feishu.cn/drive/folder/cursor-run-folder",
+        )
         db.add(run)
         db.flush()
         for index in range(7):
@@ -120,10 +138,19 @@ async def test_slow_sse_consumer_does_not_block_fast_cursor_compensation(
     event_count = 40
     batch_limit = 5
     with db_session_factory() as db:
-        flow = FlowDefinition(name="slow-consumer-flow")
+        flow = FlowDefinition(
+            name="slow-consumer-flow",
+            lark_root_folder_url="https://example.feishu.cn/drive/folder/slow-root",
+        )
         db.add(flow)
         db.flush()
-        run = FlowRun(flow_definition_id=flow.id, run_no=1, name="slow-consumer-run")
+        run = FlowRun(
+            flow_definition_id=flow.id,
+            run_no=1,
+            name="slow-consumer-run",
+            lark_folder_token="slow-run-folder",
+            lark_folder_url="https://example.feishu.cn/drive/folder/slow-run-folder",
+        )
         db.add(run)
         db.commit()
         run_id = run.id
@@ -184,7 +211,7 @@ async def test_slow_sse_consumer_does_not_block_fast_cursor_compensation(
 
 
 def test_attempt_confirmation_cas_allows_only_one_transaction(
-    client, db_session_factory, settings, skill_capability
+    client, container, db_session_factory, settings, skill_capability
 ) -> None:
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -193,19 +220,33 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
 
     from flowweave.modules.orchestration.application.service import confirm_start
     from flowweave.shared.domain.errors import DomainError
+    from flowweave.shared.lark_drive import lark_drive_context
     from flowweave.shared.models import BackgroundTask, HumanAction, RunEvent
-    from flowweave.shared.schemas import AttemptVersionWrite
+    from flowweave.shared.schemas import AttemptStartWrite
     from flowweave.shared.settings import settings_context
 
     asset_response = client.post(
         "/api/v1/node-assets",
         json={
             "name": "CAS 并发节点",
-            "inputs": [{"field_key": "prd", "display_name": "需求", "data_type": "DOCUMENT"}],
-            "outputs": [{"field_key": "design", "display_name": "方案", "data_type": "DOCUMENT"}],
+            "inputs": [
+                {
+                    "field_key": "prd",
+                    "display_name": "需求",
+                    "data_type": "URL",
+                    "template_url": "https://example.feishu.cn/docx/prd-template",
+                }
+            ],
+            "outputs": [
+                {
+                    "field_key": "design",
+                    "display_name": "方案",
+                    "data_type": "URL",
+                    "template_url": "https://example.feishu.cn/docx/design-template",
+                }
+            ],
             "executor": {"startup_prompt": "生成方案"},
             "capabilities": [skill_capability],
-            "default_skill_ref": skill_capability["capability_key"],
         },
     )
     assert asset_response.status_code == 201, asset_response.text
@@ -214,6 +255,7 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
         "/api/v1/flows",
         json={
             "name": "CAS 并发流程",
+            "lark_root_folder_url": ("https://example.feishu.cn/drive/folder/cas-root"),
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -223,13 +265,14 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
     run = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "CAS 输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/cas-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt = run["node_runs"][0]["attempts"][0]
@@ -240,13 +283,17 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
     worker_settings = settings.model_copy(update={"execution_mode": "worker"})
 
     def issue(index: int) -> str:
-        with settings_context(worker_settings), db_session_factory() as db:
+        with (
+            settings_context(worker_settings),
+            lark_drive_context(container.lark_drive),
+            db_session_factory() as db,
+        ):
             barrier.wait(timeout=5)
             try:
                 confirm_start(
                     db,
                     attempt_id,
-                    AttemptVersionWrite(expected_state_version=version),
+                    AttemptStartWrite(expected_state_version=version),
                     f"cas-confirm-{index}",
                 )
             except DomainError as exc:

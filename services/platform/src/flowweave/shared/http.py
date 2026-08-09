@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from typing import Annotated, TypeVar
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
+from starlette.requests import HTTPConnection
 
 from flowweave.bootstrap.container import Container
 from flowweave.shared.application.transactions import (
@@ -17,8 +18,10 @@ from flowweave.shared.application.transactions import (
 T = TypeVar("T")
 
 
-def get_container(request: Request) -> Container:
-    return request.app.state.container
+def get_container(connection: HTTPConnection) -> Container:
+    """Resolve the application container for both HTTP and WebSocket scopes."""
+
+    return connection.app.state.container
 
 
 async def get_db(

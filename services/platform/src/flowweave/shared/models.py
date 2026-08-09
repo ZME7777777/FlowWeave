@@ -16,11 +16,21 @@ from flowweave.modules.conversations.infrastructure.models import (
     AgentMessage,
     MessageArtifactRef,
 )
+from flowweave.modules.credentials.infrastructure.models import (
+    CredentialConnection,
+    CredentialLease,
+    OAuthSession,
+)
+from flowweave.modules.environments.infrastructure.models import (
+    EnvironmentSetupSession,
+    EnvironmentVersion,
+    TerminalEnvironment,
+)
 from flowweave.modules.flows.infrastructure.models import (
     FlowDefinition,
     FlowEdge,
-    FlowEdgeMapping,
     FlowNode,
+    FlowPortMapping,
     GatePolicy,
 )
 from flowweave.modules.model_providers.infrastructure.models import (
@@ -52,9 +62,13 @@ __all__ = (
     "AttemptState",
     "BackgroundTask",
     "CapabilityImport",
+    "CredentialConnection",
+    "CredentialLease",
+    "EnvironmentSetupSession",
+    "EnvironmentVersion",
     "FlowDefinition",
     "FlowEdge",
-    "FlowEdgeMapping",
+    "FlowPortMapping",
     "FlowNode",
     "FlowRun",
     "FlowRunState",
@@ -71,10 +85,12 @@ __all__ = (
     "NodeIOField",
     "NodeRun",
     "NodeRunState",
+    "OAuthSession",
     "ProviderModel",
     "RunEvent",
     "RunSnapshot",
     "TaskState",
+    "TerminalEnvironment",
     "now",
     "uid",
 )

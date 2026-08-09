@@ -39,10 +39,19 @@ def test_generated_openapi_matches_v1_baseline() -> None:
 
 def test_persisted_run_event_matches_schema_and_rejects_drift(db_session_factory) -> None:
     with db_session_factory() as db:
-        flow = FlowDefinition(name="contract-flow")
+        flow = FlowDefinition(
+            name="contract-flow",
+            lark_root_folder_url="https://example.feishu.cn/drive/folder/contract-root",
+        )
         db.add(flow)
         db.flush()
-        run = FlowRun(flow_definition_id=flow.id, run_no=1, name="contract-run")
+        run = FlowRun(
+            flow_definition_id=flow.id,
+            run_no=1,
+            name="contract-run",
+            lark_folder_token="contract-run-folder",
+            lark_folder_url=("https://example.feishu.cn/drive/folder/contract-run-folder"),
+        )
         db.add(run)
         db.flush()
         db.add(
@@ -72,7 +81,7 @@ def test_runtime_adapter_result_matches_schema_and_rejects_unknown_status() -> N
                 "alias": "Contract Node",
                 "asset": {
                     "name": "Contract Asset",
-                    "outputs": [{"field_key": "result", "data_type": "TEXT"}],
+                    "outputs": [{"field_key": "result", "data_type": "URL"}],
                 },
             },
             bindings=[],

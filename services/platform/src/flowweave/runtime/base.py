@@ -8,6 +8,14 @@ def _empty_outputs() -> dict[str, tuple[str, str]]:
     return {}
 
 
+def _empty_runtime_secrets() -> dict[str, dict[str, object]]:
+    return {}
+
+
+def _empty_output_targets() -> dict[str, dict[str, str]]:
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeProvider:
     provider_id: str
@@ -23,6 +31,7 @@ class RuntimeSkill:
     description: str = ""
     source: str = ""
     workspace_path: str = ""
+    dependency_runtime_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +53,13 @@ class StartAttemptRequest:
     skills: tuple[RuntimeSkill, ...] = ()
     mcp_servers: tuple[RuntimeMCP, ...] = ()
     interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION"
+    startup_prompt: str | None = None
+    startup_capability_key: str | None = None
+    output_targets: dict[str, dict[str, str]] = field(default_factory=_empty_output_targets)
+    runtime_secrets: dict[str, dict[str, object]] = field(
+        default_factory=_empty_runtime_secrets, repr=False
+    )
+    environment_image: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -109,7 +109,10 @@ def test_lease_heartbeat_prevents_recovery_and_second_claim(db_session_factory, 
 
 def test_late_worker_success_rolls_back_uncommitted_business_writes(db_session_factory):
     with db_session_factory() as db:
-        flow = FlowDefinition(name="before-lost-lease")
+        flow = FlowDefinition(
+            name="before-lost-lease",
+            lark_root_folder_url=("https://example.feishu.cn/drive/folder/before-lost-lease-root"),
+        )
         db.add(flow)
         task = enqueue(
             db,
@@ -169,10 +172,23 @@ def test_idempotent_enqueue_returns_same_task(db_session_factory):
 def _asset_payload(skill):
     return {
         "name": "异步执行节点",
-        "inputs": [{"field_key": "prd", "display_name": "需求", "data_type": "DOCUMENT"}],
-        "outputs": [{"field_key": "design", "display_name": "方案", "data_type": "DOCUMENT"}],
+        "inputs": [
+            {
+                "field_key": "prd",
+                "display_name": "需求",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/prd-template",
+            }
+        ],
+        "outputs": [
+            {
+                "field_key": "design",
+                "display_name": "方案",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/design-template",
+            }
+        ],
         "capabilities": [skill],
-        "default_skill_ref": skill["capability_key"],
         "executor": {
             "startup_prompt": "生成方案",
             "context_prompt": "保留证据",
@@ -194,6 +210,7 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
         "/api/v1/flows",
         json={
             "name": "异步执行流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [
                 {
@@ -230,13 +247,14 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "异步输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/async-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt_id = started["node_runs"][0]["attempts"][0]["id"]
@@ -292,6 +310,7 @@ def _prepare_starting_attempt(worker_client, worker_container, skill):
         "/api/v1/flows",
         json={
             "name": "Worker 恢复流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -299,13 +318,14 @@ def _prepare_starting_attempt(worker_client, worker_container, skill):
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "恢复测试输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/recovery-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt_id = started["node_runs"][0]["attempts"][0]["id"]
@@ -413,6 +433,7 @@ def test_cancelled_run_stops_started_runtime_through_worker(
         "/api/v1/flows",
         json={
             "name": "取消 Runtime 流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -420,13 +441,14 @@ def test_cancelled_run_stops_started_runtime_through_worker(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "取消测试输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/cancel-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt_id = started["node_runs"][0]["attempts"][0]["id"]
@@ -509,6 +531,7 @@ def test_terminal_runtime_event_batch_skips_inspect_and_persists_events(
         "/api/v1/flows",
         json={
             "name": "Runtime 事件流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -516,13 +539,14 @@ def test_terminal_runtime_event_batch_skips_inspect_and_persists_events(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "事件输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/event-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt_id = started["node_runs"][0]["attempts"][0]["id"]
@@ -548,7 +572,8 @@ def test_terminal_runtime_event_batch_skips_inspect_and_persists_events(
     attempt = detail["node_runs"][0]["attempts"][0]
     assert attempt["runtime_cursor"] == "event-2"
     assert attempt["runtime_phase"] == "COMPLETED"
-    assert attempt["artifacts"][0]["inline_content"] == "event result"
+    assert attempt["artifacts"][0]["inline_content"] is None
+    assert attempt["artifacts"][0]["uri"].startswith("https://example.feishu.cn/docx/")
     history = worker_client.get(f"/api/v1/flow-runs/{started['id']}/event-history").json()
     runtime_events = [item for item in history if item["event_type"].startswith("RUNTIME_EVENT_")]
     assert [item["event_type"] for item in runtime_events] == [
@@ -579,6 +604,7 @@ def test_worker_rolls_back_business_result_when_task_success_is_fenced(
         "/api/v1/flows",
         json={
             "name": "Worker 原子提交流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -586,13 +612,14 @@ def test_worker_rolls_back_business_result_when_task_success_is_fenced(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "原子提交输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/atomic-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt_id = started["node_runs"][0]["attempts"][0]["id"]
@@ -654,6 +681,7 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
         "/api/v1/flows",
         json={
             "name": "Runtime CAS 迟到结果流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -661,13 +689,14 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "Runtime CAS 输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/runtime-cas-input",
                 }
-            ]
+            ],
         },
     ).json()
     run_id = started["id"]
@@ -809,6 +838,7 @@ def test_worker_runtime_io_runs_without_database_transaction(
         "/api/v1/flows",
         json={
             "name": "Runtime 短事务流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -816,13 +846,14 @@ def test_worker_runtime_io_runs_without_database_transaction(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "短事务输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/short-transaction-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt_id = started["node_runs"][0]["attempts"][0]["id"]
@@ -915,6 +946,7 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
         "/api/v1/flows",
         json={
             "name": "Gate CAS 短事务流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [
                 {
@@ -940,13 +972,14 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "flow_node_key": "design",
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "Gate CAS 输入",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/gate-cas-input",
                 }
-            ]
+            ],
         },
     ).json()
     attempt_id = started["node_runs"][0]["attempts"][0]["id"]

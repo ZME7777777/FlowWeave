@@ -45,7 +45,11 @@ class NodeAsset(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     icon_kind: Mapped[str] = mapped_column(String(30), default="LUCIDE")
     icon_value: Mapped[str] = mapped_column(String(80), default="bot")
-    default_skill_ref: Mapped[str | None] = mapped_column(String(200))
+    # The database foreign key is added by the 0014 forward migration. Keep
+    # this mapping free of the cross-module FK so historical baseline
+    # migrations that create catalog tables from current metadata do not try
+    # to reference environment_versions before that table exists.
+    environment_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -70,6 +74,7 @@ class NodeIOField(Base):
     display_name: Mapped[str] = mapped_column(String(160))
     data_type: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(Text, default="")
+    template_url: Mapped[str] = mapped_column(Text)
     position: Mapped[int] = mapped_column(Integer, default=0)
 
 

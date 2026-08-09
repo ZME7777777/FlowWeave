@@ -68,6 +68,8 @@ def test_single_skill_zip_accepts_skill_files_at_archive_root(client):
                 "entry": "SKILL.md",
                 "description": "",
                 "version": "",
+                "dependencies": {},
+                "dependency_build_state": "NOT_REQUIRED",
             },
         }
     ]
@@ -140,7 +142,6 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
         json={
             "name": "batch imported skills",
             "executor": {},
-            "default_skill_ref": "requirements-analysis",
             "capabilities": capabilities,
         },
     )
@@ -169,11 +170,98 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
         json={
             "name": "duplicate capability refs",
             "executor": {},
-            "default_skill_ref": "requirements-analysis",
             "capabilities": [capabilities[0], capabilities[0]],
         },
     )
     assert duplicate.status_code == 422, duplicate.text
+
+
+def test_editing_one_skill_saves_in_place_and_refreshes_bound_node(client):
+    encoded = _zip_content(
+        {
+            "skills/requirements-analysis/SKILL.md": (
+                "---\nname: requirements-analysis\ndescription: Analyze requirements\n---\n"
+                "# Requirements analysis v1\n"
+            ),
+            "skills/technical-design/SKILL.md": (
+                "---\nname: technical-design\ndescription: Create a design\n---\n"
+                "# Technical design v1\n"
+            ),
+        }
+    )
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "team-skills.zip",
+            "content_base64": encoded,
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": validated.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+
+    initial = client.get("/api/v1/capabilities").json()
+    assert len(initial) == 2
+    requirements = next(
+        item for item in initial if item["capability_key"] == "requirements-analysis"
+    )
+    design = next(item for item in initial if item["capability_key"] == "technical-design")
+
+    bound_node = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "使用需求分析能力的节点",
+            "executor": {},
+            "capabilities": [
+                {
+                    "capability_id": requirements["id"],
+                    "capability_type": "SKILL",
+                    "capability_key": "requirements-analysis",
+                    "normalized_config": {},
+                }
+            ],
+        },
+    )
+    assert bound_node.status_code == 201, bound_node.text
+    workspace = Path("test-workspaces") / bound_node.json()["workspace_ref"]
+    skill_file = workspace / "skills/requirements-analysis/SKILL.md"
+    assert "v1" in skill_file.read_text()
+
+    source = client.get(f"/api/v1/capabilities/{requirements['id']}/source")
+    assert source.status_code == 200, source.text
+    revised_content = source.json()["content"].replace("v1", "v2")
+    saved = client.put(
+        f"/api/v1/capabilities/{requirements['id']}/source",
+        json={"content": revised_content},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["id"] == requirements["id"]
+    assert saved.json()["content_hash"] != requirements["content_hash"]
+
+    current = client.get("/api/v1/capabilities").json()
+    assert len(current) == 2
+    assert {item["id"] for item in current} == {requirements["id"], design["id"]}
+    assert len([item for item in current if item["capability_key"] == "requirements-analysis"]) == 1
+    assert "v2" in client.get(f"/api/v1/capabilities/{requirements['id']}/source").json()["content"]
+
+    persisted_node = client.get(f"/api/v1/node-assets/{bound_node.json()['id']}").json()
+    assert persisted_node["capabilities"][0]["capability_id"] == requirements["id"]
+    assert (
+        persisted_node["capabilities"][0]["normalized_config"]["content_hash"]
+        == saved.json()["content_hash"]
+    )
+    assert "v2" in skill_file.read_text()
+
+    unchanged = client.put(
+        f"/api/v1/capabilities/{requirements['id']}/source",
+        json={"content": revised_content},
+    )
+    assert unchanged.status_code == 422, unchanged.text
+    assert unchanged.json()["error"]["code"] == "CAPABILITY_SOURCE_UNCHANGED"
 
 
 def test_skill_zip_rejects_duplicate_skill_names_atomically(client):
@@ -245,7 +333,6 @@ def test_node_asset_rejects_forged_or_tampered_capability_import(client):
         json={
             "name": "forged capability",
             "executor": {},
-            "default_skill_ref": "forged",
             "capabilities": [
                 {
                     "capability_type": "SKILL",
@@ -272,7 +359,6 @@ def test_node_asset_rejects_forged_or_tampered_capability_import(client):
         json={
             "name": "tampered capability",
             "executor": {},
-            "default_skill_ref": "tampered",
             "capabilities": [capability],
         },
     )
@@ -338,9 +424,7 @@ def test_skill_import_accepts_files_larger_than_two_mib(client):
 
 def test_skill_zip_entry_limit_is_reported_with_actual_and_maximum(client):
     entries: dict[str, bytes | str] = {"sample/SKILL.md": "# Sample\n"}
-    entries.update(
-        {f"sample/references/reference-{index}.txt": "" for index in range(1000)}
-    )
+    entries.update({f"sample/references/reference-{index}.txt": "" for index in range(1000)})
 
     response = client.post(
         "/api/v1/capability-imports/validate",
@@ -439,3 +523,66 @@ def test_expired_import_cleanup_task_deletes_only_uncommitted_source(
     with db_session_factory() as db:
         assert db.get(CapabilityImport, committed["id"]).state == "COMMITTED"
     assert committed_source.is_file()
+
+
+def test_capability_bulk_delete_skips_active_references_and_ignores_deleted_nodes(
+    client, skill_capability
+):
+    referenced_asset = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "引用能力的节点",
+            "executor": {},
+            "capabilities": [skill_capability],
+        },
+    )
+    assert referenced_asset.status_code == 201, referenced_asset.text
+    referenced_asset = referenced_asset.json()
+
+    second_validate = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "unreferenced.zip",
+            "content_base64": skill_zip(),
+        },
+    )
+    assert second_validate.status_code == 200, second_validate.text
+    second_commit = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": second_validate.json()["import_token"]},
+    )
+    assert second_commit.status_code == 201, second_commit.text
+
+    capabilities = client.get("/api/v1/capabilities").json()
+    referenced = next(item for item in capabilities if item["reference_count"] == 1)
+    unreferenced = next(item for item in capabilities if item["reference_count"] == 0)
+    result = client.request(
+        "DELETE",
+        "/api/v1/capabilities",
+        json={"ids": [referenced["id"], unreferenced["id"]]},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json() == {
+        "deleted_ids": [unreferenced["id"]],
+        "blocked": [
+            {
+                "id": referenced["id"],
+                "name": referenced["capability_key"],
+                "relation": "NODE_CAPABILITY",
+                "nodes": [{"id": referenced_asset["id"], "name": referenced_asset["name"]}],
+            }
+        ],
+    }
+
+    assert client.delete(f"/api/v1/node-assets/{referenced_asset['id']}").status_code == 204
+    capabilities = client.get("/api/v1/capabilities").json()
+    assert capabilities == [{**referenced, "reference_count": 0}]
+    deleted = client.request(
+        "DELETE",
+        "/api/v1/capabilities",
+        json={"ids": [referenced["id"]]},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json() == {"deleted_ids": [referenced["id"]], "blocked": []}
+    assert client.get("/api/v1/capabilities").json() == []

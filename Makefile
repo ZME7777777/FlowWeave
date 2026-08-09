@@ -1,4 +1,4 @@
-.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images sandbox-smoke web-dev api-dev worker-dev e2e infra-up infra-up-openhands infra-down
+.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image sandbox-smoke web-dev api-dev worker-dev e2e infra-up infra-up-openhands infra-down
 
 install:
 	pnpm install --frozen-lockfile
@@ -40,6 +40,12 @@ sandbox-images:
 	docker build -f infra/sandbox/python/Dockerfile -t flowweave-sandbox-python:1 .
 	docker build -f infra/sandbox/javascript/Dockerfile -t flowweave-sandbox-javascript:1 .
 
+dependency-builder-image:
+	docker build -f infra/dependency-builder/Dockerfile -t flowweave-dependency-builder:1 .
+
+openhands-image:
+	docker build -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
+
 sandbox-smoke: sandbox-images
 	docker compose -f infra/compose.yaml exec -T worker python - < services/platform/scripts/sandbox_smoke_check.py
 
@@ -48,10 +54,10 @@ check: api-check web-check compose-check
 e2e:
 	pnpm --filter @flowweave/web e2e
 
-infra-up: sandbox-images
+infra-up: sandbox-images dependency-builder-image
 	docker compose -f infra/compose.yaml up -d --build postgres migration api worker web
 
-infra-up-openhands: sandbox-images
+infra-up-openhands: sandbox-images dependency-builder-image openhands-image
 	docker compose -f infra/compose.yaml up -d --build postgres migration openhands-agent-server api worker web
 
 infra-down:

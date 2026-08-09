@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.public import describe_asset
 from flowweave.modules.conversations import public as conversations
+from flowweave.modules.credentials.public import connected_lark_access_token
 from flowweave.modules.flows.public import describe_flow, load_flow
 from flowweave.modules.gates.public import (
     GateExecutionPlan,
@@ -41,6 +43,7 @@ from flowweave.shared.application.transactions import (
 )
 from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
+from flowweave.shared.lark_drive import get_lark_drive
 from flowweave.shared.models import (
     AgentConversation,
     AgentMessage,
@@ -48,6 +51,7 @@ from flowweave.shared.models import (
     AttemptInputBinding,
     AttemptState,
     BackgroundTask,
+    EnvironmentVersion,
     FlowRun,
     FlowRunState,
     GateEvaluation,
@@ -63,6 +67,7 @@ from flowweave.shared.models import (
 )
 from flowweave.shared.schemas import (
     ArtifactWrite,
+    AttemptStartWrite,
     AttemptVersionWrite,
     HumanInputWrite,
     InputBindingsWrite,
@@ -301,6 +306,45 @@ def create_artifact(db: Session, run_id: str, prepared: PreparedArtifact) -> dic
     return _artifact_dict(item)
 
 
+def delete_artifact(db: Session, run_id: str, artifact_id: str) -> None:
+    """Delete an unbound human-provided artifact from a run's artifact pool."""
+
+    run = _run(db, run_id)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("cannot remove artifact from terminal run", state=run.state)
+    item = db.get(ArtifactVersion, artifact_id)
+    if item is None or item.flow_run_id != run.id:
+        raise not_found("artifact_version", artifact_id)
+    if item.producer_attempt_id is not None or item.source != "HUMAN":
+        raise DomainError(
+            "ARTIFACT_DELETE_BLOCKED",
+            "Only human-provided artifacts can be removed from the artifact pool",
+            409,
+            {"id": artifact_id},
+        )
+    binding_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(AttemptInputBinding)
+            .where(AttemptInputBinding.artifact_version_id == artifact_id)
+        )
+        or 0
+    )
+    if binding_count:
+        raise DomainError(
+            "ARTIFACT_DELETE_BLOCKED",
+            "Artifact is already bound to a node attempt",
+            409,
+            {"id": artifact_id, "binding_count": binding_count},
+        )
+    storage_key = item.storage_key
+    db.delete(item)
+    _event(db, run.id, "ARTIFACT_VERSION_DELETED", {"artifact_id": artifact_id})
+    if storage_key:
+        register_commit_action(db, lambda key=storage_key: get_artifact_store().delete(key))
+    finish(db)
+
+
 def artifact_content_reference(db: Session, artifact_id: str) -> ArtifactContentReference:
     """Read an immutable content pointer inside a short database transaction."""
 
@@ -348,6 +392,44 @@ def read_artifact_content(reference: ArtifactContentReference) -> tuple[bytes, s
 
 def _input_fields(node: dict[str, Any]) -> tuple[InputField, ...]:
     return tuple(InputField(x["field_key"], x["data_type"]) for x in node["asset"]["inputs"])
+
+
+def _validate_input_bindings(
+    db: Session,
+    run: FlowRun,
+    node: dict[str, Any],
+    artifact_ids: dict[str, str],
+) -> None:
+    input_types = {field.key: field.data_type for field in _input_fields(node)}
+    unknown_fields = sorted(set(artifact_ids) - set(input_types))
+    if unknown_fields:
+        raise DomainError(
+            "INPUT_BINDING_INVALID",
+            "binding field is not an input of the target node",
+            422,
+            {"fields": unknown_fields},
+        )
+    for field_key, artifact_id in artifact_ids.items():
+        artifact = db.get(ArtifactVersion, artifact_id)
+        if artifact is None or artifact.flow_run_id != run.id:
+            raise DomainError(
+                "INPUT_BINDING_INVALID",
+                "artifact does not belong to run",
+                422,
+                {"id": artifact_id, "field": field_key},
+            )
+        if artifact.artifact_type != input_types[field_key]:
+            raise DomainError(
+                "INPUT_BINDING_INVALID",
+                "artifact type does not match the target input",
+                422,
+                {
+                    "id": artifact_id,
+                    "field": field_key,
+                    "expected": input_types[field_key],
+                    "actual": artifact.artifact_type,
+                },
+            )
 
 
 def _bindings(db: Session, attempt_id: str) -> list[AttemptInputBinding]:
@@ -726,6 +808,95 @@ def _create_node_run(
     asset_id = str(asset.get("id") or "")
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
+    _validate_input_bindings(db, run, node, artifact_ids)
+    existing = db.scalar(
+        select(NodeRun)
+        .where(
+            NodeRun.flow_run_id == run.id,
+            NodeRun.flow_node_snapshot_key == instance_key,
+        )
+        .order_by(NodeRun.sequence_no)
+    )
+    if existing:
+        latest = db.scalar(
+            select(NodeAttempt)
+            .where(NodeAttempt.node_run_id == existing.id)
+            .order_by(NodeAttempt.attempt_no.desc())
+        )
+        if latest is None:
+            raise DomainError("RUN_STATE_INVALID", "node work item has no attempt", 409)
+        if created_from == "PORT_MAPPING" and latest.state != AttemptState.WAITING_INPUT:
+            return existing, latest
+        if latest.state == AttemptState.WAITING_INPUT:
+            current_bindings = {row.input_field_key: row for row in _bindings(db, latest.id)}
+            for field_key, artifact_id in artifact_ids.items():
+                binding = current_bindings.get(field_key)
+                if binding:
+                    binding.artifact_version_id = artifact_id
+                    binding.binding_source = created_from
+                else:
+                    db.add(
+                        AttemptInputBinding(
+                            attempt_id=latest.id,
+                            input_field_key=field_key,
+                            artifact_version_id=artifact_id,
+                            binding_source=created_from,
+                        )
+                    )
+            latest.state_version += 1
+            latest.error_code = None
+            latest.error_detail = None
+            db.flush()
+            _dispatch_readiness(db, latest)
+            _event(
+                db,
+                run.id,
+                "INPUT_BINDING_CHANGED",
+                {"fields": list(artifact_ids), "source": created_from},
+                existing.id,
+                latest.id,
+            )
+            return existing, latest
+        if existing.state == NodeRunState.ACTIVE:
+            raise illegal("node work item already has an active attempt", state=latest.state)
+        next_attempt_no = latest.attempt_no + 1
+        existing.state = NodeRunState.ACTIVE
+        existing.accepted_attempt_id = None
+        attempt = NodeAttempt(
+            node_run_id=existing.id,
+            attempt_no=next_attempt_no,
+            snapshot_id=snapshot.id,
+            workspace_ref=str(
+                attempt_workspace_path(
+                    asset_id=asset_id,
+                    run_id=run.id,
+                    node_run_id=existing.id,
+                    attempt_no=next_attempt_no,
+                )
+            ),
+        )
+        db.add(attempt)
+        db.flush()
+        for field_key, artifact_id in artifact_ids.items():
+            db.add(
+                AttemptInputBinding(
+                    attempt_id=attempt.id,
+                    input_field_key=field_key,
+                    artifact_version_id=artifact_id,
+                    binding_source=created_from,
+                )
+            )
+        db.flush()
+        _event(
+            db,
+            run.id,
+            "ATTEMPT_CREATED",
+            {"attempt_no": next_attempt_no, "flow_node_key": instance_key},
+            existing.id,
+            attempt.id,
+        )
+        _dispatch_readiness(db, attempt)
+        return existing, attempt
     sequence = (
         db.scalar(select(func.max(NodeRun.sequence_no)).where(NodeRun.flow_run_id == run.id)) or 0
     ) + 1
@@ -753,17 +924,12 @@ def _create_node_run(
     db.add(attempt)
     db.flush()
     for field_key, artifact_id in artifact_ids.items():
-        artifact = db.get(ArtifactVersion, artifact_id)
-        if not artifact or artifact.flow_run_id != run.id:
-            raise DomainError(
-                "INPUT_BINDING_INVALID", "artifact does not belong to run", 422, {"id": artifact_id}
-            )
         db.add(
             AttemptInputBinding(
                 attempt_id=attempt.id,
                 input_field_key=field_key,
                 artifact_version_id=artifact_id,
-                binding_source="EXPLICIT",
+                binding_source=created_from,
             )
         )
     # AsyncSession uses autoflush=False; readiness queries must see new bindings.
@@ -784,7 +950,6 @@ def start_flow(
     db: Session,
     flow_id: str,
     payload: RunStart,
-    prepared_artifacts: list[PreparedArtifact],
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
     definition = _snapshot_definition(db, flow_id)
@@ -792,10 +957,30 @@ def start_flow(
         db.scalar(select(func.max(FlowRun.run_no)).where(FlowRun.flow_definition_id == flow_id))
         or 0
     ) + 1
+    environment = None
+    if payload.environment_version_id:
+        environment = db.scalar(
+            select(EnvironmentVersion)
+            .where(EnvironmentVersion.id == payload.environment_version_id)
+            .with_for_update()
+        )
+        if environment is None:
+            raise not_found("environment_version", payload.environment_version_id)
+        if environment.state != "READY" or not environment.image_digest:
+            raise DomainError(
+                "ENVIRONMENT_VERSION_NOT_READY",
+                "The selected terminal environment version is not ready",
+                409,
+                {"environment_version_id": payload.environment_version_id},
+            )
+    run_name = payload.name or f"{flow.name} · Run #{run_no}"
     run = FlowRun(
         flow_definition_id=flow_id,
         run_no=run_no,
-        name=payload.name or f"{flow.name} · Run #{run_no}",
+        name=run_name,
+        environment_version_id=environment.id if environment else None,
+        lark_folder_token=None,
+        lark_folder_url=None,
     )
     db.add(run)
     db.flush()
@@ -808,16 +993,28 @@ def start_flow(
     db.add(snapshot)
     db.flush()
     run.active_snapshot_id = snapshot.id
-    artifacts: dict[str, str] = {}
-    for prepared in prepared_artifacts:
-        artifact = _register_artifact(db, run.id, prepared)
-        artifacts[prepared.payload.field_key] = artifact.id
-    artifacts.update(payload.input_bindings)
-    entry = (
-        payload.flow_node_key or flow.default_entry_key or definition["nodes"][0]["instance_key"]
+    _event(
+        db,
+        run.id,
+        "FLOW_RUN_CREATED",
+        {
+            "snapshot_version": 1,
+            "environment_version_id": environment.id if environment else None,
+        },
     )
-    _create_node_run(db, run, entry, artifacts, "RUN_START")
-    _event(db, run.id, "FLOW_RUN_CREATED", {"snapshot_version": 1, "entry": entry})
+    if payload.flow_node_key:
+        artifact_ids = dict(payload.input_bindings)
+        for artifact_payload in payload.artifacts:
+            prepared = prepare_artifact(artifact_payload)
+            artifact = _register_artifact(db, run.id, prepared, source="HUMAN_INPUT")
+            artifact_ids[artifact.field_key] = artifact.id
+        _create_node_run(
+            db,
+            run,
+            payload.flow_node_key,
+            artifact_ids,
+            "RUN_START",
+        )
     finish(db)
     return run_detail(db, run.id)
 
@@ -828,7 +1025,30 @@ def start_node_run(
     run = _run(db, run_id)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal run cannot activate node", state=run.state)
-    node_run, _ = _create_node_run(db, run, instance_key, payload.artifact_ids, "HUMAN_START")
+    artifact_ids = dict(payload.artifact_ids)
+    if payload.input_urls:
+        node = _node(_active_snapshot(db, run), instance_key)
+        input_fields = {field.key for field in _input_fields(node)}
+        unknown_fields = sorted(set(payload.input_urls) - input_fields)
+        if unknown_fields:
+            raise DomainError(
+                "INPUT_BINDING_INVALID",
+                "input URL field is not an input of the target node",
+                422,
+                {"fields": unknown_fields},
+            )
+        for field_key, uri in payload.input_urls.items():
+            prepared = prepare_artifact(
+                ArtifactWrite(
+                    field_key=field_key,
+                    artifact_type="URL",
+                    uri=uri,
+                    metadata={"source": "HUMAN_INPUT"},
+                )
+            )
+            artifact = _register_artifact(db, run.id, prepared, source="HUMAN_INPUT")
+            artifact_ids[field_key] = artifact.id
+    node_run, _ = _create_node_run(db, run, instance_key, artifact_ids, "HUMAN_START")
     finish(db)
     return node_run_detail(db, node_run.id)
 
@@ -878,10 +1098,9 @@ def replace_bindings(db: Session, attempt_id: str, payload: InputBindingsWrite) 
     if current.state not in {AttemptState.WAITING_INPUT, AttemptState.START_BLOCKED}:
         raise illegal("input bindings are frozen", state=current.state)
     node_run = _node_run(db, current.node_run_id)
-    for artifact_id in payload.bindings.values():
-        artifact = db.get(ArtifactVersion, artifact_id)
-        if not artifact or artifact.flow_run_id != node_run.flow_run_id:
-            raise DomainError("INPUT_BINDING_INVALID", "invalid artifact binding", 422)
+    run = _run(db, node_run.flow_run_id)
+    node = _node(_snapshot(db, current.snapshot_id), node_run.flow_node_snapshot_key)
+    _validate_input_bindings(db, run, node, payload.bindings)
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -917,9 +1136,25 @@ def replace_bindings(db: Session, attempt_id: str, payload: InputBindingsWrite) 
 def confirm_start(
     db: Session,
     attempt_id: str,
-    payload: AttemptVersionWrite,
+    payload: AttemptStartWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
+    current = _attempt(db, attempt_id)
+    current_node_run = _node_run(db, current.node_run_id)
+    node = _node(_snapshot(db, current.snapshot_id), current_node_run.flow_node_snapshot_key)
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    capabilities = cast(list[dict[str, Any]], asset.get("capabilities") or [])
+    if payload.startup_mode == "SKILL" and not any(
+        item.get("capability_type") == "SKILL"
+        and item.get("capability_key") == payload.capability_key
+        for item in capabilities
+    ):
+        raise DomainError(
+            "STARTUP_CAPABILITY_INVALID",
+            "Selected Skill is not available on this node",
+            422,
+            {"capability_key": payload.capability_key},
+        )
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -928,8 +1163,14 @@ def confirm_start(
         next_state=AttemptState.EXECUTING,
         runtime_phase="STARTING",
     )
+    attempt.startup_mode = payload.startup_mode
+    attempt.startup_capability_key = payload.capability_key
+    attempt.startup_prompt = payload.prompt
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
+    # Starting an attempt must not call a provider or acquire capability credentials.
+    # Skills/MCPs request their own dependencies only when they are actually invoked.
+    attempt.output_targets_json = _create_output_targets(db, run, attempt, node)
     _action(
         db,
         run.id,
@@ -953,6 +1194,140 @@ def confirm_start(
     if _inline_execution():
         process_start_runtime(db, attempt.id)
     return attempt_detail(db, attempt.id)
+
+
+def _url_token(value: str, marker: str) -> str:
+    path = urlparse(value).path
+    if marker not in path:
+        raise DomainError(
+            "LARK_RESOURCE_URL_INVALID",
+            "The configured Lark resource URL is invalid",
+            422,
+            {"url": value},
+        )
+    token = path.split(marker, 1)[1].split("/", 1)[0]
+    if not token:
+        raise DomainError(
+            "LARK_RESOURCE_URL_INVALID",
+            "The configured Lark resource token is missing",
+            422,
+            {"url": value},
+        )
+    return token
+
+
+def _create_output_targets(
+    db: Session, run: FlowRun, attempt: NodeAttempt, node: dict[str, Any]
+) -> dict[str, dict[str, str]]:
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    raw_outputs = cast(list[object], asset.get("outputs") or [])
+    if not raw_outputs:
+        return {}
+    snapshot = _snapshot(db, attempt.snapshot_id)
+    root_url = str(snapshot.definition_json.get("lark_root_folder_url") or "")
+    if not root_url:
+        raise DomainError(
+            "LARK_ROOT_REQUIRED",
+            "The flow must configure a Lark root before creating outputs",
+            422,
+        )
+    try:
+        access_token = connected_lark_access_token(db)
+    except DomainError as exc:
+        if exc.code in {"CREDENTIAL_CONNECTION_REQUIRED", "CREDENTIAL_REAUTH_REQUIRED"}:
+            return {}
+        raise
+    drive = get_lark_drive()
+    is_wiki = "/wiki/" in urlparse(root_url).path
+    if not run.lark_folder_token or not run.lark_folder_url:
+        if is_wiki:
+            folder = drive.create_wiki_node(
+                access_token=access_token, parent_url=root_url, name=run.name
+            )
+            register_rollback_action(
+                db,
+                lambda url=folder.url: drive.delete_wiki_node(
+                    access_token=access_token, node_url=url
+                ),
+            )
+        else:
+            folder = drive.create_folder(
+                access_token=access_token,
+                parent_token=_url_token(root_url, "/drive/folder/"),
+                parent_url=root_url,
+                name=run.name,
+            )
+            register_rollback_action(
+                db,
+                lambda token=folder.token: drive.delete(
+                    access_token=access_token, token=token, resource_type="folder"
+                ),
+            )
+        run.lark_folder_token = folder.token
+        run.lark_folder_url = folder.url
+
+    targets: dict[str, dict[str, str]] = {}
+    node_name = str(node.get("alias") or asset.get("name") or "Node")
+    for raw in raw_outputs:
+        if not isinstance(raw, dict):
+            continue
+        output = cast(dict[str, Any], raw)
+        field_key = str(output.get("field_key") or "")
+        if not field_key:
+            continue
+        display_name = str(output.get("display_name") or field_key)
+        title = f"{node_name} · {display_name}"
+        template_url = str(output.get("template_url") or "")
+        if is_wiki:
+            resource = drive.create_wiki_node(
+                access_token=access_token,
+                parent_url=run.lark_folder_url or root_url,
+                name=title,
+            )
+            register_rollback_action(
+                db,
+                lambda url=resource.url: drive.delete_wiki_node(
+                    access_token=access_token, node_url=url
+                ),
+            )
+            token = resource.object_token or resource.token
+        elif template_url:
+            resource = drive.copy_docx(
+                access_token=access_token,
+                source_token=_url_token(template_url, "/docx/"),
+                folder_token=run.lark_folder_token or "",
+                name=title,
+            )
+            token = resource.token
+            register_rollback_action(
+                db,
+                lambda token=token: drive.delete(
+                    access_token=access_token, token=token, resource_type="docx"
+                ),
+            )
+        else:
+            resource = drive.create_docx(
+                access_token=access_token,
+                folder_token=run.lark_folder_token or "",
+                folder_url=run.lark_folder_url or root_url,
+                name=title,
+            )
+            token = resource.token
+            register_rollback_action(
+                db,
+                lambda token=token: drive.delete(
+                    access_token=access_token, token=token, resource_type="docx"
+                ),
+            )
+        targets[field_key] = {
+            "url": resource.url,
+            "token": token,
+            "title": title,
+            "display_name": display_name,
+            "description": str(output.get("description") or ""),
+            "template_url": template_url,
+        }
+    return targets
 
 
 def recover_runtime_tasks(db: Session) -> int:
@@ -1046,7 +1421,20 @@ def recover_runtime_tasks(db: Session) -> int:
 
 def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    environment = (
+        db.get(EnvironmentVersion, run.environment_version_id)
+        if run.environment_version_id
+        else None
+    )
     node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    input_contracts = {
+        str(item.get("field_key") or ""): item
+        for raw in cast(list[object], asset.get("inputs") or [])
+        if isinstance(raw, dict)
+        for item in [cast(dict[str, Any], raw)]
+    }
     bindings: list[dict[str, Any]] = []
     for binding in _bindings(db, attempt.id):
         artifact = db.get(ArtifactVersion, binding.artifact_version_id)
@@ -1057,8 +1445,15 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
                 409,
                 {"artifact_version_id": binding.artifact_version_id},
             )
+        contract = input_contracts.get(binding.input_field_key, {})
         bindings.append(
-            {"field_key": binding.input_field_key, "artifact": _artifact_dict(artifact)}
+            {
+                "field_key": binding.input_field_key,
+                "display_name": contract.get("display_name"),
+                "description": contract.get("description"),
+                "template_url": contract.get("template_url"),
+                "artifact": _artifact_dict(artifact),
+            }
         )
     return build_runtime_request(
         db,
@@ -1067,6 +1462,10 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         node=node,
         bindings=bindings,
         workspace_ref=attempt.workspace_ref or "",
+        startup_prompt=attempt.startup_prompt,
+        startup_capability_key=attempt.startup_capability_key,
+        output_targets=cast(dict[str, dict[str, str]], attempt.output_targets_json or {}),
+        environment_image=environment.image_digest if environment else None,
     )
 
 
@@ -1239,18 +1638,25 @@ def _apply_runtime_result(
     return attempt_detail(db, attempt.id)
 
 
-def _prepare_runtime_outputs(result: RuntimeResult) -> list[PreparedArtifact]:
+def _prepare_runtime_outputs(
+    result: RuntimeResult, output_targets: dict[str, Any]
+) -> list[PreparedArtifact]:
     if result.status != "COMPLETED":
         return []
     return [
         prepare_artifact(
             ArtifactWrite(
                 field_key=field_key,
-                artifact_type=artifact_type,
-                inline_content=content,
+                artifact_type="URL",
+                uri=content,
+                metadata={"runtime_artifact_type": "URL"},
             )
         )
-        for field_key, (artifact_type, content) in result.outputs.items()
+        for field_key, raw_target in output_targets.items()
+        if isinstance(raw_target, dict)
+        for target in [cast(dict[str, Any], raw_target)]
+        for content in [str(target.get("url") or "")]
+        if content
     ]
 
 
@@ -1276,11 +1682,9 @@ def process_poll_runtime(
     result = batch.result or runtime.inspect(
         RuntimeHandle(handle.job_id, handle.conversation_id, batch.cursor or handle.cursor)
     )
-    prepared_outputs = _prepare_runtime_outputs(result)
     try:
         _require_current_lease(db, lease)
     except Exception:
-        discard_prepared_artifacts(prepared_outputs)
         raise
     claimed = _claim_runtime_phase(
         db,
@@ -1290,8 +1694,8 @@ def process_poll_runtime(
         "RUNNING",
     )
     if claimed is None:
-        discard_prepared_artifacts(prepared_outputs)
         return
+    prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {})
     node_run = _node_run(db, claimed.node_run_id)
     for runtime_event in batch.events:
         _event(
@@ -1391,11 +1795,9 @@ def process_resume_runtime(
     )
     _release_worker_read_transaction(db, lease)
     result = get_runtime().resume(handle, content)
-    prepared_outputs = _prepare_runtime_outputs(result)
     try:
         _require_current_lease(db, lease)
     except Exception:
-        discard_prepared_artifacts(prepared_outputs)
         raise
     claimed = _claim_runtime_phase(
         db,
@@ -1406,8 +1808,8 @@ def process_resume_runtime(
         runtime_phase="RUNNING",
     )
     if claimed is None:
-        discard_prepared_artifacts(prepared_outputs)
         return
+    prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {})
     conversations.mark_auto_human_input_delivered(db, claimed.id, action_id=action.id)
     _apply_runtime_result(
         db,
@@ -1613,16 +2015,18 @@ def _activate_mapped_targets(db: Session, run: FlowRun, accepted: NodeRun) -> No
         )
     )
     by_field = {x.field_key: x.id for x in outputs}
-    for edge in definition.get("edges", []):
-        if edge["source_instance_key"] != accepted.flow_node_snapshot_key:
+    for mapping in definition.get("port_mappings", []):
+        if mapping["source_instance_key"] != accepted.flow_node_snapshot_key:
             continue
-        bindings = {
-            mapping["target_input_key"]: by_field[mapping["source_output_key"]]
-            for mapping in edge.get("mappings", [])
-            if mapping["source_output_key"] in by_field
-        }
-        if bindings:
-            _create_node_run(db, run, edge["target_instance_key"], bindings, "EDGE_MAPPING")
+        artifact_id = by_field.get(mapping["source_output_key"])
+        if artifact_id:
+            _create_node_run(
+                db,
+                run,
+                mapping["target_instance_key"],
+                {mapping["target_input_key"]: artifact_id},
+                "PORT_MAPPING",
+            )
 
 
 def accept_attempt(
@@ -2035,6 +2439,10 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "conversation_id": attempt.conversation_id,
         "runtime_cursor": attempt.runtime_cursor,
         "workspace_ref": attempt.workspace_ref,
+        "startup_mode": attempt.startup_mode,
+        "startup_capability_key": attempt.startup_capability_key,
+        "startup_prompt": attempt.startup_prompt,
+        "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,
         "error_detail": attempt.error_detail,
         "input_bindings": [
@@ -2091,6 +2499,11 @@ def node_run_detail(db: Session, node_run_id: str) -> dict[str, Any]:
 
 def run_detail(db: Session, run_id: str) -> dict[str, Any]:
     run = _run(db, run_id)
+    environment = (
+        db.get(EnvironmentVersion, run.environment_version_id)
+        if run.environment_version_id
+        else None
+    )
     snapshots = list(
         db.scalars(
             select(RunSnapshot)
@@ -2124,6 +2537,23 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
         "state": run.state,
         "row_version": run.row_version,
         "completion_mode": run.completion_mode,
+        "environment_version_id": run.environment_version_id,
+        "environment_version": (
+            {
+                "id": environment.id,
+                "environment_id": environment.environment_id,
+                "version_no": environment.version_no,
+                "state": environment.state,
+                "image_reference": environment.image_reference,
+                "image_digest": environment.image_digest,
+                "manifest": environment.manifest_json or {},
+                "created_at": environment.created_at.isoformat(),
+            }
+            if environment
+            else None
+        ),
+        "lark_folder_token": run.lark_folder_token,
+        "lark_folder_url": run.lark_folder_url,
         "active_snapshot_id": run.active_snapshot_id,
         "active_snapshot_version": next(
             (x.version for x in snapshots if x.id == run.active_snapshot_id), None
@@ -2243,6 +2673,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "name": run.name,
                 "state": run.state,
                 "completion_mode": run.completion_mode,
+                "environment_version_id": run.environment_version_id,
                 "active_snapshot_version": snapshot.version if snapshot else None,
                 "current_node_key": (current_node.flow_node_snapshot_key if current_node else None),
                 "current_node_name": current_name,

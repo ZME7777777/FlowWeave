@@ -14,6 +14,7 @@ from flowweave.modules.orchestration import public as service
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
     ArtifactWrite,
+    AttemptStartWrite,
     AttemptVersionWrite,
     HumanInputWrite,
     InputBindingsWrite,
@@ -32,17 +33,7 @@ def _key(value: str | None, action: str, identifier: str) -> str:
 
 @router.post("/flows/{flow_id}/runs", status_code=201)
 async def start_flow(flow_id: str, payload: RunStart, db: Db) -> dict[str, Any]:
-    await db.rollback()
-    prepared = await asyncio.to_thread(
-        lambda: [service.prepare_artifact(item) for item in payload.artifacts]
-    )
-    try:
-        return await run_sync(
-            db, lambda session: service.start_flow(session, flow_id, payload, prepared)
-        )
-    except BaseException:
-        await asyncio.to_thread(service.discard_prepared_artifacts, prepared)
-        raise
+    return await run_sync(db, lambda session: service.start_flow(session, flow_id, payload))
 
 
 @router.get("/flow-runs")
@@ -84,6 +75,16 @@ async def add_artifact(run_id: str, payload: ArtifactWrite, db: Db) -> dict[str,
         raise
 
 
+@router.delete(
+    "/flow-runs/{run_id}/artifacts/{artifact_id}",
+    status_code=204,
+    response_class=Response,
+)
+async def delete_artifact(run_id: str, artifact_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_artifact(session, run_id, artifact_id))
+    return Response(status_code=204)
+
+
 @router.get("/artifact-versions/{artifact_id}/content")
 async def artifact_content(artifact_id: str, db: Db, download: bool = False) -> Response:
     reference = await run_sync(
@@ -120,7 +121,7 @@ async def update_bindings(attempt_id: str, payload: InputBindingsWrite, db: Db) 
 @router.post("/node-attempts/{attempt_id}/confirm-start")
 async def confirm_start(
     attempt_id: str,
-    payload: AttemptVersionWrite,
+    payload: AttemptStartWrite,
     db: Db,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:

@@ -26,8 +26,22 @@ def asset_payload(name="方案生成", skill=None):
     return {
         "name": name,
         "description": "产品驱动节点",
-        "inputs": [{"field_key": "prd", "display_name": "需求", "data_type": "DOCUMENT"}],
-        "outputs": [{"field_key": "design", "display_name": "方案", "data_type": "DOCUMENT"}],
+        "inputs": [
+            {
+                "field_key": "prd",
+                "display_name": "需求",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/prd-template",
+            }
+        ],
+        "outputs": [
+            {
+                "field_key": "design",
+                "display_name": "方案",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/design-template",
+            }
+        ],
         "executor": {
             "startup_prompt": "读取输入并生成方案",
             "context_prompt": "保留证据",
@@ -35,7 +49,6 @@ def asset_payload(name="方案生成", skill=None):
             "max_iterations": 20,
         },
         "capabilities": [skill] if skill else [],
-        "default_skill_ref": skill["capability_key"] if skill else None,
     }
 
 
@@ -45,11 +58,47 @@ def create_asset(client, skill, name="方案生成"):
     return response.json()
 
 
-def test_node_asset_can_be_saved_without_skill_or_default_skill(client):
+def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
     assert response.json()["capabilities"] == []
-    assert response.json()["default_skill_ref"] is None
+
+
+def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
+    payload = asset_payload("无模板节点")
+    payload["inputs"][0]["template_url"] = ""
+    payload["outputs"][0]["template_url"] = ""
+    created = client.post("/api/v1/node-assets", json=payload)
+    assert created.status_code == 201, created.text
+    asset = created.json()
+    assert asset["inputs"][0]["template_url"] == ""
+    assert asset["outputs"][0]["template_url"] == ""
+
+    flow = create_flow(client, asset["id"])
+    started = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "flow_node_key": "design_a",
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/input-without-template",
+                }
+            ],
+        },
+    )
+    assert started.status_code == 201, started.text
+    attempt = started.json()["node_runs"][0]["attempts"][0]
+    confirmed = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
+        json={"expected_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "blank-output-template"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    target = confirmed.json()["output_targets"]["design"]
+    assert target["template_url"] == ""
+    assert "/docx/mock-docx-" in target["url"]
 
 
 def flow_payload(asset_id, name="需求到方案"):
@@ -91,6 +140,7 @@ def flow_payload(asset_id, name="需求到方案"):
     return {
         "name": name,
         "description": "同一资产放置两次，映射显式产物",
+        "lark_root_folder_url": "https://example.feishu.cn/drive/folder/flow-root",
         "default_entry_key": "design_a",
         "nodes": [
             {
@@ -115,7 +165,14 @@ def flow_payload(asset_id, name="需求到方案"):
                 "source_instance_key": "design_a",
                 "target_instance_key": "design_b",
                 "position": 0,
-                "mappings": [{"source_output_key": "design", "target_input_key": "prd"}],
+            }
+        ],
+        "port_mappings": [
+            {
+                "source_instance_key": "design_a",
+                "source_output_key": "design",
+                "target_instance_key": "design_b",
+                "target_input_key": "prd",
             }
         ],
     }
@@ -125,6 +182,193 @@ def create_flow(client, asset_id):
     response = client.post("/api/v1/flows", json=flow_payload(asset_id))
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_flow_run_can_start_empty_and_activate_any_node_later(client, skill_capability):
+    asset = create_asset(client, skill_capability)
+    flow = create_flow(client, asset["id"])
+
+    created = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"name": "空任务运行"},
+    )
+
+    assert created.status_code == 201, created.text
+    run = created.json()
+    assert run["node_runs"] == []
+    assert run["artifacts"] == []
+    assert run["lark_folder_token"] is None
+    assert run["lark_folder_url"] is None
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
+        json={"artifact_ids": {}},
+    )
+    assert activated.status_code == 201, activated.text
+    node_run = activated.json()
+    assert node_run["flow_node_snapshot_key"] == "design_b"
+    assert node_run["attempts"][0]["state"] == "WAITING_INPUT"
+
+
+def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
+    def create_graph_asset(name, inputs, outputs):
+        response = client.post(
+            "/api/v1/node-assets",
+            json={
+                "name": name,
+                "inputs": inputs,
+                "outputs": outputs,
+                "executor": {"startup_prompt": f"执行{name}"},
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    source = create_graph_asset(
+        "分支源节点",
+        [],
+        [
+            {
+                "field_key": "result",
+                "display_name": "结果",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/result-template",
+            }
+        ],
+    )
+    merge = create_graph_asset(
+        "汇聚节点",
+        [
+            {
+                "field_key": "left",
+                "display_name": "左输入",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/left-template",
+            },
+            {
+                "field_key": "right",
+                "display_name": "右输入",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/right-template",
+            },
+        ],
+        [],
+    )
+    branch = create_graph_asset(
+        "分支目标节点",
+        [
+            {
+                "field_key": "input",
+                "display_name": "输入",
+                "data_type": "URL",
+                "template_url": "https://example.feishu.cn/docx/input-template",
+            }
+        ],
+        [],
+    )
+    created_flow = client.post(
+        "/api/v1/flows",
+        json={
+            "name": "分支与汇聚流程",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/branch-root",
+            "nodes": [
+                {"instance_key": "source_a", "node_asset_id": source["id"]},
+                {"instance_key": "source_b", "node_asset_id": source["id"]},
+                {"instance_key": "merge", "node_asset_id": merge["id"]},
+                {"instance_key": "branch", "node_asset_id": branch["id"]},
+            ],
+            "edges": [
+                {"source_instance_key": "source_a", "target_instance_key": "merge"},
+                {"source_instance_key": "source_b", "target_instance_key": "merge"},
+                {"source_instance_key": "source_a", "target_instance_key": "branch"},
+            ],
+            "port_mappings": [
+                {
+                    "source_instance_key": "source_a",
+                    "source_output_key": "result",
+                    "target_instance_key": "merge",
+                    "target_input_key": "left",
+                },
+                {
+                    "source_instance_key": "source_b",
+                    "source_output_key": "result",
+                    "target_instance_key": "merge",
+                    "target_input_key": "right",
+                },
+                {
+                    "source_instance_key": "source_a",
+                    "source_output_key": "result",
+                    "target_instance_key": "branch",
+                    "target_input_key": "input",
+                },
+            ],
+        },
+    )
+    assert created_flow.status_code == 201, created_flow.text
+    flow = created_flow.json()
+    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+
+    source_attempts = {}
+    for node_key in ("source_a", "source_b"):
+        activated = client.post(
+            f"/api/v1/flow-runs/{run['id']}/nodes/{node_key}/runs",
+            json={"artifact_ids": {}},
+        )
+        assert activated.status_code == 201, activated.text
+        source_attempts[node_key] = activated.json()["attempts"][0]
+
+    def execute_and_accept(node_key):
+        attempt = source_attempts[node_key]
+        execution = client.post(
+            f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
+            json={
+                "expected_state_version": attempt["state_version"],
+                "startup_mode": "PROMPT",
+                "prompt": f"执行 {node_key}",
+            },
+            headers={"Idempotency-Key": f"execute-{node_key}"},
+        )
+        assert execution.status_code == 200, execution.text
+        executed = execution.json()
+        assert executed["state"] == "WAITING_ACCEPTANCE"
+        accepted = client.post(
+            f"/api/v1/node-attempts/{attempt['id']}/accept",
+            json={"expected_state_version": executed["state_version"]},
+            headers={"Idempotency-Key": f"accept-{node_key}"},
+        )
+        assert accepted.status_code == 200, accepted.text
+        return executed, accepted.json()
+
+    source_a_execution, after_source_a = execute_and_accept("source_a")
+    merge_run = next(
+        item for item in after_source_a["node_runs"] if item["flow_node_snapshot_key"] == "merge"
+    )
+    branch_run = next(
+        item for item in after_source_a["node_runs"] if item["flow_node_snapshot_key"] == "branch"
+    )
+    assert merge_run["attempts"][0]["state"] == "WAITING_INPUT"
+    assert [item["input_field_key"] for item in merge_run["attempts"][0]["input_bindings"]] == [
+        "left"
+    ]
+    assert branch_run["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
+    assert (
+        branch_run["attempts"][0]["input_bindings"][0]["artifact_version_id"]
+        == source_a_execution["artifacts"][0]["id"]
+    )
+
+    source_b_execution, after_source_b = execute_and_accept("source_b")
+    merge_runs = [
+        item for item in after_source_b["node_runs"] if item["flow_node_snapshot_key"] == "merge"
+    ]
+    assert len(merge_runs) == 1
+    merge_attempt = merge_runs[0]["attempts"][0]
+    assert merge_attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert {
+        item["input_field_key"]: item["artifact_version_id"]
+        for item in merge_attempt["input_bindings"]
+    } == {
+        "left": source_a_execution["artifacts"][0]["id"],
+        "right": source_b_execution["artifacts"][0]["id"],
+    }
 
 
 def test_public_reads_and_writes_require_no_human_token(public_client):
@@ -147,6 +391,7 @@ def test_node_asset_delete_is_blocked_by_active_flow(client, skill_capability):
         {
             "id": asset["id"],
             "name": asset["name"],
+            "relation": "FLOW_NODE",
             "flows": [
                 {
                     "id": flow["id"],
@@ -165,29 +410,38 @@ def test_node_asset_delete_is_blocked_by_active_flow(client, skill_capability):
     assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
 
 
-def test_node_asset_bulk_delete_is_atomic_when_referenced(client, skill_capability):
+def test_node_asset_bulk_delete_deletes_unreferenced_and_reports_blocked(client, skill_capability):
     referenced = create_asset(client, skill_capability, "批删被引用节点")
     unreferenced = create_asset(client, skill_capability, "批删未引用节点")
     flow = create_flow(client, referenced["id"])
 
-    rejected = client.request(
+    deleted = client.request(
         "DELETE",
         "/api/v1/node-assets",
         json={"ids": [unreferenced["id"], referenced["id"]]},
     )
 
-    assert rejected.status_code == 409, rejected.text
-    error = rejected.json()["error"]
-    assert error["code"] == "NODE_ASSET_IN_USE"
-    assert error["details"]["flows"] == [
-        {
-            "id": flow["id"],
-            "name": flow["name"],
-            "reference_count": 2,
-        }
-    ]
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json() == {
+        "deleted_ids": [unreferenced["id"]],
+        "blocked": [
+            {
+                "id": referenced["id"],
+                "name": referenced["name"],
+                "relation": "FLOW_NODE",
+                "flows": [
+                    {
+                        "id": flow["id"],
+                        "name": flow["name"],
+                        "reference_count": 2,
+                    }
+                ],
+            }
+        ],
+    }
     listed_ids = {item["id"] for item in client.get("/api/v1/node-assets").json()}
-    assert {referenced["id"], unreferenced["id"]} <= listed_ids
+    assert referenced["id"] in listed_ids
+    assert unreferenced["id"] not in listed_ids
 
 
 def test_catalog_model_provider_and_optimistic_concurrency(client, skill_capability):
@@ -197,7 +451,6 @@ def test_catalog_model_provider_and_optimistic_concurrency(client, skill_capabil
     payload = asset_payload(skill=skill_capability)
     payload["directory_id"] = directory["id"]
     created = client.post("/api/v1/node-assets", json=payload).json()
-    assert created["default_skill_ref"] == skill_capability["capability_key"]
     assert created["inputs"][0]["field_key"] == "prd"
 
     stale = deepcopy(payload)
@@ -302,11 +555,17 @@ def test_model_provider_single_and_bulk_delete(client):
         "/api/v1/model-providers",
         json={"ids": [second["id"], third["id"]]},
     )
-    assert deleted.status_code == 204, deleted.text
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json() == {
+        "deleted_ids": [second["id"], third["id"]],
+        "blocked": [],
+    }
     assert client.get("/api/v1/model-providers").json() == []
 
 
-def test_model_provider_bulk_delete_is_atomic_when_referenced(client, skill_capability):
+def test_model_provider_bulk_delete_deletes_unreferenced_and_reports_blocked(
+    client, skill_capability
+):
     referenced = _create_model_provider(client, "被引用模型服务")
     unreferenced = _create_model_provider(client, "未引用模型服务")
     payload = asset_payload("引用模型服务节点", skill_capability)
@@ -316,31 +575,30 @@ def test_model_provider_bulk_delete_is_atomic_when_referenced(client, skill_capa
     assert asset_response.status_code == 201, asset_response.text
     asset = asset_response.json()
 
-    rejected = client.request(
+    deleted = client.request(
         "DELETE",
         "/api/v1/model-providers",
         json={"ids": [referenced["id"], unreferenced["id"]]},
     )
-    assert rejected.status_code == 409, rejected.text
-    error = rejected.json()["error"]
-    assert error["code"] == "VERSION_CONFLICT"
-    assert error["details"]["providers"] == [
-        {
-            "id": referenced["id"],
-            "name": referenced["name"],
-            "reference_node_count": 1,
-        }
-    ]
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json() == {
+        "deleted_ids": [unreferenced["id"]],
+        "blocked": [
+            {
+                "id": referenced["id"],
+                "name": referenced["name"],
+                "relation": "NODE_EXECUTOR",
+                "nodes": [{"id": asset["id"], "name": asset["name"]}],
+            }
+        ],
+    }
     assert {item["id"] for item in client.get("/api/v1/model-providers").json()} == {
         referenced["id"],
-        unreferenced["id"],
     }
 
     assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
     assert client.delete(f"/api/v1/model-providers/{referenced['id']}").status_code == 204
-    assert [item["id"] for item in client.get("/api/v1/model-providers").json()] == [
-        unreferenced["id"]
-    ]
+    assert client.get("/api/v1/model-providers").json() == []
 
 
 @pytest.mark.asyncio
@@ -381,9 +639,7 @@ async def test_model_discovery_performs_network_io_outside_database_transaction(
     assert transaction_states == [False]
 
 
-def test_model_provider_connection_test_reports_result_and_persists_failure(
-    monkeypatch, client
-):
+def test_model_provider_connection_test_reports_result_and_persists_failure(monkeypatch, client):
     from flowweave.modules.model_providers.presentation import router as provider_router
     from flowweave.shared.errors import DomainError
 
@@ -419,8 +675,8 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": "需求文档 v1",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/prd-v1",
                 }
             ],
         },
@@ -444,13 +700,22 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
 
     execution = client.post(
         f"/api/v1/node-attempts/{attempt1['id']}/confirm-start",
-        json={"expected_state_version": attempt1["state_version"]},
+        json={
+            "expected_state_version": attempt1["state_version"],
+            "startup_mode": "SKILL",
+            "capability_key": skill_capability["capability_key"],
+        },
         headers={"Idempotency-Key": "confirm-first"},
     )
     assert execution.status_code == 200, execution.text
     attempt1 = execution.json()
     assert attempt1["state"] == "WAITING_ACCEPTANCE"
+    assert attempt1["startup_mode"] == "SKILL"
+    assert attempt1["startup_capability_key"] == skill_capability["capability_key"]
     assert attempt1["artifacts"][0]["field_key"] == "design"
+    assert attempt1["artifacts"][0]["artifact_type"] == "URL"
+    assert attempt1["artifacts"][0]["uri"] == attempt1["output_targets"]["design"]["url"]
+    assert attempt1["artifacts"][0]["inline_content"] is None
     assert [x["stage"] for x in attempt1["gate_evaluations"]] == ["END", "START", "START"]
 
     rejected = client.post(
@@ -520,16 +785,13 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
 def test_any_node_can_start_without_upstream_completion(client, skill_capability):
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
-    run = client.post(
-        f"/api/v1/flows/{flow['id']}/runs",
-        json={"flow_node_key": "design_a"},
-    ).json()
+    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
     manual = client.post(
         f"/api/v1/flow-runs/{run['id']}/artifacts",
         json={
             "field_key": "prd",
-            "artifact_type": "DOCUMENT",
-            "inline_content": "人工为任意节点提供的输入",
+            "artifact_type": "URL",
+            "uri": "https://example.feishu.cn/docx/manual-input",
         },
     ).json()
     activated = client.post(
@@ -538,32 +800,93 @@ def test_any_node_can_start_without_upstream_completion(client, skill_capability
     )
     assert activated.status_code == 201, activated.text
     assert activated.json()["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
-    assert run["node_runs"][0]["state"] == "ACTIVE"
+    assert activated.json()["flow_node_snapshot_key"] == "design_b"
+    assert run["node_runs"] == []
 
 
-def test_artifact_content_preview_download_and_storage_boundary(client, skill_capability):
+def test_node_input_bindings_reject_unknown_ports_and_other_run_artifacts(client, skill_capability):
+    asset = create_asset(client, skill_capability)
+    flow = create_flow(client, asset["id"])
+    first_run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    second_run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    artifact = client.post(
+        f"/api/v1/flow-runs/{first_run['id']}/artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.feishu.cn/docx/strict-input",
+        },
+    ).json()
+
+    unknown = client.post(
+        f"/api/v1/flow-runs/{first_run['id']}/nodes/design_a/runs",
+        json={"artifact_ids": {"unknown": artifact["id"]}},
+    )
+    assert unknown.status_code == 422, unknown.text
+    assert unknown.json()["error"]["code"] == "INPUT_BINDING_INVALID"
+    assert unknown.json()["error"]["details"]["fields"] == ["unknown"]
+
+    cross_run = client.post(
+        f"/api/v1/flow-runs/{second_run['id']}/nodes/design_a/runs",
+        json={"artifact_ids": {"prd": artifact["id"]}},
+    )
+    assert cross_run.status_code == 422, cross_run.text
+    assert cross_run.json()["error"]["code"] == "INPUT_BINDING_INVALID"
+    assert cross_run.json()["error"]["details"]["field"] == "prd"
+
+
+def test_lark_artifact_content_redirects_to_external_document(client, skill_capability):
     asset = create_asset(client, skill_capability, "产物内容节点")
     flow = create_flow(client, asset["id"])
-    run = client.post(
-        f"/api/v1/flows/{flow['id']}/runs",
-        json={"flow_node_key": "design_a"},
-    ).json()
-    inline = client.post(
+    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    external = client.post(
         f"/api/v1/flow-runs/{run['id']}/artifacts",
         json={
             "field_key": "notes",
-            "artifact_type": "TEXT",
-            "inline_content": "可预览内容",
-            "metadata": {"filename": "notes.md"},
+            "artifact_type": "URL",
+            "uri": "https://example.feishu.cn/docx/manual-notes",
         },
     ).json()
-    preview = client.get(f"/api/v1/artifact-versions/{inline['id']}/content")
-    assert preview.status_code == 200
-    assert preview.text == "可预览内容"
-    assert preview.headers["content-disposition"].startswith("inline")
-    download = client.get(f"/api/v1/artifact-versions/{inline['id']}/content?download=true")
-    assert download.headers["content-disposition"].startswith("attachment")
-    assert "notes.md" in download.headers["content-disposition"]
+    preview = client.get(f"/api/v1/artifact-versions/{external['id']}/content")
+    assert preview.status_code == 409
+    assert preview.json()["error"]["code"] == "ARTIFACT_EXTERNAL"
+    assert preview.json()["error"]["details"]["uri"] == external["uri"]
+
+
+def test_human_artifact_can_be_named_and_removed_until_bound(client, skill_capability):
+    asset = create_asset(client, skill_capability, "人工文档管理节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    first = client.post(
+        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        json={
+            "field_key": "prd",
+            "uri": "https://example.feishu.cn/docx/named-input",
+            "metadata": {"display_name": "支付改版需求文档", "source": "HUMAN_INPUT"},
+        },
+    )
+    assert first.status_code == 201, first.text
+    artifact = first.json()
+    assert artifact["metadata"]["display_name"] == "支付改版需求文档"
+    removed = client.delete(f"/api/v1/flow-runs/{run['id']}/artifacts/{artifact['id']}")
+    assert removed.status_code == 204, removed.text
+    assert artifact["id"] not in {
+        item["id"] for item in client.get(f"/api/v1/flow-runs/{run['id']}").json()["artifacts"]
+    }
+
+    bound = client.post(
+        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        json={"field_key": "prd", "uri": "https://example.feishu.cn/docx/bound-input"},
+    ).json()
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"artifact_ids": {"prd": bound["id"]}},
+    )
+    assert activated.status_code == 201, activated.text
+    blocked = client.delete(f"/api/v1/flow-runs/{run['id']}/artifacts/{bound['id']}")
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["error"]["code"] == "ARTIFACT_DELETE_BLOCKED"
+    assert blocked.json()["error"]["details"]["binding_count"] == 1
 
 
 def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
@@ -571,7 +894,6 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
 ):
     asset = create_asset(client, skill_capability, "删除语义节点")
     flow = create_flow(client, asset["id"])
-    large_content = "x" * (settings.inline_artifact_limit + 1)
     started = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
@@ -580,8 +902,8 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
             "artifacts": [
                 {
                     "field_key": "prd",
-                    "artifact_type": "DOCUMENT",
-                    "inline_content": large_content,
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/deletion-input",
                 }
             ],
         },
@@ -590,8 +912,8 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
     run = started.json()
     attempt = run["node_runs"][0]["attempts"][0]
     artifact = next(item for item in run["artifacts"] if item["field_key"] == "prd")
-    assert artifact["storage_key"]
-    assert container.artifact_store.exists(artifact["storage_key"])
+    assert artifact["storage_key"] is None
+    assert artifact["uri"] == "https://example.feishu.cn/docx/deletion-input"
 
     workspace = Path(attempt["workspace_ref"])
     workspace.mkdir(parents=True, exist_ok=True)
@@ -624,7 +946,6 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
     assert deleted.status_code == 204, deleted.text
     assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
     assert all(item["id"] != run["id"] for item in client.get("/api/v1/flow-runs").json())
-    assert not container.artifact_store.exists(artifact["storage_key"])
     assert not workspace.exists()
 
     with db_session_factory() as db:

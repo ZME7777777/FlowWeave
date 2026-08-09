@@ -11,9 +11,13 @@ from flowweave.runtime.base import RuntimePort
 from flowweave.runtime.mock import MockRuntime
 from flowweave.runtime.openhands import OpenHandsRuntime
 from flowweave.shared.application.artifact_store import ArtifactStorePort
+from flowweave.shared.application.dependency_builder import DependencyBuilderPort
+from flowweave.shared.application.lark_drive import LarkDrivePort
 from flowweave.shared.application.sandbox import SandboxPort
 from flowweave.shared.infrastructure.artifact_store import build_artifact_store
 from flowweave.shared.infrastructure.database import Database
+from flowweave.shared.infrastructure.dependency_builder import build_dependency_builder
+from flowweave.shared.infrastructure.lark_drive import build_lark_drive
 from flowweave.shared.infrastructure.sandbox import build_sandbox
 
 
@@ -25,7 +29,9 @@ class Container:
     http: httpx.AsyncClient
     runtime: RuntimePort
     artifact_store: ArtifactStorePort
+    dependency_builder: DependencyBuilderPort
     sandbox: SandboxPort
+    lark_drive: LarkDrivePort
     run_event_listener: RunEventListener
 
     async def close(self) -> None:
@@ -48,6 +54,8 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         http=httpx.AsyncClient(timeout=timeout, follow_redirects=False),
         runtime=runtime,
         artifact_store=build_artifact_store(settings),
+        dependency_builder=build_dependency_builder(settings),
         sandbox=build_sandbox(settings),
+        lark_drive=build_lark_drive(settings),
         run_event_listener=RunEventListener(settings.database_url),
     )

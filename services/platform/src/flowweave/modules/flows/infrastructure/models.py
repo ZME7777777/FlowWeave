@@ -26,6 +26,7 @@ class FlowDefinition(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     default_entry_key: Mapped[str | None] = mapped_column(String(100))
+    lark_root_folder_url: Mapped[str] = mapped_column(Text)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -73,19 +74,28 @@ class FlowEdge(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
 
 
-class FlowEdgeMapping(Base):
-    __tablename__ = "flow_edge_mappings"
+class FlowPortMapping(Base):
+    __tablename__ = "flow_port_mappings"
     __table_args__ = (
         UniqueConstraint(
-            "edge_id", "source_output_key", "target_input_key", name="uq_edge_mapping"
+            "flow_id",
+            "target_flow_node_id",
+            "target_input_key",
+            name="uq_flow_target_input_mapping",
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    edge_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_edges.id", ondelete="CASCADE"), index=True
+    flow_id: Mapped[str] = mapped_column(
+        ForeignKey("flow_definitions.id", ondelete="CASCADE"), index=True
+    )
+    source_flow_node_id: Mapped[str] = mapped_column(
+        ForeignKey("flow_nodes.id", ondelete="CASCADE")
     )
     source_output_key: Mapped[str] = mapped_column(String(100))
+    target_flow_node_id: Mapped[str] = mapped_column(
+        ForeignKey("flow_nodes.id", ondelete="CASCADE")
+    )
     target_input_key: Mapped[str] = mapped_column(String(100))
 
 
@@ -113,6 +123,6 @@ __all__ = (
     "FlowDefinition",
     "FlowNode",
     "FlowEdge",
-    "FlowEdgeMapping",
+    "FlowPortMapping",
     "GatePolicy",
 )

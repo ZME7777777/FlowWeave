@@ -57,17 +57,28 @@ class TransactionProbeStore:
 
 
 @pytest.mark.asyncio
-async def test_artifact_store_io_is_transaction_free_and_failed_registration_is_compensated(
+async def test_lark_url_artifacts_never_touch_object_storage(
     tmp_path: Path,
     container: Container,
     settings: Settings,
     db_session_factory,
 ) -> None:
     with db_session_factory() as db:
-        flow = FlowDefinition(name="artifact-store-uow-flow")
+        flow = FlowDefinition(
+            name="artifact-store-uow-flow",
+            lark_root_folder_url=("https://example.feishu.cn/drive/folder/artifact-store-uow-root"),
+        )
         db.add(flow)
         db.flush()
-        run = FlowRun(flow_definition_id=flow.id, run_no=1, name="artifact-store-uow-run")
+        run = FlowRun(
+            flow_definition_id=flow.id,
+            run_no=1,
+            name="artifact-store-uow-run",
+            lark_folder_token="artifact-store-uow-run-folder",
+            lark_folder_url=(
+                "https://example.feishu.cn/drive/folder/artifact-store-uow-run-folder"
+            ),
+        )
         db.add(run)
         db.commit()
         run_id = run.id
@@ -76,43 +87,33 @@ async def test_artifact_store_io_is_transaction_free_and_failed_registration_is_
         mark_uow_owned(session.sync_session)
         delegate = LocalArtifactStore(tmp_path / "artifact-uow")
         store = TransactionProbeStore(delegate, session)
-        content = "x" * (settings.inline_artifact_limit + 1)
         with settings_context(settings), artifact_store_context(store):
             created = await runs_router.add_artifact(
                 run_id,
                 ArtifactWrite(
-                    field_key="large",
-                    artifact_type="DOCUMENT",
-                    inline_content=content,
+                    field_key="document",
+                    artifact_type="URL",
+                    uri="https://example.feishu.cn/docx/registered-document",
                 ),
                 session,
             )
-            response = await runs_router.artifact_content(created["id"], session)
-            assert response.body == content.encode()
+            assert created["uri"] == ("https://example.feishu.cn/docx/registered-document")
+            with pytest.raises(DomainError) as external:
+                await runs_router.artifact_content(created["id"], session)
+            assert external.value.code == "ARTIFACT_EXTERNAL"
 
             with pytest.raises(DomainError):
                 await runs_router.add_artifact(
                     "missing-run",
                     ArtifactWrite(
                         field_key="orphan",
-                        artifact_type="DOCUMENT",
-                        inline_content=content,
+                        artifact_type="URL",
+                        uri="https://example.feishu.cn/docx/orphan-document",
                     ),
                     session,
                 )
 
-        assert store.calls
-        assert all(in_transaction is False for _, in_transaction, _ in store.calls)
-        operations = [operation for operation, _, _ in store.calls]
-        assert "put" in operations
-        assert "read" in operations
-        assert "delete" in operations
-        orphan_key = next(
-            key
-            for operation, _, key in reversed(store.calls)
-            if operation == "delete" and key.startswith("artifacts/versions/")
-        )
-        assert delegate.exists(orphan_key) is False
+        assert store.calls == []
 
 
 @pytest.mark.asyncio

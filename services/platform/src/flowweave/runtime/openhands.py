@@ -8,6 +8,7 @@ from typing import Any, cast
 import httpx
 
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.environments.infrastructure import docker as environment_docker
 from flowweave.runtime.base import (
     RuntimeEvent,
     RuntimeEventBatch,
@@ -29,13 +30,38 @@ class OpenHandsRuntime:
         self.openhands_workspace_root = settings.openhands_workspace_root
         self._contracts: dict[str, list[dict[str, str]]] = {}
 
+    @staticmethod
+    def _environment_route(job_id: str) -> tuple[str, bool] | None:
+        for prefix, disposable in (("env-exec:", True), ("env-chat:", False)):
+            if job_id.startswith(prefix):
+                container_name = job_id.removeprefix(prefix)
+                if container_name:
+                    return container_name, disposable
+        return None
+
+    def _base_url_for_handle(self, handle: RuntimeHandle) -> str:
+        route = self._environment_route(handle.job_id)
+        return f"http://{route[0]}:8000" if route else self.base_url
+
+    @classmethod
+    def _cleanup_environment(cls, handle: RuntimeHandle) -> None:
+        route = cls._environment_route(handle.job_id)
+        if route:
+            environment_docker.remove_runtime_container(route[0])
+
     def _request(
-        self, method: str, path: str, *, missing_ok: bool = False, **kwargs: Any
+        self,
+        method: str,
+        path: str,
+        *,
+        missing_ok: bool = False,
+        base_url: str | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         try:
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.request(
-                    method, f"{self.base_url}{path}", headers=self.headers, **kwargs
+                    method, f"{base_url or self.base_url}{path}", headers=self.headers, **kwargs
                 )
                 if missing_ok and response.status_code == 404:
                     return {"_flowweave_missing": True}
@@ -82,6 +108,9 @@ class OpenHandsRuntime:
         artifact = cast(dict[str, Any], binding.get("artifact") or {})
         return {
             "field_key": binding.get("field_key"),
+            "display_name": binding.get("display_name"),
+            "description": binding.get("description"),
+            "template_url": binding.get("template_url"),
             "artifact_type": artifact.get("artifact_type"),
             "inline_content": artifact.get("inline_content"),
             "uri": artifact.get("uri"),
@@ -92,26 +121,25 @@ class OpenHandsRuntime:
     def _output_contract(request: StartAttemptRequest) -> list[dict[str, str]]:
         if request.interaction_mode == "COLLABORATION":
             return []
-        asset = cast(dict[str, Any], request.node.get("asset") or {})
-        raw_outputs: object = asset.get("outputs") or []
-        if not isinstance(raw_outputs, list):
-            return []
-        outputs = cast(list[object], raw_outputs)
         return [
             {
-                "field_key": str(item.get("field_key") or "result"),
-                "artifact_type": str(item.get("data_type") or "TEXT"),
-                "description": str(item.get("description") or ""),
+                "field_key": field_key,
+                "artifact_type": "URL",
+                "url": target.get("url", ""),
+                "title": target.get("title", field_key),
+                "display_name": target.get("display_name", field_key),
+                "description": target.get("description", ""),
+                "template_url": target.get("template_url", ""),
             }
-            for raw in outputs
-            if isinstance(raw, dict)
-            for item in [cast(dict[str, Any], raw)]
+            for field_key, target in request.output_targets.items()
         ]
 
     def _initial_text(self, request: StartAttemptRequest) -> str:
         asset = cast(dict[str, Any], request.node.get("asset") or {})
         executor = cast(dict[str, Any], asset.get("executor") or {})
-        startup = str(executor.get("startup_prompt") or "").strip()
+        startup = str(request.startup_prompt or executor.get("startup_prompt") or "").strip()
+        if request.startup_capability_key:
+            startup = f"${request.startup_capability_key}\n{startup}".strip()
         context = str(executor.get("context_prompt") or "").strip()
         inputs = [self._artifact_input(item) for item in request.bindings]
         outputs = self._output_contract(request)
@@ -119,14 +147,12 @@ class OpenHandsRuntime:
         sections = (
             [
                 "你正在一个由人工新建的独立协作会话中。等待并响应用户在本会话中的请求。"
-                "节点默认 Skill 和启动提示词只用于流程自动执行，不是本会话的预设任务。"
+                "节点启动提示词只用于流程自动执行，不是本会话的预设任务。"
                 "可用 Skill 与 MCP 均为候选能力：先理解用户意图，再自行选择真正相关的能力；"
                 "用户通过 $ 显式指定能力时必须优先遵循。不要仅因某项能力是节点默认值就调用它。"
             ]
             if collaboration
-            else [
-                startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}"
-            ]
+            else [startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}"]
         )
         if context:
             heading = "节点背景上下文（仅作协作参考）" if collaboration else "任务上下文"
@@ -139,17 +165,21 @@ class OpenHandsRuntime:
             ]
             if request.skills:
                 resource_lines.append("可用 Skills：")
-                resource_lines.extend(
-                    f"- {skill.name}: {skill.source}（脚本目录 {skill.workspace_path}）"
-                    for skill in request.skills
-                )
+                for skill in request.skills:
+                    detail = f"- {skill.name}: {skill.source}（脚本目录 {skill.workspace_path}）"
+                    if skill.dependency_runtime_path:
+                        detail += (
+                            f"；依赖运行器 {skill.dependency_runtime_path}/python 与 "
+                            f"{skill.dependency_runtime_path}/node"
+                        )
+                    resource_lines.append(detail)
             if request.mcp_servers:
                 resource_lines.append("可用 MCP Servers：")
                 resource_lines.extend(
                     f"- {server.name}: {server.workspace_path}" for server in request.mcp_servers
                 )
             resource_lines.append(
-                "这些 Skill 与 MCP 是可选能力，不预设默认 Skill；根据用户当前消息动态选择。"
+                "这些 Skill 与 MCP 是可选能力；根据用户当前消息动态选择。"
                 "用户显式选择时必须优先调用；Skill 附带脚本可直接从上述目录执行。"
                 if collaboration
                 else "用户在消息中显式选择 Skill 或 MCP 时，必须优先调用所选能力；"
@@ -159,11 +189,19 @@ class OpenHandsRuntime:
         input_heading = "当前 Attempt 输入（协作参考）" if collaboration else "流程输入"
         rendered_inputs = json.dumps(inputs, ensure_ascii=False, default=str)
         sections.append(f"{input_heading}：\n{rendered_inputs}")
+        if inputs and not collaboration:
+            sections.append(
+                "输入项中的 uri 是本次运行实际读取的飞书文档；非空的 template_url 是节点定义时"
+                "指定的可选格式与结构参考。请以实际输入内容为事实来源；有模板时参考其组织方式，"
+                "没有模板时按 description 和任务要求处理。不得修改输入文档或输入模板。"
+            )
         if outputs:
             sections.append(
-                "完成任务后，请调用 finish，并将 message 严格写成 JSON 对象。"
-                "对象的 key 必须是下列 field_key；每个 value 必须包含 artifact_type 和 content。"
-                "不要使用 Markdown 代码围栏。\n" + json.dumps(outputs, ensure_ascii=False)
+                "输出文档已由平台在本次运行目录创建（配置模板时为模板副本，否则为空白文档）。"
+                "必须使用飞书能力直接编辑下列目标文档；非空的 template_url 是可选格式与结构参考，"
+                "description 是内容及验收要求。不得另建"
+                "文档、替换 URL、修改模板，或只在最终消息中返回正文。完成全部编辑后调用"
+                " finish；message 只需简短说明已完成。\n" + json.dumps(outputs, ensure_ascii=False)
             )
         return "\n\n".join(sections)
 
@@ -218,14 +256,34 @@ class OpenHandsRuntime:
             },
             "agent": agent,
         }
-        created = self._request("POST", "/api/conversations", json=payload)
+        if request.runtime_secrets:
+            payload["secrets"] = request.runtime_secrets
+        container_name = ""
+        target_base_url = self.base_url
+        if request.environment_image:
+            container_name, target_base_url = environment_docker.start_runtime_container(
+                request.environment_image, request.attempt_id
+            )
+        try:
+            created = self._request(
+                "POST", "/api/conversations", base_url=target_base_url, json=payload
+            )
+        except BaseException:
+            if container_name:
+                environment_docker.remove_runtime_container(container_name)
+            raise
         conversation_id = str(created.get("id") or "")
         if not conversation_id:
             raise DomainError("RUNTIME_PROTOCOL_ERROR", "Missing conversation id", 502)
         self._contracts[conversation_id] = self._output_contract(request)
         cursor_value = created.get("leaf_event_id") or created.get("last_user_message_id")
         cursor = str(cursor_value) if cursor_value else None
-        return RuntimeHandle(job_id=conversation_id, conversation_id=conversation_id, cursor=cursor)
+        job_id = (
+            f"{'env-exec' if run else 'env-chat'}:{container_name}"
+            if container_name
+            else conversation_id
+        )
+        return RuntimeHandle(job_id=job_id, conversation_id=conversation_id, cursor=cursor)
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
@@ -343,13 +401,16 @@ class OpenHandsRuntime:
         return payload
 
     def _events(
-        self, conversation_id: str, cursor: str | None
+        self, conversation_id: str, cursor: str | None, *, base_url: str | None = None
     ) -> tuple[list[dict[str, Any]], str | None]:
         params: dict[str, Any] = {"limit": 100, "sort_order": "TIMESTAMP"}
         if cursor:
             params["page_id"] = cursor
         data = self._request(
-            "GET", f"/api/conversations/{conversation_id}/events/search", params=params
+            "GET",
+            f"/api/conversations/{conversation_id}/events/search",
+            base_url=base_url,
+            params=params,
         )
         raw_items: object = data.get("items", [])
         items = (
@@ -364,43 +425,13 @@ class OpenHandsRuntime:
         next_cursor = str(items[-1].get("id")) if items and items[-1].get("id") else cursor
         return items, next_cursor
 
-    @staticmethod
-    def _json_object(text: str) -> dict[str, Any] | None:
-        value = text.strip()
-        if value.startswith("```"):
-            lines = value.splitlines()
-            if len(lines) >= 3:
-                value = "\n".join(lines[1:-1]).strip()
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-        return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else None
-
     def _outputs(self, conversation_id: str, text: str) -> dict[str, tuple[str, str]]:
-        parsed = self._json_object(text)
-        contract = self._contracts.get(conversation_id, [])
-        by_key = {item["field_key"]: item for item in contract}
-        if parsed is not None:
-            outputs: dict[str, tuple[str, str]] = {}
-            for key, raw in parsed.items():
-                expected = by_key.get(str(key), {})
-                if isinstance(raw, dict):
-                    item = cast(dict[str, object], raw)
-                    artifact_type = str(
-                        item.get("artifact_type") or expected.get("artifact_type") or "TEXT"
-                    )
-                    content = str(item.get("content") or item.get("value") or "")
-                else:
-                    artifact_type = str(expected.get("artifact_type") or "TEXT")
-                    content = str(raw)
-                outputs[str(key)] = (artifact_type, content)
-            if outputs:
-                return outputs
-        if len(contract) == 1:
-            item = contract[0]
-            return {item["field_key"]: (item["artifact_type"], text)}
-        return {"result": ("TEXT", text)} if text else {}
+        del text
+        return {
+            item["field_key"]: ("URL", item["url"])
+            for item in self._contracts.get(conversation_id, [])
+            if item.get("url")
+        }
 
     def _result_from_events(
         self, conversation_id: str, items: list[dict[str, Any]], cursor: str | None
@@ -422,7 +453,9 @@ class OpenHandsRuntime:
         return None
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
-        items, cursor = self._events(handle.conversation_id, handle.cursor)
+        items, cursor = self._events(
+            handle.conversation_id, handle.cursor, base_url=self._base_url_for_handle(handle)
+        )
         events = tuple(
             RuntimeEvent(
                 cursor=str(item.get("id") or f"{cursor or '0'}:{index}"),
@@ -431,28 +464,43 @@ class OpenHandsRuntime:
             )
             for index, item in enumerate(items, start=1)
         )
-        return RuntimeEventBatch(
+        batch = RuntimeEventBatch(
             events=events,
             cursor=cursor,
             result=self._result_from_events(handle.conversation_id, items, cursor),
         )
+        route = self._environment_route(handle.job_id)
+        if route and route[1] and batch.result is not None:
+            self._cleanup_environment(handle)
+        return batch
 
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
-        data = self._request("GET", f"/api/conversations/{handle.conversation_id}")
+        base_url = self._base_url_for_handle(handle)
+        data = self._request(
+            "GET", f"/api/conversations/{handle.conversation_id}", base_url=base_url
+        )
         status = str(data.get("execution_status") or "running").lower()
         cursor = str(data.get("leaf_event_id") or handle.cursor or "") or None
         if status == "finished":
-            items, event_cursor = self._events(handle.conversation_id, None)
+            items, event_cursor = self._events(handle.conversation_id, None, base_url=base_url)
             result = self._result_from_events(handle.conversation_id, items, event_cursor or cursor)
-            return result or RuntimeResult(
+            terminal = result or RuntimeResult(
                 status="COMPLETED", outputs={}, cursor=event_cursor or cursor
             )
+            route = self._environment_route(handle.job_id)
+            if route and route[1]:
+                self._cleanup_environment(handle)
+            return terminal
         if status in {"error", "stuck"}:
-            return RuntimeResult(
+            result = RuntimeResult(
                 status="FAILED",
                 error=str(data.get("error") or f"OpenHands status: {status}"),
                 cursor=cursor,
             )
+            route = self._environment_route(handle.job_id)
+            if route and route[1]:
+                self._cleanup_environment(handle)
+            return result
         if status == "waiting_for_confirmation":
             return RuntimeResult(
                 status="HUMAN_INPUT_REQUIRED",
@@ -472,6 +520,7 @@ class OpenHandsRuntime:
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/events",
+            base_url=self._base_url_for_handle(handle),
             json={
                 "role": "user",
                 "content": parts,
@@ -483,26 +532,37 @@ class OpenHandsRuntime:
     def resume(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult:
-        self._request("POST", f"/api/conversations/{handle.conversation_id}/interrupt", json={})
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/interrupt",
+            base_url=self._base_url_for_handle(handle),
+            json={},
+        )
         return self.send_message(handle, content, image_urls)
 
     def cancel(self, handle: RuntimeHandle) -> None:
         path = f"/api/conversations/{handle.conversation_id}"
-        interrupted = self._request("POST", f"{path}/interrupt", missing_ok=True, json={})
-        if interrupted.get("_flowweave_missing"):
-            return
-        for poll_no in range(10):
-            data = self._request("GET", path, missing_ok=True)
-            if data.get("_flowweave_missing"):
+        base_url = self._base_url_for_handle(handle)
+        try:
+            interrupted = self._request(
+                "POST", f"{path}/interrupt", missing_ok=True, base_url=base_url, json={}
+            )
+            if interrupted.get("_flowweave_missing"):
                 return
-            status = str(data.get("execution_status") or "").lower()
-            if status not in {"starting", "running", "executing", "stopping"}:
-                return
-            if poll_no < 9:
-                time.sleep(0.1)
-        raise DomainError(
-            "EXECUTOR_CANCEL_UNCONFIRMED",
-            "OpenHands accepted the interrupt but the Agent is still running",
-            503,
-            {"conversation_id": handle.conversation_id},
-        )
+            for poll_no in range(10):
+                data = self._request("GET", path, missing_ok=True, base_url=base_url)
+                if data.get("_flowweave_missing"):
+                    return
+                status = str(data.get("execution_status") or "").lower()
+                if status not in {"starting", "running", "executing", "stopping"}:
+                    return
+                if poll_no < 9:
+                    time.sleep(0.1)
+            raise DomainError(
+                "EXECUTOR_CANCEL_UNCONFIRMED",
+                "OpenHands accepted the interrupt but the Agent is still running",
+                503,
+                {"conversation_id": handle.conversation_id},
+            )
+        finally:
+            self._cleanup_environment(handle)

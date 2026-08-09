@@ -1,7 +1,7 @@
 import type {
-  AgentConversation, AgentMessage, ArtifactInput, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput,
-  ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  NodeDirectory, NodeRun, RunEvent,
+  AgentConversation, AgentMessage, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
+  BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CredentialConnection, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
+  NodeDirectory, NodeRun, RunEvent, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -70,18 +70,41 @@ export const api = {
   createNode: (body: NodeAssetWrite) => request<NodeAsset>('/node-assets', json('POST', body)),
   updateNode: (id: string, body: NodeAssetWrite) => request<NodeAsset>(`/node-assets/${id}`, json('PUT', body)),
   deleteNode: (id: string) => request<void>(`/node-assets/${id}`, json('DELETE')),
-  deleteNodes: (ids: string[]) => request<void>('/node-assets', json('DELETE', { ids })),
+  deleteNodes: (ids: string[]) => request<BulkDeleteResult<BlockedNodeDelete>>('/node-assets', json('DELETE', { ids })),
   validateCapability: (body: { capability_type: string; filename: string; content_base64: string }) =>
     request<{ import_token: string; preview: unknown; content_hash: string }>('/capability-imports/validate', json('POST', body)),
   commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
+  capabilities: () => request<CapabilityAsset[]>('/capabilities'),
+  capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
+  updateCapabilitySource: (id: string, content: string) =>
+    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
+  deleteCapability: (id: string) => request<void>(`/capabilities/${encodeURIComponent(id)}`, json('DELETE')),
+  deleteCapabilities: (ids: string[]) => request<BulkDeleteResult<BlockedCapabilityDelete>>('/capabilities', json('DELETE', { ids })),
+
+  terminalEnvironments: () => request<TerminalEnvironment[]>('/terminal-environments'),
+  createTerminalEnvironment: (body: TerminalEnvironmentWrite) =>
+    request<TerminalEnvironment>('/terminal-environments', json('POST', body)),
+  updateTerminalEnvironment: (id: string, body: TerminalEnvironmentWrite) =>
+    request<TerminalEnvironment>(`/terminal-environments/${id}`, json('PUT', body)),
+  deleteTerminalEnvironment: (id: string) => request<void>(`/terminal-environments/${id}`, json('DELETE')),
+  deleteEnvironmentVersion: (environmentId: string, versionId: string) =>
+    request<void>(`/terminal-environments/${environmentId}/versions/${versionId}`, json('DELETE')),
+  createEnvironmentSetup: (id: string, base_version_id?: string) =>
+    request<EnvironmentSetupSession>(`/terminal-environments/${id}/setup-sessions`, json('POST', { base_version_id: base_version_id || null })),
+  publishEnvironmentSetup: (id: string) =>
+    request<EnvironmentVersion>(`/environment-setup-sessions/${id}/publish`, json('POST')),
+  stopEnvironmentSetup: (id: string) => request<void>(`/environment-setup-sessions/${id}`, json('DELETE')),
 
   providers: () => request<ModelProvider[]>('/model-providers'),
   createProvider: (body: ModelProviderWrite) => request<ModelProvider>('/model-providers', json('POST', body)),
   updateProvider: (id: string, body: ModelProviderWrite) => request<ModelProvider>(`/model-providers/${id}`, json('PUT', body)),
   deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, json('DELETE')),
-  deleteProviders: (ids: string[]) => request<void>('/model-providers', json('DELETE', { ids })),
+  deleteProviders: (ids: string[]) => request<BulkDeleteResult<BlockedProviderDelete>>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
   discoverProviderModels: (id: string) => request<{ models: string[] }>(`/model-providers/${id}/discover-models`, json('POST')),
+  credentialConnections: () => request<CredentialConnection[]>('/credential-connections'),
+  beginLarkOAuth: () => request<{ authorization_url: string; expires_at: string }>('/oauth/lark/sessions', json('POST', { scopes: [] })),
+  disconnectCredential: (id: string) => request<void>(`/credential-connections/${id}`, json('DELETE')),
 
   flows: () => request<FlowDefinition[]>('/flows'),
   flow: (id: string) => request<FlowDefinition>(`/flows/${id}`),
@@ -90,18 +113,19 @@ export const api = {
   validateFlow: (id: string) => request<{ valid: boolean; errors: unknown[] }>(`/flows/${id}/validate`, json('POST')),
   deleteFlow: (id: string) => request<void>(`/flows/${id}`, json('DELETE')),
 
-  runFlow: (flowId: string, body: { name?: string; flow_node_key?: string; artifacts?: ArtifactInput[]; input_bindings?: Record<string, string> }) =>
+  runFlow: (flowId: string, body: { name?: string; environment_version_id: string }) =>
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
+  addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
   artifactContent: (artifactId: string) => requestText(`/artifact-versions/${artifactId}/content`),
-  activateNode: (runId: string, key: string, artifact_ids: Record<string, string>) =>
-    request<NodeRun>(`/flow-runs/${runId}/nodes/${key}/runs`, json('POST', { artifact_ids })),
+  activateNode: (runId: string, key: string, artifact_ids: Record<string, string>, input_urls: Record<string, string> = {}) =>
+    request<NodeRun>(`/flow-runs/${runId}/nodes/${key}/runs`, json('POST', { artifact_ids, input_urls })),
   bindInputs: (attemptId: string, bindings: Record<string, string>, version?: number) =>
     request<NodeAttempt>(`/node-attempts/${attemptId}/input-bindings`, json('PUT', { bindings, expected_state_version: version })),
-  confirmStart: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version }, true)),
+  confirmStart: (attemptId: string, version: number, startup: { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string }) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version, ...startup }, true)),
   humanInput: (attemptId: string, content: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   rejectAttempt: (attemptId: string, reason: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reject`, json('POST', { reason, copy_input_bindings: true, expected_state_version: version }, true)),
@@ -138,6 +162,20 @@ export const api = {
     request<AgentMessage>(`/agent-messages/${messageId}/retry`, json('POST', undefined, true)),
   flowEvents: (runId: string, after = 0) => request<RunEvent[]>(`/flow-runs/${runId}/event-history?after=${after}`),
 };
+
+export function environmentTerminalUrl(sessionId: string): string {
+  const base = API_BASE || window.location.origin;
+  const url = new URL(`${ROOT}/environment-setup-sessions/${encodeURIComponent(sessionId)}/terminal`, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
+export function agentTerminalUrl(conversationId: string): string {
+  const base = API_BASE || window.location.origin;
+  const url = new URL(`${ROOT}/agent-conversations/${encodeURIComponent(conversationId)}/terminal`, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
 
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`);

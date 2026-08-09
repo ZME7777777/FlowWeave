@@ -15,12 +15,15 @@ from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.catalog.presentation.router import router as catalog_router
 from flowweave.modules.conversations.presentation.router import router as conversations_router
+from flowweave.modules.credentials.presentation.router import router as credentials_router
+from flowweave.modules.environments.presentation.router import router as environments_router
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
 from flowweave.modules.runs.presentation.router import router as runs_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
 from flowweave.shared.errors import DomainError
+from flowweave.shared.lark_drive import bind_lark_drive, reset_lark_drive
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -60,11 +63,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime_token = bind_runtime(container.runtime)
         store_token = bind_artifact_store(container.artifact_store)
         sandbox_token = bind_sandbox(container.sandbox)
+        lark_drive_token = bind_lark_drive(container.lark_drive)
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
             return response
         finally:
+            reset_lark_drive(lark_drive_token)
             reset_sandbox(sandbox_token)
             reset_artifact_store(store_token)
             reset_runtime(runtime_token)
@@ -124,6 +129,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     for router in (
         catalog_router,
+        credentials_router,
+        environments_router,
         providers_router,
         flows_router,
         runs_router,

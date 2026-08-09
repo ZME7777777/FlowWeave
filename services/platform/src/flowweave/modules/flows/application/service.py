@@ -15,8 +15,8 @@ from flowweave.shared.errors import conflict, not_found
 from flowweave.shared.models import (
     FlowDefinition,
     FlowEdge,
-    FlowEdgeMapping,
     FlowNode,
+    FlowPortMapping,
     GatePolicy,
     NodeAsset,
     NodeIOField,
@@ -83,27 +83,18 @@ def flow_dict(db: Session, item: FlowDefinition) -> dict[str, Any]:
     edges = db.scalars(
         select(FlowEdge).where(FlowEdge.flow_id == item.id).order_by(FlowEdge.position)
     ).all()
-    mappings: Sequence[FlowEdgeMapping] = (
-        db.scalars(
-            select(FlowEdgeMapping).where(FlowEdgeMapping.edge_id.in_([x.id for x in edges]))
-        ).all()
-        if edges
-        else []
-    )
-    mapping_map: dict[str, list[dict[str, Any]]] = {x.id: [] for x in edges}
-    for mapping in mappings:
-        mapping_map[mapping.edge_id].append(
-            {
-                "source_output_key": mapping.source_output_key,
-                "target_input_key": mapping.target_input_key,
-            }
-        )
+    port_mappings = db.scalars(
+        select(FlowPortMapping)
+        .where(FlowPortMapping.flow_id == item.id)
+        .order_by(FlowPortMapping.target_flow_node_id, FlowPortMapping.target_input_key)
+    ).all()
     key_by_id = {x.id: x.instance_key for x in nodes}
     return {
         "id": item.id,
         "name": item.name,
         "description": item.description,
         "default_entry_key": item.default_entry_key,
+        "lark_root_folder_url": item.lark_root_folder_url,
         "row_version": item.row_version,
         "nodes": [
             {
@@ -124,9 +115,18 @@ def flow_dict(db: Session, item: FlowDefinition) -> dict[str, Any]:
                 "source_instance_key": key_by_id[x.source_flow_node_id],
                 "target_instance_key": key_by_id[x.target_flow_node_id],
                 "position": x.position,
-                "mappings": mapping_map[x.id],
             }
             for x in edges
+        ],
+        "port_mappings": [
+            {
+                "id": mapping.id,
+                "source_instance_key": key_by_id[mapping.source_flow_node_id],
+                "source_output_key": mapping.source_output_key,
+                "target_instance_key": key_by_id[mapping.target_flow_node_id],
+                "target_input_key": mapping.target_input_key,
+            }
+            for mapping in port_mappings
         ],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -167,9 +167,7 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
         old_nodes = db.scalars(select(FlowNode.id).where(FlowNode.flow_id == item.id)).all()
         if old_nodes:
             db.execute(delete(GatePolicy).where(GatePolicy.flow_node_id.in_(old_nodes)))
-        old_edges = db.scalars(select(FlowEdge.id).where(FlowEdge.flow_id == item.id)).all()
-        if old_edges:
-            db.execute(delete(FlowEdgeMapping).where(FlowEdgeMapping.edge_id.in_(old_edges)))
+        db.execute(delete(FlowPortMapping).where(FlowPortMapping.flow_id == item.id))
         db.execute(delete(FlowEdge).where(FlowEdge.flow_id == item.id))
         db.execute(delete(FlowNode).where(FlowNode.flow_id == item.id))
     else:
@@ -177,12 +175,14 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
             name=payload.name,
             description=payload.description,
             default_entry_key=payload.default_entry_key,
+            lark_root_folder_url=payload.lark_root_folder_url,
         )
         db.add(item)
         db.flush()
     item.name = payload.name
     item.description = payload.description
     item.default_entry_key = payload.default_entry_key
+    item.lark_root_folder_url = payload.lark_root_folder_url
     by_key: dict[str, FlowNode] = {}
     for node in payload.nodes:
         values = node.model_dump(exclude={"gates"})
@@ -203,9 +203,16 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
             position=edge.position,
         )
         db.add(row)
-        db.flush()
-        for mapping in edge.mappings:
-            db.add(FlowEdgeMapping(edge_id=row.id, **mapping.model_dump()))
+    for mapping in payload.port_mappings:
+        db.add(
+            FlowPortMapping(
+                flow_id=item.id,
+                source_flow_node_id=by_key[mapping.source_instance_key].id,
+                source_output_key=mapping.source_output_key,
+                target_flow_node_id=by_key[mapping.target_instance_key].id,
+                target_input_key=mapping.target_input_key,
+            )
+        )
     finish(db)
     return flow_dict(db, item)
 

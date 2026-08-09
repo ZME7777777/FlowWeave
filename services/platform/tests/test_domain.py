@@ -47,6 +47,7 @@ def test_flow_validation_allows_same_asset_twice_but_checks_mapping_and_gate_pos
     payload = FlowWrite.model_validate(
         {
             "name": "repeat asset",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
             "nodes": [
                 {
                     "instance_key": "first",
@@ -62,11 +63,128 @@ def test_flow_validation_allows_same_asset_twice_but_checks_mapping_and_gate_pos
                 {
                     "source_instance_key": "first",
                     "target_instance_key": "second",
-                    "mappings": [{"source_output_key": "out", "target_input_key": "in"}],
+                }
+            ],
+            "port_mappings": [
+                {
+                    "source_instance_key": "first",
+                    "source_output_key": "out",
+                    "target_instance_key": "second",
+                    "target_input_key": "in",
                 }
             ],
         }
     )
     validate_flow(
-        payload.model_dump(), {"asset": {"INPUT": {"in": "TEXT"}, "OUTPUT": {"out": "TEXT"}}}
+        payload.model_dump(), {"asset": {"INPUT": {"in": "URL"}, "OUTPUT": {"out": "URL"}}}
     )
+
+
+def test_flow_validation_supports_branching_merging_and_multiple_ports():
+    payload = FlowWrite.model_validate(
+        {
+            "name": "branch and merge",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
+            "nodes": [
+                {"instance_key": "source_a", "node_asset_id": "source"},
+                {"instance_key": "source_b", "node_asset_id": "source"},
+                {"instance_key": "merge", "node_asset_id": "merge"},
+                {"instance_key": "branch", "node_asset_id": "target"},
+            ],
+            "edges": [
+                {"source_instance_key": "source_a", "target_instance_key": "merge"},
+                {"source_instance_key": "source_b", "target_instance_key": "merge"},
+                {"source_instance_key": "source_a", "target_instance_key": "branch"},
+            ],
+            "port_mappings": [
+                {
+                    "source_instance_key": "source_a",
+                    "source_output_key": "result",
+                    "target_instance_key": "merge",
+                    "target_input_key": "left",
+                },
+                {
+                    "source_instance_key": "source_b",
+                    "source_output_key": "result",
+                    "target_instance_key": "merge",
+                    "target_input_key": "right",
+                },
+                {
+                    "source_instance_key": "source_a",
+                    "source_output_key": "result",
+                    "target_instance_key": "branch",
+                    "target_input_key": "input",
+                },
+            ],
+        }
+    )
+    validate_flow(
+        payload.model_dump(),
+        {
+            "source": {"INPUT": {}, "OUTPUT": {"result": "URL"}},
+            "merge": {"INPUT": {"left": "URL", "right": "URL"}, "OUTPUT": {}},
+            "target": {"INPUT": {"input": "URL"}, "OUTPUT": {}},
+        },
+    )
+
+
+def test_flow_validation_rejects_cycles_but_not_branching_or_merging():
+    payload = FlowWrite.model_validate(
+        {
+            "name": "cycle",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
+            "nodes": [
+                {"instance_key": "a", "node_asset_id": "asset"},
+                {"instance_key": "b", "node_asset_id": "asset"},
+                {"instance_key": "c", "node_asset_id": "asset"},
+            ],
+            "edges": [
+                {"source_instance_key": "a", "target_instance_key": "b"},
+                {"source_instance_key": "b", "target_instance_key": "c"},
+                {"source_instance_key": "c", "target_instance_key": "a"},
+            ],
+        }
+    )
+
+    with pytest.raises(DomainError, match="cycles"):
+        validate_flow(
+            payload.model_dump(),
+            {"asset": {"INPUT": {}, "OUTPUT": {}}},
+        )
+
+
+def test_flow_validation_rejects_multiple_sources_for_one_target_input():
+    payload = FlowWrite.model_validate(
+        {
+            "name": "ambiguous input",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
+            "nodes": [
+                {"instance_key": "source_a", "node_asset_id": "source"},
+                {"instance_key": "source_b", "node_asset_id": "source"},
+                {"instance_key": "target", "node_asset_id": "target"},
+            ],
+            "port_mappings": [
+                {
+                    "source_instance_key": "source_a",
+                    "source_output_key": "result",
+                    "target_instance_key": "target",
+                    "target_input_key": "input",
+                },
+                {
+                    "source_instance_key": "source_b",
+                    "source_output_key": "result",
+                    "target_instance_key": "target",
+                    "target_input_key": "input",
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(DomainError, match="multiple mappings"):
+        validate_flow(
+            payload.model_dump(),
+            {
+                "source": {"INPUT": {}, "OUTPUT": {"result": "URL"}},
+                "target": {"INPUT": {"input": "URL"}, "OUTPUT": {}},
+            },
+        )

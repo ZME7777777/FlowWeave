@@ -26,6 +26,7 @@ from flowweave.modules.conversations.application.service import (
     set_attempt_conversations_state,
     set_auto_conversation_state,
     steer_message,
+    terminal_container_id,
     workspace_image_reference,
 )
 from flowweave.modules.conversations.domain.enums import ConversationState
@@ -57,6 +58,7 @@ __all__ = (
     "schedule_next_queued_message",
     "send_message",
     "steer_message",
+    "terminal_container_id",
     "workspace_image_reference",
     "set_attempt_conversations_state",
     "set_auto_conversation_state",

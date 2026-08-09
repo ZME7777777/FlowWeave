@@ -251,8 +251,17 @@
           }
         },
         "responses": {
-          "204": {
-            "description": "Successful Response"
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Assets Api V1 Node Assets Delete"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -467,6 +476,680 @@
         }
       }
     },
+    "/api/v1/capabilities": {
+      "get": {
+        "summary": "Capabilities",
+        "operationId": "capabilities_api_v1_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response Capabilities Api V1 Capabilities Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Capability Batch",
+        "operationId": "delete_capability_batch_api_v1_capabilities_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityBulkDeleteWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Delete Capability Batch Api V1 Capabilities Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{capability_id}/source": {
+      "get": {
+        "summary": "Capability Source",
+        "operationId": "capability_source_api_v1_capabilities__capability_id__source_get",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Capability Source Api V1 Capabilities  Capability Id  Source Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Capability Source",
+        "operationId": "update_capability_source_api_v1_capabilities__capability_id__source_put",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilitySkillRevisionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Capability Source Api V1 Capabilities  Capability Id  Source Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{capability_id}": {
+      "delete": {
+        "summary": "Delete Capability",
+        "operationId": "delete_capability_api_v1_capabilities__capability_id__delete",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/credential-connections": {
+      "get": {
+        "summary": "Connections",
+        "operationId": "connections_api_v1_credential_connections_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response Connections Api V1 Credential Connections Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/oauth/lark/sessions": {
+      "post": {
+        "summary": "Begin Lark Oauth",
+        "operationId": "begin_lark_oauth_api_v1_oauth_lark_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OAuthStartWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Begin Lark Oauth Api V1 Oauth Lark Sessions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/oauth/lark/callback": {
+      "get": {
+        "summary": "Lark Oauth Callback",
+        "operationId": "lark_oauth_callback_api_v1_oauth_lark_callback_get",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "title": "Code"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 512,
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/credential-connections/{connection_id}": {
+      "delete": {
+        "summary": "Disconnect",
+        "operationId": "disconnect_api_v1_credential_connections__connection_id__delete",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/terminal-environments": {
+      "get": {
+        "summary": "Environments",
+        "operationId": "environments_api_v1_terminal_environments_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response Environments Api V1 Terminal Environments Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Environment",
+        "operationId": "create_environment_api_v1_terminal_environments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalEnvironmentWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Environment Api V1 Terminal Environments Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/terminal-environments/{environment_id}": {
+      "get": {
+        "summary": "Environment",
+        "operationId": "environment_api_v1_terminal_environments__environment_id__get",
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Environment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Environment Api V1 Terminal Environments  Environment Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Environment",
+        "operationId": "update_environment_api_v1_terminal_environments__environment_id__put",
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Environment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalEnvironmentWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Environment Api V1 Terminal Environments  Environment Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Environment",
+        "operationId": "delete_environment_api_v1_terminal_environments__environment_id__delete",
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Environment Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/terminal-environments/{environment_id}/versions/{version_id}": {
+      "delete": {
+        "summary": "Delete Environment Version",
+        "operationId": "delete_environment_version_api_v1_terminal_environments__environment_id__versions__version_id__delete",
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Environment Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/terminal-environments/{environment_id}/setup-sessions": {
+      "post": {
+        "summary": "Create Setup Session",
+        "operationId": "create_setup_session_api_v1_terminal_environments__environment_id__setup_sessions_post",
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Environment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentSetupWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Setup Session Api V1 Terminal Environments  Environment Id  Setup Sessions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/environment-setup-sessions/{session_id}/publish": {
+      "post": {
+        "summary": "Publish Setup Session",
+        "operationId": "publish_setup_session_api_v1_environment_setup_sessions__session_id__publish_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Publish Setup Session Api V1 Environment Setup Sessions  Session Id  Publish Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/environment-setup-sessions/{session_id}": {
+      "delete": {
+        "summary": "Stop Setup Session",
+        "operationId": "stop_setup_session_api_v1_environment_setup_sessions__session_id__delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/model-providers": {
       "get": {
         "summary": "Providers",
@@ -541,8 +1224,17 @@
           "required": true
         },
         "responses": {
-          "204": {
-            "description": "Successful Response"
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Delete Providers Api V1 Model Providers Delete"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -1188,6 +1880,47 @@
         }
       }
     },
+    "/api/v1/flow-runs/{run_id}/artifacts/{artifact_id}": {
+      "delete": {
+        "summary": "Delete Artifact",
+        "operationId": "delete_artifact_api_v1_flow_runs__run_id__artifacts__artifact_id__delete",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Artifact Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/artifact-versions/{artifact_id}/content": {
       "get": {
         "summary": "Artifact Content",
@@ -1382,7 +2115,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AttemptVersionWrite"
+                "$ref": "#/components/schemas/AttemptStartWrite"
               }
             }
           }
@@ -2685,9 +3418,9 @@
           },
           "artifact_type": {
             "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Artifact Type"
+            "const": "URL",
+            "title": "Artifact Type",
+            "default": "URL"
           },
           "inline_content": {
             "anyOf": [
@@ -2725,8 +3458,7 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "field_key",
-          "artifact_type"
+          "field_key"
         ],
         "title": "ArtifactWrite"
       },
@@ -2765,6 +3497,52 @@
         ],
         "title": "AttachmentPartWrite"
       },
+      "AttemptStartWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          },
+          "startup_mode": {
+            "type": "string",
+            "enum": [
+              "SKILL",
+              "PROMPT"
+            ],
+            "title": "Startup Mode",
+            "default": "PROMPT"
+          },
+          "capability_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Key"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version"
+        ],
+        "title": "AttemptStartWrite"
+      },
       "AttemptVersionWrite": {
         "properties": {
           "expected_state_version": {
@@ -2779,6 +3557,25 @@
           "expected_state_version"
         ],
         "title": "AttemptVersionWrite"
+      },
+      "CapabilityBulkDeleteWrite": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "title": "CapabilityBulkDeleteWrite"
       },
       "CapabilityCommitWrite": {
         "properties": {
@@ -2819,6 +3616,22 @@
         ],
         "title": "CapabilityInvocationWrite"
       },
+      "CapabilitySkillRevisionWrite": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 1048576,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "CapabilitySkillRevisionWrite"
+      },
       "CapabilityValidateWrite": {
         "properties": {
           "capability_type": {
@@ -2850,33 +3663,62 @@
       },
       "CapabilityWrite": {
         "properties": {
+          "capability_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 48,
+                "minLength": 38
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Id"
+          },
           "capability_type": {
-            "type": "string",
-            "enum": [
-              "SKILL",
-              "MCP",
-              "HOOK"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "SKILL",
+                  "MCP",
+                  "HOOK"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Capability Type"
           },
           "capability_key": {
-            "type": "string",
-            "maxLength": 200,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Capability Key"
           },
           "normalized_config": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Normalized Config"
           }
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "capability_type",
-          "capability_key"
-        ],
         "title": "CapabilityWrite"
       },
       "ConversationCreateWrite": {
@@ -2966,24 +3808,23 @@
         ],
         "title": "DirectoryWrite"
       },
-      "EdgeMappingWrite": {
+      "EnvironmentSetupWrite": {
         "properties": {
-          "source_output_key": {
-            "type": "string",
-            "title": "Source Output Key"
-          },
-          "target_input_key": {
-            "type": "string",
-            "title": "Target Input Key"
+          "base_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Version Id"
           }
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "source_output_key",
-          "target_input_key"
-        ],
-        "title": "EdgeMappingWrite"
+        "title": "EnvironmentSetupWrite"
       },
       "ExecutorWrite": {
         "properties": {
@@ -3053,13 +3894,6 @@
             "minimum": 0.0,
             "title": "Position",
             "default": 0
-          },
-          "mappings": {
-            "items": {
-              "$ref": "#/components/schemas/EdgeMappingWrite"
-            },
-            "type": "array",
-            "title": "Mappings"
           }
         },
         "additionalProperties": false,
@@ -3147,6 +3981,11 @@
             ],
             "title": "Default Entry Key"
           },
+          "lark_root_folder_url": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Lark Root Folder Url"
+          },
           "row_version": {
             "anyOf": [
               {
@@ -3172,12 +4011,20 @@
             },
             "type": "array",
             "title": "Edges"
+          },
+          "port_mappings": {
+            "items": {
+              "$ref": "#/components/schemas/PortMappingWrite"
+            },
+            "type": "array",
+            "title": "Port Mappings"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
+          "lark_root_folder_url",
           "nodes"
         ],
         "title": "FlowWrite"
@@ -3277,36 +4124,30 @@
           "display_name": {
             "type": "string",
             "maxLength": 160,
-            "minLength": 1,
-            "title": "Display Name"
+            "title": "Display Name",
+            "default": ""
           },
           "data_type": {
             "type": "string",
-            "enum": [
-              "TEXT",
-              "MARKDOWN",
-              "JSON_OBJECT",
-              "JSON_ARRAY",
-              "FILE",
-              "FILE_COLLECTION",
-              "DOCUMENT",
-              "URL",
-              "REPOSITORY_REF"
-            ],
-            "title": "Data Type"
+            "const": "URL",
+            "title": "Data Type",
+            "default": "URL"
           },
           "description": {
             "type": "string",
             "title": "Description",
+            "default": ""
+          },
+          "template_url": {
+            "type": "string",
+            "title": "Template Url",
             "default": ""
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "field_key",
-          "display_name",
-          "data_type"
+          "field_key"
         ],
         "title": "IOFieldWrite"
       },
@@ -3514,7 +4355,7 @@
             "title": "Icon Value",
             "default": "bot"
           },
-          "default_skill_ref": {
+          "environment_version_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -3523,7 +4364,7 @@
                 "type": "null"
               }
             ],
-            "title": "Default Skill Ref"
+            "title": "Environment Version Id"
           },
           "row_version": {
             "anyOf": [
@@ -3576,11 +4417,62 @@
             },
             "type": "object",
             "title": "Artifact Ids"
+          },
+          "input_urls": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Input Urls"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "NodeRunStart"
+      },
+      "OAuthStartWrite": {
+        "properties": {
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Scopes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "OAuthStartWrite"
+      },
+      "PortMappingWrite": {
+        "properties": {
+          "source_instance_key": {
+            "type": "string",
+            "title": "Source Instance Key"
+          },
+          "source_output_key": {
+            "type": "string",
+            "title": "Source Output Key"
+          },
+          "target_instance_key": {
+            "type": "string",
+            "title": "Target Instance Key"
+          },
+          "target_input_key": {
+            "type": "string",
+            "title": "Target Input Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_instance_key",
+          "source_output_key",
+          "target_instance_key",
+          "target_input_key"
+        ],
+        "title": "PortMappingWrite"
       },
       "ProviderModelWrite": {
         "properties": {
@@ -3647,6 +4539,17 @@
             ],
             "title": "Name"
           },
+          "environment_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Version Id"
+          },
           "flow_node_key": {
             "anyOf": [
               {
@@ -3694,6 +4597,45 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SyncSnapshotWrite"
+      },
+      "TerminalEnvironmentWrite": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "base_image": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Base Image"
+          },
+          "row_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "base_image"
+        ],
+        "title": "TerminalEnvironmentWrite"
       },
       "TextPartWrite": {
         "properties": {

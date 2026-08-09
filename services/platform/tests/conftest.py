@@ -59,14 +59,15 @@ def test_database_url() -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
-def settings(test_database_url: str) -> Settings:
+def settings(test_database_url: str, tmp_path_factory: pytest.TempPathFactory) -> Settings:
+    session_root = tmp_path_factory.mktemp("flowweave-platform")
     return Settings(
         database_url=test_database_url,
         credentials_master_key="Qy0d9T_0Y4GxN31PqYqzRo6YD_s-hnbJFRb_v8xQwFc=",
         runtime_adapter="mock",
         execution_mode="inline",
         seed_demo=False,
-        artifact_root=Path("./test-artifacts"),
+        artifact_root=session_root / "artifacts",
         workspace_root=Path("./test-workspaces"),
     )
 
@@ -116,9 +117,13 @@ def db_session_factory(
 
 
 @pytest.fixture(autouse=True)
-def database(container: Container, sync_session_factory: sessionmaker[Session]) -> Iterator[None]:
-    shutil.rmtree("./test-artifacts", ignore_errors=True)
-    shutil.rmtree("./test-workspaces", ignore_errors=True)
+def database(
+    container: Container,
+    settings: Settings,
+    sync_session_factory: sessionmaker[Session],
+) -> Iterator[None]:
+    shutil.rmtree(settings.artifact_root, ignore_errors=True)
+    shutil.rmtree(settings.workspace_root, ignore_errors=True)
     engine: Engine = sync_session_factory.kw["bind"]
     existing = [name for name in inspect(engine).get_table_names() if name != "alembic_version"]
     if existing:
@@ -127,8 +132,8 @@ def database(container: Container, sync_session_factory: sessionmaker[Session]) 
             connection.exec_driver_sql(f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE")
     with sandbox_context(container.sandbox):
         yield
-    shutil.rmtree("./test-artifacts", ignore_errors=True)
-    shutil.rmtree("./test-workspaces", ignore_errors=True)
+    shutil.rmtree(settings.artifact_root, ignore_errors=True)
+    shutil.rmtree(settings.workspace_root, ignore_errors=True)
 
 
 @pytest.fixture

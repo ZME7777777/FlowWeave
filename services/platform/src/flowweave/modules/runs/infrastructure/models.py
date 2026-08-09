@@ -33,8 +33,15 @@ class FlowRun(Base):
     name: Mapped[str] = mapped_column(String(220))
     state: Mapped[str] = mapped_column(String(30), default=FlowRunState.ACTIVE)
     active_snapshot_id: Mapped[str | None] = mapped_column(String(36))
+    # The database foreign key is added by migration 0015. Keeping the ORM
+    # mapping free of this cross-module FK lets historical migration 0003
+    # create flow_runs before migration 0014 creates environment_versions.
+    environment_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     completion_mode: Mapped[str | None] = mapped_column(String(10))
+    # Created lazily when a node is actually executed and needs Lark outputs.
+    lark_folder_token: Mapped[str | None] = mapped_column(String(200))
+    lark_folder_url: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -91,6 +98,10 @@ class NodeAttempt(Base):
     conversation_id: Mapped[str | None] = mapped_column(String(100))
     runtime_cursor: Mapped[str | None] = mapped_column(String(200))
     workspace_ref: Mapped[str | None] = mapped_column(Text)
+    startup_mode: Mapped[str] = mapped_column(String(20), default="PROMPT")
+    startup_capability_key: Mapped[str | None] = mapped_column(String(200))
+    startup_prompt: Mapped[str | None] = mapped_column(Text)
+    output_targets_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

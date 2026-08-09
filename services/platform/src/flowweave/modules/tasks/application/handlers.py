@@ -5,7 +5,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from flowweave.modules.catalog.public import cleanup_capability_import
+from flowweave.modules.catalog.public import (
+    build_capability_dependencies,
+    cleanup_capability_import,
+)
 from flowweave.modules.conversations import public as conversations
 from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.tasks.public import Lease, lease_is_current
@@ -68,6 +71,12 @@ def _cleanup_capability_import(
     cleanup_capability_import(db, aggregate_id)
 
 
+def _build_capability_dependencies(
+    db: Session, aggregate_id: str, payload: dict[str, Any], _lease: Lease
+) -> None:
+    build_capability_dependencies(db, aggregate_id, int(payload["position"]))
+
+
 HANDLERS: dict[str, Handler] = {
     "EVALUATE_READINESS": _readiness,
     "RUN_GATE_POLICY": _gates,
@@ -79,6 +88,7 @@ HANDLERS: dict[str, Handler] = {
     "DELIVER_CONVERSATION_MESSAGE": _deliver_conversation_message,
     "POLL_CONVERSATION": _poll_conversation,
     "CLEANUP_CAPABILITY_IMPORT": _cleanup_capability_import,
+    "BUILD_CAPABILITY_DEPENDENCIES": _build_capability_dependencies,
 }
 
 

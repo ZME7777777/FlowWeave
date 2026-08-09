@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@tanstack/react-query": "5.83.0",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/xterm": "5.5.0",
     "@xyflow/react": "12.8.2",
     "clsx": "2.1.1",
     "lucide-react": "0.468.0",

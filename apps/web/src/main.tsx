@@ -5,6 +5,7 @@ import '@xyflow/react/dist/style.css';
 import './styles.css';
 import { App } from './App';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
+import { ProductDialogProvider } from './components/ProductDialog';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, retry: 1 } } });
 
@@ -35,5 +36,5 @@ window.addEventListener('focus', () => { void reloadWhenDeploymentChanges(); });
 document.addEventListener('visibilitychange', () => { void reloadWhenDeploymentChanges(); });
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode><AppErrorBoundary><QueryClientProvider client={queryClient}><App /></QueryClientProvider></AppErrorBoundary></StrictMode>,
+  <StrictMode><AppErrorBoundary><QueryClientProvider client={queryClient}><ProductDialogProvider><App /></ProductDialogProvider></QueryClientProvider></AppErrorBoundary></StrictMode>,
 );

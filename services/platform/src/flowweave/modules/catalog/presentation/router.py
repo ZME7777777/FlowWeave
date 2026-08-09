@@ -4,9 +4,12 @@ from typing import Any
 from fastapi import APIRouter, Query, Response
 
 from flowweave.modules.catalog.application import capability_imports, service
+from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, run_sync
 from flowweave.shared.schemas import (
+    CapabilityBulkDeleteWrite,
     CapabilityCommitWrite,
+    CapabilitySkillRevisionWrite,
     CapabilityValidateWrite,
     DirectoryWrite,
     NodeAssetBulkDeleteWrite,
@@ -54,10 +57,9 @@ async def delete_asset(asset_id: str, db: Db) -> Response:
     return Response(status_code=204)
 
 
-@router.delete("/node-assets", status_code=204, response_class=Response)
-async def delete_assets(payload: NodeAssetBulkDeleteWrite, db: Db) -> Response:
-    await run_sync(db, lambda session: service.delete_assets(session, payload.ids))
-    return Response(status_code=204)
+@router.delete("/node-assets")
+async def delete_assets(payload: NodeAssetBulkDeleteWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.delete_assets(session, payload.ids))
 
 
 @router.post("/capability-imports/validate")
@@ -82,4 +84,61 @@ async def commit_capability(payload: CapabilityCommitWrite, db: Db) -> dict[str,
     final_key = await asyncio.to_thread(capability_imports.finalize_commit_source, plan)
     return await run_sync(
         db, lambda session: capability_imports.confirm_commit(session, plan, final_key)
+    )
+
+
+@router.get("/capabilities")
+async def capabilities(db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, capability_imports.list_capabilities)
+
+
+@router.get("/capabilities/{capability_id}/source")
+async def capability_source(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.read_skill_source(session, capability_id)
+    )
+
+
+@router.put("/capabilities/{capability_id}/source")
+async def update_capability_source(
+    capability_id: str, payload: CapabilitySkillRevisionWrite, db: Db
+) -> dict[str, Any]:
+    update_plan = await run_sync(
+        db,
+        lambda session: capability_imports.prepare_skill_update(
+            session, capability_id, payload.content
+        ),
+    )
+    stored = await asyncio.to_thread(capability_imports.store_skill_update_source, update_plan)
+    try:
+        final_key = await asyncio.to_thread(capability_imports.finalize_skill_update_source, stored)
+        return await run_sync(
+            db,
+            lambda session: capability_imports.confirm_skill_update(session, stored, final_key),
+        )
+    except BaseException:
+        if stored.prepared.storage_key is not None:
+            await asyncio.to_thread(capability_imports.discard_validation_source, stored.prepared)
+        raise
+
+
+@router.delete("/capabilities/{capability_id}", status_code=204, response_class=Response)
+async def delete_capability(capability_id: str, db: Db) -> Response:
+    result = await run_sync(
+        db, lambda session: capability_imports.delete_capabilities(session, [capability_id])
+    )
+    if result["blocked"]:
+        raise DomainError(
+            "CAPABILITY_IN_USE",
+            "Capability version is referenced by active nodes",
+            409,
+            {"blocked": result["blocked"]},
+        )
+    return Response(status_code=204)
+
+
+@router.delete("/capabilities")
+async def delete_capability_batch(payload: CapabilityBulkDeleteWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.delete_capabilities(session, payload.ids)
     )

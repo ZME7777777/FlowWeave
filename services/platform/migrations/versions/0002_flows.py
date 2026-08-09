@@ -13,7 +13,7 @@ revision = "0002_flows"
 down_revision = "0001_catalog"
 branch_labels = None
 depends_on = None
-TABLES = ["flow_definitions", "flow_nodes", "flow_edges", "flow_edge_mappings", "gate_policies"]
+TABLES = ["flow_definitions", "flow_nodes", "flow_edges", "gate_policies"]
 
 
 def upgrade():

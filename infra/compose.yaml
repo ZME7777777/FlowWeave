@@ -8,26 +8,38 @@ x-platform-env: &platform-env
   OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
   OPENHANDS_WORKSPACE_ROOT: /workspaces
   CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+  CREDENTIAL_SUBJECT_KEY: ${CREDENTIAL_SUBJECT_KEY:-local-user}
+  CREDENTIAL_INTERNAL_BASE_URL: http://api:8080/api/v1
+  CREDENTIAL_INTERNAL_API_KEY: ${CREDENTIAL_INTERNAL_API_KEY:-flowweave-credential-internal}
+  LARK_OAUTH_CLIENT_ID: ${LARK_OAUTH_CLIENT_ID:-}
+  LARK_OAUTH_CLIENT_SECRET: ${LARK_OAUTH_CLIENT_SECRET:-}
+  LARK_OAUTH_REDIRECT_URL: ${LARK_OAUTH_REDIRECT_URL:-http://localhost:8080/api/v1/oauth/lark/callback}
   ARTIFACT_ROOT: /data/artifacts
   WORKSPACE_ROOT: /data/workspaces
   INLINE_ARTIFACT_LIMIT: ${INLINE_ARTIFACT_LIMIT:-65536}
   CAPABILITY_IMPORT_TTL_SECONDS: ${CAPABILITY_IMPORT_TTL_SECONDS:-900}
+  DEPENDENCY_BUILDER_BACKEND: ${DEPENDENCY_BUILDER_BACKEND:-docker}
+  DEPENDENCY_BUILDER_IMAGE: ${DEPENDENCY_BUILDER_IMAGE:-flowweave-dependency-builder:1}
+  # Use the stock bridge for package-registry egress without attaching the
+  # disposable builder to FlowWeave's application network.
+  DEPENDENCY_BUILDER_NETWORK: ${DEPENDENCY_BUILDER_NETWORK:-bridge}
+  DEPENDENCY_BUILDER_TIMEOUT_SECONDS: ${DEPENDENCY_BUILDER_TIMEOUT_SECONDS:-300}
+  TERMINAL_ENVIRONMENT_BACKEND: ${TERMINAL_ENVIRONMENT_BACKEND:-docker}
+  TERMINAL_ENVIRONMENT_BASE_IMAGE: ${TERMINAL_ENVIRONMENT_BASE_IMAGE:-flowweave-openhands-runtime:1}
+  TERMINAL_ENVIRONMENT_SETUP_NETWORK: ${TERMINAL_ENVIRONMENT_SETUP_NETWORK:-bridge}
+  TERMINAL_ENVIRONMENT_RUNTIME_NETWORK: ${TERMINAL_ENVIRONMENT_RUNTIME_NETWORK:-flowweave_runtime}
+  TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER: ${TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER:-flowweave-openhands-agent-server}
   TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-30}
 
 services:
   workspace-init:
     image: alpine:3.22
-    command: ["sh", "-c", "mkdir -p /data/workspaces/nodes /data/lark-cli /data/lark-cli-key && chmod 0777 /data/workspaces /data/workspaces/nodes && if [ -f /data/lark-cli-key/master.key.file ]; then ln -sf master.key.file /data/lark-cli-key/master.key; fi"]
+    command: ["sh", "-c", "mkdir -p /data/artifacts /data/workspaces/nodes && chown -R 10001:10001 /data/artifacts && chmod -R u+rwX /data/artifacts && chmod 0777 /data/workspaces /data/workspaces/nodes"]
     volumes:
+      - artifacts:/data/artifacts
       - type: bind
         source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
         target: /data/workspaces
-      - type: bind
-        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-${HOME}/.lark-cli}
-        target: /data/lark-cli
-      - type: bind
-        source: ${FLOWWEAVE_HOST_LARK_CLI_KEY_HOME:-${HOME}/Library/Application Support/lark-cli}
-        target: /data/lark-cli-key
     restart: "no"
 
   postgres:
@@ -53,21 +65,16 @@ services:
     restart: "no"
 
   openhands-agent-server:
+    image: flowweave-openhands-runtime:1
+    container_name: flowweave-openhands-agent-server
     build: { context: .., dockerfile: infra/openhands/Dockerfile }
     environment:
       SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OH_SESSION_API_KEYS_0: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
-      LARKSUITE_CLI_CONFIG_DIR: /root/.lark-cli
     volumes:
       - type: bind
         source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
         target: /workspaces
-      - type: bind
-        source: ${FLOWWEAVE_HOST_LARK_CLI_HOME:-${HOME}/.lark-cli}
-        target: /root/.lark-cli
-      - type: bind
-        source: ${FLOWWEAVE_HOST_LARK_CLI_KEY_HOME:-${HOME}/Library/Application Support/lark-cli}
-        target: /root/.local/share/lark-cli
       - openhands-state:/root/.openhands
       - ../agent-packages:/agent-packages:ro
     expose: ["8000"]
@@ -85,11 +92,16 @@ services:
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory"]
     environment: *platform-env
     ports: ["8080:8080"]
+    # Environment setup exposes an interactive root shell in a disposable
+    # container. Docker Socket access is host-administrator-equivalent and is
+    # intentionally enabled only for this self-hosted environment feature.
+    group_add: ["0"]
     volumes:
       - artifacts:/data/artifacts
       - type: bind
         source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
         target: /data/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migration: { condition: service_completed_successfully }
       openhands-agent-server: { condition: service_healthy }
@@ -108,6 +120,7 @@ services:
       SANDBOX_BACKEND: docker
       SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
       SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
+      DEPENDENCY_BUILDER_BACKEND: docker
     # Docker Desktop exposes this socket as root:root 0660. The process remains
     # UID 10001 and receives only supplemental GID 0 for local daemon access.
     group_add: ["0"]
@@ -122,6 +135,16 @@ services:
       openhands-agent-server: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     restart: unless-stopped
+    networks:
+      - default
+      - dependency-build
+
+  dependency-builder-image:
+    image: flowweave-dependency-builder:1
+    build: { context: .., dockerfile: infra/dependency-builder/Dockerfile }
+    command: ["python", "-c", "print('dependency builder image ready')"]
+    network_mode: none
+    restart: "no"
 
   web:
     build: { context: .., dockerfile: apps/web/Dockerfile }
@@ -133,3 +156,9 @@ volumes:
   postgres-data:
   artifacts:
   openhands-state:
+
+networks:
+  default:
+    name: flowweave_runtime
+  dependency-build:
+    name: flowweave_dependency-build

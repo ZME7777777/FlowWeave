@@ -1,37 +1,81 @@
-export type ViewName = 'nodes' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-chat';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-chat';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
 }
-export type ArtifactDataType =
-  | 'TEXT' | 'MARKDOWN' | 'JSON_OBJECT' | 'JSON_ARRAY'
-  | 'FILE' | 'FILE_COLLECTION' | 'DOCUMENT' | 'URL' | 'REPOSITORY_REF';
+export type ArtifactDataType = 'URL';
 export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
-  description: string; position?: number;
+  description: string; template_url: string; position?: number;
 }
 export interface ExecutorConfig {
   model_provider_id?: string | null; model_name?: string | null;
   startup_prompt: string; context_prompt: string; timeout_seconds: number; max_iterations: number;
 }
 export interface CapabilityRef {
-  id?: string; capability_type: 'SKILL' | 'MCP' | 'HOOK'; capability_key: string;
+  id?: string; capability_id?: string; capability_type: 'SKILL' | 'MCP' | 'HOOK'; capability_key: string;
   normalized_config: Record<string, unknown>; position?: number;
+}
+export interface CapabilityAsset {
+  id: string; lineage_id: string; revision_number: number; is_latest: boolean;
+  capability_type: CapabilityRef['capability_type']; capability_key: string;
+  description: string; version: string; filename: string; content_hash: string;
+  byte_size: number; import_id: string; created_at: string; reference_count: number;
+  dependencies: Record<string, Record<string, string>>;
+  dependency_build_state: 'NOT_REQUIRED' | 'PENDING' | 'READY' | 'FAILED';
+  dependency_build_error?: string | null;
+}
+export interface SkillSource {
+  id: string; capability_key: string; filename: string; entry: string; content: string;
 }
 export interface CapabilityImportResult {
   id: string; capability_type: CapabilityRef['capability_type']; filename: string;
   content_hash: string; storage_key: string; capabilities: CapabilityRef[];
 }
+export interface NamedDeleteReference { id: string; name: string }
+export interface BlockedCapabilityDelete {
+  id: string; name: string; relation: 'NODE_CAPABILITY'; nodes: NamedDeleteReference[];
+}
+export interface BlockedNodeDelete {
+  id: string; name: string; relation: 'FLOW_NODE';
+  flows: Array<NamedDeleteReference & { reference_count: number }>;
+}
+export interface BlockedProviderDelete {
+  id: string; name: string; relation: 'NODE_EXECUTOR'; nodes: NamedDeleteReference[];
+}
+export interface BulkDeleteResult<T> { deleted_ids: string[]; blocked: T[] }
+export interface EnvironmentVersion {
+  id: string; environment_id: string; version_no: number; parent_version_id?: string | null;
+  state: 'PUBLISHING' | 'READY' | 'FAILED'; image_reference: string; image_digest: string;
+  manifest: { commands?: Record<string, string>; [key: string]: unknown };
+  error_detail?: string | null; node_reference_count: number; run_reference_count: number;
+  reference_count: number; created_at: string;
+}
+export interface EnvironmentSetupSession {
+  id: string; environment_id: string; base_version_id?: string | null;
+  state: 'STARTING' | 'RUNNING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
+  base_image_reference: string; expires_at: string; error_detail?: string | null;
+}
+export interface TerminalEnvironment {
+  id: string; name: string; description: string; base_image: string; row_version: number;
+  versions: EnvironmentVersion[]; active_sessions: EnvironmentSetupSession[];
+  created_at: string; updated_at: string;
+}
+export interface TerminalEnvironmentWrite {
+  name: string; description: string; base_image: string; row_version?: number | null;
+}
 export interface NodeAsset {
   id: string; directory_id?: string | null; name: string; description: string;
-  icon_kind: string; icon_value: string; default_skill_ref?: string | null; row_version: number;
+  icon_kind: string; icon_value: string; row_version: number;
+  environment_version_id?: string | null; environment_version?: EnvironmentVersion | null;
   workspace_ref?: string;
   inputs: IOField[]; outputs: IOField[]; executor: ExecutorConfig | null;
   capabilities: CapabilityRef[]; created_at: string; updated_at: string;
 }
 export interface NodeAssetWrite {
   directory_id?: string | null; name: string; description: string;
-  icon_kind: string; icon_value: string; default_skill_ref?: string | null;
+  icon_kind: string; icon_value: string;
+  environment_version_id?: string | null;
   row_version?: number | null; inputs: IOField[]; outputs: IOField[];
   executor: ExecutorConfig; capabilities: CapabilityRef[];
 }
@@ -49,6 +93,10 @@ export interface ModelProviderWrite {
   name: string; base_url: string; api_key?: string | null; row_version?: number | null;
   models: ProviderModel[];
 }
+export interface CredentialConnection {
+  id: string; provider: string; provider_subject?: string | null; scopes: string[];
+  state: string; expires_at?: string | null; updated_at: string;
+}
 
 export interface GatePolicy {
   id?: string; stage: 'START' | 'END'; position: number;
@@ -60,19 +108,24 @@ export interface FlowNode {
   position_x: number; position_y: number; config_override: Record<string, unknown>;
   gates: GatePolicy[];
 }
-export interface EdgeMapping { source_output_key: string; target_input_key: string }
 export interface FlowEdge {
   id?: string; source_instance_key: string; target_instance_key: string;
-  position: number; mappings: EdgeMapping[];
+  position: number;
+}
+export interface FlowPortMapping {
+  id?: string; source_instance_key: string; source_output_key: string;
+  target_instance_key: string; target_input_key: string;
 }
 export interface FlowDefinition {
   id: string; name: string; description: string; default_entry_key?: string | null;
-  row_version: number; nodes: FlowNode[]; edges: FlowEdge[];
+  lark_root_folder_url: string;
+  row_version: number; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
   created_at: string; updated_at: string;
 }
 export interface FlowWrite {
   name: string; description: string; default_entry_key?: string | null;
-  row_version?: number | null; nodes: FlowNode[]; edges: FlowEdge[];
+  lark_root_folder_url: string;
+  row_version?: number | null; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
 }
 
 export interface ArtifactVersion {
@@ -101,6 +154,9 @@ export interface NodeAttempt {
   runtime_adapter?: string | null;
   runtime_job_id?: string | null; conversation_id?: string | null; runtime_cursor?: string | null;
   workspace_ref?: string | null; error_code?: string | null; error_detail?: string | null;
+  startup_mode?: 'SKILL' | 'PROMPT'; startup_capability_key?: string | null;
+  startup_prompt?: string | null;
+  output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
   gate_evaluations: GateEvaluation[]; created_at: string; updated_at: string;
 }
@@ -122,6 +178,7 @@ export interface FlowRunSummary {
   id: string; flow_definition_id: string; flow_name?: string | null;
   flow_row_version?: number | null; run_no: number; name: string; state: string;
   completion_mode?: string | null; active_snapshot_version?: number | null;
+  environment_version_id?: string | null;
   current_node_key?: string | null; current_node_name?: string | null;
   current_attempt_state?: AttemptState | null; has_pending_action: boolean;
   progress: { accepted: number; terminal: number; active: number };
@@ -129,6 +186,8 @@ export interface FlowRunSummary {
 }
 export interface FlowRun extends FlowRunSummary {
   row_version: number; active_snapshot_id: string; active_snapshot_version: number;
+  environment_version?: EnvironmentVersion | null;
+  lark_folder_token: string | null; lark_folder_url: string | null;
   progress: { accepted: number; terminal: number; active: number };
   snapshots: RunSnapshot[]; node_runs: NodeRun[]; artifacts: ArtifactVersion[];
 }
@@ -137,7 +196,7 @@ export interface RunEvent {
   event_type: string; payload: Record<string, unknown>; occurred_at: string;
 }
 export interface ArtifactInput {
-  field_key: string; artifact_type: string; inline_content?: string; uri?: string;
+  field_key: string; artifact_type: 'URL'; uri: string;
   mime_type?: string; metadata?: Record<string, unknown>;
 }
 
@@ -175,7 +234,7 @@ export interface AgentMessage {
 export interface AgentConversation {
   id: string; attempt_id: string; conversation_no: number;
   kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
-  state_version: number; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
+  state_version: number; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
   context_baseline: Record<string, unknown>; message_count: number;
   last_message?: AgentMessage | null; created_at: string; updated_at: string;
 }

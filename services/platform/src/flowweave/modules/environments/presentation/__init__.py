@@ -1,0 +1,1 @@
+"""Terminal environment HTTP adapters."""

@@ -27,7 +27,9 @@ from flowweave.shared.application.transactions import (
     run_rollback_actions,
 )
 from flowweave.shared.artifact_store import artifact_store_context
+from flowweave.shared.dependency_builder import dependency_builder_context
 from flowweave.shared.infrastructure.database import Database
+from flowweave.shared.lark_drive import lark_drive_context
 from flowweave.shared.sandbox import sandbox_context
 from flowweave.shared.settings import settings_context
 
@@ -110,12 +112,14 @@ class TaskWorker:
             settings_context(self.container.settings),
             runtime_context(self.container.runtime),
             artifact_store_context(self.container.artifact_store),
+            dependency_builder_context(self.container.dependency_builder),
             sandbox_context(self.container.sandbox),
+            lark_drive_context(self.container.lark_drive),
         )
 
     async def recover_startup(self) -> None:
-        settings, runtime, artifacts, sandbox = self._contexts()
-        with settings, runtime, artifacts, sandbox:
+        settings, runtime, artifacts, dependency_builder, sandbox, lark_drive = self._contexts()
+        with settings, runtime, artifacts, dependency_builder, sandbox, lark_drive:
             async with self.container.database.session() as session:
                 try:
                     await session.run_sync(
@@ -133,8 +137,8 @@ class TaskWorker:
                     raise
 
     async def run_once(self) -> bool:
-        settings, runtime, artifacts, sandbox = self._contexts()
-        with settings, runtime, artifacts, sandbox:
+        settings, runtime, artifacts, dependency_builder, sandbox, lark_drive = self._contexts()
+        with settings, runtime, artifacts, dependency_builder, sandbox, lark_drive:
             async with self.container.database.session() as session:
                 claimed = await session.run_sync(
                     lambda db: claim(
