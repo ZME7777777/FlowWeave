@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
-from uuid import uuid4
 
 import quickjs
 
@@ -15,6 +14,16 @@ from flowweave.shared.application.sandbox import (
     SandboxExecution,
     SandboxLanguage,
     SandboxPort,
+)
+from flowweave.shared.infrastructure.docker_control import (
+    DockerControlError,
+    EphemeralDockerLease,
+    remove_owned_container,
+)
+from flowweave.shared.infrastructure.docker_controller import (
+    DockerControllerClient,
+    DockerControllerError,
+    controller_is_remote,
 )
 
 _MAX_CODE_BYTES = 32_768
@@ -131,12 +140,18 @@ class DockerSandbox:
         javascript_image: str,
         *,
         docker_binary: str = "docker",
+        manager_scope: str,
+        cleanup_grace_seconds: int = 300,
+        storage_size: str = "4g",
     ) -> None:
         self.images: dict[SandboxLanguage, str] = {
             "PYTHON": python_image,
             "JAVASCRIPT": javascript_image,
         }
         self.docker_binary = docker_binary
+        self.manager_scope = manager_scope
+        self.cleanup_grace_seconds = cleanup_grace_seconds
+        self.storage_size = storage_size
 
     def execute(
         self,
@@ -148,14 +163,28 @@ class DockerSandbox:
         invalid = _invalid_code(code)
         if invalid:
             return invalid
-        name = f"flowweave-sandbox-{uuid4().hex}"
+        lease = EphemeralDockerLease.create(
+            kind="gate",
+            owner_type="GATE_EXECUTION",
+            manager_scope=self.manager_scope,
+            ttl_seconds=timeout_seconds + self.cleanup_grace_seconds,
+        )
         command = [
             self.docker_binary,
             "run",
             "--rm",
             "--interactive",
             "--name",
-            name,
+            lease.resource_name,
+            *lease.label_args(),
+            "--log-driver",
+            "local",
+            "--log-opt",
+            "max-size=4m",
+            "--log-opt",
+            "max-file=2",
+            "--storage-opt",
+            f"size={self.storage_size}",
             "--network",
             "none",
             "--read-only",
@@ -187,26 +216,78 @@ class DockerSandbox:
                 env={"PATH": os.defpath},
             )
         except subprocess.TimeoutExpired:
-            subprocess.run(
-                [self.docker_binary, "rm", "--force", name],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-                env={"PATH": os.defpath},
-            )
+            try:
+                remove_owned_container(
+                    self.docker_binary,
+                    lease.resource_name,
+                    lease.resource_id,
+                    expected_manager_scope=lease.manager_scope,
+                    timeout=5,
+                )
+            except DockerControlError:
+                # The durable expiry labels let maintenance retry cleanup. Never
+                # bypass ownership verification merely because immediate cleanup failed.
+                pass
             return SandboxExecution("TIMEOUT", error=f"{language.title()} gate timed out")
         except OSError as exc:
             return SandboxExecution("ERROR", error="Docker sandbox is unavailable", log=str(exc))
         return _decode_output(completed.stdout, completed.stderr, completed.returncode)
 
 
+class RemoteDockerSandbox:
+    """Executes fixed gate operations through the authenticated controller."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def execute(
+        self,
+        language: SandboxLanguage,
+        code: str,
+        context: dict[str, Any],
+        timeout_seconds: int,
+    ) -> SandboxExecution:
+        invalid = _invalid_code(code)
+        if invalid:
+            return invalid
+        try:
+            raw = DockerControllerClient(self.settings).post(
+                "/v1/gates/execute",
+                {
+                    "language": language,
+                    "code": code,
+                    "context": context,
+                    "timeout_seconds": timeout_seconds,
+                },
+                timeout=timeout_seconds + 10,
+            )
+        except DockerControllerError as exc:
+            return SandboxExecution(
+                "ERROR", error="Docker sandbox controller is unavailable", log=str(exc)
+            )
+        status = str(raw.get("status") or "ERROR")
+        if status not in {"COMPLETED", "ERROR", "TIMEOUT"}:
+            status = "ERROR"
+        return SandboxExecution(
+            cast(Any, status),
+            result=raw.get("result"),
+            error=str(raw.get("error") or "") or None,
+            log=str(raw.get("log") or "")[:_MAX_LOG_BYTES],
+        )
+
+
 def build_sandbox(settings: Settings) -> SandboxPort:
     if settings.sandbox_backend == "process":
         return ProcessSandbox()
     if settings.sandbox_backend == "docker":
+        if controller_is_remote(settings):
+            return RemoteDockerSandbox(settings)
         return DockerSandbox(
             settings.sandbox_image_python,
             settings.sandbox_image_javascript,
+            docker_binary=settings.docker_binary,
+            manager_scope=settings.sandbox_manager_scope,
+            cleanup_grace_seconds=settings.sandbox_orphan_grace_seconds,
+            storage_size=settings.sandbox_storage_size,
         )
     raise ValueError(f"Unsupported sandbox backend: {settings.sandbox_backend}")

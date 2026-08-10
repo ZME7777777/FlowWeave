@@ -14,6 +14,21 @@ def test_postgresql_schema_has_core_constraints_and_indexes(db_session_factory) 
     assert {item["name"] for item in inspector.get_indexes("run_events")} >= {"ix_run_event_cursor"}
     columns = {item["name"]: item for item in inspector.get_columns("run_events")}
     assert str(columns["cursor"]["type"]).upper() == "BIGINT"
+    assert "managed_sandboxes" in inspector.get_table_names()
+    setup_columns = {item["name"] for item in inspector.get_columns("environment_setup_sessions")}
+    assert "sandbox_id" in setup_columns
+    assert "published_version_id" in setup_columns
+    setup_foreign_keys = inspector.get_foreign_keys("environment_setup_sessions")
+    assert any(
+        item["referred_table"] == "managed_sandboxes"
+        and item["constrained_columns"] == ["sandbox_id"]
+        for item in setup_foreign_keys
+    )
+    assert {
+        "oauth_sessions",
+        "credential_connections",
+        "credential_leases",
+    }.isdisjoint(inspector.get_table_names())
 
 
 def test_postgresql_skip_locked_can_claim_distinct_tasks(db_session_factory) -> None:
@@ -211,7 +226,7 @@ async def test_slow_sse_consumer_does_not_block_fast_cursor_compensation(
 
 
 def test_attempt_confirmation_cas_allows_only_one_transaction(
-    client, container, db_session_factory, settings, skill_capability
+    client, db_session_factory, settings, skill_capability
 ) -> None:
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -220,7 +235,6 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
 
     from flowweave.modules.orchestration.application.service import confirm_start
     from flowweave.shared.domain.errors import DomainError
-    from flowweave.shared.lark_drive import lark_drive_context
     from flowweave.shared.models import BackgroundTask, HumanAction, RunEvent
     from flowweave.shared.schemas import AttemptStartWrite
     from flowweave.shared.settings import settings_context
@@ -283,11 +297,7 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
     worker_settings = settings.model_copy(update={"execution_mode": "worker"})
 
     def issue(index: int) -> str:
-        with (
-            settings_context(worker_settings),
-            lark_drive_context(container.lark_drive),
-            db_session_factory() as db,
-        ):
+        with settings_context(worker_settings), db_session_factory() as db:
             barrier.wait(timeout=5)
             try:
                 confirm_start(

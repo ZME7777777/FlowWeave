@@ -93,11 +93,6 @@ export interface ModelProviderWrite {
   name: string; base_url: string; api_key?: string | null; row_version?: number | null;
   models: ProviderModel[];
 }
-export interface CredentialConnection {
-  id: string; provider: string; provider_subject?: string | null; scopes: string[];
-  state: string; expires_at?: string | null; updated_at: string;
-}
-
 export interface GatePolicy {
   id?: string; stage: 'START' | 'END'; position: number;
   gate_type: 'PROMPT' | 'PYTHON' | 'JAVASCRIPT'; enabled: boolean;
@@ -201,7 +196,7 @@ export interface ArtifactInput {
 }
 
 
-export type ConversationState = 'CREATING' | 'IDLE' | 'GENERATING' | 'WAITING_HUMAN' | 'FAILED' | 'READ_ONLY';
+export type ConversationState = 'CREATING' | 'IDLE' | 'GENERATING' | 'STOPPING' | 'WAITING_HUMAN' | 'FAILED' | 'READ_ONLY';
 export type MessageDeliveryState = 'QUEUED' | 'DELIVERING' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
 export interface AgentMessageTextPart { type: 'text'; text: string }
 export interface AgentMessageAttachmentPart {
@@ -235,6 +230,12 @@ export interface AgentConversation {
   id: string; attempt_id: string; conversation_no: number;
   kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
   state_version: number; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
+  runtime_resource?: {
+    sandbox_id: string; container_name: string; owner_type: 'ATTEMPT' | 'CONVERSATION'; owner_id: string;
+    desired_state: string; observed_state: string; lifecycle: 'RUNNING' | 'DELETING' | 'DELETED' | 'ERROR';
+    cleanup_policy: 'DELETE_WITH_CONVERSATION' | 'DELETE_WITH_ATTEMPT';
+  } | null;
+  connection_status?: { phase: 'WAITING_WORKER' | 'PREPARING_CONTEXT' | 'STARTING_RUNTIME' | 'CONNECTING_AGENT' | 'READY' | 'FAILED'; started_at: string; elapsed_seconds?: number; detail?: string | null };
   context_baseline: Record<string, unknown>; message_count: number;
   last_message?: AgentMessage | null; created_at: string; updated_at: string;
 }

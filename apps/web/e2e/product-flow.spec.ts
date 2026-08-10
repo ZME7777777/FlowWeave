@@ -224,32 +224,30 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   const createdRunResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/flows/${flow.id}/runs`) && response.request().method() === 'POST');
   await dialog.getByRole('button', { name: '创建运行' }).click();
   const createdRun = await (await createdRunResponse).json();
-  await expect(page.getByText('任务运行已创建；请选择任意节点并绑定可用产物。')).toBeVisible();
-  await page.getByRole('button', { name: '编辑输入输出' }).click();
-  const ioDialog = page.getByRole('dialog', { name: '编辑输入输出' });
-  await ioDialog.getByLabel('输入文档 prd').fill(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
-  await ioDialog.getByRole('button', { name: '保存并返回' }).click();
-  await page.getByRole('button', { name: '创建节点工作项' }).click();
-
-  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
-  await expect(page.locator('.gate-results')).toContainText('START');
-
+  await expect(page.locator('.node-selection-hint')).toContainText('点击运行快照中的任意节点');
+  await expect(page.locator('.action-panel')).toHaveCount(0);
   const graphNodes = page.locator('.run-graph .react-flow__node');
-  await graphNodes.filter({ hasText: '复核方案' }).click();
-  const pendingNodeDialog = page.getByRole('dialog', { name: '运行节点详情 复核方案' });
-  await expect(pendingNodeDialog).toContainText('未激活');
-  await expect(pendingNodeDialog).toContainText('创建执行轮次时选择');
-  await expect(pendingNodeDialog).toContainText('START · #1');
-  await expect(pendingNodeDialog).toContainText('END · #1');
-  await pendingNodeDialog.getByRole('button', { name: '关闭运行节点详情' }).click();
-
   await graphNodes.filter({ hasText: '首轮方案' }).click();
-  const activeNodeDialog = page.getByRole('dialog', { name: '运行节点详情 首轮方案' });
-  await expect(activeNodeDialog).toContainText('运行次数');
-  await expect(activeNodeDialog).toContainText('WAITING_START_CONFIRMATION');
-  await expect(activeNodeDialog).toContainText('1 轮');
-  await activeNodeDialog.getByRole('button', { name: '查看最新运行' }).click();
-  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
+  const nodeConsole = page.locator('.node-console');
+  await expect(nodeConsole).toContainText('首轮方案');
+  await expect(nodeConsole).toContainText('创建一次独立执行');
+  await expect(nodeConsole).toContainText('使用 Skill 启动');
+  await expect(nodeConsole).toContainText('发送启动提示词');
+  await expect(nodeConsole).toContainText('仅创建会话启动');
+
+  await nodeConsole.getByText('新建输入产物', { exact: true }).click();
+  await nodeConsole.getByLabel('新建产物名称 prd').fill(`需求文档-${suffix}`);
+  await nodeConsole.getByLabel('新建产物 URL prd').fill(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
+  await nodeConsole.getByRole('button', { name: '保存到产物池' }).click();
+  await expect(nodeConsole.locator('.selected-artifact')).toContainText(`需求文档-${suffix}`);
+  await expect(nodeConsole.locator('.selected-artifact')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
+  await nodeConsole.getByRole('button', { name: '开始第 1 次执行' }).click();
+
+  const attemptControl = page.locator('.attempt-control');
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+  await expect(attemptControl.locator('.attempt-input-card')).toContainText(`需求文档-${suffix}`);
+  await expect(attemptControl.locator('.attempt-input-card')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
+  await expect(attemptControl.locator('.gate-results')).toContainText('START');
 
   const changedFlow = await request.put(`${apiBase}/api/v1/flows/${flow.id}`, {
     data: {
@@ -292,11 +290,11 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await expect(page.locator('.run-title')).toContainText('流程快照 v2');
   await expect(page.getByTestId('snapshot-sync')).toBeHidden();
 
-  await page.getByText('选择节点和输入产物', { exact: true }).click();
-  await page.getByLabel('重新运行节点').selectOption('design_b');
-  await page.getByLabel('重新运行输入 prd').selectOption({ index: 1 });
-  await page.getByRole('button', { name: '运行这个节点' }).click();
-  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
+  await attemptControl.getByRole('button', { name: '创建新的独立执行' }).click();
+  await expect(nodeConsole).toContainText('已有执行记录');
+  await nodeConsole.getByLabel('节点输入 prd').selectOption({ index: 1 });
+  await nodeConsole.getByRole('button', { name: '开始第 2 次执行' }).click();
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
   await expect(page.locator('.timeline button')).toHaveCount(2);
 
   const runResponse = await request.get(`${apiBase}/api/v1/flow-runs/${createdRun.id}`);
@@ -306,11 +304,16 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   expect(run.artifacts).toEqual(expect.arrayContaining([expect.objectContaining({
     field_key: 'prd',
     uri: `https://example.feishu.cn/docx/e2e-input-${suffix}`,
-    source: 'HUMAN_INPUT',
+    source: 'HUMAN',
+    metadata: expect.objectContaining({
+      source: 'HUMAN_INPUT',
+      display_name: `需求文档-${suffix}`,
+    }),
   })]));
   expect(run.node_runs[0].attempts[0].input_bindings).toEqual(expect.arrayContaining([
     expect.objectContaining({ input_field_key: 'prd' }),
   ]));
+  expect(run.node_runs.filter((item: { flow_node_snapshot_key: string }) => item.flow_node_snapshot_key === 'design_a')).toHaveLength(2);
 });
 
 test('cancelled run becomes read-only and can be permanently deleted', async ({ page, request }) => {
@@ -325,19 +328,20 @@ test('cancelled run becomes read-only and can be permanently deleted', async ({ 
   await page.getByLabel('搜索流程或运行').fill(`终态运行-${suffix}`);
   await page.locator('.run-open').click();
   await expect(page.locator('.timeline button')).toHaveCount(2);
+  await page.locator('.timeline button').first().click();
 
   await confirmProductDialog(
     page,
     page.getByRole('button', { name: '取消整个流程' }),
     '取消流程',
-    '所有尚未结束的节点运行都会被取消',
+    '未结束的执行会被取消',
   );
   await expect(page.getByTestId('flow-run-state')).toHaveText('已取消');
   await expect(page.locator('.run-progress')).toContainText('0 已验收');
   await expect(page.locator('.run-progress')).toContainText('2 已结束');
   await expect(page.locator('.run-progress')).toContainText('0 进行中');
   await expect(page.locator('.terminal-run-panel')).toContainText('流程已取消');
-  await expect(page.getByRole('button', { name: '从此节点运行' })).toBeHidden();
+  await expect(page.getByRole('button', { name: '创建新的独立执行' })).toBeHidden();
   await expect(page.getByRole('button', { name: '取消整个流程' })).toBeHidden();
 
   await confirmProductDialog(

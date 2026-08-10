@@ -202,6 +202,64 @@
 .attach-button:hover { background: #eaf2ed; color: var(--green); }
 .attach-button:disabled { opacity: .4; cursor: not-allowed; }
 
+.message-branch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 5px;
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+.chat-message:hover .message-branch-actions,
+.message-branch-actions:focus-within { opacity: 1; }
+.message-branch-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 9px;
+}
+.message-branch-actions button:hover { background: #edf3ef; color: var(--green); }
+.message-branch-actions button:disabled { cursor: wait; opacity: .5; }
+.chat-message.human .message-branch-actions { justify-content: flex-end; }
+
+.stop-generation-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #111a16;
+  border-radius: 50%;
+  background: #111a16;
+  color: #fff;
+  box-shadow: 0 2px 8px #13201924;
+}
+.stop-generation-button:hover { background: #27332d; }
+.stop-generation-button:disabled { cursor: wait; opacity: .6; }
+.stop-generation-button:disabled svg { animation: agent-status-spin 1.2s linear infinite; }
+
+.agent-stop-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #171918;
+  color: #fff;
+  box-shadow: 0 2px 7px #1013112e;
+}
+.agent-stop-button:hover { background: #000; transform: translateY(-1px); }
+.agent-stop-button:disabled { cursor: wait; opacity: .55; transform: none; }
+
 .message-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -292,32 +350,45 @@
 
 .agent-activity-status {
   width: min(1080px, calc(100% - clamp(40px, 4vw, 80px)));
+  min-height: 32px;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
-  margin: 0 auto 10px;
-  padding: 9px 11px;
+  gap: 7px;
+  margin: 0 auto 6px;
+  padding: 5px 8px;
   border: 1px solid #d9e2dc;
-  border-radius: 9px;
+  border-radius: 7px;
   background: #f8faf8;
   color: #4d5b53;
 }
 
 .agent-activity-icon {
-  width: 28px;
-  height: 28px;
+  width: 18px;
+  height: 18px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: 5px;
   background: #e7f0ea;
   color: var(--green);
 }
-
-.agent-activity-status b,
-.agent-activity-status small { display: block; }
-.agent-activity-status b { color: var(--ink); font-size: 11px; }
-.agent-activity-status small { margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.agent-activity-icon svg { width: 12px; height: 12px; }
+.agent-activity-status > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.agent-activity-status b { flex: 0 0 auto; color: var(--ink); font-size: 10px; }
+.agent-activity-status small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agent-activity-status.waiting { border-color: #ead9ba; background: #fffaf1; }
 .agent-activity-status.waiting .agent-activity-icon { background: #f7ead2; color: #94631f; }
 .agent-activity-status.failed { border-color: #ebcece; background: #fff6f6; }

@@ -4,11 +4,10 @@ import hashlib
 import json
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
@@ -16,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.public import describe_asset
 from flowweave.modules.conversations import public as conversations
-from flowweave.modules.credentials.public import connected_lark_access_token
+from flowweave.modules.environments.public import lock_referenceable_version
 from flowweave.modules.flows.public import describe_flow, load_flow
 from flowweave.modules.gates.public import (
     GateExecutionPlan,
@@ -30,6 +29,7 @@ from flowweave.modules.runs.public import (
     InputField,
     evaluate_readiness,
 )
+from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
 from flowweave.runtime.dependencies import get_runtime
@@ -43,7 +43,6 @@ from flowweave.shared.application.transactions import (
 )
 from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
-from flowweave.shared.lark_drive import get_lark_drive
 from flowweave.shared.models import (
     AgentConversation,
     AgentMessage,
@@ -79,6 +78,39 @@ from flowweave.shared.schemas import (
 from flowweave.shared.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def attempt_sandbox_owner_is_active(
+    db: Session,
+    owner_id: str,
+    sandbox_id: str,
+    *,
+    created_at: datetime,
+    now_at: datetime,
+    binding_grace_seconds: int,
+) -> bool:
+    """Report whether an Attempt still authorizes its Runtime sandbox."""
+
+    item = db.get(NodeAttempt, owner_id)
+    provisioning = bool(
+        item is not None
+        and item.runtime_sandbox_id is None
+        and item.runtime_phase == "STARTING"
+        and created_at + timedelta(seconds=binding_grace_seconds) > now_at
+    )
+    return bool(
+        provisioning
+        or (
+            item is not None
+            and item.runtime_sandbox_id == sandbox_id
+            and item.state
+            not in {
+                AttemptState.ACCEPTED,
+                AttemptState.REJECTED,
+                AttemptState.CANCELLED,
+            }
+        )
+    )
 
 
 def _hash(value: Any) -> str:
@@ -809,13 +841,21 @@ def _create_node_run(
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
     _validate_input_bindings(db, run, node, artifact_ids)
-    existing = db.scalar(
-        select(NodeRun)
-        .where(
-            NodeRun.flow_run_id == run.id,
-            NodeRun.flow_node_snapshot_key == instance_key,
+    # Automatic port propagation targets the latest waiting work item so the
+    # same mapping stays idempotent. A human start is intentionally different:
+    # every click represents an independent execution record, even when another
+    # execution of the same snapshot node is still active.
+    existing = (
+        db.scalar(
+            select(NodeRun)
+            .where(
+                NodeRun.flow_run_id == run.id,
+                NodeRun.flow_node_snapshot_key == instance_key,
+            )
+            .order_by(NodeRun.sequence_no.desc())
         )
-        .order_by(NodeRun.sequence_no)
+        if created_from == "PORT_MAPPING"
+        else None
     )
     if existing:
         latest = db.scalar(
@@ -959,20 +999,9 @@ def start_flow(
     ) + 1
     environment = None
     if payload.environment_version_id:
-        environment = db.scalar(
-            select(EnvironmentVersion)
-            .where(EnvironmentVersion.id == payload.environment_version_id)
-            .with_for_update()
-        )
+        environment = lock_referenceable_version(db, payload.environment_version_id)
         if environment is None:
             raise not_found("environment_version", payload.environment_version_id)
-        if environment.state != "READY" or not environment.image_digest:
-            raise DomainError(
-                "ENVIRONMENT_VERSION_NOT_READY",
-                "The selected terminal environment version is not ready",
-                409,
-                {"environment_version_id": payload.environment_version_id},
-            )
     run_name = payload.name or f"{flow.name} · Run #{run_no}"
     run = FlowRun(
         flow_definition_id=flow_id,
@@ -1196,29 +1225,16 @@ def confirm_start(
     return attempt_detail(db, attempt.id)
 
 
-def _url_token(value: str, marker: str) -> str:
-    path = urlparse(value).path
-    if marker not in path:
-        raise DomainError(
-            "LARK_RESOURCE_URL_INVALID",
-            "The configured Lark resource URL is invalid",
-            422,
-            {"url": value},
-        )
-    token = path.split(marker, 1)[1].split("/", 1)[0]
-    if not token:
-        raise DomainError(
-            "LARK_RESOURCE_URL_INVALID",
-            "The configured Lark resource token is missing",
-            422,
-            {"url": value},
-        )
-    return token
-
-
 def _create_output_targets(
     db: Session, run: FlowRun, attempt: NodeAttempt, node: dict[str, Any]
 ) -> dict[str, dict[str, str]]:
+    """Describe outputs for the environment-local Lark CLI.
+
+    FlowWeave intentionally does not acquire an account token or create remote
+    resources here. The Agent creates each document with the terminal
+    environment's isolated Lark CLI login and returns the resulting URL.
+    """
+
     asset = cast(dict[str, Any], node.get("asset") or {})
     raw_outputs = cast(list[object], asset.get("outputs") or [])
     if not raw_outputs:
@@ -1231,41 +1247,6 @@ def _create_output_targets(
             "The flow must configure a Lark root before creating outputs",
             422,
         )
-    try:
-        access_token = connected_lark_access_token(db)
-    except DomainError as exc:
-        if exc.code in {"CREDENTIAL_CONNECTION_REQUIRED", "CREDENTIAL_REAUTH_REQUIRED"}:
-            return {}
-        raise
-    drive = get_lark_drive()
-    is_wiki = "/wiki/" in urlparse(root_url).path
-    if not run.lark_folder_token or not run.lark_folder_url:
-        if is_wiki:
-            folder = drive.create_wiki_node(
-                access_token=access_token, parent_url=root_url, name=run.name
-            )
-            register_rollback_action(
-                db,
-                lambda url=folder.url: drive.delete_wiki_node(
-                    access_token=access_token, node_url=url
-                ),
-            )
-        else:
-            folder = drive.create_folder(
-                access_token=access_token,
-                parent_token=_url_token(root_url, "/drive/folder/"),
-                parent_url=root_url,
-                name=run.name,
-            )
-            register_rollback_action(
-                db,
-                lambda token=folder.token: drive.delete(
-                    access_token=access_token, token=token, resource_type="folder"
-                ),
-            )
-        run.lark_folder_token = folder.token
-        run.lark_folder_url = folder.url
-
     targets: dict[str, dict[str, str]] = {}
     node_name = str(node.get("alias") or asset.get("name") or "Node")
     for raw in raw_outputs:
@@ -1278,50 +1259,9 @@ def _create_output_targets(
         display_name = str(output.get("display_name") or field_key)
         title = f"{node_name} · {display_name}"
         template_url = str(output.get("template_url") or "")
-        if is_wiki:
-            resource = drive.create_wiki_node(
-                access_token=access_token,
-                parent_url=run.lark_folder_url or root_url,
-                name=title,
-            )
-            register_rollback_action(
-                db,
-                lambda url=resource.url: drive.delete_wiki_node(
-                    access_token=access_token, node_url=url
-                ),
-            )
-            token = resource.object_token or resource.token
-        elif template_url:
-            resource = drive.copy_docx(
-                access_token=access_token,
-                source_token=_url_token(template_url, "/docx/"),
-                folder_token=run.lark_folder_token or "",
-                name=title,
-            )
-            token = resource.token
-            register_rollback_action(
-                db,
-                lambda token=token: drive.delete(
-                    access_token=access_token, token=token, resource_type="docx"
-                ),
-            )
-        else:
-            resource = drive.create_docx(
-                access_token=access_token,
-                folder_token=run.lark_folder_token or "",
-                folder_url=run.lark_folder_url or root_url,
-                name=title,
-            )
-            token = resource.token
-            register_rollback_action(
-                db,
-                lambda token=token: drive.delete(
-                    access_token=access_token, token=token, resource_type="docx"
-                ),
-            )
         targets[field_key] = {
-            "url": resource.url,
-            "token": token,
+            "root_url": root_url,
+            "run_name": run.name,
             "title": title,
             "display_name": display_name,
             "description": str(output.get("description") or ""),
@@ -1466,6 +1406,9 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         startup_capability_key=attempt.startup_capability_key,
         output_targets=cast(dict[str, dict[str, str]], attempt.output_targets_json or {}),
         environment_image=environment.image_digest if environment else None,
+        environment_id=environment.environment_id if environment else None,
+        environment_version_id=environment.id if environment else None,
+        environment_version_no=environment.version_no if environment else None,
     )
 
 
@@ -1541,9 +1484,40 @@ def process_start_runtime(
 
     current_attempt_id = attempt.id
     request = _runtime_request(db, attempt)
+    allocation = None
+    if request.environment_image and get_settings().runtime_adapter != "mock":
+        allocation = sandboxes.create_runtime_sandbox(
+            db,
+            owner_type="ATTEMPT",
+            owner_id=attempt.id,
+            image=request.environment_image,
+            environment_id=request.environment_id,
+            environment_version_id=request.environment_version_id,
+            environment_version_no=request.environment_version_no,
+            workspace_relative=request.runtime_workspace_relative,
+        )
+        request = replace(
+            request,
+            runtime_sandbox_id=allocation.id,
+            runtime_resource_name=allocation.resource_name,
+            runtime_base_url=allocation.base_url,
+        )
     _release_worker_read_transaction(db, lease)
-    handle = get_runtime().start(request)
-    _require_current_lease(db, lease)
+    handle: RuntimeHandle | None = None
+    try:
+        handle = get_runtime().start(request)
+        if allocation is not None:
+            sandboxes.mark_runtime_bound(db, allocation.id)
+        _require_current_lease(db, lease)
+    except BaseException:
+        if handle is not None:
+            try:
+                get_runtime().cancel(handle)
+            except Exception:
+                pass
+        if allocation is not None:
+            sandboxes.request_delete_durable(db, allocation.id)
+        raise
     claimed = _claim_runtime_phase(
         db,
         current_attempt_id,
@@ -1553,12 +1527,15 @@ def process_start_runtime(
         runtime_job_id=handle.job_id,
         conversation_id=handle.conversation_id,
         runtime_cursor=handle.cursor,
+        runtime_sandbox_id=allocation.id if allocation else None,
         runtime_adapter=get_settings().runtime_adapter,
         runtime_phase="RUNNING",
     )
     if claimed is None:
         _release_worker_read_transaction(db, lease)
         get_runtime().cancel(handle)
+        if allocation is not None:
+            sandboxes.request_delete_durable(db, allocation.id)
         _require_current_lease(db, lease)
         return
     conversations.bind_auto_runtime(
@@ -1568,6 +1545,7 @@ def process_start_runtime(
         runtime_conversation_id=handle.conversation_id,
         runtime_cursor=handle.cursor,
         runtime_adapter=get_settings().runtime_adapter,
+        runtime_sandbox_id=claimed.runtime_sandbox_id,
     )
     if _inline_execution():
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
@@ -1605,6 +1583,8 @@ def _apply_runtime_result(
             attempt.id,
         )
     elif result.status == "COMPLETED":
+        if attempt.runtime_sandbox_id:
+            sandboxes.request_delete(db, attempt.runtime_sandbox_id)
         conversations.set_auto_conversation_state(
             db, attempt.id, conversations.ConversationState.IDLE
         )
@@ -1625,6 +1605,8 @@ def _apply_runtime_result(
             db, attempt.id, conversations.ConversationState.GENERATING
         )
     elif result.status == "FAILED":
+        if attempt.runtime_sandbox_id:
+            sandboxes.request_delete(db, attempt.runtime_sandbox_id)
         conversations.set_auto_conversation_state(
             db, attempt.id, conversations.ConversationState.FAILED
         )
@@ -1643,21 +1625,35 @@ def _prepare_runtime_outputs(
 ) -> list[PreparedArtifact]:
     if result.status != "COMPLETED":
         return []
-    return [
-        prepare_artifact(
-            ArtifactWrite(
-                field_key=field_key,
-                artifact_type="URL",
-                uri=content,
-                metadata={"runtime_artifact_type": "URL"},
+    missing = sorted(set(output_targets) - set(result.outputs))
+    if missing:
+        raise DomainError(
+            "RUNTIME_OUTPUT_MISSING",
+            "The Agent completed without returning every required output URL",
+            422,
+            {"fields": missing},
+        )
+    prepared: list[PreparedArtifact] = []
+    for field_key in output_targets:
+        artifact_type, content = result.outputs[field_key]
+        if artifact_type != "URL" or not content.strip():
+            raise DomainError(
+                "RUNTIME_OUTPUT_INVALID",
+                "The Agent returned an invalid output URL",
+                422,
+                {"field": field_key},
+            )
+        prepared.append(
+            prepare_artifact(
+                ArtifactWrite(
+                    field_key=field_key,
+                    artifact_type="URL",
+                    uri=content.strip(),
+                    metadata={"runtime_artifact_type": "URL"},
+                )
             )
         )
-        for field_key, raw_target in output_targets.items()
-        if isinstance(raw_target, dict)
-        for target in [cast(dict[str, Any], raw_target)]
-        for content in [str(target.get("url") or "")]
-        if content
-    ]
+    return prepared
 
 
 def process_poll_runtime(
@@ -1682,6 +1678,7 @@ def process_poll_runtime(
     result = batch.result or runtime.inspect(
         RuntimeHandle(handle.job_id, handle.conversation_id, batch.cursor or handle.cursor)
     )
+    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     try:
         _require_current_lease(db, lease)
     except Exception:
@@ -1795,6 +1792,7 @@ def process_resume_runtime(
     )
     _release_worker_read_transaction(db, lease)
     result = get_runtime().resume(handle, content)
+    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     try:
         _require_current_lease(db, lease)
     except Exception:
@@ -1877,6 +1875,13 @@ def process_cancel_runtime(
         for adapter, handle in targets:
             runtime_for(adapter, handle).cancel(handle)
         _require_current_lease(db, lease)
+    if attempt.runtime_sandbox_id:
+        sandboxes.request_delete(db, attempt.runtime_sandbox_id)
+    for conversation in db.scalars(
+        select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
+    ):
+        if conversation.runtime_sandbox_id:
+            sandboxes.request_delete(db, conversation.runtime_sandbox_id)
     claimed = _claim_runtime_phase(
         db,
         current_attempt_id,
@@ -1970,6 +1975,61 @@ def retry_runtime_cancel(
     _event(db, run.id, "ATTEMPT_CANCEL_RETRIED", {}, node_run.id, claimed.id)
     finish(db)
     return attempt_detail(db, claimed.id)
+
+
+def cancel_attempt(
+    db: Session, attempt_id: str, payload: AttemptVersionWrite, idempotency_key: str
+) -> dict[str, Any]:
+    """Cancel one node Attempt without cancelling the entire flow run."""
+
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        return attempt_detail(db, attempt_id)
+    attempt = _attempt(db, attempt_id)
+    if attempt.state in {
+        AttemptState.ACCEPTED,
+        AttemptState.REJECTED,
+        AttemptState.CANCELLED,
+    }:
+        return attempt_detail(db, attempt.id)
+    if attempt.state_version != payload.expected_state_version:
+        raise conflict(
+            "attempt was modified",
+            expected=payload.expected_state_version,
+            actual=attempt.state_version,
+        )
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    _action(
+        db,
+        run.id,
+        "CANCEL_NODE_ATTEMPT",
+        idempotency_key,
+        node_run_id=node_run.id,
+        attempt_id=attempt.id,
+    )
+    targets = _runtime_cancel_targets(db, attempt)
+    attempt.state = AttemptState.CANCELLED
+    attempt.state_version += 1
+    node_run.state = NodeRunState.CANCELLED
+    conversations.set_attempt_conversations_state(
+        db, attempt.id, conversations.ConversationState.READ_ONLY
+    )
+    if targets:
+        attempt.runtime_phase = "CANCELLING"
+        enqueue(
+            db,
+            task_type="CANCEL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=attempt.id,
+            idempotency_key=f"cancel-runtime:{attempt.id}:v{attempt.state_version}",
+        )
+    else:
+        attempt.runtime_phase = "CANCELLED"
+    _event(db, run.id, "ATTEMPT_CANCELLED", {}, node_run.id, attempt.id)
+    _recompute_run(db, run)
+    finish(db)
+    return attempt_detail(db, attempt.id)
 
 
 def _recompute_run(db: Session, run: FlowRun) -> None:

@@ -4,11 +4,12 @@ import json
 import time
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import httpx
 
 from flowweave.bootstrap.settings import Settings
-from flowweave.modules.environments.infrastructure import docker as environment_docker
+from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import (
     RuntimeEvent,
     RuntimeEventBatch,
@@ -25,7 +26,8 @@ class OpenHandsRuntime:
 
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.openhands_base_url.rstrip("/")
-        self.headers = {"X-Session-API-Key": settings.openhands_session_api_key}
+        self.root_session_api_key = settings.openhands_session_api_key
+        self.manager_scope = settings.sandbox_manager_scope
         self.workspace_root = settings.workspace_root.resolve()
         self.openhands_workspace_root = settings.openhands_workspace_root
         self._contracts: dict[str, list[dict[str, str]]] = {}
@@ -43,11 +45,16 @@ class OpenHandsRuntime:
         route = self._environment_route(handle.job_id)
         return f"http://{route[0]}:8000" if route else self.base_url
 
-    @classmethod
-    def _cleanup_environment(cls, handle: RuntimeHandle) -> None:
-        route = cls._environment_route(handle.job_id)
-        if route:
-            environment_docker.remove_runtime_container(route[0])
+    def _session_key_for_resource(self, resource_name: str | None) -> str:
+        if not resource_name:
+            return self.root_session_api_key
+        return derive_runtime_session_key(
+            self.root_session_api_key, self.manager_scope, resource_name
+        )
+
+    def _session_key_for_handle(self, handle: RuntimeHandle) -> str:
+        route = self._environment_route(handle.job_id)
+        return self._session_key_for_resource(route[0] if route else None)
 
     def _request(
         self,
@@ -56,12 +63,16 @@ class OpenHandsRuntime:
         *,
         missing_ok: bool = False,
         base_url: str | None = None,
+        session_api_key: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         try:
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.request(
-                    method, f"{base_url or self.base_url}{path}", headers=self.headers, **kwargs
+                    method,
+                    f"{base_url or self.base_url}{path}",
+                    headers={"X-Session-API-Key": session_api_key or self.root_session_api_key},
+                    **kwargs,
                 )
                 if missing_ok and response.status_code == 404:
                     return {"_flowweave_missing": True}
@@ -125,7 +136,8 @@ class OpenHandsRuntime:
             {
                 "field_key": field_key,
                 "artifact_type": "URL",
-                "url": target.get("url", ""),
+                "root_url": target.get("root_url", ""),
+                "run_name": target.get("run_name", ""),
                 "title": target.get("title", field_key),
                 "display_name": target.get("display_name", field_key),
                 "description": target.get("description", ""),
@@ -157,6 +169,13 @@ class OpenHandsRuntime:
         if context:
             heading = "节点背景上下文（仅作协作参考）" if collaboration else "任务上下文"
             sections.append(f"{heading}：\n{context}")
+        if collaboration and request.conversation_history:
+            sections.append(
+                "这是从既有会话分叉出的独立会话。下列记录是分叉点及其之前的真实对话历史，"
+                "按给定顺序视为本会话已经发生的上下文；不要声称看不到这些消息，也不要重复回答"
+                "最后一条历史消息。等待用户的新消息后，从该上下文继续。\n"
+                + json.dumps(request.conversation_history, ensure_ascii=False)
+            )
         if request.node_workspace_ref:
             resource_lines = [
                 f"节点持久工作目录：{request.node_workspace_ref}",
@@ -197,11 +216,12 @@ class OpenHandsRuntime:
             )
         if outputs:
             sections.append(
-                "输出文档已由平台在本次运行目录创建（配置模板时为模板副本，否则为空白文档）。"
-                "必须使用飞书能力直接编辑下列目标文档；非空的 template_url 是可选格式与结构参考，"
-                "description 是内容及验收要求。不得另建"
-                "文档、替换 URL、修改模板，或只在最终消息中返回正文。完成全部编辑后调用"
-                " finish；message 只需简短说明已完成。\n" + json.dumps(outputs, ensure_ascii=False)
+                "平台不会持有或注入飞书账号凭据。请使用本终端环境内已登录的 lark-cli，"
+                "在 root_url 下按 run_name/标题创建并编辑下列输出文档；有 template_url 时复制模板，"
+                "否则创建空白文档。完成后调用 finish，并把 message 严格写成 JSON："
+                '{"outputs":{"字段标识":{"artifact_type":"URL","uri":"https://..."}}}'
+                "。不得把 token、cookie 或本地凭据文件写入消息。\n"
+                + json.dumps(outputs, ensure_ascii=False)
             )
         return "\n\n".join(sections)
 
@@ -256,22 +276,24 @@ class OpenHandsRuntime:
             },
             "agent": agent,
         }
-        if request.runtime_secrets:
-            payload["secrets"] = request.runtime_secrets
-        container_name = ""
-        target_base_url = self.base_url
-        if request.environment_image:
-            container_name, target_base_url = environment_docker.start_runtime_container(
-                request.environment_image, request.attempt_id
+        if request.environment_image and not (
+            request.runtime_sandbox_id
+            and request.runtime_resource_name
+            and request.runtime_base_url
+        ):
+            raise DomainError(
+                "RUNTIME_SANDBOX_REQUIRED",
+                "A published environment Runtime must be allocated by the sandbox control plane",
+                500,
             )
-        try:
-            created = self._request(
-                "POST", "/api/conversations", base_url=target_base_url, json=payload
-            )
-        except BaseException:
-            if container_name:
-                environment_docker.remove_runtime_container(container_name)
-            raise
+        target_base_url = request.runtime_base_url or self.base_url
+        created = self._request(
+            "POST",
+            "/api/conversations",
+            base_url=target_base_url,
+            session_api_key=self._session_key_for_resource(request.runtime_resource_name or None),
+            json=payload,
+        )
         conversation_id = str(created.get("id") or "")
         if not conversation_id:
             raise DomainError("RUNTIME_PROTOCOL_ERROR", "Missing conversation id", 502)
@@ -279,8 +301,8 @@ class OpenHandsRuntime:
         cursor_value = created.get("leaf_event_id") or created.get("last_user_message_id")
         cursor = str(cursor_value) if cursor_value else None
         job_id = (
-            f"{'env-exec' if run else 'env-chat'}:{container_name}"
-            if container_name
+            f"{'env-exec' if run else 'env-chat'}:{request.runtime_resource_name}"
+            if request.runtime_resource_name
             else conversation_id
         )
         return RuntimeHandle(job_id=job_id, conversation_id=conversation_id, cursor=cursor)
@@ -295,6 +317,12 @@ class OpenHandsRuntime:
     def _text_content(value: object) -> str:
         if isinstance(value, str):
             return value
+        if isinstance(value, dict):
+            item = cast(dict[str, object], value)
+            text = item.get("text")
+            if isinstance(text, str):
+                return text
+            return OpenHandsRuntime._text_content(item.get("content"))
         if not isinstance(value, list):
             return ""
         values: list[str] = []
@@ -318,15 +346,15 @@ class OpenHandsRuntime:
             if isinstance(action, dict):
                 action_item = cast(dict[str, object], action)
                 value = action_item.get("message") or action_item.get("thought")
-                return str(value) if value is not None else ""
+                return cls._text_content(value)
         if kind == "ObservationEvent":
             observation = item.get("observation")
             if isinstance(observation, dict):
                 observation_item = cast(dict[str, object], observation)
                 value = observation_item.get("content") or observation_item.get("message")
-                return str(value) if value is not None else ""
+                return cls._text_content(value)
             value = item.get("content") or item.get("message")
-            return str(value) if value is not None else ""
+            return cls._text_content(value)
         return ""
 
     @classmethod
@@ -345,6 +373,14 @@ class OpenHandsRuntime:
                 return "COMPLETED"
             return "THOUGHT" if action_kind == "ThinkAction" else "TOOL_CALL"
         if kind == "ObservationEvent":
+            observation = item.get("observation")
+            observation_kind = (
+                str(cast(dict[str, object], observation).get("kind") or "")
+                if isinstance(observation, dict)
+                else ""
+            )
+            if observation_kind == "FinishObservation":
+                return "COMPLETED"
             return "TOOL_RESULT"
         if "error" in kind.lower():
             return "ERROR"
@@ -401,40 +437,116 @@ class OpenHandsRuntime:
         return payload
 
     def _events(
-        self, conversation_id: str, cursor: str | None, *, base_url: str | None = None
+        self,
+        conversation_id: str,
+        cursor: str | None,
+        *,
+        base_url: str | None = None,
+        session_api_key: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        params: dict[str, Any] = {"limit": 100, "sort_order": "TIMESTAMP"}
-        if cursor:
-            params["page_id"] = cursor
-        data = self._request(
-            "GET",
-            f"/api/conversations/{conversation_id}/events/search",
-            base_url=base_url,
-            params=params,
-        )
-        raw_items: object = data.get("items", [])
-        items = (
-            [
-                cast(dict[str, Any], item)
-                for item in cast(list[object], raw_items)
-                if isinstance(item, dict)
-            ]
-            if isinstance(raw_items, list)
-            else []
-        )
+        items: list[dict[str, Any]] = []
+        page_id = cursor
+        first_page = True
+        while True:
+            params: dict[str, Any] = {"limit": 100, "sort_order": "TIMESTAMP"}
+            if page_id:
+                params["page_id"] = page_id
+            data = self._request(
+                "GET",
+                f"/api/conversations/{conversation_id}/events/search",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                params=params,
+            )
+            raw_items: object = data.get("items", [])
+            page_items = (
+                [
+                    cast(dict[str, Any], item)
+                    for item in cast(list[object], raw_items)
+                    if isinstance(item, dict)
+                ]
+                if isinstance(raw_items, list)
+                else []
+            )
+            if first_page and cursor:
+                anchor_index = next(
+                    (
+                        index
+                        for index, item in enumerate(page_items)
+                        if str(item.get("id") or "") == cursor
+                    ),
+                    None,
+                )
+                if anchor_index is None:
+                    return [], cursor
+                page_items = page_items[anchor_index + 1 :]
+            items.extend(page_items)
+            next_page_id = str(data.get("next_page_id") or "") or None
+            if not next_page_id or next_page_id == page_id:
+                break
+            page_id = next_page_id
+            first_page = False
+        # OpenHands treats page_id as an inclusive event anchor, not as an
+        # opaque "start after this event" cursor.  The adapter persists the
+        # last projected event id as its cursor, so exposing the anchor again
+        # would replay a previous FinishAction as the result of the next human
+        # message.  Only events created after the persisted anchor belong to
+        # the current poll.  If OpenHands cannot find the anchor it starts at
+        # the beginning of the log; reject that fallback rather than replaying
+        # arbitrary history into the current turn.
         next_cursor = str(items[-1].get("id")) if items and items[-1].get("id") else cursor
         return items, next_cursor
 
     def _outputs(self, conversation_id: str, text: str) -> dict[str, tuple[str, str]]:
-        del text
-        return {
-            item["field_key"]: ("URL", item["url"])
-            for item in self._contracts.get(conversation_id, [])
-            if item.get("url")
-        }
+        expected = {item["field_key"] for item in self._contracts.get(conversation_id, [])}
+        candidate = text.strip()
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            candidate = "\n".join(lines[1:-1]).strip() if len(lines) >= 3 else ""
+        try:
+            value: object = json.loads(candidate)
+        except ValueError:
+            start, end = candidate.find("{"), candidate.rfind("}")
+            if start < 0 or end <= start:
+                return {}
+            try:
+                value = json.loads(candidate[start : end + 1])
+            except ValueError:
+                return {}
+        if not isinstance(value, dict):
+            return {}
+        raw_outputs = cast(dict[str, object], value).get("outputs")
+        if not isinstance(raw_outputs, dict):
+            return {}
+        outputs: dict[str, tuple[str, str]] = {}
+        for field_key, raw in cast(dict[object, object], raw_outputs).items():
+            key = str(field_key)
+            if key not in expected:
+                continue
+            if isinstance(raw, str):
+                uri = raw
+            elif isinstance(raw, dict):
+                item = cast(dict[object, object], raw)
+                uri = str(item.get("uri") or item.get("url") or "")
+            else:
+                continue
+            parsed = urlparse(uri)
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme != "https" or not any(
+                host == suffix or host.endswith(f".{suffix}")
+                for suffix in ("feishu.cn", "larksuite.com", "larkoffice.com")
+            ):
+                continue
+            outputs[key] = ("URL", uri)
+        return outputs
 
     def _result_from_events(
-        self, conversation_id: str, items: list[dict[str, Any]], cursor: str | None
+        self,
+        conversation_id: str,
+        items: list[dict[str, Any]],
+        cursor: str | None,
+        *,
+        assistant_message_is_final: bool = False,
     ) -> RuntimeResult | None:
         for item in reversed(items):
             if self._event_type(item) == "COMPLETED":
@@ -442,6 +554,7 @@ class OpenHandsRuntime:
                 return RuntimeResult(
                     status="COMPLETED",
                     outputs=self._outputs(conversation_id, text),
+                    final_message=text,
                     cursor=cursor,
                 )
             if self._event_type(item) == "ERROR":
@@ -450,11 +563,30 @@ class OpenHandsRuntime:
                     error=self._event_text(item) or "OpenHands failed",
                     cursor=cursor,
                 )
+            if assistant_message_is_final and str(item.get("kind") or "") == "MessageEvent":
+                message = item.get("llm_message")
+                role = (
+                    str(cast(dict[str, object], message).get("role") or "").lower()
+                    if isinstance(message, dict)
+                    else ""
+                )
+                if role == "assistant" or str(item.get("source") or "").lower() == "agent":
+                    text = self._event_text(item)
+                    if text:
+                        return RuntimeResult(
+                            status="COMPLETED",
+                            outputs=self._outputs(conversation_id, text),
+                            final_message=text,
+                            cursor=cursor,
+                        )
         return None
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         items, cursor = self._events(
-            handle.conversation_id, handle.cursor, base_url=self._base_url_for_handle(handle)
+            handle.conversation_id,
+            handle.cursor,
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
         )
         events = tuple(
             RuntimeEvent(
@@ -464,43 +596,47 @@ class OpenHandsRuntime:
             )
             for index, item in enumerate(items, start=1)
         )
-        batch = RuntimeEventBatch(
+        return RuntimeEventBatch(
             events=events,
             cursor=cursor,
             result=self._result_from_events(handle.conversation_id, items, cursor),
         )
-        route = self._environment_route(handle.job_id)
-        if route and route[1] and batch.result is not None:
-            self._cleanup_environment(handle)
-        return batch
 
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         base_url = self._base_url_for_handle(handle)
         data = self._request(
-            "GET", f"/api/conversations/{handle.conversation_id}", base_url=base_url
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=base_url,
+            session_api_key=self._session_key_for_handle(handle),
         )
         status = str(data.get("execution_status") or "running").lower()
         cursor = str(data.get("leaf_event_id") or handle.cursor or "") or None
         if status == "finished":
-            items, event_cursor = self._events(handle.conversation_id, None, base_url=base_url)
-            result = self._result_from_events(handle.conversation_id, items, event_cursor or cursor)
-            terminal = result or RuntimeResult(
-                status="COMPLETED", outputs={}, cursor=event_cursor or cursor
+            turn_anchor = str(data.get("last_user_message_id") or handle.cursor or "") or None
+            items, event_cursor = self._events(
+                handle.conversation_id,
+                turn_anchor,
+                base_url=base_url,
+                session_api_key=self._session_key_for_handle(handle),
             )
-            route = self._environment_route(handle.job_id)
-            if route and route[1]:
-                self._cleanup_environment(handle)
-            return terminal
+            result = self._result_from_events(
+                handle.conversation_id,
+                items,
+                event_cursor or cursor,
+                assistant_message_is_final=True,
+            )
+            # A finished status without a completion event after this turn's
+            # anchor can occur while event persistence is catching up.  Keep
+            # polling instead of completing the turn with an old or empty
+            # result.
+            return result or RuntimeResult(status="RUNNING", cursor=event_cursor or handle.cursor)
         if status in {"error", "stuck"}:
-            result = RuntimeResult(
+            return RuntimeResult(
                 status="FAILED",
                 error=str(data.get("error") or f"OpenHands status: {status}"),
                 cursor=cursor,
             )
-            route = self._environment_route(handle.job_id)
-            if route and route[1]:
-                self._cleanup_environment(handle)
-            return result
         if status == "waiting_for_confirmation":
             return RuntimeResult(
                 status="HUMAN_INPUT_REQUIRED",
@@ -517,17 +653,33 @@ class OpenHandsRuntime:
             parts.append({"type": "text", "text": content})
         if image_urls:
             parts.append({"type": "image", "image_urls": list(image_urls)})
-        self._request(
+        created = self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/events",
             base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
             json={
                 "role": "user",
                 "content": parts,
                 "run": True,
             },
         )
-        return RuntimeResult(status="RUNNING", cursor=handle.cursor)
+        cursor_value = (
+            created.get("id")
+            or created.get("event_id")
+            or created.get("last_user_message_id")
+            or created.get("leaf_event_id")
+        )
+        if not cursor_value:
+            state = self._request(
+                "GET",
+                f"/api/conversations/{handle.conversation_id}",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            )
+            cursor_value = state.get("last_user_message_id") or handle.cursor
+        cursor = str(cursor_value) if cursor_value else None
+        return RuntimeResult(status="RUNNING", cursor=cursor)
 
     def resume(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
@@ -536,6 +688,7 @@ class OpenHandsRuntime:
             "POST",
             f"/api/conversations/{handle.conversation_id}/interrupt",
             base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
             json={},
         )
         return self.send_message(handle, content, image_urls)
@@ -543,14 +696,26 @@ class OpenHandsRuntime:
     def cancel(self, handle: RuntimeHandle) -> None:
         path = f"/api/conversations/{handle.conversation_id}"
         base_url = self._base_url_for_handle(handle)
+        route = self._environment_route(handle.job_id)
         try:
             interrupted = self._request(
-                "POST", f"{path}/interrupt", missing_ok=True, base_url=base_url, json={}
+                "POST",
+                f"{path}/interrupt",
+                missing_ok=True,
+                base_url=base_url,
+                session_api_key=self._session_key_for_handle(handle),
+                json={},
             )
             if interrupted.get("_flowweave_missing"):
                 return
             for poll_no in range(10):
-                data = self._request("GET", path, missing_ok=True, base_url=base_url)
+                data = self._request(
+                    "GET",
+                    path,
+                    missing_ok=True,
+                    base_url=base_url,
+                    session_api_key=self._session_key_for_handle(handle),
+                )
                 if data.get("_flowweave_missing"):
                     return
                 status = str(data.get("execution_status") or "").lower()
@@ -564,5 +729,8 @@ class OpenHandsRuntime:
                 503,
                 {"conversation_id": handle.conversation_id},
             )
-        finally:
-            self._cleanup_environment(handle)
+        except DomainError:
+            # Managed Runtime deletion is authoritative and handled by the
+            # sandbox control plane. The HTTP endpoint may already be gone.
+            if route is None:
+                raise

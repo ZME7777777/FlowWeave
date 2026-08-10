@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
@@ -36,14 +38,22 @@ class MockRuntime:
                 cursor="1",
             )
         else:
-            outputs = {
-                field["field_key"]: (
-                    field["data_type"],
-                    f"Mock output for {request.node.get('alias') or request.node['asset']['name']}"
-                    f" · {field['field_key']}",
-                )
-                for field in request.node["asset"].get("outputs", [])
-            }
+            outputs: dict[str, tuple[str, str]] = {}
+            for field in request.node["asset"].get("outputs", []):
+                field_key = str(field["field_key"])
+                data_type = str(field["data_type"])
+                if data_type == "URL":
+                    target = request.output_targets.get(field_key, {})
+                    root = urlparse(str(target.get("root_url") or ""))
+                    host = root.netloc or "example.feishu.cn"
+                    content = f"https://{host}/docx/mock-docx-{field_key}"
+                else:
+                    content = (
+                        f"Mock output for "
+                        f"{request.node.get('alias') or request.node['asset']['name']}"
+                        f" · {field_key}"
+                    )
+                outputs[field_key] = (data_type, content)
             result = RuntimeResult(status="COMPLETED", outputs=outputs, cursor="2")
         self._results[handle.job_id] = result
         return handle

@@ -60,6 +60,46 @@
 }
 .agent-sidebar-header nav button:disabled { cursor: not-allowed; opacity: .38; }
 
+.agent-sidebar-toggle {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #d8e1db;
+  border-radius: 7px;
+  background: #f8faf8;
+  color: #607068;
+}
+.agent-sidebar-toggle:hover {
+  border-color: #a9c2b2;
+  background: #eef5f0;
+  color: var(--green);
+}
+
+.agent-chat-layout.runtime-sidebar-collapsed {
+  grid-template-columns: 240px minmax(420px, 1fr) 48px;
+}
+.agent-focus-shell .agent-chat-layout.runtime-sidebar-collapsed {
+  grid-template-columns: 248px minmax(0, 1fr) 48px;
+}
+.agent-runtime-sidebar.collapsed { grid-template-rows: minmax(0, 1fr); }
+.agent-runtime-sidebar.collapsed .agent-sidebar-header {
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px 8px;
+  border-bottom: 0;
+}
+.agent-runtime-sidebar.collapsed .agent-sidebar-header > div,
+.agent-runtime-sidebar.collapsed .agent-sidebar-header nav,
+.agent-runtime-sidebar.collapsed .agent-runtime-sidebar-body {
+  visibility: hidden;
+  pointer-events: none;
+}
+.agent-runtime-sidebar.collapsed .agent-sidebar-header > div,
+.agent-runtime-sidebar.collapsed .agent-sidebar-header nav { display: none; }
+
 .agent-runtime-sidebar-body { min-height: 0; overflow: hidden; }
 .agent-runtime-sidebar .conversation-context {
   height: 100%;
@@ -169,6 +209,18 @@
   font-size: 9px;
 }
 .agent-terminal-facts svg { color: #57906e; }
+.agent-terminal-facts .agent-terminal-resource {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.agent-terminal-resource code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .agent-runtime-terminal {
   height: 100%;
@@ -296,6 +348,16 @@
     max-height: 520px;
     border-top: 1px solid var(--line);
     border-left: 0;
+  }
+  .agent-chat-layout.runtime-sidebar-collapsed,
+  .agent-focus-shell .agent-chat-layout.runtime-sidebar-collapsed {
+    grid-template-columns: 210px minmax(420px, 1fr);
+  }
+  .agent-runtime-sidebar.collapsed { max-height: 48px; }
+  .agent-runtime-sidebar.collapsed .agent-sidebar-header {
+    min-height: 48px;
+    align-items: center;
+    justify-content: flex-end;
   }
   .agent-runtime-sidebar-body { overflow: auto; }
   .agent-runtime-sidebar .conversation-context { max-height: none; }

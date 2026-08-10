@@ -57,6 +57,12 @@ class EnvironmentSetupSession(Base):
     base_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("environment_versions.id", ondelete="RESTRICT")
     )
+    sandbox_id: Mapped[str | None] = mapped_column(
+        ForeignKey("managed_sandboxes.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    published_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("environment_versions.id", ondelete="SET NULL"), unique=True, index=True
+    )
     state: Mapped[str] = mapped_column(String(30), default="STARTING", index=True)
     container_id: Mapped[str] = mapped_column(String(100), default="")
     base_image_reference: Mapped[str] = mapped_column(String(500))

@@ -484,6 +484,76 @@ def test_cancelled_run_stops_started_runtime_through_worker(
     assert worker_container.runtime.inspect(handle).status == "CANCELLED"
 
 
+def test_cancel_attempt_stops_only_current_node_runtime(
+    worker_client, worker_container, worker_skill_capability
+):
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.runtime.base import RuntimeHandle
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "停止当前节点 Runtime",
+            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "flow_node_key": "design",
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/cancel-attempt-input",
+                }
+            ],
+        },
+    ).json()
+    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True
+    assert worker._run_once_sync() is True
+    ready = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    confirmed = worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
+        json={"expected_state_version": ready["node_runs"][0]["attempts"][0]["state_version"]},
+        headers={"Idempotency-Key": "cancel-attempt-confirm"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert worker._run_once_sync() is True
+    running = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    attempt = running["node_runs"][0]["attempts"][0]
+    handle = RuntimeHandle(
+        attempt["runtime_job_id"], attempt["conversation_id"], attempt["runtime_cursor"]
+    )
+
+    cancelled = worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/cancel",
+        json={"expected_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "cancel-only-current-attempt"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["state"] == "CANCELLED"
+    assert cancelled.json()["runtime_phase"] == "CANCELLING"
+    after_command = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    assert after_command["state"] != "CANCELLED"
+    assert after_command["node_runs"][0]["state"] == "CANCELLED"
+
+    assert worker._run_once_sync() is True  # stale POLL_RUNTIME
+    assert worker._run_once_sync() is True  # CANCEL_RUNTIME
+    final_attempt = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()["node_runs"][0][
+        "attempts"
+    ][0]
+    assert final_attempt["runtime_phase"] == "CANCELLED"
+    assert worker_container.runtime.inspect(handle).status == "CANCELLED"
+
+
 def test_terminal_runtime_event_batch_skips_inspect_and_persists_events(
     worker_client, db_session_factory, worker_container, worker_skill_capability
 ):
@@ -503,7 +573,12 @@ def test_terminal_runtime_event_batch_skips_inspect_and_persists_events(
         def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
             result = RuntimeResult(
                 status="COMPLETED",
-                outputs={"design": ("DOCUMENT", "event result")},
+                outputs={
+                    "design": (
+                        "URL",
+                        "https://example.feishu.cn/docx/event-result",
+                    )
+                },
                 cursor="event-2",
             )
             return RuntimeEventBatch(

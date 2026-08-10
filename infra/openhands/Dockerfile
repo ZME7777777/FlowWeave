@@ -1,6 +1,6 @@
-FROM node:22.18.0-bookworm-slim AS node_runtime
+FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e AS node_runtime
 
-FROM opensandbox/server:latest
+FROM opensandbox/server@sha256:91717d1821ffdc698fb0885aab58173c4100ea137b98650dfb361431c1fe3373
 USER root
 WORKDIR /runtime
 COPY --from=node_runtime /usr/local/ /usr/local/

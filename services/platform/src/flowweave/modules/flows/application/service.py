@@ -11,12 +11,13 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.flows.domain.rules import validate_flow
 from flowweave.shared.application.transactions import finish
-from flowweave.shared.errors import conflict, not_found
+from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     FlowDefinition,
     FlowEdge,
     FlowNode,
     FlowPortMapping,
+    FlowRun,
     GatePolicy,
     NodeAsset,
     NodeIOField,
@@ -156,6 +157,17 @@ def validate_saved_flow(db: Session, flow_id: str) -> dict[str, Any]:
 def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> dict[str, Any]:
     ports = _ports(db, {x.node_asset_id for x in payload.nodes}, lock_assets=True)
     validate_flow(payload.model_dump(), ports)
+    duplicate_query = select(FlowDefinition).where(FlowDefinition.name == payload.name)
+    if flow_id is not None:
+        duplicate_query = duplicate_query.where(FlowDefinition.id != flow_id)
+    duplicate = db.scalar(duplicate_query)
+    if duplicate is not None:
+        raise DomainError(
+            "FLOW_NAME_CONFLICT",
+            f"流程名称“{payload.name}”已存在，请使用其他名称。",
+            409,
+            {"name": payload.name},
+        )
     if flow_id:
         item = get_flow(db, flow_id)
         if payload.row_version != item.row_version:
@@ -219,6 +231,17 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
 
 def delete_flow(db: Session, flow_id: str) -> None:
     item = get_flow(db, flow_id)
-    item.deleted_at = datetime.now(UTC)
-    item.row_version += 1
+    run_ids = list(
+        db.scalars(
+            select(FlowRun.id).where(FlowRun.flow_definition_id == flow_id).order_by(FlowRun.run_no)
+        )
+    )
+    if run_ids:
+        raise DomainError(
+            "FLOW_IN_USE",
+            f"流程“{item.name}”仍有 {len(run_ids)} 条运行记录，请先删除关联运行后再永久删除流程。",
+            409,
+            {"flow_id": flow_id, "run_ids": run_ids, "run_count": len(run_ids)},
+        )
+    db.delete(item)
     finish(db)

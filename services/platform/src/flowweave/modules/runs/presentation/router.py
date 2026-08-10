@@ -207,6 +207,24 @@ async def retry_runtime_cancel(
     )
 
 
+@router.post("/node-attempts/{attempt_id}/cancel")
+async def cancel_attempt(
+    attempt_id: str,
+    payload: AttemptVersionWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.cancel_attempt(
+            session,
+            attempt_id,
+            payload,
+            _key(idempotency_key, "cancel-attempt", attempt_id),
+        ),
+    )
+
+
 @router.post("/flow-runs/{run_id}/sync-snapshot")
 async def sync_snapshot(
     run_id: str,

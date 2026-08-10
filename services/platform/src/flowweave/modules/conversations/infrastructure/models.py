@@ -47,6 +47,7 @@ class AgentConversation(Base):
     runtime_job_id: Mapped[str | None] = mapped_column(String(100))
     runtime_conversation_id: Mapped[str | None] = mapped_column(String(100), unique=True)
     runtime_cursor: Mapped[str | None] = mapped_column(String(200))
+    runtime_sandbox_id: Mapped[str | None] = mapped_column(String(36), index=True)
     context_baseline_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     next_sequence_no: Mapped[int] = mapped_column(BigInteger, default=1)
     created_by_type: Mapped[str] = mapped_column(String(20))

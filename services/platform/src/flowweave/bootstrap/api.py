@@ -15,7 +15,6 @@ from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.catalog.presentation.router import router as catalog_router
 from flowweave.modules.conversations.presentation.router import router as conversations_router
-from flowweave.modules.credentials.presentation.router import router as credentials_router
 from flowweave.modules.environments.presentation.router import router as environments_router
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
@@ -23,7 +22,6 @@ from flowweave.modules.runs.presentation.router import router as runs_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
 from flowweave.shared.errors import DomainError
-from flowweave.shared.lark_drive import bind_lark_drive, reset_lark_drive
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -63,13 +61,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime_token = bind_runtime(container.runtime)
         store_token = bind_artifact_store(container.artifact_store)
         sandbox_token = bind_sandbox(container.sandbox)
-        lark_drive_token = bind_lark_drive(container.lark_drive)
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
             return response
         finally:
-            reset_lark_drive(lark_drive_token)
             reset_sandbox(sandbox_token)
             reset_artifact_store(store_token)
             reset_runtime(runtime_token)
@@ -99,11 +95,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def integrity_error(request: Request, exc: Exception) -> Response:
         if not isinstance(exc, IntegrityError):
             raise exc
+        diagnostic = getattr(getattr(exc, "orig", None), "diag", None)
+        constraint = getattr(diagnostic, "constraint_name", None)
+        if constraint == "flow_definitions_name_key":
+            code = "FLOW_NAME_CONFLICT"
+            message = "流程名称已存在，请使用其他名称。"
+        else:
+            code = "DATA_CONFLICT"
+            message = "提交的数据与现有记录冲突，请检查是否存在重名或重复关联。"
         return JSONResponse(
             status_code=409,
             content=error_body(
-                "VERSION_CONFLICT",
-                "The resource conflicts with existing data",
+                code,
+                message,
                 request.state.request_id,
             ),
         )
@@ -129,7 +133,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     for router in (
         catalog_router,
-        credentials_router,
         environments_router,
         providers_router,
         flows_router,

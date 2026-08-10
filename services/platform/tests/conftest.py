@@ -49,7 +49,10 @@ def test_database_url() -> Iterator[str]:
     from testcontainers.postgres import PostgresContainer
 
     with PostgresContainer(
-        image="postgres:16.9-alpine3.21",
+        image=(
+            "postgres:16.9-alpine3.21"
+            "@sha256:36e8aabaa6fa6037537cff64011fa45a200fe2ba202141b9aca48cff3df7ad42"
+        ),
         username="flowweave",
         password="flowweave_test",
         dbname="flowweave_platform_test",

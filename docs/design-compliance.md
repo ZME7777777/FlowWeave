@@ -37,13 +37,13 @@
 | 短事务 + 外部副作用全部任务化 | DONE | Runtime 与 Gate 由 Worker 任务化，在事务外执行 Runtime/Sandbox/Prompt I/O，返回后以 lease + Attempt CAS 短写事务提交；模型发现/连接测试采用短读事务、事务外异步 HTTP、短写事务。能力导入与大 Artifact 使用“事务外临时/稳定对象预写或读取 → 短事务登记/CAS → 提交或幂等补偿”协议；探针测试直接证明 API、Worker 与能力导入对象存储 I/O 时无活动数据库事务，DB/lease/CAS 失败会回收预写对象。 |
 | 领域状态机 + `state_version` CAS | DONE | 人工 Attempt 命令、START/POLL/RESUME/CANCEL Runtime 回调与 Gate 结果写回均使用 `UPDATE ... WHERE state/runtime_phase/state_version` 原子 CAS；双 Session 与真实 I/O 并发窗口测试证明副作用唯一，迟到 Runtime/Gate 结果不会写状态、评估、事件、产物或后续任务。 |
 | PostgreSQL SKIP LOCKED、lease heartbeat/fencing | DONE | SKIP LOCKED claim、generation fencing、独立短事务周期 heartbeat、过期租约不可复活与启动恢复均有 PostgreSQL 测试；Handler 只 flush，业务结果与任务 `SUCCEEDED` 由 Worker 同一事务提交，fencing 失败时整体回滚。 |
-| 一次性容器 Script Sandbox | DONE | `SandboxPort`、非 root Python/JavaScript 镜像与 Docker 一次性容器适配器已实现；本机授权后的真实 Compose Worker 仍以 UID 10001 运行，仅附加 GID 0 访问 Docker Socket。真实 Worker Gate 任务证明 Python/JavaScript 容器均 `create → start → die(exit 0) → destroy`，运行时 inspect 证明禁网、只读根、cap-drop ALL、no-new-privileges、PID 64、内存 128 MiB、CPU 1、受限 tmpfs、零挂载、用户 65534:65534 和执行后零残留。Docker Socket 的宿主级风险与回退方式已明确记录；该本机配置不得直接复制到生产。 |
+| 一次性容器 Script Sandbox | DONE | `SandboxPort`、非 root Python/JavaScript 镜像与 Docker 一次性容器适配器已实现；API/Worker 不挂载 Docker Socket，所有 Docker 操作经独立、认证、固定高层接口的 `sandbox-controller`。Controller 位于 internal 控制网络且不持有数据库/OAuth/业务凭据，并用互异密钥隔离 API 的 Setup/终端/发布权限与 Worker 的 Runtime/Gate/构建/回收权限；Gate 容器保持禁网、只读根、cap-drop ALL、no-new-privileges、PID/内存/CPU/临时盘限制和用户 65534:65534，并通过过期所有权标签回收。Agent Runtime 使用资源专属 bridge 网络、逐 Runtime API Key、非 root 用户、只读根、有界 tmpfs 和单节点工作区挂载；仅当前 scope 的 Worker 可接入，既保留模型/MCP 外连能力，也阻断 Runtime 间共享网络。 |
 | OpenHands 事件归一化与未知结果 inspect | DONE | `read_events` 将异构事件归一化为固定类型/游标；终态事件批次跳过 inspect，未知状态回退 inspect；规范化事件、游标与产物均有 Worker 回归。 |
 | ArtifactStorePort、临时对象/finalize/回收、S3 实现 | DONE | Local/S3 适配器统一实现临时对象、原子/幂等 finalize、读取、存在检查和幂等删除；能力导入与大产物均经 Port，Local/Fake-S3 共用安全契约覆盖路径逃逸与回收。 |
 | LISTEN/NOTIFY SSE、cursor 补偿、慢客户端策略 | DONE | `0007` 触发器提交后 NOTIFY；SSE 使用独立异步 LISTEN 连接，Last-Event-ID/cursor 补偿、有界批次、生成器背压和空闲心跳均有 PostgreSQL 集成测试；快慢双消费者压力测试证明慢客户端不阻塞快客户端且可无缺口补偿。 |
 | 两阶段能力导入与安全规则 | DONE | 两阶段持久化协议、来源回查、ZIP 总量/文件数/层级/单文件/扩展白名单/嵌套压缩/路径/符号链接限制、YAML alias/深度/节点数/循环限制、敏感字段拒绝及持久化到期清理任务均有自动化测试。 |
 | 五段迁移基线 | DONE | `0001–0005` 严格对应 catalog、flows、runs、artifacts、execution 五段核心基线；`0006_capability_imports` 与 `0007_run_event_notify` 是为两阶段安全导入和提交后 LISTEN/NOTIFY 追加的前向迁移，保留核心基线且迁移往返已自动验证。 |
-| DoD 自动化证明 | DONE | 80 项 PostgreSQL 后端测试、Pyright strict、0001→0007 迁移往返、前端 lint/typecheck/build、Compose 配置和多阶段平台镜像构建均进入门禁；ARM64 实机证明 `quickjs` 可导入、固定 Docker CLI 29.6.1 可用且最终镜像不含 gcc。最新标准 Compose API/Worker/Web/PostgreSQL 健康，2/2 产品 E2E 覆盖模型、节点、流程、运行、Snapshot、Attempt 与 Artifact 主链路；真实 Worker 业务任务和可重复 `make sandbox-smoke` 均证明 Python/JavaScript 一次性 Docker Sandbox 正常执行、受限且无残留。Docker Socket 宿主级风险及回退方式已记录，本机授权配置不得直接复制到生产。 |
+| DoD 自动化证明 | DONE | PostgreSQL 后端测试、Pyright strict、迁移往返、前端 lint/typecheck/build、Compose 配置和安全渲染检查均进入门禁；`make sandbox-smoke` 通过生产 Controller 路径验证 Python/JavaScript 一次性 Sandbox。渲染后仅 Controller 持有 Docker Socket，API/Worker 只接入 internal 控制网络；缺失强 Controller 密钥时 Compose fail-fast。 |
 
 ## 执行顺序
 

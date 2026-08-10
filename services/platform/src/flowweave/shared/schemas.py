@@ -340,20 +340,6 @@ class CapabilityCommitWrite(ApiModel):
     import_token: str
 
 
-class OAuthStartWrite(ApiModel):
-    scopes: list[str] = Field(default_factory=list, max_length=50)
-
-    @model_validator(mode="after")
-    def validate_scopes(self) -> OAuthStartWrite:
-        normalized = [scope.strip() for scope in self.scopes if scope.strip()]
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("OAuth scopes must be unique")
-        if any(len(scope) > 200 for scope in normalized):
-            raise ValueError("OAuth scope is too long")
-        self.scopes = normalized
-        return self
-
-
 class ConversationCreateWrite(ApiModel):
     title: str | None = Field(default=None, max_length=160)
     expected_attempt_state_version: int = Field(ge=1)
@@ -363,6 +349,16 @@ class ConversationCreateWrite(ApiModel):
 class ConversationPatchWrite(ApiModel):
     title: str = Field(min_length=1, max_length=160)
     expected_conversation_version: int = Field(ge=1)
+
+
+class ConversationStopWrite(ApiModel):
+    expected_conversation_version: int = Field(ge=1)
+
+
+class ConversationForkWrite(ApiModel):
+    expected_conversation_version: int = Field(ge=1)
+    title: str | None = Field(default=None, max_length=160)
+    edited_text: str | None = Field(default=None, min_length=1, max_length=20_000)
 
 
 class TextPartWrite(ApiModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import signal
 import threading
 from collections.abc import Coroutine
@@ -10,7 +11,12 @@ from uuid import uuid4
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.conversations.public import recover_conversation_tasks
+from flowweave.modules.environments.public import (
+    expire_setup_sessions,
+    recover_environment_cleanup_tasks,
+)
 from flowweave.modules.orchestration.public import recover_runtime_deliveries
+from flowweave.modules.sandboxes.public import reconcile_managed_sandboxes
 from flowweave.modules.tasks.application.handlers import handle, record_terminal_failure
 from flowweave.modules.tasks.application.service import (
     Lease,
@@ -28,10 +34,12 @@ from flowweave.shared.application.transactions import (
 )
 from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.dependency_builder import dependency_builder_context
+from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.database import Database
-from flowweave.shared.lark_drive import lark_drive_context
 from flowweave.shared.sandbox import sandbox_context
 from flowweave.shared.settings import settings_context
+
+logger = logging.getLogger(__name__)
 
 
 class LeaseHeartbeat:
@@ -114,12 +122,11 @@ class TaskWorker:
             artifact_store_context(self.container.artifact_store),
             dependency_builder_context(self.container.dependency_builder),
             sandbox_context(self.container.sandbox),
-            lark_drive_context(self.container.lark_drive),
         )
 
     async def recover_startup(self) -> None:
-        settings, runtime, artifacts, dependency_builder, sandbox, lark_drive = self._contexts()
-        with settings, runtime, artifacts, dependency_builder, sandbox, lark_drive:
+        settings, runtime, artifacts, dependency_builder, sandbox = self._contexts()
+        with settings, runtime, artifacts, dependency_builder, sandbox:
             async with self.container.database.session() as session:
                 try:
                     await session.run_sync(
@@ -131,14 +138,20 @@ class TaskWorker:
                     await session.run_sync(
                         lambda db: (mark_uow_owned(db), recover_conversation_tasks(db))[1]
                     )
+                    await session.run_sync(
+                        lambda db: (
+                            mark_uow_owned(db),
+                            recover_environment_cleanup_tasks(db, commit=False),
+                        )[1]
+                    )
                     await session.commit()
                 except BaseException:
                     await session.rollback()
                     raise
 
     async def run_once(self) -> bool:
-        settings, runtime, artifacts, dependency_builder, sandbox, lark_drive = self._contexts()
-        with settings, runtime, artifacts, dependency_builder, sandbox, lark_drive:
+        settings, runtime, artifacts, dependency_builder, sandbox = self._contexts()
+        with settings, runtime, artifacts, dependency_builder, sandbox:
             async with self.container.database.session() as session:
                 claimed = await session.run_sync(
                     lambda db: claim(
@@ -167,13 +180,32 @@ class TaskWorker:
                         lambda db: (mark_uow_owned(db), handle(db, task, lease))[1]
                     )
                 except Exception as exc:
-                    error = str(exc)
+                    error = (
+                        f"{exc.code}: {exc.message}" if isinstance(exc, DomainError) else str(exc)
+                    )
                     renewer.stop()
                     await session.rollback()
                     await session.run_sync(run_rollback_actions)
                     if not renewer.lost.is_set():
+                        permanent = bool(
+                            isinstance(exc, DomainError)
+                            and (
+                                (
+                                    task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
+                                    and exc.code
+                                    in {
+                                        "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+                                        "ENVIRONMENT_IMAGE_TAG_CONFLICT",
+                                    }
+                                )
+                                or (
+                                    task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
+                                    and exc.code == "SANDBOX_RESOURCE_CONFLICT"
+                                )
+                            )
+                        )
                         failed = await session.run_sync(
-                            lambda db: fail(db, lease, error, commit=False)
+                            lambda db: fail(db, lease, error, permanent=permanent, commit=False)
                         )
                         if failed:
                             await session.run_sync(
@@ -195,6 +227,32 @@ class TaskWorker:
                         await session.run_sync(run_rollback_actions)
             return True
 
+    async def run_maintenance(self) -> int:
+        settings, runtime, artifacts, dependency_builder, sandbox = self._contexts()
+        with settings, runtime, artifacts, dependency_builder, sandbox:
+            async with self.container.database.session() as session:
+                try:
+                    expired = await session.run_sync(
+                        lambda db: (
+                            mark_uow_owned(db),
+                            expire_setup_sessions(db, commit=False),
+                        )[1]
+                    )
+                    await session.run_sync(
+                        lambda db: recover_environment_cleanup_tasks(db, commit=False)
+                    )
+                    recovered_conversations = await session.run_sync(
+                        lambda db: (mark_uow_owned(db), recover_conversation_tasks(db))[1]
+                    )
+                    # Publish maintenance intent before the reconciler opens its
+                    # independent short control transactions.
+                    await session.commit()
+                    await session.run_sync(reconcile_managed_sandboxes)
+                    return expired + recovered_conversations
+                except BaseException:
+                    await session.rollback()
+                    raise
+
     def _run_sync(self, operation: Coroutine[Any, Any, Any]) -> Any:
         if self._sync_loop is None:
             self._sync_loop = asyncio.new_event_loop()
@@ -212,7 +270,21 @@ class TaskWorker:
 
     async def run_until_stopped(self) -> None:
         await self.recover_startup()
+        loop = asyncio.get_running_loop()
+        next_maintenance = (
+            loop.time() + self.container.settings.terminal_environment_cleanup_seconds
+        )
         while not self._stopping.is_set():
+            if loop.time() >= next_maintenance:
+                try:
+                    await self.run_maintenance()
+                except Exception:
+                    # A transient Docker failure must not stop task delivery. The
+                    # setup row retains its container ID, so a later pass can retry.
+                    logger.exception("Terminal environment maintenance failed")
+                next_maintenance = (
+                    loop.time() + self.container.settings.terminal_environment_cleanup_seconds
+                )
             if not await self.run_once():
                 try:
                     await asyncio.wait_for(self._stopping.wait(), timeout=0.5)

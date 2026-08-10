@@ -5,37 +5,33 @@ import json
 import os
 import pty
 import re
-import socket
+import signal
 import struct
 import subprocess
 import termios
-import time
 from dataclasses import dataclass
 from typing import Any, cast
-from uuid import uuid4
 
 from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure.docker_control import (
+    DockerControlError,
+    DockerOwnershipError,
+    inspect_owned_container,
+)
+from flowweave.shared.infrastructure.docker_controller import (
+    DockerControllerClient,
+    DockerControllerError,
+    RemoteTerminal,
+    controller_is_remote,
+    wait_for_remote_terminal_output,
+)
 from flowweave.shared.settings import get_settings
 
 _IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _SAFE_NAME = re.compile(r"[^a-z0-9_.-]+")
-_SENSITIVE_PATH_MARKERS = (
-    "/.ssh",
-    "/.aws",
-    "/.kube",
-    "/.gnupg",
-    "/.lark",
-    "/.local/share/lark-cli",
-    "/.config/lark",
-    "/.config/feishu",
-    "/.docker/config.json",
-    "/.npmrc",
-    "/.pypirc",
-    "/.netrc",
-    "/.bash_history",
-    "/credentials",
-    "/token.json",
-    "/cookies",
+_TERMINAL_PROMPT = r"flowweave@\h:\w\$ "
+_TERMINAL_SHELL_SCRIPT = (
+    "exec 3<<<'PS1=" + _TERMINAL_PROMPT + "'; exec bash --noprofile --rcfile /dev/fd/3 -i"
 )
 
 
@@ -90,88 +86,267 @@ class PublishedImage:
     manifest: dict[str, Any]
 
 
-def start_setup_container(image: str, environment_id: str) -> str:
-    require_backend()
-    image = validate_image(image)
-    name = f"fw-setup-{environment_id[:8]}-{uuid4().hex[:10]}"
+def _docker_resource_absent(exc: DomainError, resource: str) -> bool:
+    detail = str(exc.details.get("detail") or "").lower()
+    return exc.code == "ENVIRONMENT_DOCKER_FAILED" and (
+        f"no such {resource}" in detail or f"{resource} not found" in detail
+    )
+
+
+def remove_legacy_setup_container(container_id: str, *, environment_id: str) -> None:
+    """Safely remove a pre-ledger setup container after revalidating its labels."""
+
+    if not container_id or not environment_id:
+        return
     settings = get_settings()
-    command = [
-        settings.docker_binary,
-        "run",
-        "--detach",
-        "--interactive",
-        "--tty",
-        "--name",
-        name,
-        "--network",
-        settings.terminal_environment_setup_network,
-        "--security-opt",
-        "no-new-privileges",
-        "--cap-drop",
-        "ALL",
-        "--cap-add",
-        "CHOWN",
-        "--cap-add",
-        "DAC_OVERRIDE",
-        "--cap-add",
-        "FOWNER",
-        "--cap-add",
-        "SETGID",
-        "--cap-add",
-        "SETUID",
-        "--pids-limit",
-        str(settings.terminal_environment_pids_limit),
-        "--memory",
-        settings.terminal_environment_memory,
-        "--cpus",
-        str(settings.terminal_environment_cpus),
-        "--label",
-        "flowweave.managed=terminal-environment",
-        "--label",
-        f"flowweave.environment={environment_id}",
-        image,
-        "sh",
-        "-c",
-        "trap : TERM INT; while :; do sleep 3600; done",
-    ]
-    return _run(command, timeout=settings.terminal_environment_start_timeout_seconds) or name
+    if controller_is_remote(settings):
+        try:
+            DockerControllerClient(settings).post(
+                "/v1/environments/remove-legacy",
+                {
+                    "resource_name": container_id,
+                    "resource_id": "legacy",
+                    "environment_id": environment_id,
+                },
+                timeout=30,
+            )
+            return
+        except DockerControllerError as exc:
+            raise DomainError(
+                "ENVIRONMENT_BACKEND_UNAVAILABLE",
+                "The terminal environment controller is unavailable",
+                503,
+            ) from exc
+    try:
+        immutable_id = resolve_setup_container(
+            container_id, sandbox_id=None, environment_id=environment_id
+        )
+    except DomainError as exc:
+        if exc.code == "ENVIRONMENT_SETUP_CONTAINER_MISSING":
+            return
+        raise
+    try:
+        _run([get_settings().docker_binary, "rm", "--force", immutable_id], timeout=30)
+    except DomainError as exc:
+        if _docker_resource_absent(exc, "container"):
+            return
+        raise
 
 
-def remove_container(container_id: str) -> None:
+def resolve_setup_container(
+    resource_name: str,
+    *,
+    sandbox_id: str | None,
+    environment_id: str,
+) -> str:
+    """Resolve a setup container name to an ownership-verified immutable ID."""
+
     require_backend()
-    _run([get_settings().docker_binary, "rm", "--force", container_id], timeout=30)
+    if controller_is_remote(get_settings()):
+        raise DomainError(
+            "ENVIRONMENT_LOCAL_DOCKER_DISABLED",
+            "Container resolution is available only inside the sandbox controller",
+            503,
+        )
+    if sandbox_id:
+        try:
+            identifier = inspect_owned_container(
+                get_settings().docker_binary,
+                resource_name,
+                sandbox_id,
+                expected_manager_scope=get_settings().sandbox_manager_scope,
+                timeout=30,
+            )
+        except DockerOwnershipError as exc:
+            raise DomainError(
+                "ENVIRONMENT_CONTAINER_OWNERSHIP_MISMATCH",
+                "The setup container is owned by another sandbox",
+                409,
+                {"container_id": resource_name, "sandbox_id": sandbox_id},
+            ) from exc
+        except DockerControlError as exc:
+            raise DomainError(
+                "ENVIRONMENT_BACKEND_UNAVAILABLE",
+                "The terminal environment Docker backend is unavailable",
+                503,
+            ) from exc
+        if identifier is None:
+            raise DomainError(
+                "ENVIRONMENT_SETUP_CONTAINER_MISSING",
+                "The setup container no longer exists",
+                409,
+                {"container_id": resource_name, "sandbox_id": sandbox_id},
+            )
+        return identifier
 
-
-def remove_runtime_container(container_id: str) -> None:
-    if not container_id:
-        return
+    # Migration compatibility is deliberately strict. Pre-ledger containers
+    # must still prove the historical environment ownership label.
     try:
-        remove_container(container_id)
-    except DomainError:
-        # Runtime cleanup is idempotent. A Docker --rm/reaper policy may have
-        # already removed the container after an executor failure.
-        return
-
-
-def remove_image(reference: str) -> None:
-    """Best-effort removal used to compensate a publish transaction rollback."""
-
-    if not reference:
-        return
-    try:
-        require_backend()
-        _run(
-            [get_settings().docker_binary, "image", "rm", "--force", reference],
+        raw = _run(
+            [
+                get_settings().docker_binary,
+                "inspect",
+                resource_name,
+                "--format",
+                "{{json .}}",
+            ],
             timeout=30,
         )
-    except DomainError:
-        # Compensation is idempotent: the image may already have been removed
-        # by an operator or a Docker image-pruning policy.
+    except DomainError as exc:
+        if _docker_resource_absent(exc, "container"):
+            raise DomainError(
+                "ENVIRONMENT_SETUP_CONTAINER_MISSING",
+                "The setup container no longer exists",
+                409,
+                {"container_id": resource_name},
+            ) from exc
+        raise
+    try:
+        value = cast(object, json.loads(raw))
+        if not isinstance(value, dict):
+            raise ValueError("inspect response must be an object")
+        data = cast(dict[str, object], value)
+        config_value = data.get("Config")
+        config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
+        labels_value = config.get("Labels")
+        labels = (
+            {str(key): str(item) for key, item in cast(dict[object, object], labels_value).items()}
+            if isinstance(labels_value, dict)
+            else {}
+        )
+        identifier = str(data.get("Id") or "")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise DomainError(
+            "ENVIRONMENT_DOCKER_PROTOCOL_ERROR",
+            "Docker returned invalid setup container ownership data",
+            502,
+        ) from exc
+    if (
+        labels.get("flowweave.managed") != "terminal-environment"
+        or labels.get("flowweave.environment") != environment_id
+        or not identifier
+    ):
+        raise DomainError(
+            "ENVIRONMENT_CONTAINER_OWNERSHIP_MISMATCH",
+            "Legacy setup container ownership could not be verified",
+            409,
+            {"container_id": resource_name, "environment_id": environment_id},
+        )
+    return identifier
+
+
+def remove_image(
+    reference: str,
+    *,
+    expected_digest: str,
+    environment_id: str | None = None,
+    version_id: str | None = None,
+    version_no: int | None = None,
+) -> None:
+    """Remove one image tag after verifying its digest and optional ownership."""
+
+    if not reference or not expected_digest:
         return
+    require_backend()
+    settings = get_settings()
+    if controller_is_remote(settings):
+        try:
+            DockerControllerClient(settings).post(
+                "/v1/environments/remove-image",
+                {
+                    "reference": reference,
+                    "expected_digest": expected_digest,
+                    "environment_id": environment_id,
+                    "version_id": version_id,
+                    "version_no": version_no,
+                },
+                timeout=30,
+            )
+            return
+        except DockerControllerError as exc:
+            raise DomainError(
+                "ENVIRONMENT_BACKEND_UNAVAILABLE",
+                "The terminal environment controller is unavailable",
+                503,
+            ) from exc
+    try:
+        raw = _run(
+            [
+                get_settings().docker_binary,
+                "image",
+                "inspect",
+                reference,
+                "--format",
+                "{{json .}}",
+            ],
+            timeout=30,
+        )
+    except DomainError as exc:
+        if _docker_resource_absent(exc, "image"):
+            return
+        raise
+    try:
+        value = cast(object, json.loads(raw))
+        if not isinstance(value, dict):
+            raise ValueError("inspect response must be an object")
+        inspection = cast(dict[str, object], value)
+        actual_digest = str(inspection.get("Id") or "")
+        config_value = inspection.get("Config")
+        config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
+        labels_value = config.get("Labels")
+        labels = (
+            {str(key): str(item) for key, item in cast(dict[object, object], labels_value).items()}
+            if isinstance(labels_value, dict)
+            else {}
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise DomainError(
+            "ENVIRONMENT_DOCKER_PROTOCOL_ERROR",
+            "Docker returned invalid image ownership data",
+            502,
+        ) from exc
+    if actual_digest != expected_digest:
+        raise DomainError(
+            "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+            "The environment image tag no longer points to the expected image",
+            409,
+            {
+                "reference": reference,
+                "expected_digest": expected_digest,
+                "actual_digest": actual_digest,
+            },
+        )
+    if version_id is not None:
+        expected_labels = {
+            "flowweave.managed": "environment-image",
+            "flowweave.manager-scope": settings.sandbox_manager_scope,
+            "flowweave.environment-id": environment_id or "",
+            "flowweave.environment-version-id": version_id,
+            "flowweave.environment-version-no": str(version_no or ""),
+        }
+        if any(labels.get(key) != expected for key, expected in expected_labels.items()):
+            raise DomainError(
+                "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+                "The environment image ownership labels no longer match",
+                409,
+                {"reference": reference, "version_id": version_id},
+            )
+    try:
+        # Remove only this version tag. Docker retains the image while another
+        # tag or a container still references the same immutable content.
+        _run([get_settings().docker_binary, "image", "rm", reference], timeout=30)
+    except DomainError as exc:
+        if _docker_resource_absent(exc, "image"):
+            return
+        raise
 
 
 def open_terminal(
-    container_id: str, *, session_name: str | None = None
+    container_id: str,
+    *,
+    session_name: str | None = None,
+    rows: int = 24,
+    columns: int = 80,
 ) -> tuple[int, subprocess.Popen[bytes]]:
     """Open an interactive shell, optionally backed by a persistent tmux session.
 
@@ -181,7 +356,13 @@ def open_terminal(
     """
 
     require_backend()
-    shell_command = ["bash"]
+    # Runtime containers deliberately use an isolated UID that may not have a
+    # passwd entry. Bash's generated prompt then says `I have no name!`. Use a
+    # stable product-facing prompt without changing the container identity or
+    # weakening its user isolation.
+    # Bash intentionally does not trust an inherited PS1 for a new interactive
+    # shell. Feed the prompt through a private rcfile descriptor instead.
+    shell_command = ["bash", "-c", _TERMINAL_SHELL_SCRIPT]
     if session_name:
         safe_session = _SAFE_NAME.sub("-", session_name.lower()).strip("-.")[:64]
         if not safe_session:
@@ -197,9 +378,15 @@ def open_terminal(
             "-s",
             safe_session,
             "bash",
+            "-c",
+            _TERMINAL_SHELL_SCRIPT,
         ]
     master, slave = pty.openpty()
     try:
+        # Full-screen programs inspect the terminal size during startup. Set a
+        # valid size before docker exec starts instead of relying on a later
+        # browser resize event.
+        resize_terminal(master, rows, columns)
         process = subprocess.Popen(
             [
                 get_settings().docker_binary,
@@ -221,62 +408,130 @@ def open_terminal(
     return master, process
 
 
-def resize_terminal(master: int, rows: int, columns: int) -> None:
+def resize_terminal(
+    master: int,
+    rows: int,
+    columns: int,
+    process: subprocess.Popen[bytes] | None = None,
+) -> None:
     import fcntl
 
-    size = struct.pack("HHHH", rows, columns, 0, 0)
+    # A transient zero-width browser layout used to reach this boundary as a
+    # two-column resize. Keep the PTY usable even if an old or malformed client
+    # bypasses the WebSocket/controller validation.
+    safe_rows = max(2, min(rows, 200))
+    safe_columns = max(20, min(columns, 400))
+    size = struct.pack("HHHH", safe_rows, safe_columns, 0, 0)
     fcntl.ioctl(master, termios.TIOCSWINSZ, size)
+    # docker exec copies the host PTY size into the container TTY when its CLI
+    # process receives SIGWINCH. ioctl alone only changes the outer PTY and
+    # leaves full-screen programs in the container at their previous size.
+    if process is not None and process.poll() is None:
+        process.send_signal(signal.SIGWINCH)
+
+
+class ManagedTerminal:
+    """Uniform attachment used by API WebSockets in local and remote modes."""
+
+    def __init__(
+        self,
+        *,
+        master: int | None = None,
+        process: subprocess.Popen[bytes] | None = None,
+        client: DockerControllerClient | None = None,
+        remote: RemoteTerminal | None = None,
+    ) -> None:
+        self.master = master
+        self.process = process
+        self.client = client
+        self.remote = remote
+
+    def read(self) -> tuple[bytes, bool]:
+        if self.client is not None and self.remote is not None:
+            content, eof = self.client.read_terminal(self.remote)
+            if not content and not eof:
+                wait_for_remote_terminal_output()
+            return content, eof
+        if self.master is None or self.process is None:
+            return b"", True
+        try:
+            content = os.read(self.master, 8192)
+        except OSError:
+            return b"", True
+        return content, self.process.poll() is not None
+
+    def write(self, content: bytes) -> None:
+        if self.client is not None and self.remote is not None:
+            self.client.write_terminal(self.remote, content)
+        elif self.master is not None:
+            os.write(self.master, content)
+
+    def resize(self, rows: int, columns: int) -> None:
+        if self.client is not None and self.remote is not None:
+            self.client.resize_terminal(self.remote, rows, columns)
+        elif self.master is not None:
+            resize_terminal(self.master, rows, columns, self.process)
+
+    def close(self) -> None:
+        if self.client is not None and self.remote is not None:
+            self.client.close_terminal(self.remote)
+            return
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+        if self.master is not None:
+            os.close(self.master)
+            self.master = None
+
+
+def open_managed_terminal(
+    resource_name: str,
+    *,
+    resource_id: str,
+    environment_id: str | None = None,
+    session_name: str | None = None,
+    rows: int = 24,
+    columns: int = 80,
+) -> ManagedTerminal:
+    """Open an ownership-checked terminal locally or through the controller."""
+
+    settings = get_settings()
+    require_backend()
+    if controller_is_remote(settings):
+        client = DockerControllerClient(settings)
+        try:
+            remote = client.start_terminal(
+                resource_name=resource_name,
+                resource_id=resource_id,
+                environment_id=environment_id,
+                session_name=session_name,
+                rows=rows,
+                columns=columns,
+            )
+        except DockerControllerError as exc:
+            raise DomainError(
+                "ENVIRONMENT_BACKEND_UNAVAILABLE",
+                "The terminal environment controller is unavailable",
+                503,
+            ) from exc
+        return ManagedTerminal(client=client, remote=remote)
+    immutable_id = resolve_setup_container(
+        resource_name, sandbox_id=resource_id, environment_id=environment_id or ""
+    )
+    master, process = open_terminal(
+        immutable_id, session_name=session_name, rows=rows, columns=columns
+    )
+    return ManagedTerminal(master=master, process=process)
 
 
 def container_diff(container_id: str) -> list[str]:
     require_backend()
     output = _run([get_settings().docker_binary, "diff", container_id], timeout=30)
     return [line for line in output.splitlines() if line.strip()]
-
-
-def _sensitive_paths(diff: list[str]) -> list[str]:
-    """Return credential-like paths that still exist in the container.
-
-    ``docker diff`` prefixes every path with ``A``, ``C``, or ``D``. Deleted
-    paths are safe to publish and are especially common after the automatic
-    cleanup performed immediately before this check.
-    """
-
-    detected: set[str] = set()
-    for entry in diff:
-        change, separator, path = entry.partition(" ")
-        path = path.strip()
-        if not separator or change not in {"A", "C"} or not path:
-            continue
-        if any(marker in path.lower() for marker in _SENSITIVE_PATH_MARKERS):
-            detected.add(path)
-    return sorted(detected)
-
-
-def _clean_ephemeral_files(container_id: str) -> None:
-    script = (
-        "rm -rf /tmp/* /var/tmp/* /root/.cache /home/*/.cache; "
-        # Authentication state must never become part of a published image.
-        # Removing these paths keeps globally installed CLIs and skill files,
-        # while clearing their user-specific tokens, keys, and app secrets.
-        "rm -rf /root/.ssh /root/.aws /root/.kube /root/.gnupg "
-        "/root/.lark /root/.lark-cli /root/.config/lark /root/.config/feishu "
-        "/root/.local/share/lark-cli; "
-        "rm -f /root/.docker/config.json /root/.npmrc /root/.pypirc "
-        "/root/.netrc /root/.bash_history; "
-        'for home in /home/*; do [ -d "$home" ] || continue; '
-        'rm -rf "$home/.ssh" "$home/.aws" "$home/.kube" '
-        '"$home/.gnupg" "$home/.lark" "$home/.lark-cli" '
-        '"$home/.config/lark" "$home/.config/feishu" '
-        '"$home/.local/share/lark-cli"; '
-        'rm -f "$home/.docker/config.json" "$home/.npmrc" '
-        '"$home/.pypirc" "$home/.netrc" "$home/.bash_history"; done; '
-        "find /var/log -type f -exec sh -c ': > \"$1\"' _ {} \\; 2>/dev/null || true"
-    )
-    _run(
-        [get_settings().docker_binary, "exec", container_id, "sh", "-c", script],
-        timeout=60,
-    )
 
 
 def _inspect_commands(container_id: str) -> dict[str, str]:
@@ -299,23 +554,89 @@ def _inspect_commands(container_id: str) -> dict[str, str]:
     return commands
 
 
-def publish_container(container_id: str, *, environment_id: str, version_no: int) -> PublishedImage:
+def publish_container(
+    container_id: str,
+    *,
+    environment_id: str,
+    version_id: str,
+    version_no: int,
+) -> PublishedImage:
     require_backend()
-    # Some version commands create per-user state as a side effect (notably
-    # ``lark-cli --version`` creates ``~/.lark-cli/cache``). Inspect tools
-    # before the final cleanup so the image is committed from the exact
-    # filesystem state that passed the sensitive-path scan.
-    commands = _inspect_commands(container_id)
-    _clean_ephemeral_files(container_id)
-    diff = container_diff(container_id)
-    sensitive = _sensitive_paths(diff)
-    if sensitive:
-        raise DomainError(
-            "ENVIRONMENT_SENSITIVE_FILES_DETECTED",
-            "Potential credential files must be removed before publishing",
-            409,
-            {"paths": sensitive[:100]},
+    settings = get_settings()
+    slug = _SAFE_NAME.sub("-", environment_id.lower()).strip("-.")[:32]
+    # Include the immutable database identity in the tag. The human version
+    # number remains visible, while two publishers can never target the same
+    # mutable Docker name between the ownership preflight and commit.
+    version_token = version_id.replace("-", "").lower()
+    reference = f"flowweave/environment-{slug}:v{version_no}-{version_token}"
+    expected_labels = {
+        "flowweave.managed": "environment-image",
+        "flowweave.manager-scope": settings.sandbox_manager_scope,
+        "flowweave.environment-id": environment_id,
+        "flowweave.environment-version-id": version_id,
+        "flowweave.environment-version-no": str(version_no),
+    }
+
+    # A retry after Docker commit but before the database CAS reuses only an
+    # image carrying the exact immutable version identity. Never retarget a
+    # predictable managed tag that another actor already owns.
+    try:
+        existing_raw = _run(
+            [settings.docker_binary, "image", "inspect", reference, "--format", "{{json .}}"],
+            timeout=30,
         )
+    except DomainError as exc:
+        if not _docker_resource_absent(exc, "image"):
+            raise
+    else:
+        try:
+            existing_value = cast(object, json.loads(existing_raw))
+            if not isinstance(existing_value, dict):
+                raise ValueError("inspect response must be an object")
+            existing = cast(dict[str, object], existing_value)
+            config_value = existing.get("Config")
+            config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
+            labels_value = config.get("Labels")
+            labels = (
+                {
+                    str(key): str(value)
+                    for key, value in cast(dict[object, object], labels_value).items()
+                }
+                if isinstance(labels_value, dict)
+                else {}
+            )
+            digest = str(existing.get("Id") or "")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise DomainError(
+                "ENVIRONMENT_DOCKER_PROTOCOL_ERROR",
+                "Docker returned invalid image ownership data",
+                502,
+            ) from exc
+        if not digest or any(
+            labels.get(key) != expected for key, expected in expected_labels.items()
+        ):
+            raise DomainError(
+                "ENVIRONMENT_IMAGE_TAG_CONFLICT",
+                "The target environment image tag is already owned by another image",
+                409,
+                {"reference": reference, "version_id": version_id},
+            )
+        manifest: dict[str, Any] = {
+            "schema_version": 1,
+            "image_id": digest,
+            "reference": reference,
+            "architecture": existing.get("Architecture"),
+            "os": existing.get("Os"),
+            "commands": {},
+            "recovered": True,
+        }
+        return PublishedImage(reference=reference, digest=digest, manifest=manifest)
+
+    # Publishing intentionally preserves the container filesystem as-is,
+    # including authentication files, caches, shell history, and other local
+    # state created during setup.
+    commands = _inspect_commands(container_id)
+    diff = container_diff(container_id)
     if not _run(
         [
             get_settings().docker_binary,
@@ -332,19 +653,22 @@ def publish_container(container_id: str, *, environment_id: str, version_no: int
             "The environment must retain the OpenHands agent-server executable",
             409,
         )
-    slug = _SAFE_NAME.sub("-", environment_id.lower()).strip("-.")[:32]
-    reference = f"flowweave/environment-{slug}:v{version_no}"
     image_id = _run(
         [
-            get_settings().docker_binary,
+            settings.docker_binary,
             "commit",
             "--pause=true",
             "--change",
             "ENTRYPOINT []",
+            *[
+                part
+                for key, value in expected_labels.items()
+                for part in ("--change", f"LABEL {key}={value}")
+            ],
             container_id,
             reference,
         ],
-        timeout=get_settings().terminal_environment_publish_timeout_seconds,
+        timeout=settings.terminal_environment_publish_timeout_seconds,
     )
     inspected = json.loads(
         _run(
@@ -361,6 +685,21 @@ def publish_container(container_id: str, *, environment_id: str, version_no: int
     )
     inspection = cast(dict[str, object], inspected) if isinstance(inspected, dict) else {}
     digest = str(inspection.get("Id") or image_id)
+    config_value = inspection.get("Config")
+    config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
+    labels_value = config.get("Labels")
+    labels = (
+        {str(key): str(value) for key, value in cast(dict[object, object], labels_value).items()}
+        if isinstance(labels_value, dict)
+        else {}
+    )
+    if not digest or any(labels.get(key) != expected for key, expected in expected_labels.items()):
+        raise DomainError(
+            "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+            "Docker did not preserve the environment image ownership labels",
+            502,
+            {"reference": reference, "version_id": version_id},
+        )
     manifest = {
         "schema_version": 1,
         "image_id": digest,
@@ -374,59 +713,55 @@ def publish_container(container_id: str, *, environment_id: str, version_no: int
     return PublishedImage(reference=reference, digest=digest, manifest=manifest)
 
 
-def start_runtime_container(image: str, execution_id: str) -> tuple[str, str]:
-    require_backend()
-    image = validate_image(image)
+def publish_setup_container(
+    resource_name: str,
+    *,
+    sandbox_id: str,
+    environment_id: str,
+    version_id: str,
+    version_no: int,
+) -> PublishedImage:
+    """Publish only after the controller/local adapter revalidates ownership."""
+
     settings = get_settings()
-    safe_execution = _SAFE_NAME.sub("-", execution_id.lower()).strip("-.")[:30]
-    name = f"fw-runtime-{safe_execution}-{uuid4().hex[:8]}"
-    command = [
-        settings.docker_binary,
-        "run",
-        "--detach",
-        "--name",
-        name,
-        "--network",
-        settings.terminal_environment_runtime_network,
-        "--security-opt",
-        "no-new-privileges",
-        "--cap-drop",
-        "ALL",
-        "--pids-limit",
-        str(settings.terminal_environment_pids_limit),
-        "--memory",
-        settings.terminal_environment_memory,
-        "--cpus",
-        str(settings.terminal_environment_cpus),
-        "--label",
-        "flowweave.managed=agent-runtime",
-        "--label",
-        f"flowweave.execution={execution_id}",
-        "--volumes-from",
-        f"{settings.terminal_environment_workspace_source_container}:rw",
-        "-e",
-        f"SESSION_API_KEY={settings.openhands_session_api_key}",
-        "-e",
-        f"OH_SESSION_API_KEYS_0={settings.openhands_session_api_key}",
-        image,
-        "agent-server",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-    ]
-    _run(command, timeout=settings.terminal_environment_start_timeout_seconds)
-    base_url = f"http://{name}:8000"
-    deadline = time.monotonic() + settings.terminal_environment_start_timeout_seconds
-    while time.monotonic() < deadline:
+    require_backend()
+    if controller_is_remote(settings):
         try:
-            with socket.create_connection((name, 8000), timeout=1):
-                return name, base_url
-        except OSError:
-            time.sleep(0.25)
-    remove_runtime_container(name)
-    raise DomainError(
-        "ENVIRONMENT_RUNTIME_UNAVAILABLE",
-        "The published environment Agent Server did not become ready",
-        503,
+            raw = DockerControllerClient(settings).post(
+                "/v1/environments/publish",
+                {
+                    "resource_name": resource_name,
+                    "resource_id": sandbox_id,
+                    "environment_id": environment_id,
+                    "version_id": version_id,
+                    "version_no": version_no,
+                },
+                timeout=settings.terminal_environment_publish_timeout_seconds + 30,
+            )
+        except DockerControllerError as exc:
+            raise DomainError(
+                "ENVIRONMENT_BACKEND_UNAVAILABLE",
+                "The terminal environment controller is unavailable",
+                503,
+            ) from exc
+        manifest = raw.get("manifest")
+        if not isinstance(manifest, dict):
+            raise DomainError(
+                "ENVIRONMENT_DOCKER_PROTOCOL_ERROR",
+                "The controller returned invalid image metadata",
+                502,
+            )
+        return PublishedImage(
+            reference=str(raw.get("reference") or ""),
+            digest=str(raw.get("digest") or ""),
+            manifest=cast(dict[str, Any], manifest),
+        )
+    immutable_id = resolve_setup_container(
+        resource_name, sandbox_id=sandbox_id, environment_id=environment_id
+    )
+    return publish_container(
+        immutable_id,
+        environment_id=environment_id,
+        version_id=version_id,
+        version_no=version_no,
     )

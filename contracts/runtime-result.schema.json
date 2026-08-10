@@ -15,6 +15,12 @@
         "null"
       ]
     },
+    "final_message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "human_question": {
       "type": [
         "string",
@@ -56,6 +62,7 @@
     "schema_version",
     "status",
     "outputs",
+    "final_message",
     "human_question",
     "cursor",
     "error"

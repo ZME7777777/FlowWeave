@@ -8,32 +8,38 @@ x-platform-env: &platform-env
   OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
   OPENHANDS_WORKSPACE_ROOT: /workspaces
   CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
-  CREDENTIAL_SUBJECT_KEY: ${CREDENTIAL_SUBJECT_KEY:-local-user}
-  CREDENTIAL_INTERNAL_BASE_URL: http://api:8080/api/v1
-  CREDENTIAL_INTERNAL_API_KEY: ${CREDENTIAL_INTERNAL_API_KEY:-flowweave-credential-internal}
-  LARK_OAUTH_CLIENT_ID: ${LARK_OAUTH_CLIENT_ID:-}
-  LARK_OAUTH_CLIENT_SECRET: ${LARK_OAUTH_CLIENT_SECRET:-}
-  LARK_OAUTH_REDIRECT_URL: ${LARK_OAUTH_REDIRECT_URL:-http://localhost:8080/api/v1/oauth/lark/callback}
   ARTIFACT_ROOT: /data/artifacts
   WORKSPACE_ROOT: /data/workspaces
   INLINE_ARTIFACT_LIMIT: ${INLINE_ARTIFACT_LIMIT:-65536}
   CAPABILITY_IMPORT_TTL_SECONDS: ${CAPABILITY_IMPORT_TTL_SECONDS:-900}
+  TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-30}
+
+x-docker-client-env: &docker-client-env
   DEPENDENCY_BUILDER_BACKEND: ${DEPENDENCY_BUILDER_BACKEND:-docker}
   DEPENDENCY_BUILDER_IMAGE: ${DEPENDENCY_BUILDER_IMAGE:-flowweave-dependency-builder:1}
-  # Use the stock bridge for package-registry egress without attaching the
-  # disposable builder to FlowWeave's application network.
-  DEPENDENCY_BUILDER_NETWORK: ${DEPENDENCY_BUILDER_NETWORK:-bridge}
   DEPENDENCY_BUILDER_TIMEOUT_SECONDS: ${DEPENDENCY_BUILDER_TIMEOUT_SECONDS:-300}
   TERMINAL_ENVIRONMENT_BACKEND: ${TERMINAL_ENVIRONMENT_BACKEND:-docker}
   TERMINAL_ENVIRONMENT_BASE_IMAGE: ${TERMINAL_ENVIRONMENT_BASE_IMAGE:-flowweave-openhands-runtime:1}
-  TERMINAL_ENVIRONMENT_SETUP_NETWORK: ${TERMINAL_ENVIRONMENT_SETUP_NETWORK:-bridge}
-  TERMINAL_ENVIRONMENT_RUNTIME_NETWORK: ${TERMINAL_ENVIRONMENT_RUNTIME_NETWORK:-flowweave_runtime}
+  TERMINAL_ENVIRONMENT_CLEANUP_SECONDS: ${TERMINAL_ENVIRONMENT_CLEANUP_SECONDS:-30}
   TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER: ${TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER:-flowweave-openhands-agent-server}
-  TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-30}
+  SANDBOX_BACKEND: docker
+  SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
+  SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
+  SANDBOX_MANAGER_SCOPE: ${SANDBOX_MANAGER_SCOPE:-flowweave-local}
+  SANDBOX_RECONCILE_SECONDS: ${SANDBOX_RECONCILE_SECONDS:-30}
+  SANDBOX_RECONCILE_BATCH_SIZE: ${SANDBOX_RECONCILE_BATCH_SIZE:-50}
+  SANDBOX_ORPHAN_GRACE_SECONDS: ${SANDBOX_ORPHAN_GRACE_SECONDS:-300}
+  SANDBOX_RUNTIME_IDLE_TTL_SECONDS: ${SANDBOX_RUNTIME_IDLE_TTL_SECONDS:-3600}
+  SANDBOX_RUNTIME_HARD_TTL_SECONDS: ${SANDBOX_RUNTIME_HARD_TTL_SECONDS:-86400}
+  SANDBOX_RUNTIME_NETWORK_MODE: ${SANDBOX_RUNTIME_NETWORK_MODE:?set isolated or egress explicitly}
+  SANDBOX_STORAGE_SIZE: ${SANDBOX_STORAGE_SIZE:-4g}
+  TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS: ${TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS:-4}
+  DOCKER_CONTROLLER_MODE: remote
+  DOCKER_CONTROLLER_URL: http://sandbox-controller:8090
 
 services:
   workspace-init:
-    image: alpine:3.22
+    image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
     command: ["sh", "-c", "mkdir -p /data/artifacts /data/workspaces/nodes && chown -R 10001:10001 /data/artifacts && chmod -R u+rwX /data/artifacts && chmod 0777 /data/workspaces /data/workspaces/nodes"]
     volumes:
       - artifacts:/data/artifacts
@@ -43,12 +49,12 @@ services:
     restart: "no"
 
   postgres:
-    image: postgres:16.9-alpine3.21
+    image: postgres:16.9-alpine3.21@sha256:36e8aabaa6fa6037537cff64011fa45a200fe2ba202141b9aca48cff3df7ad42
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-flowweave}
       POSTGRES_USER: ${POSTGRES_USER:-flowweave}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowweave_dev}
-    ports: ["${POSTGRES_PORT:-55432}:5432"]
+    ports: ["${FLOWWEAVE_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-55432}:5432"]
     volumes: ["postgres-data:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -68,6 +74,9 @@ services:
     image: flowweave-openhands-runtime:1
     container_name: flowweave-openhands-agent-server
     build: { context: .., dockerfile: infra/openhands/Dockerfile }
+    labels:
+      flowweave.workspace-source: "true"
+      flowweave.manager-scope: "${SANDBOX_MANAGER_SCOPE:-flowweave-local}"
     environment:
       SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OH_SESSION_API_KEYS_0: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
@@ -87,57 +96,105 @@ services:
     depends_on:
       workspace-init: { condition: service_completed_successfully }
 
+  sandbox-controller:
+    build: { context: .., dockerfile: services/platform/Dockerfile }
+    command: ["uvicorn", "flowweave.bootstrap.sandbox_controller:create_app", "--host", "0.0.0.0", "--port", "8090", "--factory"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    environment:
+      OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
+      OPENHANDS_WORKSPACE_ROOT: /workspaces
+      DEPENDENCY_BUILDER_BACKEND: docker
+      DEPENDENCY_BUILDER_IMAGE: ${DEPENDENCY_BUILDER_IMAGE:-flowweave-dependency-builder:1}
+      DEPENDENCY_BUILDER_TIMEOUT_SECONDS: ${DEPENDENCY_BUILDER_TIMEOUT_SECONDS:-300}
+      TERMINAL_ENVIRONMENT_BACKEND: docker
+      TERMINAL_ENVIRONMENT_BASE_IMAGE: ${TERMINAL_ENVIRONMENT_BASE_IMAGE:-flowweave-openhands-runtime:1}
+      TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER: ${TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER:-flowweave-openhands-agent-server}
+      SANDBOX_MANAGER_SCOPE: ${SANDBOX_MANAGER_SCOPE:-flowweave-local}
+      SANDBOX_ORPHAN_GRACE_SECONDS: ${SANDBOX_ORPHAN_GRACE_SECONDS:-300}
+      SANDBOX_RUNTIME_NETWORK_MODE: ${SANDBOX_RUNTIME_NETWORK_MODE:?set isolated or egress explicitly}
+      SANDBOX_STORAGE_SIZE: ${SANDBOX_STORAGE_SIZE:-4g}
+      TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS: ${TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS:-4}
+      DOCKER_CONTROLLER_MODE: local
+      DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
+      DOCKER_CONTROLLER_WORKER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
+      SANDBOX_BACKEND: docker
+      SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
+      SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
+    # Docker Desktop exposes the socket with GID 0. Linux hosts should set
+    # DOCKER_SOCKET_GID to the numeric group owning /var/run/docker.sock.
+    group_add: ["${DOCKER_SOCKET_GID:-0}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      openhands-agent-server: { condition: service_healthy }
+      workspace-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - docker-control
+
   api:
     build: { context: .., dockerfile: services/platform/Dockerfile }
+    user: "10001:10001"
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory"]
-    environment: *platform-env
-    ports: ["8080:8080"]
-    # Environment setup exposes an interactive root shell in a disposable
-    # container. Docker Socket access is host-administrator-equivalent and is
-    # intentionally enabled only for this self-hosted environment feature.
-    group_add: ["0"]
+    environment:
+      <<: [*platform-env, *docker-client-env]
+      DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
+    ports: ["${FLOWWEAVE_BIND_ADDRESS:-127.0.0.1}:8080:8080"]
     volumes:
       - artifacts:/data/artifacts
       - type: bind
         source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
         target: /data/workspaces
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migration: { condition: service_completed_successfully }
       openhands-agent-server: { condition: service_healthy }
+      sandbox-controller: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 5s
       timeout: 3s
       retries: 20
+    networks:
+      - default
+      - docker-control
 
   worker:
     build: { context: .., dockerfile: services/platform/Dockerfile }
+    user: "10001:10001"
     command: ["python", "-m", "flowweave.bootstrap.worker"]
     environment:
-      <<: *platform-env
-      SANDBOX_BACKEND: docker
-      SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
-      SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
-      DEPENDENCY_BUILDER_BACKEND: docker
-    # Docker Desktop exposes this socket as root:root 0660. The process remains
-    # UID 10001 and receives only supplemental GID 0 for local daemon access.
-    group_add: ["0"]
+      <<: [*platform-env, *docker-client-env]
+      DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
+    labels:
+      flowweave.runtime-client: "true"
+      flowweave.runtime-client-role: "worker"
+      flowweave.manager-scope: "${SANDBOX_MANAGER_SCOPE:-flowweave-local}"
     volumes:
       - artifacts:/data/artifacts
       - type: bind
         source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
         target: /data/workspaces
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migration: { condition: service_completed_successfully }
       openhands-agent-server: { condition: service_healthy }
+      sandbox-controller: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     restart: unless-stopped
     networks:
       - default
-      - dependency-build
+      - docker-control
 
   dependency-builder-image:
     image: flowweave-dependency-builder:1
@@ -148,7 +205,7 @@ services:
 
   web:
     build: { context: .., dockerfile: apps/web/Dockerfile }
-    ports: ["5173:80"]
+    ports: ["${FLOWWEAVE_BIND_ADDRESS:-127.0.0.1}:5173:80"]
     depends_on:
       api: { condition: service_healthy }
 
@@ -159,6 +216,7 @@ volumes:
 
 networks:
   default:
-    name: flowweave_runtime
-  dependency-build:
-    name: flowweave_dependency-build
+    name: flowweave_control
+  docker-control:
+    name: flowweave_docker_control
+    internal: true

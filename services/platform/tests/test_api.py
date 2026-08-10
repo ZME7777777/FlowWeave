@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from flowweave.shared.models import (
     ArtifactVersion,
     AttemptInputBinding,
     BackgroundTask,
+    EnvironmentVersion,
     FlowDefinition,
     FlowRun,
     GateEvaluation,
@@ -19,6 +21,7 @@ from flowweave.shared.models import (
     RunEvent,
     RunSnapshot,
     TaskState,
+    TerminalEnvironment,
 )
 
 
@@ -64,6 +67,12 @@ def test_node_asset_can_be_saved_without_skill(client):
     assert response.json()["capabilities"] == []
 
 
+def test_platform_owned_lark_oauth_endpoints_are_removed(client):
+    assert client.post("/api/v1/oauth/lark/sessions", json={"scopes": []}).status_code == 404
+    assert client.get("/api/v1/credential-connections").status_code == 404
+    assert client.get("/api/v1/internal/credential-leases/opaque").status_code == 404
+
+
 def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
     payload = asset_payload("无模板节点")
     payload["inputs"][0]["template_url"] = ""
@@ -98,7 +107,9 @@ def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
     assert confirmed.status_code == 200, confirmed.text
     target = confirmed.json()["output_targets"]["design"]
     assert target["template_url"] == ""
-    assert "/docx/mock-docx-" in target["url"]
+    assert target["root_url"] == flow["lark_root_folder_url"]
+    assert target["run_name"]
+    assert "url" not in target
 
 
 def flow_payload(asset_id, name="需求到方案"):
@@ -207,6 +218,95 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(client, skill_capa
     node_run = activated.json()
     assert node_run["flow_node_snapshot_key"] == "design_b"
     assert node_run["attempts"][0]["state"] == "WAITING_INPUT"
+
+
+def test_human_can_start_same_node_as_independent_runs(client, skill_capability):
+    asset = create_asset(client, skill_capability)
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"name": "重复人工启动"},
+    ).json()
+    artifact = client.post(
+        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.feishu.cn/docx/repeated-start-input",
+        },
+    ).json()
+
+    first = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"artifact_ids": {"prd": artifact["id"]}},
+    )
+    assert first.status_code == 201, first.text
+    first_attempt = first.json()["attempts"][0]
+    started = client.post(
+        f"/api/v1/node-attempts/{first_attempt['id']}/confirm-start",
+        json={
+            "expected_state_version": first_attempt["state_version"],
+            "startup_mode": "PROMPT",
+            "prompt": "执行第一条并行记录",
+        },
+        headers={"Idempotency-Key": "start-first-independent-node-run"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "WAITING_ACCEPTANCE"
+
+    second = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"artifact_ids": {"prd": artifact["id"]}},
+    )
+
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["sequence_no"] == 1
+    assert second.json()["sequence_no"] == 2
+    detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
+    matching = [
+        item for item in detail["node_runs"] if item["flow_node_snapshot_key"] == "design_a"
+    ]
+    assert len(matching) == 2
+    assert all(item["attempts"][0]["attempt_no"] == 1 for item in matching)
+
+
+def test_flow_run_rejects_ready_version_of_deleted_environment(
+    client, db_session_factory, skill_capability
+):
+    asset = create_asset(client, skill_capability, name="软删环境运行节点")
+    flow = create_flow(client, asset["id"])
+    environment = client.post(
+        "/api/v1/terminal-environments",
+        json={
+            "name": "已删除环境不可创建运行",
+            "description": "",
+            "base_image": "flowweave-openhands-runtime:1",
+        },
+    ).json()
+    with db_session_factory() as db:
+        version = EnvironmentVersion(
+            environment_id=environment["id"],
+            version_no=1,
+            state="READY",
+            image_reference="flowweave/environment-deleted-run:v1",
+            image_digest="sha256:" + "6" * 64,
+        )
+        db.add(version)
+        db.flush()
+        version_id = version.id
+        parent = db.get(TerminalEnvironment, environment["id"])
+        assert parent is not None
+        parent.deleted_at = datetime.now(UTC)
+        db.commit()
+
+    response = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": version_id},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
 
 
 def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
@@ -376,6 +476,43 @@ def test_public_reads_and_writes_require_no_human_token(public_client):
     created = public_client.post("/api/v1/node-directories", json={"name": "公开写入"})
     assert created.status_code == 201, created.text
     assert created.json()["name"] == "公开写入"
+
+
+def test_flow_name_conflict_is_explicit_and_deleted_name_can_be_reused(
+    client, skill_capability, db_session_factory
+):
+    asset = create_asset(client, skill_capability, "流程重名节点")
+    original = create_flow(client, asset["id"])
+
+    duplicate = client.post("/api/v1/flows", json=flow_payload(asset["id"], name=original["name"]))
+    assert duplicate.status_code == 409, duplicate.text
+    assert duplicate.json()["error"]["code"] == "FLOW_NAME_CONFLICT"
+    assert "流程名称" in duplicate.json()["error"]["message"]
+
+    assert client.delete(f"/api/v1/flows/{original['id']}").status_code == 204
+    with db_session_factory() as db:
+        assert db.get(FlowDefinition, original["id"]) is None
+
+    recreated = client.post("/api/v1/flows", json=flow_payload(asset["id"], name=original["name"]))
+    assert recreated.status_code == 201, recreated.text
+
+
+def test_flow_hard_delete_is_blocked_until_runs_are_deleted(
+    client, skill_capability, db_session_factory
+):
+    asset = create_asset(client, skill_capability, "有关联运行流程节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+
+    blocked = client.delete(f"/api/v1/flows/{flow['id']}")
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["error"]["code"] == "FLOW_IN_USE"
+    assert blocked.json()["error"]["details"]["run_ids"] == [run["id"]]
+
+    assert client.delete(f"/api/v1/flow-runs/{run['id']}").status_code == 204
+    assert client.delete(f"/api/v1/flows/{flow['id']}").status_code == 204
+    with db_session_factory() as db:
+        assert db.get(FlowDefinition, flow["id"]) is None
 
 
 def test_node_asset_delete_is_blocked_by_active_flow(client, skill_capability):
@@ -714,7 +851,8 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     assert attempt1["startup_capability_key"] == skill_capability["capability_key"]
     assert attempt1["artifacts"][0]["field_key"] == "design"
     assert attempt1["artifacts"][0]["artifact_type"] == "URL"
-    assert attempt1["artifacts"][0]["uri"] == attempt1["output_targets"]["design"]["url"]
+    assert attempt1["artifacts"][0]["uri"] == ("https://example.feishu.cn/docx/mock-docx-design")
+    assert "url" not in attempt1["output_targets"]["design"]
     assert attempt1["artifacts"][0]["inline_content"] is None
     assert [x["stage"] for x in attempt1["gate_evaluations"]] == ["END", "START", "START"]
 
@@ -931,25 +1069,22 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
         )
         db.commit()
 
-    assert client.delete(f"/api/v1/flows/{flow['id']}").status_code == 204
-    assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
-    assert all(item["id"] != flow["id"] for item in client.get("/api/v1/flows").json())
-    assert all(item["id"] != asset["id"] for item in client.get("/api/v1/node-assets").json())
-
-    summaries = client.get("/api/v1/flow-runs").json()
-    summary = next(item for item in summaries if item["id"] == run["id"])
-    assert summary["flow_name"] == flow["name"]
-    assert summary["flow_row_version"] == flow["row_version"]
-    assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 200
+    blocked_flow = client.delete(f"/api/v1/flows/{flow['id']}")
+    assert blocked_flow.status_code == 409, blocked_flow.text
+    assert blocked_flow.json()["error"]["code"] == "FLOW_IN_USE"
+    assert blocked_flow.json()["error"]["details"]["run_ids"] == [run["id"]]
+    assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 409
 
     deleted = client.delete(f"/api/v1/flow-runs/{run['id']}")
     assert deleted.status_code == 204, deleted.text
     assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
     assert all(item["id"] != run["id"] for item in client.get("/api/v1/flow-runs").json())
     assert not workspace.exists()
+    assert client.delete(f"/api/v1/flows/{flow['id']}").status_code == 204
+    assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
 
     with db_session_factory() as db:
-        assert db.get(FlowDefinition, flow["id"]).deleted_at is not None
+        assert db.get(FlowDefinition, flow["id"]) is None
         assert db.get(NodeAsset, asset["id"]).deleted_at is not None
         assert db.get(FlowRun, run["id"]) is None
         assert db.get(BackgroundTask, task_id) is None

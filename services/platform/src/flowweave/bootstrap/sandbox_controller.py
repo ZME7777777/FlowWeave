@@ -1,0 +1,625 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import os
+import re
+import secrets
+import subprocess
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Annotated, Any, Literal, cast
+from uuid import UUID
+
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from flowweave.bootstrap.settings import Settings
+from flowweave.modules.environments.infrastructure import docker as environments_docker
+from flowweave.modules.sandboxes.infrastructure.docker import (
+    DockerSandboxProvider,
+    backend_name,
+)
+from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
+from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure.dependency_builder import DockerDependencyBuilder
+from flowweave.shared.infrastructure.docker_controller import authorize_controller_request
+from flowweave.shared.infrastructure.sandbox import DockerSandbox
+from flowweave.shared.settings import bind_settings, reset_settings
+
+_MAX_REQUEST_BYTES = 2 * 1024 * 1024
+
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ScopedRequest(_StrictModel):
+    manager_scope: str = Field(min_length=1, max_length=128)
+
+
+class SetupSandboxSpec(_StrictModel):
+    environment_id: UUID
+    base_version_id: UUID | None
+    base_version_no: int | None = Field(ge=1)
+
+
+class RuntimeSandboxSpec(_StrictModel):
+    workspace_relative: str = Field(
+        min_length=1,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+    )
+    port: Literal[8000]
+    bound: bool
+    environment_id: UUID
+    environment_version_id: UUID
+    environment_version_no: int = Field(ge=1)
+
+    @field_validator("workspace_relative")
+    @classmethod
+    def validate_workspace_relative(cls, value: str) -> str:
+        if any(part in {"", ".", ".."} for part in value.split("/")):
+            raise ValueError("workspace_relative must not contain dot path segments")
+        return value
+
+
+class _SandboxResourceBase(ScopedRequest):
+    id: UUID
+    owner_id: UUID
+    backend_resource_name: str = Field(min_length=1, max_length=100)
+    image_reference: str = Field(min_length=1, max_length=500)
+    created_at: datetime
+
+
+class SetupSandboxResourceWrite(_SandboxResourceBase):
+    kind: Literal["ENVIRONMENT_SETUP"]
+    owner_type: Literal["SETUP_SESSION"]
+    spec: SetupSandboxSpec
+
+
+class RuntimeSandboxResourceWrite(_SandboxResourceBase):
+    kind: Literal["AGENT_RUNTIME"]
+    owner_type: Literal["ATTEMPT", "CONVERSATION"]
+    image_reference: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    spec: RuntimeSandboxSpec
+
+
+SandboxResourceWrite = Annotated[
+    SetupSandboxResourceWrite | RuntimeSandboxResourceWrite, Field(discriminator="kind")
+]
+
+
+class SandboxNameWrite(ScopedRequest):
+    # Accept both legacy fw-sbx-<uuid> names and the newer owner-labelled
+    # deterministic names. Resource-ID labels remain the ownership authority.
+    resource_name: str = Field(min_length=8, max_length=100, pattern=r"^fw-sbx-[a-z0-9-]+$")
+
+
+class SandboxDeleteWrite(SandboxNameWrite):
+    resource_id: UUID
+
+
+class ResolveContainerWrite(SandboxDeleteWrite):
+    environment_id: UUID
+
+
+class LegacyRemoveWrite(ScopedRequest):
+    resource_name: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$",
+    )
+    resource_id: Literal["legacy"]
+    environment_id: UUID
+
+
+class RemoveImageWrite(ScopedRequest):
+    reference: str = Field(
+        pattern=r"^flowweave/environment-[a-z0-9_.-]+:v[1-9][0-9]*-[0-9a-f]{32}$"
+    )
+    expected_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    environment_id: UUID
+    version_id: UUID
+    version_no: int | None = Field(default=None, ge=1)
+
+
+class PublishImageWrite(SandboxDeleteWrite):
+    environment_id: UUID
+    version_id: UUID
+    version_no: int = Field(ge=1)
+
+
+class EnvironmentCredentialsWrite(ScopedRequest):
+    environment_id: UUID
+
+
+class GateExecuteWrite(ScopedRequest):
+    language: Literal["PYTHON", "JAVASCRIPT"]
+    code: str = Field(min_length=1, max_length=32_768)
+    context: dict[str, Any]
+    timeout_seconds: int = Field(ge=1, le=300)
+
+
+class DependencyBuildWrite(ScopedRequest):
+    dependencies: dict[str, dict[str, str]]
+
+    @field_validator("dependencies")
+    @classmethod
+    def validate_dependencies(cls, value: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+        if set(value) - {"python", "node", "cli"}:
+            raise ValueError("unsupported dependency ecosystem")
+        if sum(len(group) for group in value.values()) > 50:
+            raise ValueError("too many dependencies")
+        name_pattern = r"^[A-Za-z0-9][A-Za-z0-9._@/-]{0,127}$"
+        version_pattern = r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$"
+        for group in value.values():
+            for name, version in group.items():
+                if (
+                    not re.fullmatch(name_pattern, name)
+                    or ".." in name
+                    or name.startswith(("/", "."))
+                    or not re.fullmatch(version_pattern, version)
+                ):
+                    raise ValueError("dependency names and versions must be exact and safe")
+        return value
+
+
+class TerminalStartWrite(ResolveContainerWrite):
+    session_name: str | None = Field(default=None, max_length=64)
+    rows: int = Field(default=24, ge=2, le=200)
+    columns: int = Field(default=80, ge=20, le=400)
+
+
+class TerminalIdWrite(ScopedRequest):
+    terminal_id: str = Field(min_length=32, max_length=64)
+
+
+class TerminalWrite(TerminalIdWrite):
+    content_base64: str = Field(max_length=131_072)
+
+
+class TerminalResizeWrite(TerminalIdWrite):
+    rows: int = Field(ge=2, le=200)
+    columns: int = Field(ge=20, le=400)
+
+
+@dataclass(slots=True)
+class _TerminalAttachment:
+    master: int
+    process: subprocess.Popen[bytes]
+    last_activity: float
+
+
+class _TerminalManager:
+    def __init__(self, *, idle_seconds: int) -> None:
+        self.idle_seconds = idle_seconds
+        self.attachments: dict[str, _TerminalAttachment] = {}
+
+    def start(self, container_id: str, session_name: str | None, rows: int, columns: int) -> str:
+        master, process = environments_docker.open_terminal(
+            container_id, session_name=session_name, rows=rows, columns=columns
+        )
+        os.set_blocking(master, False)
+        terminal_id = secrets.token_hex(24)
+        self.attachments[terminal_id] = _TerminalAttachment(master, process, time.monotonic())
+        return terminal_id
+
+    def get(self, terminal_id: str) -> _TerminalAttachment:
+        item = self.attachments.get(terminal_id)
+        if item is None:
+            raise DomainError("TERMINAL_NOT_FOUND", "Terminal attachment is unavailable", 404)
+        item.last_activity = time.monotonic()
+        return item
+
+    def read(self, terminal_id: str) -> tuple[bytes, bool]:
+        item = self.get(terminal_id)
+        try:
+            content = os.read(item.master, 65_536)
+        except BlockingIOError:
+            content = b""
+        except OSError:
+            content = b""
+        return content, item.process.poll() is not None
+
+    def resize(self, terminal_id: str, rows: int, columns: int) -> None:
+        item = self.get(terminal_id)
+        environments_docker.resize_terminal(item.master, rows, columns, item.process)
+
+    def close(self, terminal_id: str) -> None:
+        item = self.attachments.pop(terminal_id, None)
+        if item is None:
+            return
+        if item.process.poll() is None:
+            item.process.terminate()
+            try:
+                item.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                item.process.kill()
+                item.process.wait(timeout=2)
+        os.close(item.master)
+
+    def reap(self) -> None:
+        now = time.monotonic()
+        for terminal_id, item in list(self.attachments.items()):
+            if item.process.poll() is not None or now - item.last_activity >= self.idle_seconds:
+                self.close(terminal_id)
+
+    def close_all(self) -> None:
+        for terminal_id in list(self.attachments):
+            self.close(terminal_id)
+
+
+def _observation_dict(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    observation = cast(Any, value)
+    return {
+        "resource_id": observation.resource_id,
+        "resource_name": observation.resource_name,
+        "resource_identifier": observation.resource_identifier,
+        "state": observation.state,
+        "labels": observation.labels,
+        "resource_type": observation.resource_type,
+    }
+
+
+def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
+    resource_id = str(payload.id)
+    expected_name = backend_name(
+        resource_id,
+        owner_type=payload.owner_type,
+        owner_id=str(payload.owner_id),
+    )
+    legacy_name = backend_name(resource_id)
+    if payload.backend_resource_name not in {expected_name, legacy_name}:
+        raise DomainError("SANDBOX_NAME_INVALID", "Sandbox name is not deterministic", 422)
+    return ManagedSandbox(
+        id=resource_id,
+        kind=payload.kind,
+        owner_type=payload.owner_type,
+        owner_id=str(payload.owner_id),
+        backend="docker",
+        backend_resource_name=payload.backend_resource_name,
+        image_reference=payload.image_reference,
+        spec_json=payload.spec.model_dump(mode="json"),
+        created_at=payload.created_at,
+        hard_expires_at=payload.created_at,
+    )
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    configured = (settings or Settings()).model_copy(update={"docker_controller_mode": "local"})
+    if len(configured.docker_controller_api_key) < 32:
+        raise ValueError("DOCKER_CONTROLLER_API_KEY must contain at least 32 characters")
+    if len(configured.docker_controller_worker_api_key) < 32:
+        raise ValueError("DOCKER_CONTROLLER_WORKER_API_KEY must contain at least 32 characters")
+    if configured.docker_controller_worker_api_key == configured.docker_controller_api_key:
+        raise ValueError("Docker controller API and Worker keys must be different")
+    terminals = _TerminalManager(idle_seconds=configured.docker_controller_terminal_idle_seconds)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async def reaper() -> None:
+            while True:
+                await asyncio.sleep(30)
+                terminals.reap()
+
+        task = asyncio.create_task(reaper())
+        try:
+            yield
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            terminals.close_all()
+
+    app = FastAPI(title="FlowWeave Sandbox Controller", version="1.0.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def context(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        token = bind_settings(configured)
+        try:
+            role = authorize_controller_request(configured, request.headers.get("Authorization"))
+            if request.url.path != "/health" and role is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "error": {
+                            "code": "CONTROLLER_UNAUTHORIZED",
+                            "message": "Controller authentication failed",
+                            "details": {},
+                        }
+                    },
+                )
+            # Docker socket access is fail-closed. Every high-level operation
+            # must be assigned explicitly to a principal before it can reach a
+            # route handler; a newly added endpoint therefore starts denied.
+            allowed_roles_by_path: dict[str, frozenset[str]] = {
+                "/v1/sandboxes/ensure": frozenset({"api", "worker"}),
+                "/v1/sandboxes/inspect": frozenset({"worker"}),
+                "/v1/sandboxes/delete": frozenset({"worker"}),
+                "/v1/sandboxes/list": frozenset({"worker"}),
+                "/v1/environments/remove-image": frozenset({"worker"}),
+                "/v1/environments/remove-credentials": frozenset({"worker"}),
+                # Both principals can encounter pre-ledger setup resources
+                # during the bounded migration compatibility period. The
+                # handler independently verifies legacy ownership labels.
+                "/v1/environments/remove-legacy": frozenset({"api", "worker"}),
+                "/v1/environments/publish": frozenset({"api"}),
+                "/v1/gates/execute": frozenset({"worker"}),
+                "/v1/dependencies/build": frozenset({"worker"}),
+                "/v1/terminals/start": frozenset({"api"}),
+                "/v1/terminals/read": frozenset({"api"}),
+                "/v1/terminals/write": frozenset({"api"}),
+                "/v1/terminals/resize": frozenset({"api"}),
+                "/v1/terminals/close": frozenset({"api"}),
+            }
+            if request.url.path != "/health" and role not in allowed_roles_by_path.get(
+                request.url.path, frozenset()
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": {
+                            "code": "CONTROLLER_FORBIDDEN",
+                            "message": "The controller principal cannot use this operation",
+                            "details": {},
+                        }
+                    },
+                )
+            request.state.controller_role = role
+            content_length = request.headers.get("content-length")
+            try:
+                declared_too_large = (
+                    content_length is not None and int(content_length) > _MAX_REQUEST_BYTES
+                )
+            except ValueError:
+                declared_too_large = True
+            body = bytearray()
+            if not declared_too_large:
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > _MAX_REQUEST_BYTES:
+                        break
+            if declared_too_large or len(body) > _MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": {
+                            "code": "CONTROLLER_REQUEST_TOO_LARGE",
+                            "message": "Controller request body is too large",
+                            "details": {"max_bytes": _MAX_REQUEST_BYTES},
+                        }
+                    },
+                )
+            # The decorator middleware uses Starlette's cached request wrapper;
+            # restoring the bounded body lets the route parse it without a
+            # second socket read.
+            request.__dict__["_body"] = bytes(body)
+            return await call_next(request)
+        finally:
+            reset_settings(token)
+
+    @app.exception_handler(DomainError)
+    async def domain_error(_request: Request, exc: DomainError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+
+    def check_scope(scope: str) -> None:
+        if scope != configured.sandbox_manager_scope:
+            raise DomainError("CONTROLLER_SCOPE_MISMATCH", "Manager scope is not allowed", 403)
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.post("/v1/sandboxes/ensure")
+    async def ensure(request: Request, payload: SandboxResourceWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        role = cast(str, request.state.controller_role)
+        allowed = (role == "api" and payload.kind == "ENVIRONMENT_SETUP") or (
+            role == "worker" and payload.kind == "AGENT_RUNTIME"
+        )
+        if not allowed:
+            raise DomainError(
+                "CONTROLLER_FORBIDDEN",
+                "The controller principal cannot create this sandbox kind",
+                403,
+            )
+        observation = DockerSandboxProvider(configured).ensure_running(_resource(payload))
+        return cast(dict[str, Any], _observation_dict(observation))
+
+    @app.post("/v1/sandboxes/inspect")
+    async def inspect(payload: SandboxNameWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        if not payload.resource_name.startswith("fw-sbx-"):
+            raise DomainError("SANDBOX_NAME_INVALID", "Sandbox name is not allowed", 422)
+        observation = DockerSandboxProvider(configured).inspect(payload.resource_name)
+        return {"observation": _observation_dict(observation)}
+
+    @app.post("/v1/sandboxes/delete")
+    async def delete(payload: SandboxDeleteWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        DockerSandboxProvider(configured).delete_expected(
+            payload.resource_name, str(payload.resource_id)
+        )
+        return {"deleted": True}
+
+    @app.post("/v1/sandboxes/list")
+    async def list_sandboxes(payload: ScopedRequest) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        return {
+            "observations": [
+                _observation_dict(item) for item in DockerSandboxProvider(configured).list_managed()
+            ]
+        }
+
+    @app.post("/v1/environments/remove-image")
+    async def remove_image(payload: RemoveImageWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        if not payload.reference.startswith("flowweave/environment-"):
+            raise DomainError("ENVIRONMENT_IMAGE_INVALID", "Image tag is not managed", 422)
+        environments_docker.remove_image(
+            payload.reference,
+            expected_digest=payload.expected_digest,
+            environment_id=str(payload.environment_id),
+            version_id=str(payload.version_id),
+            version_no=payload.version_no,
+        )
+        return {"deleted": True}
+
+    @app.post("/v1/environments/remove-credentials")
+    async def remove_credentials(payload: EnvironmentCredentialsWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        DockerSandboxProvider(configured).delete_environment_credentials(
+            str(payload.environment_id)
+        )
+        return {"deleted": True}
+
+    @app.post("/v1/environments/remove-legacy")
+    async def remove_legacy(payload: LegacyRemoveWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        environments_docker.remove_legacy_setup_container(
+            payload.resource_name, environment_id=str(payload.environment_id)
+        )
+        return {"deleted": True}
+
+    @app.post("/v1/environments/publish")
+    async def publish(payload: PublishImageWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        container_id = environments_docker.resolve_setup_container(
+            payload.resource_name,
+            sandbox_id=str(payload.resource_id),
+            environment_id=str(payload.environment_id),
+        )
+        image = environments_docker.publish_container(
+            container_id,
+            environment_id=str(payload.environment_id),
+            version_id=str(payload.version_id),
+            version_no=payload.version_no,
+        )
+        return {"reference": image.reference, "digest": image.digest, "manifest": image.manifest}
+
+    @app.post("/v1/gates/execute")
+    async def gate(payload: GateExecuteWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        sandbox = DockerSandbox(
+            configured.sandbox_image_python,
+            configured.sandbox_image_javascript,
+            docker_binary=configured.docker_binary,
+            manager_scope=configured.sandbox_manager_scope,
+            cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
+            storage_size=configured.sandbox_storage_size,
+        )
+        result = sandbox.execute(
+            cast(Any, payload.language), payload.code, payload.context, payload.timeout_seconds
+        )
+        return {
+            "status": result.status,
+            "result": result.result,
+            "error": result.error,
+            "log": result.log,
+        }
+
+    @app.post("/v1/dependencies/build")
+    async def dependencies(payload: DependencyBuildWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        builder = DockerDependencyBuilder(
+            configured.dependency_builder_image,
+            docker_binary=configured.docker_binary,
+            manager_scope=configured.sandbox_manager_scope,
+            timeout_seconds=configured.dependency_builder_timeout_seconds,
+            cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
+            storage_size=configured.sandbox_storage_size,
+        )
+        bundle = builder.build(payload.dependencies)
+        return {
+            "content_base64": base64.b64encode(bundle.content).decode(),
+            "manifest": bundle.manifest,
+        }
+
+    @app.post("/v1/terminals/start")
+    async def terminal_start(payload: TerminalStartWrite) -> dict[str, str]:
+        check_scope(payload.manager_scope)
+        container_id = environments_docker.resolve_setup_container(
+            payload.resource_name,
+            sandbox_id=str(payload.resource_id),
+            environment_id=str(payload.environment_id),
+        )
+        return {
+            "terminal_id": terminals.start(
+                container_id, payload.session_name, payload.rows, payload.columns
+            )
+        }
+
+    @app.post("/v1/terminals/read")
+    async def terminal_read(payload: TerminalIdWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        content, eof = terminals.read(payload.terminal_id)
+        return {"content_base64": base64.b64encode(content).decode(), "eof": eof}
+
+    @app.post("/v1/terminals/write")
+    async def terminal_write(payload: TerminalWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        try:
+            content = base64.b64decode(payload.content_base64, validate=True)
+        except ValueError as exc:
+            raise DomainError("TERMINAL_INPUT_INVALID", "Terminal input is invalid", 422) from exc
+        if len(content) > 65_536:
+            raise DomainError("TERMINAL_INPUT_TOO_LARGE", "Terminal input is too large", 422)
+        os.write(terminals.get(payload.terminal_id).master, content)
+        return {"written": True}
+
+    @app.post("/v1/terminals/resize")
+    async def terminal_resize(payload: TerminalResizeWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        terminals.resize(payload.terminal_id, payload.rows, payload.columns)
+        return {"resized": True}
+
+    @app.post("/v1/terminals/close")
+    async def terminal_close(payload: TerminalIdWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        terminals.close(payload.terminal_id)
+        return {"closed": True}
+
+    # FastAPI retains these callables through the registered routes/handlers.
+    # Explicitly access them so strict static analysis recognizes that use.
+    _registered = (
+        context,
+        domain_error,
+        health,
+        ensure,
+        inspect,
+        delete,
+        list_sandboxes,
+        remove_image,
+        remove_credentials,
+        remove_legacy,
+        publish,
+        gate,
+        dependencies,
+        terminal_start,
+        terminal_read,
+        terminal_write,
+        terminal_resize,
+        terminal_close,
+    )
+    del _registered
+    return app
+
+
+__all__ = ("create_app",)

@@ -97,6 +97,7 @@ class NodeAttempt(Base):
     runtime_job_id: Mapped[str | None] = mapped_column(String(100))
     conversation_id: Mapped[str | None] = mapped_column(String(100))
     runtime_cursor: Mapped[str | None] = mapped_column(String(200))
+    runtime_sandbox_id: Mapped[str | None] = mapped_column(String(36), index=True)
     workspace_ref: Mapped[str | None] = mapped_column(Text)
     startup_mode: Mapped[str] = mapped_column(String(20), default="PROMPT")
     startup_capability_key: Mapped[str | None] = mapped_column(String(200))

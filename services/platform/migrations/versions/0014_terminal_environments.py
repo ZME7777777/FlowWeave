@@ -14,12 +14,48 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    for table_name in (
-        "terminal_environments",
-        "environment_versions",
-        "environment_setup_sessions",
-    ):
+    for table_name in ("terminal_environments", "environment_versions"):
         Base.metadata.tables[table_name].create(bind, checkfirst=True)
+    # Keep historical migrations independent from future ORM columns. In
+    # particular, ``sandbox_id`` is introduced by 0017 after the referenced
+    # managed_sandboxes table exists. Using today's full ORM table here would
+    # make a clean upgrade try to create that future foreign key in 0014.
+    if "environment_setup_sessions" not in sa.inspect(bind).get_table_names():
+        op.create_table(
+            "environment_setup_sessions",
+            sa.Column("id", sa.String(length=36), nullable=False),
+            sa.Column("environment_id", sa.String(length=36), nullable=False),
+            sa.Column("base_version_id", sa.String(length=36), nullable=True),
+            sa.Column("state", sa.String(length=30), nullable=False),
+            sa.Column("container_id", sa.String(length=100), nullable=False),
+            sa.Column("base_image_reference", sa.String(length=500), nullable=False),
+            sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("error_detail", sa.Text(), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["environment_id"], ["terminal_environments.id"], ondelete="CASCADE"
+            ),
+            sa.ForeignKeyConstraint(
+                ["base_version_id"], ["environment_versions.id"], ondelete="RESTRICT"
+            ),
+            sa.PrimaryKeyConstraint("id"),
+        )
+        op.create_index(
+            "ix_environment_setup_sessions_environment_id",
+            "environment_setup_sessions",
+            ["environment_id"],
+        )
+        op.create_index(
+            "ix_environment_setup_sessions_state",
+            "environment_setup_sessions",
+            ["state"],
+        )
+        op.create_index(
+            "ix_environment_setup_sessions_expires_at",
+            "environment_setup_sessions",
+            ["expires_at"],
+        )
     inspector = sa.inspect(bind)
     columns = {column["name"] for column in inspector.get_columns("node_assets")}
     if "environment_version_id" not in columns:

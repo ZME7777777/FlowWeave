@@ -1,0 +1,41 @@
+"""Stable public facade for managed sandbox resources."""
+
+from flowweave.modules.sandboxes.application.service import (
+    ReconcileReport,
+    RuntimeSandboxAllocation,
+    create_runtime_sandbox,
+    create_setup_sandbox,
+    delete_environment_credentials,
+    delete_sandbox_now,
+    environment_has_live_sandbox,
+    image_has_live_sandbox,
+    latest_runtime_sandbox_snapshot,
+    mark_runtime_bound,
+    owner_has_live_sandbox,
+    reconcile_managed_sandboxes,
+    request_delete,
+    request_delete_durable,
+    sandbox_dict,
+    sandbox_snapshot,
+    touch_runtime,
+)
+
+__all__ = (
+    "ReconcileReport",
+    "RuntimeSandboxAllocation",
+    "create_runtime_sandbox",
+    "create_setup_sandbox",
+    "delete_sandbox_now",
+    "delete_environment_credentials",
+    "environment_has_live_sandbox",
+    "image_has_live_sandbox",
+    "latest_runtime_sandbox_snapshot",
+    "mark_runtime_bound",
+    "owner_has_live_sandbox",
+    "reconcile_managed_sandboxes",
+    "request_delete",
+    "request_delete_durable",
+    "sandbox_dict",
+    "sandbox_snapshot",
+    "touch_runtime",
+)

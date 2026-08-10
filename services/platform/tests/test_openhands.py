@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from flowweave.runtime.base import (
     RuntimeHandle,
     RuntimeMCP,
@@ -10,6 +12,7 @@ from flowweave.runtime.base import (
     StartAttemptRequest,
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
+from flowweave.shared.errors import DomainError
 
 
 def _request() -> StartAttemptRequest:
@@ -56,8 +59,8 @@ def _request() -> StartAttemptRequest:
         ],
         output_targets={
             "design": {
-                "url": "https://example.feishu.cn/docx/design-output",
-                "token": "design-output",
+                "root_url": "https://example.feishu.cn/drive/folder/root",
+                "run_name": "Run 1",
                 "template_url": "https://example.feishu.cn/docx/design-template",
                 "title": "技术方案",
             }
@@ -112,8 +115,10 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
     assert "https://example.feishu.cn/docx/prd-input" in initial_text
     assert "https://example.feishu.cn/docx/prd-template" in initial_text
     assert "实际读取的飞书文档" in initial_text
-    assert "https://example.feishu.cn/docx/design-output" in initial_text
-    assert "不得另建文档" in initial_text
+    assert "https://example.feishu.cn/drive/folder/root" in initial_text
+    assert "Run 1" in initial_text
+    assert "平台不会持有或注入飞书账号凭据" in initial_text
+    assert "不得把 token、cookie 或本地凭据文件写入消息" in initial_text
     assert payload["agent"]["llm"] == {
         "model": "openai/gpt-5.6-sol",
         "base_url": "http://host.docker.internal:1234/v1",
@@ -133,48 +138,9 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
     assert "MCP Servers" in initial_text
 
 
-def test_openhands_uses_lookup_secret_without_plaintext_oauth_token(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
-    captured: dict[str, object] = {}
-
-    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
-        captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-secret", "leaf_event_id": "event-1"}
-
-    monkeypatch.setattr(runtime, "_request", fake_request)
-    request = replace(
-        _request(),
-        runtime_secrets={
-            "LARK_ACCESS_TOKEN": {
-                "kind": "LookupSecret",
-                "url": "http://api:8080/api/v1/internal/credential-leases/opaque",
-                "headers": {"Authorization": "Bearer internal-only"},
-            }
-        },
-    )
-    runtime.start(request)
-
-    payload = captured["json"]
-    assert isinstance(payload, dict)
-    assert payload["secrets"]["LARK_ACCESS_TOKEN"]["kind"] == "LookupSecret"
-    rendered = str(payload)
-    assert "access-secret" not in rendered
-    assert "refresh-secret" not in rendered
-
-
-def test_openhands_routes_published_environment_runtime_and_cleans_execution(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_routes_control_plane_runtime_without_owning_cleanup(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings.model_copy(update={"sandbox_manager_scope": "test-scope"}))
     requests: list[tuple[str, str | None]] = []
-    removed: list[str] = []
-
-    monkeypatch.setattr(
-        "flowweave.runtime.openhands.environment_docker.start_runtime_container",
-        lambda image, execution_id: ("runtime-container-1", "http://runtime-container-1:8000"),
-    )
-    monkeypatch.setattr(
-        "flowweave.runtime.openhands.environment_docker.remove_runtime_container",
-        removed.append,
-    )
 
     def fake_request(
         method: str, path: str, *, base_url: str | None = None, **kwargs: object
@@ -186,15 +152,29 @@ def test_openhands_routes_published_environment_runtime_and_cleans_execution(set
         return {
             "items": [
                 {
+                    "kind": "MessageEvent",
+                    "id": "event-1",
+                    "source": "user",
+                    "llm_message": {"content": [{"type": "text", "text": "start"}]},
+                },
+                {
                     "kind": "ActionEvent",
                     "id": "event-2",
                     "action": {"kind": "FinishAction", "message": "done"},
-                }
+                },
             ]
         }
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    handle = runtime.start(replace(_request(), environment_image="sha256:" + "a" * 64))
+    handle = runtime.start(
+        replace(
+            _request(),
+            environment_image="sha256:" + "a" * 64,
+            runtime_sandbox_id="sandbox-1",
+            runtime_resource_name="runtime-container-1",
+            runtime_base_url="http://runtime-container-1:8000",
+        )
+    )
 
     assert handle.job_id == "env-exec:runtime-container-1"
     batch = runtime.read_events(handle)
@@ -206,25 +186,44 @@ def test_openhands_routes_published_environment_runtime_and_cleans_execution(set
             "http://runtime-container-1:8000",
         ),
     ]
-    assert removed == ["runtime-container-1"]
 
 
-def test_openhands_environment_chat_is_only_cleaned_when_cancelled(settings, monkeypatch):
+def test_openhands_rejects_environment_without_control_plane_allocation(settings):
     runtime = OpenHandsRuntime(settings)
-    removed: list[str] = []
-    monkeypatch.setattr(
-        "flowweave.runtime.openhands.environment_docker.start_runtime_container",
-        lambda image, execution_id: ("runtime-chat-1", "http://runtime-chat-1:8000"),
-    )
-    monkeypatch.setattr(
-        "flowweave.runtime.openhands.environment_docker.remove_runtime_container",
-        removed.append,
-    )
+
+    with pytest.raises(DomainError) as caught:
+        runtime.start(replace(_request(), environment_image="sha256:" + "c" * 64))
+
+    assert caught.value.code == "RUNTIME_SANDBOX_REQUIRED"
+
+
+def test_openhands_does_not_own_cleanup_when_create_response_has_no_conversation_id(
+    settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(settings.model_copy(update={"sandbox_manager_scope": "test-scope"}))
+    monkeypatch.setattr(runtime, "_request", lambda *args, **kwargs: {})
+
+    with pytest.raises(DomainError, match="Missing conversation id"):
+        runtime.start(
+            replace(
+                _request(),
+                environment_image="sha256:" + "c" * 64,
+                runtime_sandbox_id="sandbox-invalid",
+                runtime_resource_name="runtime-invalid-1",
+                runtime_base_url="http://runtime-invalid-1:8000",
+            )
+        )
+
+
+def test_openhands_environment_cancel_only_interrupts_agent(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings.model_copy(update={"sandbox_manager_scope": "test-scope"}))
+    requests: list[str] = []
 
     def fake_request(
         method: str, path: str, *, base_url: str | None = None, **kwargs: object
     ) -> dict[str, object]:
         del method, base_url, kwargs
+        requests.append(path)
         if path == "/api/conversations":
             return {"id": "conversation-chat", "leaf_event_id": "event-1"}
         if path.endswith("/interrupt"):
@@ -233,13 +232,22 @@ def test_openhands_environment_chat_is_only_cleaned_when_cancelled(settings, mon
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     handle = runtime.create_conversation(
-        replace(_request(), environment_image="sha256:" + "b" * 64)
+        replace(
+            _request(),
+            environment_image="sha256:" + "b" * 64,
+            runtime_sandbox_id="sandbox-chat",
+            runtime_resource_name="runtime-chat-1",
+            runtime_base_url="http://runtime-chat-1:8000",
+        )
     )
     assert handle.job_id == "env-chat:runtime-chat-1"
-    assert removed == []
 
     runtime.cancel(handle)
-    assert removed == ["runtime-chat-1"]
+    assert requests == [
+        "/api/conversations",
+        "/api/conversations/conversation-chat/interrupt",
+        "/api/conversations/conversation-chat",
+    ]
 
 
 def test_openhands_human_conversation_uses_dynamic_capability_selection(settings, monkeypatch):
@@ -265,6 +273,32 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(settings
     assert runtime._contracts["collaboration-1"] == []
 
 
+@pytest.mark.parametrize(
+    ("uri", "accepted"),
+    (
+        ("https://example.feishu.cn/docx/output", True),
+        ("https://example.larksuite.com/docx/output", True),
+        ("https://example.larkoffice.com/docx/output", True),
+        ("http://example.feishu.cn/docx/output", False),
+        ("https://feishu.cn.attacker.example/docx/output", False),
+        ("https://example.com/docx/output", False),
+        ("javascript:alert(1)", False),
+    ),
+)
+def test_openhands_accepts_only_declared_official_https_output_urls(settings, uri, accepted):
+    runtime = OpenHandsRuntime(settings)
+    runtime._contracts["conversation-1"] = [{"field_key": "design"}]
+
+    outputs = runtime._outputs(
+        "conversation-1",
+        '{"outputs": {"design": {"uri": ' + repr(uri).replace("'", '"') + "}, "
+        '"undeclared": "https://example.feishu.cn/docx/other"}}',
+    )
+
+    expected = {"design": ("URL", uri)} if accepted else {}
+    assert outputs == expected
+
+
 def test_openhands_normalizes_incremental_events_and_terminal_result(settings, monkeypatch):
     runtime = OpenHandsRuntime(settings)
     runtime._contracts["conversation-1"] = [
@@ -279,6 +313,12 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(settings, m
         [
             {
                 "items": [
+                    {
+                        "kind": "ActionEvent",
+                        "id": "10",
+                        "source": "agent",
+                        "action": {"kind": "FinishAction", "message": "old result"},
+                    },
                     {
                         "kind": "MessageEvent",
                         "id": "11",
@@ -300,14 +340,22 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(settings, m
             {
                 "items": [
                     {
+                        "kind": "FutureEvent",
+                        "id": "13",
+                        "source": "environment",
+                    },
+                    {
                         "kind": "ActionEvent",
                         "id": "14",
                         "source": "agent",
                         "action": {
                             "kind": "FinishAction",
-                            "message": "completed; ignore this untrusted result body",
+                            "message": (
+                                '{"outputs":{"design":{"artifact_type":"URL",'
+                                '"uri":"https://example.feishu.cn/docx/design-output"}}}'
+                            ),
                         },
-                    }
+                    },
                 ]
             },
         ]
@@ -354,6 +402,97 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(settings, m
     ]
 
 
+def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+    responses = iter(
+        [
+            {
+                "items": [
+                    {
+                        "kind": "ActionEvent",
+                        "id": "old-finish",
+                        "source": "agent",
+                        "action": {"kind": "FinishAction", "message": "authorize again"},
+                    }
+                ]
+            },
+            {
+                "execution_status": "finished",
+                "leaf_event_id": "old-finish",
+                "last_user_message_id": "new-user",
+            },
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "new-user",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "hello"},
+                    }
+                ]
+            },
+        ]
+    )
+
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+    handle = RuntimeHandle("job-1", "conversation-1", "old-finish")
+
+    batch = runtime.read_events(handle)
+    inspected = runtime.inspect(handle)
+
+    assert batch.events == ()
+    assert batch.result is None
+    assert batch.cursor == "old-finish"
+    assert inspected.status == "RUNNING"
+    assert inspected.final_message is None
+
+
+def test_openhands_finished_turn_uses_assistant_message_after_latest_user(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+    responses = iter(
+        [
+            {
+                "execution_status": "finished",
+                "leaf_event_id": "state-finished",
+                "last_user_message_id": "user-current",
+            },
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "user-current",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "你好"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "assistant-current",
+                        "source": "agent",
+                        "llm_message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "你好！"}],
+                        },
+                    },
+                    {
+                        "kind": "ConversationStateUpdateEvent",
+                        "id": "state-finished",
+                        "source": "environment",
+                        "key": "execution_status",
+                        "value": "finished",
+                    },
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+
+    result = runtime.inspect(RuntimeHandle("job-1", "conversation-1", "old-finish"))
+
+    assert result.status == "COMPLETED"
+    assert result.final_message == "你好！"
+    assert result.cursor == "state-finished"
+
+
 def test_openhands_resume_interrupts_the_active_turn_before_steering(settings, monkeypatch):
     runtime = OpenHandsRuntime(settings)
     requests: list[tuple[str, str, object]] = []
@@ -384,6 +523,50 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(settings, m
                 "run": True,
             },
         ),
+        ("GET", "/api/conversations/conversation-1", None),
+    ]
+
+
+def test_openhands_send_message_advances_cursor_to_user_event(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+
+    def fake_request(_method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+        return {"id": "user-event-2"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    result = runtime.send_message(
+        RuntimeHandle("job-1", "conversation-1", "initial-event-1"),
+        "读取当前输入",
+    )
+
+    assert result.status == "RUNNING"
+    assert result.cursor == "user-event-2"
+
+
+def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(
+    settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(settings)
+    responses = iter(
+        [
+            {"success": True},
+            {"last_user_message_id": "user-event-current", "leaf_event_id": "state-running"},
+        ]
+    )
+    requests: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        requests.append((method, path))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    result = runtime.send_message(RuntimeHandle("job-1", "conversation-1", "old-finish"), "你好")
+
+    assert result.status == "RUNNING"
+    assert result.cursor == "user-event-current"
+    assert requests == [
+        ("POST", "/api/conversations/conversation-1/events"),
+        ("GET", "/api/conversations/conversation-1"),
     ]
 
 

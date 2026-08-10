@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import ast
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 SOURCE = Path(__file__).parents[2] / "src" / "flowweave"
+REPOSITORY = Path(__file__).parents[4]
 FORBIDDEN_DOMAIN_ROOTS = {"fastapi", "pydantic", "sqlalchemy", "httpx"}
 
 
@@ -38,6 +42,81 @@ def test_bootstrap_is_factory_only() -> None:
     database_source = (SOURCE / "shared" / "database.py").read_text()
     assert "create_engine(Settings()" not in database_source
     assert "SessionLocal" not in database_source
+
+
+def test_external_container_images_are_immutable() -> None:
+    violations: list[str] = []
+    dockerfiles = (
+        REPOSITORY / "services" / "platform" / "Dockerfile",
+        REPOSITORY / "apps" / "web" / "Dockerfile",
+        REPOSITORY / "infra" / "dependency-builder" / "Dockerfile",
+        REPOSITORY / "infra" / "openhands" / "Dockerfile",
+        REPOSITORY / "infra" / "sandbox" / "python" / "Dockerfile",
+        REPOSITORY / "infra" / "sandbox" / "javascript" / "Dockerfile",
+    )
+    for path in dockerfiles:
+        aliases: set[str] = set()
+        for line_number, line in enumerate(path.read_text().splitlines(), 1):
+            tokens = line.strip().split()
+            if not tokens or tokens[0].upper() != "FROM":
+                continue
+            reference = next((token for token in tokens[1:] if not token.startswith("--")), "")
+            if reference not in aliases and "@sha256:" not in reference:
+                violations.append(f"{path.relative_to(REPOSITORY)}:{line_number} -> {reference}")
+            upper_tokens = [token.upper() for token in tokens]
+            if "AS" in upper_tokens:
+                alias_index = upper_tokens.index("AS") + 1
+                if alias_index < len(tokens):
+                    aliases.add(tokens[alias_index])
+
+    compose = (REPOSITORY / "infra" / "compose.yaml").read_text()
+    for reference in (
+        "alpine:3.22",
+        "postgres:16.9-alpine3.21",
+    ):
+        if f"image: {reference}@sha256:" not in compose:
+            violations.append(f"infra/compose.yaml -> {reference}")
+
+    postgres_digest = (
+        "postgres:16.9-alpine3.21"
+        "@sha256:36e8aabaa6fa6037537cff64011fa45a200fe2ba202141b9aca48cff3df7ad42"
+    )
+    for relative in (
+        "services/platform/tests/conftest.py",
+        "services/platform/scripts/migration_check.py",
+    ):
+        if postgres_digest not in (REPOSITORY / relative).read_text().replace(
+            '"\n            "', ""
+        ):
+            violations.append(f"{relative} -> postgres test image")
+
+    assert not violations, "Mutable external container images:\n" + "\n".join(violations)
+
+
+def test_bootstrap_entrypoints_import_in_clean_processes() -> None:
+    """Catch import-order bugs hidden by pytest's already-populated module cache."""
+
+    package_root = SOURCE.parents[1]
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(package_root),
+    }
+    for module in (
+        "flowweave.bootstrap.api",
+        "flowweave.bootstrap.worker",
+        "flowweave.bootstrap.sandbox_controller",
+    ):
+        completed = subprocess.run(
+            [sys.executable, "-c", f"import {module}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=environment,
+        )
+        assert completed.returncode == 0, (
+            f"clean import failed for {module}: {(completed.stderr or completed.stdout)[-4000:]}"
+        )
 
 
 def test_production_package_contains_no_sqlite_compatibility() -> None:

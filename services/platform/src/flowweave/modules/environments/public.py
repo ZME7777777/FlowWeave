@@ -3,19 +3,43 @@
 from flowweave.modules.environments.application.service import (
     create_setup_session,
     delete_environment,
+    expire_setup_sessions,
     list_environments,
+    lock_referenceable_version,
+    process_cleanup_environment_credentials,
+    process_cleanup_environment_image,
+    process_cleanup_setup_container,
     publish_setup_session,
     read_environment,
+    recover_environment_cleanup_tasks,
     save_environment,
+    setup_sandbox_owner_is_active,
     stop_setup_session,
+)
+from flowweave.modules.environments.infrastructure.docker import (
+    ManagedTerminal,
+    open_managed_terminal,
+    open_terminal,
+    resize_terminal,
 )
 
 __all__ = (
+    "ManagedTerminal",
     "create_setup_session",
     "delete_environment",
+    "expire_setup_sessions",
     "list_environments",
+    "lock_referenceable_version",
+    "open_terminal",
+    "open_managed_terminal",
+    "process_cleanup_environment_image",
+    "process_cleanup_environment_credentials",
+    "process_cleanup_setup_container",
     "publish_setup_session",
     "read_environment",
+    "recover_environment_cleanup_tasks",
+    "resize_terminal",
     "save_environment",
+    "setup_sandbox_owner_is_active",
     "stop_setup_session",
 )

@@ -8,13 +8,11 @@ from flowweave.modules.catalog.infrastructure import models as catalog_models  #
 from flowweave.modules.conversations.infrastructure import (
     models as conversation_models,  # noqa: F401
 )
-from flowweave.modules.credentials.infrastructure import (
-    models as credential_models,  # noqa: F401
-)
 from flowweave.modules.environments.infrastructure import models as environment_models  # noqa: F401
 from flowweave.modules.flows.infrastructure import models as flow_models  # noqa: F401
 from flowweave.modules.model_providers.infrastructure import models as provider_models  # noqa: F401
 from flowweave.modules.runs.infrastructure import models as run_models  # noqa: F401
+from flowweave.modules.sandboxes.infrastructure import models as sandbox_models  # noqa: F401
 from flowweave.modules.tasks.infrastructure import models as task_models  # noqa: F401
 from flowweave.shared.database import Base
 

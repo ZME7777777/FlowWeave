@@ -6,6 +6,7 @@ from typing import Any, TypedDict, cast
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.environments.public import lock_referenceable_version
 from flowweave.runtime.workspace import materialize_node_workspace, node_workspace_relative
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -345,12 +346,8 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
     if payload.directory_id and not db.get(NodeDirectory, payload.directory_id):
         raise not_found("node_directory", payload.directory_id)
     if payload.environment_version_id:
-        environment = db.scalar(
-            select(EnvironmentVersion)
-            .where(EnvironmentVersion.id == payload.environment_version_id)
-            .with_for_update()
-        )
-        if environment is None or environment.state != "READY" or not environment.image_digest:
+        environment = lock_referenceable_version(db, payload.environment_version_id)
+        if environment is None:
             raise DomainError(
                 "ENVIRONMENT_VERSION_INVALID",
                 "Node runtime environment must reference a READY immutable version",

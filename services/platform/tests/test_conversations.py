@@ -1,19 +1,34 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from flowweave.bootstrap.worker import TaskWorker
-from flowweave.modules.conversations.application.service import recover_conversation_tasks
-from flowweave.runtime.base import StartAttemptRequest
+from flowweave.modules.conversations.application.service import (
+    _append,
+    _append_runtime_payload,
+    _apply_conversation_result,
+    recover_conversation_tasks,
+    terminal_resource_details,
+)
+from flowweave.modules.conversations.domain.enums import (
+    DeliveryMode,
+    DeliveryState,
+    MessageSource,
+    MessageType,
+)
+from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
 from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.models import (
     AgentConversation,
+    AgentMessage,
     BackgroundTask,
     EnvironmentVersion,
+    ManagedSandbox,
     NodeAttempt,
     TerminalEnvironment,
 )
@@ -79,6 +94,252 @@ def _create_run(api_client, skill: dict[str, object] | None) -> tuple[str, str]:
     assert run_response.status_code == 201, run_response.text
     run = run_response.json()
     return run["id"], run["node_runs"][0]["attempts"][0]["id"]
+
+
+def test_human_conversation_ignores_intermediate_agent_message(client, db_session_factory):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "ignore-intermediate-agent-message"},
+    )
+    assert created.status_code == 202, created.text
+
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, created.json()["id"])
+        assert conversation is not None
+        before = db.scalar(
+            select(func.count())
+            .select_from(AgentMessage)
+            .where(AgentMessage.conversation_id == conversation.id)
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="intermediate-message-1",
+            event_type="MESSAGE",
+            payload={"source": "agent", "content": "已就绪"},
+        )
+        after = db.scalar(
+            select(func.count())
+            .select_from(AgentMessage)
+            .where(AgentMessage.conversation_id == conversation.id)
+        )
+        assert after == before
+
+
+def test_conversation_fork_copies_history_and_edit_replaces_human_message(
+    client, db_session_factory
+):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "fork-source-conversation"},
+    )
+    assert created.status_code == 202, created.text
+
+    with db_session_factory() as db:
+        source = db.get(AgentConversation, created.json()["id"])
+        assert source is not None
+        source.state = "IDLE"
+        _append(
+            db,
+            source,
+            source=MessageSource.HUMAN,
+            message_type=MessageType.TEXT,
+            content={"parts": [{"type": "text", "text": "第一问"}]},
+            delivery_state=DeliveryState.DELIVERED,
+            delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
+        )
+        first_agent = _append(
+            db,
+            source,
+            source=MessageSource.AGENT,
+            message_type=MessageType.TEXT,
+            content={
+                "presentation": "final",
+                "parts": [{"type": "text", "text": "第一答"}],
+            },
+            delivery_state=DeliveryState.DELIVERED,
+        )
+        second_human = _append(
+            db,
+            source,
+            source=MessageSource.HUMAN,
+            message_type=MessageType.TEXT,
+            content={"parts": [{"type": "text", "text": "原始第二问"}]},
+            delivery_state=DeliveryState.DELIVERED,
+            delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
+        )
+        source.state_version += 1
+        version = source.state_version
+        db.commit()
+
+    forked = client.post(
+        f"/api/v1/agent-messages/{first_agent.id}/fork",
+        json={"expected_conversation_version": version},
+        headers={"Idempotency-Key": "fork-at-first-answer"},
+    )
+    assert forked.status_code == 202, forked.text
+    fork_messages = client.get(f"/api/v1/agent-conversations/{forked.json()['id']}/messages").json()
+    assert [message["source"] for message in fork_messages] == [
+        "PROGRAM",
+        "HUMAN",
+        "AGENT",
+    ]
+    assert [message["content"]["parts"][0]["text"] for message in fork_messages] == [
+        "已从既有会话创建上下文分支。",
+        "第一问",
+        "第一答",
+    ]
+    assert forked.json()["context_baseline"]["fork"]["history"] == [
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答"},
+    ]
+
+    edited = client.post(
+        f"/api/v1/agent-messages/{second_human.id}/fork",
+        json={
+            "expected_conversation_version": version,
+            "edited_text": "修改后的第二问",
+        },
+        headers={"Idempotency-Key": "edit-second-question-into-fork"},
+    )
+    assert edited.status_code == 202, edited.text
+    edited_messages = client.get(
+        f"/api/v1/agent-conversations/{edited.json()['id']}/messages"
+    ).json()
+    assert [message["source"] for message in edited_messages] == [
+        "PROGRAM",
+        "HUMAN",
+        "AGENT",
+        "HUMAN",
+    ]
+    assert edited_messages[-1]["content"]["parts"][0]["text"] == "修改后的第二问"
+    assert edited_messages[-1]["delivery_state"] == "QUEUED"
+    assert all(
+        message["content"].get("parts", [{}])[0].get("text") != "原始第二问"
+        for message in edited_messages
+    )
+    assert edited.json()["context_baseline"]["fork"]["history"] == [
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答"},
+    ]
+
+
+def test_conversation_result_projection_is_idempotent(client, db_session_factory):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "idempotent-result-projection"},
+    )
+    assert created.status_code == 202, created.text
+
+    runtime_event_id = "delivery-result:poll:current-finish:current-finish"
+    result = RuntimeResult(
+        status="COMPLETED",
+        final_message="本轮完成",
+        cursor="current-finish",
+    )
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, created.json()["id"])
+        assert conversation is not None
+        conversation.state = "GENERATING"
+        _apply_conversation_result(db, conversation, result, message_id="poll:current-finish")
+        db.flush()
+        conversation.state = "GENERATING"
+        _apply_conversation_result(db, conversation, result, message_id="poll:current-finish")
+        db.flush()
+
+        projected = db.scalars(
+            select(AgentMessage).where(
+                AgentMessage.conversation_id == conversation.id,
+                AgentMessage.runtime_event_id == runtime_event_id,
+            )
+        ).all()
+        assert len(projected) == 1
+        assert conversation.state == "IDLE"
+
+
+def test_dead_conversation_poll_projects_visible_failure(client, db_session_factory):
+    from flowweave.modules.tasks.application.handlers import record_terminal_failure
+
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "dead-poll-visible-failure"},
+    )
+    assert created.status_code == 202, created.text
+
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, created.json()["id"])
+        assert conversation is not None
+        conversation.state = "GENERATING"
+        conversation.runtime_job_id = "env-chat:test-runtime"
+        conversation.runtime_conversation_id = "runtime-conversation-dead-poll"
+        task = BackgroundTask(
+            task_type="POLL_CONVERSATION",
+            aggregate_type="CONVERSATION",
+            aggregate_id=conversation.id,
+            idempotency_key=f"dead-poll:{conversation.id}",
+            state="DEAD",
+            attempts=3,
+            max_attempts=3,
+        )
+        db.add(task)
+        db.flush()
+        record_terminal_failure(db, task.id, "OpenHands temporarily unavailable")
+        db.commit()
+
+    failed = client.get(f"/api/v1/agent-conversations/{created.json()['id']}").json()
+    assert failed["state"] == "FAILED"
+    messages = client.get(f"/api/v1/agent-conversations/{created.json()['id']}/messages").json()
+    assert messages[-1]["message_type"] == "ERROR"
+    assert messages[-1]["content"]["error"]["code"] == "RUNTIME_POLL_FAILED"
+
+
+def test_conversation_recovery_requeues_missing_poll_with_extended_retries(
+    client, db_session_factory
+):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "recover-missing-poll"},
+    )
+    assert created.status_code == 202, created.text
+
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, created.json()["id"])
+        assert conversation is not None
+        conversation.state = "GENERATING"
+        conversation.runtime_job_id = "env-chat:test-runtime"
+        conversation.runtime_conversation_id = "runtime-conversation-recover-poll"
+        db.flush()
+        assert recover_conversation_tasks(db) == 1
+        recovered = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation.id,
+                BackgroundTask.task_type == "POLL_CONVERSATION",
+                BackgroundTask.state == "PENDING",
+            )
+        )
+        assert recovered is not None
+        assert recovered.max_attempts == 10
+        db.rollback()
 
 
 def test_run_environment_is_used_by_execution_and_collaboration_runtime(
@@ -163,6 +424,9 @@ def test_run_environment_is_used_by_execution_and_collaboration_runtime(
             headers={"Idempotency-Key": "environment-runtime-start"},
         )
         assert confirmed.status_code == 200, confirmed.text
+        automatic = worker_client.get(f"/api/v1/node-attempts/{attempt_id}/conversations").json()[0]
+        assert automatic["kind"] == "AUTO"
+        assert automatic["connection_status"]["phase"] == "WAITING_WORKER"
         assert worker._run_once_sync() is True  # START_RUNTIME
         assert runtime.execution_requests[0].environment_image == digest
         assert worker._run_once_sync() is True  # POLL_RUNTIME
@@ -181,6 +445,10 @@ def test_run_environment_is_used_by_execution_and_collaboration_runtime(
         assert conversation.status_code == 202, conversation.text
         assert worker._run_once_sync() is True  # CREATE_CONVERSATION
         assert runtime.collaboration_requests[0].environment_image == digest
+        binding = runtime.collaboration_requests[0].bindings[0]
+        assert binding["display_name"] == "需求"
+        assert binding["template_url"] == "https://example.feishu.cn/docx/prd-template"
+        assert binding["artifact"]["uri"] == ("https://example.feishu.cn/docx/environment-input")
     finally:
         worker_container.runtime = previous_runtime
 
@@ -222,7 +490,44 @@ def test_auto_conversation_records_runtime_result_and_becomes_read_only(
     assert [message["source"] for message in messages] == ["PROGRAM", "AGENT"]
     assert [message["sequence_no"] for message in messages] == [1, 2]
     assert messages[1]["delivery_state"] == "DELIVERED"
-    assert "Mock output" in messages[1]["content"]["parts"][0]["text"]
+    assert messages[1]["content"]["parts"][0]["text"] == (
+        "https://example.feishu.cn/docx/mock-docx-design"
+    )
+
+    # AUTO terminal attachment resolves the Attempt-owned sandbox even for
+    # rows created before runtime_sandbox_id was projected to the conversation.
+    with db_session_factory() as db:
+        runtime_conversation = db.get(AgentConversation, automatic["id"])
+        runtime_attempt = db.get(NodeAttempt, attempt_id)
+        assert runtime_conversation is not None
+        assert runtime_attempt is not None
+        sandbox_id = str(uuid4())
+        current_time = datetime.now(UTC)
+        db.add(
+            ManagedSandbox(
+                id=sandbox_id,
+                kind="AGENT_RUNTIME",
+                owner_type="ATTEMPT",
+                owner_id=attempt_id,
+                backend="docker",
+                backend_resource_name=f"fw-sbx-{sandbox_id.replace('-', '')}",
+                image_reference="runtime:test",
+                spec_json={"environment_id": "11111111-1111-4111-8111-111111111111"},
+                hard_expires_at=current_time + timedelta(hours=1),
+                next_reconcile_at=current_time,
+            )
+        )
+        db.flush()
+        runtime_conversation.runtime_job_id = "env-exec:fw-sbx-auto-terminal"
+        runtime_conversation.runtime_sandbox_id = None
+        runtime_attempt.runtime_sandbox_id = sandbox_id
+        db.flush()
+        assert terminal_resource_details(db, runtime_conversation.id) == (
+            "fw-sbx-auto-terminal",
+            sandbox_id,
+            "11111111-1111-4111-8111-111111111111",
+        )
+        db.rollback()
 
     workspace = Path(attempt["workspace_ref"])
     workspace.mkdir(parents=True, exist_ok=True)
@@ -238,6 +543,43 @@ def test_auto_conversation_records_runtime_result_and_becomes_read_only(
     assert media.status_code == 200, media.text
     assert media.headers["content-type"] == "image/png"
     assert media.content == image.read_bytes()
+
+    node_workspace = workspace.parents[3]
+    shared_image = node_workspace / "files" / "lark-readonly-auth.png"
+    shared_image.parent.mkdir(parents=True, exist_ok=True)
+    shared_image.write_bytes(b"\x89PNG\r\n\x1a\nflowweave-shared-node-image")
+    shared_runtime_path = Path("/workspaces") / shared_image.resolve().relative_to(
+        settings.workspace_root.resolve()
+    )
+    shared_media = client.get(
+        f"/api/v1/agent-messages/{messages[1]['id']}/workspace-image",
+        params={"source": str(shared_runtime_path)},
+    )
+    assert shared_media.status_code == 200, shared_media.text
+    assert shared_media.headers["content-type"] == "image/png"
+    assert shared_media.content == shared_image.read_bytes()
+
+    other_node_image = (
+        settings.workspace_root.resolve() / "nodes" / "other-node" / "files" / "private.png"
+    )
+    other_node_image.parent.mkdir(parents=True, exist_ok=True)
+    other_node_image.write_bytes(b"not available to this node")
+    blocked_other_node = client.get(
+        f"/api/v1/agent-messages/{messages[1]['id']}/workspace-image",
+        params={
+            "source": str(
+                Path("/workspaces")
+                / other_node_image.resolve().relative_to(settings.workspace_root.resolve())
+            )
+        },
+    )
+    assert blocked_other_node.status_code == 404
+
+    blocked_relative_escape = client.get(
+        f"/api/v1/agent-messages/{messages[1]['id']}/workspace-image",
+        params={"source": "../../../../files/lark-readonly-auth.png"},
+    )
+    assert blocked_relative_escape.status_code == 404
 
     outside = settings.workspace_root.resolve() / "outside.png"
     outside.write_bytes(b"not available to this attempt")
@@ -349,6 +691,7 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert created.status_code == 202, created.text
     conversation = created.json()
     assert conversation["state"] == "CREATING"
+    assert conversation["connection_status"]["phase"] == "WAITING_WORKER"
 
     with db_session_factory() as db:
         db.execute(
@@ -372,6 +715,7 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
 
     conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert conversation["state"] == "IDLE"
+    assert conversation["connection_status"]["phase"] == "READY"
     unavailable = worker_client.post(
         f"/api/v1/agent-conversations/{conversation['id']}/messages",
         json={
@@ -427,6 +771,36 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
         generating.state_version += 1
         db.commit()
     conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
+    runtime_handle = RuntimeHandle(
+        conversation["runtime_job_id"], conversation["runtime_conversation_id"]
+    )
+    stopping = worker_client.post(
+        f"/api/v1/agent-conversations/{conversation['id']}/stop",
+        json={"expected_conversation_version": conversation["state_version"]},
+        headers={"Idempotency-Key": "stop-human-conversation-turn"},
+    )
+    assert stopping.status_code == 202, stopping.text
+    assert stopping.json()["state"] == "STOPPING"
+    with db_session_factory() as db:
+        stop_task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation["id"],
+                BackgroundTask.task_type == "STOP_CONVERSATION_RUNTIME",
+            )
+        )
+        assert stop_task is not None
+    assert worker._run_once_sync() is True
+    stopped = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
+    assert stopped["state"] == "IDLE"
+    assert worker_container.runtime.inspect(runtime_handle).status == "CANCELLED"
+
+    with db_session_factory() as db:
+        generating = db.get(AgentConversation, conversation["id"])
+        assert generating is not None
+        generating.state = "GENERATING"
+        generating.state_version += 1
+        db.commit()
+    conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     queued = worker_client.post(
         f"/api/v1/agent-conversations/{conversation['id']}/messages",
         json={
@@ -450,14 +824,26 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert retried.status_code == 202, retried.text
     queued_message = retried.json()
     with db_session_factory() as db:
+        recreate_task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation["id"],
+                BackgroundTask.task_type == "CREATE_CONVERSATION",
+                BackgroundTask.state == "PENDING",
+            )
+        )
+        assert recreate_task is not None
+        assert recreate_task.idempotency_key.startswith("recreate-conversation:")
+    assert worker._run_once_sync() is True  # recreate Runtime stopped above
+    with db_session_factory() as db:
         retry_task = db.scalar(
             select(BackgroundTask).where(
                 BackgroundTask.aggregate_id == queued_message["id"],
                 BackgroundTask.task_type == "DELIVER_CONVERSATION_MESSAGE",
+                BackgroundTask.state == "PENDING",
             )
         )
         assert retry_task is not None
-        assert retry_task.idempotency_key.startswith("retry-conversation-message:")
+        assert retry_task.idempotency_key.startswith("deliver-conversation-message:")
         db.delete(retry_task)
         db.commit()
 
@@ -593,6 +979,32 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert worker._run_once_sync() is True  # deliver queued message
     recovered = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert recovered["state"] == "IDLE"
+    runtime_handle = RuntimeHandle(
+        recovered["runtime_job_id"],
+        recovered["runtime_conversation_id"],
+    )
+    current_run = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    current_attempt = current_run["node_runs"][0]["attempts"][0]
+    accepted = worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/accept",
+        json={"expected_state_version": current_attempt["state_version"]},
+        headers={"Idempotency-Key": "accept-and-clean-human-runtime"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    with db_session_factory() as db:
+        cleanup = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation["id"],
+                BackgroundTask.task_type == "CLEANUP_CONVERSATION_RUNTIME",
+            )
+        )
+        assert cleanup is not None
+    assert worker._run_once_sync() is True
+    cleaned = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
+    assert cleaned["state"] == "READ_ONLY"
+    assert cleaned["runtime_job_id"] is None
+    assert cleaned["runtime_conversation_id"] is None
+    assert worker_container.runtime.inspect(runtime_handle).status == "CANCELLED"
 
     automatic = next(
         item

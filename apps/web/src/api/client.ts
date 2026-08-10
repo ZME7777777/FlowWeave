@@ -1,6 +1,6 @@
 import type {
   AgentConversation, AgentMessage, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
-  BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CredentialConnection, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
+  BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
   NodeDirectory, NodeRun, RunEvent, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
 } from '../types';
 
@@ -24,9 +24,38 @@ export class ApiError extends Error {
 
 async function responseError(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => ({}));
+  const code = body?.error?.code ?? 'REQUEST_FAILED';
+  const backendMessage = typeof body?.error?.message === 'string' ? body.error.message : '';
+  const chineseMessages: Record<string, string> = {
+    FLOW_NAME_CONFLICT: '流程名称已存在，请使用其他名称。',
+    FLOW_IN_USE: '该流程仍有关联运行，请先删除关联运行后再永久删除流程。',
+    NODE_ASSET_IN_USE: '该节点仍被流程引用，请先从相关流程中移除节点。',
+    CAPABILITY_IN_USE: '该能力仍被节点引用，请先解除引用后再删除。',
+    ENVIRONMENT_VERSION_IN_USE: '该环境版本仍被运行引用，暂时不能删除。',
+    RESOURCE_NOT_FOUND: '请求的资源不存在或已被删除，请刷新页面后重试。',
+    VERSION_CONFLICT: '数据已被其他操作修改，请刷新页面后重试。',
+    DATA_CONFLICT: '提交的数据与现有记录冲突，请检查是否存在重名或重复关联。',
+    INVALID_COMMAND: '提交的数据不符合要求，请检查必填项和输入格式。',
+    FLOW_GRAPH_INVALID: '流程配置无效，请检查节点、连线、端口映射和门禁设置。',
+    ILLEGAL_STATE_TRANSITION: '当前状态不允许执行此操作，请刷新页面确认最新状态。',
+    EXECUTOR_UNAVAILABLE: '执行服务暂时不可用，请稍后重试。',
+    REQUEST_FAILED: '请求处理失败，请稍后重试。',
+  };
+  const message = /[\u3400-\u9fff]/u.test(backendMessage)
+    ? backendMessage
+    : chineseMessages[code]
+      ?? (response.status >= 500
+        ? '服务器处理请求时发生错误，请稍后重试。'
+        : response.status === 403
+          ? '当前账号没有执行此操作的权限。'
+          : response.status === 401
+            ? '登录状态已失效，请重新登录。'
+            : response.status === 404
+              ? '请求的资源不存在或已被删除。'
+              : '请求处理失败，请检查输入后重试。');
   return new ApiError(
-    body?.error?.message ?? response.statusText ?? '请求失败',
-    body?.error?.code ?? 'REQUEST_FAILED',
+    message,
+    code,
     body?.error?.details ?? {},
     response.status,
   );
@@ -34,22 +63,32 @@ async function responseError(response: Response): Promise<ApiError> {
 export const artifactContentUrl = (artifactId: string, download = false) =>
   `${API_BASE}${ROOT}/artifact-versions/${artifactId}/content${download ? '?download=true' : ''}`;
 export const workspaceImageUrl = (messageId: string, source: string) =>
-  `${API_BASE}${ROOT}/agent-messages/${messageId}/workspace-image?source=${encodeURIComponent(source)}`;
+  `${API_BASE}${ROOT}/agent-messages/${messageId}/workspace-image?source=${encodeURIComponent(source)}&v=2`;
 export const messageAttachmentUrl = (messageId: string, attachmentId: string, download = false) =>
   `${API_BASE}${ROOT}/agent-messages/${messageId}/attachments/${attachmentId}${download ? '?download=true' : ''}`;
 
 async function requestText(path: string): Promise<string> {
-  const response = await fetch(`${API_BASE}${ROOT}${path}`);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${ROOT}${path}`);
+  } catch {
+    throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
+  }
   if (!response.ok) {
     throw await responseError(response);
   }
   return response.text();
 }
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${ROOT}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...init.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${ROOT}${path}`, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', ...init.headers },
+    });
+  } catch {
+    throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
+  }
   if (!response.ok) {
     throw await responseError(response);
   }
@@ -102,10 +141,6 @@ export const api = {
   deleteProviders: (ids: string[]) => request<BulkDeleteResult<BlockedProviderDelete>>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
   discoverProviderModels: (id: string) => request<{ models: string[] }>(`/model-providers/${id}/discover-models`, json('POST')),
-  credentialConnections: () => request<CredentialConnection[]>('/credential-connections'),
-  beginLarkOAuth: () => request<{ authorization_url: string; expires_at: string }>('/oauth/lark/sessions', json('POST', { scopes: [] })),
-  disconnectCredential: (id: string) => request<void>(`/credential-connections/${id}`, json('DELETE')),
-
   flows: () => request<FlowDefinition[]>('/flows'),
   flow: (id: string) => request<FlowDefinition>(`/flows/${id}`),
   createFlow: (body: FlowWrite) => request<FlowDefinition>('/flows', json('POST', body)),
@@ -130,6 +165,7 @@ export const api = {
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   rejectAttempt: (attemptId: string, reason: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reject`, json('POST', { reason, copy_input_bindings: true, expected_state_version: version }, true)),
   retryGates: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-gates`, json('POST', { expected_state_version: version })),
+  cancelAttempt: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/cancel`, json('POST', { expected_state_version: version }, true)),
   retryRuntimeCancel: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-runtime-cancel`, json('POST', { expected_state_version: version }, true)),
   syncSnapshot: (runId: string, version: number) => request<FlowRun>(`/flow-runs/${runId}/sync-snapshot`, json('POST', { expected_active_version: version }, true)),
   completeRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/complete`, json('POST', undefined, true)),
@@ -140,6 +176,8 @@ export const api = {
       title, expected_attempt_state_version: version, baseline: { include_current_artifacts: true },
     }, true)),
   conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
+  stopConversation: (conversationId: string, version: number) =>
+    request<AgentConversation>(`/agent-conversations/${conversationId}/stop`, json('POST', { expected_conversation_version: version }, true)),
   deleteConversation: (conversationId: string) => request<void>(`/agent-conversations/${conversationId}`, json('DELETE')),
   conversationMessages: (conversationId: string, afterSequence = 0) =>
     request<AgentMessage[]>(`/agent-conversations/${conversationId}/messages?after_sequence=${afterSequence}&limit=200`),
@@ -154,6 +192,11 @@ export const api = {
       delivery_mode: 'QUEUE_AFTER_TURN',
       expected_conversation_version: version,
     }, true)),
+  forkConversationMessage: (messageId: string, version: number, editedText?: string) =>
+    request<AgentConversation>(`/agent-messages/${messageId}/fork`, json('POST', {
+      expected_conversation_version: version,
+      ...(editedText === undefined ? {} : { edited_text: editedText }),
+    }, true)),
   steerConversationMessage: (messageId: string) =>
     request<AgentMessage>(`/agent-messages/${messageId}/steer`, json('POST', undefined, true)),
   cancelQueuedConversationMessage: (messageId: string) =>
@@ -163,17 +206,21 @@ export const api = {
   flowEvents: (runId: string, after = 0) => request<RunEvent[]>(`/flow-runs/${runId}/event-history?after=${after}`),
 };
 
-export function environmentTerminalUrl(sessionId: string): string {
+export function environmentTerminalUrl(sessionId: string, rows = 24, columns = 80): string {
   const base = API_BASE || window.location.origin;
   const url = new URL(`${ROOT}/environment-setup-sessions/${encodeURIComponent(sessionId)}/terminal`, base);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('rows', String(rows));
+  url.searchParams.set('columns', String(columns));
   return url.toString();
 }
 
-export function agentTerminalUrl(conversationId: string): string {
+export function agentTerminalUrl(conversationId: string, rows = 24, columns = 80): string {
   const base = API_BASE || window.location.origin;
   const url = new URL(`${ROOT}/agent-conversations/${encodeURIComponent(conversationId)}/terminal`, base);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('rows', String(rows));
+  url.searchParams.set('columns', String(columns));
   return url.toString();
 }
 

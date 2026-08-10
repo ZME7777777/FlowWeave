@@ -150,7 +150,14 @@ def succeed(db: Session, lease: Lease, *, commit: bool = True) -> bool:
     return True
 
 
-def fail(db: Session, lease: Lease, error: str, *, commit: bool = True) -> bool:
+def fail(
+    db: Session,
+    lease: Lease,
+    error: str,
+    *,
+    permanent: bool = False,
+    commit: bool = True,
+) -> bool:
     task = db.scalar(
         select(BackgroundTask).where(
             *_lease_filter(lease),
@@ -161,7 +168,9 @@ def fail(db: Session, lease: Lease, error: str, *, commit: bool = True) -> bool:
         if commit:
             db.rollback()
         return False
-    task.state = TaskState.DEAD if task.attempts >= task.max_attempts else TaskState.RETRY
+    task.state = (
+        TaskState.DEAD if permanent or task.attempts >= task.max_attempts else TaskState.RETRY
+    )
     task.available_at = datetime.now(UTC) + timedelta(seconds=min(2**task.attempts, 60))
     task.lease_owner = None
     task.lease_until = None

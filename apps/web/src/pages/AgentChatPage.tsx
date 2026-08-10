@@ -1,6 +1,6 @@
-import { AlertTriangle, ArrowLeft, Bot, CheckCircle2, ChevronRight, Clock3, CornerDownRight, Download, File as FileIcon, FileText, Image as ImageIcon, Link2, LoaderCircle, Paperclip, Plus, RefreshCw, Send, Sparkles, Trash2, Workflow, X, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Bot, CheckCircle2, ChevronRight, Clock3, CornerDownRight, Download, File as FileIcon, FileText, GitFork, Image as ImageIcon, Link2, LoaderCircle, Paperclip, Pencil, Plus, RefreshCw, Send, Sparkles, Square, Trash2, Workflow, X, XCircle } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { KeyboardEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import '../agent-chat.css';
 import { api, messageAttachmentUrl, randomId, subscribeToRun, workspaceImageUrl } from '../api/client';
@@ -16,6 +16,7 @@ interface PendingAttachment extends MessageAttachmentInput { id: string; preview
 
 const STATE_LABELS: Record<string, string> = {
   CREATING: '创建中', IDLE: '在线', GENERATING: 'Agent 生成中',
+  STOPPING: '正在停止',
   WAITING_HUMAN: '等待你的回复', FAILED: '连接失败', READ_ONLY: '历史会话',
 };
 const STARTED_STATES = new Set(['WAITING_START_CONFIRMATION', 'EXECUTING', 'WAITING_HUMAN', 'END_GATES', 'END_BLOCKED', 'WAITING_ACCEPTANCE']);
@@ -131,7 +132,9 @@ function activitySummary(message: AgentMessage) {
   }
   const tool = eventDetails(message.content.tool);
   const fallback = message.message_type === 'TOOL_RESULT' ? '工具结果' : '工具调用';
-  return message.message_type === 'TOOL_RESULT' ? `已完成 ${eventName(tool, fallback)}` : `正在调用 ${eventName(tool, fallback)}`;
+  return message.message_type === 'TOOL_RESULT'
+    ? `${eventName(tool, fallback)} 已返回，等待 Agent 下一步`
+    : `正在调用 ${eventName(tool, fallback)}`;
 }
 
 function formatDuration(start: string, end: string | number) {
@@ -151,7 +154,10 @@ function ActivityGroup({ messages, running, startedAt, completedAt }: { messages
   }, [running]);
   useEffect(() => setExpanded(running), [running]);
   const last = messages[messages.length - 1];
-  const duration = formatDuration(startedAt ?? messages[0].created_at, completedAt ?? clock);
+  const duration = formatDuration(
+    startedAt ?? messages[0].created_at,
+    running ? clock : completedAt ?? messages[messages.length - 1].created_at,
+  );
   return <details className={`activity-group ${running ? 'running' : 'completed'}`} open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
     <summary><span>{running ? <LoaderCircle size={14}/> : <CheckCircle2 size={14}/>}<b>{running ? '处理中' : '已处理'}</b><small>{duration}</small>{running && <em>{activitySummary(last)}</em>}</span><ChevronRight size={14}/></summary>
     <div className="activity-group-content">{messages.map(message => <ActivityMessage key={message.id} message={message}/>)}</div>
@@ -190,7 +196,16 @@ function deliveryLabel(message: AgentMessage, conversationState?: AgentConversat
   return '已取消';
 }
 
-function MessageBubble({ message, onRetry, final, conversationState, latestHuman }: { message: AgentMessage; onRetry: (id: string) => void; final: boolean; conversationState?: AgentConversation['state']; latestHuman: boolean }) {
+function MessageBubble({ message, onRetry, onFork, onEdit, final, conversationState, latestHuman, forking }: {
+  message: AgentMessage;
+  onRetry: (id: string) => void;
+  onFork: (message: AgentMessage) => void;
+  onEdit: (message: AgentMessage) => void;
+  final: boolean;
+  conversationState?: AgentConversation['state'];
+  latestHuman: boolean;
+  forking: boolean;
+}) {
   const meta = message.source === 'PROGRAM'
     ? { label: '流程自动发送', className: 'program' }
     : message.source === 'HUMAN'
@@ -203,24 +218,119 @@ function MessageBubble({ message, onRetry, final, conversationState, latestHuman
   return <article className={`chat-message ${meta.className} ${final ? 'final-answer' : ''}`}>
     <div className="message-avatar" aria-label={meta.label} title={meta.label}><SourceIcon source={message.source}/></div>
     <div className="message-body"><header>{message.source !== 'HUMAN' && <b>{final ? '最终答复' : meta.label}</b>}<span>{new Date(message.created_at).toLocaleTimeString()}</span></header>{!!message.content.capability_refs?.length && <div className="message-capability-refs">{message.content.capability_refs.map(item => <span key={`${item.capability_type}-${item.capability_key}`}>{item.capability_type === 'SKILL' ? 'Skill' : 'MCP'} · {item.capability_key}</span>)}</div>}{messageText(message) && (message.source === 'AGENT' ? <MarkdownMessage text={messageText(message)} messageId={message.id}/> : <p>{messageText(message)}</p>)}<MessageAttachmentList message={message}/>
+      {message.message_type === 'TEXT' && message.source !== 'PROGRAM' && messageText(message) && <div className="message-branch-actions">{message.source === 'HUMAN' && <button type="button" disabled={forking} onClick={() => onEdit(message)} title="保留原消息，并从此处修改上下文创建新会话"><Pencil size={12}/>编辑并分支</button>}<button type="button" disabled={forking} onClick={() => onFork(message)} title="复制此消息及之前的历史到新会话"><GitFork size={12}/>{forking ? '正在创建…' : '从此分叉'}</button></div>}
       {message.source !== 'AGENT' && <footer className={`delivery ${message.delivery_state.toLowerCase()}`}>{deliveryLabel(message, conversationState, latestHuman)}{message.delivery_state === 'FAILED' && <>{message.error_detail && <span>{message.error_code === 'RUNTIME_CONVERSATION_MISSING' || message.error_code === 'EXECUTOR_UNAVAILABLE' ? 'Agent 连接已失效，重试会自动重建' : message.error_detail}</span>}<button onClick={() => onRetry(message.id)}><RefreshCw size={12}/>重试并重连</button></>}</footer>}
     </div>
   </article>;
 }
 
+function MessageTimeline({ conversation, messages, onRetry, onFork, onEdit, forkingId }: {
+  conversation?: AgentConversation;
+  messages: AgentMessage[];
+  onRetry: (id: string) => void;
+  onFork: (message: AgentMessage) => void;
+  onEdit: (message: AgentMessage) => void;
+  forkingId?: string;
+}) {
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true);
+  const timelineItems = groupTimelineMessages(messages);
+  const lastActivityGroupId = [...timelineItems].reverse().find(item => item.type === 'activity')?.id;
+  const latestInputId = [...messages].reverse().find(message => message.source === 'HUMAN' || message.source === 'PROGRAM')?.id;
+  const version = messages.map(message => `${message.id}:${message.delivery_state}`).join('|');
+  const scrollToBottom = useCallback(() => {
+    const timeline = timelineRef.current;
+    if (timeline) timeline.scrollTop = timeline.scrollHeight;
+  }, []);
+
+  useLayoutEffect(() => {
+    followRef.current = true;
+    scrollToBottom();
+  }, [conversation?.id, scrollToBottom]);
+  useLayoutEffect(() => {
+    if (followRef.current) scrollToBottom();
+  }, [conversation?.state, scrollToBottom, version]);
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (followRef.current) scrollToBottom();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [conversation?.id, scrollToBottom]);
+
+  return <div
+    ref={timelineRef}
+    className="message-timeline"
+    aria-live="polite"
+    aria-label="对话消息"
+    onScroll={event => {
+      const timeline = event.currentTarget;
+      followRef.current = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 80;
+    }}
+  ><div ref={contentRef} className="message-timeline-content">
+    {timelineItems.map(item => {
+      if (item.type === 'activity') {
+        const firstSequence = item.messages[0].sequence_no;
+        const lastSequence = item.messages[item.messages.length - 1].sequence_no;
+        const startedBy = [...messages].reverse().find(message => message.sequence_no < firstSequence && (message.source === 'HUMAN' || message.source === 'PROGRAM'));
+        const completedBy = messages.find(message => message.sequence_no > lastSequence && message.source === 'AGENT' && message.message_type === 'TEXT');
+        const running = conversation?.state === 'GENERATING' && item.id === lastActivityGroupId && !completedBy;
+        return <ActivityGroup key={item.id} messages={item.messages} running={running} startedAt={startedBy?.created_at} completedAt={completedBy?.created_at ?? item.messages[item.messages.length - 1].created_at}/>;
+      }
+      const message = item.message;
+      return <MessageBubble key={item.id} message={message} onRetry={onRetry} onFork={onFork} onEdit={onEdit} forking={message.id === forkingId} final={message.content.presentation === 'final'} conversationState={conversation?.state} latestHuman={message.id === latestInputId}/>;
+    })}
+    {conversation && !messages.length && <div className="conversation-empty"><Bot size={26}/><b>当前轮次上下文已挂载</b><span>发送第一条消息开始协作。</span></div>}
+    {!conversation && <div className="conversation-empty"><Workflow size={26}/><b>尚无可用会话</b><span>本轮开始执行后将自动创建默认会话。</span></div>}
+  </div></div>;
+}
+
 function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { conversation: AgentConversation; messages: AgentMessage[]; retrying: boolean; onRetry: (id: string) => void }) {
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    if (conversation.state !== 'GENERATING') return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [conversation.state]);
   const activeMessages = messages.filter(message => message.delivery_state !== 'CANCELLED');
   const latestHuman = [...activeMessages].reverse().find(message => message.source === 'HUMAN' || message.source === 'PROGRAM');
   const waitingDelivery = [...activeMessages].reverse().find(message => message.delivery_state === 'QUEUED' && message.content.presentation !== 'queued');
   const delivering = [...activeMessages].reverse().find(message => message.delivery_state === 'DELIVERING');
+  const turnMessages = activeMessages.filter(message => !latestHuman || message.sequence_no > latestHuman.sequence_no);
+  const activityMessages = turnMessages.filter(message => isActivityMessage(message));
+  const latestActivity = activityMessages[activityMessages.length - 1];
+  const thoughtCount = activityMessages.filter(message => message.message_type === 'STATE').length;
+  const quietSeconds = latestActivity
+    ? Math.max(0, Math.round((clock - new Date(latestActivity.created_at).getTime()) / 1000))
+    : 0;
+  const quietLabel = quietSeconds >= 60
+    ? `${Math.floor(quietSeconds / 60)} 分 ${quietSeconds % 60} 秒`
+    : `${quietSeconds} 秒`;
   let tone = 'working';
   let title = '';
   let detail = '';
   let icon = <LoaderCircle size={15}/>;
 
   if (conversation.state === 'CREATING') {
-    title = '正在建立 Agent 连接';
-    detail = '消息已保存在 FlowWeave，尚未发送给 Agent。连接建立后会自动投递。';
+    const status = conversation.connection_status;
+    const phases = {
+      WAITING_WORKER: ['等待后台调度', '消息已保存，正在等待 Worker 接手创建任务。'],
+      PREPARING_CONTEXT: ['正在准备执行上下文', '正在整理节点快照、输入绑定、模型与能力配置。'],
+      STARTING_RUNTIME: ['正在启动 Agent 运行环境', '正在创建隔离容器并等待 Agent Server 就绪。'],
+      CONNECTING_AGENT: ['正在创建 Agent 会话', '运行环境已经就绪，正在建立 Agent 会话。'],
+      READY: ['Agent 已连接', 'Agent 会话已经可以接收消息。'],
+      FAILED: ['Agent 连接失败', status?.detail || '运行环境或 Agent 会话创建失败。'],
+    } as const;
+    const phase = phases[status?.phase ?? 'WAITING_WORKER'];
+    title = phase[0];
+    detail = `${phase[1]}${status?.elapsed_seconds ? ` 已等待 ${status.elapsed_seconds} 秒。` : ''}`;
+    if (status?.phase === 'FAILED') { tone = 'failed'; icon = <AlertTriangle size={15}/>; }
+  } else if (conversation.state === 'STOPPING') {
+    title = '正在强制终止会话';
+    detail = '已提交停止请求，后台正在中断 Agent 并回收运行容器。';
   } else if (conversation.state === 'FAILED') {
     tone = 'failed';
     title = 'Agent 连接中断';
@@ -235,10 +345,25 @@ function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { co
     title = '正在发送给 Agent';
     detail = '后台正在把消息写入 Agent 会话，大模型尚未开始处理。';
   } else if (conversation.state === 'GENERATING') {
-    title = latestHuman?.delivery_state === 'DELIVERED' ? 'Agent 正在处理' : 'Agent 正在运行';
-    detail = latestHuman?.delivery_state === 'DELIVERED'
-      ? 'Agent 运行时已收到消息，可能正在思考、调用工具或生成回复。'
-      : '流程正在执行；新的工具调用、思考过程和回复会实时显示在这里。';
+    const thoughtDetail = thoughtCount
+      ? `本轮已收到 ${thoughtCount} 条可展示的思考事件。`
+      : '本轮尚未收到可展示的思考事件。';
+    if (!latestActivity) {
+      title = '等待 Agent 活动事件';
+      detail = `消息已送达，但尚未收到模型或工具事件。${thoughtDetail}`;
+    } else if (latestActivity.message_type === 'TOOL_CALL') {
+      const tool = eventDetails(latestActivity.content.tool);
+      title = `工具调用中 · ${eventName(tool, '工具')}`;
+      detail = `最后事件距今 ${quietLabel}。${thoughtDetail}`;
+    } else if (latestActivity.message_type === 'TOOL_RESULT') {
+      const tool = eventDetails(latestActivity.content.tool);
+      title = quietSeconds >= 30 ? 'Agent 事件流长时间无更新' : '工具结果已返回';
+      detail = `${eventName(tool, '工具')} 已返回，之后 ${quietLabel} 没有新事件。${thoughtDetail}`;
+      if (quietSeconds >= 30) { tone = 'waiting'; icon = <Clock3 size={15}/>; }
+    } else {
+      title = '已收到模型思考事件';
+      detail = `最后一条思考事件距今 ${quietLabel}；正在等待下一条模型或工具事件。`;
+    }
   } else if (conversation.state === 'WAITING_HUMAN') {
     tone = 'waiting';
     title = 'Agent 正在等待你的回复';
@@ -277,13 +402,14 @@ export function AgentChatPage() {
   const [pendingAttachments, setPendingAttachments] = useState<Record<string, PendingAttachment[]>>({});
   const [attachmentError, setAttachmentError] = useState('');
   const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [runtimeSidebarCollapsed, setRuntimeSidebarCollapsed] = useState(false);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const runQuery = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId) });
   const attempt = useMemo(() => runQuery.data?.node_runs.find(item => item.id === selectedNodeRunId)?.attempts.find(item => item.id === selectedAttemptId), [runQuery.data, selectedAttemptId, selectedNodeRunId]);
   const conversationsQuery = useQuery({ queryKey: ['attempt-conversations', selectedAttemptId], queryFn: () => api.conversations(selectedAttemptId!), enabled: Boolean(selectedAttemptId), refetchInterval: 2500 });
   const conversations = conversationsQuery.data ?? [];
   const selected = conversations.find(item => item.id === selectedConversationId) ?? conversations[0];
-  const messagesQuery = useQuery({ queryKey: ['conversation-messages', selected?.id], queryFn: () => api.conversationMessages(selected!.id), enabled: Boolean(selected), refetchInterval: selected?.state === 'GENERATING' || selected?.state === 'CREATING' ? 1500 : 4000 });
+  const messagesQuery = useQuery({ queryKey: ['conversation-messages', selected?.id], queryFn: () => api.conversationMessages(selected!.id), enabled: Boolean(selected), refetchInterval: selected?.state === 'GENERATING' || selected?.state === 'CREATING' || selected?.state === 'STOPPING' ? 1500 : 4000 });
   const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['attempt-conversations', selectedAttemptId] });
     if (selected?.id) void qc.invalidateQueries({ queryKey: ['conversation-messages', selected.id] });
@@ -327,6 +453,28 @@ export function AgentChatPage() {
       refresh();
     },
   });
+  const forkMutation = useMutation({
+    mutationFn: ({ message, editedText }: { message: AgentMessage; editedText?: string }) => {
+      if (!selected) throw new Error('当前没有可分叉的会话。');
+      return api.forkConversationMessage(message.id, selected.state_version, editedText);
+    },
+    onSuccess: conversation => {
+      qc.setQueryData<AgentConversation[]>(['attempt-conversations', selectedAttemptId], current => current?.some(item => item.id === conversation.id) ? current : [...(current ?? []), conversation]);
+      selectConversation(conversation.id);
+      refresh();
+    },
+  });
+  const stopMutation = useMutation({
+    mutationFn: async (conversation: AgentConversation) => conversation.kind === 'AUTO'
+      ? api.cancelAttempt(attempt!.id, attempt!.state_version)
+      : api.stopConversation(conversation.id, conversation.state_version),
+    onSuccess: (result, conversation) => {
+      if (conversation.kind === 'HUMAN_CREATED' && 'kind' in result) {
+        qc.setQueryData<AgentConversation[]>(['attempt-conversations', selectedAttemptId], current => current?.map(item => item.id === result.id ? result : item));
+      }
+      refresh();
+    },
+  });
   if (!selectedRunId || !selectedNodeRunId || !selectedAttemptId) return <div className="empty"><b>缺少运行上下文</b><button className="secondary" onClick={returnToWorkbench}>返回运行详情</button></div>;
   if (!runQuery.data || !attempt) return <div className="empty">加载 Agent 协作空间…</div>;
   const nodeRun = runQuery.data.node_runs.find(item => item.id === selectedNodeRunId)!;
@@ -343,10 +491,6 @@ export function AgentChatPage() {
   const readOnly = selected?.state === 'READ_ONLY';
   const queuedMessages = (messagesQuery.data ?? []).filter(message => message.source === 'HUMAN' && message.delivery_state === 'QUEUED' && message.content.presentation === 'queued');
   const timelineMessages = (messagesQuery.data ?? []).filter(message => !queuedMessages.some(queued => queued.id === message.id) && !(message.source === 'HUMAN' && message.delivery_state === 'CANCELLED' && message.content.presentation === 'cancelled-queue'));
-  const timelineItems = groupTimelineMessages(timelineMessages);
-  const lastActivityGroupId = [...timelineItems].reverse().find(item => item.type === 'activity')?.id;
-  const lastAgentTextId = [...timelineMessages].reverse().find(message => message.source === 'AGENT' && message.message_type === 'TEXT')?.id;
-  const latestInputId = [...timelineMessages].reverse().find(message => message.source === 'HUMAN' || message.source === 'PROGRAM')?.id;
   const replyingToAttempt = selected?.kind === 'AUTO' && attempt.state === 'WAITING_HUMAN';
   const addFiles = async (files: File[]) => {
     if (!selected || !files.length) return;
@@ -362,14 +506,42 @@ export function AgentChatPage() {
   };
   const removeAttachment = (id: string) => { if (selected) setPendingAttachments(old => ({ ...old, [selected.id]: (old[selected.id] ?? []).filter(item => item.id !== id) })); };
   const send = () => { const content = draft.trim(); if (selected && (content || attachments.length) && !readOnly) { const capabilityRefs = callableCapabilities.filter(item => selectedCapabilityKeys.includes(`${item.capability_type}:${item.capability_key}`)).map(item => ({ capability_type: item.capability_type as 'SKILL' | 'MCP', capability_key: item.capability_key })); sendMutation.mutate({ conversation: selected, content, capabilityRefs, attachments }); } };
+  const stop = () => {
+    if (!selected || selected.state !== 'GENERATING') return;
+    const automatic = selected.kind === 'AUTO';
+    void dialog.confirm({
+      title: automatic ? '停止当前节点执行？' : '强制终止当前 Agent 回合？',
+      message: automatic
+        ? '自动会话与当前节点执行共享 Runtime。停止后当前执行轮次会被取消，流程中的其他记录仍会保留。'
+        : '当前 Agent 回合会被立即中断；消息和会话上下文仍会保留，之后可以继续发送新消息。',
+      confirmLabel: '强制终止',
+      tone: 'danger',
+    }).then(confirmed => { if (confirmed) stopMutation.mutate(selected); });
+  };
+  const forkFrom = (message: AgentMessage) => {
+    void dialog.confirm({
+      title: '从此消息创建新会话？',
+      message: '该消息及之前的历史会被复制到独立会话；原会话不会改变。',
+      confirmLabel: '创建分支',
+    }).then(confirmed => { if (confirmed) forkMutation.mutate({ message }); });
+  };
+  const editFrom = (message: AgentMessage) => {
+    void dialog.prompt({
+      title: '编辑消息并创建分支',
+      message: '原消息和原会话保持不变；新会话会继承该消息之前的历史，并以修改后的内容继续。',
+      inputLabel: '修改后的消息',
+      initialValue: messageText(message),
+      confirmLabel: '创建并发送',
+    }).then(value => { if (value?.trim()) forkMutation.mutate({ message, editedText: value.trim() }); });
+  };
   const selectCapability = (type: string, key: string) => { if (!selected) return; const marker = capabilityMarker(type, key); let next = draft; if (commandMatch) { const markerStart = (commandMatch.index ?? 0) + commandMatch[1].length; next = `${draft.slice(0, markerStart)}${marker} `; } else if (!new RegExp(`(^|\\s)${escapeRegExp(marker)}(?=\\s|$)`).test(draft)) { next = `${draft}${draft && !draft.endsWith(' ') ? ' ' : ''}${marker} `; } setDrafts(old => ({ ...old, [selected.id]: next })); setSuggestionIndex(0); };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (commandSuggestions.length) { if (event.key === 'ArrowDown') { event.preventDefault(); setSuggestionIndex(index => (index + 1) % commandSuggestions.length); return; } if (event.key === 'ArrowUp') { event.preventDefault(); setSuggestionIndex(index => (index - 1 + commandSuggestions.length) % commandSuggestions.length); return; } if (event.key === 'Escape') { event.preventDefault(); setSuggestionIndex(0); return; } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); const item = commandSuggestions[Math.min(suggestionIndex, commandSuggestions.length - 1)]; selectCapability(item.capability_type, item.capability_key); return; } } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } };
   return <section className="agent-chat-page"><div className="conversation-topbar"><button onClick={returnToWorkbench}><ArrowLeft size={15}/>返回运行详情</button><div><span>{runQuery.data.name}</span><b>{nodeName} · 第 {attempt.attempt_no} 轮</b></div><span className={`conversation-status ${selected?.state.toLowerCase() ?? ''}`}>{selected ? STATE_LABELS[selected.state] : '等待会话'}</span></div>
-    <div className="agent-chat-layout"><ConversationRail conversations={conversations} selectedId={selected?.id} attempt={attempt} onSelect={selectConversation} onCreate={() => createMutation.mutate()} onDelete={item => { void dialog.confirm({ title: `删除“${conversationTitle(item.title)}”？`, message: '该会话的消息和临时附件都会被永久删除。', confirmLabel: '确认删除', tone: 'danger' }).then(confirmed => { if (confirmed) deleteMutation.mutate(item.id); }); }} creating={createMutation.isPending} deleting={deleteMutation.isPending ? deleteMutation.variables : undefined}/><main className="conversation-workspace"><header><div><span className="eyebrow">AGENT COLLABORATION</span><h1>{selected ? conversationTitle(selected.title) : 'Agent 协作空间'}</h1></div>{selected && <span>{selected.kind === 'AUTO' ? 'AUTO 默认会话' : `人工会话 #${selected.conversation_no}`}</span>}</header>
-      <div className="message-timeline" aria-live="polite">{timelineItems.map(item => { if (item.type === 'activity') { const firstSequence = item.messages[0].sequence_no; const lastSequence = item.messages[item.messages.length - 1].sequence_no; const startedBy = [...timelineMessages].reverse().find(message => message.sequence_no < firstSequence && (message.source === 'HUMAN' || message.source === 'PROGRAM')); const completedBy = timelineMessages.find(message => message.sequence_no > lastSequence && message.source === 'AGENT' && message.message_type === 'TEXT'); const running = selected?.state === 'GENERATING' && item.id === lastActivityGroupId && !completedBy; return <ActivityGroup key={`${item.id}-${running ? 'running' : 'completed'}`} messages={item.messages} running={running} startedAt={startedBy?.created_at} completedAt={completedBy?.created_at ?? item.messages[item.messages.length - 1].created_at}/>; } const message = item.message; return <MessageBubble key={item.id} message={message} onRetry={id => retryMutation.mutate(id)} final={message.content.presentation === 'final' || (message.id === lastAgentTextId && (selected?.state === 'IDLE' || selected?.state === 'READ_ONLY'))} conversationState={selected?.state} latestHuman={message.id === latestInputId}/>; })}{selected && !messagesQuery.data?.length && <div className="conversation-empty"><Bot size={26}/><b>当前轮次上下文已挂载</b><span>发送第一条消息开始协作。</span></div>}{!selected && <div className="conversation-empty"><Workflow size={26}/><b>尚无可用会话</b><span>本轮开始执行后将自动创建默认会话。</span></div>}</div>
+    <div className={`agent-chat-layout ${runtimeSidebarCollapsed ? 'runtime-sidebar-collapsed' : ''}`}><ConversationRail conversations={conversations} selectedId={selected?.id} attempt={attempt} onSelect={selectConversation} onCreate={() => createMutation.mutate()} onDelete={item => { void dialog.confirm({ title: `删除“${conversationTitle(item.title)}”？`, message: '该会话的消息和临时附件都会被永久删除。', confirmLabel: '确认删除', tone: 'danger' }).then(confirmed => { if (confirmed) deleteMutation.mutate(item.id); }); }} creating={createMutation.isPending} deleting={deleteMutation.isPending ? deleteMutation.variables : undefined}/><main className="conversation-workspace"><header><div><span className="eyebrow">AGENT COLLABORATION</span><h1>{selected ? conversationTitle(selected.title) : 'Agent 协作空间'}</h1></div>{selected && <span>{selected.kind === 'AUTO' ? 'AUTO 默认会话' : `人工会话 #${selected.conversation_no}`}</span>}</header>
+      <MessageTimeline conversation={selected} messages={timelineMessages} onRetry={id => retryMutation.mutate(id)} onFork={forkFrom} onEdit={editFrom} forkingId={forkMutation.isPending ? forkMutation.variables?.message.id : undefined}/>
       {selected && <AgentActivityStatus conversation={selected} messages={messagesQuery.data ?? []} retrying={retryMutation.isPending} onRetry={id => retryMutation.mutate(id)}/>}
       {!!queuedMessages.length && <section className="queued-message-stack" aria-label={`排队消息 ${queuedMessages.length} 条`}><header><b>等待当前回合结束</b><span>引导会立即把消息加入正在运行的 Agent 上下文</span></header>{queuedMessages.map((message, index) => <article key={message.id}><span className="queue-position"><CornerDownRight size={15}/><small>{index + 1}</small></span><p title={messageSummary(message)}>{messageSummary(message)}</p><div className="queue-actions"><button type="button" title="立即作为引导发送" disabled={steerMutation.isPending || cancelQueuedMutation.isPending} onClick={() => steerMutation.mutate(message.id)}><CornerDownRight size={14}/>{steerMutation.isPending && steerMutation.variables === message.id ? '引导中…' : '引导'}</button><button type="button" className="queue-remove" aria-label={`移出队列 ${messageSummary(message)}`} title="仅移出队列，不影响当前回合" disabled={steerMutation.isPending || cancelQueuedMutation.isPending} onClick={() => cancelQueuedMutation.mutate(message.id)}><Trash2 size={14}/></button></div></article>)}</section>}
-      {selected && (readOnly ? <div className="read-only-composer"><b>历史会话，只读</b><span>验收、退回和重跑请返回运行详情操作。</span><button className="secondary" onClick={returnToWorkbench}>返回运行详情</button></div> : <div className="message-composer">{!!commandSuggestions.length && <div className="capability-command-menu" role="listbox" aria-label="能力引用候选">{commandSuggestions.map((item, index) => <button type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? 'active' : ''} key={`${item.capability_type}-${item.capability_key}`} onMouseDown={event => event.preventDefault()} onClick={() => selectCapability(item.capability_type, item.capability_key)}><b>{capabilityMarker(item.capability_type, item.capability_key)}</b><span>{item.capability_type === 'SKILL' ? 'Skill · 调用并遵循能力说明' : 'MCP · 使用 Server 暴露的工具'}</span></button>)}</div>}{!!attachments.length && <div className="pending-attachments">{attachments.map(item => <article key={item.id}>{item.preview_url ? <img src={item.preview_url} alt=""/> : <span><FileIcon size={16}/></span>}<div><b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small></div><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => removeAttachment(item.id)}><X size={13}/></button></article>)}</div>}<textarea aria-label="发送给 Agent 的消息" value={draft} maxLength={20000} placeholder={selected.state === 'CREATING' ? '会话创建中…' : selected.state === 'FAILED' ? '输入新消息并发送，系统会自动重建 Agent 会话。' : replyingToAttempt ? '回复 Agent 并继续执行。输入 $ 引用运行能力。' : '补充要求；输入 $ 引用能力，也可粘贴文件或图片。Enter 发送。'} disabled={selected.state === 'CREATING'} onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void addFiles(files); } }} onChange={event => { setDrafts(old => ({ ...old, [selected.id]: event.target.value })); setSuggestionIndex(0); }} onKeyDown={keyDown}/><input ref={attachmentInputRef} className="attachment-input" type="file" multiple onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = ''; }}/><div className="composer-actions"><div><button type="button" className="attach-button" aria-label="添加附件" title={replyingToAttempt ? '流程人工回复暂不支持附件，可在人工会话中发送' : '添加图片或文件'} disabled={replyingToAttempt || attachments.length >= MAX_ATTACHMENT_COUNT} onClick={() => attachmentInputRef.current?.click()}><Paperclip size={15}/></button><span>{selected.state === 'GENERATING' ? '发送后将显示在输入框上方的队列中' : `${draft.length} / 20,000`}</span></div><button className="primary" disabled={(!draft.trim() && !attachments.length) || selected.state === 'CREATING' || sendMutation.isPending} onClick={send}><Send size={15}/>{replyingToAttempt ? '提交并继续' : selected.state === 'FAILED' ? '重新连接并发送' : selected.state === 'GENERATING' ? '加入队列' : '发送'}</button></div></div>)}
-      {(attachmentError || createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error) && <p className="conversation-error"><AlertTriangle size={14}/>{attachmentError || (createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error)?.message}</p>}
-    </main><AgentRuntimeSidebar conversation={selected}><ContextPanel attempt={attempt} nodeName={nodeName} node={node} runName={runQuery.data.name} messages={messagesQuery.data ?? []} conversationKind={selected?.kind}/></AgentRuntimeSidebar></div></section>;
+      {selected && (readOnly ? <div className="read-only-composer"><b>历史会话，只读</b><span>验收、退回和重跑请返回运行详情操作。</span><button className="secondary" onClick={returnToWorkbench}>返回运行详情</button></div> : <div className="message-composer">{!!commandSuggestions.length && <div className="capability-command-menu" role="listbox" aria-label="能力引用候选">{commandSuggestions.map((item, index) => <button type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? 'active' : ''} key={`${item.capability_type}-${item.capability_key}`} onMouseDown={event => event.preventDefault()} onClick={() => selectCapability(item.capability_type, item.capability_key)}><b>{capabilityMarker(item.capability_type, item.capability_key)}</b><span>{item.capability_type === 'SKILL' ? 'Skill · 调用并遵循能力说明' : 'MCP · 使用 Server 暴露的工具'}</span></button>)}</div>}{!!attachments.length && <div className="pending-attachments">{attachments.map(item => <article key={item.id}>{item.preview_url ? <img src={item.preview_url} alt=""/> : <span><FileIcon size={16}/></span>}<div><b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small></div><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => removeAttachment(item.id)}><X size={13}/></button></article>)}</div>}<textarea aria-label="发送给 Agent 的消息" value={draft} maxLength={20000} placeholder={selected.state === 'CREATING' ? '会话创建中…' : selected.state === 'STOPPING' ? '正在停止 Agent…' : selected.state === 'FAILED' ? '输入新消息并发送，系统会自动重建 Agent 会话。' : replyingToAttempt ? '回复 Agent 并继续执行。输入 $ 引用运行能力。' : '补充要求；输入 $ 引用能力，也可粘贴文件或图片。Enter 发送。'} disabled={selected.state === 'CREATING' || selected.state === 'STOPPING'} onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void addFiles(files); } }} onChange={event => { setDrafts(old => ({ ...old, [selected.id]: event.target.value })); setSuggestionIndex(0); }} onKeyDown={keyDown}/><input ref={attachmentInputRef} className="attachment-input" type="file" multiple onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = ''; }}/><div className="composer-actions"><div><button type="button" className="attach-button" aria-label="添加附件" title={replyingToAttempt ? '流程人工回复暂不支持附件，可在人工会话中发送' : '添加图片或文件'} disabled={replyingToAttempt || selected.state === 'STOPPING' || attachments.length >= MAX_ATTACHMENT_COUNT} onClick={() => attachmentInputRef.current?.click()}><Paperclip size={15}/></button><span>{selected.state === 'GENERATING' ? '可停止当前 Agent；本轮草稿会保留' : selected.state === 'STOPPING' ? '正在等待 Runtime 确认停止' : `${draft.length} / 20,000`}</span></div>{selected.state === 'GENERATING' ? <button type="button" className="agent-stop-button" aria-label="停止当前 Agent" title="停止当前 Agent" disabled={stopMutation.isPending} onClick={stop}><Square size={11} fill="currentColor"/></button> : <button className="primary" disabled={(!draft.trim() && !attachments.length) || selected.state === 'CREATING' || selected.state === 'STOPPING' || sendMutation.isPending} onClick={send}><Send size={15}/>{replyingToAttempt ? '提交并继续' : selected.state === 'FAILED' ? '重新连接并发送' : '发送'}</button>}</div></div>)}
+      {(attachmentError || createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || stopMutation.error) && <p className="conversation-error"><AlertTriangle size={14}/>{attachmentError || (createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || stopMutation.error)?.message}</p>}
+    </main><AgentRuntimeSidebar conversation={selected} collapsed={runtimeSidebarCollapsed} onCollapsedChange={setRuntimeSidebarCollapsed}><ContextPanel attempt={attempt} nodeName={nodeName} node={node} runName={runQuery.data.name} messages={messagesQuery.data ?? []} conversationKind={selected?.kind}/></AgentRuntimeSidebar></div></section>;
 }

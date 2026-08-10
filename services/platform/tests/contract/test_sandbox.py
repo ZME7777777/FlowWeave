@@ -87,7 +87,11 @@ def test_docker_sandbox_uses_one_hardened_container_per_execution(monkeypatch) -
         )
 
     monkeypatch.setattr(sandbox_module.subprocess, "run", fake_run)
-    sandbox = DockerSandbox("python-gate:locked", "javascript-gate:locked")
+    sandbox = DockerSandbox(
+        "python-gate:locked",
+        "javascript-gate:locked",
+        manager_scope="test-scope",
+    )
 
     first = sandbox.execute("PYTHON", "result = {}", {"value": 1}, 5)
     second = sandbox.execute("JAVASCRIPT", "return {};", {"value": 2}, 5)
@@ -99,6 +103,14 @@ def test_docker_sandbox_uses_one_hardened_container_per_execution(monkeypatch) -
     for command in (first_command, second_command):
         assert command[:2] == ["docker", "run"]
         assert "--rm" in command
+        labels = [command[index + 1] for index, value in enumerate(command) if value == "--label"]
+        assert "flowweave.managed=true" in labels
+        assert "flowweave.manager-scope=test-scope" in labels
+        assert "flowweave.lifecycle=ephemeral" in labels
+        assert any(label.startswith("flowweave.resource-id=") for label in labels)
+        assert any(label.startswith("flowweave.expires-at=") for label in labels)
+        assert "flowweave.kind=gate" in labels
+        assert any(label.startswith("flowweave.owner-id=") for label in labels)
         assert command[command.index("--network") + 1] == "none"
         assert "--read-only" in command
         assert command[command.index("--cap-drop") + 1] == "ALL"
@@ -107,6 +119,7 @@ def test_docker_sandbox_uses_one_hardened_container_per_execution(monkeypatch) -
         assert command[command.index("--memory") + 1] == "128m"
         assert command[command.index("--cpus") + 1] == "1"
         assert command[command.index("--user") + 1] == "65534:65534"
+        assert command[command.index("--storage-opt") + 1] == "size=4g"
         assert command[command.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=16m"
     assert first_command[-1] == "python-gate:locked"
     assert second_command[-1] == "javascript-gate:locked"
@@ -124,20 +137,54 @@ def test_docker_sandbox_force_removes_timed_out_container(monkeypatch) -> None:
         calls.append(command)
         if command[1] == "run":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        if command[1] == "inspect":
+            run_command = calls[0]
+            labels = {
+                value.split("=", 1)[0]: value.split("=", 1)[1]
+                for index, item in enumerate(run_command)
+                if item == "--label"
+                for value in [run_command[index + 1]]
+            }
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "Id": "verified-container-id",
+                        "Config": {"Labels": labels},
+                    }
+                ),
+                stderr="",
+            )
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sandbox_module.subprocess, "run", fake_run)
-    sandbox = DockerSandbox("python-gate:locked", "javascript-gate:locked")
+    sandbox = DockerSandbox(
+        "python-gate:locked",
+        "javascript-gate:locked",
+        manager_scope="test-scope",
+    )
     result = sandbox.execute("PYTHON", "result = {}", {}, 1)
 
     assert result.status == "TIMEOUT"
-    assert len(calls) == 2
+    assert len(calls) == 3
     container_name = calls[0][calls[0].index("--name") + 1]
-    assert calls[1] == ["docker", "rm", "--force", container_name]
+    assert calls[1] == [
+        "docker",
+        "inspect",
+        container_name,
+        "--format",
+        "{{json .}}",
+    ]
+    assert calls[2] == ["docker", "rm", "--force", "verified-container-id"]
 
 
 @pytest.mark.parametrize("language", ["PYTHON", "JAVASCRIPT"])
 def test_sandbox_rejects_empty_or_oversized_code_before_launch(language: SandboxLanguage) -> None:
-    sandbox = DockerSandbox("python-gate:locked", "javascript-gate:locked")
+    sandbox = DockerSandbox(
+        "python-gate:locked",
+        "javascript-gate:locked",
+        manager_scope="test-scope",
+    )
     assert sandbox.execute(language, "", {}, 1).status == "ERROR"
     assert sandbox.execute(language, "x" * 32_769, {}, 1).status == "ERROR"

@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from flowweave.bootstrap.settings import Settings
-from flowweave.shared.infrastructure.sandbox import DockerSandbox
+from flowweave.shared.infrastructure.sandbox import build_sandbox
 
 
 def main() -> None:
     settings = Settings()
     if settings.sandbox_backend != "docker":
         raise SystemExit("SANDBOX_BACKEND must be docker")
-    sandbox = DockerSandbox(
-        settings.sandbox_image_python,
-        settings.sandbox_image_javascript,
-    )
+    # Exercise the same control boundary as production. In Compose this routes
+    # through the authenticated sandbox-controller; local mode still uses the
+    # ownership-labelled Docker adapter.
+    sandbox = build_sandbox(settings)
     python = sandbox.execute(
         "PYTHON",
         "result = {'decision': 'PASS', 'summary': 'python-docker-smoke'}",

@@ -10,6 +10,7 @@ class ConversationState(StrEnum):
     CREATING = "CREATING"
     IDLE = "IDLE"
     GENERATING = "GENERATING"
+    STOPPING = "STOPPING"
     WAITING_HUMAN = "WAITING_HUMAN"
     FAILED = "FAILED"
     READ_ONLY = "READ_ONLY"

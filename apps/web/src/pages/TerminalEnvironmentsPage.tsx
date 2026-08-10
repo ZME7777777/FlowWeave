@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { Box, ClipboardCopy, Play, Plus, Save, Square, Terminal, Trash2, X } from 'lucide-react';
+import { Box, Play, Plus, Save, Square, Terminal, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, environmentTerminalUrl } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
@@ -14,8 +14,6 @@ function TerminalPanel({ session, onClose }: { session: EnvironmentSetupSession;
   const [reconnecting, setReconnecting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [sensitivePaths, setSensitivePaths] = useState<string[]>([]);
-  const [cleanupCopied, setCleanupCopied] = useState(false);
   const socket = useRef<WebSocket | null>(null);
   const terminalHost = useRef<HTMLDivElement | null>(null);
 
@@ -58,18 +56,32 @@ function TerminalPanel({ session, onClose }: { session: EnvironmentSetupSession;
     term.writeln('正在连接隔离终端…');
     let disposed = false;
     let reconnectTimer: number | undefined;
+    let resizeFrame: number | undefined;
     let attempts = 0;
 
     const sendResize = () => {
-      try { fit.fit(); } catch { return; }
-      const ws = socket.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', rows: term.rows, columns: term.cols }));
-      }
+      if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = undefined;
+        if (disposed || host.clientWidth < 160 || host.clientHeight < 100) return;
+        let dimensions: { cols: number; rows: number } | undefined;
+        try { dimensions = fit.proposeDimensions(); } catch { return; }
+        // FitAddon falls back to two columns when its parent is measured before
+        // the dialog's flex layout has settled. Never propagate that transient
+        // size to xterm or the remote PTY.
+        if (!dimensions || dimensions.cols < 20 || dimensions.rows < 2) return;
+        if (term.cols !== dimensions.cols || term.rows !== dimensions.rows) {
+          term.resize(dimensions.cols, dimensions.rows);
+        }
+        const ws = socket.current;
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', rows: dimensions.rows, columns: dimensions.cols }));
+        }
+      });
     };
     const connect = () => {
       if (disposed) return;
-      const ws = new WebSocket(environmentTerminalUrl(session.id));
+      const ws = new WebSocket(environmentTerminalUrl(session.id, term.rows, term.cols));
       ws.binaryType = 'arraybuffer';
       socket.current = ws;
       ws.onopen = () => {
@@ -108,50 +120,27 @@ function TerminalPanel({ session, onClose }: { session: EnvironmentSetupSession;
       const ws = socket.current;
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
     });
-    const resize = term.onResize(({ rows, cols }) => {
-      const ws = socket.current;
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', rows, columns: cols }));
-    });
     const observer = new ResizeObserver(() => sendResize());
     observer.observe(host);
     connect();
-    requestAnimationFrame(sendResize);
+    sendResize();
+    void document.fonts?.ready.then(sendResize);
     return () => {
       disposed = true;
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       input.dispose();
-      resize.dispose();
       socket.current?.close(1000);
       socket.current = null;
       term.dispose();
     };
   }, [onClose, queryClient, session.id]);
-  const cleanupCommand = sensitivePaths.length
-    ? `rm -rf -- ${sensitivePaths.map(path => `'${path.replace(/'/g, `'"'"'`)}'`).join(' ')}`
-    : '';
   const publish = async () => {
-    setBusy(true); setError(''); setSensitivePaths([]); setCleanupCopied(false);
+    setBusy(true); setError('');
     try { await api.publishEnvironmentSetup(session.id); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); onClose(); }
-    catch (reason) {
-      if (reason instanceof ApiError && reason.code === 'ENVIRONMENT_SENSITIVE_FILES_DETECTED') {
-        const paths = Array.isArray(reason.details.paths)
-          ? reason.details.paths.filter((path): path is string => typeof path === 'string')
-          : [];
-        setSensitivePaths(paths);
-        setError('自动清理后仍检测到敏感文件。请在终端中确认路径后删除并重新发布。');
-      } else {
-        setError(reason instanceof Error ? reason.message : '发布失败');
-      }
-    } finally { setBusy(false); }
-  };
-  const copyCleanupCommand = async () => {
-    try {
-      await navigator.clipboard.writeText(cleanupCommand);
-      setCleanupCopied(true);
-    } catch {
-      setError('无法访问剪贴板，请手动复制清理命令。');
-    }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '发布失败'); }
+    finally { setBusy(false); }
   };
   const stop = async () => {
     setBusy(true); setError('');
@@ -160,16 +149,11 @@ function TerminalPanel({ session, onClose }: { session: EnvironmentSetupSession;
   };
 
   return <div className="environment-terminal-backdrop"><section className="environment-terminal-dialog">
-    <header><div><span className="eyebrow">ISOLATED SETUP SESSION</span><h2><Terminal size={20}/>环境配置终端</h2><small>{connected ? '已连接 · 所有命令仅作用于隔离容器' : reconnecting ? '连接中断，正在自动重连…' : '连接中…'}</small></div><button className="ghost" onClick={onClose}><X size={16}/>关闭视图</button></header>
-    <div ref={terminalHost} className="terminal-screen" aria-label="环境终端，点击后输入命令"/>
-    <p className="terminal-help">点击黑色区域后直接输入。支持 Enter、Backspace、方向键、Ctrl+C 和粘贴；终端失焦时按 Esc 关闭视图，聚焦时 Esc 会发送给终端程序。发布前请退出登录并删除 Token、Cookie、SSH Key 等敏感文件。</p>
+    <header><div><span className="eyebrow">ISOLATED SETUP SESSION</span><h2><Terminal size={20}/>环境配置终端</h2><small>{connected ? '已连接 · 关闭视图后任务仍会继续运行' : reconnecting ? '连接中断，正在自动重连…' : '连接中…'}</small></div><button className="ghost" title="仅关闭当前窗口，不会终止终端任务" onClick={onClose}><X size={16}/>关闭视图</button></header>
+    <div className="terminal-screen"><div ref={terminalHost} className="terminal-screen-body" aria-label="环境终端，点击后输入命令"/></div>
+    <p className="terminal-help">点击黑色区域后直接输入。关闭视图只会断开当前窗口，终端及其中的任务会继续运行；再次点击“继续配置”将返回同一个终端。支持 Enter、Backspace、方向键、Ctrl+C 和粘贴；终端失焦时按 Esc 关闭视图，聚焦时 Esc 会发送给终端程序。发布会保留容器文件系统中的认证信息、缓存和命令历史，请仅在受信任环境中使用和分发镜像。</p>
     {error && <p className="error">{error}</p>}
-    {sensitivePaths.length > 0 && <section className="environment-sensitive-files">
-      <div><b>阻止发布的路径</b><span>{sensitivePaths.join('、')}</span></div>
-      <code>{cleanupCommand}</code>
-      <button className="secondary" type="button" onClick={() => void copyCleanupCommand()}><ClipboardCopy size={14}/>{cleanupCopied ? '已复制' : '复制清理命令'}</button>
-    </section>}
-    <footer><button className="danger" disabled={busy} onClick={() => void stop()}><Square size={14}/>停止并丢弃</button><button className="primary" disabled={busy || !connected} onClick={() => void publish()}><Save size={14}/>{busy ? '处理中…' : '清理并发布版本'}</button></footer>
+    <footer><button className="danger" disabled={busy} onClick={() => void stop()}><Square size={14}/>停止并丢弃</button><button className="primary" disabled={busy || !connected} onClick={() => void publish()}><Save size={14}/>{busy ? '处理中…' : '发布环境版本'}</button></footer>
   </section></div>;
 }
 
@@ -234,8 +218,8 @@ export function TerminalEnvironmentsPage() {
     }
   };
 
-  return <main className="page environments-page"><header className="page-head"><div><span className="eyebrow">RUNTIME ENVIRONMENTS</span><h1>终端环境管理</h1><p>在隔离容器中交互安装 CLI、系统包与运行库，发布无凭据的不可变环境版本，再由节点选择使用。</p></div><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建环境</button></header>
-    <div className="environment-warning"><b>安全边界</b><span>终端拥有隔离容器内的 shell 权限，但不挂载宿主目录。登录凭据不能发布进镜像；正式运行时由凭据代理或短期 Secret 单独注入。</span></div>
+  return <main className="page environments-page"><header className="page-head"><div><span className="eyebrow">RUNTIME ENVIRONMENTS</span><h1>终端环境管理</h1><p>在隔离容器中交互安装 CLI、系统包与运行库，发布包含完整配置状态的不可变环境版本，再由节点选择使用。</p></div><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建环境</button></header>
+    <div className="environment-warning"><b>凭据风险</b><span>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</span></div>
     {error && <p className="error">{error}</p>}
     {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <div className="environment-grid">{environments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
       <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3><small>{environment.base_image}</small></div><button className="ghost" aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}><Trash2 size={15}/></button></header>

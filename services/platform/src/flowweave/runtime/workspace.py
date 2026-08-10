@@ -64,6 +64,66 @@ def attempt_workspace_path(
     )
 
 
+def isolated_runtime_workspace_relative(workspace_ref: str, node_workspace_ref: str) -> str:
+    """Return a proven node-workspace path relative to both workspace roots."""
+
+    settings = get_settings()
+    host_root = settings.workspace_root.resolve()
+    attempt_root = Path(workspace_ref).resolve()
+    if attempt_root == host_root or not attempt_root.is_relative_to(host_root):
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The Attempt workspace is outside the managed workspace root",
+            422,
+        )
+
+    runtime_root = PurePosixPath(str(settings.openhands_workspace_root))
+    runtime_node = PurePosixPath(node_workspace_ref)
+    if not runtime_root.is_absolute() or not runtime_node.is_absolute():
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The Runtime workspace roots must be absolute",
+            422,
+        )
+    try:
+        relative = runtime_node.relative_to(runtime_root)
+    except ValueError as exc:
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The node workspace is outside the Runtime workspace root",
+            422,
+        ) from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The node workspace path is not an isolated subdirectory",
+            422,
+        )
+
+    host_node = host_root.joinpath(*relative.parts)
+    cursor = host_root
+    for part in relative.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The node workspace path cannot contain symbolic links",
+                422,
+            )
+    resolved_node = host_node.resolve()
+    if (
+        not resolved_node.is_relative_to(host_root)
+        or not resolved_node.is_dir()
+        or not attempt_root.is_relative_to(resolved_node)
+    ):
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The Attempt workspace does not belong to the selected node workspace",
+            422,
+        )
+    return relative.as_posix()
+
+
 def _atomic_write(path: Path, content: bytes, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")

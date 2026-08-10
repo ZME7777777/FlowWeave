@@ -1,0 +1,399 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+from fastapi.testclient import TestClient
+
+from flowweave.bootstrap.sandbox_controller import create_app
+from flowweave.modules.environments.infrastructure import docker as environments_docker
+from flowweave.modules.sandboxes.infrastructure.docker import (
+    DockerObservation,
+    DockerSandboxProvider,
+)
+
+_API_KEY = "controller-api-test-key-with-at-least-32-bytes"
+_WORKER_KEY = "controller-worker-test-key-with-at-least-32-bytes"
+_SCOPE = "controller-test"
+_RESOURCE_ID = "12345678-1234-4234-9234-123456789abc"
+_OWNER_ID = "87654321-4321-4321-8321-cba987654321"
+_ENVIRONMENT_ID = "11111111-1111-4111-8111-111111111111"
+_ENVIRONMENT_VERSION_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def _settings(settings):
+    return settings.model_copy(
+        update={
+            "terminal_environment_backend": "docker",
+            "sandbox_manager_scope": _SCOPE,
+            "docker_controller_api_key": _API_KEY,
+            "docker_controller_worker_api_key": _WORKER_KEY,
+        }
+    )
+
+
+def _headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_WORKER_KEY}"}
+
+
+def _api_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_API_KEY}"}
+
+
+def _ensure_payload(**updates: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "manager_scope": _SCOPE,
+        "id": _RESOURCE_ID,
+        "kind": "AGENT_RUNTIME",
+        "owner_type": "ATTEMPT",
+        "owner_id": _OWNER_ID,
+        "backend_resource_name": "fw-sbx-12345678123442349234123456789abc",
+        "image_reference": "sha256:" + "a" * 64,
+        "spec": {
+            "workspace_relative": "nodes/node-1",
+            "port": 8000,
+            "bound": False,
+            "environment_id": _ENVIRONMENT_ID,
+            "environment_version_id": _ENVIRONMENT_VERSION_ID,
+            "environment_version_no": 1,
+        },
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    payload.update(updates)
+    return payload
+
+
+def test_controller_rejects_unauthenticated_control_request(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, resource: touched.append(True),
+    )
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/sandboxes/ensure", json=_ensure_payload())
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "CONTROLLER_UNAUTHORIZED"
+    assert touched == []
+
+
+def test_controller_rejects_wrong_scope_before_docker(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, resource: touched.append(True),
+    )
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/sandboxes/ensure",
+            headers=_headers(),
+            json=_ensure_payload(manager_scope="another-scope"),
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "CONTROLLER_SCOPE_MISMATCH"
+    assert touched == []
+
+
+def test_controller_rejects_arbitrary_docker_arguments(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, resource: touched.append(True),
+    )
+
+    with TestClient(create_app(_settings(settings))) as client:
+        for forbidden in ("argv", "command", "mounts"):
+            response = client.post(
+                "/v1/sandboxes/ensure",
+                headers=_headers(),
+                json=_ensure_payload(**{forbidden: ["docker", "run", "--privileged"]}),
+            )
+            assert response.status_code == 422
+
+    assert touched == []
+
+
+def test_controller_rejects_non_deterministic_resource_name(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, resource: touched.append(True),
+    )
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/sandboxes/ensure",
+            headers=_headers(),
+            json=_ensure_payload(backend_resource_name="victim-container"),
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SANDBOX_NAME_INVALID"
+    assert touched == []
+
+
+def test_controller_rejects_invalid_sandbox_contract_before_docker(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, resource: touched.append(True),
+    )
+
+    invalid_payloads = (
+        _ensure_payload(owner_type="SETUP_SESSION"),
+        _ensure_payload(image_reference="mutable-runtime:latest"),
+        _ensure_payload(
+            spec={
+                "workspace_relative": "../host",
+                "port": 8000,
+                "bound": False,
+                "environment_id": _ENVIRONMENT_ID,
+                "environment_version_id": _ENVIRONMENT_VERSION_ID,
+                "environment_version_no": 1,
+            }
+        ),
+        _ensure_payload(
+            spec={
+                "workspace_relative": "nodes/node-1",
+                "port": 8000,
+                "bound": False,
+                "environment_id": _ENVIRONMENT_ID,
+                "environment_version_id": _ENVIRONMENT_VERSION_ID,
+                "environment_version_no": 1,
+                "mounts": ["/:/host"],
+            }
+        ),
+    )
+    with TestClient(create_app(_settings(settings))) as client:
+        for payload in invalid_payloads:
+            response = client.post("/v1/sandboxes/ensure", headers=_headers(), json=payload)
+            assert response.status_code == 422, response.text
+
+    assert touched == []
+
+
+def test_controller_requires_strong_key_even_in_local_mode(settings):
+    configured = _settings(settings).model_copy(update={"docker_controller_api_key": "short"})
+
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        create_app(configured)
+
+    same_keys = _settings(settings).model_copy(
+        update={"docker_controller_worker_api_key": _API_KEY}
+    )
+    with pytest.raises(ValueError, match="must be different"):
+        create_app(same_keys)
+
+
+def test_controller_enforces_principal_operation_boundaries(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, resource: touched.append(True),
+    )
+
+    with TestClient(create_app(_settings(settings))) as client:
+        api_runtime = client.post(
+            "/v1/sandboxes/ensure", headers=_api_headers(), json=_ensure_payload()
+        )
+        worker_terminal = client.post(
+            "/v1/terminals/read",
+            headers=_headers(),
+            json={"manager_scope": _SCOPE, "terminal_id": "a" * 32},
+        )
+
+    assert api_runtime.status_code == 403
+    assert api_runtime.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
+    assert worker_terminal.status_code == 403
+    assert worker_terminal.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
+    assert touched == []
+
+
+def test_only_worker_can_remove_environment_credentials(settings, monkeypatch):
+    removed: list[str] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "delete_environment_credentials",
+        lambda self, environment_id: removed.append(environment_id),
+    )
+    payload = {"manager_scope": _SCOPE, "environment_id": _ENVIRONMENT_ID}
+
+    with TestClient(create_app(_settings(settings))) as client:
+        denied = client.post(
+            "/v1/environments/remove-credentials",
+            headers=_api_headers(),
+            json=payload,
+        )
+        allowed = client.post(
+            "/v1/environments/remove-credentials",
+            headers=_headers(),
+            json=payload,
+        )
+
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
+    assert allowed.status_code == 200
+    assert removed == [_ENVIRONMENT_ID]
+
+
+@pytest.mark.parametrize(
+    ("path", "allowed_role"),
+    (
+        ("/v1/sandboxes/inspect", "worker"),
+        ("/v1/sandboxes/delete", "worker"),
+        ("/v1/sandboxes/list", "worker"),
+        ("/v1/environments/remove-image", "worker"),
+        ("/v1/environments/publish", "api"),
+        ("/v1/gates/execute", "worker"),
+        ("/v1/dependencies/build", "worker"),
+        ("/v1/terminals/start", "api"),
+        ("/v1/terminals/read", "api"),
+        ("/v1/terminals/write", "api"),
+        ("/v1/terminals/resize", "api"),
+        ("/v1/terminals/close", "api"),
+    ),
+)
+def test_controller_denies_each_single_role_operation_to_the_other_principal(
+    settings, path, allowed_role
+):
+    headers = _headers() if allowed_role == "api" else _api_headers()
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(path, headers=headers, json={"manager_scope": _SCOPE})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
+
+
+@pytest.mark.parametrize("headers", (_api_headers(), _headers()))
+def test_controller_fails_closed_for_unregistered_control_path(settings, headers):
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/future-host-control",
+            headers=headers,
+            json={"manager_scope": _SCOPE},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
+
+
+def test_controller_allows_worker_cleanup_operations(settings, monkeypatch):
+    removed_images: list[str] = []
+    removed_legacy: list[str] = []
+    monkeypatch.setattr(
+        environments_docker,
+        "remove_image",
+        lambda reference, **_kwargs: removed_images.append(reference),
+    )
+    monkeypatch.setattr(
+        environments_docker,
+        "remove_legacy_setup_container",
+        lambda resource_name, **_kwargs: removed_legacy.append(resource_name),
+    )
+    image_reference = "flowweave/environment-environment: v1-".replace(
+        ": ", ":"
+    ) + _ENVIRONMENT_VERSION_ID.replace("-", "")
+    image_payload = {
+        "manager_scope": _SCOPE,
+        "reference": image_reference,
+        "expected_digest": "sha256:" + "a" * 64,
+        "environment_id": _ENVIRONMENT_ID,
+        "version_id": _ENVIRONMENT_VERSION_ID,
+        "version_no": 1,
+    }
+    legacy_payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": "legacy-setup-container",
+        "resource_id": "legacy",
+        "environment_id": _ENVIRONMENT_ID,
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        image_response = client.post(
+            "/v1/environments/remove-image", headers=_headers(), json=image_payload
+        )
+        worker_legacy = client.post(
+            "/v1/environments/remove-legacy", headers=_headers(), json=legacy_payload
+        )
+        api_legacy = client.post(
+            "/v1/environments/remove-legacy", headers=_api_headers(), json=legacy_payload
+        )
+
+    assert image_response.status_code == 200, image_response.text
+    assert worker_legacy.status_code == 200, worker_legacy.text
+    assert api_legacy.status_code == 200, api_legacy.text
+    assert removed_images == [image_reference]
+    assert removed_legacy == ["legacy-setup-container", "legacy-setup-container"]
+
+
+def test_controller_rejects_oversized_body_before_handler(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, resource: touched.append(True),
+    )
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/sandboxes/ensure",
+            headers={**_headers(), "Content-Type": "application/json"},
+            content=b"a" * (2 * 1_048_576 + 1),
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "CONTROLLER_REQUEST_TOO_LARGE"
+    assert touched == []
+
+
+def test_controller_rejects_too_narrow_terminal_resize(settings):
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/terminals/resize",
+            headers=_api_headers(),
+            json={
+                "manager_scope": _SCOPE,
+                "terminal_id": "a" * 32,
+                "rows": 24,
+                "columns": 2,
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_controller_accepts_fixed_high_level_operation(settings, monkeypatch):
+    observed: list[str] = []
+
+    def ensure_running(self, resource):
+        observed.append(resource.id)
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="immutable-container-id",
+            state="RUNNING",
+            labels={
+                "flowweave.managed": "true",
+                "flowweave.manager-scope": _SCOPE,
+                "flowweave.resource-id": resource.id,
+            },
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/sandboxes/ensure", headers=_headers(), json=_ensure_payload())
+
+    assert response.status_code == 200
+    assert response.json()["resource_identifier"] == "immutable-container-id"
+    assert observed == [_RESOURCE_ID]

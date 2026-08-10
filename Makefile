@@ -1,5 +1,7 @@
 .PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image sandbox-smoke web-dev api-dev worker-dev e2e infra-up infra-up-openhands infra-down
 
+COMPOSE = docker compose --env-file .env -f infra/compose.yaml
+
 install:
 	pnpm install --frozen-lockfile
 	cd services/platform && uv sync --frozen
@@ -30,7 +32,7 @@ api-check:
 	cd services/platform && uv run pytest
 
 compose-check:
-	docker compose -f infra/compose.yaml config --quiet
+	SANDBOX_RUNTIME_NETWORK_MODE=egress DOCKER_CONTROLLER_API_KEY=flowweave-compose-api-key-0000000000000 DOCKER_CONTROLLER_WORKER_API_KEY=flowweave-compose-worker-key-000000000 $(COMPOSE) config --format json | python3 services/platform/scripts/compose_security_check.py
 
 platform-image-check:
 	docker build -f services/platform/Dockerfile -t flowweave-platform-check .
@@ -47,7 +49,7 @@ openhands-image:
 	docker build -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
 
 sandbox-smoke: sandbox-images
-	docker compose -f infra/compose.yaml exec -T worker python - < services/platform/scripts/sandbox_smoke_check.py
+	$(COMPOSE) exec -T worker python - < services/platform/scripts/sandbox_smoke_check.py
 
 check: api-check web-check compose-check
 
@@ -55,10 +57,10 @@ e2e:
 	pnpm --filter @flowweave/web e2e
 
 infra-up: sandbox-images dependency-builder-image
-	docker compose -f infra/compose.yaml up -d --build postgres migration api worker web
+	$(COMPOSE) up -d --build --force-recreate postgres migration sandbox-controller api worker web
 
 infra-up-openhands: sandbox-images dependency-builder-image openhands-image
-	docker compose -f infra/compose.yaml up -d --build postgres migration openhands-agent-server api worker web
+	$(COMPOSE) up -d --build --force-recreate postgres migration openhands-agent-server sandbox-controller api worker web
 
 infra-down:
-	docker compose -f infra/compose.yaml down
+	$(COMPOSE) down

@@ -16,11 +16,6 @@ from flowweave.modules.conversations.infrastructure.models import (
     AgentMessage,
     MessageArtifactRef,
 )
-from flowweave.modules.credentials.infrastructure.models import (
-    CredentialConnection,
-    CredentialLease,
-    OAuthSession,
-)
 from flowweave.modules.environments.infrastructure.models import (
     EnvironmentSetupSession,
     EnvironmentVersion,
@@ -48,6 +43,7 @@ from flowweave.modules.runs.infrastructure.models import (
     RunEvent,
     RunSnapshot,
 )
+from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.modules.tasks.infrastructure.models import (
     BackgroundTask,
 )
@@ -62,8 +58,6 @@ __all__ = (
     "AttemptState",
     "BackgroundTask",
     "CapabilityImport",
-    "CredentialConnection",
-    "CredentialLease",
     "EnvironmentSetupSession",
     "EnvironmentVersion",
     "FlowDefinition",
@@ -76,6 +70,7 @@ __all__ = (
     "GatePolicy",
     "HumanAction",
     "MessageArtifactRef",
+    "ManagedSandbox",
     "ModelProvider",
     "NodeAsset",
     "NodeAttempt",
@@ -85,7 +80,6 @@ __all__ = (
     "NodeIOField",
     "NodeRun",
     "NodeRunState",
-    "OAuthSession",
     "ProviderModel",
     "RunEvent",
     "RunSnapshot",

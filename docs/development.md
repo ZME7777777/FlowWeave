@@ -20,14 +20,9 @@ Agent 启动时会收到上述容器内绝对路径，MCP 配置通过 OpenHands
 
 Skill ZIP 的压缩包上限为 25 MiB、解压后总量上限为 100 MiB、单文件上限为 25 MiB。单 Skill 可把 `SKILL.md` 直接放在 ZIP 根目录；批量导入时，每个 Skill 目录各自包含一个 `SKILL.md`。Web 代理允许 40 MiB 请求体，用于容纳 Base64 编码产生的额外体积。
 
-OpenHands 镜像提供 shell、Python、Node.js/npm/npx、uv/uvx、Git/SSH 与 `lark-cli`。Lark CLI 状态默认直接挂载宿主机 `~/.lark-cli`，加密凭据目录默认把宿主机 `~/Library/Application Support/lark-cli` 挂载到 Session 的 Linux 数据目录，并由 `workspace-init` 将 macOS 的 `master.key.file` 链接为 Linux 使用的 `master.key`。因此宿主机与所有 Session 使用同一份配置、登录态和 token 刷新结果。macOS 首次共享前使用：
+OpenHands 镜像提供 shell、Python、Node.js/npm/npx、uv/uvx、Git/SSH 与 `lark-cli`。平台不接收、不保存也不向 Runtime 注入 Lark OAuth token。每个终端环境拥有独立的 Controller 管理 Docker 卷；Setup 容器把它挂载到 `/root/.lark-cli`，发布后的 Runtime 把同一卷挂载到 `/home/flowweave/.lark-cli`。卷内容不会进入 `docker commit` 生成的镜像，也不会在不同环境之间共享。
 
-```bash
-lark-cli config keychain-downgrade
-lark-cli auth login --domain all
-```
-
-两个目录可分别用 `FLOWWEAVE_HOST_LARK_CLI_HOME`、`FLOWWEAVE_HOST_LARK_CLI_KEY_HOME` 覆盖。授权目录是敏感凭据，只能映射到可信环境；若需要隔离身份，应为该 FlowWeave 实例指定独立目录并在对应目录下单独完成授权。
+需要 Lark 能力时，在目标环境的 Setup 终端内运行 `lark-cli config init --new` 和 `lark-cli auth login --domain all`，按 CLI 给出的地址完成授权。发布前平台只调整卷内文件的 UID/GID，使非 root Runtime 可读写；删除环境时，Worker 在确认该环境没有存活 Sandbox 后通过所有权标签校验删除凭据卷。不要把 token、cookie 或 `.lark-cli` 内容复制到节点工作区、镜像层或 Agent 消息。
 
 Agent 消息中的 `file:///workspaces/...`、`/workspaces/...` 或相对 Markdown 图片会通过消息级工作区图片接口转换为浏览器可访问的 HTTP 地址。接口将文件限定在该消息所属 Attempt 的工作目录内，只允许常见图片格式，阻止目录穿越和跨 Attempt 读取。
 
@@ -74,6 +69,6 @@ pnpm --filter @flowweave/web e2e
 
 ## 本地 Docker Sandbox
 
-标准本地 Compose Worker 使用 `SANDBOX_BACKEND=docker`，并挂载 `/var/run/docker.sock`。`make infra-up` 会先构建固定标签的 Python/JavaScript Sandbox 镜像，再启动 Worker。Worker 主进程保持 UID 10001；Docker Desktop 的 Socket 为 `root:root 0660`，因此仅为 Worker 添加 supplemental GID 0。启动后可运行 `make sandbox-smoke`，通过生产 DockerSandbox 适配器分别执行一次 Python 和 JavaScript 容器，并验证两者返回 PASS。
+标准 Compose 使用独立 `sandbox-controller` 统一管理 Docker Sandbox。只有 Controller 挂载 `/var/run/docker.sock`；API 与 Worker 通过带 Bearer 认证的固定高层接口访问，并与 Controller 一起接入独立的 `internal` 控制网络。Controller 不持有数据库、OAuth 或业务凭据；沙箱创建还会校验 manager scope、确定性资源名、镜像发布标签、不可变规格签名和所有权标签。每个 Agent Runtime 使用独立 bridge 网络；只有当前 manager scope 下显式标记为 Worker 的客户端会接入，Runtime 会从其他 Docker 网络断开，因此不同 Runtime 之间不共享二层网络。Runtime 使用数值 UID/GID 10001、只读根文件系统、受限 tmpfs，并且只挂载所属节点工作区。
 
-Docker Socket 等价于宿主 Docker 管理权限：被攻陷的 Worker 可创建特权容器、挂载宿主路径或删除本机容器。该配置仅适用于已明确授权的本机开发环境，不应直接复制到生产。回退方式：从 `infra/compose.yaml` 的 Worker 移除 Socket volume 与 `group_add`，并将 `SANDBOX_BACKEND` 改回 `process`，然后重建 Worker。
+启动前必须设置两把互异且至少 32 字符的随机密钥 `DOCKER_CONTROLLER_API_KEY` 与 `DOCKER_CONTROLLER_WORKER_API_KEY`，例如分别运行 `openssl rand -hex 32`，并显式选择 `SANDBOX_RUNTIME_NETWORK_MODE=isolated|egress`。`isolated` 使用 Docker internal 网络、默认禁止 Runtime 直接出网；`egress` 用于访问外部模型供应商、MCP 和工具，但它只是开放 Docker NAT，不是域名白名单或受控代理，生产环境仍应在独立 Docker 主机/VM 上配置出口防火墙或代理。网络模式由 Controller 决定并写入所有权标签，客户端请求不能提升权限，旧网络或模式漂移会被拒绝复用。Linux 主机还应将 `DOCKER_SOCKET_GID` 设为 `stat -c '%g' /var/run/docker.sock` 的结果；Docker Desktop 默认使用 `0`。Controller 由 Bearer 密钥识别 API/Worker 主体：API 仅能管理 Setup/终端/发布，Worker 仅能管理 Runtime/Gate/依赖构建/回收。`make infra-up` 会构建固定的 Gate 与依赖构建镜像；启动后运行 `make sandbox-smoke`，Smoke 会通过与生产相同的 Worker Controller 路径执行 Python/JavaScript 容器。不要把 Docker Socket 添加回 API 或 Worker，也不要把 Controller 暴露端口或接入 Runtime 网络。Docker Socket 等价于宿主管理权限；生产环境应进一步使用独立 Docker 主机或受限 VM 作为 Controller 的故障域。OpenSandbox Runtime 的上游基础镜像按 digest 固定；升级时必须显式更新 digest 并重跑镜像与 Sandbox Smoke 检查。

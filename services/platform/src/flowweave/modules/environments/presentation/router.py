@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
@@ -84,12 +83,16 @@ async def stop_setup_session(session_id: str, db: Db) -> Response:
 @router.websocket("/environment-setup-sessions/{session_id}/terminal")
 async def setup_terminal(websocket: WebSocket, session_id: str, container: ContainerDep) -> None:
     settings_token = bind_settings(container.settings)
-    master = -1
-    process = None
+    terminal: docker.ManagedTerminal | None = None
+    try:
+        initial_rows = max(2, min(int(websocket.query_params.get("rows", "24")), 200))
+        initial_columns = max(20, min(int(websocket.query_params.get("columns", "80")), 400))
+    except ValueError:
+        initial_rows, initial_columns = 24, 80
     try:
         async with container.database.session() as db:
             try:
-                state, container_id, _ = await db.run_sync(
+                state, container_id, sandbox_id, environment_id, _ = await db.run_sync(
                     lambda session: service.terminal_session_details(session, session_id)
                 )
                 await db.commit()
@@ -101,27 +104,41 @@ async def setup_terminal(websocket: WebSocket, session_id: str, container: Conta
             await websocket.close(code=4409, reason="setup session is not running")
             return
 
-        master, process = await asyncio.to_thread(docker.open_terminal, container_id)
+        if not sandbox_id:
+            await websocket.close(code=4409, reason="setup session has no managed sandbox")
+            return
+        try:
+            terminal = await asyncio.to_thread(
+                docker.open_managed_terminal,
+                container_id,
+                resource_id=sandbox_id,
+                environment_id=environment_id,
+                session_name=f"flowweave-setup-{session_id}",
+                rows=initial_rows,
+                columns=initial_columns,
+            )
+        except DomainError as exc:
+            await websocket.close(code=4409, reason=exc.message)
+            return
         await websocket.accept()
+        active_terminal = terminal
 
         async def forward_output() -> None:
-            while process.poll() is None:
-                try:
-                    chunk = await asyncio.to_thread(os.read, master, 8192)
-                except OSError:
+            while True:
+                chunk, eof = await asyncio.to_thread(active_terminal.read)
+                if chunk:
+                    await websocket.send_bytes(chunk)
+                if eof:
                     return
-                if not chunk:
-                    return
-                await websocket.send_bytes(chunk)
 
         output = asyncio.create_task(forward_output())
         try:
-            while process.poll() is None:
+            while True:
                 message = await websocket.receive()
                 if message.get("type") == "websocket.disconnect":
                     break
                 if message.get("bytes") is not None:
-                    await asyncio.to_thread(os.write, master, message["bytes"])
+                    await asyncio.to_thread(active_terminal.write, message["bytes"])
                     continue
                 text = message.get("text")
                 if not isinstance(text, str):
@@ -132,23 +149,17 @@ async def setup_terminal(websocket: WebSocket, session_id: str, container: Conta
                     value = {"type": "input", "data": text}
                 if value.get("type") == "resize":
                     rows = max(2, min(int(value.get("rows", 24)), 200))
-                    columns = max(2, min(int(value.get("columns", 80)), 400))
-                    await asyncio.to_thread(docker.resize_terminal, master, rows, columns)
+                    columns = max(20, min(int(value.get("columns", 80)), 400))
+                    await asyncio.to_thread(active_terminal.resize, rows, columns)
                 elif value.get("type") == "input":
                     data = str(value.get("data", "")).encode()
-                    await asyncio.to_thread(os.write, master, data)
+                    await asyncio.to_thread(active_terminal.write, data)
         except WebSocketDisconnect:
             pass
         finally:
             output.cancel()
             await asyncio.gather(output, return_exceptions=True)
     finally:
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                await asyncio.to_thread(process.wait, 2)
-            except TimeoutError:
-                process.kill()
-        if master >= 0:
-            os.close(master)
+        if terminal is not None:
+            await asyncio.to_thread(terminal.close)
         reset_settings(settings_token)
