@@ -73,10 +73,44 @@ async function prepareBrowserAttachment(file: File): Promise<PendingAttachment> 
 
 const isWorkspaceImage = (value: string) => value.startsWith('file:///workspaces/') || value.startsWith('/workspaces/') || value.startsWith('/data/workspaces/') || value.startsWith('./') || value.startsWith('../');
 
+function WorkspaceMarkdownImage({ messageId, source, alt }: { messageId: string; source: string; alt: string }) {
+  const [retry, setRetry] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const maxAutomaticRetries = 6;
+
+  useEffect(() => {
+    setRetry(0);
+    setFailed(false);
+  }, [messageId, source]);
+
+  useEffect(() => {
+    if (!failed || retry >= maxAutomaticRetries) return;
+    const timer = window.setTimeout(() => {
+      setRetry(value => value + 1);
+      setFailed(false);
+    }, Math.min(1000 * (2 ** retry), 30_000));
+    return () => window.clearTimeout(timer);
+  }, [failed, retry]);
+
+  if (failed) {
+    const exhausted = retry >= maxAutomaticRetries;
+    return <span className="workspace-image-retry" role="status">
+      <ImageIcon size={18}/>
+      <span>{exhausted ? `${alt || '图片'}加载失败` : `${alt || '图片'}加载失败，正在重试…`}</span>
+      {exhausted && <button type="button" onClick={() => { setRetry(value => value + 1); setFailed(false); }}>重新加载</button>}
+    </span>;
+  }
+
+  const url = `${workspaceImageUrl(messageId, source)}&retry=${retry}`;
+  return <img key={url} src={url} alt={alt} onError={() => setFailed(true)}/>;
+}
+
 function MarkdownMessage({ text, messageId }: { text: string; messageId?: string }) {
   return <div className="message-markdown"><ReactMarkdown
     urlTransform={value => isWorkspaceImage(value) ? value : defaultUrlTransform(value)}
-    components={{ img: ({ src, alt }) => <img src={messageId && src && isWorkspaceImage(src) ? workspaceImageUrl(messageId, src) : src} alt={alt ?? ''}/> }}
+    components={{ img: ({ src, alt }) => messageId && src && isWorkspaceImage(src)
+      ? <WorkspaceMarkdownImage messageId={messageId} source={src} alt={alt ?? ''}/>
+      : <img src={src} alt={alt ?? ''}/> }}
   >{text}</ReactMarkdown></div>;
 }
 

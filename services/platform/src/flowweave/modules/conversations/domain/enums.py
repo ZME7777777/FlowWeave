@@ -4,6 +4,7 @@ from enum import StrEnum
 class ConversationKind(StrEnum):
     AUTO = "AUTO"
     HUMAN_CREATED = "HUMAN_CREATED"
+    SUBAGENT = "SUBAGENT"
 
 
 class ConversationState(StrEnum):

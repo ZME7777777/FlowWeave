@@ -25,6 +25,24 @@
   object-fit: contain;
 }
 
+.workspace-image-retry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px dashed #b9c9c0;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workspace-image-retry button {
+  margin-left: auto;
+}
+
 .capability-command-menu {
   display: grid !important;
   position: relative;

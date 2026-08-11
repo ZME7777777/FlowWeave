@@ -35,6 +35,9 @@ class AgentConversation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    parent_conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True
+    )
     attempt_id: Mapped[str] = mapped_column(
         ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
     )
@@ -49,6 +52,8 @@ class AgentConversation(Base):
     runtime_cursor: Mapped[str | None] = mapped_column(String(200))
     runtime_sandbox_id: Mapped[str | None] = mapped_column(String(36), index=True)
     context_baseline_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    delegation_batch_key: Mapped[str | None] = mapped_column(String(100), index=True)
+    delegation_instruction: Mapped[str | None] = mapped_column(Text)
     next_sequence_no: Mapped[int] = mapped_column(BigInteger, default=1)
     created_by_type: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
