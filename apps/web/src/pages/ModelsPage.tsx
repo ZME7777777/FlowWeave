@@ -23,9 +23,13 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const save = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      if (provider) await api.updateProvider(provider.id, form);
-      else await api.createProvider(form);
-      await qc.invalidateQueries({ queryKey: ['providers'] });
+      const saved = provider ? await api.updateProvider(provider.id, form) : await api.createProvider(form);
+      qc.setQueryData<ModelProvider[]>(['providers'], current => {
+        const providers = current ?? [];
+        const exists = providers.some(item => item.id === saved.id);
+        return exists ? providers.map(item => item.id === saved.id ? saved : item) : [saved, ...providers];
+      });
+      void qc.invalidateQueries({ queryKey: ['providers'] });
       onClose();
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败'); }

@@ -96,6 +96,21 @@ async function connectArtifact(source: Locator, target: Locator) {
   await from.dragTo(to);
 }
 
+async function dropAsset(page: Page, asset: Locator, canvas: Locator, position: { x: number; y: number }) {
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  const event = {
+    dataTransfer,
+    clientX: (box?.x ?? 0) + position.x,
+    clientY: (box?.y ?? 0) + position.y,
+  };
+  await asset.dispatchEvent('dragstart', event);
+  await canvas.dispatchEvent('dragover', event);
+  await canvas.dispatchEvent('drop', event);
+  await dataTransfer.dispose();
+}
+
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
   await login(page);
 
@@ -171,10 +186,12 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   const library = page.getByTestId('flow-library');
   const assetButton = library.getByRole('button', { name: assetName, exact: true }).last();
   const canvas = page.getByTestId('flow-designer');
-  await assetButton.dragTo(canvas, { targetPosition: { x: 320, y: 260 } });
-  await assetButton.dragTo(canvas, { targetPosition: { x: 700, y: 360 } });
-  await expect(canvas.getByRole('status')).toContainText('再次添加');
+  await expect(canvas.locator('.react-flow__pane')).toBeVisible();
+  await dropAsset(page, assetButton, canvas, { x: 320, y: 260 });
+  await expect(canvas.locator('.react-flow__node')).toHaveCount(1);
+  await dropAsset(page, assetButton, canvas, { x: 700, y: 360 });
   await expect(canvas.locator('.react-flow__node')).toHaveCount(2);
+  await expect(canvas.getByRole('status')).toContainText('再次添加');
   await canvas.getByRole('button', { name: '流程走向' }).click();
   await connectFlow(canvas.locator('.react-flow__node').nth(0), canvas.locator('.react-flow__node').nth(1));
   await expect(canvas.locator('.react-flow__edge')).toHaveCount(1);
@@ -182,7 +199,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await expect(canvas.locator('.react-flow__node')).toHaveCount(1);
   await expect(canvas.locator('.react-flow__edge')).toHaveCount(0);
   await expect(canvas.getByRole('status')).toContainText('关联连线');
-  await assetButton.dragTo(canvas, { targetPosition: { x: 700, y: 360 } });
+  await dropAsset(page, assetButton, canvas, { x: 700, y: 360 });
   await expect(canvas.locator('.react-flow__node')).toHaveCount(2);
   await connectFlow(canvas.locator('.react-flow__node').nth(0), canvas.locator('.react-flow__node').nth(1));
   await expect(canvas.locator('.react-flow__edge')).toHaveCount(1);
@@ -198,7 +215,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await expect(canvas.locator('.react-flow__node')).toHaveCount(1);
   await expect(canvas.locator('.react-flow__edge')).toHaveCount(0);
   await expect(page.getByLabel('默认入口')).toHaveValue('');
-  await assetButton.dragTo(canvas, { targetPosition: { x: 320, y: 260 } });
+  await dropAsset(page, assetButton, canvas, { x: 320, y: 260 });
   await expect(canvas.locator('.react-flow__node')).toHaveCount(2);
   await page.getByLabel('流程名称').fill(`UI流程-${suffix}`);
   await page.getByLabel('飞书 Wiki 根节点').fill('https://example.feishu.cn/wiki/e2e-ui-root');
@@ -245,6 +262,11 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
 
   const attemptControl = page.locator('.attempt-control');
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+  await graphNodes.filter({ hasText: '首轮方案' }).click();
+  await expect(page.locator('.run-graph .run-graph-node.snapshot-selected')).toHaveCount(1);
+  await page.locator('.run-rail .timeline').getByRole('button', { name: /首轮方案/ }).click();
+  await expect(page.locator('.run-graph .run-graph-node.snapshot-selected')).toHaveCount(0);
+  await expect(attemptControl).toContainText('首轮方案');
   await expect(attemptControl.locator('.attempt-input-card')).toContainText(`需求文档-${suffix}`);
   await expect(attemptControl.locator('.attempt-input-card')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
   await expect(attemptControl.locator('.gate-results')).toContainText('START');
@@ -415,7 +437,7 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   await expect(page.getByTestId('node-card')).toHaveCount(0);
   await expect(page.getByRole('status')).toContainText('已删除 2 个节点资产');
 
-  // Flow definitions: preserve runs while supporting one-row and filtered bulk deletion.
+  // Flow definitions with runs are protected until their runs are deleted.
   await page.getByRole('button', { name: '流程编排' }).click();
   const flowLibrary = page.getByTestId('flow-library');
   await flowLibrary.getByLabel('搜索流程').fill(`${marker}-流程`);
@@ -423,23 +445,15 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   await confirmProductDialog(
     page,
     flowLibrary.getByRole('button', { name: `删除流程 ${singleFlow.name}` }),
-    '确认删除',
+    '永久删除',
   );
-  await expect(flowLibrary.locator('.flow-definition-row')).toHaveCount(2);
-  await flowLibrary.getByRole('button', { name: '全选' }).click();
-  await expect(flowLibrary.getByRole('button', { name: '删除 (2)' })).toBeEnabled();
-  await confirmProductDialog(
-    page,
-    flowLibrary.getByRole('button', { name: '删除 (2)' }),
-    '确认删除',
-  );
-  await expect(flowLibrary.locator('.flow-definition-row')).toHaveCount(0);
+  await expect(flowLibrary.locator('.flow-definition-row')).toHaveCount(3);
+  await expect(page.locator('.canvas-error')).toContainText('请先删除关联运行');
 
-  // Runs remain discoverable from snapshots after their definitions are deleted.
+  // Delete runs before permanently deleting their flow definitions.
   await page.getByRole('button', { name: '流程运行' }).click();
   await page.getByLabel('搜索流程或运行').fill(`${marker}-运行`);
   await expect(page.locator('.run-row')).toHaveCount(3);
-  await expect(page.locator('.deleted-resource')).toHaveCount(3);
   await confirmProductDialog(
     page,
     page.getByRole('button', { name: `删除运行 ${marker}-运行-单删` }),
@@ -455,6 +469,24 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   );
   await expect(page.locator('.run-row')).toHaveCount(0);
   await expect(page.getByRole('status')).toContainText('已永久删除 2 个流程运行');
+
+  await page.getByRole('button', { name: '流程编排' }).click();
+  await flowLibrary.getByLabel('搜索流程').fill(`${marker}-流程`);
+  await expect(flowLibrary.locator('.flow-definition-row')).toHaveCount(3);
+  await confirmProductDialog(
+    page,
+    flowLibrary.getByRole('button', { name: `删除流程 ${singleFlow.name}` }),
+    '永久删除',
+  );
+  await expect(flowLibrary.locator('.flow-definition-row')).toHaveCount(2);
+  await flowLibrary.getByRole('button', { name: '全选' }).click();
+  await expect(flowLibrary.getByRole('button', { name: '删除 (2)' })).toBeEnabled();
+  await confirmProductDialog(
+    page,
+    flowLibrary.getByRole('button', { name: '删除 (2)' }),
+    '永久删除',
+  );
+  await expect(flowLibrary.locator('.flow-definition-row')).toHaveCount(0);
 
   const listed = await request.get(`${apiBase}/api/v1/flow-runs`);
   expect(listed.ok()).toBeTruthy();

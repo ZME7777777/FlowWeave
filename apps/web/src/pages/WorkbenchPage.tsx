@@ -61,14 +61,14 @@ function SnapshotGraph({ run, selectedKey, onSelect }: { run: FlowRun; selectedK
     const graphNodes: Node[] = (snapshot?.definition.nodes ?? []).map(item => {
       const visits = run.node_runs.filter(nodeRun => nodeRun.flow_node_snapshot_key === item.instance_key);
       const status = visits.at(-1)?.state.toLowerCase() ?? 'pending';
-      return { id: item.instance_key, position: { x: item.position_x, y: item.position_y }, data: { label: <span><b>{item.alias || item.asset.name}</b><small>{visits.length ? `运行 ${visits.length} 次` : '未运行'}</small></span> }, className: `run-graph-node ${status}${selectedKey === item.instance_key ? ' selected' : ''}` };
+      return { id: item.instance_key, position: { x: item.position_x, y: item.position_y }, data: { label: <span><b>{item.alias || item.asset.name}</b><small>{visits.length ? `运行 ${visits.length} 次` : '未运行'}</small></span> }, className: `run-graph-node ${status}${selectedKey === item.instance_key ? ' snapshot-selected' : ''}` };
     });
     const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, target: item.target_instance_key, className: 'run-direction-edge' }));
     const mappingEdges: Edge[] = (snapshot?.definition.port_mappings ?? []).map((item, index) => ({ id: `mapping-${item.id ?? index}`, source: item.source_instance_key, target: item.target_instance_key, label: `${item.source_output_key} → ${item.target_input_key}`, className: 'run-mapping-edge' }));
     const graphEdges = [...directionEdges, ...mappingEdges];
     return [graphNodes, graphEdges] as const;
   }, [run.node_runs, selectedKey, snapshot]);
-  return <section className="run-graph"><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>点击任意节点，在右侧配置输入并开始一次独立执行</small></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onNodeClick={(_, node) => onSelect(node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  return <section className="run-graph"><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>点击任意节点，在右侧配置输入并开始一次独立执行</small></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={selectedKey ?? 'node-run'} nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onNodeClick={(_, node) => onSelect(node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
 function GateList({ evaluations }: { evaluations: GateEvaluation[] }) {
   return <div className="gate-results">{evaluations.length ? evaluations.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span><strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>) : <div className="empty compact">此阶段没有门禁记录。</div>}</div>;
@@ -284,16 +284,16 @@ export function WorkbenchPage() {
       selectExecution(created.id, created.attempts.at(-1)?.id);
     }
   };
-  const hasPanel = Boolean(selectedNode);
+  const hasPanel = Boolean((nodeRun && attempt) || selectedNode);
   const selectGraphNode = (key: string) => {
     setSelectedNodeKey(key);
     useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
   };
   const selectHistory = (id: string) => {
     const item = run.node_runs.find(candidate => candidate.id === id);
-    setSelectedNodeKey(item?.flow_node_snapshot_key);
+    setSelectedNodeKey(undefined);
     selectExecution(id, item?.attempts.at(-1)?.id);
   };
   return <section className={`workbench-page${hasPanel ? '' : ' no-action-panel'}`}><RunRail run={run} selected={nodeRun?.id} onSelect={selectHistory}/><main className="run-main"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button><header className="run-title"><div><span className="eyebrow">第 {run.run_no} 次流程运行</span><h1>{run.name}</h1><p>流程快照 v{run.active_snapshot_version} · {run.progress.accepted}/{run.node_runs.length} 次节点执行已验收</p></div><span className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span></header>{run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={run} selectedKey={selectedNodeKey} onSelect={selectGraphNode}/>
-    {!selectedNode && <div className="empty compact node-selection-hint">点击运行快照中的任意节点，在右侧绑定产物并开始执行。</div>}<EventTimeline events={events.data ?? []}/></main>{selectedNode && nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} onCreateNew={() => useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined })}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => navigate(created, 'activate')} onSelectExecution={item => selectExecution(item.id, item.attempts.at(-1)?.id)}/> : null}</section>;
+    {!hasPanel && <div className="empty compact node-selection-hint">点击运行快照中的任意节点，在右侧绑定产物并开始执行。</div>}<EventTimeline events={events.data ?? []}/></main>{nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} onCreateNew={() => { setSelectedNodeKey(nodeRun.flow_node_snapshot_key); useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined }); }}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(undefined); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}</section>;
 }

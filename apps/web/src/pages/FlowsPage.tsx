@@ -18,7 +18,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { CheckSquare, GitBranch, LayoutDashboard, Plus, Save, Search, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { api, ApiError, randomId } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import type {
@@ -273,6 +273,8 @@ export function FlowsPage() {
   const [deletingFlows, setDeletingFlows] = useState(false);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<FlowNodeData>, Edge>>();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
   const [directionEdges, setDirectionEdges] = useEdgesState<Edge>([]);
   const [portMappings, setPortMappings] = useEdgesState<Edge>([]);
 
@@ -342,14 +344,17 @@ export function FlowsPage() {
   });
 
   const addAsset = (asset: NodeAsset, position?: { x: number; y: number }) => {
-    const count = nodes.filter(item => item.data.assetId === asset.id).length;
+    const currentNodes = nodesRef.current;
+    const count = currentNodes.filter(item => item.data.assetId === asset.id).length;
     const id = `node_${count + 1}_${randomId().replaceAll('-', '').slice(0, 8)}`;
-    setNodes(old => [...old, {
+    const nextNodes = [...currentNodes, {
       id,
       type: 'flowAsset',
-      position: position ?? { x: 100 + old.length * 220, y: 180 },
+      position: position ?? { x: 100 + currentNodes.length * 220, y: 180 },
       data: nodeData(asset, '', defaultGates()),
-    }]);
+    }];
+    nodesRef.current = nextNodes;
+    setNodes(nextNodes);
     setSelectedNode(id);
     setNotice(count ? `已再次添加“${asset.name}”，新实例可独立配置门禁。` : `已添加“${asset.name}”。`);
   };

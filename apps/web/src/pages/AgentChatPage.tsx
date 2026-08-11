@@ -159,38 +159,133 @@ function usefulDetails(value: unknown): Record<string, unknown> {
   return Object.fromEntries(Object.entries(eventDetails(value)).filter(([, item]) => item !== '' && item !== null && item !== undefined));
 }
 
-type ToolActivityKind = 'read' | 'edit' | 'command' | 'search' | 'web' | 'delegate' | 'generic';
+type ToolActivityKind = 'read' | 'create' | 'edit' | 'undo-edit' | 'patch' | 'command' | 'search' | 'web' | 'delegate' | 'task-view' | 'task-update' | 'workflow' | 'consult' | 'thought' | 'generic';
+type ToolActivityStatus = 'running' | 'completed' | 'failed' | 'ended';
+
+function toolEventType(tool: Record<string, unknown>) {
+  return String(tool.event_name ?? '')
+    .replace(/(Action|Observation|Event)$/i, '')
+    .toLowerCase();
+}
 
 function toolActivityKind(tool: Record<string, unknown>): ToolActivityKind {
   const details = eventDetails(tool.details);
-  const signature = `${String(tool.event_name ?? '')} ${Object.keys(details).join(' ')}`.toLowerCase();
-  if (/(delegate|subagent|agenttask|spawn)/.test(signature)) return 'delegate';
-  if (/(write|edit|patch|replace|createfile|fileeditor)/.test(signature)) return 'edit';
-  if (/(read|openfile|viewfile|catfile)/.test(signature)) return 'read';
-  if (/(command|terminal|shell|bash|execute|process)/.test(signature)) return 'command';
-  if (/(search|grep|find|glob|ripgrep)/.test(signature)) return 'search';
-  if (/(browser|web|url|fetch|http)/.test(signature)) return 'web';
+  const eventType = toolEventType(tool);
+  const command = typeof details.command === 'string' ? details.command.toLowerCase() : '';
+
+  // A command only has meaning within its tool. For example, `view` means
+  // reading a file in FileEditor, but viewing the task list in TaskTracker.
+  if (eventType.includes('fileeditor')) {
+    if (command === 'view') return 'read';
+    if (command === 'create') return 'create';
+    if (command === 'undo_edit') return 'undo-edit';
+    return 'edit';
+  }
+  if (eventType.includes('tasktracker')) return command === 'plan' ? 'task-update' : 'task-view';
+  if (eventType.includes('applypatch')) return 'patch';
+  if (eventType.includes('terminal') || eventType.includes('shell')) return 'command';
+  if (eventType.includes('grep') || eventType.includes('glob') || eventType.includes('search')) return 'search';
+  if (eventType.includes('browser') || eventType.includes('web')) return 'web';
+  if (eventType.includes('delegate') || eventType === 'task' || eventType.includes('subagent')) return 'delegate';
+  if (eventType.includes('workflow')) return 'workflow';
+  if (eventType.includes('consulttom') || eventType.includes('sleeptimecompute') || eventType.includes('consult')) return 'consult';
+  if (eventType.includes('think')) return 'thought';
+
+  // Compatibility fallbacks for adapters that use descriptive event names.
+  if (/(read|openfile|viewfile|catfile)/.test(eventType)) return 'read';
+  if (/(write|edit|patch|replace|createfile)/.test(eventType)) return 'edit';
+  if (/(command|terminal|shell|bash|execute|process)/.test(eventType)) return 'command';
   return 'generic';
 }
 
-function toolActivityLabel(tool: Record<string, unknown>, completed: boolean) {
-  const labels: Record<ToolActivityKind, [string, string]> = {
-    read: ['正在读取文件', '已读取文件'],
-    edit: ['正在编辑文件', '已编辑文件'],
-    command: ['正在运行命令', '已运行命令'],
-    search: ['正在搜索内容', '已搜索内容'],
-    web: ['正在获取网页内容', '已获取网页内容'],
-    delegate: ['正在安排子 Agent', '已安排子 Agent'],
-    generic: ['正在使用工具', '已使用工具'],
-  };
-  return labels[toolActivityKind(tool)][completed ? 1 : 0];
+function toolActivityStatus(tool: Record<string, unknown>, completed: boolean): ToolActivityStatus {
+  if (!completed) return 'running';
+  return eventDetails(tool.details).is_error === true ? 'failed' : 'completed';
 }
 
-function activityPreview(content: string, details: Record<string, unknown>) {
-  const preferred = ['path', 'file_path', 'command', 'query', 'url'];
-  for (const key of preferred) {
+function toolActivityLabel(tool: Record<string, unknown>, status: ToolActivityStatus) {
+  const labels: Record<ToolActivityKind, Record<ToolActivityStatus, string>> = {
+    read: { running: '正在读取文件', completed: '已读取文件', failed: '读取文件失败', ended: '读取已结束（无返回记录）' },
+    create: { running: '正在创建文件', completed: '已创建文件', failed: '创建文件失败', ended: '创建已结束（无返回记录）' },
+    edit: { running: '正在编辑文件', completed: '已编辑文件', failed: '编辑文件失败', ended: '编辑已结束（无返回记录）' },
+    'undo-edit': { running: '正在撤销文件修改', completed: '已撤销文件修改', failed: '撤销文件修改失败', ended: '撤销已结束（无返回记录）' },
+    patch: { running: '正在应用代码补丁', completed: '已应用代码补丁', failed: '应用代码补丁失败', ended: '补丁操作已结束（无返回记录）' },
+    command: { running: '正在运行命令', completed: '已运行命令', failed: '命令运行失败', ended: '命令已结束（无返回记录）' },
+    search: { running: '正在搜索内容', completed: '已搜索内容', failed: '搜索内容失败', ended: '搜索已结束（无返回记录）' },
+    web: { running: '正在操作网页', completed: '已操作网页', failed: '网页操作失败', ended: '网页操作已结束（无返回记录）' },
+    delegate: { running: '正在安排子 Agent', completed: '已安排子 Agent', failed: '安排子 Agent 失败', ended: '子 Agent 安排已结束（无返回记录）' },
+    'task-view': { running: '正在查看任务列表', completed: '已查看任务列表', failed: '查看任务列表失败', ended: '查看已结束（无返回记录）' },
+    'task-update': { running: '正在更新任务列表', completed: '已更新任务列表', failed: '更新任务列表失败', ended: '更新已结束（无返回记录）' },
+    workflow: { running: '正在运行工作流', completed: '已运行工作流', failed: '工作流运行失败', ended: '工作流已结束（无返回记录）' },
+    consult: { running: '正在咨询辅助 Agent', completed: '已获得辅助 Agent 建议', failed: '咨询辅助 Agent 失败', ended: '咨询已结束（无返回记录）' },
+    thought: { running: '正在记录思考', completed: '已记录思考', failed: '记录思考失败', ended: '思考记录已结束（无返回记录）' },
+    generic: { running: '正在使用工具', completed: '已使用工具', failed: '工具执行失败', ended: '工具操作已结束（无返回记录）' },
+  };
+  return labels[toolActivityKind(tool)][status];
+}
+
+function toolMatchIdentity(message: AgentMessage) {
+  const tool = eventDetails(message.content.tool);
+  const details = eventDetails(tool.details);
+  const family = toolActivityKind(tool);
+  const command = typeof details.command === 'string' ? details.command.trim() : '';
+  const targetKeys = ['path', 'file_path', 'pattern', 'query', 'url', 'prompt', 'instruction', 'task_id'];
+  const target = targetKeys.map(key => details[key]).find(value => typeof value === 'string' && value.trim());
+  return {
+    family,
+    command,
+    exact: `${family}\u0000${command}\u0000${typeof target === 'string' ? target.trim() : ''}`,
+  };
+}
+
+function matchedToolCallStatuses(messages: AgentMessage[], groupRunning: boolean) {
+  const statuses = new Map<string, ToolActivityStatus>();
+  const pending: Array<{ message: AgentMessage; family: ToolActivityKind; command: string; exact: string }> = [];
+
+  for (const message of messages) {
+    if (message.message_type === 'TOOL_CALL') {
+      pending.push({ message, ...toolMatchIdentity(message) });
+      continue;
+    }
+    if (message.message_type !== 'TOOL_RESULT') continue;
+
+    const result = toolMatchIdentity(message);
+    let matchIndex = pending.findIndex(call => call.exact === result.exact);
+    if (matchIndex < 0 && result.command) {
+      matchIndex = pending.findIndex(call => call.family === result.family && call.command === result.command);
+    }
+    if (matchIndex < 0) matchIndex = pending.findIndex(call => call.family === result.family);
+    if (matchIndex < 0) continue;
+
+    const [call] = pending.splice(matchIndex, 1);
+    const resultTool = eventDetails(message.content.tool);
+    statuses.set(call.message.id, toolActivityStatus(resultTool, true));
+  }
+
+  for (const call of pending) statuses.set(call.message.id, groupRunning ? 'running' : 'ended');
+  return statuses;
+}
+
+function activityPreview(tool: Record<string, unknown>, content: string, details: Record<string, unknown>) {
+  const kind = toolActivityKind(tool);
+  const preferred: Partial<Record<ToolActivityKind, string[]>> = {
+    read: ['path', 'file_path'],
+    create: ['path', 'file_path'],
+    edit: ['path', 'file_path'],
+    'undo-edit': ['path', 'file_path'],
+    patch: ['path', 'file_path'],
+    command: ['command'],
+    search: ['pattern', 'query', 'search_path', 'path'],
+    web: ['url'],
+    delegate: ['prompt', 'instruction', 'task'],
+  };
+  for (const key of preferred[kind] ?? []) {
     const value = details[key];
     if (typeof value === 'string' && value.trim()) return value.trim().split('\n')[0];
+  }
+  if (kind === 'task-view' || kind === 'task-update') {
+    const tasks = Array.isArray(details.task_list) ? details.task_list.length : 0;
+    return tasks ? `${tasks} 个任务` : '';
   }
   return content.split('\n')[0] || (Object.keys(details).length ? `${Object.keys(details).length} 项详情` : '');
 }
@@ -206,7 +301,7 @@ function SubagentSummary({ subagents }: { subagents: AgentConversation[] }) {
   })}</span><b>{status}</b></div></section>;
 }
 
-function ActivityMessage({ message }: { message: AgentMessage }) {
+function ActivityMessage({ message, statusOverride }: { message: AgentMessage; statusOverride?: ToolActivityStatus }) {
   if (message.message_type === 'STATE') {
     const state = eventDetails(message.content.state);
     const text = typeof state.content === 'string' ? state.content.trim() : '';
@@ -218,7 +313,8 @@ function ActivityMessage({ message }: { message: AgentMessage }) {
   const content = typeof tool.content === 'string' ? tool.content.trim() : '';
   if (!content && !Object.keys(details).length && !tool.event_name) return null;
   const completed = message.message_type === 'TOOL_RESULT';
-  return <details className={`activity-message tool-activity ${completed ? 'completed' : 'running'}`}><summary><span>{completed ? <CheckCircle2 size={14}/> : <LoaderCircle size={14}/>}<b>{toolActivityLabel(tool, completed)}</b><small>{activityPreview(content, details)}</small></span><ChevronRight size={14}/></summary><div className="activity-detail">{content && <MarkdownMessage text={content} messageId={message.id}/>} {!!Object.keys(details).length && <pre>{JSON.stringify(details, null, 2)}</pre>}</div></details>;
+  const status = statusOverride ?? toolActivityStatus(tool, completed);
+  return <details className={`activity-message tool-activity ${status}`}><summary><span>{status === 'failed' ? <XCircle size={14}/> : status === 'running' ? <LoaderCircle size={14}/> : status === 'ended' ? <Clock3 size={14}/> : <CheckCircle2 size={14}/>}<b>{toolActivityLabel(tool, status)}</b><small>{activityPreview(tool, content, details)}</small></span><ChevronRight size={14}/></summary><div className="activity-detail">{content && <MarkdownMessage text={content} messageId={message.id}/>} {!!Object.keys(details).length && <pre>{JSON.stringify(details, null, 2)}</pre>}</div></details>;
 }
 
 const isActivityMessage = (message: AgentMessage) => message.message_type === 'TOOL_CALL' || message.message_type === 'TOOL_RESULT' || message.message_type === 'STATE';
@@ -230,7 +326,7 @@ function activitySummary(message: AgentMessage) {
     return text ? `正在思考 · ${text}` : '正在分析上下文';
   }
   const tool = eventDetails(message.content.tool);
-  return toolActivityLabel(tool, message.message_type === 'TOOL_RESULT');
+  return toolActivityLabel(tool, toolActivityStatus(tool, message.message_type === 'TOOL_RESULT'));
 }
 
 function formatDuration(start: string, end: string | number) {
@@ -250,13 +346,14 @@ function ActivityGroup({ messages, running, startedAt, completedAt }: { messages
   }, [running]);
   useEffect(() => setExpanded(running), [running]);
   const last = messages[messages.length - 1];
+  const callStatuses = useMemo(() => matchedToolCallStatuses(messages, running), [messages, running]);
   const duration = formatDuration(
     startedAt ?? messages[0].created_at,
     running ? clock : completedAt ?? messages[messages.length - 1].created_at,
   );
   return <details className={`activity-group ${running ? 'running' : 'completed'}`} open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
     <summary><span>{running ? <LoaderCircle size={14}/> : <CheckCircle2 size={14}/>}<b>{running ? '正在处理' : '查看处理过程'}</b><small>{duration}</small>{running && <em>{activitySummary(last)}</em>}</span><ChevronRight size={14}/></summary>
-    <div className="activity-group-content">{messages.map(message => <ActivityMessage key={message.id} message={message}/>)}</div>
+    <div className="activity-group-content">{messages.map(message => <ActivityMessage key={message.id} message={message} statusOverride={callStatuses.get(message.id)}/>)}</div>
   </details>;
 }
 
@@ -356,6 +453,7 @@ function MessageTimeline({ conversation, messages, subagents, onRetry, onFork, o
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   const [following, setFollowing] = useState(true);
+  const answering = conversation?.state === 'GENERATING' || conversation?.state === 'WAITING_SUBAGENTS';
   const timelineItems = groupTimelineMessages(messages);
   const lastActivityGroupId = [...timelineItems].reverse().find(item => item.type === 'activity')?.id;
   const latestInputId = [...messages].reverse().find(message => message.source === 'HUMAN' || message.source === 'PROGRAM')?.id;
@@ -368,6 +466,15 @@ function MessageTimeline({ conversation, messages, subagents, onRetry, onFork, o
     followRef.current = false;
     setFollowing(false);
   }, []);
+  const updateFollowingFromScroll = useCallback((timeline: HTMLDivElement) => {
+    const atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 24;
+    if (atBottom) {
+      followRef.current = true;
+      setFollowing(true);
+    } else {
+      pauseFollowing();
+    }
+  }, [pauseFollowing]);
   const resumeFollowing = useCallback(() => {
     followRef.current = true;
     setFollowing(true);
@@ -397,14 +504,7 @@ function MessageTimeline({ conversation, messages, subagents, onRetry, onFork, o
       className="message-timeline"
       aria-live="polite"
       aria-label="对话消息"
-      onWheel={() => pauseFollowing()}
-      onTouchMove={() => pauseFollowing()}
-      onPointerDown={event => { if (!(event.target as HTMLElement).closest('[data-follow-control]')) pauseFollowing(); }}
-      onScroll={event => {
-        if (!followRef.current) return;
-        const timeline = event.currentTarget;
-        if (timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight > 80) pauseFollowing();
-      }}
+      onScroll={event => updateFollowingFromScroll(event.currentTarget)}
     ><div ref={contentRef} className="message-timeline-content">
     {timelineItems.map(item => {
       if (item.type === 'activity') {
@@ -412,7 +512,7 @@ function MessageTimeline({ conversation, messages, subagents, onRetry, onFork, o
         const lastSequence = item.messages[item.messages.length - 1].sequence_no;
         const startedBy = [...messages].reverse().find(message => message.sequence_no < firstSequence && (message.source === 'HUMAN' || message.source === 'PROGRAM'));
         const completedBy = messages.find(message => message.sequence_no > lastSequence && message.source === 'AGENT' && message.message_type === 'TEXT');
-        const running = conversation?.state === 'GENERATING' && item.id === lastActivityGroupId && !completedBy;
+        const running = answering && item.id === lastActivityGroupId && !completedBy;
         return <ActivityGroup key={item.id} messages={item.messages} running={running} startedAt={startedBy?.created_at} completedAt={completedBy?.created_at ?? item.messages[item.messages.length - 1].created_at}/>;
       }
       const message = item.message;
@@ -422,7 +522,16 @@ function MessageTimeline({ conversation, messages, subagents, onRetry, onFork, o
     {conversation && <AgentActivityStatus conversation={conversation} messages={messages} retrying={retrying} onRetry={onRetry}/>}
     {conversation && !messages.length && <div className="conversation-empty"><Bot size={26}/><b>当前轮次上下文已挂载</b><span>发送第一条消息开始协作。</span></div>}
     {!conversation && <div className="conversation-empty"><Workflow size={26}/><b>尚无可用会话</b><span>本轮开始执行后将自动创建默认会话。</span></div>}
-    </div></div>{!following && <button type="button" className="timeline-follow-button" data-follow-control onPointerDown={event => event.stopPropagation()} onClick={resumeFollowing}><CornerDownRight size={14}/>立即跟踪最新回答</button>}</div>;
+    </div></div>{!following && <button
+      type="button"
+      className={`timeline-follow-button ${answering ? 'answering' : 'answered'}`}
+      onWheel={event => {
+        event.preventDefault();
+        event.stopPropagation();
+        timelineRef.current?.scrollBy({ top: event.deltaY });
+      }}
+      onClick={resumeFollowing}
+    >{answering ? <LoaderCircle size={14}/> : <CornerDownRight size={14}/>}<span>{answering ? '正在回答 · 跟踪最新' : '立即跟踪最新回答'}</span></button>}</div>;
 }
 
 function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { conversation: AgentConversation; messages: AgentMessage[]; retrying: boolean; onRetry: (id: string) => void }) {
@@ -490,12 +599,12 @@ function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { co
       detail = `消息已送达，但尚未收到模型或工具事件。${thoughtDetail}`;
     } else if (latestActivity.message_type === 'TOOL_CALL') {
       const tool = eventDetails(latestActivity.content.tool);
-      title = toolActivityLabel(tool, false);
+      title = toolActivityLabel(tool, 'running');
       detail = `最后事件距今 ${quietLabel}。${thoughtDetail}`;
     } else if (latestActivity.message_type === 'TOOL_RESULT') {
       const tool = eventDetails(latestActivity.content.tool);
       title = quietSeconds >= 30 ? 'Agent 事件流长时间无更新' : '工具结果已返回';
-      detail = `${toolActivityLabel(tool, true)}，之后 ${quietLabel} 没有新事件。${thoughtDetail}`;
+      detail = `${toolActivityLabel(tool, toolActivityStatus(tool, true))}，之后 ${quietLabel} 没有新事件。${thoughtDetail}`;
       if (quietSeconds >= 30) { tone = 'waiting'; icon = <Clock3 size={15}/>; }
     } else {
       title = '已收到模型思考事件';

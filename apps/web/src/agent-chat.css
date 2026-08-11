@@ -632,6 +632,11 @@
   animation: agent-status-spin 1.2s linear infinite;
 }
 
+.activity-group-content .tool-activity.failed > summary > span > svg,
+.activity-group-content .tool-activity.failed > summary b {
+  color: var(--red);
+}
+
 .activity-group-content .activity-detail {
   padding: 3px 8px 8px 30px;
 }
@@ -745,6 +750,20 @@
 .timeline-follow-button:hover {
   border-color: #91b09e;
   background: #f3f8f5;
+}
+
+.timeline-follow-button.answering {
+  border-color: #9fc7ad;
+  background: #f1f8f3;
+  box-shadow: 0 5px 18px #19352624, 0 0 0 3px #dcece2a8;
+}
+
+.timeline-follow-button.answering > svg {
+  animation: agent-status-spin 1.2s linear infinite;
+}
+
+.timeline-follow-button.answered > svg {
+  animation: none;
 }
 
 @media (max-width: 760px) {

@@ -85,7 +85,7 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 
 /* Node-first execution console */
 .workbench-page.no-action-panel{grid-template-columns:250px minmax(500px,1fr)}
-.run-graph-node.selected{border:2px solid var(--green)!important;background:#e8f3eb!important;box-shadow:0 0 0 4px #dcece2}
+.run-graph-node.snapshot-selected{border:2px solid var(--green)!important;background:#e8f3eb!important;box-shadow:0 0 0 4px #dcece2}
 .node-console-intro{padding-bottom:13px;border-bottom:1px solid var(--line)}
 .node-console-intro h3{margin:5px 0 4px;font-size:15px}
 .node-console-intro p{margin:0;color:var(--muted);font-size:10px;line-height:1.55}
