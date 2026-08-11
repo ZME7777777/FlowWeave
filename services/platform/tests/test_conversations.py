@@ -638,9 +638,7 @@ def test_auto_conversation_records_runtime_result_and_becomes_read_only(
     )
     assert before_start.status_code == 202, before_start.text
     assert before_start.json()["kind"] == "HUMAN_CREATED"
-    assert (
-        client.delete(f"/api/v1/agent-conversations/{before_start.json()['id']}").status_code == 204
-    )
+    assert before_start.json()["conversation_no"] == 1
 
     execution = client.post(
         f"/api/v1/node-attempts/{attempt_id}/confirm-start",
@@ -652,9 +650,10 @@ def test_auto_conversation_records_runtime_result_and_becomes_read_only(
     assert attempt["state"] == "WAITING_ACCEPTANCE"
 
     conversations = client.get(f"/api/v1/node-attempts/{attempt_id}/conversations").json()
-    assert len(conversations) == 1
-    automatic = conversations[0]
+    assert len(conversations) == 2
+    automatic = next(item for item in conversations if item["kind"] == "AUTO")
     assert automatic["kind"] == "AUTO"
+    assert automatic["conversation_no"] == 2
     assert automatic["state"] == "IDLE"
     messages = client.get(f"/api/v1/agent-conversations/{automatic['id']}/messages").json()
     assert [message["source"] for message in messages] == ["PROGRAM", "AGENT"]

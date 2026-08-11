@@ -668,9 +668,17 @@ def ensure_auto_conversation(db: Session, attempt: NodeAttempt) -> AgentConversa
     )
     if existing is not None:
         return existing
+    maximum = (
+        db.scalar(
+            select(func.max(AgentConversation.conversation_no)).where(
+                AgentConversation.attempt_id == attempt.id
+            )
+        )
+        or 0
+    )
     item = AgentConversation(
         attempt_id=attempt.id,
-        conversation_no=1,
+        conversation_no=int(maximum) + 1,
         kind=ConversationKind.AUTO,
         title=f"自动执行 · Attempt {attempt.attempt_no}",
         state=ConversationState.CREATING,
@@ -1729,17 +1737,15 @@ def create_conversation(
             expected=payload.expected_attempt_state_version,
             actual=attempt.state_version,
         )
-    count = (
-        db.scalar(
-            select(func.count(AgentConversation.id)).where(
-                AgentConversation.attempt_id == attempt.id
-            )
-        )
-        or 0
-    )
+    count, maximum = db.execute(
+        select(
+            func.count(AgentConversation.id),
+            func.max(AgentConversation.conversation_no),
+        ).where(AgentConversation.attempt_id == attempt.id)
+    ).one()
     if count >= get_settings().conversation_limit_per_attempt:
         raise DomainError("CONVERSATION_LIMIT_REACHED", "Conversation limit reached", 422)
-    number = int(count) + 1
+    number = int(maximum or 0) + 1
     item = AgentConversation(
         attempt_id=attempt.id,
         conversation_no=number,

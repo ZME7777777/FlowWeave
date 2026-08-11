@@ -1,12 +1,12 @@
 import { Background, Controls, ReactFlow, type Edge, type Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, ArrowLeft, ExternalLink, Link2, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Wrench } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ExternalLink, Link2, Play, Plus, RefreshCw, Send, StopCircle, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, subscribeToRun } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useWorkbenchStore } from '../store/workbench';
-import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, NodeAttempt, NodeRun, RunEvent, SnapshotFlowNode } from '../types';
+import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 
@@ -72,10 +72,6 @@ function SnapshotGraph({ run, selectedKey, onSelect }: { run: FlowRun; selectedK
 }
 function GateList({ evaluations }: { evaluations: GateEvaluation[] }) {
   return <div className="gate-results">{evaluations.length ? evaluations.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span><strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>) : <div className="empty compact">此阶段没有门禁记录。</div>}</div>;
-}
-
-function EventTimeline({ events }: { events: RunEvent[] }) {
-  return <section className="event-history"><h3>运行事件</h3>{events.map(event => <div key={event.cursor}><Wrench size={13}/><span><b>{event.event_type}</b><small>{new Date(event.occurred_at).toLocaleTimeString()}</small></span><code>{JSON.stringify(event.payload)}</code></div>)}</section>;
 }
 
 function ArtifactList({ artifacts }: { artifacts: ArtifactVersion[] }) {
@@ -177,6 +173,12 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const [startupSkill, setStartupSkill] = useState('');
   const [startupPrompt, setStartupPrompt] = useState(attemptNode?.asset.executor?.startup_prompt ?? '');
   useEffect(() => { setStartupMode('PROMPT'); setStartupSkill(''); setStartupPrompt(attemptNode?.asset.executor?.startup_prompt ?? ''); }, [attempt.id, attemptNode?.asset.executor?.startup_prompt]);
+  const conversations = useQuery({
+    queryKey: ['attempt-conversations', attempt.id],
+    queryFn: () => api.conversations(attempt.id),
+    enabled: attempt.state === 'WAITING_START_CONFIRMATION',
+  });
+  const existingConversation = conversations.data?.[0];
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
@@ -201,7 +203,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts}/></section>
     <button className="secondary full agent-chat-entry" onClick={() => useWorkbenchStore.getState().openAgentChat(run.id, nodeRun.id, attempt.id)}><Send size={15}/>进入 Agent 对话</button>
     {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>运行已进入只读终态，历史记录继续保留。</p>{attempt.runtime_phase === 'CANCEL_FAILED' && <button className="secondary full" onClick={() => act('retry-cancel')}>重试停止 Agent</button>}<button className="danger full" onClick={() => void dialog.confirm({ title: '永久删除这个流程运行？', message: '相关记录都会被清理且不可恢复。', confirmLabel: '永久删除', tone: 'danger' }).then(ok => ok && act('delete'))}><Trash2 size={15}/>永久删除此运行</button></section> : <>
-      {attempt.state === 'WAITING_START_CONFIRMATION' && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>也可以返回点击同一节点，再创建一条独立记录。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'SKILL'} onChange={() => setStartupMode('SKILL')}/><span><b>使用 Skill 启动</b></span></label><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'SKILL' && <label>本轮 Skill<select value={startupSkill} onChange={event => setStartupSkill(event.target.value)}><option value="">请选择</option>{skills.map(item => <option key={item.capability_key}>{item.capability_key}</option>)}</select></label>}{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'SKILL' && !startupSkill) || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => startupMode === 'CHAT' ? act('chat') : act('confirm', startupMode === 'SKILL' ? { startup_mode: 'SKILL', capability_key: startupSkill } : { startup_mode: 'PROMPT', prompt: startupPrompt })}>确认启动</button></section>}
+      {attempt.state === 'WAITING_START_CONFIRMATION' && conversations.isSuccess && !existingConversation && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>也可以返回点击同一节点，再创建一条独立记录。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'SKILL'} onChange={() => setStartupMode('SKILL')}/><span><b>使用 Skill 启动</b></span></label><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'SKILL' && <label>本轮 Skill<select value={startupSkill} onChange={event => setStartupSkill(event.target.value)}><option value="">请选择</option>{skills.map(item => <option key={item.capability_key}>{item.capability_key}</option>)}</select></label>}{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'SKILL' && !startupSkill) || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => startupMode === 'CHAT' ? act('chat') : act('confirm', startupMode === 'SKILL' ? { startup_mode: 'SKILL', capability_key: startupSkill } : { startup_mode: 'PROMPT', prompt: startupPrompt })}>确认启动</button></section>}
+      {attempt.state === 'WAITING_START_CONFIRMATION' && existingConversation && <section className="attempt-startup"><h4>本轮会话已创建</h4><p>启动方式无需再次选择，请点击“进入 Agent 对话”继续。</p></section>}
+      {attempt.state === 'WAITING_START_CONFIRMATION' && conversations.isError && <p className="error">无法确认本轮会话状态：{conversations.error.message}</p>}
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_ACCEPTANCE' && <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>确认完成</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>}
       {(attempt.state === 'WAITING_INPUT' || attempt.state === 'START_BLOCKED') && <section className="input-binding-editor"><h4>修正本轮输入</h4>{attemptNode?.asset.inputs.map(field => <label key={field.field_key}>{field.display_name}<select value={currentBinding(field.field_key)} onChange={event => setBindings(old => ({ ...old, [field.field_key]: event.target.value }))}><option value="">未绑定</option>{artifactOptions(run, field.data_type).map(item => <option key={item.id} value={item.id}>{artifactLabel(item)} · {item.uri}</option>)}</select></label>)}<button className="secondary full" disabled={!Object.keys(bindingPayload).length} onClick={() => act('bind', bindingPayload)}>保存输入绑定</button>{attempt.state === 'START_BLOCKED' && <button className="secondary full" onClick={() => act('retry')}>重试门禁</button>}</section>}
@@ -222,10 +226,9 @@ export function WorkbenchPage() {
   const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectAttempt, selectExecution, setView } = useWorkbenchStore();
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const query = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
-  const events = useQuery({ queryKey: ['run-events', selectedRunId], queryFn: () => api.flowEvents(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
   const flowId = query.data?.flow_definition_id;
   const flow = useQuery({ queryKey: ['flow', flowId], queryFn: () => api.flow(flowId!), enabled: Boolean(flowId), refetchInterval: 5000 });
-  const refresh = useCallback(() => { if (selectedRunId) { void qc.invalidateQueries({ queryKey: ['flow-run', selectedRunId] }); void qc.invalidateQueries({ queryKey: ['run-events', selectedRunId] }); } if (flowId) void qc.invalidateQueries({ queryKey: ['flow', flowId] }); void qc.invalidateQueries({ queryKey: ['runs'] }); }, [flowId, qc, selectedRunId]);
+  const refresh = useCallback(() => { if (selectedRunId) void qc.invalidateQueries({ queryKey: ['flow-run', selectedRunId] }); if (flowId) void qc.invalidateQueries({ queryKey: ['flow', flowId] }); void qc.invalidateQueries({ queryKey: ['runs'] }); }, [flowId, qc, selectedRunId]);
   useEffect(() => setSelectedNodeKey(undefined), [selectedRunId]);
   useEffect(() => selectedRunId ? subscribeToRun(selectedRunId, refresh) : undefined, [selectedRunId, refresh]);
   useEffect(() => {
@@ -253,7 +256,6 @@ export function WorkbenchPage() {
   const navigate = (result: unknown, kind: string) => {
     if (kind === 'delete') {
       qc.removeQueries({ queryKey: ['flow-run', selectedRunId] });
-      qc.removeQueries({ queryKey: ['run-events', selectedRunId] });
       void qc.invalidateQueries({ queryKey: ['runs'] });
       useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined, selectedConversationId: undefined });
       return;
@@ -295,5 +297,5 @@ export function WorkbenchPage() {
     selectExecution(id, item?.attempts.at(-1)?.id);
   };
   return <section className={`workbench-page${hasPanel ? '' : ' no-action-panel'}`}><RunRail run={run} selected={nodeRun?.id} onSelect={selectHistory}/><main className="run-main"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button><header className="run-title"><div><span className="eyebrow">第 {run.run_no} 次流程运行</span><h1>{run.name}</h1><p>流程快照 v{run.active_snapshot_version} · {run.progress.accepted}/{run.node_runs.length} 次节点执行已验收</p></div><span className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span></header>{run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={run} selectedKey={selectedNodeKey} onSelect={selectGraphNode}/>
-    {!hasPanel && <div className="empty compact node-selection-hint">点击运行快照中的任意节点，在右侧绑定产物并开始执行。</div>}<EventTimeline events={events.data ?? []}/></main>{nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} onCreateNew={() => { setSelectedNodeKey(nodeRun.flow_node_snapshot_key); useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined }); }}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(undefined); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}</section>;
+    </main>{nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} onCreateNew={() => { setSelectedNodeKey(nodeRun.flow_node_snapshot_key); useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined }); }}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(undefined); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}</section>;
 }
