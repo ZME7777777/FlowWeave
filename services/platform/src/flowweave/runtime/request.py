@@ -57,6 +57,7 @@ def build_runtime_request(
     startup_prompt: str | None = None,
     startup_capability_key: str | None = None,
     conversation_history: tuple[dict[str, str], ...] = (),
+    delegation_enabled: bool = False,
     output_targets: dict[str, dict[str, str]] | None = None,
     environment_image: str | None = None,
     environment_id: str | None = None,
@@ -86,6 +87,7 @@ def build_runtime_request(
         startup_prompt=startup_prompt,
         startup_capability_key=startup_capability_key,
         conversation_history=conversation_history,
+        delegation_enabled=delegation_enabled,
         output_targets=output_targets or {},
         environment_image=environment_image
         if environment_image is not None

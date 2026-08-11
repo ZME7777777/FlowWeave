@@ -358,7 +358,11 @@ class ConversationStopWrite(ApiModel):
 class ConversationForkWrite(ApiModel):
     expected_conversation_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=160)
-    edited_text: str | None = Field(default=None, min_length=1, max_length=20_000)
+
+
+class ConversationReviseWrite(ApiModel):
+    expected_conversation_version: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=20_000)
 
 
 class TextPartWrite(ApiModel):

@@ -152,6 +152,12 @@ class OpenHandsRuntime:
         startup = str(request.startup_prompt or executor.get("startup_prompt") or "").strip()
         if request.startup_capability_key:
             startup = f"${request.startup_capability_key}\n{startup}".strip()
+        return startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}"
+
+    def _context_text(self, request: StartAttemptRequest) -> str:
+        asset = cast(dict[str, Any], request.node.get("asset") or {})
+        executor = cast(dict[str, Any], asset.get("executor") or {})
+        startup = str(request.startup_prompt or executor.get("startup_prompt") or "").strip()
         context = str(executor.get("context_prompt") or "").strip()
         inputs = [self._artifact_input(item) for item in request.bindings]
         outputs = self._output_contract(request)
@@ -159,13 +165,17 @@ class OpenHandsRuntime:
         sections = (
             [
                 "你正在一个由人工新建的独立协作会话中。等待并响应用户在本会话中的请求。"
-                "节点启动提示词只用于流程自动执行，不是本会话的预设任务。"
+                "节点启动提示词在本会话中仅作背景，不是需要独立执行的预设任务。"
                 "可用 Skill 与 MCP 均为候选能力：先理解用户意图，再自行选择真正相关的能力；"
                 "用户通过 $ 显式指定能力时必须优先遵循。不要仅因某项能力是节点默认值就调用它。"
             ]
             if collaboration
-            else [startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}"]
+            else []
         )
+        if collaboration and startup:
+            sections.append(
+                "节点预置说明（仅作协作背景，不是需要独立执行或立即答复的用户任务）：\n" + startup
+            )
         if context:
             heading = "节点背景上下文（仅作协作参考）" if collaboration else "任务上下文"
             sections.append(f"{heading}：\n{context}")
@@ -175,6 +185,21 @@ class OpenHandsRuntime:
                 "按给定顺序视为本会话已经发生的上下文；不要声称看不到这些消息，也不要重复回答"
                 "最后一条历史消息。等待用户的新消息后，从该上下文继续。\n"
                 + json.dumps(request.conversation_history, ensure_ascii=False)
+            )
+        if collaboration and request.delegation_enabled:
+            sections.append(
+                "当任务可拆成互相独立的工作时，你可以让平台自动创建子智能体并行处理。"
+                "需要委派时，本轮不要输出普通答复，只调用 finish 并把 message 严格写成以下 JSON，"
+                "tasks 最多 4 项；title 是短标题，instruction 必须包含完整、独立、可执行的要求：\n"
+                '{"flowweave":{"action":"delegate","tasks":['
+                '{"title":"检查后端","instruction":"独立检查后端实现并给出结论"}'
+                "]}}\n"
+                "平台会在所有子智能体结束后把结构化结果送回本会话，届时你必须综合结果继续回答。"
+                "不要为简单任务委派，也不要输出上述控制 JSON 的解释或 Markdown 代码块。"
+            )
+        elif collaboration:
+            sections.append(
+                "你是由父智能体创建的子智能体。请只完成收到的独立任务；不得继续委派其他智能体。"
             )
         if request.node_workspace_ref:
             resource_lines = [
@@ -259,8 +284,10 @@ class OpenHandsRuntime:
                 {"name": "task_tracker", "params": {}},
             ],
         }
-        if skills:
-            agent["agent_context"] = {"skills": skills}
+        agent["agent_context"] = {
+            "skills": skills,
+            "system_message_suffix": self._context_text(request),
+        }
         if request.mcp_servers:
             agent["mcp_config"] = {server.name: server.config for server in request.mcp_servers}
         payload: dict[str, Any] = {
@@ -269,13 +296,14 @@ class OpenHandsRuntime:
                 "working_dir": self._workspace_path(request.workspace_ref),
             },
             "max_iterations": int(executor.get("max_iterations") or 100),
-            "initial_message": {
-                "role": "user",
-                "content": [{"type": "text", "text": self._initial_text(request)}],
-                "run": run,
-            },
             "agent": agent,
         }
+        if run:
+            payload["initial_message"] = {
+                "role": "user",
+                "content": [{"type": "text", "text": self._initial_text(request)}],
+                "run": True,
+            }
         if request.environment_image and not (
             request.runtime_sandbox_id
             and request.runtime_resource_name

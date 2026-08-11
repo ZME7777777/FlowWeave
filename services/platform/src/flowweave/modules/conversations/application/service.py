@@ -57,6 +57,7 @@ from flowweave.shared.schemas import (
     ConversationCreateWrite,
     ConversationForkWrite,
     ConversationPatchWrite,
+    ConversationReviseWrite,
     ConversationStopWrite,
     MessageSendWrite,
 )
@@ -73,6 +74,7 @@ _WORKSPACE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
 _MESSAGE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
 _MESSAGE_ATTACHMENTS_MAX_BYTES = 20 * 1024 * 1024
 _SAFE_ATTACHMENT_NAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
+_SUBAGENT_LIMIT = 4
 
 
 @dataclass(frozen=True)
@@ -430,23 +432,27 @@ def _message_dict(item: AgentMessage) -> dict[str, Any]:
     }
 
 
+def _message_is_superseded(item: AgentMessage) -> bool:
+    return item.content_json.get("superseded") is True
+
+
 def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
-    last = db.scalar(
-        select(AgentMessage)
-        .where(AgentMessage.conversation_id == item.id)
-        .order_by(AgentMessage.sequence_no.desc())
-        .limit(1)
-    )
-    count = (
-        db.scalar(
-            select(func.count(AgentMessage.id)).where(AgentMessage.conversation_id == item.id)
+    active_messages = [
+        message
+        for message in db.scalars(
+            select(AgentMessage)
+            .where(AgentMessage.conversation_id == item.id)
+            .order_by(AgentMessage.sequence_no)
         )
-        or 0
-    )
+        if not _message_is_superseded(message)
+    ]
+    last = active_messages[-1] if active_messages else None
+    count = len(active_messages)
     connection = _connection_status(db, item)
     runtime_resource = _runtime_resource(db, item)
     return {
         "id": item.id,
+        "parent_conversation_id": item.parent_conversation_id,
         "attempt_id": item.attempt_id,
         "conversation_no": item.conversation_no,
         "kind": item.kind,
@@ -459,6 +465,11 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
         "runtime_resource": runtime_resource,
         "connection_status": connection,
         "context_baseline": item.context_baseline_json,
+        "editable_message_id": cast(
+            dict[str, Any], item.context_baseline_json.get("stopped_turn") or {}
+        ).get("editable_message_id"),
+        "delegation_batch_key": item.delegation_batch_key,
+        "delegation_instruction": item.delegation_instruction,
         "message_count": count,
         "last_message": _message_dict(last) if last else None,
         "created_at": item.created_at.isoformat(),
@@ -493,7 +504,7 @@ def _runtime_resource(db: Session, item: AgentConversation) -> dict[str, Any] | 
         "lifecycle": lifecycle,
         "cleanup_policy": (
             "DELETE_WITH_CONVERSATION"
-            if item.kind == ConversationKind.HUMAN_CREATED
+            if item.kind != ConversationKind.AUTO
             else "DELETE_WITH_ATTEMPT"
         ),
     }
@@ -946,7 +957,7 @@ def set_attempt_conversations_state(db: Session, attempt_id: str, state: str) ->
 def _ensure_conversation_runtime_cleanup(db: Session, item: AgentConversation) -> bool:
     """Ensure terminal conversation compute has durable cleanup work."""
 
-    if item.kind != ConversationKind.HUMAN_CREATED or not item.runtime_conversation_id:
+    if item.kind == ConversationKind.AUTO or not item.runtime_conversation_id:
         return False
     key = f"cleanup-conversation-runtime:{item.id}:{item.runtime_conversation_id}"
     existing = db.scalar(select(BackgroundTask).where(BackgroundTask.idempotency_key == key))
@@ -1063,11 +1074,242 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
     rows = list(
         db.scalars(
             select(AgentConversation)
-            .where(AgentConversation.attempt_id == attempt_id)
+            .where(
+                AgentConversation.attempt_id == attempt_id,
+                AgentConversation.kind != ConversationKind.SUBAGENT,
+            )
             .order_by(AgentConversation.conversation_no)
         )
     )
     return [_conversation_dict(db, item) for item in rows]
+
+
+def list_subagents(db: Session, conversation_id: str) -> list[dict[str, Any]]:
+    _conversation(db, conversation_id)
+    rows = list(
+        db.scalars(
+            select(AgentConversation)
+            .where(
+                AgentConversation.parent_conversation_id == conversation_id,
+                AgentConversation.kind == ConversationKind.SUBAGENT,
+            )
+            .order_by(AgentConversation.created_at, AgentConversation.conversation_no)
+        )
+    )
+    return [_conversation_dict(db, item) for item in rows]
+
+
+def _delegation_tasks(text: str) -> list[dict[str, str]] | None:
+    """Parse the model-only delegation envelope without accepting prose or fences."""
+
+    try:
+        value: object = json.loads(text.strip())
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    envelope = cast(dict[str, object], value).get("flowweave")
+    if not isinstance(envelope, dict):
+        return None
+    command = cast(dict[str, object], envelope)
+    raw_tasks = command.get("tasks")
+    if command.get("action") != "delegate" or not isinstance(raw_tasks, list):
+        return None
+    task_items = cast(list[object], raw_tasks)
+    if not 1 <= len(task_items) <= _SUBAGENT_LIMIT:
+        return None
+    tasks: list[dict[str, str]] = []
+    for raw in task_items:
+        if not isinstance(raw, dict):
+            return None
+        item = cast(dict[str, object], raw)
+        title = str(item.get("title") or "").strip()
+        instruction = str(item.get("instruction") or "").strip()
+        if not title or len(title) > 80 or not instruction or len(instruction) > 20_000:
+            return None
+        tasks.append({"title": title, "instruction": instruction})
+    return tasks
+
+
+def _start_delegation(
+    db: Session,
+    parent: AgentConversation,
+    tasks: list[dict[str, str]],
+    *,
+    result_key: str,
+) -> bool:
+    if parent.kind != ConversationKind.HUMAN_CREATED:
+        return False
+    batch_key = hashlib.sha256(f"{parent.id}:{result_key}".encode()).hexdigest()[:32]
+    existing = db.scalar(
+        select(AgentConversation.id).where(
+            AgentConversation.parent_conversation_id == parent.id,
+            AgentConversation.delegation_batch_key == batch_key,
+        )
+    )
+    if existing is not None:
+        return True
+    maximum = (
+        db.scalar(
+            select(func.max(AgentConversation.conversation_no)).where(
+                AgentConversation.attempt_id == parent.attempt_id
+            )
+        )
+        or 0
+    )
+    baseline = copy.deepcopy(parent.context_baseline_json or {})
+    for offset, task in enumerate(tasks, start=1):
+        child = AgentConversation(
+            parent_conversation_id=parent.id,
+            attempt_id=parent.attempt_id,
+            conversation_no=int(maximum) + offset,
+            kind=ConversationKind.SUBAGENT,
+            title=task["title"],
+            state=ConversationState.CREATING,
+            context_baseline_json=baseline,
+            delegation_batch_key=batch_key,
+            delegation_instruction=task["instruction"],
+            created_by_type=MessageSource.AGENT,
+        )
+        db.add(child)
+        db.flush()
+        _append(
+            db,
+            child,
+            # This is the parent Agent's delegated request.  It must remain
+            # queued until the child's Runtime is ready; CREATE_CONVERSATION
+            # only auto-delivers bootstrap PROGRAM messages.
+            source=MessageSource.HUMAN,
+            message_type=MessageType.TEXT,
+            content={
+                "presentation": "subagent-task",
+                "parts": [{"type": "text", "text": task["instruction"]}],
+            },
+            delivery_state=DeliveryState.QUEUED,
+            client_message_id=f"subagent-task:{child.id}",
+        )
+        enqueue(
+            db,
+            task_type="CREATE_CONVERSATION",
+            aggregate_type="CONVERSATION",
+            aggregate_id=child.id,
+            idempotency_key=f"create-subagent:{child.id}",
+        )
+        _event(
+            db,
+            child,
+            "SUBAGENT_CREATED",
+            {"parent_conversation_id": parent.id, "batch_key": batch_key},
+        )
+    previous = parent.state
+    parent.state = ConversationState.WAITING_SUBAGENTS
+    parent.state_version += 1
+    _event(
+        db,
+        parent,
+        "CONVERSATION_STATE_CHANGED",
+        {"from": previous, "to": parent.state, "version": parent.state_version},
+    )
+    return True
+
+
+def _subagent_result(db: Session, child: AgentConversation) -> dict[str, str]:
+    message = db.scalar(
+        select(AgentMessage)
+        .where(
+            AgentMessage.conversation_id == child.id,
+            AgentMessage.source == MessageSource.AGENT,
+            AgentMessage.message_type.in_([MessageType.TEXT, MessageType.ERROR]),
+        )
+        .order_by(AgentMessage.sequence_no.desc())
+        .limit(1)
+    )
+    text = _message_text(message.content_json) if message else ""
+    if message and message.message_type == MessageType.ERROR:
+        error = cast(dict[str, object], message.content_json.get("error") or {})
+        text = str(error.get("message") or text or "子智能体执行失败")
+    return {
+        "id": child.id,
+        "title": child.title,
+        "state": child.state,
+        "result": text,
+    }
+
+
+def _resume_parent_after_subagents(db: Session, child: AgentConversation) -> bool:
+    if child.kind != ConversationKind.SUBAGENT or not child.parent_conversation_id:
+        return False
+    siblings = list(
+        db.scalars(
+            select(AgentConversation)
+            .where(
+                AgentConversation.parent_conversation_id == child.parent_conversation_id,
+                AgentConversation.delegation_batch_key == child.delegation_batch_key,
+            )
+            .order_by(AgentConversation.created_at, AgentConversation.conversation_no)
+        )
+    )
+    terminal = {ConversationState.READ_ONLY, ConversationState.FAILED}
+    if not siblings or any(item.state not in terminal for item in siblings):
+        return False
+    parent = _conversation(db, child.parent_conversation_id, lock=True)
+    batch_key = child.delegation_batch_key or "unknown"
+    client_id = f"subagent-results:{batch_key}"
+    existing = db.scalar(
+        select(AgentMessage.id).where(
+            AgentMessage.conversation_id == parent.id,
+            AgentMessage.client_message_id == client_id,
+        )
+    )
+    if existing is not None:
+        return False
+    results = [_subagent_result(db, item) for item in siblings]
+    text = (
+        "平台创建的子智能体已经全部结束。请基于以下结构化结果综合回答用户；"
+        "不得再次委派同一批任务。\n" + json.dumps({"subagent_results": results}, ensure_ascii=False)
+    )
+    message = _append(
+        db,
+        parent,
+        source=MessageSource.PROGRAM,
+        message_type=MessageType.TEXT,
+        content={
+            "presentation": "subagent-results",
+            "parts": [{"type": "text", "text": text}],
+        },
+        delivery_state=DeliveryState.DELIVERING,
+        delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
+        client_message_id=client_id,
+    )
+    previous = parent.state
+    parent.state = ConversationState.GENERATING
+    parent.state_version += 1
+    enqueue(
+        db,
+        task_type="DELIVER_CONVERSATION_MESSAGE",
+        aggregate_type="MESSAGE",
+        aggregate_id=message.id,
+        idempotency_key=f"deliver-subagent-results:{parent.id}:{batch_key}",
+    )
+    _event(
+        db,
+        parent,
+        "CONVERSATION_STATE_CHANGED",
+        {"from": previous, "to": parent.state, "version": parent.state_version},
+    )
+    return True
+
+
+def _finish_subagent(db: Session, child: AgentConversation) -> None:
+    """Close one child Runtime and resume its parent when the batch is done."""
+
+    if child.kind != ConversationKind.SUBAGENT:
+        return
+    if child.state != ConversationState.FAILED:
+        child.state = ConversationState.READ_ONLY
+        child.state_version += 1
+    _ensure_conversation_runtime_cleanup(db, child)
+    _resume_parent_after_subagents(db, child)
 
 
 def get_conversation(db: Session, conversation_id: str) -> dict[str, Any]:
@@ -1091,6 +1333,7 @@ def _fork_runtime_history(messages: list[AgentMessage]) -> tuple[dict[str, str],
             message.source not in {MessageSource.HUMAN, MessageSource.AGENT}
             or message.message_type != MessageType.TEXT
             or message.delivery_state == DeliveryState.CANCELLED
+            or _message_is_superseded(message)
         ):
             continue
         text = _fork_message_text(message)
@@ -1164,9 +1407,8 @@ def fork_conversation(
     message_id: str,
     payload: ConversationForkWrite,
     idempotency_key: str,
-    actor: str | None,
 ) -> dict[str, Any]:
-    """Create an independent branch at a message, optionally replacing that human input."""
+    """Create an independent conversation ending at one Agent text reply."""
 
     existing_action = db.scalar(
         select(HumanAction).where(HumanAction.idempotency_key == idempotency_key)
@@ -1177,6 +1419,16 @@ def fork_conversation(
     if source_message is None:
         raise not_found("agent_message", message_id)
     source = _conversation(db, source_message.conversation_id, lock=True)
+    if (
+        source_message.source != MessageSource.AGENT
+        or source_message.message_type != MessageType.TEXT
+        or _message_is_superseded(source_message)
+    ):
+        raise DomainError(
+            "MESSAGE_NOT_FORKABLE",
+            "Only an active Agent text reply can be forked",
+            409,
+        )
     if source.state_version != payload.expected_conversation_version:
         raise conflict(
             "conversation was modified",
@@ -1192,10 +1444,6 @@ def fork_conversation(
         raise DomainError("ATTEMPT_TERMINAL", "Terminal attempt cannot fork conversations", 409)
     if attempt.state not in CONVERSATION_ENABLED_ATTEMPT_STATES:
         raise DomainError("ATTEMPT_NOT_STARTED", "Attempt must be active before forking", 409)
-    if payload.edited_text is not None and source_message.source != MessageSource.HUMAN:
-        raise DomainError(
-            "MESSAGE_NOT_EDITABLE", "Only a human message can be edited into a branch", 409
-        )
     count = (
         db.scalar(
             select(func.count(AgentConversation.id)).where(
@@ -1207,7 +1455,7 @@ def fork_conversation(
     if count >= get_settings().conversation_limit_per_attempt:
         raise DomainError("CONVERSATION_LIMIT_REACHED", "Conversation limit reached", 422)
 
-    cutoff = source_message.sequence_no - (1 if payload.edited_text is not None else 0)
+    cutoff = source_message.sequence_no
     history_rows = list(
         db.scalars(
             select(AgentMessage)
@@ -1221,11 +1469,11 @@ def fork_conversation(
     )
     number = int(count) + 1
     baseline = _baseline(db, attempt)
+    history_rows = [row for row in history_rows if not _message_is_superseded(row)]
     baseline["fork"] = {
         "source_conversation_id": source.id,
         "source_message_id": source_message.id,
         "source_sequence_no": source_message.sequence_no,
-        "edited": payload.edited_text is not None,
         "history": list(_fork_runtime_history(history_rows)),
     }
     item = AgentConversation(
@@ -1267,31 +1515,6 @@ def fork_conversation(
             conversation_id=item.id,
             message_id=cloned.id,
         )
-    if payload.edited_text is not None:
-        edited_content = _copy_fork_attachments(
-            source_message.content_json,
-            attempt=attempt,
-            conversation_id=item.id,
-            message_id=f"edit-{source_message.id}",
-        )
-        parts = [
-            part
-            for part in cast(list[dict[str, Any]], edited_content.get("parts") or [])
-            if part.get("type") != "text"
-        ]
-        edited_content["parts"] = [{"type": "text", "text": payload.edited_text}, *parts]
-        edited_content["presentation"] = "chat"
-        _append(
-            db,
-            item,
-            source=MessageSource.HUMAN,
-            message_type=MessageType.TEXT,
-            content=edited_content,
-            delivery_state=DeliveryState.QUEUED,
-            delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
-            client_message_id=f"fork-edit:{source_message.id}",
-            created_by=actor,
-        )
     node_run, run_id = _context(db, attempt)
     db.add(
         HumanAction(
@@ -1304,7 +1527,6 @@ def fork_conversation(
                 "conversation_id": item.id,
                 "source_conversation_id": source.id,
                 "source_message_id": source_message.id,
-                "edited": payload.edited_text is not None,
             },
         )
     )
@@ -1323,6 +1545,159 @@ def fork_conversation(
     )
     finish(db)
     return _conversation_dict(db, item)
+
+
+def revise_message(
+    db: Session,
+    message_id: str,
+    payload: ConversationReviseWrite,
+    idempotency_key: str,
+    actor: str | None,
+) -> dict[str, Any]:
+    """Replace the last stopped human turn and rebuild the same conversation Runtime."""
+
+    existing_action = db.scalar(
+        select(HumanAction).where(HumanAction.idempotency_key == idempotency_key)
+    )
+    if existing_action is not None:
+        return get_conversation(db, str(existing_action.payload_json.get("conversation_id") or ""))
+    source_message = db.get(AgentMessage, message_id)
+    if source_message is None:
+        raise not_found("agent_message", message_id)
+    conversation = _conversation(db, source_message.conversation_id, lock=True)
+    if conversation.state_version != payload.expected_conversation_version:
+        raise conflict(
+            "conversation was modified",
+            expected=payload.expected_conversation_version,
+            actual=conversation.state_version,
+        )
+    stopped_turn = cast(
+        dict[str, Any], conversation.context_baseline_json.get("stopped_turn") or {}
+    )
+    if (
+        conversation.kind == ConversationKind.AUTO
+        or conversation.state != ConversationState.IDLE
+        or stopped_turn.get("editable_message_id") != source_message.id
+        or source_message.source != MessageSource.HUMAN
+        or source_message.message_type != MessageType.TEXT
+        or _message_is_superseded(source_message)
+    ):
+        raise DomainError(
+            "MESSAGE_NOT_REVISABLE",
+            "Only the last human message from a stopped turn can be revised",
+            409,
+        )
+    attempt = _attempt(db, conversation.attempt_id)
+    if attempt.state in TERMINAL_ATTEMPT_STATES:
+        raise DomainError("CONVERSATION_READ_ONLY", "Conversation is read only", 409)
+
+    active_prefix = [
+        row
+        for row in db.scalars(
+            select(AgentMessage)
+            .where(
+                AgentMessage.conversation_id == conversation.id,
+                AgentMessage.sequence_no < source_message.sequence_no,
+                AgentMessage.source != MessageSource.PROGRAM,
+            )
+            .order_by(AgentMessage.sequence_no)
+        )
+        if not _message_is_superseded(row)
+    ]
+    superseded_rows = list(
+        db.scalars(
+            select(AgentMessage).where(
+                AgentMessage.conversation_id == conversation.id,
+                AgentMessage.sequence_no >= source_message.sequence_no,
+            )
+        )
+    )
+    revision_id = str(uuid4())
+    for row in superseded_rows:
+        row.content_json = {
+            **row.content_json,
+            "superseded": True,
+            "superseded_by_revision_id": revision_id,
+        }
+        if row.delivery_state in {DeliveryState.QUEUED, DeliveryState.DELIVERING}:
+            row.delivery_state = DeliveryState.CANCELLED
+            row.error_code = "MESSAGE_SUPERSEDED"
+            row.error_detail = "Superseded by an edited resend"
+
+    revised_content = copy.deepcopy(source_message.content_json)
+    revised_content.pop("superseded", None)
+    revised_content.pop("superseded_by_revision_id", None)
+    non_text_parts = [
+        part
+        for part in cast(list[dict[str, Any]], revised_content.get("parts") or [])
+        if part.get("type") != "text"
+    ]
+    revised_content["parts"] = [{"type": "text", "text": payload.text}, *non_text_parts]
+    revised_content["presentation"] = "chat"
+    revised_content["revision"] = {
+        "id": revision_id,
+        "replaces_message_id": source_message.id,
+    }
+    revised = _append(
+        db,
+        conversation,
+        source=MessageSource.HUMAN,
+        message_type=MessageType.TEXT,
+        content=revised_content,
+        delivery_state=DeliveryState.QUEUED,
+        delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
+        client_message_id=f"revise:{source_message.id}:{revision_id}",
+        created_by=actor,
+    )
+    baseline = copy.deepcopy(conversation.context_baseline_json or {})
+    baseline.pop("stopped_turn", None)
+    baseline["fork"] = {
+        "history": list(_fork_runtime_history(active_prefix)),
+        "revision_id": revision_id,
+        "replaces_message_id": source_message.id,
+    }
+    conversation.context_baseline_json = baseline
+    conversation.state = ConversationState.CREATING
+    conversation.state_version += 1
+    conversation.runtime_job_id = None
+    conversation.runtime_conversation_id = None
+    conversation.runtime_cursor = None
+    conversation.runtime_sandbox_id = None
+    node_run, run_id = _context(db, attempt)
+    db.add(
+        HumanAction(
+            flow_run_id=run_id,
+            node_run_id=node_run.id,
+            attempt_id=attempt.id,
+            action_type="REVISE_AGENT_MESSAGE",
+            idempotency_key=idempotency_key,
+            payload_json={
+                "conversation_id": conversation.id,
+                "source_message_id": source_message.id,
+                "message_id": revised.id,
+                "revision_id": revision_id,
+            },
+        )
+    )
+    enqueue(
+        db,
+        task_type="CREATE_CONVERSATION",
+        aggregate_type="CONVERSATION",
+        aggregate_id=conversation.id,
+        idempotency_key=f"recreate-conversation:{conversation.id}:revision:{revision_id}",
+    )
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_MESSAGE_REVISED",
+        {
+            "source_message_id": source_message.id,
+            "message_id": revised.id,
+            "revision_id": revision_id,
+        },
+    )
+    finish(db)
+    return _conversation_dict(db, conversation)
 
 
 def create_conversation(
@@ -1586,17 +1961,18 @@ def list_messages(
     db: Session, conversation_id: str, after_sequence: int, limit: int
 ) -> list[dict[str, Any]]:
     _conversation(db, conversation_id)
-    rows = list(
-        db.scalars(
+    rows = [
+        item
+        for item in db.scalars(
             select(AgentMessage)
             .where(
                 AgentMessage.conversation_id == conversation_id,
                 AgentMessage.sequence_no > after_sequence,
             )
             .order_by(AgentMessage.sequence_no)
-            .limit(min(limit, 200))
         )
-    )
+        if not _message_is_superseded(item)
+    ][: min(limit, 200)]
     return [_message_dict(item) for item in rows]
 
 
@@ -1718,7 +2094,7 @@ def send_message(
     if existing:
         return _message_dict(existing)
     allow_stale_queue = (
-        item.state == ConversationState.GENERATING
+        item.state in {ConversationState.GENERATING, ConversationState.WAITING_SUBAGENTS}
         and payload.delivery_mode == DeliveryMode.QUEUE_AFTER_TURN
     )
     if item.state_version != payload.expected_conversation_version and not allow_stale_queue:
@@ -1742,7 +2118,10 @@ def send_message(
     if len(text) > get_settings().conversation_message_max_chars:
         raise DomainError("MESSAGE_TOO_LARGE", "Message is too large", 422)
     capability_refs = _validated_capability_refs(db, attempt, payload)
-    queued_during_turn = item.state == ConversationState.GENERATING
+    queued_during_turn = item.state in {
+        ConversationState.GENERATING,
+        ConversationState.WAITING_SUBAGENTS,
+    }
     message = _append(
         db,
         item,
@@ -1758,6 +2137,10 @@ def send_message(
         client_message_id=payload.client_message_id,
         created_by=actor,
     )
+    if item.context_baseline_json.get("stopped_turn"):
+        baseline = copy.deepcopy(item.context_baseline_json)
+        baseline.pop("stopped_turn", None)
+        item.context_baseline_json = baseline
     item.state_version += 1
     node_run, run_id = _context(db, attempt)
     db.add(
@@ -2034,6 +2417,7 @@ def recover_conversation_tasks(db: Session) -> int:
                         ConversationState.GENERATING,
                         ConversationState.STOPPING,
                         ConversationState.WAITING_HUMAN,
+                        ConversationState.WAITING_SUBAGENTS,
                         ConversationState.READ_ONLY,
                     ]
                 )
@@ -2044,6 +2428,17 @@ def recover_conversation_tasks(db: Session) -> int:
     )
     recovered = 0
     for conversation in conversations:
+        if conversation.state == ConversationState.WAITING_SUBAGENTS:
+            children = list(
+                db.scalars(
+                    select(AgentConversation).where(
+                        AgentConversation.parent_conversation_id == conversation.id
+                    )
+                )
+            )
+            if children and _resume_parent_after_subagents(db, children[-1]):
+                recovered += 1
+            continue
         if conversation.state == ConversationState.STOPPING:
             if _recover_delivery(
                 db,
@@ -2066,7 +2461,7 @@ def recover_conversation_tasks(db: Session) -> int:
             set_attempt_conversations_state(db, attempt.id, ConversationState.READ_ONLY)
             continue
         if conversation.state == ConversationState.CREATING:
-            if conversation.kind == ConversationKind.HUMAN_CREATED and _recover_delivery(
+            if conversation.kind != ConversationKind.AUTO and _recover_delivery(
                 db,
                 task_type="CREATE_CONVERSATION",
                 aggregate_type="CONVERSATION",
@@ -2225,6 +2620,7 @@ def process_create_conversation(
         bindings=bindings,
         workspace_ref=attempt.workspace_ref or "",
         interaction_mode="COLLABORATION",
+        delegation_enabled=item.kind == ConversationKind.HUMAN_CREATED,
         conversation_history=tuple(
             cast(
                 list[dict[str, str]],
@@ -2323,12 +2719,12 @@ def process_create_conversation(
 def process_cleanup_conversation_runtime(
     db: Session, conversation_id: str, lease: Lease, *, commit: bool = True
 ) -> None:
-    """Release compute owned by a terminal human-created conversation."""
+    """Release compute owned by a terminal non-automatic conversation."""
 
     item = _conversation(db, conversation_id)
     if (
-        item.kind != ConversationKind.HUMAN_CREATED
-        or item.state != ConversationState.READ_ONLY
+        item.kind == ConversationKind.AUTO
+        or item.state not in {ConversationState.READ_ONLY, ConversationState.FAILED}
         or not item.runtime_conversation_id
     ):
         return
@@ -2346,7 +2742,7 @@ def process_cleanup_conversation_runtime(
         raise RuntimeError("task lease was lost during conversation Runtime cleanup")
     current = _conversation(db, conversation_id, lock=True)
     if (
-        current.state == ConversationState.READ_ONLY
+        current.state in {ConversationState.READ_ONLY, ConversationState.FAILED}
         and current.runtime_conversation_id == runtime_conversation_id
     ):
         current.runtime_job_id = None
@@ -2391,6 +2787,33 @@ def process_stop_conversation_runtime(
     current.runtime_job_id = None
     current.runtime_conversation_id = None
     current.runtime_cursor = None
+    latest_human = next(
+        (
+            message
+            for message in reversed(
+                list(
+                    db.scalars(
+                        select(AgentMessage)
+                        .where(
+                            AgentMessage.conversation_id == current.id,
+                            AgentMessage.source == MessageSource.HUMAN,
+                            AgentMessage.delivery_state == DeliveryState.DELIVERED,
+                        )
+                        .order_by(AgentMessage.sequence_no)
+                    )
+                )
+            )
+            if not _message_is_superseded(message)
+        ),
+        None,
+    )
+    baseline = copy.deepcopy(current.context_baseline_json or {})
+    if latest_human is not None:
+        baseline["stopped_turn"] = {
+            "editable_message_id": latest_human.id,
+            "stopped_at_version": current.state_version,
+        }
+    current.context_baseline_json = baseline
     current.state_version += 1
     _event(
         db,
@@ -2471,6 +2894,45 @@ def record_poll_conversation_failure(
             "error": detail,
         },
     )
+    _finish_subagent(db, item)
+    db.flush()
+
+
+def record_create_conversation_failure(
+    db: Session, conversation_id: str, error: str, *, terminal: bool
+) -> None:
+    """Project a terminal child creation failure and unblock its parent batch."""
+
+    if not terminal:
+        return
+    item = _conversation(db, conversation_id, lock=True)
+    if item.state != ConversationState.CREATING:
+        return
+    previous = item.state
+    item.state = ConversationState.FAILED
+    item.state_version += 1
+    detail = error[:2000]
+    _append(
+        db,
+        item,
+        source=MessageSource.AGENT,
+        message_type=MessageType.ERROR,
+        content={"error": {"code": "RUNTIME_CREATE_FAILED", "message": detail}},
+        delivery_state=DeliveryState.DELIVERED,
+        runtime_event_id=f"create-failed:{item.id}:v{item.state_version}",
+    )
+    _event(
+        db,
+        item,
+        "CONVERSATION_STATE_CHANGED",
+        {
+            "from": previous,
+            "to": item.state,
+            "version": item.state_version,
+            "error": detail,
+        },
+    )
+    _finish_subagent(db, item)
     db.flush()
 
 
@@ -2488,7 +2950,7 @@ def _append_runtime_payload(
     # result is appended separately by _apply_conversation_result.  Projecting
     # both makes one user turn look like two model answers, so collaboration
     # keeps tool/state activity but only exposes the Finish result as the reply.
-    if event_type == "MESSAGE" and conversation.kind == ConversationKind.HUMAN_CREATED:
+    if event_type == "MESSAGE" and conversation.kind != ConversationKind.AUTO:
         return
     existing = db.scalar(
         select(AgentMessage.id).where(
@@ -2592,6 +3054,11 @@ def _apply_conversation_result(
         text = result.final_message or (
             "\n".join(value[1] for value in result.outputs.values()) if result.outputs else ""
         )
+        tasks = _delegation_tasks(text) if text else None
+        if tasks is not None and _start_delegation(
+            db, conversation, tasks, result_key=f"{message_id}:{result.cursor or ''}"
+        ):
+            return
         if text:
             append_once(
                 message_type=MessageType.TEXT,
@@ -2611,6 +3078,8 @@ def _apply_conversation_result(
             "CONVERSATION_STATE_CHANGED",
             {"from": previous, "to": next_state, "version": conversation.state_version},
         )
+    if result.status != "RUNNING" and conversation.kind == ConversationKind.SUBAGENT:
+        _finish_subagent(db, conversation)
 
 
 def _schedule_next_message(db: Session, conversation: AgentConversation) -> None:
@@ -2663,6 +3132,7 @@ def process_poll_conversation(
         return
     if not conversation.runtime_conversation_id:
         conversation.state = ConversationState.FAILED
+        _finish_subagent(db, conversation)
         conversation.state_version += 1
         db.commit() if commit else db.flush()
         return
@@ -2752,6 +3222,8 @@ def process_deliver_message(
         message.delivery_state = DeliveryState.FAILED
         message.error_code = "RUNTIME_CONVERSATION_UNAVAILABLE"
         conversation.state = ConversationState.FAILED
+        conversation.state_version += 1
+        _finish_subagent(db, conversation)
         db.commit() if commit else db.flush()
         return
     message.delivery_state = DeliveryState.DELIVERING
@@ -2782,6 +3254,7 @@ def process_deliver_message(
             failed.error_detail = exc.message
         current.state = ConversationState.FAILED
         current.state_version += 1
+        _finish_subagent(db, current)
         _event(
             db,
             current,

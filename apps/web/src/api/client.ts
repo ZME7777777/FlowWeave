@@ -176,6 +176,8 @@ export const api = {
       title, expected_attempt_state_version: version, baseline: { include_current_artifacts: true },
     }, true)),
   conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
+  conversationSubagents: (conversationId: string) =>
+    request<AgentConversation[]>(`/agent-conversations/${conversationId}/subagents`),
   stopConversation: (conversationId: string, version: number) =>
     request<AgentConversation>(`/agent-conversations/${conversationId}/stop`, json('POST', { expected_conversation_version: version }, true)),
   deleteConversation: (conversationId: string) => request<void>(`/agent-conversations/${conversationId}`, json('DELETE')),
@@ -192,10 +194,13 @@ export const api = {
       delivery_mode: 'QUEUE_AFTER_TURN',
       expected_conversation_version: version,
     }, true)),
-  forkConversationMessage: (messageId: string, version: number, editedText?: string) =>
+  forkConversationMessage: (messageId: string, version: number) =>
     request<AgentConversation>(`/agent-messages/${messageId}/fork`, json('POST', {
       expected_conversation_version: version,
-      ...(editedText === undefined ? {} : { edited_text: editedText }),
+    }, true)),
+  reviseConversationMessage: (messageId: string, version: number, text: string) =>
+    request<AgentConversation>(`/agent-messages/${messageId}/revise`, json('POST', {
+      expected_conversation_version: version, text,
     }, true)),
   steerConversationMessage: (messageId: string) =>
     request<AgentMessage>(`/agent-messages/${messageId}/steer`, json('POST', undefined, true)),

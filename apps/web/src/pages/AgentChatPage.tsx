@@ -13,11 +13,11 @@ const MAX_ATTACHMENT_COUNT = 4;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENTS_BYTES = 20 * 1024 * 1024;
 interface PendingAttachment extends MessageAttachmentInput { id: string; preview_url?: string }
-
+interface AttachmentPreview { messageId: string; item: AgentMessageAttachmentPart }
 const STATE_LABELS: Record<string, string> = {
   CREATING: '创建中', IDLE: '在线', GENERATING: 'Agent 生成中',
   STOPPING: '正在停止',
-  WAITING_HUMAN: '等待你的回复', FAILED: '连接失败', READ_ONLY: '历史会话',
+  WAITING_HUMAN: '等待你的回复', WAITING_SUBAGENTS: '等待子智能体', FAILED: '连接失败', READ_ONLY: '历史会话',
 };
 const STARTED_STATES = new Set(['WAITING_START_CONFIRMATION', 'EXECUTING', 'WAITING_HUMAN', 'END_GATES', 'END_BLOCKED', 'WAITING_ACCEPTANCE']);
 const conversationTitle = (title: string) => title.replace(/Attempt\s*(\d+)/gi, '第 $1 轮');
@@ -114,15 +114,40 @@ function MarkdownMessage({ text, messageId }: { text: string; messageId?: string
   >{text}</ReactMarkdown></div>;
 }
 
-function MessageAttachmentList({ message }: { message: AgentMessage }) {
+function AttachmentPreviewDialog({ preview, onClose }: { preview: AttachmentPreview; onClose: () => void }) {
+  const { messageId, item } = preview;
+  const inlineUrl = messageAttachmentUrl(messageId, item.attachment_id);
+  const downloadUrl = messageAttachmentUrl(messageId, item.attachment_id, true);
+  const canEmbed = item.mime_type.startsWith('image/') || item.mime_type === 'application/pdf' || item.mime_type.startsWith('text/');
+  useEffect(() => {
+    const close = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [onClose]);
+  return <div className="attachment-preview-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="attachment-preview-dialog" role="dialog" aria-modal="true" aria-label={`预览 ${item.filename}`}>
+      <header><div><b>{item.filename}</b><small>{item.mime_type} · {formatBytes(item.byte_size)}</small></div><div><a className="secondary" href={downloadUrl}><Download size={13}/>下载</a><button type="button" className="ghost" aria-label="关闭预览" onClick={onClose}><X size={17}/></button></div></header>
+      <div className={`attachment-preview-content ${item.mime_type.startsWith('image/') ? 'image' : ''}`}>{item.mime_type.startsWith('image/')
+        ? <img src={inlineUrl} alt={item.filename}/>
+        : canEmbed ? <iframe src={inlineUrl} title={item.filename}/>
+          : <div className="attachment-preview-unsupported"><FileIcon size={34}/><b>此格式暂不支持站内预览</b><span>可下载后使用本地应用打开。</span><a className="primary" href={downloadUrl}><Download size={14}/>下载文件</a></div>}
+      </div>
+    </section>
+  </div>;
+}
+
+function MessageAttachmentList({ message, onPreview }: { message: AgentMessage; onPreview: (preview: AttachmentPreview) => void }) {
   const attachments = messageAttachments(message);
   if (!attachments.length) return null;
   return <div className="message-attachments">{attachments.map(item => {
     const url = messageAttachmentUrl(message.id, item.attachment_id);
-    return <a key={item.attachment_id} href={messageAttachmentUrl(message.id, item.attachment_id, true)} className={item.mime_type.startsWith('image/') ? 'image' : ''} title={`下载 ${item.filename}`}>
-      {item.mime_type.startsWith('image/') ? <img src={url} alt={item.filename}/> : <span><FileIcon size={16}/></span>}
-      <b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small><Download size={13}/>
-    </a>;
+    return <article key={item.attachment_id} className={item.mime_type.startsWith('image/') ? 'image' : ''}>
+      <button type="button" className="attachment-preview-trigger" title={`预览 ${item.filename}`} onClick={() => onPreview({ messageId: message.id, item })}>
+        {item.mime_type.startsWith('image/') ? <img src={url} alt={item.filename}/> : <span><FileIcon size={16}/></span>}
+        <span><b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small></span>
+      </button>
+      <a href={messageAttachmentUrl(message.id, item.attachment_id, true)} title={`下载 ${item.filename}`} aria-label={`下载 ${item.filename}`}><Download size={13}/></a>
+    </article>;
   })}</div>;
 }
 
@@ -134,9 +159,51 @@ function usefulDetails(value: unknown): Record<string, unknown> {
   return Object.fromEntries(Object.entries(eventDetails(value)).filter(([, item]) => item !== '' && item !== null && item !== undefined));
 }
 
-function eventName(payload: Record<string, unknown>, fallback: string) {
-  const raw = String(payload.event_name || fallback).replace(/(Action|Observation|Event)$/g, '');
-  return raw || fallback;
+type ToolActivityKind = 'read' | 'edit' | 'command' | 'search' | 'web' | 'delegate' | 'generic';
+
+function toolActivityKind(tool: Record<string, unknown>): ToolActivityKind {
+  const details = eventDetails(tool.details);
+  const signature = `${String(tool.event_name ?? '')} ${Object.keys(details).join(' ')}`.toLowerCase();
+  if (/(delegate|subagent|agenttask|spawn)/.test(signature)) return 'delegate';
+  if (/(write|edit|patch|replace|createfile|fileeditor)/.test(signature)) return 'edit';
+  if (/(read|openfile|viewfile|catfile)/.test(signature)) return 'read';
+  if (/(command|terminal|shell|bash|execute|process)/.test(signature)) return 'command';
+  if (/(search|grep|find|glob|ripgrep)/.test(signature)) return 'search';
+  if (/(browser|web|url|fetch|http)/.test(signature)) return 'web';
+  return 'generic';
+}
+
+function toolActivityLabel(tool: Record<string, unknown>, completed: boolean) {
+  const labels: Record<ToolActivityKind, [string, string]> = {
+    read: ['正在读取文件', '已读取文件'],
+    edit: ['正在编辑文件', '已编辑文件'],
+    command: ['正在运行命令', '已运行命令'],
+    search: ['正在搜索内容', '已搜索内容'],
+    web: ['正在获取网页内容', '已获取网页内容'],
+    delegate: ['正在安排子 Agent', '已安排子 Agent'],
+    generic: ['正在使用工具', '已使用工具'],
+  };
+  return labels[toolActivityKind(tool)][completed ? 1 : 0];
+}
+
+function activityPreview(content: string, details: Record<string, unknown>) {
+  const preferred = ['path', 'file_path', 'command', 'query', 'url'];
+  for (const key of preferred) {
+    const value = details[key];
+    if (typeof value === 'string' && value.trim()) return value.trim().split('\n')[0];
+  }
+  return content.split('\n')[0] || (Object.keys(details).length ? `${Object.keys(details).length} 项详情` : '');
+}
+
+function SubagentSummary({ subagents }: { subagents: AgentConversation[] }) {
+  if (!subagents.length) return null;
+  const running = subagents.filter(item => !['READ_ONLY', 'FAILED'].includes(item.state)).length;
+  const failed = subagents.filter(item => item.state === 'FAILED').length;
+  const status = running ? `${subagents.length} · ${running} 运行中` : failed ? `${subagents.length} · ${failed} 失败` : `${subagents.length} 完成`;
+  return <section className="subagent-summary"><h3>子智能体</h3><div><span className="subagent-avatars">{subagents.slice(0, 5).map((item, index) => {
+    const state = item.state === 'FAILED' ? 'failed' : item.state === 'READ_ONLY' ? 'completed' : 'running';
+    return <i key={item.id} className={state} title={`${item.title} · ${STATE_LABELS[item.state] ?? item.state}`} style={{ '--subagent-index': index } as React.CSSProperties}><Bot size={12}/></i>;
+  })}</span><b>{status}</b></div></section>;
 }
 
 function ActivityMessage({ message }: { message: AgentMessage }) {
@@ -144,16 +211,14 @@ function ActivityMessage({ message }: { message: AgentMessage }) {
     const state = eventDetails(message.content.state);
     const text = typeof state.content === 'string' ? state.content.trim() : '';
     if (!text) return null;
-    return <details className="activity-message thought-message"><summary><span><Sparkles size={15}/><b>思考过程</b><small>{text.split('\n')[0]}</small></span><ChevronRight size={14}/></summary><MarkdownMessage text={text} messageId={message.id}/></details>;
+    return <div className="activity-message thought-message"><Sparkles size={14}/><MarkdownMessage text={text} messageId={message.id}/></div>;
   }
   const tool = eventDetails(message.content.tool);
   const details = usefulDetails(tool.details);
   const content = typeof tool.content === 'string' ? tool.content.trim() : '';
-  const fallback = message.message_type === 'TOOL_RESULT' ? '工具结果' : '工具调用';
-  const name = eventName(tool, fallback);
   if (!content && !Object.keys(details).length && !tool.event_name) return null;
   const completed = message.message_type === 'TOOL_RESULT';
-  return <details className={`activity-message tool-activity ${completed ? 'completed' : 'running'}`}><summary><span>{completed ? <CheckCircle2 size={15}/> : <Sparkles size={15}/>}<b>{completed ? '工具执行结果' : '调用工具'} · {name}</b><small>{content.split('\n')[0] || (Object.keys(details).length ? `${Object.keys(details).length} 项参数` : '')}</small></span><ChevronRight size={14}/></summary><div className="activity-detail">{content && <MarkdownMessage text={content} messageId={message.id}/>} {!!Object.keys(details).length && <pre>{JSON.stringify(details, null, 2)}</pre>}</div></details>;
+  return <details className={`activity-message tool-activity ${completed ? 'completed' : 'running'}`}><summary><span>{completed ? <CheckCircle2 size={14}/> : <LoaderCircle size={14}/>}<b>{toolActivityLabel(tool, completed)}</b><small>{activityPreview(content, details)}</small></span><ChevronRight size={14}/></summary><div className="activity-detail">{content && <MarkdownMessage text={content} messageId={message.id}/>} {!!Object.keys(details).length && <pre>{JSON.stringify(details, null, 2)}</pre>}</div></details>;
 }
 
 const isActivityMessage = (message: AgentMessage) => message.message_type === 'TOOL_CALL' || message.message_type === 'TOOL_RESULT' || message.message_type === 'STATE';
@@ -165,10 +230,7 @@ function activitySummary(message: AgentMessage) {
     return text ? `正在思考 · ${text}` : '正在分析上下文';
   }
   const tool = eventDetails(message.content.tool);
-  const fallback = message.message_type === 'TOOL_RESULT' ? '工具结果' : '工具调用';
-  return message.message_type === 'TOOL_RESULT'
-    ? `${eventName(tool, fallback)} 已返回，等待 Agent 下一步`
-    : `正在调用 ${eventName(tool, fallback)}`;
+  return toolActivityLabel(tool, message.message_type === 'TOOL_RESULT');
 }
 
 function formatDuration(start: string, end: string | number) {
@@ -193,8 +255,19 @@ function ActivityGroup({ messages, running, startedAt, completedAt }: { messages
     running ? clock : completedAt ?? messages[messages.length - 1].created_at,
   );
   return <details className={`activity-group ${running ? 'running' : 'completed'}`} open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
-    <summary><span>{running ? <LoaderCircle size={14}/> : <CheckCircle2 size={14}/>}<b>{running ? '处理中' : '已处理'}</b><small>{duration}</small>{running && <em>{activitySummary(last)}</em>}</span><ChevronRight size={14}/></summary>
+    <summary><span>{running ? <LoaderCircle size={14}/> : <CheckCircle2 size={14}/>}<b>{running ? '正在处理' : '查看处理过程'}</b><small>{duration}</small>{running && <em>{activitySummary(last)}</em>}</span><ChevronRight size={14}/></summary>
     <div className="activity-group-content">{messages.map(message => <ActivityMessage key={message.id} message={message}/>)}</div>
+  </details>;
+}
+
+function SubagentActivity({ subagents }: { subagents: AgentConversation[] }) {
+  if (!subagents.length) return null;
+  const running = subagents.filter(item => !['READ_ONLY', 'FAILED'].includes(item.state)).length;
+  const failed = subagents.filter(item => item.state === 'FAILED').length;
+  const label = running ? '子 Agent 已开始工作' : failed ? '子 Agent 工作遇到问题' : '子 Agent 已完成工作';
+  return <details className={`subagent-activity ${running ? 'running' : failed ? 'failed' : 'completed'}`}>
+    <summary><span className="subagent-capsule"><Bot size={13}/><b>{label}</b><small>{running ? `${running} 个运行中` : `${subagents.length} 个`}</small></span><ChevronRight size={14}/></summary>
+    <div className="subagent-activity-list">{subagents.map(item => <article key={item.id}><span><Bot size={12}/></span><div><b>{conversationTitle(item.title)}</b>{item.delegation_instruction && <small>{item.delegation_instruction}</small>}</div><em>{STATE_LABELS[item.state] ?? item.state}</em></article>)}</div>
   </details>;
 }
 
@@ -230,16 +303,24 @@ function deliveryLabel(message: AgentMessage, conversationState?: AgentConversat
   return '已取消';
 }
 
-function MessageBubble({ message, onRetry, onFork, onEdit, final, conversationState, latestHuman, forking }: {
+function MessageBubble({ message, onRetry, onFork, onRevise, onPreview, final, conversationState, latestHuman, editable, forking, revising }: {
   message: AgentMessage;
   onRetry: (id: string) => void;
   onFork: (message: AgentMessage) => void;
-  onEdit: (message: AgentMessage) => void;
+  onRevise: (message: AgentMessage, text: string) => void;
+  onPreview: (preview: AttachmentPreview) => void;
   final: boolean;
   conversationState?: AgentConversation['state'];
   latestHuman: boolean;
+  editable: boolean;
   forking: boolean;
+  revising: boolean;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [editedText, setEditedText] = useState(messageText(message));
+  useEffect(() => {
+    if (!editable) setEditing(false);
+  }, [editable]);
   const meta = message.source === 'PROGRAM'
     ? { label: '流程自动发送', className: 'program' }
     : message.source === 'HUMAN'
@@ -249,26 +330,32 @@ function MessageBubble({ message, onRetry, onFork, onEdit, final, conversationSt
   if (message.message_type === 'ERROR') {
     return <article className="message-error"><XCircle size={17}/><div><b>执行遇到问题</b><p>{messageText(message)}</p></div></article>;
   }
-  return <article className={`chat-message ${meta.className} ${final ? 'final-answer' : ''}`}>
-    <div className="message-avatar" aria-label={meta.label} title={meta.label}><SourceIcon source={message.source}/></div>
-    <div className="message-body"><header>{message.source !== 'HUMAN' && <b>{final ? '最终答复' : meta.label}</b>}<span>{new Date(message.created_at).toLocaleTimeString()}</span></header>{!!message.content.capability_refs?.length && <div className="message-capability-refs">{message.content.capability_refs.map(item => <span key={`${item.capability_type}-${item.capability_key}`}>{item.capability_type === 'SKILL' ? 'Skill' : 'MCP'} · {item.capability_key}</span>)}</div>}{messageText(message) && (message.source === 'AGENT' ? <MarkdownMessage text={messageText(message)} messageId={message.id}/> : <p>{messageText(message)}</p>)}<MessageAttachmentList message={message}/>
-      {message.message_type === 'TEXT' && message.source !== 'PROGRAM' && messageText(message) && <div className="message-branch-actions">{message.source === 'HUMAN' && <button type="button" disabled={forking} onClick={() => onEdit(message)} title="保留原消息，并从此处修改上下文创建新会话"><Pencil size={12}/>编辑并分支</button>}<button type="button" disabled={forking} onClick={() => onFork(message)} title="复制此消息及之前的历史到新会话"><GitFork size={12}/>{forking ? '正在创建…' : '从此分叉'}</button></div>}
+  const text = messageText(message);
+  return <article className={`chat-message ${meta.className} ${message.source === 'PROGRAM' ? 'has-avatar' : 'no-avatar'} ${final ? 'final-answer' : ''}`}>
+    {message.source === 'PROGRAM' && <div className="message-avatar" aria-label={meta.label} title={meta.label}><SourceIcon source={message.source}/></div>}
+    <div className="message-body"><header>{message.source !== 'HUMAN' && <b>{final ? '最终答复' : meta.label}</b>}<span>{new Date(message.created_at).toLocaleTimeString()}</span></header>{!!message.content.capability_refs?.length && <div className="message-capability-refs">{message.content.capability_refs.map(item => <span key={`${item.capability_type}-${item.capability_key}`}>{item.capability_type === 'SKILL' ? 'Skill' : 'MCP'} · {item.capability_key}</span>)}</div>}{editing ? <div className="message-revision-editor"><textarea autoFocus aria-label="编辑最近发送的消息" value={editedText} maxLength={20000} onChange={event => setEditedText(event.target.value)}/><small>重新发送会在当前会话中替换这一轮上下文；原附件和能力引用保持不变。</small><div><button type="button" className="ghost" disabled={revising} onClick={() => { setEditedText(text); setEditing(false); }}>取消</button><button type="button" className="primary" disabled={revising || !editedText.trim() || editedText.trim() === text} onClick={() => onRevise(message, editedText.trim())}>{revising ? '正在重建…' : '重新发送'}</button></div></div> : <>{text && (message.source === 'AGENT' ? <MarkdownMessage text={text} messageId={message.id}/> : <p>{text}</p>)}<MessageAttachmentList message={message} onPreview={onPreview}/></>}
+      {!editing && message.message_type === 'TEXT' && text && ((message.source === 'AGENT') || editable) && <div className="message-branch-actions">{editable && <button type="button" disabled={revising} onClick={() => { setEditedText(text); setEditing(true); }} title="编辑这条消息并在当前会话重新生成"><Pencil size={12}/>编辑重发</button>}{message.source === 'AGENT' && <button type="button" disabled={forking} onClick={() => onFork(message)} title="复制这条模型回复及之前的历史到新会话"><GitFork size={12}/>{forking ? '正在创建…' : '从此分叉'}</button>}</div>}
       {message.source !== 'AGENT' && <footer className={`delivery ${message.delivery_state.toLowerCase()}`}>{deliveryLabel(message, conversationState, latestHuman)}{message.delivery_state === 'FAILED' && <>{message.error_detail && <span>{message.error_code === 'RUNTIME_CONVERSATION_MISSING' || message.error_code === 'EXECUTOR_UNAVAILABLE' ? 'Agent 连接已失效，重试会自动重建' : message.error_detail}</span>}<button onClick={() => onRetry(message.id)}><RefreshCw size={12}/>重试并重连</button></>}</footer>}
     </div>
   </article>;
 }
 
-function MessageTimeline({ conversation, messages, onRetry, onFork, onEdit, forkingId }: {
+function MessageTimeline({ conversation, messages, subagents, onRetry, onFork, onRevise, onPreview, forkingId, revisingId, retrying }: {
   conversation?: AgentConversation;
   messages: AgentMessage[];
+  subagents: AgentConversation[];
   onRetry: (id: string) => void;
   onFork: (message: AgentMessage) => void;
-  onEdit: (message: AgentMessage) => void;
+  onRevise: (message: AgentMessage, text: string) => void;
+  onPreview: (preview: AttachmentPreview) => void;
   forkingId?: string;
+  revisingId?: string;
+  retrying: boolean;
 }) {
   const timelineRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const [following, setFollowing] = useState(true);
   const timelineItems = groupTimelineMessages(messages);
   const lastActivityGroupId = [...timelineItems].reverse().find(item => item.type === 'activity')?.id;
   const latestInputId = [...messages].reverse().find(message => message.source === 'HUMAN' || message.source === 'PROGRAM')?.id;
@@ -277,9 +364,19 @@ function MessageTimeline({ conversation, messages, onRetry, onFork, onEdit, fork
     const timeline = timelineRef.current;
     if (timeline) timeline.scrollTop = timeline.scrollHeight;
   }, []);
+  const pauseFollowing = useCallback(() => {
+    followRef.current = false;
+    setFollowing(false);
+  }, []);
+  const resumeFollowing = useCallback(() => {
+    followRef.current = true;
+    setFollowing(true);
+    scrollToBottom();
+  }, [scrollToBottom]);
 
   useLayoutEffect(() => {
     followRef.current = true;
+    setFollowing(true);
     scrollToBottom();
   }, [conversation?.id, scrollToBottom]);
   useLayoutEffect(() => {
@@ -295,16 +392,20 @@ function MessageTimeline({ conversation, messages, onRetry, onFork, onEdit, fork
     return () => observer.disconnect();
   }, [conversation?.id, scrollToBottom]);
 
-  return <div
-    ref={timelineRef}
-    className="message-timeline"
-    aria-live="polite"
-    aria-label="对话消息"
-    onScroll={event => {
-      const timeline = event.currentTarget;
-      followRef.current = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 80;
-    }}
-  ><div ref={contentRef} className="message-timeline-content">
+  return <div className="message-timeline-shell"><div
+      ref={timelineRef}
+      className="message-timeline"
+      aria-live="polite"
+      aria-label="对话消息"
+      onWheel={() => pauseFollowing()}
+      onTouchMove={() => pauseFollowing()}
+      onPointerDown={event => { if (!(event.target as HTMLElement).closest('[data-follow-control]')) pauseFollowing(); }}
+      onScroll={event => {
+        if (!followRef.current) return;
+        const timeline = event.currentTarget;
+        if (timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight > 80) pauseFollowing();
+      }}
+    ><div ref={contentRef} className="message-timeline-content">
     {timelineItems.map(item => {
       if (item.type === 'activity') {
         const firstSequence = item.messages[0].sequence_no;
@@ -315,11 +416,13 @@ function MessageTimeline({ conversation, messages, onRetry, onFork, onEdit, fork
         return <ActivityGroup key={item.id} messages={item.messages} running={running} startedAt={startedBy?.created_at} completedAt={completedBy?.created_at ?? item.messages[item.messages.length - 1].created_at}/>;
       }
       const message = item.message;
-      return <MessageBubble key={item.id} message={message} onRetry={onRetry} onFork={onFork} onEdit={onEdit} forking={message.id === forkingId} final={message.content.presentation === 'final'} conversationState={conversation?.state} latestHuman={message.id === latestInputId}/>;
+      return <MessageBubble key={item.id} message={message} onRetry={onRetry} onFork={onFork} onRevise={onRevise} onPreview={onPreview} editable={conversation?.editable_message_id === message.id} forking={message.id === forkingId} revising={message.id === revisingId} final={message.content.presentation === 'final'} conversationState={conversation?.state} latestHuman={message.id === latestInputId}/>;
     })}
+    <SubagentActivity subagents={subagents}/>
+    {conversation && <AgentActivityStatus conversation={conversation} messages={messages} retrying={retrying} onRetry={onRetry}/>}
     {conversation && !messages.length && <div className="conversation-empty"><Bot size={26}/><b>当前轮次上下文已挂载</b><span>发送第一条消息开始协作。</span></div>}
     {!conversation && <div className="conversation-empty"><Workflow size={26}/><b>尚无可用会话</b><span>本轮开始执行后将自动创建默认会话。</span></div>}
-  </div></div>;
+    </div></div>{!following && <button type="button" className="timeline-follow-button" data-follow-control onPointerDown={event => event.stopPropagation()} onClick={resumeFollowing}><CornerDownRight size={14}/>立即跟踪最新回答</button>}</div>;
 }
 
 function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { conversation: AgentConversation; messages: AgentMessage[]; retrying: boolean; onRetry: (id: string) => void }) {
@@ -387,12 +490,12 @@ function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { co
       detail = `消息已送达，但尚未收到模型或工具事件。${thoughtDetail}`;
     } else if (latestActivity.message_type === 'TOOL_CALL') {
       const tool = eventDetails(latestActivity.content.tool);
-      title = `工具调用中 · ${eventName(tool, '工具')}`;
+      title = toolActivityLabel(tool, false);
       detail = `最后事件距今 ${quietLabel}。${thoughtDetail}`;
     } else if (latestActivity.message_type === 'TOOL_RESULT') {
       const tool = eventDetails(latestActivity.content.tool);
       title = quietSeconds >= 30 ? 'Agent 事件流长时间无更新' : '工具结果已返回';
-      detail = `${eventName(tool, '工具')} 已返回，之后 ${quietLabel} 没有新事件。${thoughtDetail}`;
+      detail = `${toolActivityLabel(tool, true)}，之后 ${quietLabel} 没有新事件。${thoughtDetail}`;
       if (quietSeconds >= 30) { tone = 'waiting'; icon = <Clock3 size={15}/>; }
     } else {
       title = '已收到模型思考事件';
@@ -403,6 +506,9 @@ function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { co
     title = 'Agent 正在等待你的回复';
     detail = '补充信息后，本轮执行会从当前上下文继续。';
     icon = <Clock3 size={15}/>;
+  } else if (conversation.state === 'WAITING_SUBAGENTS') {
+    title = '正在等待子 Agent 完成';
+    detail = '子 Agent 正在并行处理已分配的任务，结果会自动回到当前对话。';
   } else {
     return null;
   }
@@ -421,11 +527,11 @@ function ConversationRail({ conversations, selectedId, attempt, onSelect, onCrea
   </aside>;
 }
 
-function ContextPanel({ attempt, nodeName, node, runName, messages, conversationKind }: { attempt: NodeAttempt; nodeName: string; node?: { asset: { executor: { model_name?: string | null } | null; workspace_ref?: string; capabilities: Array<{ capability_type: string; capability_key: string }> } }; runName: string; messages: AgentMessage[]; conversationKind?: AgentConversation['kind'] }) {
+function ContextPanel({ attempt, nodeName, node, runName, messages, subagents, conversationKind, onPreview }: { attempt: NodeAttempt; nodeName: string; node?: { asset: { executor: { model_name?: string | null } | null; workspace_ref?: string; capabilities: Array<{ capability_type: string; capability_key: string }> } }; runName: string; messages: AgentMessage[]; subagents: AgentConversation[]; conversationKind?: AgentConversation['kind']; onPreview: (preview: AttachmentPreview) => void }) {
   const attachments = messages.flatMap(message => messageAttachments(message).map(item => ({ message, item })));
   const urls = [...new Set(messages.filter(message => message.source === 'HUMAN').flatMap(message => messageText(message).match(/https?:\/\/[^\s<>"']+/g) ?? []).map(value => value.replace(/[()[\]{},.;:!?，。；：！？]+$/, '')))];
   const collaboration = conversationKind === 'HUMAN_CREATED';
-  return <aside className="conversation-context"><header><span className="eyebrow">EXECUTION CONTEXT</span><h2>执行上下文</h2></header><section><h3>当前事实</h3><dl><dt>流程运行</dt><dd>{runName}</dd><dt>节点</dt><dd>{nodeName}</dd><dt>执行轮次</dt><dd>第 {attempt.attempt_no} 轮</dd><dt>状态 / 版本</dt><dd>{attempt.state} · v{attempt.state_version}</dd></dl></section><section><h3>模型与能力</h3><dl><dt>模型</dt><dd>{node?.asset.executor?.model_name || '服务默认'}</dd><dt>能力策略</dt><dd>{collaboration ? '按消息动态选择' : '按执行轮次选择'}</dd><dt>宿主工作区</dt><dd>{node?.asset.workspace_ref ? `var/workspaces/${node.asset.workspace_ref}` : '—'}</dd></dl>{node?.asset.capabilities.map(item => <span className="context-capability" key={`${item.capability_type}-${item.capability_key}`}>{item.capability_type} · {item.capability_key}</span>)}</section><section><h3>会话来源</h3>{attachments.map(({ message, item }) => <a className="conversation-source" key={`${message.id}-${item.attachment_id}`} href={messageAttachmentUrl(message.id, item.attachment_id, true)}><span>{item.mime_type.startsWith('image/') ? <ImageIcon size={14}/> : <FileIcon size={14}/>}</span><b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small><Download size={12}/></a>)}{urls.map(url => <a className="conversation-source url" key={url} href={url} target="_blank" rel="noreferrer"><span><Link2 size={14}/></span><b>{url}</b><small>URL</small></a>)}{!attachments.length && !urls.length && <p className="context-empty">消息中的附件和 URL 会集中显示在这里。</p>}</section><section><h3>输入与本轮产物</h3>{attempt.input_bindings.map(item => <span className="context-reference" key={item.id}><FileText size={13}/>{item.input_field_key}</span>)}{attempt.artifacts.map(item => <span className="context-reference" key={item.id}><FileText size={13}/>{item.field_key} · v{item.version_no}<small>{item.artifact_type}</small></span>)}</section><footer>{collaboration ? '人工会话共享本轮事实与能力，但不继承其他会话的启动任务。' : '这些会话只属于当前执行轮次；退回后产生的新轮次会建立独立上下文并保留这里的历史。'}</footer></aside>;
+  return <aside className="conversation-context"><header><span className="eyebrow">EXECUTION CONTEXT</span><h2>执行上下文</h2></header><section><h3>当前事实</h3><dl><dt>流程运行</dt><dd>{runName}</dd><dt>节点</dt><dd>{nodeName}</dd><dt>执行轮次</dt><dd>第 {attempt.attempt_no} 轮</dd><dt>状态 / 版本</dt><dd>{attempt.state} · v{attempt.state_version}</dd></dl></section><section><h3>模型与能力</h3><dl><dt>模型</dt><dd>{node?.asset.executor?.model_name || '服务默认'}</dd><dt>能力策略</dt><dd>{collaboration ? '按消息动态选择' : '按执行轮次选择'}</dd><dt>宿主工作区</dt><dd>{node?.asset.workspace_ref ? `var/workspaces/${node.asset.workspace_ref}` : '—'}</dd></dl>{node?.asset.capabilities.map(item => <span className="context-capability" key={`${item.capability_type}-${item.capability_key}`}>{item.capability_type} · {item.capability_key}</span>)}</section><SubagentSummary subagents={subagents}/><section><h3>会话来源</h3>{attachments.map(({ message, item }) => <article className="conversation-source" key={`${message.id}-${item.attachment_id}`}><button type="button" title={`预览 ${item.filename}`} onClick={() => onPreview({ messageId: message.id, item })}><span>{item.mime_type.startsWith('image/') ? <ImageIcon size={14}/> : <FileIcon size={14}/>}</span><span><b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small></span></button><a href={messageAttachmentUrl(message.id, item.attachment_id, true)} title={`下载 ${item.filename}`} aria-label={`下载 ${item.filename}`}><Download size={12}/></a></article>)}{urls.map(url => <a className="conversation-source url" key={url} href={url} target="_blank" rel="noreferrer"><span><Link2 size={14}/></span><b>{url}</b><small>URL</small></a>)}{!attachments.length && !urls.length && <p className="context-empty">消息中的附件和 URL 会集中显示在这里。</p>}</section><section><h3>输入与本轮产物</h3>{attempt.input_bindings.map(item => <span className="context-reference" key={item.id}><FileText size={13}/>{item.input_field_key}</span>)}{attempt.artifacts.map(item => <span className="context-reference" key={item.id}><FileText size={13}/>{item.field_key} · v{item.version_no}<small>{item.artifact_type}</small></span>)}</section><footer>{collaboration ? '人工会话共享本轮事实与能力，但不继承其他会话的启动任务。' : '这些会话只属于当前执行轮次；退回后产生的新轮次会建立独立上下文并保留这里的历史。'}</footer></aside>;
 }
 
 export function AgentChatPage() {
@@ -437,6 +543,7 @@ export function AgentChatPage() {
   const [attachmentError, setAttachmentError] = useState('');
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [runtimeSidebarCollapsed, setRuntimeSidebarCollapsed] = useState(false);
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview>();
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const runQuery = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId) });
   const attempt = useMemo(() => runQuery.data?.node_runs.find(item => item.id === selectedNodeRunId)?.attempts.find(item => item.id === selectedAttemptId), [runQuery.data, selectedAttemptId, selectedNodeRunId]);
@@ -444,9 +551,13 @@ export function AgentChatPage() {
   const conversations = conversationsQuery.data ?? [];
   const selected = conversations.find(item => item.id === selectedConversationId) ?? conversations[0];
   const messagesQuery = useQuery({ queryKey: ['conversation-messages', selected?.id], queryFn: () => api.conversationMessages(selected!.id), enabled: Boolean(selected), refetchInterval: selected?.state === 'GENERATING' || selected?.state === 'CREATING' || selected?.state === 'STOPPING' ? 1500 : 4000 });
+  const subagentsQuery = useQuery({ queryKey: ['conversation-subagents', selected?.id], queryFn: () => api.conversationSubagents(selected!.id), enabled: Boolean(selected), refetchInterval: selected?.state === 'WAITING_SUBAGENTS' ? 1500 : 4000 });
   const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['attempt-conversations', selectedAttemptId] });
-    if (selected?.id) void qc.invalidateQueries({ queryKey: ['conversation-messages', selected.id] });
+    if (selected?.id) {
+      void qc.invalidateQueries({ queryKey: ['conversation-messages', selected.id] });
+      void qc.invalidateQueries({ queryKey: ['conversation-subagents', selected.id] });
+    }
     if (selectedRunId) void qc.invalidateQueries({ queryKey: ['flow-run', selectedRunId] });
   }, [qc, selected?.id, selectedAttemptId, selectedRunId]);
   useEffect(() => selectedRunId ? subscribeToRun(selectedRunId, refresh) : undefined, [refresh, selectedRunId]);
@@ -488,13 +599,23 @@ export function AgentChatPage() {
     },
   });
   const forkMutation = useMutation({
-    mutationFn: ({ message, editedText }: { message: AgentMessage; editedText?: string }) => {
+    mutationFn: ({ message }: { message: AgentMessage }) => {
       if (!selected) throw new Error('当前没有可分叉的会话。');
-      return api.forkConversationMessage(message.id, selected.state_version, editedText);
+      return api.forkConversationMessage(message.id, selected.state_version);
     },
     onSuccess: conversation => {
       qc.setQueryData<AgentConversation[]>(['attempt-conversations', selectedAttemptId], current => current?.some(item => item.id === conversation.id) ? current : [...(current ?? []), conversation]);
       selectConversation(conversation.id);
+      refresh();
+    },
+  });
+  const reviseMutation = useMutation({
+    mutationFn: ({ message, text }: { message: AgentMessage; text: string }) => {
+      if (!selected) throw new Error('当前没有可编辑的会话。');
+      return api.reviseConversationMessage(message.id, selected.state_version, text);
+    },
+    onSuccess: conversation => {
+      qc.setQueryData<AgentConversation[]>(['attempt-conversations', selectedAttemptId], current => current?.map(item => item.id === conversation.id ? conversation : item));
       refresh();
     },
   });
@@ -547,7 +668,7 @@ export function AgentChatPage() {
       title: automatic ? '停止当前节点执行？' : '强制终止当前 Agent 回合？',
       message: automatic
         ? '自动会话与当前节点执行共享 Runtime。停止后当前执行轮次会被取消，流程中的其他记录仍会保留。'
-        : '当前 Agent 回合会被立即中断；消息和会话上下文仍会保留，之后可以继续发送新消息。',
+        : '当前 Agent 回合会被立即中断；停止完成后可以直接编辑最近发送的消息并在当前会话重新生成。',
       confirmLabel: '强制终止',
       tone: 'danger',
     }).then(confirmed => { if (confirmed) stopMutation.mutate(selected); });
@@ -559,23 +680,13 @@ export function AgentChatPage() {
       confirmLabel: '创建分支',
     }).then(confirmed => { if (confirmed) forkMutation.mutate({ message }); });
   };
-  const editFrom = (message: AgentMessage) => {
-    void dialog.prompt({
-      title: '编辑消息并创建分支',
-      message: '原消息和原会话保持不变；新会话会继承该消息之前的历史，并以修改后的内容继续。',
-      inputLabel: '修改后的消息',
-      initialValue: messageText(message),
-      confirmLabel: '创建并发送',
-    }).then(value => { if (value?.trim()) forkMutation.mutate({ message, editedText: value.trim() }); });
-  };
   const selectCapability = (type: string, key: string) => { if (!selected) return; const marker = capabilityMarker(type, key); let next = draft; if (commandMatch) { const markerStart = (commandMatch.index ?? 0) + commandMatch[1].length; next = `${draft.slice(0, markerStart)}${marker} `; } else if (!new RegExp(`(^|\\s)${escapeRegExp(marker)}(?=\\s|$)`).test(draft)) { next = `${draft}${draft && !draft.endsWith(' ') ? ' ' : ''}${marker} `; } setDrafts(old => ({ ...old, [selected.id]: next })); setSuggestionIndex(0); };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (commandSuggestions.length) { if (event.key === 'ArrowDown') { event.preventDefault(); setSuggestionIndex(index => (index + 1) % commandSuggestions.length); return; } if (event.key === 'ArrowUp') { event.preventDefault(); setSuggestionIndex(index => (index - 1 + commandSuggestions.length) % commandSuggestions.length); return; } if (event.key === 'Escape') { event.preventDefault(); setSuggestionIndex(0); return; } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); const item = commandSuggestions[Math.min(suggestionIndex, commandSuggestions.length - 1)]; selectCapability(item.capability_type, item.capability_key); return; } } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } };
   return <section className="agent-chat-page"><div className="conversation-topbar"><button onClick={returnToWorkbench}><ArrowLeft size={15}/>返回运行详情</button><div><span>{runQuery.data.name}</span><b>{nodeName} · 第 {attempt.attempt_no} 轮</b></div><span className={`conversation-status ${selected?.state.toLowerCase() ?? ''}`}>{selected ? STATE_LABELS[selected.state] : '等待会话'}</span></div>
     <div className={`agent-chat-layout ${runtimeSidebarCollapsed ? 'runtime-sidebar-collapsed' : ''}`}><ConversationRail conversations={conversations} selectedId={selected?.id} attempt={attempt} onSelect={selectConversation} onCreate={() => createMutation.mutate()} onDelete={item => { void dialog.confirm({ title: `删除“${conversationTitle(item.title)}”？`, message: '该会话的消息和临时附件都会被永久删除。', confirmLabel: '确认删除', tone: 'danger' }).then(confirmed => { if (confirmed) deleteMutation.mutate(item.id); }); }} creating={createMutation.isPending} deleting={deleteMutation.isPending ? deleteMutation.variables : undefined}/><main className="conversation-workspace"><header><div><span className="eyebrow">AGENT COLLABORATION</span><h1>{selected ? conversationTitle(selected.title) : 'Agent 协作空间'}</h1></div>{selected && <span>{selected.kind === 'AUTO' ? 'AUTO 默认会话' : `人工会话 #${selected.conversation_no}`}</span>}</header>
-      <MessageTimeline conversation={selected} messages={timelineMessages} onRetry={id => retryMutation.mutate(id)} onFork={forkFrom} onEdit={editFrom} forkingId={forkMutation.isPending ? forkMutation.variables?.message.id : undefined}/>
-      {selected && <AgentActivityStatus conversation={selected} messages={messagesQuery.data ?? []} retrying={retryMutation.isPending} onRetry={id => retryMutation.mutate(id)}/>}
+      <MessageTimeline conversation={selected} messages={timelineMessages} subagents={subagentsQuery.data ?? []} onRetry={id => retryMutation.mutate(id)} onFork={forkFrom} onRevise={(message, text) => reviseMutation.mutate({ message, text })} onPreview={setAttachmentPreview} forkingId={forkMutation.isPending ? forkMutation.variables?.message.id : undefined} revisingId={reviseMutation.isPending ? reviseMutation.variables?.message.id : undefined} retrying={retryMutation.isPending}/>
       {!!queuedMessages.length && <section className="queued-message-stack" aria-label={`排队消息 ${queuedMessages.length} 条`}><header><b>等待当前回合结束</b><span>引导会立即把消息加入正在运行的 Agent 上下文</span></header>{queuedMessages.map((message, index) => <article key={message.id}><span className="queue-position"><CornerDownRight size={15}/><small>{index + 1}</small></span><p title={messageSummary(message)}>{messageSummary(message)}</p><div className="queue-actions"><button type="button" title="立即作为引导发送" disabled={steerMutation.isPending || cancelQueuedMutation.isPending} onClick={() => steerMutation.mutate(message.id)}><CornerDownRight size={14}/>{steerMutation.isPending && steerMutation.variables === message.id ? '引导中…' : '引导'}</button><button type="button" className="queue-remove" aria-label={`移出队列 ${messageSummary(message)}`} title="仅移出队列，不影响当前回合" disabled={steerMutation.isPending || cancelQueuedMutation.isPending} onClick={() => cancelQueuedMutation.mutate(message.id)}><Trash2 size={14}/></button></div></article>)}</section>}
       {selected && (readOnly ? <div className="read-only-composer"><b>历史会话，只读</b><span>验收、退回和重跑请返回运行详情操作。</span><button className="secondary" onClick={returnToWorkbench}>返回运行详情</button></div> : <div className="message-composer">{!!commandSuggestions.length && <div className="capability-command-menu" role="listbox" aria-label="能力引用候选">{commandSuggestions.map((item, index) => <button type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? 'active' : ''} key={`${item.capability_type}-${item.capability_key}`} onMouseDown={event => event.preventDefault()} onClick={() => selectCapability(item.capability_type, item.capability_key)}><b>{capabilityMarker(item.capability_type, item.capability_key)}</b><span>{item.capability_type === 'SKILL' ? 'Skill · 调用并遵循能力说明' : 'MCP · 使用 Server 暴露的工具'}</span></button>)}</div>}{!!attachments.length && <div className="pending-attachments">{attachments.map(item => <article key={item.id}>{item.preview_url ? <img src={item.preview_url} alt=""/> : <span><FileIcon size={16}/></span>}<div><b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small></div><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => removeAttachment(item.id)}><X size={13}/></button></article>)}</div>}<textarea aria-label="发送给 Agent 的消息" value={draft} maxLength={20000} placeholder={selected.state === 'CREATING' ? '会话创建中…' : selected.state === 'STOPPING' ? '正在停止 Agent…' : selected.state === 'FAILED' ? '输入新消息并发送，系统会自动重建 Agent 会话。' : replyingToAttempt ? '回复 Agent 并继续执行。输入 $ 引用运行能力。' : '补充要求；输入 $ 引用能力，也可粘贴文件或图片。Enter 发送。'} disabled={selected.state === 'CREATING' || selected.state === 'STOPPING'} onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void addFiles(files); } }} onChange={event => { setDrafts(old => ({ ...old, [selected.id]: event.target.value })); setSuggestionIndex(0); }} onKeyDown={keyDown}/><input ref={attachmentInputRef} className="attachment-input" type="file" multiple onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = ''; }}/><div className="composer-actions"><div><button type="button" className="attach-button" aria-label="添加附件" title={replyingToAttempt ? '流程人工回复暂不支持附件，可在人工会话中发送' : '添加图片或文件'} disabled={replyingToAttempt || selected.state === 'STOPPING' || attachments.length >= MAX_ATTACHMENT_COUNT} onClick={() => attachmentInputRef.current?.click()}><Paperclip size={15}/></button><span>{selected.state === 'GENERATING' ? '可停止当前 Agent；本轮草稿会保留' : selected.state === 'STOPPING' ? '正在等待 Runtime 确认停止' : `${draft.length} / 20,000`}</span></div>{selected.state === 'GENERATING' ? <button type="button" className="agent-stop-button" aria-label="停止当前 Agent" title="停止当前 Agent" disabled={stopMutation.isPending} onClick={stop}><Square size={11} fill="currentColor"/></button> : <button className="primary" disabled={(!draft.trim() && !attachments.length) || selected.state === 'CREATING' || selected.state === 'STOPPING' || sendMutation.isPending} onClick={send}><Send size={15}/>{replyingToAttempt ? '提交并继续' : selected.state === 'FAILED' ? '重新连接并发送' : '发送'}</button>}</div></div>)}
-      {(attachmentError || createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || stopMutation.error) && <p className="conversation-error"><AlertTriangle size={14}/>{attachmentError || (createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || stopMutation.error)?.message}</p>}
-    </main><AgentRuntimeSidebar conversation={selected} collapsed={runtimeSidebarCollapsed} onCollapsedChange={setRuntimeSidebarCollapsed}><ContextPanel attempt={attempt} nodeName={nodeName} node={node} runName={runQuery.data.name} messages={messagesQuery.data ?? []} conversationKind={selected?.kind}/></AgentRuntimeSidebar></div></section>;
+      {(attachmentError || createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || reviseMutation.error || stopMutation.error) && <p className="conversation-error"><AlertTriangle size={14}/>{attachmentError || (createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || reviseMutation.error || stopMutation.error)?.message}</p>}
+    </main><AgentRuntimeSidebar conversation={selected} collapsed={runtimeSidebarCollapsed} onCollapsedChange={setRuntimeSidebarCollapsed}><ContextPanel attempt={attempt} nodeName={nodeName} node={node} runName={runQuery.data.name} messages={messagesQuery.data ?? []} subagents={subagentsQuery.data ?? []} conversationKind={selected?.kind} onPreview={setAttachmentPreview}/></AgentRuntimeSidebar></div>{attachmentPreview && <AttachmentPreviewDialog preview={attachmentPreview} onClose={() => setAttachmentPreview(undefined)}/>}</section>;
 }

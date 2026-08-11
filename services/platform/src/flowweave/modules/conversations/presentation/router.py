@@ -17,6 +17,7 @@ from flowweave.shared.schemas import (
     ConversationCreateWrite,
     ConversationForkWrite,
     ConversationPatchWrite,
+    ConversationReviseWrite,
     ConversationStopWrite,
     MessageSendWrite,
 )
@@ -57,6 +58,11 @@ async def create_conversation(
 @router.get("/agent-conversations/{conversation_id}")
 async def conversation(conversation_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.get_conversation(session, conversation_id))
+
+
+@router.get("/agent-conversations/{conversation_id}/subagents")
+async def subagents(conversation_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, lambda session: service.list_subagents(session, conversation_id))
 
 
 @router.websocket("/agent-conversations/{conversation_id}/terminal")
@@ -261,7 +267,6 @@ async def fork_conversation(
     message_id: str,
     payload: ConversationForkWrite,
     db: Db,
-    actor: Actor = None,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     return await run_sync(
@@ -271,6 +276,25 @@ async def fork_conversation(
             message_id,
             payload,
             _key(idempotency_key, "fork-conversation", message_id),
+        ),
+    )
+
+
+@router.post("/agent-messages/{message_id}/revise", status_code=202)
+async def revise_message(
+    message_id: str,
+    payload: ConversationReviseWrite,
+    db: Db,
+    actor: Actor = None,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.revise_message(
+            session,
+            message_id,
+            payload,
+            _key(idempotency_key, "revise-message", message_id),
             actor,
         ),
     )

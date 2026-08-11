@@ -349,19 +349,6 @@
       "ConversationForkWrite": {
         "additionalProperties": false,
         "properties": {
-          "edited_text": {
-            "anyOf": [
-              {
-                "maxLength": 20000,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Edited Text"
-          },
           "expected_conversation_version": {
             "minimum": 1.0,
             "title": "Expected Conversation Version",
@@ -406,6 +393,28 @@
           "expected_conversation_version"
         ],
         "title": "ConversationPatchWrite",
+        "type": "object"
+      },
+      "ConversationReviseWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_conversation_version": {
+            "minimum": 1.0,
+            "title": "Expected Conversation Version",
+            "type": "integer"
+          },
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_conversation_version",
+          "text"
+        ],
+        "title": "ConversationReviseWrite",
         "type": "object"
       },
       "ConversationStopWrite": {
@@ -1667,6 +1676,50 @@
         "summary": "Stop Conversation"
       }
     },
+    "/api/v1/agent-conversations/{conversation_id}/subagents": {
+      "get": {
+        "operationId": "subagents_api_v1_agent_conversations__conversation_id__subagents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Subagents Api V1 Agent Conversations  Conversation Id  Subagents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Subagents"
+      }
+    },
     "/api/v1/agent-messages/{message_id}/attachments/{attachment_id}": {
       "get": {
         "operationId": "message_attachment_api_v1_agent_messages__message_id__attachments__attachment_id__get",
@@ -1790,22 +1843,6 @@
           },
           {
             "in": "header",
-            "name": "X-Actor-ID",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Actor-Id"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
@@ -1913,6 +1950,89 @@
           }
         },
         "summary": "Retry Message"
+      }
+    },
+    "/api/v1/agent-messages/{message_id}/revise": {
+      "post": {
+        "operationId": "revise_message_api_v1_agent_messages__message_id__revise_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Actor-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Actor-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationReviseWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revise Message Api V1 Agent Messages  Message Id  Revise Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revise Message"
       }
     },
     "/api/v1/agent-messages/{message_id}/steer": {

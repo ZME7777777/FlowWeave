@@ -112,13 +112,15 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
     }
     assert payload["initial_message"]["run"] is True
     initial_text = payload["initial_message"]["content"][0]["text"]
-    assert "https://example.feishu.cn/docx/prd-input" in initial_text
-    assert "https://example.feishu.cn/docx/prd-template" in initial_text
-    assert "实际读取的飞书文档" in initial_text
-    assert "https://example.feishu.cn/drive/folder/root" in initial_text
-    assert "Run 1" in initial_text
-    assert "平台不会持有或注入飞书账号凭据" in initial_text
-    assert "不得把 token、cookie 或本地凭据文件写入消息" in initial_text
+    assert initial_text == "生成技术方案"
+    system_context = payload["agent"]["agent_context"]["system_message_suffix"]
+    assert "https://example.feishu.cn/docx/prd-input" in system_context
+    assert "https://example.feishu.cn/docx/prd-template" in system_context
+    assert "实际读取的飞书文档" in system_context
+    assert "https://example.feishu.cn/drive/folder/root" in system_context
+    assert "Run 1" in system_context
+    assert "平台不会持有或注入飞书账号凭据" in system_context
+    assert "不得把 token、cookie 或本地凭据文件写入消息" in system_context
     assert payload["agent"]["llm"] == {
         "model": "openai/gpt-5.6-sol",
         "base_url": "http://host.docker.internal:1234/v1",
@@ -130,12 +132,13 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
         "file_editor",
         "task_tracker",
     ]
+    assert "tool_module_qualnames" not in payload
     assert payload["agent"]["agent_context"]["skills"][0]["content"].startswith("# Requirements")
     assert payload["agent"]["mcp_config"] == {
         "docs": {"url": "https://mcp.example.test", "transport": "http"}
     }
-    assert "/workspaces/nodes/node-1/skills/requirements" in initial_text
-    assert "MCP Servers" in initial_text
+    assert "/workspaces/nodes/node-1/skills/requirements" in system_context
+    assert "MCP Servers" in system_context
 
 
 def test_openhands_routes_control_plane_runtime_without_owning_cleanup(settings, monkeypatch):
@@ -252,24 +255,32 @@ def test_openhands_environment_cancel_only_interrupts_agent(settings, monkeypatc
 
 def test_openhands_human_conversation_uses_dynamic_capability_selection(settings, monkeypatch):
     runtime = OpenHandsRuntime(settings)
-    captured: dict[str, object] = {}
+    requests: list[dict[str, object]] = []
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
-        captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "collaboration-1", "leaf_event_id": "event-1"}
+        requests.append({"method": method, "path": path, **kwargs})
+        return {"id": "collaboration-1" if path == "/api/conversations" else "user-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    runtime.create_conversation(replace(_request(), interaction_mode="COLLABORATION"))
+    handle = runtime.create_conversation(replace(_request(), interaction_mode="COLLABORATION"))
+    runtime.send_message(handle, "你好")
 
-    payload = captured["json"]
+    payload = requests[0]["json"]
     assert isinstance(payload, dict)
-    assert payload["initial_message"]["run"] is False
-    initial_text = payload["initial_message"]["content"][0]["text"]
-    assert "生成技术方案" not in initial_text
-    assert "完成任务后，请调用 finish" not in initial_text
-    assert "这些 Skill 与 MCP 是可选能力" in initial_text
-    assert "根据用户当前消息动态选择" in initial_text
-    assert "https://example.feishu.cn/docx/prd-input" in initial_text
+    assert "initial_message" not in payload
+    system_context = payload["agent"]["agent_context"]["system_message_suffix"]
+    assert "节点预置说明（仅作协作背景" in system_context
+    assert "生成技术方案" in system_context
+    assert "完成任务后，请调用 finish" not in system_context
+    assert "这些 Skill 与 MCP 是可选能力" in system_context
+    assert "根据用户当前消息动态选择" in system_context
+    assert "https://example.feishu.cn/docx/prd-input" in system_context
+    assert requests[1]["path"] == "/api/conversations/collaboration-1/events"
+    assert requests[1]["json"] == {
+        "role": "user",
+        "content": [{"type": "text", "text": "你好"}],
+        "run": True,
+    }
     assert runtime._contracts["collaboration-1"] == []
 
 

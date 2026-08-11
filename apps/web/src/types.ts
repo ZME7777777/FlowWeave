@@ -196,7 +196,7 @@ export interface ArtifactInput {
 }
 
 
-export type ConversationState = 'CREATING' | 'IDLE' | 'GENERATING' | 'STOPPING' | 'WAITING_HUMAN' | 'FAILED' | 'READ_ONLY';
+export type ConversationState = 'CREATING' | 'IDLE' | 'GENERATING' | 'STOPPING' | 'WAITING_HUMAN' | 'WAITING_SUBAGENTS' | 'FAILED' | 'READ_ONLY';
 export type MessageDeliveryState = 'QUEUED' | 'DELIVERING' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
 export interface AgentMessageTextPart { type: 'text'; text: string }
 export interface AgentMessageAttachmentPart {
@@ -227,8 +227,10 @@ export interface AgentMessage {
   conversation_state_version?: number;
 }
 export interface AgentConversation {
-  id: string; attempt_id: string; conversation_no: number;
-  kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
+  id: string; parent_conversation_id?: string | null; attempt_id: string; conversation_no: number;
+  kind: 'AUTO' | 'HUMAN_CREATED' | 'SUBAGENT'; title: string; state: ConversationState;
+  editable_message_id?: string | null;
+  delegation_batch_key?: string | null; delegation_instruction?: string | null;
   state_version: number; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
   runtime_resource?: {
     sandbox_id: string; container_name: string; owner_type: 'ATTEMPT' | 'CONVERSATION'; owner_id: string;

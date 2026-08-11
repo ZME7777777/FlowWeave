@@ -143,6 +143,10 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
         return
     if task.task_type == "CANCEL_RUNTIME":
         orchestration.record_runtime_task_failure(db, task.aggregate_id, error, terminal=True)
+    elif task.task_type == "CREATE_CONVERSATION":
+        conversations.record_create_conversation_failure(
+            db, task.aggregate_id, error, terminal=True
+        )
     elif task.task_type == "POLL_CONVERSATION":
         conversations.record_poll_conversation_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "STOP_CONVERSATION_RUNTIME":

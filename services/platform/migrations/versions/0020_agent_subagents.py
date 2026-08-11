@@ -14,48 +14,61 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "agent_conversations",
-        sa.Column("parent_conversation_id", sa.String(length=36), nullable=True),
+    # Migration 0008 creates this table from live ORM metadata. Fresh installs
+    # therefore already contain fields introduced after 0008, while existing
+    # installations do not. Inspect before each operation so both paths remain
+    # valid until 0008 can be replaced by a fully static table declaration.
+    bind = op.get_bind()
+    columns = {item["name"] for item in sa.inspect(bind).get_columns("agent_conversations")}
+    if "parent_conversation_id" not in columns:
+        op.add_column(
+            "agent_conversations",
+            sa.Column("parent_conversation_id", sa.String(length=36), nullable=True),
+        )
+    if "delegation_batch_key" not in columns:
+        op.add_column(
+            "agent_conversations",
+            sa.Column("delegation_batch_key", sa.String(length=100), nullable=True),
+        )
+    if "delegation_instruction" not in columns:
+        op.add_column(
+            "agent_conversations",
+            sa.Column("delegation_instruction", sa.Text(), nullable=True),
+        )
+
+    foreign_keys = sa.inspect(bind).get_foreign_keys("agent_conversations")
+    has_parent_fk = any(
+        item.get("constrained_columns") == ["parent_conversation_id"] for item in foreign_keys
     )
-    op.add_column(
-        "agent_conversations",
-        sa.Column("delegation_batch_key", sa.String(length=100), nullable=True),
-    )
-    op.add_column(
-        "agent_conversations",
-        sa.Column("delegation_instruction", sa.Text(), nullable=True),
-    )
-    op.create_foreign_key(
-        "fk_agent_conversation_parent",
-        "agent_conversations",
-        "agent_conversations",
-        ["parent_conversation_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_index(
-        "ix_agent_conversations_parent_conversation_id",
-        "agent_conversations",
-        ["parent_conversation_id"],
-    )
-    op.create_index(
-        "ix_agent_conversations_delegation_batch_key",
-        "agent_conversations",
-        ["delegation_batch_key"],
-    )
+    if not has_parent_fk:
+        op.create_foreign_key(
+            "fk_agent_conversation_parent",
+            "agent_conversations",
+            "agent_conversations",
+            ["parent_conversation_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+
+    indexes = {item["name"] for item in sa.inspect(bind).get_indexes("agent_conversations")}
+    if "ix_agent_conversations_parent_conversation_id" not in indexes:
+        op.create_index(
+            "ix_agent_conversations_parent_conversation_id",
+            "agent_conversations",
+            ["parent_conversation_id"],
+        )
+    if "ix_agent_conversations_delegation_batch_key" not in indexes:
+        op.create_index(
+            "ix_agent_conversations_delegation_batch_key",
+            "agent_conversations",
+            ["delegation_batch_key"],
+        )
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_agent_conversations_delegation_batch_key", table_name="agent_conversations"
-    )
-    op.drop_index(
-        "ix_agent_conversations_parent_conversation_id", table_name="agent_conversations"
-    )
-    op.drop_constraint(
-        "fk_agent_conversation_parent", "agent_conversations", type_="foreignkey"
-    )
+    op.drop_index("ix_agent_conversations_delegation_batch_key", table_name="agent_conversations")
+    op.drop_index("ix_agent_conversations_parent_conversation_id", table_name="agent_conversations")
+    op.drop_constraint("fk_agent_conversation_parent", "agent_conversations", type_="foreignkey")
     op.drop_column("agent_conversations", "delegation_instruction")
     op.drop_column("agent_conversations", "delegation_batch_key")
     op.drop_column("agent_conversations", "parent_conversation_id")

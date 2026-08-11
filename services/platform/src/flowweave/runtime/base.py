@@ -58,6 +58,7 @@ class StartAttemptRequest:
     conversation_history: tuple[dict[str, str], ...] = field(
         default_factory=_empty_conversation_history
     )
+    delegation_enabled: bool = False
     output_targets: dict[str, dict[str, str]] = field(default_factory=_empty_output_targets)
     environment_image: str = ""
     environment_id: str = ""

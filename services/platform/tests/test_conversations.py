@@ -12,6 +12,7 @@ from flowweave.modules.conversations.application.service import (
     _append,
     _append_runtime_payload,
     _apply_conversation_result,
+    list_subagents,
     recover_conversation_tasks,
     terminal_resource_details,
 )
@@ -130,9 +131,7 @@ def test_human_conversation_ignores_intermediate_agent_message(client, db_sessio
         assert after == before
 
 
-def test_conversation_fork_copies_history_and_edit_replaces_human_message(
-    client, db_session_factory
-):
+def test_conversation_fork_only_accepts_agent_reply_and_copies_history(client, db_session_factory):
     run_id, attempt_id = _create_run(client, None)
     run = client.get(f"/api/v1/flow-runs/{run_id}").json()
     attempt = run["node_runs"][0]["attempts"][0]
@@ -202,34 +201,130 @@ def test_conversation_fork_copies_history_and_edit_replaces_human_message(
         {"role": "assistant", "content": "第一答"},
     ]
 
-    edited = client.post(
+    rejected = client.post(
         f"/api/v1/agent-messages/{second_human.id}/fork",
-        json={
-            "expected_conversation_version": version,
-            "edited_text": "修改后的第二问",
-        },
-        headers={"Idempotency-Key": "edit-second-question-into-fork"},
+        json={"expected_conversation_version": version},
+        headers={"Idempotency-Key": "reject-human-message-fork"},
     )
-    assert edited.status_code == 202, edited.text
-    edited_messages = client.get(
-        f"/api/v1/agent-conversations/{edited.json()['id']}/messages"
-    ).json()
-    assert [message["source"] for message in edited_messages] == [
-        "PROGRAM",
-        "HUMAN",
-        "AGENT",
-        "HUMAN",
-    ]
-    assert edited_messages[-1]["content"]["parts"][0]["text"] == "修改后的第二问"
-    assert edited_messages[-1]["delivery_state"] == "QUEUED"
-    assert all(
-        message["content"].get("parts", [{}])[0].get("text") != "原始第二问"
-        for message in edited_messages
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "MESSAGE_NOT_FORKABLE"
+
+
+def test_revise_stopped_turn_rebuilds_same_conversation_and_supersedes_old_chain(
+    client, db_session_factory
+):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "revise-source-conversation"},
     )
-    assert edited.json()["context_baseline"]["fork"]["history"] == [
+    assert created.status_code == 202, created.text
+    conversation_id = created.json()["id"]
+
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None
+        conversation.state = "IDLE"
+        first_human = _append(
+            db,
+            conversation,
+            source=MessageSource.HUMAN,
+            message_type=MessageType.TEXT,
+            content={"parts": [{"type": "text", "text": "第一问"}]},
+            delivery_state=DeliveryState.DELIVERED,
+            delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
+        )
+        _append(
+            db,
+            conversation,
+            source=MessageSource.AGENT,
+            message_type=MessageType.TEXT,
+            content={"presentation": "final", "parts": [{"type": "text", "text": "第一答"}]},
+            delivery_state=DeliveryState.DELIVERED,
+        )
+        stopped_human = _append(
+            db,
+            conversation,
+            source=MessageSource.HUMAN,
+            message_type=MessageType.TEXT,
+            content={
+                "presentation": "chat",
+                "parts": [{"type": "text", "text": "原始第二问"}],
+                "capability_refs": [{"capability_type": "SKILL", "capability_key": "kept-skill"}],
+            },
+            delivery_state=DeliveryState.DELIVERED,
+            delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
+        )
+        stale_agent = _append(
+            db,
+            conversation,
+            source=MessageSource.AGENT,
+            message_type=MessageType.TEXT,
+            content={"parts": [{"type": "text", "text": "不应继续使用的旧回复"}]},
+            delivery_state=DeliveryState.DELIVERED,
+        )
+        conversation.context_baseline_json = {
+            **conversation.context_baseline_json,
+            "stopped_turn": {"editable_message_id": stopped_human.id},
+        }
+        conversation.state_version += 1
+        version = conversation.state_version
+        db.commit()
+
+    earlier_rejected = client.post(
+        f"/api/v1/agent-messages/{first_human.id}/revise",
+        json={"expected_conversation_version": version, "text": "不能编辑第一问"},
+        headers={"Idempotency-Key": "reject-earlier-revision"},
+    )
+    assert earlier_rejected.status_code == 409, earlier_rejected.text
+    assert earlier_rejected.json()["error"]["code"] == "MESSAGE_NOT_REVISABLE"
+
+    revised = client.post(
+        f"/api/v1/agent-messages/{stopped_human.id}/revise",
+        json={"expected_conversation_version": version, "text": "修改后的第二问"},
+        headers={"Idempotency-Key": "revise-stopped-turn"},
+    )
+    assert revised.status_code == 202, revised.text
+    assert revised.json()["id"] == conversation_id
+    assert revised.json()["state"] == "CREATING"
+    assert revised.json()["editable_message_id"] is None
+    assert revised.json()["context_baseline"]["fork"]["history"] == [
         {"role": "user", "content": "第一问"},
         {"role": "assistant", "content": "第一答"},
     ]
+
+    visible = client.get(f"/api/v1/agent-conversations/{conversation_id}/messages").json()
+    assert [message["content"].get("parts", [{}])[0].get("text") for message in visible] == [
+        (
+            "当前 Attempt 的快照、输入绑定、候选能力与产物已挂载；"
+            "本会话不包含其他会话消息，也不继承自动执行的启动任务。"
+            "Agent 将根据本会话中的消息动态选择能力。"
+        ),
+        "第一问",
+        "第一答",
+        "修改后的第二问",
+    ]
+    assert visible[-1]["delivery_state"] == "QUEUED"
+    assert visible[-1]["content"]["capability_refs"] == [
+        {"capability_type": "SKILL", "capability_key": "kept-skill"}
+    ]
+
+    with db_session_factory() as db:
+        old_human = db.get(AgentMessage, stopped_human.id)
+        old_agent = db.get(AgentMessage, stale_agent.id)
+        assert old_human is not None and old_human.content_json["superseded"] is True
+        assert old_agent is not None and old_agent.content_json["superseded"] is True
+        recreate = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation_id,
+                BackgroundTask.task_type == "CREATE_CONVERSATION",
+                BackgroundTask.state == "PENDING",
+            )
+        )
+        assert recreate is not None
 
 
 def test_conversation_result_projection_is_idempotent(client, db_session_factory):
@@ -267,6 +362,81 @@ def test_conversation_result_projection_is_idempotent(client, db_session_factory
         ).all()
         assert len(projected) == 1
         assert conversation.state == "IDLE"
+
+
+def test_human_conversation_delegates_and_resumes_after_all_children(client, db_session_factory):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "delegate-parent"},
+    )
+    assert created.status_code == 202, created.text
+
+    envelope = (
+        '{"flowweave":{"action":"delegate","tasks":['
+        '{"title":"后端检查","instruction":"检查后端状态机"},'
+        '{"title":"前端检查","instruction":"检查前端侧栏"}'
+        "]}}"
+    )
+    with db_session_factory() as db:
+        parent = db.get(AgentConversation, created.json()["id"])
+        assert parent is not None
+        parent.state = "GENERATING"
+        _apply_conversation_result(
+            db,
+            parent,
+            RuntimeResult(status="COMPLETED", final_message=envelope, cursor="delegate-1"),
+            message_id="delegate-message",
+        )
+        db.flush()
+
+        children = list_subagents(db, parent.id)
+        assert parent.state == "WAITING_SUBAGENTS"
+        assert [item["title"] for item in children] == ["后端检查", "前端检查"]
+        assert all(item["kind"] == "SUBAGENT" for item in children)
+        assert all(item["parent_conversation_id"] == parent.id for item in children)
+        assert all(item["state"] == "CREATING" for item in children)
+
+        child_rows = [db.get(AgentConversation, item["id"]) for item in children]
+        assert all(item is not None for item in child_rows)
+        for index, child in enumerate(child_rows):
+            assert child is not None
+            child.state = "GENERATING"
+            _apply_conversation_result(
+                db,
+                child,
+                RuntimeResult(
+                    status="COMPLETED",
+                    final_message=f"子任务 {index + 1} 结果",
+                    cursor=f"child-{index + 1}",
+                ),
+                message_id=f"child-message-{index + 1}",
+            )
+            db.flush()
+
+        db.refresh(parent)
+        assert parent.state == "GENERATING"
+        result_message = db.scalar(
+            select(AgentMessage).where(
+                AgentMessage.conversation_id == parent.id,
+                AgentMessage.client_message_id.like("subagent-results:%"),
+            )
+        )
+        assert result_message is not None
+        assert result_message.delivery_state == "DELIVERING"
+        result_text = result_message.content_json["parts"][0]["text"]
+        assert "子任务 1 结果" in result_text
+        assert "子任务 2 结果" in result_text
+        delivery = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == result_message.id,
+                BackgroundTask.task_type == "DELIVER_CONVERSATION_MESSAGE",
+            )
+        )
+        assert delivery is not None
 
 
 def test_dead_conversation_poll_projects_visible_failure(client, db_session_factory):
