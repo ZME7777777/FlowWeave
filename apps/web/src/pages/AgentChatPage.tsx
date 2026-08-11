@@ -76,7 +76,7 @@ const isWorkspaceImage = (value: string) => value.startsWith('file:///workspaces
 function MarkdownMessage({ text, messageId }: { text: string; messageId?: string }) {
   return <div className="message-markdown"><ReactMarkdown
     urlTransform={value => isWorkspaceImage(value) ? value : defaultUrlTransform(value)}
-    components={{ img: ({ src, alt }) => <img src={messageId && src && isWorkspaceImage(src) ? workspaceImageUrl(messageId, src) : src} alt={alt ?? ''} loading="lazy"/> }}
+    components={{ img: ({ src, alt }) => <img src={messageId && src && isWorkspaceImage(src) ? workspaceImageUrl(messageId, src) : src} alt={alt ?? ''}/> }}
   >{text}</ReactMarkdown></div>;
 }
 
