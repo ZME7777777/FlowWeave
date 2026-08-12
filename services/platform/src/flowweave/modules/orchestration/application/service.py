@@ -33,7 +33,11 @@ from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
 from flowweave.runtime.dependencies import get_runtime
-from flowweave.runtime.request import build_runtime_request
+from flowweave.runtime.request import (
+    build_runtime_request,
+    resolve_runtime_provider,
+    resolve_runtime_selection,
+)
 from flowweave.runtime.routing import runtime_for
 from flowweave.runtime.workspace import attempt_workspace_path
 from flowweave.shared.application.transactions import (
@@ -1184,6 +1188,9 @@ def confirm_start(
             422,
             {"capability_key": payload.capability_key},
         )
+    selected_model, selected_effort = resolve_runtime_selection(
+        db, node, payload.model_name, payload.reasoning_effort
+    )
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -1195,6 +1202,8 @@ def confirm_start(
     attempt.startup_mode = payload.startup_mode
     attempt.startup_capability_key = payload.capability_key
     attempt.startup_prompt = payload.prompt
+    attempt.model_name = selected_model
+    attempt.reasoning_effort = selected_effort
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
     # Starting an attempt must not call a provider or acquire capability credentials.
@@ -1404,6 +1413,8 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         workspace_ref=attempt.workspace_ref or "",
         startup_prompt=attempt.startup_prompt,
         startup_capability_key=attempt.startup_capability_key,
+        model_name=attempt.model_name,
+        reasoning_effort=attempt.reasoning_effort,
         output_targets=cast(dict[str, dict[str, str]], attempt.output_targets_json or {}),
         environment_image=environment.image_digest if environment else None,
         environment_id=environment.environment_id if environment else None,
@@ -1734,6 +1745,30 @@ def process_poll_runtime(
 def human_input(
     db: Session, attempt_id: str, payload: HumanInputWrite, idempotency_key: str
 ) -> dict[str, Any]:
+    current = _attempt(db, attempt_id)
+    current_node_run = _node_run(db, current.node_run_id)
+    node = _node(_snapshot(db, current.snapshot_id), current_node_run.flow_node_snapshot_key)
+    auto_conversation = db.scalar(
+        select(AgentConversation).where(
+            AgentConversation.attempt_id == current.id,
+            AgentConversation.kind == "AUTO",
+        )
+    )
+    current_selection = cast(
+        dict[str, Any],
+        (auto_conversation.context_baseline_json if auto_conversation else {}).get(
+            "runtime_selection"
+        )
+        or {},
+    )
+    selected_model, selected_effort = resolve_runtime_selection(
+        db,
+        node,
+        payload.model_name or cast(str | None, current_selection.get("model_name")),
+        payload.reasoning_effort
+        if "reasoning_effort" in payload.model_fields_set
+        else cast(str | None, current_selection.get("reasoning_effort")),
+    )
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -1748,12 +1783,25 @@ def human_input(
         node_run.flow_run_id,
         "HUMAN_INPUT",
         idempotency_key,
-        {"content": payload.content},
+        {
+            "content": payload.content,
+            "runtime_selection": {
+                "model_name": selected_model,
+                "reasoning_effort": selected_effort,
+            },
+        },
         node_run.id,
         attempt.id,
     )
     conversations.record_auto_human_input(
-        db, attempt.id, action_id=action.id, content=payload.content
+        db,
+        attempt.id,
+        action_id=action.id,
+        content=payload.content,
+        runtime_selection={
+            "model_name": selected_model,
+            "reasoning_effort": selected_effort,
+        },
     )
     if not _inline_execution():
         enqueue(
@@ -1790,8 +1838,24 @@ def process_resume_runtime(
     handle = RuntimeHandle(
         attempt.runtime_job_id or "", attempt.conversation_id or "", attempt.runtime_cursor
     )
+    selection = cast(dict[str, Any], action.payload_json.get("runtime_selection") or {})
+    node_run = _node_run(db, attempt.node_run_id)
+    node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
+    provider = (
+        resolve_runtime_provider(
+            db,
+            node,
+            cast(str | None, selection.get("model_name")),
+            cast(str | None, selection.get("reasoning_effort")),
+        )
+        if selection.get("model_name") and get_settings().runtime_adapter != "mock"
+        else None
+    )
     _release_worker_read_transaction(db, lease)
-    result = get_runtime().resume(handle, content)
+    runtime = get_runtime()
+    if provider is not None:
+        runtime.switch_model(handle, provider)
+    result = runtime.resume(handle, content)
     sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     try:
         _require_current_lease(db, lease)
@@ -2502,6 +2566,8 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_mode": attempt.startup_mode,
         "startup_capability_key": attempt.startup_capability_key,
         "startup_prompt": attempt.startup_prompt,
+        "model_name": attempt.model_name,
+        "reasoning_effort": attempt.reasoning_effort,
         "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,
         "error_detail": attempt.error_detail,

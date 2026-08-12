@@ -153,10 +153,33 @@ class CapabilitySkillRevisionWrite(ApiModel):
     content: str = Field(min_length=1, max_length=1_048_576)
 
 
+class SkillCollectionWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    category: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=2000)
+    capability_ids: list[str] = Field(min_length=1, max_length=100)
+    row_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_collection(self) -> SkillCollectionWrite:
+        self.name = self.name.strip()
+        self.category = self.category.strip()
+        self.description = self.description.strip()
+        if not self.name:
+            raise ValueError("name cannot be blank")
+        if len(self.capability_ids) != len(set(self.capability_ids)):
+            raise ValueError("Skill collection members must be unique")
+        return self
+
+
 class ProviderModelWrite(ApiModel):
     model_name: str = Field(min_length=1, max_length=240)
     enabled: bool = True
     is_default: bool = False
+
+
+def _empty_provider_models() -> list[ProviderModelWrite]:
+    return []
 
 
 class ModelProviderBulkDeleteWrite(ApiModel):
@@ -165,19 +188,25 @@ class ModelProviderBulkDeleteWrite(ApiModel):
 
 class ModelProviderWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
-    base_url: str = Field(min_length=1)
+    auth_type: Literal["API_KEY", "CODEX_OAUTH"] = "API_KEY"
+    base_url: str = ""
     api_key: str | None = None
     row_version: int | None = None
-    models: list[ProviderModelWrite] = Field(min_length=1)
+    models: list[ProviderModelWrite] = Field(default_factory=_empty_provider_models)
 
     @model_validator(mode="after")
     def validate_models(self) -> ModelProviderWrite:
+        self.base_url = self.base_url.strip()
+        if self.auth_type == "API_KEY" and not self.base_url:
+            raise ValueError("base_url is required for API key providers")
+        if self.auth_type == "API_KEY" and not self.models:
+            raise ValueError("at least one model is required for API key providers")
         names = [item.model_name for item in self.models]
         if len(names) != len(set(names)):
             raise ValueError("model names must be unique")
         if sum(item.is_default for item in self.models) > 1:
             raise ValueError("only one default model is allowed")
-        if not any(item.is_default and item.enabled for item in self.models):
+        if self.models and not any(item.is_default and item.enabled for item in self.models):
             self.models[0].enabled = True
             self.models[0].is_default = True
         return self
@@ -303,6 +332,8 @@ class AttemptStartWrite(AttemptVersionWrite):
     startup_mode: Literal["SKILL", "PROMPT"] = "PROMPT"
     capability_key: str | None = None
     prompt: str | None = None
+    model_name: str | None = Field(default=None, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
     @model_validator(mode="after")
     def validate_startup(self) -> AttemptStartWrite:
@@ -319,6 +350,8 @@ class InputBindingsWrite(AttemptVersionWrite):
 
 class HumanInputWrite(AttemptVersionWrite):
     content: str = Field(min_length=1)
+    model_name: str | None = Field(default=None, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 class RejectWrite(AttemptVersionWrite):
@@ -330,10 +363,31 @@ class SyncSnapshotWrite(ApiModel):
     expected_active_version: int | None = None
 
 
+class MCPScriptWrite(ApiModel):
+    server: str = Field(min_length=1, max_length=200)
+    filename: str = Field(min_length=1, max_length=240)
+    content_base64: str = Field(min_length=1)
+
+
+def _empty_mcp_scripts() -> list[MCPScriptWrite]:
+    return []
+
+
+class HookScriptWrite(ApiModel):
+    filename: str = Field(min_length=1, max_length=240)
+    content_base64: str = Field(min_length=1)
+
+
+def _empty_hook_scripts() -> list[HookScriptWrite]:
+    return []
+
+
 class CapabilityValidateWrite(ApiModel):
     capability_type: Literal["SKILL", "MCP", "HOOK"]
     filename: str
     content_base64: str
+    mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
+    hook_scripts: list[HookScriptWrite] = Field(default_factory=_empty_hook_scripts, max_length=20)
 
 
 class CapabilityCommitWrite(ApiModel):
@@ -344,6 +398,8 @@ class ConversationCreateWrite(ApiModel):
     title: str | None = Field(default=None, max_length=160)
     expected_attempt_state_version: int = Field(ge=1)
     baseline: dict[str, Any] = Field(default_factory=_empty_any_dict)
+    model_name: str | None = Field(default=None, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 class ConversationPatchWrite(ApiModel):
@@ -394,6 +450,8 @@ class MessageSendWrite(ApiModel):
     )
     delivery_mode: Literal["QUEUE_AFTER_TURN", "INTERRUPT_AND_RESUME"] = "QUEUE_AFTER_TURN"
     expected_conversation_version: int = Field(ge=1)
+    model_name: str | None = Field(default=None, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
     @model_validator(mode="after")
     def validate_capability_refs(self) -> MessageSendWrite:

@@ -13,6 +13,7 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
 from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure.docker_controller import DockerControllerClient
 
 
 def _request() -> StartAttemptRequest:
@@ -89,6 +90,20 @@ def _request() -> StartAttemptRequest:
                 workspace_path="/workspaces/nodes/node-1/mcp/docs",
             ),
         ),
+        hook_config={
+            "pre_tool_use": [
+                {
+                    "matcher": "terminal",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "flowweave-policy-check",
+                            "timeout": 30,
+                        }
+                    ],
+                }
+            ]
+        },
     )
 
 
@@ -137,8 +152,64 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
     assert payload["agent"]["mcp_config"] == {
         "docs": {"url": "https://mcp.example.test", "transport": "http"}
     }
+    assert payload["hook_config"] == {
+        "pre_tool_use": [
+            {
+                "matcher": "terminal",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "flowweave-policy-check",
+                        "timeout": 30,
+                    }
+                ],
+            }
+        ]
+    }
     assert "/workspaces/nodes/node-1/skills/requirements" in system_context
     assert "MCP Servers" in system_context
+
+
+def test_openhands_configures_codex_oauth_for_responses(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "conversation-codex", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    request = replace(
+        _request(),
+        provider=RuntimeProvider(
+            provider_id="codex-oauth",
+            base_url="https://chatgpt.com/backend-api/codex",
+            model="gpt-5.6-sol",
+            api_key="short-lived-access-token",
+            auth_type="CODEX_OAUTH",
+            extra_headers={
+                "originator": "codex_cli_rs",
+                "OpenAI-Beta": "responses=experimental",
+                "chatgpt-account-id": "account-123",
+            },
+            reasoning_effort="high",
+        ),
+    )
+    runtime.start(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    llm = payload["agent"]["llm"]
+    assert llm["model"] == "openai/gpt-5.6-sol"
+    assert llm["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert llm["api_key"] == "short-lived-access-token"
+    assert llm["api_mode"] == "responses"
+    assert llm["stream"] is True
+    assert llm["litellm_extra_body"] == {
+        "store": False,
+        "reasoning": {"effort": "high"},
+    }
+    assert llm["extra_headers"]["chatgpt-account-id"] == "account-123"
 
 
 def test_openhands_routes_control_plane_runtime_without_owning_cleanup(settings, monkeypatch):
@@ -552,6 +623,134 @@ def test_openhands_send_message_advances_cursor_to_user_event(settings, monkeypa
 
     assert result.status == "RUNNING"
     assert result.cursor == "user-event-2"
+
+
+def test_openhands_public_stream_exposes_text_but_not_reasoning():
+    assert OpenHandsRuntime._visible_stream_event(
+        {
+            "kind": "StreamingDeltaEvent",
+            "content": "可见正文",
+            "reasoning_content": "不得外泄的推理",
+        }
+    ) == {"type": "delta", "content": "可见正文"}
+    assert (
+        OpenHandsRuntime._visible_stream_event(
+            {
+                "kind": "StreamingDeltaEvent",
+                "reasoning_content": "不得外泄的推理",
+            }
+        )
+        is None
+    )
+    assert OpenHandsRuntime._visible_stream_event({"kind": "MessageEvent", "source": "agent"}) == {
+        "type": "message_complete"
+    }
+    assert (
+        OpenHandsRuntime._visible_stream_event({"kind": "MessageEvent", "source": "user"}) is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
+    settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(
+        settings.model_copy(
+            update={
+                "docker_controller_mode": "remote",
+                "docker_controller_api_key": "a" * 32,
+            }
+        )
+    )
+    observed: dict[str, str] = {}
+
+    async def stream(
+        _client, *, resource_name: str, resource_id: str, conversation_id: str
+    ):
+        observed.update(
+            resource_name=resource_name,
+            resource_id=resource_id,
+            conversation_id=conversation_id,
+        )
+        yield {
+            "kind": "StreamingDeltaEvent",
+            "content": "可见正文",
+            "reasoning_content": "隐藏推理",
+        }
+        yield {"kind": "MessageEvent", "source": "agent"}
+
+    monkeypatch.setattr(DockerControllerClient, "stream_runtime_events", stream)
+    handle = RuntimeHandle(
+        "env-chat:fw-sbx-runtime",
+        "conversation-1",
+        runtime_resource_id="sandbox-1",
+        runtime_resource_name="fw-sbx-runtime",
+    )
+
+    events = [event async for event in runtime.stream_events(handle)]
+
+    assert events == [
+        {"type": "delta", "content": "可见正文"},
+        {"type": "message_complete"},
+    ]
+    assert observed == {
+        "resource_name": "fw-sbx-runtime",
+        "resource_id": "sandbox-1",
+        "conversation_id": "conversation-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openhands_isolated_stream_rejects_missing_sandbox_binding(settings):
+    runtime = OpenHandsRuntime(
+        settings.model_copy(
+            update={
+                "docker_controller_mode": "remote",
+                "docker_controller_api_key": "a" * 32,
+            }
+        )
+    )
+
+    with pytest.raises(DomainError, match="verified sandbox binding"):
+        await anext(
+            runtime.stream_events(
+                RuntimeHandle("env-chat:fw-sbx-runtime", "conversation-1")
+            )
+        )
+
+
+def test_openhands_switches_llm_in_place_with_reasoning(settings, monkeypatch):
+    runtime = OpenHandsRuntime(settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"success": True}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    runtime.switch_model(
+        RuntimeHandle("job-1", "conversation-1", "cursor-1"),
+        RuntimeProvider(
+            provider_id="codex-oauth",
+            base_url="https://chatgpt.com/backend-api/codex",
+            model="gpt-5.6-sol",
+            api_key="short-lived-access-token",
+            auth_type="CODEX_OAUTH",
+            extra_headers={"chatgpt-account-id": "account-123"},
+            reasoning_effort="high",
+        ),
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/conversations/conversation-1/switch_llm"
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert payload["llm"]["litellm_extra_body"] == {
+        "store": False,
+        "reasoning": {"effort": "high"},
+    }
+    assert payload["llm"]["extra_headers"] == {"chatgpt-account-id": "account-123"}
 
 
 def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(

@@ -22,6 +22,12 @@ RUN apt-get -o Acquire::Retries=5 update \
 COPY infra/openhands/pyproject.toml infra/openhands/uv.lock ./
 ENV UV_PROJECT_ENV=/runtime/.venv
 RUN uv sync --frozen --no-dev
+COPY --from=openhands_sdk / /opt/software-agent-sdk/
+RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
+      /opt/software-agent-sdk/openhands-sdk \
+      /opt/software-agent-sdk/openhands-tools \
+      /opt/software-agent-sdk/openhands-workspace \
+      /opt/software-agent-sdk/openhands-agent-server
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \

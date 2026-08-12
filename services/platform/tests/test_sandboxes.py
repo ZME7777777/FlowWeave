@@ -434,6 +434,11 @@ def test_runtime_bind_mount_exposes_only_the_selected_node_workspace(settings, m
     assert mount == [
         "--mount",
         ("type=bind,src=/srv/flowweave/workspaces/nodes/node-1,dst=/workspaces/nodes/node-1"),
+        "--mount",
+        (
+            "type=bind,src=/srv/flowweave/workspaces/.managed-assets/nodes/node-1,"
+            "dst=/runtime/capabilities/nodes/node-1,readonly"
+        ),
     ]
     assert inspected == [
         [
@@ -457,6 +462,11 @@ def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_pat
         lambda _resource: [
             "--mount",
             "type=bind,src=/srv/workspaces/nodes/node-1,dst=/workspaces/nodes/node-1",
+            "--mount",
+            (
+                "type=bind,src=/srv/workspaces/.managed-assets/nodes/node-1,"
+                "dst=/runtime/capabilities/nodes/node-1,readonly"
+            ),
         ],
     )
     credential_volume = provider.environment_credential_volume_name("environment-1")
@@ -477,6 +487,10 @@ def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_pat
     assert mounts == [
         (f"type=volume,src={credential_volume},dst=/home/flowweave"),
         "type=bind,src=/srv/workspaces/nodes/node-1,dst=/workspaces/nodes/node-1",
+        (
+            "type=bind,src=/srv/workspaces/.managed-assets/nodes/node-1,"
+            "dst=/runtime/capabilities/nodes/node-1,readonly"
+        ),
     ]
     assert all("/var/run/docker.sock" not in mount for mount in mounts)
     tmpfs = [command[index + 1] for index, item in enumerate(command) if item == "--tmpfs"]
@@ -807,7 +821,36 @@ def test_runtime_named_volume_mount_uses_an_isolated_subpath(settings, monkeypat
             "type=volume,src=flowweave-workspaces,dst=/workspaces/nodes/node-1,"
             "volume-subpath=nodes/node-1"
         ),
+        "--mount",
+        (
+            "type=volume,src=flowweave-workspaces,"
+            "dst=/runtime/capabilities/nodes/node-1,"
+            "volume-subpath=.managed-assets/nodes/node-1,readonly"
+        ),
     ]
+
+
+@pytest.mark.parametrize(
+    "managed_root",
+    [
+        "/workspaces/managed",
+        "/",
+        "relative/capabilities",
+        "/runtime/capabilities,invalid",
+    ],
+)
+def test_runtime_managed_asset_mount_root_must_be_disjoint(settings, monkeypatch, managed_root):
+    provider = DockerSandboxProvider(
+        _docker_settings(settings, openhands_managed_assets_root=managed_root)
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(provider, "_run", lambda command, **_kwargs: calls.append(command))
+
+    with pytest.raises(DomainError) as caught:
+        provider._runtime_workspace_mount(_runtime_resource())
+
+    assert caught.value.code == "SANDBOX_WORKSPACE_INVALID"
+    assert calls == []
 
 
 @pytest.mark.parametrize(

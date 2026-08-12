@@ -97,7 +97,9 @@ def _create_run(api_client, skill: dict[str, object] | None) -> tuple[str, str]:
     return run["id"], run["node_runs"][0]["attempts"][0]["id"]
 
 
-def test_human_conversation_ignores_intermediate_agent_message(client, db_session_factory):
+def test_human_conversation_projects_intermediate_agent_message_as_progress(
+    client, db_session_factory
+):
     run_id, attempt_id = _create_run(client, None)
     run = client.get(f"/api/v1/flow-runs/{run_id}").json()
     attempt = run["node_runs"][0]["attempts"][0]
@@ -119,16 +121,149 @@ def test_human_conversation_ignores_intermediate_agent_message(client, db_sessio
         _append_runtime_payload(
             db,
             conversation,
-            cursor="intermediate-message-1",
+            cursor="initialization-message",
             event_type="MESSAGE",
             payload={"source": "agent", "content": "已就绪"},
         )
-        after = db.scalar(
+        after_initialization = db.scalar(
             select(func.count())
             .select_from(AgentMessage)
             .where(AgentMessage.conversation_id == conversation.id)
         )
-        assert after == before
+        assert after_initialization == before
+
+        human = _append(
+            db,
+            conversation,
+            source=MessageSource.HUMAN,
+            message_type=MessageType.TEXT,
+            content={"parts": [{"type": "text", "text": "开始处理"}]},
+            delivery_state=DeliveryState.DELIVERED,
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="intermediate-message-1",
+            event_type="MESSAGE",
+            payload={"source": "agent", "content": "我先检查相关文件。"},
+        )
+        progress = db.scalar(
+            select(AgentMessage).where(
+                AgentMessage.conversation_id == conversation.id,
+                AgentMessage.runtime_event_id == "intermediate-message-1",
+            )
+        )
+        assert progress is not None
+        assert progress.message_type == MessageType.TEXT
+        assert progress.content_json["presentation"] == "progress"
+        assert progress.content_json["turn_message_id"] == human.id
+        assert progress.content_json["parts"][0]["text"] == "我先检查相关文件。"
+
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="tool-call-1",
+            event_type="TOOL_CALL",
+            payload={
+                "event_name": "CommandAction",
+                "content": "读取需求文档",
+                "details": {"command": "read requirements"},
+            },
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="tool-result-1",
+            event_type="TOOL_RESULT",
+            payload={
+                "event_name": "CommandObservation",
+                "content": "读取完成",
+                "details": {"command": "read requirements"},
+            },
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="intermediate-message-2",
+            event_type="MESSAGE",
+            payload={"source": "agent", "content": "需求已读取，继续核对画板。"},
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="tool-call-2",
+            event_type="TOOL_CALL",
+            payload={
+                "event_name": "CommandAction",
+                "content": "读取画板",
+                "details": {"command": "read whiteboard"},
+            },
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="tool-result-2",
+            event_type="TOOL_RESULT",
+            payload={
+                "event_name": "CommandObservation",
+                "content": "读取完成",
+                "details": {"command": "read whiteboard"},
+            },
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="intermediate-message-3",
+            event_type="MESSAGE",
+            payload={"source": "agent", "content": "核对完成。"},
+        )
+        _apply_conversation_result(
+            db,
+            conversation,
+            RuntimeResult(
+                status="COMPLETED",
+                final_message="核对完成。",
+                cursor="finish-1",
+            ),
+            message_id="human-turn-1",
+        )
+        db.flush()
+
+        turn_messages = list(
+            db.scalars(
+                select(AgentMessage)
+                .where(
+                    AgentMessage.conversation_id == conversation.id,
+                    AgentMessage.sequence_no > human.sequence_no,
+                )
+                .order_by(AgentMessage.sequence_no)
+            )
+        )
+        visible = [
+            item for item in turn_messages if item.content_json.get("superseded") is not True
+        ]
+        assert [item.message_type for item in visible] == [
+            MessageType.TEXT,
+            MessageType.TOOL_CALL,
+            MessageType.TOOL_RESULT,
+            MessageType.TEXT,
+            MessageType.TOOL_CALL,
+            MessageType.TOOL_RESULT,
+            MessageType.TEXT,
+        ]
+        assert [
+            item.content_json["parts"][0]["text"]
+            for item in visible
+            if item.message_type == MessageType.TEXT
+        ] == [
+            "我先检查相关文件。",
+            "需求已读取，继续核对画板。",
+            "核对完成。",
+        ]
+        duplicate_progress = next(
+            item for item in turn_messages if item.runtime_event_id == "intermediate-message-3"
+        )
+        assert duplicate_progress.content_json["superseded_by_final"] is True
 
 
 def test_conversation_fork_only_accepts_agent_reply_and_copies_history(client, db_session_factory):

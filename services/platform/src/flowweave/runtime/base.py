@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -16,12 +17,23 @@ def _empty_conversation_history() -> tuple[dict[str, str], ...]:
     return ()
 
 
+def _empty_headers() -> dict[str, str]:
+    return {}
+
+
+def _empty_hook_config() -> dict[str, list[dict[str, Any]]]:
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeProvider:
     provider_id: str
     base_url: str
     model: str
     api_key: str = field(repr=False)
+    auth_type: Literal["API_KEY", "CODEX_OAUTH"] = "API_KEY"
+    extra_headers: dict[str, str] = field(default_factory=_empty_headers)
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +64,7 @@ class StartAttemptRequest:
     provider: RuntimeProvider | None = None
     skills: tuple[RuntimeSkill, ...] = ()
     mcp_servers: tuple[RuntimeMCP, ...] = ()
+    hook_config: dict[str, list[dict[str, Any]]] = field(default_factory=_empty_hook_config)
     interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION"
     startup_prompt: str | None = None
     startup_capability_key: str | None = None
@@ -75,6 +88,8 @@ class RuntimeHandle:
     job_id: str
     conversation_id: str
     cursor: str | None = None
+    runtime_resource_id: str = ""
+    runtime_resource_name: str = ""
 
 
 RuntimeEventType = Literal[
@@ -135,7 +150,13 @@ class RuntimePort(Protocol):
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch: ...
 
+    def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]: ...
+
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult: ...
+
+    def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None: ...
+
+    def interrupt(self, handle: RuntimeHandle) -> None: ...
 
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()

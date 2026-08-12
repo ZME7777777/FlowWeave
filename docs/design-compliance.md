@@ -13,7 +13,7 @@
 |---|---|---|
 | 节点目录树、当前目录搜索、卡片与只读详情 | DONE | `parent_id` 递归目录树、子树节点计数、当前目录搜索/数量、节点卡片和只读详情抽屉已实现；Playwright 覆盖卡片详情。 |
 | 四步节点编辑器 | DONE | 四步表单覆盖完整标准类型；Skill 与默认 Skill 均可选，设置默认值时必须指向已导入 Skill；I/O 按输入、输出分区并说明字段契约。 |
-| Skill ZIP、MCP/Hooks JSON/YAML 导入 | DONE | 两阶段导入、来源回查、ZIP/JSON/YAML 契约测试。 |
+| Skill ZIP 导入、MCP JSON 粘贴创建 | DONE | 两阶段校验/提交、来源回查、ZIP/JSON 契约测试。 |
 | 模型服务、测试、发现、默认模型、引用数 | DONE | CRUD/test/discover、密钥不回显、启用/默认模型、派生可用状态和引用节点数已实现；服务端禁止节点引用禁用模型，也禁止禁用仍被节点引用的模型；API 与 E2E 覆盖。 |
 | 三栏拖拽画布、端口连接、自动布局、重复提示 | DONE | 三栏布局、目录分组/搜索、HTML5 拖入、端口连线、自动布局、重复资产提示均已实现；节点显示默认 Skill 与 START/END 数量；Playwright 覆盖。 |
 | 多条 START/END 门禁 | DONE | 编辑、顺序执行、审计和 Python/JavaScript/Prompt 测试已有。 |

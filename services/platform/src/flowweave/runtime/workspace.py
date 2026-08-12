@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import re
+import shlex
+import shutil
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -17,6 +20,18 @@ from flowweave.shared.settings import get_settings
 _SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 _DEPENDENCY_MAX_FILES = 20_000
 _DEPENDENCY_MAX_EXPANDED_BYTES = 100 * 1024 * 1024
+_MCP_SCRIPT_MAX_FILES = 20
+_MCP_SCRIPT_MAX_EXPANDED_BYTES = 10 * 1024 * 1024
+_HOOK_SCRIPT_MAX_FILES = 20
+_HOOK_SCRIPT_MAX_EXPANDED_BYTES = 10 * 1024 * 1024
+_HOOK_EVENTS = (
+    "pre_tool_use",
+    "post_tool_use",
+    "user_prompt_submit",
+    "session_start",
+    "session_end",
+    "stop",
+)
 _MCP_KEYS = {
     "url",
     "transport",
@@ -50,6 +65,18 @@ def node_workspace_path(asset_id: str) -> Path:
 
 def openhands_node_workspace_path(asset_id: str) -> Path:
     return Path(get_settings().openhands_workspace_root) / node_workspace_relative(asset_id)
+
+
+def managed_node_assets_path(asset_id: str) -> Path:
+    return (
+        Path(get_settings().workspace_root).resolve()
+        / ".managed-assets"
+        / node_workspace_relative(asset_id)
+    )
+
+
+def openhands_managed_node_assets_path(asset_id: str) -> Path:
+    return Path(get_settings().openhands_managed_assets_root) / node_workspace_relative(asset_id)
 
 
 def attempt_workspace_path(
@@ -130,6 +157,31 @@ def _atomic_write(path: Path, content: bytes, mode: int = 0o644) -> None:
     temporary.write_bytes(content)
     temporary.chmod(mode)
     os.replace(temporary, path)
+
+
+def _replace_managed_directory(path: Path, managed_root: Path) -> None:
+    """Create a clean directory without following pre-existing links."""
+
+    workspace_root = Path(get_settings().workspace_root).resolve()
+    resolved_managed_root = managed_root.resolve()
+    if not resolved_managed_root.is_relative_to(workspace_root):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The managed capability directory is outside the workspace root",
+            422,
+        )
+    managed_root.mkdir(parents=True, exist_ok=True)
+    if path.parent != managed_root or path.name in {"", ".", ".."}:
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The managed capability directory is invalid",
+            422,
+        )
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+    path.mkdir(mode=0o700)
 
 
 def _extract_dependencies(
@@ -293,23 +345,254 @@ def _mcp_config(config: dict[str, Any], runtime_directory: Path) -> dict[str, An
     return value
 
 
+def _extract_mcp_scripts(
+    capability: dict[str, Any],
+    host_directory: Path,
+) -> None:
+    normalized = cast(dict[str, Any], capability.get("normalized_config") or {})
+    raw_files = normalized.get("script_files")
+    if not isinstance(raw_files, list) or not raw_files:
+        return
+    filenames = [str(value) for value in cast(list[object], raw_files)]
+    hashes = normalized.get("script_hashes")
+    expected_hashes = (
+        {str(key): str(value) for key, value in cast(dict[object, object], hashes).items()}
+        if isinstance(hashes, dict)
+        else {}
+    )
+    if (
+        len(filenames) > _MCP_SCRIPT_MAX_FILES
+        or len(filenames) != len(set(filenames))
+        or set(filenames) != set(expected_hashes)
+    ):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "An MCP script package has an invalid manifest",
+            422,
+            {"capability_key": capability.get("capability_key")},
+        )
+    storage_key = str(normalized.get("storage_key") or "")
+    prefix = PurePosixPath(str(normalized.get("script_archive_prefix") or ""))
+    if not storage_key or not prefix.parts:
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "An MCP script package is missing",
+            422,
+            {"capability_key": capability.get("capability_key")},
+        )
+    expected = set(filenames)
+    extracted: set[str] = set()
+    total = 0
+    try:
+        bundle = get_artifact_store().read(storage_key)
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            for item in archive.infolist():
+                if item.is_dir():
+                    continue
+                source = PurePosixPath(item.filename.replace("\\", "/"))
+                try:
+                    relative = source.relative_to(prefix)
+                except ValueError:
+                    continue
+                if len(relative.parts) != 1 or relative.name not in expected:
+                    raise ValueError("unexpected MCP script path")
+                mode_type = (item.external_attr >> 16) & 0o170000
+                if source.is_absolute() or ".." in source.parts or mode_type not in {0, 0o100000}:
+                    raise ValueError("unsafe MCP script path")
+                content = archive.read(item)
+                total += len(content)
+                if total > _MCP_SCRIPT_MAX_EXPANDED_BYTES:
+                    raise ValueError("MCP script package is too large")
+                if hashlib.sha256(content).hexdigest() != expected_hashes[relative.name]:
+                    raise ValueError("MCP script digest mismatch")
+                destination = (host_directory / "scripts" / relative.name).resolve()
+                scripts_root = (host_directory / "scripts").resolve()
+                if not destination.is_relative_to(scripts_root):
+                    raise ValueError("unsafe MCP script destination")
+                suffix = Path(relative.name).suffix.lower()
+                mode = 0o555 if suffix == ".sh" else 0o444
+                _atomic_write(destination, content, mode=mode)
+                extracted.add(relative.name)
+        if extracted != expected:
+            raise ValueError("MCP script package is incomplete")
+    except (FileNotFoundError, KeyError, OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "An MCP script package cannot be materialized",
+            422,
+            {"capability_key": capability.get("capability_key")},
+        ) from exc
+
+
 def _materialize_mcp(capability: dict[str, Any], host_root: Path, runtime_root: Path) -> RuntimeMCP:
     key = _segment(capability.get("capability_key"), "mcp")
     host_directory = host_root / "mcp" / key
     runtime_directory = runtime_root / "mcp" / key
     raw = capability.get("normalized_config")
+    _extract_mcp_scripts(capability, host_directory)
     config = _mcp_config(
         cast(dict[str, Any], raw) if isinstance(raw, dict) else {}, runtime_directory
     )
     _atomic_write(
         host_directory / "config.json",
         json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8"),
+        mode=0o444,
     )
     return RuntimeMCP(
         name=str(capability.get("capability_key") or key),
         config=config,
         workspace_path=str(runtime_directory),
     )
+
+
+def _hook_script_command(runtime_path: Path) -> str:
+    quoted = shlex.quote(str(runtime_path))
+    suffix = runtime_path.suffix.lower()
+    if suffix == ".sh":
+        return f"sh {quoted}"
+    if suffix == ".py":
+        return f"python {quoted}"
+    if suffix in {".js", ".mjs", ".cjs"}:
+        return f"node {quoted}"
+    raise ValueError("unsupported Hook script extension")
+
+
+def _extract_hook_scripts(
+    capability: dict[str, Any], host_directory: Path, runtime_directory: Path
+) -> dict[str, str]:
+    normalized = cast(dict[str, Any], capability.get("normalized_config") or {})
+    raw_files = normalized.get("script_files")
+    if not isinstance(raw_files, list) or not raw_files:
+        return {}
+    filenames = [str(value) for value in cast(list[object], raw_files)]
+    hashes = normalized.get("script_hashes")
+    expected_hashes = (
+        {str(key): str(value) for key, value in cast(dict[object, object], hashes).items()}
+        if isinstance(hashes, dict)
+        else {}
+    )
+    if len(filenames) > _HOOK_SCRIPT_MAX_FILES or set(filenames) != set(expected_hashes):
+        raise ValueError("invalid Hook script manifest")
+    storage_key = str(normalized.get("storage_key") or "")
+    prefix = PurePosixPath(str(normalized.get("script_archive_prefix") or ""))
+    if not storage_key or not prefix.parts:
+        raise ValueError("missing Hook script package")
+
+    scripts_directory = host_directory / "scripts"
+    if scripts_directory.is_symlink() or scripts_directory.is_file():
+        scripts_directory.unlink()
+    elif scripts_directory.exists():
+        shutil.rmtree(scripts_directory)
+    expected = set(filenames)
+    extracted: set[str] = set()
+    total = 0
+    try:
+        bundle = get_artifact_store().read(storage_key)
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            for item in archive.infolist():
+                if item.is_dir():
+                    continue
+                source = PurePosixPath(item.filename.replace("\\", "/"))
+                try:
+                    relative = source.relative_to(prefix)
+                except ValueError:
+                    continue
+                mode_type = (item.external_attr >> 16) & 0o170000
+                if (
+                    len(relative.parts) != 1
+                    or relative.name not in expected
+                    or source.is_absolute()
+                    or ".." in source.parts
+                    or mode_type not in {0, 0o100000}
+                ):
+                    raise ValueError("unsafe Hook script path")
+                content = archive.read(item)
+                total += len(content)
+                if total > _HOOK_SCRIPT_MAX_EXPANDED_BYTES:
+                    raise ValueError("Hook script package is too large")
+                if hashlib.sha256(content).hexdigest() != expected_hashes[relative.name]:
+                    raise ValueError("Hook script digest mismatch")
+                destination = (scripts_directory / relative.name).resolve()
+                if not destination.is_relative_to(scripts_directory.resolve()):
+                    raise ValueError("unsafe Hook script destination")
+                _atomic_write(destination, content, mode=0o555)
+                extracted.add(relative.name)
+        if extracted != expected:
+            raise ValueError("Hook script package is incomplete")
+    except (FileNotFoundError, KeyError, OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "A Hook script package cannot be materialized",
+            422,
+            {"capability_key": capability.get("capability_key")},
+        ) from exc
+    return {
+        filename: _hook_script_command(runtime_directory / "scripts" / filename)
+        for filename in filenames
+    }
+
+
+def materialize_hook_config(asset: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Materialize Hook scripts and return an OpenHands-native Hook config."""
+
+    asset_id = str(asset.get("id") or "")
+    if not asset_id:
+        raise DomainError("RUNTIME_NODE_INVALID", "Node asset id is missing", 422)
+    host_root = managed_node_assets_path(asset_id)
+    runtime_root = openhands_managed_node_assets_path(asset_id)
+    hooks_root = host_root / "hooks"
+    _replace_managed_directory(hooks_root, host_root)
+    merged: dict[str, list[dict[str, Any]]] = {}
+    raw_capabilities = asset.get("capabilities")
+    if not isinstance(raw_capabilities, list):
+        return merged
+    for raw_capability in cast(list[object], raw_capabilities):
+        if not isinstance(raw_capability, dict):
+            continue
+        capability = cast(dict[str, Any], raw_capability)
+        if capability.get("capability_type") != "HOOK":
+            continue
+        key = _segment(capability.get("capability_key"), "hook")
+        host_directory = host_root / "hooks" / key
+        runtime_directory = runtime_root / "hooks" / key
+        try:
+            commands = _extract_hook_scripts(capability, host_directory, runtime_directory)
+            normalized = cast(dict[str, Any], capability.get("normalized_config") or {})
+            for event in _HOOK_EVENTS:
+                raw_matchers = normalized.get(event)
+                if not isinstance(raw_matchers, list):
+                    continue
+                for raw_matcher in cast(list[object], raw_matchers):
+                    if not isinstance(raw_matcher, dict):
+                        continue
+                    matcher = cast(dict[str, Any], raw_matcher)
+                    converted_hooks: list[dict[str, Any]] = []
+                    for raw_hook in cast(list[object], matcher.get("hooks") or []):
+                        if not isinstance(raw_hook, dict):
+                            continue
+                        hook = dict(cast(dict[str, Any], raw_hook))
+                        if hook.get("type") == "script":
+                            filename = str(hook.pop("script", ""))
+                            command = commands.get(filename)
+                            if command is None:
+                                raise ValueError("Hook script action is not materialized")
+                            hook["type"] = "command"
+                            hook["command"] = command
+                        converted_hooks.append(hook)
+                    merged.setdefault(event, []).append(
+                        {
+                            "matcher": str(matcher.get("matcher") or "*"),
+                            "hooks": converted_hooks,
+                        }
+                    )
+        except ValueError as exc:
+            raise DomainError(
+                "RUNTIME_CAPABILITY_UNAVAILABLE",
+                "A Hook configuration cannot be materialized",
+                422,
+                {"capability_key": capability.get("capability_key")},
+            ) from exc
+    return merged
 
 
 def materialize_node_workspace(
@@ -320,7 +603,12 @@ def materialize_node_workspace(
         raise DomainError("RUNTIME_NODE_INVALID", "Node asset id is missing", 422)
     host_root = node_workspace_path(asset_id)
     runtime_root = openhands_node_workspace_path(asset_id)
-    for directory in ("skills", "mcp", "files", "repositories", "sessions", ".runtime"):
+    managed_root = managed_node_assets_path(asset_id)
+    managed_runtime_root = openhands_managed_node_assets_path(asset_id)
+    managed_root.mkdir(parents=True, exist_ok=True)
+    mcp_root = managed_root / "mcp"
+    _replace_managed_directory(mcp_root, managed_root)
+    for directory in ("skills", "files", "repositories", "sessions", ".runtime"):
         (host_root / directory).mkdir(parents=True, exist_ok=True)
     raw_capabilities: object = asset.get("capabilities")
     capabilities = (
@@ -338,7 +626,7 @@ def materialize_node_workspace(
         if capability.get("capability_type") == "SKILL"
     )
     mcp_servers = tuple(
-        _materialize_mcp(capability, host_root, runtime_root)
+        _materialize_mcp(capability, managed_root, managed_runtime_root)
         for capability in capabilities
         if capability.get("capability_type") == "MCP"
     )

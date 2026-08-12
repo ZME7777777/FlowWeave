@@ -4,7 +4,7 @@ FlowWeave 是面向内部研发流程的 Agent 工作台：可复用节点资产
 
 ## 产品能力
 
-- 节点目录与节点资产：模型、提示词、可选的 Skill/MCP/Hook、输入输出契约；默认 Skill 不是必填。Skill ZIP 最大 25 MiB，既支持根目录直接包含单个 `SKILL.md`，也支持一个 ZIP 下按目录批量导入多个 Skill。Skill 的脚本与参考文件会完整落到节点宿主工作区，MCP 会作为真实工具注入 Agent。
+- 节点目录与节点资产：模型、提示词、可选的 Skill/MCP、输入输出契约；默认 Skill 不是必填。Skill ZIP 最大 25 MiB，既支持根目录直接包含单个 `SKILL.md`，也支持一个 ZIP 下按目录批量导入多个 Skill；macOS 元数据不会占用有效条目配额。MCP 通过页面内 JSON 配置创建并作为真实工具注入 Agent；命令型 MCP 所需 CLI 由终端环境安装并随环境版本发布。
 - 模型服务：加密 API Key、模型发现、启用模型和默认模型。
 - 流程编排：同一资产可重复放置为不同 Flow Node，边提供产物映射候选，节点拥有多条 START/END 门禁。
 - 流程运行：任意节点启动、显式 Input Binding、Node Run/Attempt 分离、不可变 Artifact Version；产物来源仅用于血缘和审计。
@@ -38,7 +38,13 @@ make infra-up
 RUNTIME_ADAPTER=openhands make infra-up-openhands
 ```
 
-节点资源保存在宿主机 `var/workspaces/nodes/<node-asset-id>/`：`skills/` 存放完整 Skill 包，`mcp/` 存放 Server 配置与配套文件，`files/` 可放文本或附件，`repositories/` 可放代码仓库，`sessions/` 保存该节点各次运行的会话工作区。可通过 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 改为其他宿主机目录。
+修改基础镜像、平台服务或 Web 后，可一条命令无缓存重建全部本地镜像并重新部署完整服务。该命令保留数据库、Artifact 与节点工作区数据：
+
+```bash
+make rebuild-deploy
+```
+
+节点可写资源保存在宿主机 `var/workspaces/nodes/<node-asset-id>/`：`skills/` 存放完整 Skill 包，`files/` 可放文本或附件，`repositories/` 可放代码仓库，`sessions/` 保存各次运行的会话工作区。上传的 MCP/Hook 配置与脚本由平台物化到 `var/workspaces/.managed-assets/nodes/<node-asset-id>/`，并以只读方式挂载到 Runtime 的 `/runtime/capabilities/nodes/<node-asset-id>/`，不会暴露在节点可写挂载中。可通过 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 改为其他宿主机目录。
 
 OpenHands 镜像内置 `sh`、`bash`、Python、Node.js、npm/npx、`js`、uv/uvx、Git、SSH、curl、jq、unzip 与 `lark-cli`。默认会把宿主机 `~/.lark-cli` 及 `~/Library/Application Support/lark-cli` 映射到 Session 容器，并自动为 Linux 创建兼容的 `master.key` 链接，因此在宿主机完成的配置和授权可被所有 Agent 会话直接复用。macOS 首次共享前需在宿主机终端执行一次：
 

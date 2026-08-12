@@ -1,7 +1,7 @@
 import type {
   AgentConversation, AgentMessage, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
-  BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  NodeDirectory, NodeRun, RunEvent, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
+  BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
+  NodeDirectory, NodeRun, RunEvent, SkillCollection, SkillCollectionWrite, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -110,10 +110,27 @@ export const api = {
   updateNode: (id: string, body: NodeAssetWrite) => request<NodeAsset>(`/node-assets/${id}`, json('PUT', body)),
   deleteNode: (id: string) => request<void>(`/node-assets/${id}`, json('DELETE')),
   deleteNodes: (ids: string[]) => request<BulkDeleteResult<BlockedNodeDelete>>('/node-assets', json('DELETE', { ids })),
-  validateCapability: (body: { capability_type: string; filename: string; content_base64: string }) =>
-    request<{ import_token: string; preview: unknown; content_hash: string }>('/capability-imports/validate', json('POST', body)),
+  validateCapability: (body: { capability_type: string; filename: string; content_base64: string; mcp_scripts?: Array<{ server: string; filename: string; content_base64: string }>; hook_scripts?: Array<{ filename: string; content_base64: string }> }) =>
+    request<{
+      import_token: string;
+      preview: {
+        capabilities?: Array<{ capability_key?: string }>;
+        file_count?: number;
+        raw_entry_count?: number;
+        effective_entry_count?: number;
+        ignored_entry_count?: number;
+      };
+      content_hash: string;
+    }>('/capability-imports/validate', json('POST', body)),
   commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
+  skillCollections: () => request<SkillCollection[]>('/skill-collections'),
+  createSkillCollection: (body: SkillCollectionWrite) =>
+    request<SkillCollection>('/skill-collections', json('POST', body)),
+  updateSkillCollection: (id: string, body: SkillCollectionWrite) =>
+    request<SkillCollection>(`/skill-collections/${id}`, json('PUT', body)),
+  deleteSkillCollection: (id: string) =>
+    request<void>(`/skill-collections/${id}`, json('DELETE')),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
   updateCapabilitySource: (id: string, content: string) =>
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
@@ -140,7 +157,11 @@ export const api = {
   deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, json('DELETE')),
   deleteProviders: (ids: string[]) => request<BulkDeleteResult<BlockedProviderDelete>>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
-  discoverProviderModels: (id: string) => request<{ models: string[] }>(`/model-providers/${id}/discover-models`, json('POST')),
+  discoverProviderModels: (id: string) => request<{ models: string[]; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
+  startCodexOAuth: (id: string) => request<CodexDeviceAuthorization>(`/model-providers/${id}/oauth/device/start`, json('POST')),
+  pollCodexOAuth: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/device/poll`, json('POST')),
+  codexOAuthStatus: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/status`),
+  disconnectCodexOAuth: (id: string) => request<ModelProvider>(`/model-providers/${id}/oauth`, json('DELETE')),
   flows: () => request<FlowDefinition[]>('/flows'),
   flow: (id: string) => request<FlowDefinition>(`/flows/${id}`),
   createFlow: (body: FlowWrite) => request<FlowDefinition>('/flows', json('POST', body)),
@@ -161,7 +182,7 @@ export const api = {
   bindInputs: (attemptId: string, bindings: Record<string, string>, version?: number) =>
     request<NodeAttempt>(`/node-attempts/${attemptId}/input-bindings`, json('PUT', { bindings, expected_state_version: version })),
   confirmStart: (attemptId: string, version: number, startup: { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string }) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version, ...startup }, true)),
-  humanInput: (attemptId: string, content: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version }, true)),
+  humanInput: (attemptId: string, content: string, version: number, runtime?: { model_name?: string; reasoning_effort?: string | null }) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version, ...runtime }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   rejectAttempt: (attemptId: string, reason: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reject`, json('POST', { reason, copy_input_bindings: true, expected_state_version: version }, true)),
   retryGates: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-gates`, json('POST', { expected_state_version: version })),
@@ -171,9 +192,9 @@ export const api = {
   completeRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/complete`, json('POST', undefined, true)),
   cancelRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/cancel`, json('POST', undefined, true)),
   conversations: (attemptId: string) => request<AgentConversation[]>(`/node-attempts/${attemptId}/conversations`),
-  createConversation: (attemptId: string, version: number, title?: string) =>
+  createConversation: (attemptId: string, version: number, title?: string, runtime?: { model_name?: string; reasoning_effort?: string }) =>
     request<AgentConversation>(`/node-attempts/${attemptId}/conversations`, json('POST', {
-      title, expected_attempt_state_version: version, baseline: { include_current_artifacts: true },
+      title, expected_attempt_state_version: version, baseline: { include_current_artifacts: true }, ...runtime,
     }, true)),
   conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
   conversationSubagents: (conversationId: string) =>
@@ -183,7 +204,7 @@ export const api = {
   deleteConversation: (conversationId: string) => request<void>(`/agent-conversations/${conversationId}`, json('DELETE')),
   conversationMessages: (conversationId: string, afterSequence = 0) =>
     request<AgentMessage[]>(`/agent-conversations/${conversationId}/messages?after_sequence=${afterSequence}&limit=200`),
-  sendConversationMessage: (conversationId: string, content: string, version: number, capabilityRefs: Array<{ capability_type: 'SKILL' | 'MCP'; capability_key: string }> = [], attachments: MessageAttachmentInput[] = [], clientMessageId = randomId()) =>
+  sendConversationMessage: (conversationId: string, content: string, version: number, capabilityRefs: Array<{ capability_type: 'SKILL' | 'MCP'; capability_key: string }> = [], attachments: MessageAttachmentInput[] = [], runtime?: { model_name?: string; reasoning_effort?: string | null }, clientMessageId = randomId()) =>
     request<AgentMessage>(`/agent-conversations/${conversationId}/messages`, json('POST', {
       client_message_id: clientMessageId,
       content: [
@@ -193,6 +214,7 @@ export const api = {
       capability_refs: capabilityRefs,
       delivery_mode: 'QUEUE_AFTER_TURN',
       expected_conversation_version: version,
+      ...runtime,
     }, true)),
   forkConversationMessage: (messageId: string, version: number) =>
     request<AgentConversation>(`/agent-messages/${messageId}/fork`, json('POST', {
@@ -227,6 +249,60 @@ export function agentTerminalUrl(conversationId: string, rows = 24, columns = 80
   url.searchParams.set('rows', String(rows));
   url.searchParams.set('columns', String(columns));
   return url.toString();
+}
+
+export interface AgentStreamEvent {
+  type: 'delta' | 'message_complete';
+  content?: string;
+}
+
+export function agentStreamUrl(conversationId: string): string {
+  const base = API_BASE || window.location.origin;
+  const url = new URL(`${ROOT}/agent-conversations/${encodeURIComponent(conversationId)}/stream`, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
+export function subscribeToConversationStream(
+  conversationId: string,
+  onEvent: (event: AgentStreamEvent) => void,
+): () => void {
+  let disposed = false;
+  let socket: WebSocket | undefined;
+  let reconnectTimer: number | undefined;
+  let reconnectAttempt = 0;
+
+  const connect = () => {
+    if (disposed) return;
+    socket = new WebSocket(agentStreamUrl(conversationId));
+    socket.onopen = () => { reconnectAttempt = 0; };
+    socket.onmessage = message => {
+      try {
+        const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
+        if (event.type === 'delta' && typeof event.content === 'string') {
+          onEvent({ type: 'delta', content: event.content });
+        } else if (event.type === 'message_complete') {
+          onEvent({ type: 'message_complete' });
+        }
+      } catch {
+        // A malformed transient frame must not disrupt durable message polling.
+      }
+    };
+    socket.onclose = event => {
+      socket = undefined;
+      if (disposed || event.code === 4409) return;
+      const delay = Math.min(500 * (2 ** reconnectAttempt), 5000);
+      reconnectAttempt += 1;
+      reconnectTimer = window.setTimeout(connect, delay);
+    };
+  };
+
+  connect();
+  return () => {
+    disposed = true;
+    if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+    socket?.close(1000, 'Conversation changed');
+  };
 }
 
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {

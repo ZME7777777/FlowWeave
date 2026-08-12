@@ -16,6 +16,7 @@ dependencies = [
   "quickjs==1.19.4",
   "sqlalchemy==2.0.41",
   "uvicorn[standard]==0.34.2",
+  "websockets==17.0.1",
 ]
 [dependency-groups]
 dev = [

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import Any
 from urllib.parse import urlparse
 
 from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
+    RuntimeProvider,
     RuntimeResult,
     StartAttemptRequest,
 )
@@ -61,8 +64,19 @@ class MockRuntime:
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         return RuntimeEventBatch(cursor=handle.cursor)
 
+    async def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]:
+        del handle
+        if False:
+            yield {}
+
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         return self._results.get(handle.job_id, RuntimeResult(status="FAILED", error="UNKNOWN_JOB"))
+
+    def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
+        del handle, provider
+
+    def interrupt(self, handle: RuntimeHandle) -> None:
+        del handle
 
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()

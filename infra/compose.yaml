@@ -73,7 +73,11 @@ services:
   openhands-agent-server:
     image: flowweave-openhands-runtime:1
     container_name: flowweave-openhands-agent-server
-    build: { context: .., dockerfile: infra/openhands/Dockerfile }
+    build:
+      context: ..
+      dockerfile: infra/openhands/Dockerfile
+      additional_contexts:
+        openhands_sdk: ${OPENHANDS_SDK_SOURCE:-../../openhands/software-agent-sdk}
     labels:
       flowweave.workspace-source: "true"
       flowweave.manager-scope: "${SANDBOX_MANAGER_SCOPE:-flowweave-local}"

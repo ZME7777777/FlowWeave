@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, Header, Query, Response, WebSocket, WebS
 from flowweave.bootstrap.container import Container
 from flowweave.modules.conversations import public as service
 from flowweave.modules.environments import public as environments
+from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
 from flowweave.shared.schemas import (
@@ -58,6 +60,37 @@ async def create_conversation(
 @router.get("/agent-conversations/{conversation_id}")
 async def conversation(conversation_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.get_conversation(session, conversation_id))
+
+
+@router.websocket("/agent-conversations/{conversation_id}/stream")
+async def conversation_stream(
+    websocket: WebSocket, conversation_id: str, container: ContainerDep
+) -> None:
+    """Proxy safe, transient Runtime text deltas without exposing Runtime credentials."""
+
+    settings_token = bind_settings(container.settings)
+    try:
+        async with container.database.session() as db:
+            try:
+                adapter, handle = await db.run_sync(
+                    lambda session: service.runtime_stream_details(session, conversation_id)
+                )
+            except DomainError as exc:
+                await websocket.close(code=4409, reason=exc.message)
+                return
+        with runtime_context(container.runtime):
+            runtime = runtime_for(adapter, handle)
+        await websocket.accept()
+        try:
+            async for event in runtime.stream_events(handle):
+                await websocket.send_json(event)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            # Runtime connectivity is best-effort; durable messages remain the fallback.
+            await websocket.close(code=1011, reason="Runtime stream unavailable")
+    finally:
+        reset_settings(settings_token)
 
 
 @router.get("/agent-conversations/{conversation_id}/subagents")

@@ -795,7 +795,7 @@ chmod 0700 "$target"
                 ]
             )
             return command
-        workspace_mount = self._runtime_workspace_mount(resource)
+        workspace_mounts = self._runtime_workspace_mount(resource)
         session_key = derive_runtime_session_key(
             self.settings.openhands_session_api_key,
             self.settings.sandbox_manager_scope,
@@ -809,8 +809,9 @@ chmod 0700 "$target"
                 # model-generated commands. Keep that workload away from root
                 # and make the image itself immutable. Only the selected node
                 # workspace and these bounded, in-memory runtime directories
-                # remain writable. UID 10001 matches the platform workspace
-                # owner used by the standard deployment.
+                # remain writable. Uploaded executable capability assets are
+                # exposed through a separate read-only mount. UID 10001 matches
+                # the platform workspace owner used by the standard deployment.
                 "--user",
                 "10001:10001",
                 "--read-only",
@@ -820,7 +821,7 @@ chmod 0700 "$target"
                 "/runtime/workspace:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
                 "--mount",
                 (f"type=volume,src={credential_volume},dst=/home/flowweave"),
-                *workspace_mount,
+                *workspace_mounts,
                 "-e",
                 "HOME=/home/flowweave",
                 "-e",
@@ -853,10 +854,18 @@ chmod 0700 "$target"
                 422,
             )
         runtime_root = PurePosixPath(str(self.settings.openhands_workspace_root))
-        if not runtime_root.is_absolute():
+        managed_runtime_root = PurePosixPath(str(self.settings.openhands_managed_assets_root))
+        if (
+            not runtime_root.is_absolute()
+            or not managed_runtime_root.is_absolute()
+            or managed_runtime_root == runtime_root
+            or managed_runtime_root.is_relative_to(runtime_root)
+            or runtime_root.is_relative_to(managed_runtime_root)
+            or any(character in str(managed_runtime_root) for character in ",=")
+        ):
             raise DomainError(
                 "SANDBOX_WORKSPACE_INVALID",
-                "The Runtime workspace root must be absolute",
+                "The Runtime workspace and managed asset roots must be isolated absolute paths",
                 503,
             )
         raw = self._run(
@@ -914,6 +923,8 @@ chmod 0700 "$target"
         source_mount = matches[0]
         mount_type = str(source_mount.get("Type") or "")
         target = runtime_root.joinpath(*relative.parts)
+        managed_relative = PurePosixPath(".managed-assets").joinpath(*relative.parts)
+        managed_target = managed_runtime_root.joinpath(*relative.parts)
         if mount_type == "bind":
             source = PurePosixPath(str(source_mount.get("Source") or ""))
             if not source.is_absolute() or any(character in str(source) for character in ",="):
@@ -923,7 +934,11 @@ chmod 0700 "$target"
                     503,
                 )
             isolated_source = source.joinpath(*relative.parts)
-            specification = f"type=bind,src={isolated_source},dst={target}"
+            managed_source = source.joinpath(*managed_relative.parts)
+            specifications = [
+                f"type=bind,src={isolated_source},dst={target}",
+                (f"type=bind,src={managed_source},dst={managed_target},readonly"),
+            ]
         elif mount_type == "volume":
             name = str(source_mount.get("Name") or "")
             if not name or any(character in name for character in ",="):
@@ -932,16 +947,20 @@ chmod 0700 "$target"
                     "The workspace volume name is missing or invalid",
                     503,
                 )
-            specification = (
-                f"type=volume,src={name},dst={target},volume-subpath={relative.as_posix()}"
-            )
+            specifications = [
+                (f"type=volume,src={name},dst={target},volume-subpath={relative.as_posix()}"),
+                (
+                    f"type=volume,src={name},dst={managed_target},"
+                    f"volume-subpath={managed_relative.as_posix()},readonly"
+                ),
+            ]
         else:
             raise DomainError(
                 "SANDBOX_WORKSPACE_SOURCE_INVALID",
                 "The workspace source must be a bind mount or named volume",
                 503,
             )
-        return ["--mount", specification]
+        return [item for specification in specifications for item in ("--mount", specification)]
 
     def _wait_for_agent_server(self, resource_name: str) -> None:
         deadline = time.monotonic() + self.settings.terminal_environment_start_timeout_seconds

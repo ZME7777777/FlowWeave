@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from flowweave.bootstrap import sandbox_controller as controller_module
 from flowweave.bootstrap.sandbox_controller import create_app
 from flowweave.modules.environments.infrastructure import docker as environments_docker
 from flowweave.modules.sandboxes.infrastructure.docker import (
@@ -397,3 +398,56 @@ def test_controller_accepts_fixed_high_level_operation(settings, monkeypatch):
     assert response.status_code == 200
     assert response.json()["resource_identifier"] == "immutable-container-id"
     assert observed == [_RESOURCE_ID]
+
+
+def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, monkeypatch):
+    verification: dict[str, object] = {}
+
+    def inspect_owned(
+        docker_binary,
+        resource_name,
+        resource_id,
+        *,
+        expected_manager_scope,
+        expected_kind=None,
+        timeout,
+    ):
+        verification.update(
+            {
+                "docker_binary": docker_binary,
+                "resource_name": resource_name,
+                "resource_id": resource_id,
+                "manager_scope": expected_manager_scope,
+                "kind": expected_kind,
+                "timeout": timeout,
+            }
+        )
+        return "immutable-runtime-container-id"
+
+    async def stream(_settings, container_id, conversation_id):
+        assert container_id == "immutable-runtime-container-id"
+        assert conversation_id == "conversation-1"
+        yield b'{"kind":"StreamingDeltaEvent","content":"hello"}\n'
+
+    monkeypatch.setattr(controller_module, "inspect_owned_container", inspect_owned)
+    monkeypatch.setattr(controller_module, "_runtime_event_stream", stream)
+    payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": "fw-sbx-12345678123442349234123456789abc",
+        "resource_id": _RESOURCE_ID,
+        "conversation_id": "conversation-1",
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/runtimes/events", headers=_api_headers(), json=payload)
+        denied = client.post("/v1/runtimes/events", headers=_headers(), json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "kind": "StreamingDeltaEvent",
+        "content": "hello",
+    }
+    assert verification["resource_id"] == _RESOURCE_ID
+    assert verification["manager_scope"] == _SCOPE
+    assert verification["kind"] == "agent-runtime"
+    assert denied.status_code == 403

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 import secrets
@@ -15,7 +16,7 @@ from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from flowweave.bootstrap.settings import Settings
@@ -27,6 +28,11 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.dependency_builder import DockerDependencyBuilder
+from flowweave.shared.infrastructure.docker_control import (
+    DockerControlError,
+    DockerOwnershipError,
+    inspect_owned_container,
+)
 from flowweave.shared.infrastructure.docker_controller import authorize_controller_request
 from flowweave.shared.infrastructure.sandbox import DockerSandbox
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -188,6 +194,14 @@ class TerminalResizeWrite(TerminalIdWrite):
     columns: int = Field(ge=20, le=400)
 
 
+class RuntimeEventsWrite(SandboxDeleteWrite):
+    conversation_id: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$",
+    )
+
+
 @dataclass(slots=True)
 class _TerminalAttachment:
     master: int
@@ -252,6 +266,78 @@ class _TerminalManager:
     def close_all(self) -> None:
         for terminal_id in list(self.attachments):
             self.close(terminal_id)
+
+
+_RUNTIME_EVENT_RELAY = r"""
+import asyncio
+import os
+import sys
+
+from websockets.asyncio.client import connect
+
+
+async def main():
+    conversation_id = sys.argv[1]
+    headers = {"X-Session-API-Key": os.environ["SESSION_API_KEY"]}
+    async with connect(
+        f"ws://127.0.0.1:8000/sockets/events/{conversation_id}",
+        additional_headers=headers,
+        open_timeout=10,
+        ping_interval=20,
+        ping_timeout=20,
+        max_size=2 * 1024 * 1024,
+    ) as upstream:
+        async for frame in upstream:
+            if isinstance(frame, str):
+                print(frame, flush=True)
+
+
+asyncio.run(main())
+"""
+
+
+async def _runtime_event_stream(
+    configured: Settings, container_id: str, conversation_id: str
+) -> AsyncIterator[bytes]:
+    """Run the fixed relay inside one ownership-verified Runtime container."""
+
+    process = await asyncio.create_subprocess_exec(
+        configured.docker_binary,
+        "exec",
+        container_id,
+        "/runtime/.venv/bin/python",
+        "-u",
+        "-c",
+        _RUNTIME_EVENT_RELAY,
+        conversation_id,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={"PATH": os.defpath},
+    )
+    assert process.stdout is not None
+    try:
+        while line := await process.stdout.readline():
+            # The Runtime owns the JSON schema. Preserve only valid JSON objects
+            # and normalize framing so one upstream event is one NDJSON record.
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(value, dict):
+                yield json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+        return_code = await process.wait()
+        if return_code:
+            assert process.stderr is not None
+            detail = (await process.stderr.read()).decode(errors="replace")[-2000:]
+            raise RuntimeError(f"Runtime event relay exited with {return_code}: {detail}")
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
 
 
 def _observation_dict(value: object) -> dict[str, Any] | None:
@@ -354,6 +440,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/environments/publish": frozenset({"api"}),
                 "/v1/gates/execute": frozenset({"worker"}),
                 "/v1/dependencies/build": frozenset({"worker"}),
+                "/v1/runtimes/events": frozenset({"api"}),
                 "/v1/terminals/start": frozenset({"api"}),
                 "/v1/terminals/read": frozenset({"api"}),
                 "/v1/terminals/write": frozenset({"api"}),
@@ -552,6 +639,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "manifest": bundle.manifest,
         }
 
+    @app.post("/v1/runtimes/events")
+    async def runtime_events(payload: RuntimeEventsWrite) -> StreamingResponse:
+        check_scope(payload.manager_scope)
+        try:
+            container_id = inspect_owned_container(
+                configured.docker_binary,
+                payload.resource_name,
+                str(payload.resource_id),
+                expected_manager_scope=configured.sandbox_manager_scope,
+                expected_kind="agent-runtime",
+                timeout=10,
+            )
+        except DockerOwnershipError as exc:
+            raise DomainError(
+                "SANDBOX_RESOURCE_CONFLICT",
+                "The Runtime container is owned by another sandbox",
+                409,
+            ) from exc
+        except DockerControlError as exc:
+            raise DomainError(
+                "SANDBOX_BACKEND_UNAVAILABLE",
+                "The Runtime container could not be verified",
+                503,
+            ) from exc
+        if container_id is None:
+            raise DomainError(
+                "SANDBOX_RESOURCE_MISSING",
+                "The Runtime container no longer exists",
+                409,
+            )
+        return StreamingResponse(
+            _runtime_event_stream(configured, container_id, payload.conversation_id),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     @app.post("/v1/terminals/start")
     async def terminal_start(payload: TerminalStartWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
@@ -612,6 +738,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         publish,
         gate,
         dependencies,
+        runtime_events,
         terminal_start,
         terminal_read,
         terminal_write,

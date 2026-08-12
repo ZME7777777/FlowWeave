@@ -1,4 +1,4 @@
-.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image sandbox-smoke web-dev api-dev worker-dev e2e infra-up infra-up-openhands infra-down
+.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image sandbox-smoke web-dev api-dev worker-dev e2e infra-up infra-up-openhands rebuild-deploy infra-down
 
 COMPOSE = docker compose --env-file .env -f infra/compose.yaml
 
@@ -46,7 +46,7 @@ dependency-builder-image:
 	docker build -f infra/dependency-builder/Dockerfile -t flowweave-dependency-builder:1 .
 
 openhands-image:
-	docker build -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
+	docker build --build-context openhands_sdk=$${OPENHANDS_SDK_SOURCE:-../openhands/software-agent-sdk} -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
 
 sandbox-smoke: sandbox-images
 	$(COMPOSE) exec -T worker python - < services/platform/scripts/sandbox_smoke_check.py
@@ -61,6 +61,16 @@ infra-up: sandbox-images dependency-builder-image
 
 infra-up-openhands: sandbox-images dependency-builder-image openhands-image
 	$(COMPOSE) up -d --build --force-recreate postgres migration openhands-agent-server sandbox-controller api worker web
+
+# Rebuild every local image without cache, then recreate the complete stack.
+# Persistent database, artifact and workspace data are preserved.
+rebuild-deploy:
+	docker build --no-cache -f infra/sandbox/python/Dockerfile -t flowweave-sandbox-python:1 .
+	docker build --no-cache -f infra/sandbox/javascript/Dockerfile -t flowweave-sandbox-javascript:1 .
+	docker build --no-cache -f infra/dependency-builder/Dockerfile -t flowweave-dependency-builder:1 .
+	docker build --no-cache --build-context openhands_sdk=$${OPENHANDS_SDK_SOURCE:-../openhands/software-agent-sdk} -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
+	$(COMPOSE) build --no-cache migration sandbox-controller api worker web
+	$(COMPOSE) up -d --force-recreate --remove-orphans postgres workspace-init migration openhands-agent-server sandbox-controller api worker web
 
 infra-down:
 	$(COMPOSE) down

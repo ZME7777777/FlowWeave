@@ -35,7 +35,11 @@ from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import RuntimeHandle, RuntimeResult
 from flowweave.runtime.dependencies import get_runtime
-from flowweave.runtime.request import build_runtime_request
+from flowweave.runtime.request import (
+    build_runtime_request,
+    resolve_runtime_provider,
+    resolve_runtime_selection,
+)
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -155,6 +159,20 @@ def _context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, str]:
     if node_run is None:
         raise not_found("node_run", attempt.node_run_id)
     return node_run, node_run.flow_run_id
+
+
+def _attempt_node(db: Session, attempt: NodeAttempt) -> dict[str, Any]:
+    snapshot = db.get(RunSnapshot, attempt.snapshot_id)
+    node_run, _ = _context(db, attempt)
+    raw_nodes: object = snapshot.definition_json.get("nodes", []) if snapshot else []
+    nodes = cast(list[dict[str, Any]], raw_nodes) if isinstance(raw_nodes, list) else []
+    node = next(
+        (item for item in nodes if item.get("instance_key") == node_run.flow_node_snapshot_key),
+        None,
+    )
+    if node is None:
+        raise DomainError("SNAPSHOT_NODE_MISSING", "Attempt node is unavailable", 409)
+    return node
 
 
 def _event(
@@ -436,6 +454,10 @@ def _message_is_superseded(item: AgentMessage) -> bool:
     return item.content_json.get("superseded") is True
 
 
+def _message_is_progress(item: AgentMessage) -> bool:
+    return item.content_json.get("presentation") == "progress"
+
+
 def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
     active_messages = [
         message
@@ -450,6 +472,9 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
     count = len(active_messages)
     connection = _connection_status(db, item)
     runtime_resource = _runtime_resource(db, item)
+    runtime_selection = cast(
+        dict[str, Any], item.context_baseline_json.get("runtime_selection") or {}
+    )
     return {
         "id": item.id,
         "parent_conversation_id": item.parent_conversation_id,
@@ -459,6 +484,8 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
         "title": item.title,
         "state": item.state,
         "state_version": item.state_version,
+        "model_name": runtime_selection.get("model_name"),
+        "reasoning_effort": runtime_selection.get("reasoning_effort"),
         "runtime_adapter": item.runtime_adapter,
         "runtime_job_id": item.runtime_job_id,
         "runtime_conversation_id": item.runtime_conversation_id,
@@ -676,13 +703,21 @@ def ensure_auto_conversation(db: Session, attempt: NodeAttempt) -> AgentConversa
         )
         or 0
     )
+    selected_model, selected_effort = resolve_runtime_selection(
+        db, _attempt_node(db, attempt), attempt.model_name, attempt.reasoning_effort
+    )
+    baseline = _baseline(db, attempt)
+    baseline["runtime_selection"] = {
+        "model_name": selected_model,
+        "reasoning_effort": selected_effort,
+    }
     item = AgentConversation(
         attempt_id=attempt.id,
         conversation_no=int(maximum) + 1,
         kind=ConversationKind.AUTO,
         title=f"自动执行 · Attempt {attempt.attempt_no}",
         state=ConversationState.CREATING,
-        context_baseline_json=_baseline(db, attempt),
+        context_baseline_json=baseline,
         created_by_type=MessageSource.PROGRAM,
     )
     db.add(item)
@@ -823,7 +858,14 @@ def _auto_conversation(db: Session, attempt_id: str) -> AgentConversation | None
     )
 
 
-def record_auto_human_input(db: Session, attempt_id: str, *, action_id: str, content: str) -> None:
+def record_auto_human_input(
+    db: Session,
+    attempt_id: str,
+    *,
+    action_id: str,
+    content: str,
+    runtime_selection: dict[str, Any] | None = None,
+) -> None:
     conversation = _auto_conversation(db, attempt_id)
     if conversation is None or conversation.state == ConversationState.READ_ONLY:
         return
@@ -840,10 +882,17 @@ def record_auto_human_input(db: Session, attempt_id: str, *, action_id: str, con
             conversation,
             source=MessageSource.HUMAN,
             message_type=MessageType.TEXT,
-            content={"parts": [{"type": "text", "text": content}]},
+            content={
+                "parts": [{"type": "text", "text": content}],
+                "runtime_selection": runtime_selection or {},
+            },
             delivery_state=DeliveryState.QUEUED,
             runtime_event_id=runtime_event_id,
         )
+    if runtime_selection:
+        baseline = copy.deepcopy(conversation.context_baseline_json or {})
+        baseline["runtime_selection"] = runtime_selection
+        conversation.context_baseline_json = baseline
     if conversation.state != ConversationState.GENERATING:
         previous = conversation.state
         conversation.state = ConversationState.GENERATING
@@ -1324,6 +1373,31 @@ def get_conversation(db: Session, conversation_id: str) -> dict[str, Any]:
     return _conversation_dict(db, _conversation(db, conversation_id))
 
 
+def runtime_stream_details(db: Session, conversation_id: str) -> tuple[str | None, RuntimeHandle]:
+    item = _conversation(db, conversation_id)
+    if not item.runtime_conversation_id:
+        raise DomainError(
+            "AGENT_STREAM_UNAVAILABLE",
+            "This Agent conversation is not connected to a Runtime",
+            409,
+        )
+    sandbox_id = item.runtime_sandbox_id
+    if not sandbox_id and item.kind == ConversationKind.AUTO:
+        sandbox_id = _attempt(db, item.attempt_id).runtime_sandbox_id
+    sandbox = sandboxes.sandbox_snapshot(db, sandbox_id)
+    resource_id = str(sandbox.get("id") or "") if sandbox is not None else ""
+    resource_name = (
+        str(sandbox.get("backend_resource_name") or "") if sandbox is not None else ""
+    )
+    return item.runtime_adapter, RuntimeHandle(
+        item.runtime_job_id or item.runtime_conversation_id,
+        item.runtime_conversation_id,
+        item.runtime_cursor,
+        resource_id,
+        resource_name,
+    )
+
+
 def _fork_message_text(message: AgentMessage) -> str:
     return "\n".join(
         str(part.get("text") or "")
@@ -1342,6 +1416,7 @@ def _fork_runtime_history(messages: list[AgentMessage]) -> tuple[dict[str, str],
             or message.message_type != MessageType.TEXT
             or message.delivery_state == DeliveryState.CANCELLED
             or _message_is_superseded(message)
+            or _message_is_progress(message)
         ):
             continue
         text = _fork_message_text(message)
@@ -1431,6 +1506,7 @@ def fork_conversation(
         source_message.source != MessageSource.AGENT
         or source_message.message_type != MessageType.TEXT
         or _message_is_superseded(source_message)
+        or _message_is_progress(source_message)
     ):
         raise DomainError(
             "MESSAGE_NOT_FORKABLE",
@@ -1737,6 +1813,9 @@ def create_conversation(
             expected=payload.expected_attempt_state_version,
             actual=attempt.state_version,
         )
+    selected_model, selected_effort = resolve_runtime_selection(
+        db, _attempt_node(db, attempt), payload.model_name, payload.reasoning_effort
+    )
     count, maximum = db.execute(
         select(
             func.count(AgentConversation.id),
@@ -1746,13 +1825,18 @@ def create_conversation(
     if count >= get_settings().conversation_limit_per_attempt:
         raise DomainError("CONVERSATION_LIMIT_REACHED", "Conversation limit reached", 422)
     number = int(maximum or 0) + 1
+    baseline = _baseline(db, attempt)
+    baseline["runtime_selection"] = {
+        "model_name": selected_model,
+        "reasoning_effort": selected_effort,
+    }
     item = AgentConversation(
         attempt_id=attempt.id,
         conversation_no=number,
         kind=ConversationKind.HUMAN_CREATED,
         title=payload.title or f"人工会话 {number}",
         state=ConversationState.CREATING,
-        context_baseline_json=_baseline(db, attempt),
+        context_baseline_json=baseline,
         created_by_type=MessageSource.HUMAN,
     )
     db.add(item)
@@ -2124,6 +2208,22 @@ def send_message(
     if len(text) > get_settings().conversation_message_max_chars:
         raise DomainError("MESSAGE_TOO_LARGE", "Message is too large", 422)
     capability_refs = _validated_capability_refs(db, attempt, payload)
+    current_selection = cast(
+        dict[str, Any], item.context_baseline_json.get("runtime_selection") or {}
+    )
+    requested_model = payload.model_name or current_selection.get("model_name")
+    requested_effort = (
+        payload.reasoning_effort
+        if "reasoning_effort" in payload.model_fields_set
+        else current_selection.get("reasoning_effort")
+    )
+    selected_model, selected_effort = resolve_runtime_selection(
+        db, _attempt_node(db, attempt), requested_model, requested_effort
+    )
+    runtime_selection = {
+        "model_name": selected_model,
+        "reasoning_effort": selected_effort,
+    }
     queued_during_turn = item.state in {
         ConversationState.GENERATING,
         ConversationState.WAITING_SUBAGENTS,
@@ -2136,6 +2236,7 @@ def send_message(
         content={
             "parts": prepared_parts or [part.model_dump() for part in payload.content],
             "capability_refs": capability_refs,
+            "runtime_selection": runtime_selection,
             "presentation": "queued" if queued_during_turn else "chat",
         },
         delivery_state=DeliveryState.QUEUED,
@@ -2163,6 +2264,7 @@ def send_message(
                 "content_length": len(text),
                 "attachment_count": sum(part.type == "attachment" for part in payload.content),
                 "capability_refs": capability_refs,
+                "runtime_selection": runtime_selection,
             },
         )
     )
@@ -2523,14 +2625,18 @@ def recover_conversation_tasks(db: Session) -> int:
             ):
                 recovered += 1
             continue
-        last_agent_sequence = (
-            db.scalar(
-                select(func.max(AgentMessage.sequence_no)).where(
-                    AgentMessage.conversation_id == conversation.id,
-                    AgentMessage.source == MessageSource.AGENT,
+        last_agent_sequence = max(
+            (
+                message.sequence_no
+                for message in db.scalars(
+                    select(AgentMessage).where(
+                        AgentMessage.conversation_id == conversation.id,
+                        AgentMessage.source == MessageSource.AGENT,
+                    )
                 )
-            )
-            or 0
+                if not _message_is_progress(message)
+            ),
+            default=0,
         )
         last_delivered_human_sequence = (
             db.scalar(
@@ -2618,6 +2724,9 @@ def process_create_conversation(
                     },
                 }
             )
+    runtime_selection = cast(
+        dict[str, Any], item.context_baseline_json.get("runtime_selection") or {}
+    )
     request = build_runtime_request(
         db,
         attempt_id=f"{attempt.id}:{item.id}",
@@ -2626,6 +2735,8 @@ def process_create_conversation(
         bindings=bindings,
         workspace_ref=attempt.workspace_ref or "",
         interaction_mode="COLLABORATION",
+        model_name=runtime_selection.get("model_name"),
+        reasoning_effort=runtime_selection.get("reasoning_effort"),
         delegation_enabled=item.kind == ConversationKind.HUMAN_CREATED,
         conversation_history=tuple(
             cast(
@@ -2950,14 +3061,6 @@ def _append_runtime_payload(
     event_type: str,
     payload: dict[str, Any],
 ) -> None:
-    # OpenHands may emit assistant MessageEvents while a human-created turn is
-    # still running (including the acknowledgement generated while the empty
-    # collaboration conversation is initialized).  The durable completion
-    # result is appended separately by _apply_conversation_result.  Projecting
-    # both makes one user turn look like two model answers, so collaboration
-    # keeps tool/state activity but only exposes the Finish result as the reply.
-    if event_type == "MESSAGE" and conversation.kind != ConversationKind.AUTO:
-        return
     existing = db.scalar(
         select(AgentMessage.id).where(
             AgentMessage.conversation_id == conversation.id,
@@ -2975,8 +3078,33 @@ def _append_runtime_payload(
             str(raw)
             if isinstance(raw, str | int | float | bool)
             else json.dumps(payload, ensure_ascii=False, default=str)
-        )
+        ).strip()
+        if not text:
+            return
         content: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
+        if conversation.kind != ConversationKind.AUTO:
+            latest_human = db.scalar(
+                select(AgentMessage)
+                .where(
+                    AgentMessage.conversation_id == conversation.id,
+                    AgentMessage.source == MessageSource.HUMAN,
+                    AgentMessage.delivery_state == DeliveryState.DELIVERED,
+                )
+                .order_by(AgentMessage.sequence_no.desc())
+                .limit(1)
+            )
+            # Ignore the assistant acknowledgement emitted while an empty
+            # collaboration Runtime is being initialized.  Once a human turn
+            # is active, retain assistant MessageEvents as visible progress
+            # updates; the Finish result remains the only formal answer.
+            if latest_human is None:
+                return
+            content.update(
+                {
+                    "presentation": "progress",
+                    "turn_message_id": latest_human.id,
+                }
+            )
         message_type = MessageType.TEXT
     elif event_type in {"TOOL", "TOOL_CALL", "TOOL_RESULT"}:
         content = {"tool": payload}
@@ -3012,6 +3140,40 @@ def _apply_conversation_result(
     *,
     message_id: str,
 ) -> None:
+    def supersede_duplicate_progress(text: str) -> None:
+        normalized = text.strip()
+        if not normalized:
+            return
+        latest_human = db.scalar(
+            select(AgentMessage)
+            .where(
+                AgentMessage.conversation_id == conversation.id,
+                AgentMessage.source == MessageSource.HUMAN,
+                AgentMessage.delivery_state == DeliveryState.DELIVERED,
+            )
+            .order_by(AgentMessage.sequence_no.desc())
+            .limit(1)
+        )
+        if latest_human is None:
+            return
+        for progress in db.scalars(
+            select(AgentMessage).where(
+                AgentMessage.conversation_id == conversation.id,
+                AgentMessage.sequence_no > latest_human.sequence_no,
+                AgentMessage.source == MessageSource.AGENT,
+            )
+        ):
+            if (
+                _message_is_progress(progress)
+                and not _message_is_superseded(progress)
+                and _message_text(progress.content_json).strip() == normalized
+            ):
+                progress.content_json = {
+                    **progress.content_json,
+                    "superseded": True,
+                    "superseded_by_final": True,
+                }
+
     def append_once(
         *,
         runtime_event_id: str,
@@ -3066,6 +3228,7 @@ def _apply_conversation_result(
         ):
             return
         if text:
+            supersede_duplicate_progress(text)
             append_once(
                 message_type=MessageType.TEXT,
                 content={
@@ -3240,16 +3403,28 @@ def process_deliver_message(
         conversation.runtime_cursor,
     )
     content_json = dict(message.content_json)
+    runtime_selection = cast(dict[str, Any], content_json.get("runtime_selection") or {})
+    provider = (
+        resolve_runtime_provider(
+            db,
+            _attempt_node(db, attempt),
+            cast(str | None, runtime_selection.get("model_name")),
+            cast(str | None, runtime_selection.get("reasoning_effort")),
+        )
+        if runtime_selection.get("model_name") and get_settings().runtime_adapter != "mock"
+        else None
+    )
     steering = message.delivery_mode == DeliveryMode.INTERRUPT_AND_RESUME
     db.flush()
     db.rollback()
     content, image_urls = _runtime_message_payload(content_json)
     try:
-        result = (
-            get_runtime().resume(handle, content, image_urls)
-            if steering
-            else get_runtime().send_message(handle, content, image_urls)
-        )
+        runtime = get_runtime()
+        if steering:
+            runtime.interrupt(handle)
+        if provider is not None:
+            runtime.switch_model(handle, provider)
+        result = runtime.send_message(handle, content, image_urls)
         sandboxes.touch_runtime(db, conversation.runtime_sandbox_id)
     except DomainError as exc:
         failed = db.get(AgentMessage, message_id)
@@ -3286,6 +3461,10 @@ def process_deliver_message(
     current_message.delivered_at = now()
     current_message.runtime_cursor = result.cursor
     current.runtime_cursor = result.cursor
+    if runtime_selection:
+        baseline = copy.deepcopy(current.context_baseline_json or {})
+        baseline["runtime_selection"] = runtime_selection
+        current.context_baseline_json = baseline
     _event(
         db,
         current,

@@ -4,7 +4,7 @@
 
 ## 1. 文档目标与系统定位
 
-FlowWeave 是面向内部研发流程的 Agent 工作台。系统把可复用的节点资产、模型、Skill/MCP/Hook、终端环境和流程拓扑组合为可审计的流程运行；Agent 负责执行，人工负责开始确认、过程补充、结果验收、退回修订、快照同步和流程终止。
+FlowWeave 是面向内部研发流程的 Agent 工作台。系统把可复用的节点资产、模型、Skill/MCP、终端环境和流程拓扑组合为可审计的流程运行；Agent 负责执行，人工负责开始确认、过程补充、结果验收、退回修订、快照同步和流程终止。
 
 核心设计目标：
 
@@ -20,7 +20,7 @@ FlowWeave 是面向内部研发流程的 Agent 工作台。系统把可复用的
 | 概念 | 含义 | 关键约束 |
 |---|---|---|
 | Node Asset | 可复用节点定义 | 定义 I/O 契约、模型、提示词、能力和执行参数；可被多个 Flow Node 引用 |
-| Capability | Skill、MCP 或 Hook | 通过校验/提交两阶段导入；Skill 依赖可在隔离构建容器中预构建 |
+| Capability | Skill 或 MCP | Skill 通过 ZIP 导入，MCP 通过页面内 JSON 创建；两者均使用校验/提交两阶段保存 |
 | Terminal Environment | 可交互配置并发布的 Agent 环境 | 每次发布生成不可变 Environment Version；凭据卷按环境隔离 |
 | Flow Definition | 可编辑流程定义 | 包含节点实例、边、端口映射和 Gate；同一 Node Asset 可多次放置 |
 | Flow Run | 一次流程业务运行 | 创建时生成 Snapshot v1；可以从任意节点开始 |
@@ -50,7 +50,7 @@ FlowWeave 是面向内部研发流程的 Agent 工作台。系统把可复用的
 ```mermaid
 flowchart LR
   A["配置模型服务与可用模型"] --> B["创建终端环境并发布版本"]
-  C["校验并导入 Skill/MCP/Hook"] --> D["创建节点资产"]
+  C["导入 Skill ZIP 或粘贴 MCP JSON"] --> D["创建节点资产"]
   A --> D
   B --> D
   D --> E["声明输入/输出契约与执行参数"]
@@ -60,7 +60,7 @@ flowchart LR
 ```
 
 1. **模型服务**：保存 Base URL、加密 API Key 和模型列表；节点只能引用启用的模型。被节点引用的模型不能直接禁用或删除。
-2. **能力导入**：`validate` 先进行压缩包/JSON/YAML 安全校验并生成短期导入记录，`commit` 再将指定能力写入节点；到期临时对象由后台任务清理。
+2. **能力导入**：`validate` 先进行 Skill ZIP 或 MCP JSON 安全校验并生成短期导入记录，`commit` 再保存能力；到期临时对象由后台任务清理。
 3. **终端环境**：用户创建 Setup Session，通过 WebSocket 终端安装工具或完成环境内授权，再发布为带 digest 的 Environment Version。
 4. **节点资产**：绑定模型、环境版本、I/O Schema、提示词、超时、迭代次数以及能力引用。
 5. **流程编排**：同一资产可形成多个不同 `instance_key` 的 Flow Node；端口映射独立于可视边保存，一个目标输入最多有一个映射候选。
@@ -399,16 +399,18 @@ Runtime 网络模式由 Controller 配置决定，客户端请求不能升级权
 
 ```text
 var/workspaces/
-└── nodes/<node-asset-id>/
-    ├── skills/<capability-key>/
+├── nodes/<node-asset-id>/
+│   ├── skills/<capability-key>/
+│   ├── files/
+│   ├── repositories/
+│   └── sessions/<run-id>/<node-run-id>/<attempt-no>/
+└── .managed-assets/nodes/<node-asset-id>/
     ├── mcp/<capability-key>/
-    ├── files/
-    ├── repositories/
-    └── sessions/<run-id>/<node-run-id>/<attempt-no>/
+    └── hooks/<capability-key>/
 ```
 
 - Workspace 由 API、Worker、OpenHands 基础服务和所属 Runtime 以约定路径共享。
-- Runtime 只能挂载所属节点的工作区，不挂载数据库、Artifact 根或其他节点目录。
+- Runtime 只能可写挂载所属节点的工作区，不挂载数据库、Artifact 根或其他节点目录。MCP/Hook 上传资产从 `.managed-assets` 单独挂载到 `/runtime/capabilities`，并强制只读。
 - Artifact 使用独立 named volume（或 S3），不会和 Runtime 工作目录混为一体。
 - 每环境凭据 Volume 独立存在，由 Controller 创建/挂载/删除；删除前必须确认没有存活 Sandbox。
 

@@ -1,7 +1,8 @@
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -65,6 +66,53 @@ def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
     assert response.json()["capabilities"] == []
+
+
+def test_confirm_start_persists_explicit_model_selection(client):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "启动模型选择服务",
+            "base_url": "https://models.example.test/v1",
+            "models": [
+                {"model_name": "model-default", "enabled": True, "is_default": True},
+                {"model_name": "model-explicit", "enabled": True, "is_default": False},
+            ],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    payload = asset_payload("启动模型选择节点")
+    payload["executor"]["model_provider_id"] = provider.json()["id"]
+    created = client.post("/api/v1/node-assets", json=payload)
+    assert created.status_code == 201, created.text
+    flow = create_flow(client, created.json()["id"])
+    started = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "flow_node_key": "design_a",
+            "artifacts": [
+                {
+                    "field_key": "prd",
+                    "artifact_type": "URL",
+                    "uri": "https://example.feishu.cn/docx/model-selection-input",
+                }
+            ],
+        },
+    )
+    assert started.status_code == 201, started.text
+    attempt = started.json()["node_runs"][0]["attempts"][0]
+
+    confirmed = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "model_name": "model-explicit",
+        },
+        headers={"Idempotency-Key": "explicit-start-model"},
+    )
+
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["model_name"] == "model-explicit"
 
 
 def test_platform_owned_lark_oauth_endpoints_are_removed(client):
@@ -799,6 +847,161 @@ def test_model_provider_connection_test_reports_result_and_persists_failure(monk
     assert failed.status_code == 503, failed.text
     assert failed.json()["error"]["code"] == "EXECUTOR_UNAVAILABLE"
     assert client.get("/api/v1/model-providers").json()[0]["connection_state"] == "FAILED"
+
+
+def test_codex_oauth_device_flow_encrypts_tokens_and_never_returns_them(
+    monkeypatch, client, db_session_factory
+):
+    from flowweave.modules.model_providers.infrastructure.codex_oauth import (
+        CodexModelProfile,
+        DeviceAuthorization,
+        OAuthTokens,
+    )
+    from flowweave.modules.model_providers.presentation import router as provider_router
+    from flowweave.shared.models import ModelProvider
+
+    created = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "Codex 订阅",
+            "auth_type": "CODEX_OAUTH",
+            "base_url": "",
+            "models": [],
+        },
+    )
+    assert created.status_code == 201, created.text
+    provider = created.json()
+    assert provider["auth_type"] == "CODEX_OAUTH"
+    assert provider["oauth_connected"] is False
+
+    async def start_device(_client):
+        return DeviceAuthorization(
+            device_auth_id="internal-device-id",
+            user_code="ABCD-EFGH",
+            interval=5,
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+        )
+
+    monkeypatch.setattr(provider_router, "request_device_authorization", start_device)
+    started = client.post(f"/api/v1/model-providers/{provider['id']}/oauth/device/start")
+    assert started.status_code == 200, started.text
+    assert started.json()["user_code"] == "ABCD-EFGH"
+    assert "internal-device-id" not in started.text
+
+    async def finish_device(_client, device_auth_id, user_code):
+        assert device_auth_id == "internal-device-id"
+        assert user_code == "ABCD-EFGH"
+        return OAuthTokens(
+            access_token="secret-access-token",
+            refresh_token="secret-refresh-token",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            account_id="account-123",
+            email="developer@example.test",
+        )
+
+    monkeypatch.setattr(provider_router, "poll_device_authorization", finish_device)
+
+    async def discover_account_models(*_args):
+        return [
+            CodexModelProfile("gpt-5.4", "medium", ("low", "medium", "high")),
+            CodexModelProfile("gpt-5.6-sol", "high", ("low", "medium", "high", "xhigh")),
+            CodexModelProfile("gpt-5.6-terra", "medium", ("low", "medium", "high")),
+        ]
+
+    monkeypatch.setattr(provider_router, "discover_codex_model_profiles", discover_account_models)
+    completed = client.post(f"/api/v1/model-providers/{provider['id']}/oauth/device/poll")
+    assert completed.status_code == 200, completed.text
+    assert completed.json() == {
+        "state": "CONNECTED",
+        "connected": True,
+        "account_email": "developer@example.test",
+        "model_count": 3,
+        "model_sync_error": None,
+    }
+    assert "secret-access-token" not in completed.text
+    assert "secret-refresh-token" not in completed.text
+
+    listed = client.get("/api/v1/model-providers").json()[0]
+    assert listed["oauth_connected"] is True
+    assert listed["available_for_nodes"] is True
+    assert listed["available_for_prompt_gates"] is False
+    assert [model["model_name"] for model in listed["models"]] == [
+        "gpt-5.4",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+    ]
+    sol = next(model for model in listed["models"] if model["model_name"] == "gpt-5.6-sol")
+    assert sol["default_reasoning_effort"] == "high"
+    assert sol["supported_reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
+    assert "secret-access-token" not in str(listed)
+    assert "secret-refresh-token" not in str(listed)
+
+    with db_session_factory() as db:
+        stored = db.get(ModelProvider, provider["id"])
+        assert stored is not None
+        assert stored.encrypted_oauth_access_token != b"secret-access-token"
+        assert stored.encrypted_oauth_refresh_token != b"secret-refresh-token"
+
+    monkeypatch.setattr(provider_router, "_discover_codex", discover_account_models)
+    discovered = client.post(f"/api/v1/model-providers/{provider['id']}/discover-models")
+    assert discovered.status_code == 200, discovered.text
+    discovered_payload = discovered.json()
+    assert discovered_payload["models"] == [
+        "gpt-5.4",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+    ]
+    assert discovered_payload["provider"]["row_version"] > listed["row_version"]
+
+    tested = client.post(f"/api/v1/model-providers/{provider['id']}/test")
+    assert tested.status_code == 200, tested.text
+    assert tested.json() == {"connection_state": "CONNECTED", "model_count": 3}
+
+
+@pytest.mark.asyncio
+async def test_codex_model_discovery_uses_account_headers_and_parses_slugs():
+    from flowweave.modules.model_providers.infrastructure.codex_oauth import (
+        discover_codex_models,
+    )
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["account_id"] = request.headers.get("ChatGPT-Account-ID")
+        captured["originator"] = request.headers.get("Originator")
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"slug": "gpt-5.6-sol"},
+                    {"id": "gpt-5.4"},
+                    {"name": "gpt-5.5"},
+                    {"slug": "gpt-5.6-sol"},
+                    {"display_name": "ignored-without-id"},
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        models = await discover_codex_models(upstream, "access-token", "account-123")
+
+    assert models == ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]
+    assert captured["url"] == (
+        "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"
+    )
+    assert captured["authorization"] == "Bearer access-token"
+    assert captured["account_id"] == "account-123"
+    assert captured["originator"] == "codex_cli_rs"
+
+
+def test_api_key_provider_rejects_codex_oauth_endpoints(client):
+    provider = _create_model_provider(client, "普通 API Key 服务")
+    status = client.get(f"/api/v1/model-providers/{provider['id']}/oauth/status")
+    assert status.status_code == 409
+    disconnected = client.delete(f"/api/v1/model-providers/{provider['id']}/oauth")
+    assert disconnected.status_code == 409
 
 
 def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_capability):

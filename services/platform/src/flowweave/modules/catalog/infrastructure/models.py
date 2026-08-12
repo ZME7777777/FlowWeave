@@ -139,6 +139,42 @@ class CapabilityImport(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class SkillCollection(Base):
+    __tablename__ = "skill_collections"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    category: Mapped[str] = mapped_column(String(120), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class SkillCollectionItem(Base):
+    __tablename__ = "skill_collection_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "collection_id",
+            "capability_import_id",
+            "capability_position",
+            name="uq_skill_collection_capability_version",
+        ),
+        CheckConstraint("position >= 0", name="ck_skill_collection_item_position"),
+        CheckConstraint("capability_position >= 0", name="ck_skill_collection_capability_position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    collection_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_collections.id", ondelete="CASCADE"), index=True
+    )
+    capability_import_id: Mapped[str] = mapped_column(
+        ForeignKey("capability_imports.id", ondelete="RESTRICT"), index=True
+    )
+    capability_position: Mapped[int] = mapped_column(Integer)
+    position: Mapped[int] = mapped_column(Integer)
+
+
 __all__ = (
     "NodeDirectory",
     "NodeAsset",
@@ -146,4 +182,6 @@ __all__ = (
     "NodeExecutorConfig",
     "NodeCapabilityRef",
     "CapabilityImport",
+    "SkillCollection",
+    "SkillCollectionItem",
 )

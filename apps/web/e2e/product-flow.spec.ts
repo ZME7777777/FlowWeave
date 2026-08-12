@@ -22,6 +22,13 @@ async function importSkill(request: APIRequestContext) {
 
 async function createAsset(request: APIRequestContext, name: string) {
   const skill = await importSkill(request);
+  const modelName = `e2e-model-${suffix}`;
+  const provider = await post(request, '/model-providers', {
+    name: `E2E模型服务-${name}`,
+    base_url: 'http://127.0.0.1:9/v1',
+    api_key: 'e2e-placeholder-key',
+    models: [{ model_name: modelName, enabled: true, is_default: true }],
+  });
   return post(request, '/node-assets', {
     name,
     description: '浏览器端到端验收节点',
@@ -30,8 +37,8 @@ async function createAsset(request: APIRequestContext, name: string) {
     inputs: [{ field_key: 'prd', display_name: '需求文档', data_type: 'URL', description: '', template_url: '' }],
     outputs: [{ field_key: 'design', display_name: '技术方案', data_type: 'URL', description: '', template_url: '' }],
     executor: {
-      model_provider_id: null,
-      model_name: null,
+      model_provider_id: provider.id,
+      model_name: modelName,
       startup_prompt: '读取输入并生成方案',
       context_prompt: '保留证据',
       timeout_seconds: 120,
@@ -138,6 +145,11 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await expect(page.getByRole('heading', { name: '能力仓库', exact: true })).toBeVisible();
   const skillInput = page.locator('label.file-button').filter({ hasText: '上传 Skill ZIP' }).locator('input');
   await skillInput.setInputFiles('e2e/fixtures/ui-product-skill.zip');
+  const importDialog = page.getByRole('alertdialog', { name: '确认导入 ui-product-skill.zip' });
+  await expect(importDialog).toContainText('识别到 1 个 Skill');
+  const committedImport = page.waitForResponse(response => response.url().endsWith('/api/v1/capability-imports') && response.request().method() === 'POST');
+  await importDialog.getByRole('button', { name: '导入 1 项能力', exact: true }).click();
+  expect((await committedImport).ok()).toBeTruthy();
   await expect(page.getByRole('status')).toContainText('已从 ui-product-skill.zip 导入 1 项 Skill 能力');
   await expect(page.locator('.capability-card').filter({ hasText: 'ui-product-skill' }).first()).toBeVisible();
 
@@ -241,7 +253,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   const createdRunResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/flows/${flow.id}/runs`) && response.request().method() === 'POST');
   await dialog.getByRole('button', { name: '创建运行' }).click();
   const createdRun = await (await createdRunResponse).json();
-  await expect(page.locator('.node-selection-hint')).toContainText('点击运行快照中的任意节点');
+  await expect(page.getByText('点击任意节点，在右侧配置输入并开始一次独立执行', { exact: true })).toBeVisible();
   await expect(page.locator('.action-panel')).toHaveCount(0);
   const graphNodes = page.locator('.run-graph .react-flow__node');
   await graphNodes.filter({ hasText: '首轮方案' }).click();
@@ -267,6 +279,17 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await page.locator('.run-rail .timeline').getByRole('button', { name: /首轮方案/ }).click();
   await expect(page.locator('.run-graph .run-graph-node.snapshot-selected')).toHaveCount(0);
   await expect(attemptControl).toContainText('首轮方案');
+  const agentChatEntry = attemptControl.getByRole('button', { name: '进入 Agent 对话' });
+  await expect(agentChatEntry).toBeVisible();
+  await expect(attemptControl.locator('.attempt-runtime-summary')).toHaveCount(0);
+  expect(await attemptControl.evaluate(panel => {
+    const state = panel.querySelector('.state-banner');
+    const chat = panel.querySelector('.agent-chat-entry');
+    const frozenInputs = Array.from(panel.querySelectorAll('.attempt-side-section')).find(section => section.textContent?.includes('本轮冻结输入'));
+    return Boolean(state && chat && frozenInputs
+      && (state.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && (chat.compareDocumentPosition(frozenInputs) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBeTruthy();
   await expect(attemptControl.locator('.attempt-input-card')).toContainText(`需求文档-${suffix}`);
   await expect(attemptControl.locator('.attempt-input-card')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
   await expect(attemptControl.locator('.gate-results')).toContainText('START');
@@ -318,6 +341,16 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await nodeConsole.getByRole('button', { name: '开始第 2 次执行' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
   await expect(page.locator('.timeline button')).toHaveCount(2);
+  await expect(attemptControl.getByRole('button', { name: '取消整个流程' })).toHaveCount(0);
+  await expect(page.locator('.flow-run-management').getByRole('button', { name: '取消整个流程' })).toBeVisible();
+  await confirmProductDialog(
+    page,
+    attemptControl.getByRole('button', { name: '取消本轮节点执行' }),
+    '取消本轮执行',
+    '其他节点执行和整个流程不会被取消',
+  );
+  await expect(page.getByTestId('attempt-state')).toHaveText('CANCELLED');
+  await expect(page.getByTestId('flow-run-state')).toHaveText('运行中');
 
   const runResponse = await request.get(`${apiBase}/api/v1/flow-runs/${createdRun.id}`);
   expect(runResponse.ok(), await runResponse.text()).toBeTruthy();
@@ -336,6 +369,11 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
     expect.objectContaining({ input_field_key: 'prd' }),
   ]));
   expect(run.node_runs.filter((item: { flow_node_snapshot_key: string }) => item.flow_node_snapshot_key === 'design_a')).toHaveLength(2);
+  expect(run.state).not.toBe('CANCELLED');
+  expect(run.node_runs).toEqual(expect.arrayContaining([
+    expect.objectContaining({ state: 'ACTIVE' }),
+    expect.objectContaining({ state: 'CANCELLED' }),
+  ]));
 });
 
 test('cancelled run becomes read-only and can be permanently deleted', async ({ page, request }) => {
@@ -354,7 +392,7 @@ test('cancelled run becomes read-only and can be permanently deleted', async ({ 
 
   await confirmProductDialog(
     page,
-    page.getByRole('button', { name: '取消整个流程' }),
+    page.locator('.flow-run-management').getByRole('button', { name: '取消整个流程' }),
     '取消流程',
     '未结束的执行会被取消',
   );

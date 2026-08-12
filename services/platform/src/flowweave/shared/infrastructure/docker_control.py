@@ -136,6 +136,7 @@ def inspect_owned_container(
     expected_resource_id: str,
     *,
     expected_manager_scope: str,
+    expected_kind: str | None = None,
     timeout: int = 10,
 ) -> str | None:
     """Return the immutable ID only when all ownership labels still match."""
@@ -169,15 +170,18 @@ def inspect_owned_container(
         raise DockerControlError("Docker inspect returned invalid ownership data") from exc
     actual_resource_id = labels.get("flowweave.resource-id", "")
     actual_manager_scope = labels.get("flowweave.manager-scope", "")
+    actual_kind = labels.get("flowweave.kind", "")
     if (
         labels.get("flowweave.managed") != "true"
         or actual_resource_id != expected_resource_id
         or actual_manager_scope != expected_manager_scope
+        or (expected_kind is not None and actual_kind != expected_kind)
     ):
         raise DockerOwnershipError(
             f"Container ownership mismatch for {resource_name}: "
             f"expected {expected_manager_scope}/{expected_resource_id}, got "
-            f"{actual_manager_scope or 'unscoped'}/{actual_resource_id or 'unmanaged'}"
+            f"{actual_manager_scope or 'unscoped'}/{actual_resource_id or 'unmanaged'}; "
+            f"expected kind {expected_kind or 'any'}, got {actual_kind or 'unknown'}"
         )
     identifier = str(data.get("Id") or "")
     if not identifier:

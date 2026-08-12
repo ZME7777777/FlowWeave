@@ -63,7 +63,10 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
     executor = db.get(NodeExecutorConfig, item.id)
     capabilities = db.scalars(
         select(NodeCapabilityRef)
-        .where(NodeCapabilityRef.node_asset_id == item.id)
+        .where(
+            NodeCapabilityRef.node_asset_id == item.id,
+            NodeCapabilityRef.capability_type.in_(("SKILL", "MCP", "HOOK")),
+        )
         .order_by(NodeCapabilityRef.position)
     ).all()
     environment = (
@@ -281,6 +284,12 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
         capability_id = capability.capability_id
         if capability_id is not None:
             imported, canonical = _resolve_capability(db, capability_id)
+            if imported.capability_type not in {"SKILL", "MCP", "HOOK"}:
+                raise DomainError(
+                    "CAPABILITY_TYPE_UNSUPPORTED",
+                    "Only Skill, MCP, and Hook capabilities can be bound to nodes",
+                    422,
+                )
             canonical_key = str(canonical.get("capability_key") or "")
             if (
                 capability.capability_type is not None
@@ -303,6 +312,12 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
                     "Node capabilities must reference a published capability",
                     422,
                     {"capability_key": capability.capability_key},
+                )
+            if imported.capability_type not in {"SKILL", "MCP", "HOOK"}:
+                raise DomainError(
+                    "CAPABILITY_TYPE_UNSUPPORTED",
+                    "Only Skill, MCP, and Hook capabilities can be bound to nodes",
+                    422,
                 )
             canonical = next(
                 (

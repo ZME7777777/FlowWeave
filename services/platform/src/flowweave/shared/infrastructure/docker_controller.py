@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import hmac
+import json
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -142,6 +144,58 @@ class DockerControllerClient:
             # Closing an attachment is best-effort. The controller also reaps
             # abandoned attachments after a bounded idle timeout.
             pass
+
+    async def stream_runtime_events(
+        self,
+        *,
+        resource_name: str,
+        resource_id: str,
+        conversation_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Read a Runtime event stream through the ownership-checking controller."""
+
+        payload = {
+            "manager_scope": self.manager_scope,
+            "resource_name": resource_name,
+            "resource_id": resource_id,
+            "conversation_id": conversation_id,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/v1/runtimes/events",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                ) as response:
+                    if response.is_error:
+                        await response.aread()
+                        try:
+                            raw = cast(object, response.json())
+                        except ValueError:
+                            raw = {}
+                        body = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+                        error = body.get("error")
+                        detail = cast(dict[str, Any], error) if isinstance(error, dict) else {}
+                        raise DomainError(
+                            str(detail.get("code") or "DOCKER_CONTROLLER_FAILED"),
+                            str(detail.get("message") or "Docker controller operation failed"),
+                            response.status_code,
+                            cast(dict[str, Any], detail.get("details") or {}),
+                        )
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            value = cast(object, json.loads(line))
+                        except ValueError:
+                            continue
+                        if isinstance(value, dict):
+                            yield cast(dict[str, Any], value)
+        except DomainError:
+            raise
+        except httpx.HTTPError as exc:
+            raise DockerControllerError("Docker controller stream is unavailable") from exc
 
 
 def wait_for_remote_terminal_output() -> None:

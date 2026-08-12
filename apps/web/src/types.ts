@@ -12,29 +12,39 @@ export interface ExecutorConfig {
   model_provider_id?: string | null; model_name?: string | null;
   startup_prompt: string; context_prompt: string; timeout_seconds: number; max_iterations: number;
 }
+export type CapabilityAssetType = 'SKILL' | 'MCP' | 'HOOK';
 export interface CapabilityRef {
-  id?: string; capability_id?: string; capability_type: 'SKILL' | 'MCP' | 'HOOK'; capability_key: string;
+  id?: string; capability_id?: string; capability_type: CapabilityAssetType; capability_key: string;
   normalized_config: Record<string, unknown>; position?: number;
 }
 export interface CapabilityAsset {
   id: string; lineage_id: string; revision_number: number; is_latest: boolean;
-  capability_type: CapabilityRef['capability_type']; capability_key: string;
+  capability_type: CapabilityAssetType; capability_key: string;
   description: string; version: string; filename: string; content_hash: string;
   byte_size: number; import_id: string; created_at: string; reference_count: number;
   dependencies: Record<string, Record<string, string>>;
   dependency_build_state: 'NOT_REQUIRED' | 'PENDING' | 'READY' | 'FAILED';
   dependency_build_error?: string | null;
 }
+export interface SkillCollection {
+  id: string; name: string; category: string; description: string; row_version: number;
+  members: CapabilityAsset[]; created_at: string; updated_at: string;
+}
+export interface SkillCollectionWrite {
+  name: string; category: string; description: string; capability_ids: string[];
+  row_version?: number | null;
+}
 export interface SkillSource {
   id: string; capability_key: string; filename: string; entry: string; content: string;
 }
 export interface CapabilityImportResult {
-  id: string; capability_type: CapabilityRef['capability_type']; filename: string;
-  content_hash: string; storage_key: string; capabilities: CapabilityRef[];
+  id: string; capability_type: CapabilityAssetType; filename: string;
+  content_hash: string; storage_key: string; capabilities: CapabilityAsset[];
 }
 export interface NamedDeleteReference { id: string; name: string }
 export interface BlockedCapabilityDelete {
-  id: string; name: string; relation: 'NODE_CAPABILITY'; nodes: NamedDeleteReference[];
+  id: string; name: string; relation: 'NODE_CAPABILITY' | 'SKILL_COLLECTION';
+  nodes: NamedDeleteReference[]; collections?: NamedDeleteReference[];
 }
 export interface BlockedNodeDelete {
   id: string; name: string; relation: 'FLOW_NODE';
@@ -82,16 +92,28 @@ export interface NodeAssetWrite {
 
 export interface ProviderModel {
   id?: string; model_name: string; enabled: boolean; is_default: boolean;
+  default_reasoning_effort?: string | null; supported_reasoning_efforts?: string[];
 }
 export interface ModelProvider {
-  id: string; name: string; base_url: string; has_api_key: boolean; api_key_hint?: string | null;
+  id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'CODEX_OAUTH';
+  has_api_key: boolean; api_key_hint?: string | null; oauth_connected: boolean;
+  oauth_account_email?: string | null; oauth_device_pending: boolean;
   connection_state: string; reference_node_count: number; available_for_nodes: boolean;
+  available_for_prompt_gates: boolean;
   row_version: number; models: ProviderModel[];
   created_at: string; updated_at: string;
 }
 export interface ModelProviderWrite {
-  name: string; base_url: string; api_key?: string | null; row_version?: number | null;
+  name: string; auth_type: 'API_KEY' | 'CODEX_OAUTH'; base_url: string;
+  api_key?: string | null; row_version?: number | null;
   models: ProviderModel[];
+}
+export interface CodexDeviceAuthorization {
+  verification_url: string; user_code: string; expires_at: string; interval: number;
+}
+export interface CodexOAuthStatus {
+  state: string; connected: boolean; account_email?: string | null;
+  model_count?: number; model_sync_error?: string | null;
 }
 export interface GatePolicy {
   id?: string; stage: 'START' | 'END'; position: number;
@@ -151,6 +173,7 @@ export interface NodeAttempt {
   workspace_ref?: string | null; error_code?: string | null; error_detail?: string | null;
   startup_mode?: 'SKILL' | 'PROMPT'; startup_capability_key?: string | null;
   startup_prompt?: string | null;
+  model_name?: string | null; reasoning_effort?: string | null;
   output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
   gate_evaluations: GateEvaluation[]; created_at: string; updated_at: string;
@@ -212,8 +235,9 @@ export interface AgentMessageContent {
   tool?: Record<string, unknown>;
   state?: Record<string, unknown>;
   error?: Record<string, unknown>;
-  presentation?: 'final' | 'question' | 'queued' | 'cancelled-queue' | 'chat';
+  presentation?: 'final' | 'progress' | 'question' | 'queued' | 'cancelled-queue' | 'chat';
   capability_refs?: Array<Pick<CapabilityRef, 'capability_type' | 'capability_key'>>;
+  runtime_selection?: { model_name?: string | null; reasoning_effort?: string | null };
   [key: string]: unknown;
 }
 export interface AgentMessage {
@@ -231,7 +255,7 @@ export interface AgentConversation {
   kind: 'AUTO' | 'HUMAN_CREATED' | 'SUBAGENT'; title: string; state: ConversationState;
   editable_message_id?: string | null;
   delegation_batch_key?: string | null; delegation_instruction?: string | null;
-  state_version: number; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
+  state_version: number; model_name?: string | null; reasoning_effort?: string | null; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
   runtime_resource?: {
     sandbox_id: string; container_name: string; owner_type: 'ATTEMPT' | 'CONVERSATION'; owner_id: string;
     desired_state: string; observed_state: string; lifecycle: 'RUNNING' | 'DELETING' | 'DELETED' | 'ERROR';

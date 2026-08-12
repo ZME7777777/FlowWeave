@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -159,9 +160,10 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
         "print('ok')\n"
     )
     assert (workspace / "skills/technical-design/scripts/check.sh").stat().st_mode & 0o111
-    mcp_config = (workspace / "mcp/local-review/config.json").read_text()
+    managed = Path("test-workspaces/.managed-assets") / saved.json()["workspace_ref"]
+    mcp_config = (managed / "mcp/local-review/config.json").read_text()
     assert '"command": "python"' in mcp_config
-    assert '"cwd": "/workspaces/nodes/' in mcp_config
+    assert '"cwd": "/runtime/capabilities/nodes/' in mcp_config
     assert (workspace / "files").is_dir()
     assert (workspace / "repositories").is_dir()
 
@@ -174,6 +176,370 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
         },
     )
     assert duplicate.status_code == 422, duplicate.text
+
+
+def test_mcp_config_normalizes_flowweave_transports(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json=_validate_payload(
+            "MCP",
+            "mcp.json",
+            """
+{
+  "mcpServers": {
+    "remote-docs": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com/mcp",
+      "timeout": 30
+    },
+    "local-review": {
+      "command": "python",
+      "args": ["-m", "review_server"],
+      "env": {"LOG_LEVEL": "info"}
+    }
+  }
+}
+""",
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    capabilities = response.json()["preview"]["capabilities"]
+    assert capabilities == [
+        {
+            "capability_key": "remote-docs",
+            "normalized_config": {
+                "url": "https://mcp.example.com/mcp",
+                "timeout": 30,
+                "transport": "streamable-http",
+            },
+        },
+        {
+            "capability_key": "local-review",
+            "normalized_config": {
+                "command": "python",
+                "args": ["-m", "review_server"],
+                "env": {"LOG_LEVEL": "info"},
+                "transport": "stdio",
+            },
+        },
+    ]
+
+
+def test_mcp_config_rejects_invalid_transport_contracts(client):
+    cases = (
+        ("remote-without-url", {"transport": "streamable-http"}),
+        ("stdio-without-command", {"transport": "stdio"}),
+        ("unknown-field", {"url": "https://mcp.test/mcp", "custom": True}),
+        ("invalid-args", {"command": "python", "args": [1]}),
+    )
+    for name, server in cases:
+        response = client.post(
+            "/api/v1/capability-imports/validate",
+            json=_validate_payload(
+                "MCP",
+                "mcp.json",
+                json.dumps({"mcpServers": {name: server}}),
+            ),
+        )
+        assert response.status_code == 422, (name, response.text)
+        assert response.json()["error"]["code"] == "IMPORT_REJECTED"
+
+
+def test_stdio_mcp_persists_multiple_scripts_and_materializes_them(client):
+    payload = _validate_payload(
+        "MCP",
+        "mcp.json",
+        json.dumps(
+            {
+                "mcpServers": {
+                    "local-tools": {
+                        "transport": "stdio",
+                        "command": "python",
+                        "args": ["scripts/server.py"],
+                    },
+                    "remote-docs": {
+                        "transport": "streamable-http",
+                        "url": "https://mcp.example.test/mcp",
+                    },
+                }
+            }
+        ),
+    )
+    payload["mcp_scripts"] = [
+        {
+            "server": "local-tools",
+            "filename": "server.py",
+            "content_base64": base64.b64encode(b"print('server')\n").decode(),
+        },
+        {
+            "server": "local-tools",
+            "filename": "settings.json",
+            "content_base64": base64.b64encode(b'{"mode": "readonly"}\n').decode(),
+        },
+    ]
+
+    validated = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert validated.status_code == 200, validated.text
+    assert validated.json()["preview"]["script_count"] == 2
+    local_preview = validated.json()["preview"]["capabilities"][0]
+    assert local_preview["normalized_config"]["script_files"] == [
+        "server.py",
+        "settings.json",
+    ]
+
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": validated.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+    local_capability = committed.json()["capabilities"][0]
+    assert local_capability["normalized_config"]["package_format"] == "mcp-bundle-v1"
+    assert set(local_capability["normalized_config"]["script_hashes"]) == {
+        "server.py",
+        "settings.json",
+    }
+
+    saved = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "scripted MCP node",
+            "executor": {},
+            "capabilities": [local_capability],
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    managed = Path("test-workspaces/.managed-assets") / saved.json()["workspace_ref"]
+    mcp_root = managed / "mcp/local-tools"
+    assert (mcp_root / "scripts/server.py").read_text() == "print('server')\n"
+    assert (mcp_root / "scripts/settings.json").read_text() == '{"mode": "readonly"}\n'
+    config = json.loads((mcp_root / "config.json").read_text())
+    assert config["command"] == "python"
+    assert config["args"] == ["scripts/server.py"]
+    expected_cwd = f"/runtime/capabilities/nodes/{saved.json()['id']}/mcp/local-tools"
+    assert config["cwd"] == expected_cwd
+
+
+def test_mcp_scripts_reject_remote_server_and_unsafe_filename(client):
+    config = json.dumps(
+        {
+            "mcpServers": {
+                "remote": {
+                    "transport": "streamable-http",
+                    "url": "https://mcp.example.test/mcp",
+                },
+                "local": {"transport": "stdio", "command": "python"},
+            }
+        }
+    )
+    cases = [
+        ("remote", "server.py"),
+        ("local", "../server.py"),
+        ("local", "server.exe"),
+    ]
+    for server, filename in cases:
+        payload = _validate_payload("MCP", "mcp.json", config)
+        payload["mcp_scripts"] = [
+            {
+                "server": server,
+                "filename": filename,
+                "content_base64": base64.b64encode(b"content").decode(),
+            }
+        ]
+        response = client.post("/api/v1/capability-imports/validate", json=payload)
+        assert response.status_code == 422, (server, filename, response.text)
+        assert response.json()["error"]["code"] == "IMPORT_REJECTED"
+
+
+def test_hook_config_normalizes_form_json_and_binds_to_node(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json=_validate_payload(
+            "HOOK",
+            "guardrails.json",
+            json.dumps(
+                {
+                    "name": "security-guardrails",
+                    "description": "Block unsafe terminal operations",
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "terminal",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "flowweave-policy-check",
+                                        "timeout": 30,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ),
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["preview"]["capabilities"] == [
+        {
+            "capability_key": "security-guardrails",
+            "normalized_config": {
+                "pre_tool_use": [
+                    {
+                        "matcher": "terminal",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "flowweave-policy-check",
+                                "timeout": 30,
+                            }
+                        ],
+                    }
+                ],
+                "description": "Block unsafe terminal operations",
+            },
+        }
+    ]
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": response.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+    saved = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "hook-enabled node",
+            "executor": {},
+            "capabilities": committed.json()["capabilities"],
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["capabilities"][0]["capability_type"] == "HOOK"
+    assert "pre_tool_use" in saved.json()["capabilities"][0]["normalized_config"]
+
+
+def test_hook_config_rejects_async_blocking_action(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json=_validate_payload(
+            "HOOK",
+            "guardrails.json",
+            json.dumps(
+                {
+                    "name": "unsafe-hook",
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "terminal",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "policy-check",
+                                        "async": True,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ),
+        ),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "IMPORT_REJECTED"
+    assert response.json()["error"]["details"]["event"] == "pre_tool_use"
+
+
+def test_hook_script_action_requires_and_persists_its_uploaded_attachment(client):
+    config = json.dumps(
+        {
+            "name": "script-guardrails",
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "terminal",
+                        "hooks": [
+                            {
+                                "type": "script",
+                                "name": "check-terminal",
+                                "script": "check.py",
+                                "timeout": 30,
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    )
+    missing = client.post(
+        "/api/v1/capability-imports/validate",
+        json=_validate_payload("HOOK", "guardrails.json", config),
+    )
+    assert missing.status_code == 422, missing.text
+    assert missing.json()["error"]["details"]["filenames"] == ["check.py"]
+
+    payload = _validate_payload("HOOK", "guardrails.json", config)
+    payload["hook_scripts"] = [
+        {
+            "filename": "check.py",
+            "content_base64": base64.b64encode(b"print('allow')\n").decode(),
+        }
+    ]
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json=payload,
+    )
+    assert validated.status_code == 200, validated.text
+    normalized = validated.json()["preview"]["capabilities"][0]["normalized_config"]
+    assert normalized["script_files"] == ["check.py"]
+    assert len(normalized["script_hashes"]["check.py"]) == 64
+    assert normalized["pre_tool_use"][0]["hooks"][0] == {
+        "type": "script",
+        "name": "check-terminal",
+        "script": "check.py",
+        "timeout": 30,
+    }
+
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": validated.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+    committed_config = committed.json()["capabilities"][0]["normalized_config"]
+    assert committed_config["package_format"] == "hook-bundle-v1"
+    assert committed_config["storage_key"] == committed.json()["storage_key"]
+
+
+def test_hook_script_upload_rejects_unused_and_non_executable_files(client):
+    config = json.dumps(
+        {
+            "name": "script-guardrails",
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "*",
+                        "hooks": [{"type": "command", "command": "echo ready"}],
+                    }
+                ]
+            },
+        }
+    )
+    for filename in ("unused.py", "policy.txt"):
+        payload = _validate_payload("HOOK", "guardrails.json", config)
+        payload["hook_scripts"] = [
+            {
+                "filename": filename,
+                "content_base64": base64.b64encode(b"content\n").decode(),
+            }
+        ]
+        response = client.post(
+            "/api/v1/capability-imports/validate",
+            json=payload,
+        )
+        assert response.status_code == 422, (filename, response.text)
+        assert response.json()["error"]["code"] == "IMPORT_REJECTED"
 
 
 def test_editing_one_skill_saves_in_place_and_refreshes_bound_node(client):
@@ -310,9 +676,9 @@ def test_import_rejects_secrets_and_unsafe_filenames(client):
     secret = client.post(
         "/api/v1/capability-imports/validate",
         json={
-            "capability_type": "HOOK",
-            "filename": "hook.yaml",
-            "content_base64": base64.b64encode(b"api_key: no\n").decode(),
+            "capability_type": "MCP",
+            "filename": "mcp.json",
+            "content_base64": base64.b64encode(b'{"servers":{"docs":{"api_key":"no"}}}').decode(),
         },
     )
     assert secret.status_code == 422
@@ -438,8 +804,38 @@ def test_skill_zip_entry_limit_is_reported_with_actual_and_maximum(client):
     assert response.status_code == 422, response.text
     error = response.json()["error"]
     assert error["code"] == "IMPORT_REJECTED"
-    assert error["message"] == "ZIP contains 1001 entries; maximum is 1000"
-    assert error["details"] == {"actual_entries": 1001, "max_entries": 1000}
+    assert error["message"] == "ZIP contains 1001 effective entries; maximum is 1000"
+    assert error["details"] == {
+        "actual_entries": 1001,
+        "max_entries": 1000,
+        "ignored_entries": 0,
+    }
+
+
+def test_skill_zip_ignores_macos_metadata_before_effective_entry_limit(client):
+    entries: dict[str, bytes | str] = {
+        "sample/SKILL.md": "# Sample\n",
+        "sample/assets/template.jsx": "export default () => <main />;",
+        "sample/assets/template.html": "<main></main>",
+        "sample/references/schema.xml": "<schema />",
+    }
+    entries.update({f"__MACOSX/sample/._metadata-{index}": b"metadata" for index in range(1000)})
+
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "macos-skill.zip",
+            "content_base64": _zip_content(entries),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["preview"]
+    assert preview["file_count"] == 4
+    assert preview["raw_entry_count"] == 1004
+    assert preview["effective_entry_count"] == 4
+    assert preview["ignored_entry_count"] == 1000
 
 
 def test_config_import_rejects_alias_bombs_recursive_aliases_and_deep_values(client):

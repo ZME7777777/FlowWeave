@@ -8,17 +8,37 @@ FlowWeave 由独立的 migration、API、Worker、Web 和 PostgreSQL 进程组�
 
 ## 节点宿主工作区
 
-默认根目录为 `var/workspaces`，可用 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 覆盖。每个节点资产拥有 `nodes/<node-asset-id>`，其中：
+默认根目录为 `var/workspaces`，可用 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 覆盖。每个节点资产拥有可写目录 `nodes/<node-asset-id>`，其中：
 
 - `skills/<能力名>`：从导入 ZIP 完整解压的 `SKILL.md`、scripts、references 和资源文件。
-- `mcp/<能力名>`：规范化后的 `config.json`，也可放置本地 MCP Server 脚本。
 - `files`：用户自行放置的文本、附件或其他上下文。
 - `repositories`：节点长期使用的代码仓库。
 - `sessions/<run-id>/<node-run-id>/<attempt-no>`：各执行轮次的隔离工作目录。
 
-Agent 启动时会收到上述容器内绝对路径，MCP 配置通过 OpenHands `mcp_config` 注册为真实工具。聊天输入框用统一的 `$能力名` 引用 Skill 或 MCP，消息会保存结构化 `capability_refs`，不依赖模型自行猜测文本。
+上传的 MCP/Hook 配置与脚本由平台物化到 `.managed-assets/nodes/<node-asset-id>/`，Runtime 只在 `/runtime/capabilities/nodes/<node-asset-id>/` 看到独立只读挂载。脚本不位于节点可写挂载中，物化时校验路径、文件类型、数量、大小和 SHA-256 摘要。Agent 启动时会收到这些容器内绝对路径，MCP 配置通过 OpenHands `mcp_config` 注册为真实工具。能力仓库提供“表单配置”和“JSON 配置”两种视图，但底层始终是同一份 `mcpServers` JSON：表单修改会立即更新 JSON，合法的 JSON 修改会回填表单；表单未展示的高级字段会原样保留。表单支持管理多个 Server，JSON 视图适合批量粘贴或编辑高级字段。命令型 MCP 只保存配置，对应 CLI 必须先在节点绑定的终端环境中安装并发布。聊天输入框用统一的 `$能力名` 引用 Skill 或 MCP，消息会保存结构化 `capability_refs`，不依赖模型自行猜测文本。
 
-Skill ZIP 的压缩包上限为 25 MiB、解压后总量上限为 100 MiB、单文件上限为 25 MiB。单 Skill 可把 `SKILL.md` 直接放在 ZIP 根目录；批量导入时，每个 Skill 目录各自包含一个 `SKILL.md`。Web 代理允许 40 MiB 请求体，用于容纳 Base64 编码产生的额外体积。
+FlowWeave 的 MCP JSON 使用以下结构。远程 Server 的 `transport` 支持 `streamable-http`（推荐）、`http` 或 `sse`；命令型 Server 使用 `stdio`。输入中的兼容别名 `type` 会被规范化为 `transport`，`shttp` 会被规范化为 `http`。配置禁止保存 token、secret、password、Authorization 等敏感字段。
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "url": "https://mcp.example.com/mcp",
+      "transport": "streamable-http",
+      "description": "查询团队文档",
+      "timeout": 30
+    },
+    "localTools": {
+      "command": "mcp-tool-server",
+      "args": ["--stdio"],
+      "transport": "stdio",
+      "description": "调用终端环境中已安装的 MCP CLI"
+    }
+  }
+}
+```
+
+Skill ZIP 的压缩包上限为 25 MiB、解压后总量上限为 100 MiB、单文件上限为 25 MiB。单 Skill 可把 `SKILL.md` 直接放在 ZIP 根目录；批量导入时，每个 Skill 目录各自包含一个 `SKILL.md`。ZIP 最多包含 5000 个原始条目，过滤 `__MACOSX`、`.DS_Store` 与 `._*` 后最多保留 1000 个有效条目；常见脚本、文档、图片及 `.jsx`、`.tsx`、`.html`、`.xml`、`.css` 等 Skill 资源可随包保存。Web 代理允许 40 MiB 请求体，用于容纳 Base64 编码产生的额外体积。
 
 OpenHands 镜像提供 shell、Python、Node.js/npm/npx、uv/uvx、Git/SSH 与 `lark-cli`。平台不接收、不保存也不向 Runtime 注入 Lark OAuth token。每个终端环境拥有独立的 Controller 管理 Docker 卷；Setup 容器把它挂载到 `/root/.lark-cli`，发布后的 Runtime 把同一卷挂载到 `/home/flowweave/.lark-cli`。卷内容不会进入 `docker commit` 生成的镜像，也不会在不同环境之间共享。
 

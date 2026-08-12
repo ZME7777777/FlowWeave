@@ -27,7 +27,13 @@ from flowweave.shared.application.transactions import (
 from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.dependency_builder import get_dependency_builder
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import CapabilityImport, NodeAsset, NodeCapabilityRef
+from flowweave.shared.models import (
+    CapabilityImport,
+    NodeAsset,
+    NodeCapabilityRef,
+    SkillCollection,
+    SkillCollectionItem,
+)
 from flowweave.shared.schemas import CapabilityValidateWrite
 from flowweave.shared.settings import get_settings
 
@@ -35,12 +41,35 @@ SENSITIVE = {"api_key", "apikey", "token", "secret", "password", "authorization"
 ZIP_MAX_COMPRESSED_BYTES = 25 * 1024 * 1024
 ZIP_MAX_EXPANDED_BYTES = 100 * 1024 * 1024
 ZIP_MAX_FILE_BYTES = 25 * 1024 * 1024
+# Keep a generous raw-entry ceiling so harmless macOS metadata does not make a
+# valid package fail, while still bounding the work needed to inspect an
+# archive. The stricter limit applies after ignored metadata is removed.
+ZIP_MAX_RAW_ENTRIES = 5000
 ZIP_MAX_FILES = 1000
 ZIP_MAX_DEPTH = 8
 CONFIG_MAX_BYTES = 1024 * 1024
 CONFIG_MAX_ALIASES = 20
 CONFIG_MAX_DEPTH = 20
 CONFIG_MAX_NODES = 10_000
+MCP_SCRIPT_MAX_FILES = 20
+MCP_SCRIPT_MAX_FILE_BYTES = 1024 * 1024
+MCP_SCRIPT_MAX_TOTAL_BYTES = 10 * 1024 * 1024
+MCP_SCRIPT_ALLOWED_SUFFIXES = {
+    ".py",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".sh",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".txt",
+}
+HOOK_SCRIPT_MAX_FILES = MCP_SCRIPT_MAX_FILES
+HOOK_SCRIPT_MAX_FILE_BYTES = MCP_SCRIPT_MAX_FILE_BYTES
+HOOK_SCRIPT_MAX_TOTAL_BYTES = MCP_SCRIPT_MAX_TOTAL_BYTES
+HOOK_SCRIPT_ALLOWED_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh"}
 NESTED_ARCHIVE_SUFFIXES = {
     ".zip",
     ".tar",
@@ -65,6 +94,13 @@ SKILL_ALLOWED_SUFFIXES = {
     ".mjs",
     ".cjs",
     ".ts",
+    ".tsx",
+    ".jsx",
+    ".html",
+    ".xml",
+    ".css",
+    ".csv",
+    ".lock",
     ".sh",
     ".svg",
     ".png",
@@ -80,6 +116,46 @@ PLATFORM_CLI_VERSIONS = {
 }
 DEPENDENCY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@/-]{0,127}$")
 EXACT_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
+MCP_SERVER_KEYS = {
+    "url",
+    "transport",
+    "type",
+    "command",
+    "args",
+    "env",
+    "cwd",
+    "description",
+    "icon",
+    "timeout",
+    "sse_read_timeout",
+    "keep_alive",
+    "headers",
+    "auth",
+    "enabled",
+}
+MCP_TRANSPORTS = {"stdio", "http", "streamable-http", "sse"}
+HOOK_EVENTS = {
+    "PreToolUse": "pre_tool_use",
+    "PostToolUse": "post_tool_use",
+    "UserPromptSubmit": "user_prompt_submit",
+    "SessionStart": "session_start",
+    "SessionEnd": "session_end",
+    "Stop": "stop",
+}
+HOOK_EVENT_KEYS = frozenset(HOOK_EVENTS.values())
+HOOK_TYPES = {"command", "script", "prompt", "agent"}
+HOOK_DEFINITION_KEYS = {
+    "type",
+    "name",
+    "command",
+    "script",
+    "prompt",
+    "system_prompt",
+    "tools",
+    "timeout",
+    "max_iterations",
+    "async",
+}
 
 
 def _ignored_archive_entry(path: PurePosixPath) -> bool:
@@ -252,23 +328,21 @@ def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             files = archive.infolist()
-            if len(files) > ZIP_MAX_FILES:
+            if len(files) > ZIP_MAX_RAW_ENTRIES:
                 raise _reject(
-                    f"ZIP contains {len(files)} entries; maximum is {ZIP_MAX_FILES}",
+                    f"ZIP contains {len(files)} raw entries; maximum is {ZIP_MAX_RAW_ENTRIES}",
                     actual_entries=len(files),
-                    max_entries=ZIP_MAX_FILES,
+                    max_entries=ZIP_MAX_RAW_ENTRIES,
                 )
             names: list[str] = []
             total = 0
+            effective_entries = 0
+            ignored_entries = 0
             for item in files:
                 name = item.filename.replace("\\", "/")
                 path = PurePosixPath(name)
                 if path.is_absolute() or ".." in path.parts:
                     raise _reject("Unsafe ZIP path")
-                if _ignored_archive_entry(path):
-                    continue
-                if len(path.parts) > ZIP_MAX_DEPTH:
-                    raise _reject("ZIP path nesting exceeds limit", filename=name)
                 if (item.external_attr >> 16) & 0o170000 == 0o120000:
                     raise _reject("Symbolic links are not allowed")
                 if item.file_size > ZIP_MAX_FILE_BYTES:
@@ -280,6 +354,20 @@ def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
                 total += item.file_size
                 if total > ZIP_MAX_EXPANDED_BYTES:
                     raise _reject("Expanded ZIP exceeds 100 MiB", max_bytes=ZIP_MAX_EXPANDED_BYTES)
+                if _ignored_archive_entry(path):
+                    ignored_entries += 1
+                    continue
+                effective_entries += 1
+                if effective_entries > ZIP_MAX_FILES:
+                    raise _reject(
+                        f"ZIP contains {effective_entries} effective entries; maximum is "
+                        f"{ZIP_MAX_FILES}",
+                        actual_entries=effective_entries,
+                        max_entries=ZIP_MAX_FILES,
+                        ignored_entries=ignored_entries,
+                    )
+                if len(path.parts) > ZIP_MAX_DEPTH:
+                    raise _reject("ZIP path nesting exceeds limit", filename=name)
                 if not item.is_dir():
                     suffix = path.suffix.lower()
                     if suffix in NESTED_ARCHIVE_SUFFIXES:
@@ -324,46 +412,450 @@ def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
                 "skill_files": skill_files,
                 "files": names[:50],
                 "file_count": len(names),
+                "raw_entry_count": len(files),
+                "effective_entry_count": effective_entries,
+                "ignored_entry_count": ignored_entries,
             }
     except zipfile.BadZipFile as exc:
         raise _reject("Invalid ZIP file") from exc
 
 
-def _named_mapping(value: object, label: str) -> list[dict[str, Any]]:
-    if not isinstance(value, dict) or not value:
-        raise _reject(f"{label} config must contain at least one named item")
-    mapping = cast(dict[object, object], value)
+def _string_mapping(value: object, *, server: str, field: str) -> dict[str, str]:
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) or not isinstance(child, str)
+        for key, child in cast(dict[object, object], value).items()
+    ):
+        raise _reject(f"MCP {field} must be a string map", server=server, field=field)
+    return cast(dict[str, str], value)
+
+
+def _normalize_mcp_server(name: str, value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _reject("MCP server must be an object", server=name)
+    server = {str(key): child for key, child in cast(dict[object, object], value).items()}
+    unknown = sorted(set(server) - MCP_SERVER_KEYS)
+    if unknown:
+        raise _reject("MCP server contains unsupported fields", server=name, fields=unknown)
+
+    typed_transport = server.pop("type", None)
+    if typed_transport is not None and "transport" in server:
+        raise _reject("MCP server cannot declare both type and transport", server=name)
+    transport_value = server.get("transport", typed_transport)
+    if transport_value == "shttp":
+        transport_value = "http"
+    if transport_value is None:
+        transport_value = "stdio" if server.get("command") else "streamable-http"
+    if not isinstance(transport_value, str) or transport_value not in MCP_TRANSPORTS:
+        raise _reject(
+            "MCP transport is not supported",
+            server=name,
+            transport=transport_value,
+            supported_transports=sorted(MCP_TRANSPORTS),
+        )
+    server["transport"] = transport_value
+
+    command = server.get("command")
+    url = server.get("url")
+    if transport_value == "stdio":
+        if not isinstance(command, str) or not command.strip():
+            raise _reject("stdio MCP server requires command", server=name)
+        if url is not None:
+            raise _reject("stdio MCP server cannot declare url", server=name)
+        server["command"] = command.strip()
+    else:
+        if not isinstance(url, str) or not url.strip():
+            raise _reject("Remote MCP server requires url", server=name)
+        if command is not None:
+            raise _reject("Remote MCP server cannot declare command", server=name)
+        server["url"] = url.strip()
+
+    args = server.get("args")
+    if args is not None and (
+        not isinstance(args, list)
+        or any(not isinstance(argument, str) for argument in cast(list[object], args))
+    ):
+        raise _reject("MCP args must be a string list", server=name, field="args")
+    for field in ("env", "headers"):
+        if field in server:
+            server[field] = _string_mapping(server[field], server=name, field=field)
+    for field in ("cwd", "description", "icon"):
+        if field in server and not isinstance(server[field], str):
+            raise _reject("MCP field must be a string", server=name, field=field)
+    for field in ("timeout", "sse_read_timeout"):
+        value = server.get(field)
+        if value is not None and (
+            not isinstance(value, int | float) or isinstance(value, bool) or value <= 0
+        ):
+            raise _reject("MCP timeout must be positive", server=name, field=field)
+    for field in ("keep_alive", "enabled"):
+        if field in server and not isinstance(server[field], bool):
+            raise _reject("MCP field must be boolean", server=name, field=field)
+    if "auth" in server and not isinstance(server["auth"], dict):
+        raise _reject("MCP auth must be an object", server=name, field="auth")
+    return server
+
+
+def _mcp_capabilities(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    roots = [key for key in ("mcpServers", "servers") if key in parsed]
+    if len(roots) != 1:
+        raise _reject("MCP config must contain exactly one mcpServers or servers root")
+    raw_servers = parsed[roots[0]]
+    if not isinstance(raw_servers, dict) or not raw_servers:
+        raise _reject("MCP config must contain at least one named server")
+    capabilities: list[dict[str, Any]] = []
+    for raw_name, raw_server in cast(dict[object, object], raw_servers).items():
+        name = str(raw_name).strip()
+        if not name or len(name) > 200:
+            raise _reject("MCP server name is invalid", server=str(raw_name))
+        capabilities.append(
+            {
+                "capability_key": name,
+                "normalized_config": _normalize_mcp_server(name, raw_server),
+            }
+        )
+    return capabilities
+
+
+def _mcp_bundle(
+    config_content: bytes,
+    capabilities: list[dict[str, Any]],
+    payload: CapabilityValidateWrite,
+) -> tuple[bytes, list[dict[str, Any]]]:
+    if not payload.mcp_scripts:
+        return config_content, capabilities
+    if payload.capability_type != "MCP":
+        raise _reject("Only MCP capabilities can include scripts")
+    if len(payload.mcp_scripts) > MCP_SCRIPT_MAX_FILES:
+        raise _reject(
+            "MCP script count exceeds limit",
+            actual_files=len(payload.mcp_scripts),
+            max_files=MCP_SCRIPT_MAX_FILES,
+        )
+
+    capability_by_name = {str(item["capability_key"]): item for item in capabilities}
+    server_positions = {
+        str(item["capability_key"]): position for position, item in enumerate(capabilities)
+    }
+    decoded: list[tuple[str, str, bytes]] = []
+    seen: set[tuple[str, str]] = set()
+    total_bytes = 0
+    for script in payload.mcp_scripts:
+        server = script.server.strip()
+        capability = capability_by_name.get(server)
+        if capability is None:
+            raise _reject("MCP script references an unknown server", server=server)
+        normalized = cast(dict[str, Any], capability["normalized_config"])
+        if normalized.get("transport") != "stdio":
+            raise _reject("Only stdio MCP servers can include scripts", server=server)
+
+        filename = script.filename.strip()
+        path = PurePosixPath(filename.replace("\\", "/"))
+        if (
+            path.is_absolute()
+            or len(path.parts) != 1
+            or path.name in {"", ".", ".."}
+            or path.suffix.lower() not in MCP_SCRIPT_ALLOWED_SUFFIXES
+        ):
+            raise _reject(
+                "MCP script filename or extension is not supported",
+                server=server,
+                filename=filename,
+                allowed_extensions=sorted(MCP_SCRIPT_ALLOWED_SUFFIXES),
+            )
+        identity = (server, path.name)
+        if identity in seen:
+            raise _reject(
+                "MCP script filenames must be unique within one server",
+                server=server,
+                filename=path.name,
+            )
+        seen.add(identity)
+        try:
+            content = base64.b64decode(script.content_base64, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise _reject(
+                "MCP script content is not valid base64",
+                server=server,
+                filename=path.name,
+            ) from exc
+        if len(content) > MCP_SCRIPT_MAX_FILE_BYTES:
+            raise _reject(
+                "MCP script exceeds 1 MiB",
+                server=server,
+                filename=path.name,
+                max_bytes=MCP_SCRIPT_MAX_FILE_BYTES,
+            )
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise _reject(
+                "MCP scripts must be UTF-8 text files",
+                server=server,
+                filename=path.name,
+            ) from exc
+        total_bytes += len(content)
+        if total_bytes > MCP_SCRIPT_MAX_TOTAL_BYTES:
+            raise _reject(
+                "MCP scripts exceed 10 MiB in total",
+                max_bytes=MCP_SCRIPT_MAX_TOTAL_BYTES,
+            )
+        decoded.append((server, path.name, content))
+
+    scripts_by_server: dict[str, list[str]] = {}
+    hashes_by_server: dict[str, dict[str, str]] = {}
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("config.json", config_content)
+        for server, filename, content in decoded:
+            position = server_positions[server]
+            archive_path = f"scripts/{position}/{filename}"
+            info = zipfile.ZipInfo(archive_path)
+            info.external_attr = (0o755 if Path(filename).suffix == ".sh" else 0o644) << 16
+            archive.writestr(info, content)
+            scripts_by_server.setdefault(server, []).append(filename)
+            hashes_by_server.setdefault(server, {})[filename] = hashlib.sha256(content).hexdigest()
+
+    for server, filenames in scripts_by_server.items():
+        capability = capability_by_name[server]
+        normalized = cast(dict[str, Any], capability["normalized_config"])
+        position = server_positions[server]
+        normalized["script_files"] = sorted(filenames)
+        normalized["script_hashes"] = hashes_by_server[server]
+        normalized["script_archive_prefix"] = f"scripts/{position}"
+        normalized["package_format"] = "mcp-bundle-v1"
+    return output.getvalue(), capabilities
+
+
+def _normalize_hook_config(parsed: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    name = str(parsed.get("name") or "hook-policy").strip()
+    description = str(parsed.get("description") or "").strip()[:2000]
+    if not name or len(name) > 200:
+        raise _reject("Hook name is invalid")
+
+    raw_config: object = parsed.get("hooks", parsed)
+    if raw_config is parsed:
+        raw_config = {
+            key: value for key, value in parsed.items() if key not in {"name", "description"}
+        }
+    if not isinstance(raw_config, dict) or not raw_config:
+        raise _reject("Hook config must contain at least one lifecycle event")
+
+    normalized: dict[str, Any] = {}
+    for raw_event, raw_matchers in cast(dict[object, object], raw_config).items():
+        event_name = str(raw_event)
+        event = HOOK_EVENTS.get(event_name, event_name)
+        if event not in HOOK_EVENT_KEYS:
+            raise _reject(
+                "Hook event is not supported by OpenHands",
+                event=event_name,
+                supported_events=sorted(HOOK_EVENT_KEYS),
+            )
+        if event in normalized:
+            raise _reject("Hook event is declared more than once", event=event)
+        if not isinstance(raw_matchers, list) or not raw_matchers:
+            raise _reject("Hook event must contain at least one matcher", event=event)
+
+        matchers: list[dict[str, Any]] = []
+        for raw_matcher in cast(list[object], raw_matchers):
+            if not isinstance(raw_matcher, dict):
+                raise _reject("Hook matcher must be an object", event=event)
+            matcher = {
+                str(key): value for key, value in cast(dict[object, object], raw_matcher).items()
+            }
+            unknown_matcher = sorted(set(matcher) - {"matcher", "hooks"})
+            if unknown_matcher:
+                raise _reject(
+                    "Hook matcher contains unsupported fields",
+                    event=event,
+                    fields=unknown_matcher,
+                )
+            raw_hooks = matcher.get("hooks")
+            if not isinstance(raw_hooks, list) or not raw_hooks:
+                raise _reject("Hook matcher must contain at least one hook", event=event)
+
+            hooks: list[dict[str, Any]] = []
+            for raw_hook in cast(list[object], raw_hooks):
+                if not isinstance(raw_hook, dict):
+                    raise _reject("Hook definition must be an object", event=event)
+                hook = {
+                    str(key): value for key, value in cast(dict[object, object], raw_hook).items()
+                }
+                unknown = sorted(set(hook) - HOOK_DEFINITION_KEYS)
+                if unknown:
+                    raise _reject(
+                        "Hook definition contains unsupported fields",
+                        event=event,
+                        fields=unknown,
+                    )
+                hook_type = str(hook.get("type") or "command")
+                if hook_type not in HOOK_TYPES:
+                    raise _reject("Hook type is not supported", event=event, hook_type=hook_type)
+                if hook_type == "command" and not str(hook.get("command") or "").strip():
+                    raise _reject("Command Hook requires command", event=event)
+                if hook_type == "script":
+                    script_name = str(hook.get("script") or "").strip()
+                    script_path = PurePosixPath(script_name.replace("\\", "/"))
+                    if (
+                        script_path.is_absolute()
+                        or len(script_path.parts) != 1
+                        or script_path.name in {"", ".", ".."}
+                        or script_path.suffix.lower() not in HOOK_SCRIPT_ALLOWED_SUFFIXES
+                    ):
+                        raise _reject(
+                            "Script Hook requires a supported uploaded script",
+                            event=event,
+                            filename=script_name,
+                            allowed_extensions=sorted(HOOK_SCRIPT_ALLOWED_SUFFIXES),
+                        )
+                    if hook.get("command"):
+                        raise _reject("Script Hook cannot declare command", event=event)
+                    hook["script"] = script_path.name
+                if hook_type == "prompt" and not str(hook.get("prompt") or "").strip():
+                    raise _reject("Prompt Hook requires prompt", event=event)
+                if hook_type == "agent" and hook.get("command"):
+                    raise _reject("Agent Hook cannot declare command", event=event)
+                if hook_type == "agent" and hook.get("async"):
+                    raise _reject("Agent Hook cannot run asynchronously", event=event)
+                if event in {"pre_tool_use", "user_prompt_submit", "stop"} and hook.get("async"):
+                    raise _reject("Blocking lifecycle Hooks cannot run asynchronously", event=event)
+
+                timeout = hook.get("timeout", 60)
+                iterations = hook.get("max_iterations", 3)
+                if (
+                    not isinstance(timeout, int)
+                    or isinstance(timeout, bool)
+                    or not 1 <= timeout <= 300
+                ):
+                    raise _reject("Hook timeout must be between 1 and 300 seconds", event=event)
+                if (
+                    not isinstance(iterations, int)
+                    or isinstance(iterations, bool)
+                    or not 1 <= iterations <= 20
+                ):
+                    raise _reject("Hook max_iterations must be between 1 and 20", event=event)
+                raw_tools: object = hook.get("tools", [])
+                if not isinstance(raw_tools, list) or any(
+                    not isinstance(tool, str) for tool in cast(list[object], raw_tools)
+                ):
+                    raise _reject("Hook tools must be a string list", event=event)
+
+                normalized_hook = {**hook, "type": hook_type, "timeout": timeout}
+                if hook_type == "agent":
+                    normalized_hook["max_iterations"] = iterations
+                hooks.append(normalized_hook)
+            matchers.append(
+                {
+                    "matcher": str(matcher.get("matcher") or "*"),
+                    "hooks": hooks,
+                }
+            )
+        normalized[event] = matchers
+    return name, description, normalized
+
+
+def _hook_capabilities(parsed: dict[str, Any], fallback_name: str) -> list[dict[str, Any]]:
+    name, description, normalized = _normalize_hook_config(parsed)
+    if name == "hook-policy" and fallback_name:
+        name = fallback_name
     return [
         {
-            "capability_key": str(key),
-            "normalized_config": (
-                cast(dict[str, Any], config) if isinstance(config, dict) else {"value": config}
-            ),
+            "capability_key": name,
+            "normalized_config": {**normalized, "description": description},
         }
-        for key, config in mapping.items()
-        if str(key).strip()
     ]
 
 
-def _config_capabilities(capability_type: str, parsed: dict[str, Any]) -> list[dict[str, Any]]:
-    if capability_type == "MCP":
-        servers = cast(object, parsed.get("mcpServers", parsed.get("servers")))
-        return _named_mapping(servers, "MCP")
-    hooks = cast(object, parsed.get("hooks"))
-    if isinstance(hooks, list):
-        result: list[dict[str, Any]] = []
-        for index, raw_hook in enumerate(cast(list[object], hooks)):
-            if not isinstance(raw_hook, dict):
-                raise _reject("Hook entries must be objects")
-            hook = cast(dict[str, Any], raw_hook)
-            key = str(
-                hook.get("name") or hook.get("id") or hook.get("event") or f"hook-{index + 1}"
+def _hook_bundle(
+    config_content: bytes,
+    capabilities: list[dict[str, Any]],
+    payload: CapabilityValidateWrite,
+) -> tuple[bytes, list[dict[str, Any]]]:
+    if payload.capability_type != "HOOK":
+        raise _reject("Only Hook capabilities can include Hook scripts")
+    if len(payload.hook_scripts) > HOOK_SCRIPT_MAX_FILES:
+        raise _reject(
+            "Hook script count exceeds limit",
+            actual_files=len(payload.hook_scripts),
+            max_files=HOOK_SCRIPT_MAX_FILES,
+        )
+    if len(capabilities) != 1:
+        raise _reject("A Hook script bundle must contain exactly one Hook policy")
+
+    decoded: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    for script in payload.hook_scripts:
+        filename = script.filename.strip()
+        path = PurePosixPath(filename.replace("\\", "/"))
+        if (
+            path.is_absolute()
+            or len(path.parts) != 1
+            or path.name in {"", ".", ".."}
+            or path.suffix.lower() not in HOOK_SCRIPT_ALLOWED_SUFFIXES
+        ):
+            raise _reject(
+                "Hook script filename or extension is not supported",
+                filename=filename,
+                allowed_extensions=sorted(HOOK_SCRIPT_ALLOWED_SUFFIXES),
             )
-            result.append({"capability_key": key, "normalized_config": hook})
-        if result:
-            return result
-        raise _reject("Hook config must contain at least one item")
-    return _named_mapping(hooks, "Hook")
+        if path.name in seen:
+            raise _reject("Hook script filenames must be unique", filename=path.name)
+        seen.add(path.name)
+        try:
+            content = base64.b64decode(script.content_base64, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise _reject("Hook script content is not valid base64", filename=path.name) from exc
+        if len(content) > HOOK_SCRIPT_MAX_FILE_BYTES:
+            raise _reject(
+                "Hook script exceeds 1 MiB",
+                filename=path.name,
+                max_bytes=HOOK_SCRIPT_MAX_FILE_BYTES,
+            )
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise _reject("Hook scripts must be UTF-8 text files", filename=path.name) from exc
+        total_bytes += len(content)
+        if total_bytes > HOOK_SCRIPT_MAX_TOTAL_BYTES:
+            raise _reject(
+                "Hook scripts exceed 10 MiB in total", max_bytes=HOOK_SCRIPT_MAX_TOTAL_BYTES
+            )
+        decoded.append((path.name, content))
+
+    normalized = cast(dict[str, Any], capabilities[0]["normalized_config"])
+    referenced: set[str] = set()
+    for event in HOOK_EVENT_KEYS:
+        for matcher in cast(list[dict[str, Any]], normalized.get(event, [])):
+            for hook in cast(list[dict[str, Any]], matcher.get("hooks", [])):
+                if hook.get("type") == "script":
+                    referenced.add(str(hook.get("script") or ""))
+    missing = sorted(referenced - seen)
+    if missing:
+        raise _reject("Hook action references an unuploaded script", filenames=missing)
+    unused = sorted(seen - referenced)
+    if unused:
+        raise _reject("Uploaded Hook scripts must be bound to an action", filenames=unused)
+    if not decoded:
+        return config_content, capabilities
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("config.json", config_content)
+        for filename, content in decoded:
+            info = zipfile.ZipInfo(f"scripts/0/{filename}")
+            info.external_attr = (
+                0o755
+                if Path(filename).suffix.lower() in {".sh", ".py", ".js", ".mjs", ".cjs"}
+                else 0o644
+            ) << 16
+            archive.writestr(info, content)
+    normalized["script_files"] = sorted(seen)
+    normalized["script_hashes"] = {
+        filename: hashlib.sha256(content).hexdigest() for filename, content in decoded
+    }
+    normalized["script_archive_prefix"] = "scripts/0"
+    normalized["package_format"] = "hook-bundle-v1"
+    return output.getvalue(), capabilities
 
 
 def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[str, Any]]:
@@ -379,28 +871,40 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
             raise _reject("Skill must be a ZIP")
         return content, _validate_skill(content, Path(filename).stem)
     suffix = Path(filename).suffix.lower()
-    if suffix not in {".json", ".yaml", ".yml"}:
-        raise _reject("Config must be JSON or YAML")
+    if suffix != ".json":
+        raise _reject(f"{payload.capability_type} config must be JSON")
     if len(content) > CONFIG_MAX_BYTES:
         raise _reject("Config exceeds 1 MiB")
     try:
         text = content.decode("utf-8")
-        parsed_object = (
-            cast(object, json.loads(text)) if suffix == ".json" else _safe_yaml_load(text)
-        )
-        if suffix == ".json":
-            _validate_config_structure(parsed_object)
+        parsed_object = cast(object, json.loads(text))
+        _validate_config_structure(parsed_object)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
-        raise _reject("Invalid JSON or YAML") from exc
+        raise _reject("Invalid JSON") from exc
     if not isinstance(parsed_object, dict):
         raise _reject("Config root must be an object")
     parsed = cast(dict[str, Any], parsed_object)
     _reject_sensitive(parsed)
-    capabilities = _config_capabilities(payload.capability_type, parsed)
+    capabilities = (
+        _mcp_capabilities(parsed)
+        if payload.capability_type == "MCP"
+        else _hook_capabilities(parsed, Path(filename).stem)
+    )
+    if payload.capability_type == "MCP":
+        content, capabilities = _mcp_bundle(content, capabilities, payload)
+    elif payload.capability_type == "HOOK":
+        content, capabilities = _hook_bundle(content, capabilities, payload)
+    elif payload.mcp_scripts:
+        raise _reject("Only MCP capabilities can include scripts")
+    if payload.capability_type != "MCP" and payload.mcp_scripts:
+        raise _reject("Only MCP capabilities can include scripts")
+    if payload.capability_type != "HOOK" and payload.hook_scripts:
+        raise _reject("Only Hook capabilities can include Hook scripts")
     _ensure_unique_capability_keys(capabilities)
     return content, {
         "capabilities": capabilities,
         "config": parsed,
+        "script_count": len(payload.mcp_scripts) + len(payload.hook_scripts),
     }
 
 
@@ -542,6 +1046,8 @@ def prepare_commit(db: Session, token: str) -> CapabilityCommitPlan:
     item = db.scalar(stmt)
     if not item or item.state != "VALIDATED":
         raise _reject("Import token is invalid, expired, or already consumed")
+    if item.capability_type not in {"SKILL", "MCP", "HOOK"}:
+        raise _reject("Capability type is no longer supported")
     expired = _utc(item.expires_at) <= datetime.now(UTC)
     if expired:
         item.state = "EXPIRED"
@@ -649,7 +1155,10 @@ def list_capabilities(db: Session) -> list[dict[str, Any]]:
 
     imports = db.scalars(
         select(CapabilityImport)
-        .where(CapabilityImport.state == "COMMITTED")
+        .where(
+            CapabilityImport.state == "COMMITTED",
+            CapabilityImport.capability_type.in_(("SKILL", "MCP", "HOOK")),
+        )
         .order_by(CapabilityImport.created_at, CapabilityImport.id)
     ).all()
     reference_counts: dict[tuple[str, str, str], int] = {}
@@ -1104,6 +1613,24 @@ def _references(
     return result
 
 
+def _collection_references(
+    db: Session, item: CapabilityImport, position: int
+) -> list[dict[str, str]]:
+    rows = db.execute(
+        select(SkillCollection.id, SkillCollection.name)
+        .join(
+            SkillCollectionItem,
+            SkillCollectionItem.collection_id == SkillCollection.id,
+        )
+        .where(
+            SkillCollectionItem.capability_import_id == item.id,
+            SkillCollectionItem.capability_position == position,
+        )
+        .order_by(SkillCollection.name, SkillCollection.id)
+    ).all()
+    return [{"id": collection_id, "name": name} for collection_id, name in rows]
+
+
 def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any]:
     unique_ids = list(dict.fromkeys(capability_ids))
     resolved = [
@@ -1113,15 +1640,19 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
     deletable: list[tuple[CapabilityImport, int, dict[str, Any], str]] = []
     for item, position, entry, capability_id in resolved:
         nodes = _references(db, capability_id, item, entry)
-        if nodes:
-            blocked.append(
-                {
-                    "id": capability_id,
-                    "name": str(entry.get("capability_key") or ""),
-                    "relation": "NODE_CAPABILITY",
-                    "nodes": nodes,
-                }
-            )
+        collections = _collection_references(db, item, position)
+        if nodes or collections:
+            reference: dict[str, Any] = {
+                "id": capability_id,
+                "name": str(entry.get("capability_key") or ""),
+                "relation": "NODE_CAPABILITY" if nodes else "SKILL_COLLECTION",
+                "nodes": nodes,
+            }
+            # Preserve the existing node-only response shape while exposing
+            # collection references when they actually block deletion.
+            if collections:
+                reference["collections"] = collections
+            blocked.append(reference)
         else:
             deletable.append((item, position, entry, capability_id))
 

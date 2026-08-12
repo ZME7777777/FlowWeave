@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     openhands_base_url: str = "http://openhands-agent-server:8000"
     openhands_session_api_key: str = "flowweave-internal"
     openhands_workspace_root: Path = Path("/workspaces")
+    # Uploaded executable capability assets are mounted separately from the
+    # writable node workspace. Keep this path outside openhands_workspace_root
+    # so workspace-controlled symlinks cannot influence the mount target.
+    openhands_managed_assets_root: Path = Path("/runtime/capabilities")
     conversation_limit_per_attempt: int = Field(default=20, ge=1, le=100)
     conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
 

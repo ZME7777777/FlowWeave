@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Response
 
-from flowweave.modules.catalog.application import capability_imports, service
+from flowweave.modules.catalog.application import capability_imports, service, skill_collections
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, run_sync
 from flowweave.shared.schemas import (
@@ -14,9 +14,36 @@ from flowweave.shared.schemas import (
     DirectoryWrite,
     NodeAssetBulkDeleteWrite,
     NodeAssetWrite,
+    SkillCollectionWrite,
 )
 
 router = APIRouter()
+
+
+@router.get("/skill-collections")
+async def collections(db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, skill_collections.list_collections)
+
+
+@router.post("/skill-collections", status_code=201)
+async def create_collection(payload: SkillCollectionWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: skill_collections.save_collection(session, payload))
+
+
+@router.put("/skill-collections/{collection_id}")
+async def update_collection(
+    collection_id: str, payload: SkillCollectionWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: skill_collections.save_collection(session, payload, collection_id),
+    )
+
+
+@router.delete("/skill-collections/{collection_id}", status_code=204, response_class=Response)
+async def delete_collection(collection_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: skill_collections.delete_collection(session, collection_id))
+    return Response(status_code=204)
 
 
 @router.get("/node-directories")

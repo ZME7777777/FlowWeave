@@ -10,6 +10,8 @@ from flowweave.modules.catalog.infrastructure.models import (
     NodeDirectory,
     NodeExecutorConfig,
     NodeIOField,
+    SkillCollection,
+    SkillCollectionItem,
 )
 from flowweave.modules.conversations.infrastructure.models import (
     AgentConversation,
@@ -78,6 +80,8 @@ __all__ = (
     "NodeDirectory",
     "NodeExecutorConfig",
     "NodeIOField",
+    "SkillCollection",
+    "SkillCollectionItem",
     "NodeRun",
     "NodeRunState",
     "ProviderModel",

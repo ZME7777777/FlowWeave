@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
 import httpx
+from websockets.asyncio.client import connect
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.auth import derive_runtime_session_key
@@ -15,16 +17,22 @@ from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeEventType,
     RuntimeHandle,
+    RuntimeProvider,
     RuntimeResult,
     StartAttemptRequest,
 )
 from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure.docker_controller import (
+    DockerControllerClient,
+    controller_is_remote,
+)
 
 
 class OpenHandsRuntime:
     """OpenHands Agent Server adapter backed by the node's configured model provider."""
 
     def __init__(self, settings: Settings) -> None:
+        self.settings = settings
         self.base_url = settings.openhands_base_url.rstrip("/")
         self.root_session_api_key = settings.openhands_session_api_key
         self.manager_scope = settings.sandbox_manager_scope
@@ -105,6 +113,33 @@ class OpenHandsRuntime:
     @staticmethod
     def _model_name(model: str) -> str:
         return model if "/" in model else f"openai/{model}"
+
+    def _llm_payload(self, provider: RuntimeProvider) -> dict[str, Any]:
+        llm: dict[str, Any] = {
+            "model": self._model_name(provider.model),
+            "base_url": provider.base_url,
+            "api_key": provider.api_key,
+            "usage_id": f"flowweave:{provider.provider_id}",
+        }
+        if provider.auth_type == "CODEX_OAUTH":
+            extra_body: dict[str, Any] = {"store": False}
+            if provider.reasoning_effort:
+                extra_body["reasoning"] = {"effort": provider.reasoning_effort}
+            llm.update(
+                {
+                    "api_mode": "responses",
+                    "extra_headers": provider.extra_headers,
+                    "litellm_extra_body": extra_body,
+                    "stream": True,
+                    "temperature": None,
+                    "max_output_tokens": None,
+                    "capability_overrides": {
+                        "supports_responses_api": True,
+                        "supports_sampling_params": False,
+                    },
+                }
+            )
+        return llm
 
     def _workspace_path(self, value: str) -> str:
         path = Path(value)
@@ -217,6 +252,12 @@ class OpenHandsRuntime:
                             f"{skill.dependency_runtime_path}/node"
                         )
                     resource_lines.append(detail)
+                resource_lines.append(
+                    "只有上面明确列出的 Skill 已绑定到本 Runtime。若某个 Skill 文档引用了"
+                    "未列出的兄弟 Skill（例如 ../other-skill/SKILL.md），该依赖当前不可用；"
+                    "不要猜测或反复探测不存在的路径，应使用当前 Skill 已提供的说明、references、"
+                    "脚本或 CLI --help 继续，确实无法执行时再明确报告缺失依赖。"
+                )
             if request.mcp_servers:
                 resource_lines.append("可用 MCP Servers：")
                 resource_lines.extend(
@@ -272,12 +313,7 @@ class OpenHandsRuntime:
         ]
         agent: dict[str, Any] = {
             "kind": "Agent",
-            "llm": {
-                "model": self._model_name(provider.model),
-                "base_url": provider.base_url,
-                "api_key": provider.api_key,
-                "usage_id": f"flowweave:{provider.provider_id}",
-            },
+            "llm": self._llm_payload(provider),
             "tools": [
                 {"name": "terminal", "params": {}},
                 {"name": "file_editor", "params": {}},
@@ -298,6 +334,8 @@ class OpenHandsRuntime:
             "max_iterations": int(executor.get("max_iterations") or 100),
             "agent": agent,
         }
+        if request.hook_config:
+            payload["hook_config"] = request.hook_config
         if run:
             payload["initial_message"] = {
                 "role": "user",
@@ -630,6 +668,75 @@ class OpenHandsRuntime:
             result=self._result_from_events(handle.conversation_id, items, cursor),
         )
 
+    async def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]:
+        """Relay transient visible-text deltas without persisting model reasoning."""
+
+        route = self._environment_route(handle.job_id)
+        if route is not None and controller_is_remote(self.settings):
+            if not handle.runtime_resource_id or not handle.runtime_resource_name:
+                raise DomainError(
+                    "AGENT_STREAM_UNAVAILABLE",
+                    "The isolated Runtime stream has no verified sandbox binding",
+                    409,
+                )
+            async for event in DockerControllerClient(self.settings).stream_runtime_events(
+                resource_name=handle.runtime_resource_name,
+                resource_id=handle.runtime_resource_id,
+                conversation_id=handle.conversation_id,
+            ):
+                visible = self._visible_stream_event(cast(dict[str, object], event))
+                if visible is not None:
+                    yield visible
+            return
+
+        base_url = self._base_url_for_handle(handle)
+        websocket_url = (
+            f"{base_url.replace('https://', 'wss://').replace('http://', 'ws://')}"
+            f"/sockets/events/{handle.conversation_id}"
+        )
+        headers = {"X-Session-API-Key": self._session_key_for_handle(handle)}
+        async with connect(
+            websocket_url,
+            additional_headers=headers,
+            open_timeout=10,
+            ping_interval=20,
+            ping_timeout=20,
+            max_size=2 * 1024 * 1024,
+        ) as upstream:
+            async for raw in upstream:
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    value: object = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(value, dict):
+                    continue
+                event = cast(dict[str, object], value)
+                visible = self._visible_stream_event(event)
+                if visible is not None:
+                    yield visible
+
+    @staticmethod
+    def _visible_stream_event(event: dict[str, object]) -> dict[str, Any] | None:
+        """Map an OpenHands frame to the public stream without exposing reasoning."""
+
+        kind = str(event.get("kind") or "")
+        if kind == "StreamingDeltaEvent":
+            content = event.get("content")
+            return (
+                {"type": "delta", "content": content}
+                if isinstance(content, str) and content
+                else None
+            )
+        if kind != "MessageEvent":
+            return None
+        raw_message = event.get("llm_message")
+        message = cast(dict[str, object], raw_message) if isinstance(raw_message, dict) else {}
+        role = str(message.get("role") or "").lower()
+        source = str(event.get("source") or "").lower()
+        return {"type": "message_complete"} if role == "assistant" or source == "agent" else None
+
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         base_url = self._base_url_for_handle(handle)
         data = self._request(
@@ -709,9 +816,16 @@ class OpenHandsRuntime:
         cursor = str(cursor_value) if cursor_value else None
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
-    def resume(
-        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
-    ) -> RuntimeResult:
+    def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/switch_llm",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={"llm": self._llm_payload(provider)},
+        )
+
+    def interrupt(self, handle: RuntimeHandle) -> None:
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/interrupt",
@@ -719,6 +833,11 @@ class OpenHandsRuntime:
             session_api_key=self._session_key_for_handle(handle),
             json={},
         )
+
+    def resume(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
+    ) -> RuntimeResult:
+        self.interrupt(handle)
         return self.send_message(handle, content, image_urls)
 
     def cancel(self, handle: RuntimeHandle) -> None:
