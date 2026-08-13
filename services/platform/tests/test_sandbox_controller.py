@@ -11,7 +11,10 @@ from flowweave.modules.environments.infrastructure import docker as environments
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
+    backend_name,
 )
+from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure import docker_controller as docker_controller_module
 
 _API_KEY = "controller-api-test-key-with-at-least-32-bytes"
 _WORKER_KEY = "controller-worker-test-key-with-at-least-32-bytes"
@@ -256,6 +259,8 @@ def test_only_worker_can_remove_environment_credentials(settings, monkeypatch):
         ("/v1/environments/publish", "api"),
         ("/v1/gates/execute", "worker"),
         ("/v1/dependencies/build", "worker"),
+        ("/v1/plugins/resolve", "worker"),
+        ("/v1/plugins/resolve-marketplace", "worker"),
         ("/v1/terminals/start", "api"),
         ("/v1/terminals/read", "api"),
         ("/v1/terminals/write", "api"),
@@ -400,6 +405,36 @@ def test_controller_accepts_fixed_high_level_operation(settings, monkeypatch):
     assert observed == [_RESOURCE_ID]
 
 
+def test_controller_accepts_mcp_oauth_authorization_runtime(settings, monkeypatch):
+    observed: list[str] = []
+
+    def ensure_running(self, resource):
+        observed.append(resource.owner_type)
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="oauth-runtime-container",
+            state="RUNNING",
+            labels={},
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+    payload = _ensure_payload(
+        owner_type="MCP_OAUTH_AUTHORIZATION",
+        backend_resource_name=backend_name(
+            _RESOURCE_ID,
+            owner_type="MCP_OAUTH_AUTHORIZATION",
+            owner_id=_OWNER_ID,
+        ),
+    )
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/sandboxes/ensure", headers=_headers(), json=payload)
+
+    assert response.status_code == 200, response.text
+    assert observed == ["MCP_OAUTH_AUTHORIZATION"]
+
+
 def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, monkeypatch):
     verification: dict[str, object] = {}
 
@@ -451,3 +486,107 @@ def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, 
     assert verification["manager_scope"] == _SCOPE
     assert verification["kind"] == "agent-runtime"
     assert denied.status_code == 403
+
+
+def test_controller_plugin_validation_is_fixed_owned_and_path_scoped(settings, monkeypatch):
+    validation_id = "33333333-3333-4333-8333-333333333333"
+    calls: list[dict[str, str]] = []
+
+    def validate(
+        _settings,
+        *,
+        resource_name: str,
+        resource_id: str,
+        validation_id: str,
+        plugin_path: str,
+    ):
+        calls.append(
+            {
+                "resource_name": resource_name,
+                "resource_id": resource_id,
+                "validation_id": validation_id,
+                "plugin_path": plugin_path,
+            }
+        )
+        return {
+            "plugin_name": "governed-review",
+            "plugin_version": "1.0.0",
+            "skill_count": 0,
+            "command_count": 1,
+            "agent_count": 0,
+            "mcp_server_count": 0,
+            "has_hooks": False,
+        }
+
+    monkeypatch.setattr(controller_module, "validate_owned_runtime_plugin", validate)
+    payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": "fw-sbx-12345678123442349234123456789abc",
+        "resource_id": _RESOURCE_ID,
+        "validation_id": validation_id,
+        "plugin_path": (
+            f"/runtime/capabilities/nodes/plugin-probe-{validation_id}/plugins/governed-review"
+        ),
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/runtimes/validate-plugin", headers=_api_headers(), json=payload)
+        denied = client.post("/v1/runtimes/validate-plugin", headers=_headers(), json=payload)
+        injected = client.post(
+            "/v1/runtimes/validate-plugin",
+            headers=_api_headers(),
+            json={**payload, "command": ["sh", "-c", "id"]},
+        )
+        wrong_path = client.post(
+            "/v1/runtimes/validate-plugin",
+            headers=_api_headers(),
+            json={
+                **payload,
+                "plugin_path": (
+                    "/runtime/capabilities/nodes/plugin-probe-"
+                    "44444444-4444-4444-8444-444444444444/plugins/governed-review"
+                ),
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["plugin_name"] == "governed-review"
+    assert denied.status_code == 403
+    assert injected.status_code == 422
+    assert wrong_path.status_code == 422
+    assert wrong_path.json()["error"]["code"] == "PLUGIN_TARGET_PATH_INVALID"
+    assert calls == [
+        {
+            "resource_name": "fw-sbx-12345678123442349234123456789abc",
+            "resource_id": _RESOURCE_ID,
+            "validation_id": validation_id,
+            "plugin_path": (
+                f"/runtime/capabilities/nodes/plugin-probe-{validation_id}/plugins/governed-review"
+            ),
+        }
+    ]
+
+
+def test_local_plugin_validation_rejects_cross_validation_path_before_docker(settings, monkeypatch):
+    touched: list[bool] = []
+    monkeypatch.setattr(
+        docker_controller_module,
+        "inspect_owned_container",
+        lambda *_args, **_kwargs: touched.append(True),
+    )
+    configured = _settings(settings)
+
+    with pytest.raises(DomainError) as raised:
+        docker_controller_module.validate_owned_runtime_plugin(
+            configured,
+            resource_name="fw-sbx-12345678123442349234123456789abc",
+            resource_id=_RESOURCE_ID,
+            validation_id="33333333-3333-4333-8333-333333333333",
+            plugin_path=(
+                "/runtime/capabilities/nodes/plugin-probe-"
+                "44444444-4444-4444-8444-444444444444/plugins/governed-review"
+            ),
+        )
+
+    assert raised.value.code == "PLUGIN_TARGET_PATH_INVALID"
+    assert touched == []

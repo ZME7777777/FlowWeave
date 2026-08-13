@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from flowweave.runtime.base import (
     RuntimeEventBatch,
+    RuntimeForkResult,
     RuntimeHandle,
+    RuntimeMCPOAuthCallbackRequest,
+    RuntimeMCPOAuthJobRequest,
+    RuntimeMCPOAuthStartRequest,
+    RuntimeMCPOAuthStatus,
+    RuntimeMCPProbeRequest,
+    RuntimeMCPProbeResult,
+    RuntimePendingConfirmation,
+    RuntimePluginValidationRequest,
+    RuntimePluginValidationResult,
     RuntimeProvider,
     RuntimeResult,
+    RuntimeWakeup,
     StartAttemptRequest,
 )
 
@@ -18,6 +29,51 @@ class MockRuntime:
 
     def __init__(self) -> None:
         self._results: dict[str, RuntimeResult] = {}
+
+    def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
+        del request
+        return RuntimeMCPProbeResult(ok=True, tools=("mock_read",))
+
+    def validate_plugin(
+        self, request: RuntimePluginValidationRequest
+    ) -> RuntimePluginValidationResult:
+        return RuntimePluginValidationResult(
+            plugin_name=request.plugin.name,
+            plugin_version="mock",
+            skill_count=0,
+            command_count=0,
+            agent_count=0,
+            mcp_server_count=0,
+            has_hooks=False,
+        )
+
+    def start_mcp_oauth(self, request: RuntimeMCPOAuthStartRequest) -> RuntimeMCPOAuthStatus:
+        del request
+        return RuntimeMCPOAuthStatus(
+            ok=True,
+            status="authorizing",
+            job_id="mock-mcp-oauth-job",
+            authorization_url="https://identity.example.test/authorize?state=redacted",
+        )
+
+    def read_mcp_oauth(self, request: RuntimeMCPOAuthJobRequest) -> RuntimeMCPOAuthStatus:
+        return RuntimeMCPOAuthStatus(
+            ok=True,
+            status="authorizing",
+            job_id=request.job_id,
+            callback_ready=True,
+        )
+
+    def submit_mcp_oauth_callback(
+        self, request: RuntimeMCPOAuthCallbackRequest
+    ) -> RuntimeMCPOAuthStatus:
+        return RuntimeMCPOAuthStatus(
+            ok=True,
+            status="succeeded",
+            job_id=request.job_id,
+            tools=("mock_read",),
+            oauth_state={"tokens": {"access_token": "mock-secret"}},
+        )
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
@@ -69,6 +125,20 @@ class MockRuntime:
         if False:
             yield {}
 
+    def wait_for_wakeup(
+        self,
+        handle: RuntimeHandle,
+        *,
+        channel: Literal["CONVERSATION", "BASH"],
+        timeout_seconds: float,
+        cursor: str | None = None,
+    ) -> RuntimeWakeup:
+        del handle, timeout_seconds
+        return RuntimeWakeup(
+            channel=channel,
+            cursor=cursor,
+        )
+
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         return self._results.get(handle.job_id, RuntimeResult(status="FAILED", error="UNKNOWN_JOB"))
 
@@ -77,6 +147,61 @@ class MockRuntime:
 
     def interrupt(self, handle: RuntimeHandle) -> None:
         del handle
+
+    def run(self, handle: RuntimeHandle) -> RuntimeResult:
+        result = RuntimeResult(status="RUNNING", cursor=handle.cursor)
+        self._results[handle.job_id] = result
+        return result
+
+    def get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
+        del handle
+        return None
+
+    def respond_to_confirmation(
+        self,
+        handle: RuntimeHandle,
+        expected_pending_digest: str,
+        accept: bool,
+        reason: str,
+    ) -> RuntimeResult:
+        del expected_pending_digest, accept, reason
+        result = RuntimeResult(status="RUNNING", cursor=handle.cursor)
+        self._results[handle.job_id] = result
+        return result
+
+    def condense(self, handle: RuntimeHandle) -> RuntimeResult:
+        result = RuntimeResult(status="RUNNING", cursor=handle.cursor)
+        self._results[handle.job_id] = result
+        return result
+
+    def fork_conversation(
+        self,
+        handle: RuntimeHandle,
+        *,
+        target_conversation_id: str,
+        title: str,
+        from_event_id: str | None,
+        expected_source_leaf_event_id: str,
+        reset_metrics: bool,
+    ) -> RuntimeForkResult:
+        del title
+        fork_handle = RuntimeHandle(
+            job_id=handle.job_id,
+            conversation_id=target_conversation_id,
+            cursor=from_event_id or expected_source_leaf_event_id,
+            runtime_resource_id=handle.runtime_resource_id,
+            runtime_resource_name=handle.runtime_resource_name,
+        )
+        self._results[fork_handle.job_id] = RuntimeResult(
+            status="RUNNING", cursor=fork_handle.cursor
+        )
+        return RuntimeForkResult(
+            handle=fork_handle,
+            source_conversation_id=handle.conversation_id,
+            source_event_id=from_event_id,
+            leaf_event_id=fork_handle.cursor,
+            reset_metrics=reset_metrics,
+        )
 
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()

@@ -3,6 +3,7 @@
 from flowweave.modules.sandboxes.application.service import (
     ReconcileReport,
     RuntimeSandboxAllocation,
+    cleanup_unclaimed_runtime_memory,
     create_runtime_sandbox,
     create_setup_sandbox,
     delete_environment_credentials,
@@ -15,6 +16,7 @@ from flowweave.modules.sandboxes.application.service import (
     reconcile_managed_sandboxes,
     request_delete,
     request_delete_durable,
+    runtime_memory_cleanup_pending,
     sandbox_dict,
     sandbox_snapshot,
     touch_runtime,
@@ -23,6 +25,7 @@ from flowweave.modules.sandboxes.application.service import (
 __all__ = (
     "ReconcileReport",
     "RuntimeSandboxAllocation",
+    "cleanup_unclaimed_runtime_memory",
     "create_runtime_sandbox",
     "create_setup_sandbox",
     "delete_sandbox_now",
@@ -35,6 +38,7 @@ __all__ = (
     "reconcile_managed_sandboxes",
     "request_delete",
     "request_delete_durable",
+    "runtime_memory_cleanup_pending",
     "sandbox_dict",
     "sandbox_snapshot",
     "touch_runtime",

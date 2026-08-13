@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.orchestration import public as service
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
+    AgentProfileSwitchWrite,
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
@@ -21,6 +22,8 @@ from flowweave.shared.schemas import (
     NodeRunStart,
     RejectWrite,
     RunStart,
+    RuntimeCancelRecoveryWrite,
+    RuntimeConfirmationDecisionWrite,
     SyncSnapshotWrite,
 )
 
@@ -169,6 +172,24 @@ async def accept(
     )
 
 
+@router.post("/runtime-confirmation-batches/{batch_id}/decision")
+async def decide_runtime_confirmation(
+    batch_id: str,
+    payload: RuntimeConfirmationDecisionWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.decide_runtime_confirmation(
+            session,
+            batch_id,
+            payload,
+            _key(idempotency_key, "runtime-confirmation", batch_id),
+        ),
+    )
+
+
 @router.post("/node-attempts/{attempt_id}/reject")
 async def reject(
     attempt_id: str,
@@ -192,7 +213,7 @@ async def retry_gates(attempt_id: str, payload: AttemptVersionWrite, db: Db) -> 
 @router.post("/node-attempts/{attempt_id}/retry-runtime-cancel")
 async def retry_runtime_cancel(
     attempt_id: str,
-    payload: AttemptVersionWrite,
+    payload: RuntimeCancelRecoveryWrite,
     db: Db,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
@@ -236,6 +257,39 @@ async def sync_snapshot(
         db,
         lambda session: service.sync_snapshot(
             session, run_id, payload, _key(idempotency_key, "sync-snapshot", run_id)
+        ),
+    )
+
+
+@router.get("/flow-runs/{run_id}/agent-profile-switch-preview")
+async def agent_profile_switch_preview(
+    run_id: str,
+    flow_node_key: str,
+    profile_version_id: str,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.preview_agent_profile_switch(
+            session, run_id, flow_node_key, profile_version_id
+        ),
+    )
+
+
+@router.post("/flow-runs/{run_id}/agent-profile-switch", status_code=201)
+async def agent_profile_switch(
+    run_id: str,
+    payload: AgentProfileSwitchWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.switch_agent_profile(
+            session,
+            run_id,
+            payload,
+            _key(idempotency_key, "switch-agent-profile", run_id),
         ),
     )
 

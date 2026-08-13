@@ -1,19 +1,57 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
+from flowweave.bootstrap.settings import Settings
+from flowweave.runtime import openhands as openhands_module
 from flowweave.runtime.base import (
+    RuntimeAgentContext,
+    RuntimeAgentDefinition,
+    RuntimeAgentProfile,
+    RuntimeAgentSpec,
+    RuntimeBudgets,
+    RuntimeCondenser,
+    RuntimeCritic,
     RuntimeHandle,
     RuntimeMCP,
+    RuntimeMCPOAuthCallbackRequest,
+    RuntimeMCPOAuthJobRequest,
+    RuntimeMCPOAuthStartRequest,
+    RuntimeMCPProbeRequest,
+    RuntimeMCPToolCall,
+    RuntimePlugin,
+    RuntimePluginValidationRequest,
     RuntimeProvider,
+    RuntimeResult,
     RuntimeSkill,
+    RuntimeTool,
     StartAttemptRequest,
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import DockerControllerClient
+
+
+@pytest.fixture(autouse=True)
+def database():
+    """Override the suite-wide PostgreSQL fixture for adapter-only tests."""
+
+    yield
+
+
+@pytest.fixture
+def openhands_settings(tmp_path) -> Settings:
+    """OpenHands adapter tests do not require PostgreSQL or Docker."""
+
+    return Settings(
+        workspace_root=Path("./test-workspaces"),
+        artifact_root=tmp_path / "artifacts",
+        runtime_adapter="openhands",
+        sandbox_manager_scope="flowweave-test",
+    )
 
 
 def _request() -> StartAttemptRequest:
@@ -67,48 +105,111 @@ def _request() -> StartAttemptRequest:
             }
         },
         workspace_ref="./test-workspaces/run-1/node-1/1",
-        provider=RuntimeProvider(
-            provider_id="provider-1",
-            base_url="http://host.docker.internal:1234/v1",
-            model="gpt-5.6-sol",
-            api_key="configured-secret",
-        ),
-        skills=(
-            RuntimeSkill(
-                name="requirements",
-                content="# Requirements\nAnalyze the requirement.",
-                description="Requirement analysis",
-                source="requirements/SKILL.md",
-                workspace_path="/workspaces/nodes/node-1/skills/requirements",
+        agent_spec=RuntimeAgentSpec(
+            provider=RuntimeProvider(
+                provider_id="provider-1",
+                base_url="http://host.docker.internal:1234/v1",
+                model="gpt-5.6-sol",
+                api_key="configured-secret",
             ),
+            tools=(
+                RuntimeTool(name="terminal"),
+                RuntimeTool(name="file_editor"),
+                RuntimeTool(name="task_tracker"),
+            ),
+            agent_context=RuntimeAgentContext(
+                system_message_suffix="Frozen organization policy",
+                user_message_suffix="Use the governed capabilities only.",
+                disabled_skills=("unreviewed-skill",),
+            ),
+            skills=(
+                RuntimeSkill(
+                    name="requirements",
+                    content="# Requirements\nAnalyze the requirement.",
+                    description="Requirement analysis",
+                    source="requirements/SKILL.md",
+                    workspace_path="/workspaces/nodes/node-1/skills/requirements",
+                    activation_keywords=("$requirements",),
+                ),
+            ),
+            mcp_servers=(
+                RuntimeMCP(
+                    name="docs",
+                    config={"url": "https://mcp.example.test", "transport": "http"},
+                    workspace_path="/workspaces/nodes/node-1/mcp/docs",
+                ),
+            ),
+            hook_config={
+                "pre_tool_use": [
+                    {
+                        "matcher": "terminal",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "flowweave-policy-check",
+                                "timeout": 30,
+                            }
+                        ],
+                    }
+                ]
+            },
+            budgets=RuntimeBudgets(max_iterations=20),
         ),
         node_workspace_ref="/workspaces/nodes/node-1",
-        mcp_servers=(
-            RuntimeMCP(
-                name="docs",
-                config={"url": "https://mcp.example.test", "transport": "http"},
-                workspace_path="/workspaces/nodes/node-1/mcp/docs",
-            ),
-        ),
-        hook_config={
-            "pre_tool_use": [
-                {
-                    "matcher": "terminal",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": "flowweave-policy-check",
-                            "timeout": 30,
-                        }
-                    ],
-                }
-            ]
-        },
     )
 
 
-def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+@pytest.mark.parametrize(
+    ("max_iterations", "expected_refinement"),
+    [
+        (0, None),
+        (2, {"success_threshold": 0.7, "max_iterations": 2}),
+    ],
+)
+def test_openhands_serializes_native_critic_without_invalid_zero_iteration_refinement(
+    openhands_settings,
+    monkeypatch,
+    max_iterations: int,
+    expected_refinement: dict[str, object] | None,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "conversation-critic", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    request = replace(
+        baseline,
+        agent_spec=replace(
+            baseline.agent_spec,
+            critic=RuntimeCritic(
+                mode="finish_and_message",
+                success_threshold=0.7,
+                max_iterations=max_iterations,
+            ),
+        ),
+    )
+
+    runtime.start(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    critic = payload["agent"]["critic"]
+    assert critic["kind"] == "AgentFinishedCritic"
+    assert critic["mode"] == "finish_and_message"
+    if expected_refinement is None:
+        assert "iterative_refinement" not in critic
+    else:
+        assert critic["iterative_refinement"] == expected_refinement
+
+
+def test_openhands_starts_real_agent_with_selected_provider_and_skill(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
@@ -126,9 +227,25 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
         "working_dir": "/workspaces/run-1/node-1/1",
     }
     assert payload["initial_message"]["run"] is True
+    assert payload["confirmation_policy"] == {"kind": "AlwaysConfirm"}
+    assert payload["agent"]["condenser"] == {"kind": "NoOpCondenser"}
+    assert payload["agent"]["tool_concurrency_limit"] == 1
     initial_text = payload["initial_message"]["content"][0]["text"]
     assert initial_text == "生成技术方案"
     system_context = payload["agent"]["agent_context"]["system_message_suffix"]
+    assert system_context.startswith("Frozen organization policy\n\n")
+    assert payload["agent"]["agent_context"] | {"skills": []} == {
+        "skills": [],
+        "system_message_suffix": system_context,
+        "user_message_suffix": "Use the governed capabilities only.",
+        "load_user_skills": False,
+        "load_public_skills": False,
+        "marketplace_path": None,
+        "registered_marketplaces": [],
+        "load_project_skills": False,
+        "load_memory": False,
+        "disabled_skills": ["unreviewed-skill"],
+    }
     assert "https://example.feishu.cn/docx/prd-input" in system_context
     assert "https://example.feishu.cn/docx/prd-template" in system_context
     assert "实际读取的飞书文档" in system_context
@@ -149,6 +266,14 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
     ]
     assert "tool_module_qualnames" not in payload
     assert payload["agent"]["agent_context"]["skills"][0]["content"].startswith("# Requirements")
+    assert payload["agent"]["agent_context"]["skills"][0] | {"content": "<content>"} == {
+        "name": "requirements",
+        "content": "<content>",
+        "description": "Requirement analysis",
+        "source": "requirements/SKILL.md",
+        "trigger": {"type": "keyword", "keywords": ["$requirements"]},
+        "is_agentskills_format": True,
+    }
     assert payload["agent"]["mcp_config"] == {
         "docs": {"url": "https://mcp.example.test", "transport": "http"}
     }
@@ -166,12 +291,350 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(settings, 
             }
         ]
     }
-    assert "/workspaces/nodes/node-1/skills/requirements" in system_context
+    assert "/workspaces/nodes/node-1/skills/requirements" not in system_context
+    assert "invoke_skill" in system_context
     assert "MCP Servers" in system_context
 
 
-def test_openhands_configures_codex_oauth_for_responses(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_probes_mcp_through_target_runtime_and_redacts_oauth_state(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {
+            "ok": True,
+            "tools": ["lookup", "lookup", "status"],
+            "tool_result": {"is_error": False, "text": "private result"},
+        }
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    result = runtime.probe_mcp(
+        RuntimeMCPProbeRequest(
+            server=RuntimeMCP(
+                name="docs",
+                config={
+                    "transport": "streamable-http",
+                    "url": "https://mcp.example.test/mcp",
+                },
+            ),
+            base_url="http://fw-sbx-probe:8000",
+            runtime_resource_name="fw-sbx-probe",
+            timeout=12,
+            read_only_tool_call=RuntimeMCPToolCall(name="status", arguments={"scope": "current"}),
+        )
+    )
+
+    assert result.ok is True
+    assert result.tools == ("lookup", "status")
+    assert result.tool_call_is_error is False
+    assert result.tool_call_text == "private result"
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/mcp/test"
+    assert captured["base_url"] == "http://fw-sbx-probe:8000"
+    assert captured["session_api_key"] != openhands_settings.openhands_session_api_key
+    assert captured["json"] == {
+        "name": "docs",
+        "server": {
+            "url": "https://mcp.example.test/mcp",
+            "type": "streamable-http",
+        },
+        "timeout": 12,
+        "tool_call": {"name": "status", "arguments": {"scope": "current"}},
+    }
+
+    oauth_state = {
+        "tokens": {
+            "access_token": "encrypted-access-token",
+            "refresh_token": "encrypted-refresh-token",
+        }
+    }
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda method, path, **kwargs: (
+            captured.update({"method": method, "path": path, **kwargs})
+            or {"ok": True, "tools": ["lookup"], "oauth_state": oauth_state}
+        ),
+    )
+    oauth_result = runtime.probe_mcp(
+        RuntimeMCPProbeRequest(
+            server=RuntimeMCP(
+                name="oauth",
+                config={
+                    "transport": "http",
+                    "url": "https://mcp.example.test/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "authentication": {"type": "oauth"},
+                    },
+                },
+            ),
+            base_url="http://fw-sbx-probe:8000",
+            runtime_resource_name="fw-sbx-probe",
+            oauth_secret_reference_id="secret-reference",
+            oauth_secret_version=4,
+            oauth_state=oauth_state,
+        )
+    )
+    assert oauth_result.oauth_state == oauth_state
+    assert captured["json"] == {
+        "name": "oauth",
+        "server": {
+            "url": "https://mcp.example.test/mcp",
+            "auth": {
+                "strategy": "oauth2",
+                "authentication": {"type": "oauth"},
+                "state": oauth_state,
+            },
+            "type": "http",
+        },
+        "timeout": 15.0,
+    }
+
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: {"ok": True, "tools": [], "oauth_state": {}},
+    )
+    with pytest.raises(DomainError) as raised:
+        runtime.probe_mcp(
+            RuntimeMCPProbeRequest(
+                server=RuntimeMCP(
+                    name="oauth",
+                    config={"transport": "http", "url": "https://mcp.test"},
+                ),
+                base_url="http://fw-sbx-probe:8000",
+                runtime_resource_name="fw-sbx-probe",
+            )
+        )
+    assert raised.value.code == "MCP_OAUTH_LIFECYCLE_REQUIRED"
+
+
+def test_openhands_maps_formal_mcp_oauth_job_routes(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[tuple[str, str, dict[str, object]]] = []
+    responses = iter(
+        [
+            {
+                "ok": True,
+                "job_id": "native-oauth-job",
+                "authorization_url": "https://identity.example.test/authorize",
+            },
+            {
+                "ok": True,
+                "status": "authorizing",
+                "job_id": "native-oauth-job",
+                "callback_ready": True,
+            },
+            {
+                "ok": True,
+                "status": "succeeded",
+                "job_id": "native-oauth-job",
+                "callback_ready": True,
+                "tools": ["lookup", "lookup", "status"],
+                "oauth_state": {"tokens": {"access_token": "runtime-secret"}},
+            },
+        ]
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        calls.append((method, path, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    start = runtime.start_mcp_oauth(
+        RuntimeMCPOAuthStartRequest(
+            server=RuntimeMCP(
+                name="oauth-docs",
+                config={
+                    "transport": "http",
+                    "url": "https://mcp.example.test/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "authentication": {"type": "oauth"},
+                    },
+                },
+            ),
+            base_url="http://fw-sbx-oauth:8000",
+            runtime_resource_name="fw-sbx-oauth",
+            timeout=12,
+        )
+    )
+    assert start.status == "authorizing"
+    assert start.job_id == "native-oauth-job"
+    assert calls[0][0:2] == ("POST", "/api/mcp/oauth/start")
+    assert calls[0][2]["json"] == {
+        "name": "oauth-docs",
+        "server": {
+            "url": "https://mcp.example.test/mcp",
+            "auth": {
+                "strategy": "oauth2",
+                "authentication": {"type": "oauth"},
+            },
+            "type": "http",
+        },
+        "timeout": 12,
+    }
+
+    status = runtime.read_mcp_oauth(
+        RuntimeMCPOAuthJobRequest(
+            job_id="native-oauth-job",
+            base_url="http://fw-sbx-oauth:8000",
+            runtime_resource_name="fw-sbx-oauth",
+        )
+    )
+    assert status.callback_ready is True
+    assert calls[1][0:2] == (
+        "GET",
+        "/api/mcp/oauth/status/native-oauth-job",
+    )
+
+    callback_url = "http://localhost:54321/callback?code=private-code"
+    completed = runtime.submit_mcp_oauth_callback(
+        RuntimeMCPOAuthCallbackRequest(
+            job_id="native-oauth-job",
+            base_url="http://fw-sbx-oauth:8000",
+            runtime_resource_name="fw-sbx-oauth",
+            callback_url=callback_url,
+        )
+    )
+    assert completed.status == "succeeded"
+    assert completed.tools == ("lookup", "status")
+    assert completed.oauth_state == {"tokens": {"access_token": "runtime-secret"}}
+    assert calls[2][0:2] == (
+        "POST",
+        "/api/mcp/oauth/callback/native-oauth-job",
+    )
+    assert calls[2][2]["json"] == {"callback_url": callback_url}
+
+
+def test_openhands_materializes_governed_profile_without_server_store_lookup(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "conversation-profile", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    profile = RuntimeAgentProfile(
+        capability_version_id="62904a11-70aa-4a53-a8cb-43bcaf9a85f0",
+        capability_key="governed-profile",
+        digest="a" * 64,
+        content_hash="b" * 64,
+    )
+    runtime.start(replace(baseline, agent_spec=replace(baseline.agent_spec, agent_profile=profile)))
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert "agent" in payload
+    assert "agent_profile_id" not in payload
+    assert "agent_settings" not in payload
+    assert payload["observability_metadata"] == {
+        "flowweave.agent_profile_version_id": profile.capability_version_id,
+        "flowweave.agent_profile_key": profile.capability_key,
+        "flowweave.agent_profile_digest": profile.digest,
+    }
+
+
+def test_openhands_serializes_governed_agent_definitions(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "conversation-subagents", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    request = replace(
+        baseline,
+        agent_spec=replace(
+            baseline.agent_spec,
+            tools=(RuntimeTool(name="terminal"), RuntimeTool(name="task_tool_set")),
+            agent_definitions=(
+                RuntimeAgentDefinition(
+                    name="reviewer",
+                    description="Review a proposed change",
+                    tools=("terminal",),
+                    system_prompt="Review the change and report concrete findings.",
+                    when_to_use_examples=("review a patch",),
+                    permission_mode="never_confirm",
+                    max_iteration_per_run=20,
+                    max_budget_per_run=1.5,
+                ),
+            ),
+        ),
+    )
+
+    runtime.start(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["agent_definitions"] == [
+        {
+            "name": "reviewer",
+            "description": "Review a proposed change",
+            "model": "inherit",
+            "tools": ["terminal"],
+            "skills": [],
+            "system_prompt": "Review the change and report concrete findings.",
+            "when_to_use_examples": ["review a patch"],
+            "permission_mode": "never_confirm",
+            "max_iteration_per_run": 20,
+            "max_budget_per_run": 1.5,
+            "condenser": {"kind": "NoOpCondenser"},
+            "metadata": {},
+        }
+    ]
+
+
+def test_openhands_loads_only_frozen_local_plugins_at_creation(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "conversation-plugin", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    request = replace(
+        baseline,
+        agent_spec=replace(
+            baseline.agent_spec,
+            plugins=(
+                RuntimePlugin(
+                    name="governed-review",
+                    source=(
+                        "/runtime/capabilities/nodes/node-1/plugins/governed-review-version-id"
+                    ),
+                    content_hash="a" * 64,
+                ),
+            ),
+        ),
+    )
+
+    runtime.start(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["plugins"] == [
+        {"source": ("/runtime/capabilities/nodes/node-1/plugins/governed-review-version-id")}
+    ]
+    assert payload["load_ambient_plugins"] is False
+    assert "ref" not in payload["plugins"][0]
+    assert "repo_path" not in payload["plugins"][0]
+
+
+def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
@@ -179,20 +642,24 @@ def test_openhands_configures_codex_oauth_for_responses(settings, monkeypatch):
         return {"id": "conversation-codex", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
     request = replace(
-        _request(),
-        provider=RuntimeProvider(
-            provider_id="codex-oauth",
-            base_url="https://chatgpt.com/backend-api/codex",
-            model="gpt-5.6-sol",
-            api_key="short-lived-access-token",
-            auth_type="CODEX_OAUTH",
-            extra_headers={
-                "originator": "codex_cli_rs",
-                "OpenAI-Beta": "responses=experimental",
-                "chatgpt-account-id": "account-123",
-            },
-            reasoning_effort="high",
+        baseline,
+        agent_spec=replace(
+            baseline.agent_spec,
+            provider=RuntimeProvider(
+                provider_id="codex-oauth",
+                base_url="https://chatgpt.com/backend-api/codex",
+                model="gpt-5.6-sol",
+                api_key="short-lived-access-token",
+                auth_type="CODEX_OAUTH",
+                extra_headers={
+                    "originator": "codex_cli_rs",
+                    "OpenAI-Beta": "responses=experimental",
+                    "chatgpt-account-id": "account-123",
+                },
+                reasoning_effort="high",
+            ),
         ),
     )
     runtime.start(request)
@@ -212,8 +679,12 @@ def test_openhands_configures_codex_oauth_for_responses(settings, monkeypatch):
     assert llm["extra_headers"]["chatgpt-account-id"] == "account-123"
 
 
-def test_openhands_routes_control_plane_runtime_without_owning_cleanup(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings.model_copy(update={"sandbox_manager_scope": "test-scope"}))
+def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(update={"sandbox_manager_scope": "test-scope"})
+    )
     requests: list[tuple[str, str | None]] = []
 
     def fake_request(
@@ -259,11 +730,15 @@ def test_openhands_routes_control_plane_runtime_without_owning_cleanup(settings,
             "/api/conversations/conversation-env/events/search",
             "http://runtime-container-1:8000",
         ),
+        (
+            "/api/conversations/conversation-env",
+            "http://runtime-container-1:8000",
+        ),
     ]
 
 
-def test_openhands_rejects_environment_without_control_plane_allocation(settings):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_rejects_environment_without_control_plane_allocation(openhands_settings):
+    runtime = OpenHandsRuntime(openhands_settings)
 
     with pytest.raises(DomainError) as caught:
         runtime.start(replace(_request(), environment_image="sha256:" + "c" * 64))
@@ -272,9 +747,11 @@ def test_openhands_rejects_environment_without_control_plane_allocation(settings
 
 
 def test_openhands_does_not_own_cleanup_when_create_response_has_no_conversation_id(
-    settings, monkeypatch
+    openhands_settings, monkeypatch
 ):
-    runtime = OpenHandsRuntime(settings.model_copy(update={"sandbox_manager_scope": "test-scope"}))
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(update={"sandbox_manager_scope": "test-scope"})
+    )
     monkeypatch.setattr(runtime, "_request", lambda *args, **kwargs: {})
 
     with pytest.raises(DomainError, match="Missing conversation id"):
@@ -289,8 +766,10 @@ def test_openhands_does_not_own_cleanup_when_create_response_has_no_conversation
         )
 
 
-def test_openhands_environment_cancel_only_interrupts_agent(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings.model_copy(update={"sandbox_manager_scope": "test-scope"}))
+def test_openhands_environment_cancel_only_interrupts_agent(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(update={"sandbox_manager_scope": "test-scope"})
+    )
     requests: list[str] = []
 
     def fake_request(
@@ -324,8 +803,10 @@ def test_openhands_environment_cancel_only_interrupts_agent(settings, monkeypatc
     ]
 
 
-def test_openhands_human_conversation_uses_dynamic_capability_selection(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_human_conversation_uses_dynamic_capability_selection(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
     requests: list[dict[str, object]] = []
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
@@ -367,8 +848,10 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(settings
         ("javascript:alert(1)", False),
     ),
 )
-def test_openhands_accepts_only_declared_official_https_output_urls(settings, uri, accepted):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_accepts_only_declared_official_https_output_urls(
+    openhands_settings, uri, accepted
+):
+    runtime = OpenHandsRuntime(openhands_settings)
     runtime._contracts["conversation-1"] = [{"field_key": "design"}]
 
     outputs = runtime._outputs(
@@ -381,8 +864,10 @@ def test_openhands_accepts_only_declared_official_https_output_urls(settings, ur
     assert outputs == expected
 
 
-def test_openhands_normalizes_incremental_events_and_terminal_result(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_normalizes_incremental_events_and_terminal_result(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
     runtime._contracts["conversation-1"] = [
         {
             "field_key": "design",
@@ -419,6 +904,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(settings, m
                     {"kind": "FutureEvent", "id": "13", "source": "environment"},
                 ]
             },
+            {"leaf_event_id": "13", "stats": {"usage_to_metrics": {}}},
             {
                 "items": [
                     {
@@ -440,6 +926,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(settings, m
                     },
                 ]
             },
+            {"leaf_event_id": "14", "stats": {"usage_to_metrics": {}}},
         ]
     )
     requests: list[tuple[str, str, object]] = []
@@ -476,16 +963,20 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(settings, m
             "/api/conversations/conversation-1/events/search",
             {"limit": 100, "sort_order": "TIMESTAMP", "page_id": "10"},
         ),
+        ("GET", "/api/conversations/conversation-1", None),
         (
             "GET",
             "/api/conversations/conversation-1/events/search",
             {"limit": 100, "sort_order": "TIMESTAMP", "page_id": "13"},
         ),
+        ("GET", "/api/conversations/conversation-1", None),
     ]
 
 
-def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
         [
             {
@@ -529,8 +1020,64 @@ def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(settings, m
     assert inspected.final_message is None
 
 
-def test_openhands_finished_turn_uses_assistant_message_after_latest_user(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_retries_temporarily_missing_anchor_and_recovers_new_events(
+    openhands_settings, monkeypatch
+):
+    """A persistence race must not replay history or permanently strand the cursor."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            {
+                "items": [
+                    {
+                        "kind": "ActionEvent",
+                        "id": "old-finish",
+                        "source": "agent",
+                        "action": {"kind": "FinishAction", "message": "old"},
+                    }
+                ]
+            },
+            {"leaf_event_id": "old-finish", "stats": {"usage_to_metrics": {}}},
+            {
+                "items": [
+                    {
+                        "kind": "ActionEvent",
+                        "id": "cursor-1",
+                        "source": "agent",
+                        "action": {"kind": "ThinkAction", "thought": "anchor"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "message-2",
+                        "source": "agent",
+                        "llm_message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "recovered"}],
+                        },
+                    },
+                ]
+            },
+            {"leaf_event_id": "message-2", "stats": {"usage_to_metrics": {}}},
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+    handle = RuntimeHandle("job-1", "conversation-1", "cursor-1")
+
+    raced = runtime.read_events(handle)
+    recovered = runtime.read_events(handle)
+
+    assert raced.events == ()
+    assert raced.cursor == "cursor-1"
+    assert recovered.cursor == "message-2"
+    assert [event.cursor for event in recovered.events] == ["message-2"]
+    assert recovered.events[0].payload["content"] == "recovered"
+
+
+def test_openhands_finished_turn_uses_assistant_message_after_latest_user(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
         [
             {
@@ -575,8 +1122,10 @@ def test_openhands_finished_turn_uses_assistant_message_after_latest_user(settin
     assert result.cursor == "state-finished"
 
 
-def test_openhands_resume_interrupts_the_active_turn_before_steering(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_resume_interrupts_the_active_turn_before_steering(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str, object]] = []
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
@@ -609,8 +1158,8 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(settings, m
     ]
 
 
-def test_openhands_send_message_advances_cursor_to_user_event(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_send_message_advances_cursor_to_user_event(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
 
     def fake_request(_method: str, _path: str, **_kwargs: object) -> dict[str, object]:
         return {"id": "user-event-2"}
@@ -650,12 +1199,40 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
     )
 
 
+def test_bash_wakeup_identity_excludes_command_output_and_marks_direct_actor():
+    identity = OpenHandsRuntime._bash_event_identity(
+        {
+            "id": "bash-event-1",
+            "kind": "BashOutput",
+            "timestamp": "2026-08-13T10:00:00Z",
+            "command_id": "command-1",
+            "order": 2,
+            "exit_code": 0,
+            "stdout": "secret output",
+            "stderr": "secret error",
+        }
+    )
+
+    assert identity == {
+        "event_id": "bash-event-1",
+        "kind": "BashOutput",
+        "timestamp": "2026-08-13T10:00:00Z",
+        "command_id": "command-1",
+        "order": 2,
+        "exit_code": 0,
+        "actor": "HUMAN_OR_SYSTEM",
+        "source": "DIRECT_BASH",
+    }
+    assert "stdout" not in identity
+    assert "stderr" not in identity
+
+
 @pytest.mark.asyncio
 async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
-    settings, monkeypatch
+    openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(
-        settings.model_copy(
+        openhands_settings.model_copy(
             update={
                 "docker_controller_mode": "remote",
                 "docker_controller_api_key": "a" * 32,
@@ -664,9 +1241,7 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
     )
     observed: dict[str, str] = {}
 
-    async def stream(
-        _client, *, resource_name: str, resource_id: str, conversation_id: str
-    ):
+    async def stream(_client, *, resource_name: str, resource_id: str, conversation_id: str):
         observed.update(
             resource_name=resource_name,
             resource_id=resource_id,
@@ -701,9 +1276,9 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
 
 
 @pytest.mark.asyncio
-async def test_openhands_isolated_stream_rejects_missing_sandbox_binding(settings):
+async def test_openhands_isolated_stream_rejects_missing_sandbox_binding(openhands_settings):
     runtime = OpenHandsRuntime(
-        settings.model_copy(
+        openhands_settings.model_copy(
             update={
                 "docker_controller_mode": "remote",
                 "docker_controller_api_key": "a" * 32,
@@ -713,14 +1288,12 @@ async def test_openhands_isolated_stream_rejects_missing_sandbox_binding(setting
 
     with pytest.raises(DomainError, match="verified sandbox binding"):
         await anext(
-            runtime.stream_events(
-                RuntimeHandle("env-chat:fw-sbx-runtime", "conversation-1")
-            )
+            runtime.stream_events(RuntimeHandle("env-chat:fw-sbx-runtime", "conversation-1"))
         )
 
 
-def test_openhands_switches_llm_in_place_with_reasoning(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
@@ -754,9 +1327,9 @@ def test_openhands_switches_llm_in_place_with_reasoning(settings, monkeypatch):
 
 
 def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(
-    settings, monkeypatch
+    openhands_settings, monkeypatch
 ):
-    runtime = OpenHandsRuntime(settings)
+    runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
         [
             {"success": True},
@@ -780,8 +1353,463 @@ def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(
     ]
 
 
-def test_openhands_cancel_waits_until_agent_is_no_longer_running(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_projects_and_decides_native_confirmation_batch(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    action = {
+        "kind": "ActionEvent",
+        "id": "action-1",
+        "parent_id": "user-1",
+        "tool_name": "terminal",
+        "tool_call_id": "call-1",
+        "security_risk": "HIGH",
+        "summary": "install package",
+        "action": {"kind": "TerminalAction", "command": "uv add package", "token": "secret"},
+    }
+    responses = iter(
+        [
+            {"execution_status": "waiting_for_confirmation", "leaf_event_id": "action-1"},
+            {"items": [{"kind": "MessageEvent", "id": "user-1"}, action]},
+            {"execution_status": "waiting_for_confirmation", "leaf_event_id": "action-1"},
+            {"items": [{"kind": "MessageEvent", "id": "user-1"}, action]},
+            {"success": True},
+        ]
+    )
+    requests: list[tuple[str, str, object]] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    handle = RuntimeHandle("job-1", "conversation-1", "user-1")
+    pending = runtime.get_pending_confirmation(handle)
+
+    assert pending is not None
+    assert len(pending.actions) == 1
+    assert pending.actions[0].action_id == "action-1"
+    assert pending.actions[0].tool_name == "terminal"
+    assert pending.actions[0].arguments == {"command": "uv add package", "token": "[redacted]"}
+    result = runtime.respond_to_confirmation(
+        handle, pending.pending_actions_digest, True, "approved"
+    )
+    assert result.status == "RUNNING"
+    assert requests[-1] == (
+        "POST",
+        "/api/conversations/conversation-1/events/respond_to_confirmation",
+        {"accept": True, "reason": "approved"},
+    )
+
+
+def test_openhands_confirmation_rejects_drifted_batch(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            {"execution_status": "waiting_for_confirmation", "leaf_event_id": "action-2"},
+            {
+                "items": [
+                    {
+                        "kind": "ActionEvent",
+                        "id": "action-2",
+                        "tool_name": "terminal",
+                        "tool_call_id": "call-2",
+                        "action": {"kind": "TerminalAction", "command": "changed"},
+                    }
+                ]
+            },
+        ]
+    )
+
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+    with pytest.raises(DomainError) as raised:
+        runtime.respond_to_confirmation(
+            RuntimeHandle("job-1", "conversation-1"), "stale-digest", False, "no"
+        )
+    assert raised.value.code == "RUNTIME_CONFIRMATION_DRIFTED"
+
+
+def test_openhands_run_uses_native_endpoint_without_user_message(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            {"execution_status": "idle", "leaf_event_id": "reject-1"},
+            {"success": True},
+        ]
+    )
+    requests: list[tuple[str, str, object]] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    result = runtime.run(RuntimeHandle("job-1", "conversation-1", "action-1"))
+
+    assert result == RuntimeResult(status="RUNNING", cursor="reject-1")
+    assert requests == [
+        ("GET", "/api/conversations/conversation-1", None),
+        ("POST", "/api/conversations/conversation-1/run", {}),
+    ]
+
+
+def test_openhands_run_does_not_retrigger_running_conversation(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        requests.append((method, path))
+        return {"execution_status": "running", "leaf_event_id": "running-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    result = runtime.run(RuntimeHandle("job-1", "conversation-1"))
+
+    assert result.cursor == "running-1"
+    assert requests == [("GET", "/api/conversations/conversation-1")]
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["finished", "error", "stuck", "waiting_for_confirmation"],
+)
+def test_openhands_run_does_not_retrigger_non_resumable_conversation(
+    openhands_settings, monkeypatch, status
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        requests.append((method, path))
+        return {"execution_status": status, "leaf_event_id": "after-confirmation"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    result = runtime.run(RuntimeHandle("job-1", "conversation-1", "action-1"))
+
+    assert result.cursor == "after-confirmation"
+    assert requests == [("GET", "/api/conversations/conversation-1")]
+
+
+def test_openhands_maps_disabled_confirmation_policy(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "conversation-never", "leaf_event_id": "event-never"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    request = _request()
+    runtime.start(
+        replace(
+            request,
+            agent_spec=replace(request.agent_spec, confirmation_policy="NEVER"),
+        )
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["confirmation_policy"] == {"kind": "NeverConfirm"}
+
+
+def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "conversation-condense", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    request = _request()
+    runtime.start(
+        replace(
+            request,
+            agent_spec=replace(
+                request.agent_spec,
+                condenser=RuntimeCondenser(
+                    kind="LLM_SUMMARIZING", max_size=80, max_tokens=120_000, keep_first=4
+                ),
+                condenser_provider=request.agent_spec.provider,
+            ),
+        )
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    condenser = payload["agent"]["condenser"]
+    assert condenser == {
+        "kind": "LLMSummarizingCondenser",
+        "llm": {
+            "model": "openai/gpt-5.6-sol",
+            "base_url": "http://host.docker.internal:1234/v1",
+            "api_key": "configured-secret",
+            "usage_id": "condenser",
+        },
+        "max_size": 80,
+        "max_tokens": 120_000,
+        "keep_first": 4,
+        "minimum_progress": 0.1,
+        "hard_context_reset_max_retries": 5,
+        "hard_context_reset_context_scaling": 0.8,
+    }
+
+
+def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str, object]] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        return {"success": True}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    result = runtime.condense(RuntimeHandle("job-1", "conversation-1", "event-4"))
+
+    assert result == RuntimeResult(status="RUNNING", cursor="event-4")
+    assert requests == [("POST", "/api/conversations/conversation-1/condense", None)]
+
+
+def test_openhands_read_events_projects_only_native_task_cumulative_usage(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            {"items": [], "next_page_id": None},
+            {
+                "leaf_event_id": "task-observation-1",
+                "stats": {
+                    "usage_to_metrics": {
+                        "flowweave:provider-1": {"accumulated_cost": 9.0},
+                        "task:task_00000001": {
+                            "model_name": "openai/test-model",
+                            "accumulated_cost": 0.125,
+                            "accumulated_token_usage": {
+                                "prompt_tokens": 120,
+                                "completion_tokens": 30,
+                                "cache_read_tokens": 40,
+                                "cache_write_tokens": 5,
+                                "reasoning_tokens": 7,
+                                "context_window": 4096,
+                                "per_turn_token": 150,
+                            },
+                        },
+                    }
+                },
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+
+    batch = runtime.read_events(RuntimeHandle("job-1", "conversation-1"))
+
+    assert len(batch.task_usage) == 1
+    usage = batch.task_usage[0]
+    assert usage.task_id == "task_00000001"
+    assert usage.source_cursor == "task-observation-1"
+    assert usage.accumulated_cost == 0.125
+    assert usage.prompt_tokens == 120
+    assert usage.completion_tokens == 30
+    assert len(usage.digest) == 64
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"accumulated_cost": -0.1},
+        {"accumulated_cost": 0.1, "accumulated_token_usage": {"prompt_tokens": -1}},
+    ],
+)
+def test_openhands_rejects_invalid_native_task_usage(metrics):
+    with pytest.raises(DomainError) as raised:
+        OpenHandsRuntime._task_usage_snapshots(
+            {"stats": {"usage_to_metrics": {"task:task_1": metrics}}},
+            source_cursor="cursor-1",
+        )
+    assert raised.value.code == "RUNTIME_TASK_USAGE_PROTOCOL_DRIFT"
+
+
+def test_openhands_normalizes_condensation_request_and_completion():
+    request = {"kind": "CondensationRequest", "id": "condense-request-1"}
+    completed = {
+        "kind": "Condensation",
+        "id": "condensation-1",
+        "forgotten_event_ids": ["event-3", "event-2"],
+        "summary": "Earlier work was summarized.",
+        "summary_offset": 2,
+        "llm_response_id": "response-1",
+    }
+
+    assert OpenHandsRuntime._event_type(request) == "CONDENSATION_REQUESTED"
+    assert OpenHandsRuntime._event_payload(request)["event_name"] == "CondensationRequest"
+    assert OpenHandsRuntime._event_type(completed) == "CONDENSATION_COMPLETED"
+    assert OpenHandsRuntime._event_payload(completed) == {
+        "source_type": "Condensation",
+        "source": None,
+        "content": "",
+        "event_name": "Condensation",
+        "forgotten_event_ids": ["event-2", "event-3"],
+        "summary": "Earlier work was summarized.",
+        "summary_offset": 2,
+        "llm_response_id": "response-1",
+    }
+
+
+def test_openhands_projects_native_task_tool_lifecycle_without_fabricating_child_api():
+    requested = {
+        "kind": "ActionEvent",
+        "id": "task-action-1",
+        "tool_call_id": "task-call-1",
+        "llm_response_id": "task-response-1",
+        "action": {
+            "kind": "TaskAction",
+            "description": "review change",
+            "prompt": "Review token=private without leaking it into the summary.",
+            "subagent_type": "reviewer",
+            "resume": None,
+        },
+    }
+    completed = {
+        "kind": "ObservationEvent",
+        "id": "task-observation-1",
+        "action_id": "task-action-1",
+        "tool_call_id": "task-call-1",
+        "observation": {
+            "kind": "TaskObservation",
+            "content": [{"type": "text", "text": "Looks good."}],
+            "is_error": False,
+            "task_id": "task_00000001",
+            "subagent": "reviewer",
+            "status": "completed",
+        },
+    }
+
+    requested_payload = OpenHandsRuntime._event_payload(requested)
+    completed_payload = OpenHandsRuntime._event_payload(completed)
+
+    assert OpenHandsRuntime._event_type(requested) == "TOOL_CALL"
+    assert requested_payload["runtime_task"] == {
+        "phase": "REQUESTED",
+        "action_event_id": "task-action-1",
+        "tool_call_id": "task-call-1",
+        "llm_response_id": "task-response-1",
+        "subagent_type": "reviewer",
+        "description": "review change",
+        "resume_task_id": None,
+    }
+    assert "prompt" not in requested_payload["runtime_task"]
+    assert "prompt" not in requested_payload["details"]
+    assert OpenHandsRuntime._event_type(completed) == "TOOL_RESULT"
+    assert completed_payload["runtime_task"] == {
+        "phase": "COMPLETED",
+        "action_event_id": "task-action-1",
+        "observation_event_id": "task-observation-1",
+        "tool_call_id": "task-call-1",
+        "task_id": "task_00000001",
+        "subagent_type": "reviewer",
+        "status": "completed",
+    }
+
+
+def test_openhands_projects_native_skill_activation_and_invocation_events():
+    activated = {
+        "kind": "MessageEvent",
+        "id": "message-1",
+        "activated_skills": ["requirements"],
+        "llm_message": {"content": [{"type": "text", "text": "$requirements"}]},
+    }
+    invoked = {
+        "kind": "ActionEvent",
+        "id": "skill-action-1",
+        "tool_call_id": "skill-call-1",
+        "llm_response_id": "response-1",
+        "action": {"kind": "InvokeSkillAction", "name": "requirements"},
+    }
+    loaded = {
+        "kind": "ObservationEvent",
+        "id": "skill-observation-1",
+        "action_id": "skill-action-1",
+        "tool_call_id": "skill-call-1",
+        "observation": {
+            "kind": "InvokeSkillObservation",
+            "skill_name": "requirements",
+            "is_error": False,
+            "content": [{"type": "text", "text": "governed skill body"}],
+        },
+    }
+
+    assert OpenHandsRuntime._event_payload(activated)["activated_skills"] == ["requirements"]
+    assert OpenHandsRuntime._event_payload(invoked)["runtime_skill"] == {
+        "phase": "INVOKED",
+        "skill_name": "requirements",
+        "action_event_id": "skill-action-1",
+        "tool_call_id": "skill-call-1",
+        "llm_response_id": "response-1",
+    }
+    assert OpenHandsRuntime._event_payload(loaded)["runtime_skill"] == {
+        "phase": "LOADED",
+        "skill_name": "requirements",
+        "action_event_id": "skill-action-1",
+        "observation_event_id": "skill-observation-1",
+        "tool_call_id": "skill-call-1",
+    }
+
+
+def test_openhands_projects_native_task_error_as_terminal_task_error():
+    failed = {
+        "kind": "ObservationEvent",
+        "id": "task-observation-2",
+        "action_id": "task-action-2",
+        "tool_call_id": "task-call-2",
+        "observation": {
+            "kind": "TaskObservation",
+            "content": [{"type": "text", "text": "Budget exceeded."}],
+            "is_error": True,
+            "task_id": "task_00000002",
+            "subagent": "reviewer",
+            "status": "error",
+        },
+    }
+
+    assert OpenHandsRuntime._event_payload(failed)["runtime_task"] == {
+        "phase": "ERROR",
+        "action_event_id": "task-action-2",
+        "observation_event_id": "task-observation-2",
+        "tool_call_id": "task-call-2",
+        "task_id": "task_00000002",
+        "subagent_type": "reviewer",
+        "status": "error",
+    }
+
+
+def test_openhands_pending_actions_only_use_active_branch():
+    actions = OpenHandsRuntime._pending_actions(
+        [
+            {"kind": "MessageEvent", "id": "root"},
+            {
+                "kind": "ActionEvent",
+                "id": "abandoned",
+                "parent_id": "root",
+                "tool_name": "terminal",
+                "tool_call_id": "old",
+                "action": {"kind": "TerminalAction", "command": "old"},
+            },
+            {
+                "kind": "ActionEvent",
+                "id": "active",
+                "parent_id": "root",
+                "tool_name": "file_editor",
+                "tool_call_id": "new",
+                "action": {"kind": "FileEditorAction", "path": "README.md"},
+            },
+        ],
+        "active",
+    )
+    assert [item.action_id for item in actions] == ["active"]
+
+
+def test_openhands_cancel_waits_until_agent_is_no_longer_running(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
     responses = iter([{"ok": True}, {"execution_status": "running"}, {"execution_status": "idle"}])
     requests: list[tuple[str, str, bool]] = []
 
@@ -799,11 +1827,118 @@ def test_openhands_cancel_waits_until_agent_is_no_longer_running(settings, monke
     ]
 
 
-def test_openhands_cancel_treats_missing_conversation_as_already_stopped(settings, monkeypatch):
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_cancel_treats_missing_conversation_as_already_stopped(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
 
     def fake_request(_method: str, _path: str, **_kwargs: object) -> dict[str, object]:
         return {"_flowweave_missing": True}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     runtime.cancel(RuntimeHandle("job-1", "missing-conversation", None))
+
+
+def _plugin_validation_request() -> RuntimePluginValidationRequest:
+    validation_id = "33333333-3333-4333-8333-333333333333"
+    return RuntimePluginValidationRequest(
+        plugin=RuntimePlugin(
+            name="governed-review",
+            source=(
+                f"/runtime/capabilities/nodes/plugin-probe-{validation_id}/plugins/governed-review"
+            ),
+            content_hash="a" * 64,
+        ),
+        validation_id=validation_id,
+        runtime_resource_id="11111111-1111-4111-8111-111111111111",
+        runtime_resource_name="fw-sbx-plugin-probe",
+    )
+
+
+def _plugin_loader_report() -> dict[str, object]:
+    return {
+        "plugin_name": "governed-review",
+        "plugin_version": "1.0.0",
+        "skill_count": 0,
+        "command_count": 1,
+        "agent_count": 0,
+        "mcp_server_count": 0,
+        "has_hooks": False,
+    }
+
+
+def test_openhands_validates_plugin_locally_with_fixed_owned_operation(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def validate(_settings, **kwargs):
+        captured.update(kwargs)
+        return _plugin_loader_report()
+
+    monkeypatch.setattr(openhands_module, "validate_owned_runtime_plugin", validate)
+    result = runtime.validate_plugin(_plugin_validation_request())
+
+    assert result.plugin_name == "governed-review"
+    assert result.command_count == 1
+    assert captured == {
+        "resource_name": "fw-sbx-plugin-probe",
+        "resource_id": "11111111-1111-4111-8111-111111111111",
+        "validation_id": "33333333-3333-4333-8333-333333333333",
+        "plugin_path": (
+            "/runtime/capabilities/nodes/plugin-probe-"
+            "33333333-3333-4333-8333-333333333333/plugins/governed-review"
+        ),
+    }
+
+
+def test_openhands_validates_plugin_remotely_with_fixed_controller_payload(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(
+            update={
+                "docker_controller_mode": "remote",
+                "docker_controller_api_key": "a" * 32,
+            }
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def post(_client, path, payload, *, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return _plugin_loader_report()
+
+    monkeypatch.setattr(DockerControllerClient, "post", post)
+    result = runtime.validate_plugin(_plugin_validation_request())
+
+    assert result.plugin_version == "1.0.0"
+    assert captured == {
+        "path": "/v1/runtimes/validate-plugin",
+        "payload": {
+            "resource_name": "fw-sbx-plugin-probe",
+            "resource_id": "11111111-1111-4111-8111-111111111111",
+            "validation_id": "33333333-3333-4333-8333-333333333333",
+            "plugin_path": (
+                "/runtime/capabilities/nodes/plugin-probe-"
+                "33333333-3333-4333-8333-333333333333/plugins/governed-review"
+            ),
+        },
+        "timeout": 30,
+    }
+
+
+def test_openhands_plugin_validation_rejects_loader_protocol_drift(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    invalid = {**_plugin_loader_report(), "command_count": -1}
+    monkeypatch.setattr(
+        openhands_module,
+        "validate_owned_runtime_plugin",
+        lambda *_args, **_kwargs: invalid,
+    )
+
+    with pytest.raises(DomainError) as raised:
+        runtime.validate_plugin(_plugin_validation_request())
+
+    assert raised.value.code == "RUNTIME_PROTOCOL_ERROR"

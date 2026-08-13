@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
@@ -22,6 +22,34 @@ from flowweave.shared.schemas import ModelProviderWrite, ProviderModelWrite
 from flowweave.shared.settings import get_settings
 
 _DEVELOPMENT_CREDENTIALS_KEY = b"I84eBL_TIqLl5IVk_DTjGPtUDyVz3pl6pVCHyT8woaE="
+
+
+def _condenser_reference(config: object) -> tuple[str, str] | None:
+    if not isinstance(config, dict):
+        return None
+    item = cast(dict[object, object], config)
+    if item.get("kind") != "LLM_SUMMARIZING":
+        return None
+    provider_id = item.get("model_provider_id")
+    model_name = item.get("model_name")
+    if not isinstance(provider_id, str) or not isinstance(model_name, str):
+        return None
+    return provider_id, model_name
+
+
+def _referencing_nodes(db: Session, provider_id: str) -> list[dict[str, str]]:
+    rows = db.execute(
+        select(NodeExecutorConfig, NodeAsset)
+        .join(NodeAsset, NodeAsset.id == NodeExecutorConfig.node_asset_id)
+        .where(NodeAsset.deleted_at.is_(None))
+        .order_by(NodeAsset.name, NodeAsset.id)
+    ).all()
+    return [
+        {"id": asset.id, "name": asset.name}
+        for executor, asset in rows
+        if executor.model_provider_id == provider_id
+        or (_condenser_reference(executor.condenser_config_json) or (None, None))[0] == provider_id
+    ]
 
 
 def _fernet() -> Fernet:
@@ -57,16 +85,7 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
             and item.oauth_device_expires_at
             and item.oauth_device_expires_at > datetime.now(UTC)
         ),
-        "reference_node_count": len(
-            db.scalars(
-                select(NodeExecutorConfig.node_asset_id)
-                .join(NodeAsset, NodeAsset.id == NodeExecutorConfig.node_asset_id)
-                .where(
-                    NodeExecutorConfig.model_provider_id == item.id,
-                    NodeAsset.deleted_at.is_(None),
-                )
-            ).all()
-        ),
+        "reference_node_count": len(_referencing_nodes(db, item.id)),
         "available_for_nodes": any(model.enabled and model.is_default for model in models)
         and (item.auth_type == "API_KEY" or item.encrypted_oauth_refresh_token is not None),
         "available_for_prompt_gates": item.auth_type == "API_KEY"
@@ -121,6 +140,11 @@ def _validate_referenced_models(
         ).all()
         if name
     }
+    referenced_names.update(
+        reference[1]
+        for config in db.scalars(select(NodeExecutorConfig.condenser_config_json)).all()
+        if (reference := _condenser_reference(config)) is not None and reference[0] == provider_id
+    )
     unavailable = sorted(referenced_names - enabled_names)
     if unavailable:
         raise conflict(
@@ -132,23 +156,7 @@ def _validate_referenced_models(
 def delete_providers(db: Session, provider_ids: list[str]) -> dict[str, Any]:
     ids = list(dict.fromkeys(provider_ids))
     items = [get_provider(db, provider_id) for provider_id in ids]
-    references: dict[str, list[dict[str, str]]] = {provider_id: [] for provider_id in ids}
-    reference_rows = db.execute(
-        select(
-            NodeExecutorConfig.model_provider_id,
-            NodeAsset.id,
-            NodeAsset.name,
-        )
-        .join(NodeAsset, NodeAsset.id == NodeExecutorConfig.node_asset_id)
-        .where(
-            NodeExecutorConfig.model_provider_id.in_(ids),
-            NodeAsset.deleted_at.is_(None),
-        )
-        .order_by(NodeAsset.name, NodeAsset.id)
-    ).tuples()
-    for referenced_provider_id, node_id, node_name in reference_rows:
-        if referenced_provider_id is not None:
-            references[referenced_provider_id].append({"id": node_id, "name": node_name})
+    references = {provider_id: _referencing_nodes(db, provider_id) for provider_id in ids}
     blocked = [
         {
             "id": item.id,

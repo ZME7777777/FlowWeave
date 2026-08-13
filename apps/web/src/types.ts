@@ -8,11 +8,22 @@ export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
   description: string; template_url: string; position?: number;
 }
+export interface CondenserConfig {
+  kind: 'NO_OP' | 'LLM_SUMMARIZING';
+  model_provider_id?: string | null; model_name?: string | null;
+  max_size: number; max_tokens?: number | null; keep_first: number;
+  minimum_progress: number; hard_context_reset_max_retries: number;
+  hard_context_reset_context_scaling: number;
+}
 export interface ExecutorConfig {
   model_provider_id?: string | null; model_name?: string | null;
   startup_prompt: string; context_prompt: string; timeout_seconds: number; max_iterations: number;
+  confirmation_policy: 'ALWAYS' | 'NEVER';
+  condenser: CondenserConfig;
 }
-export type CapabilityAssetType = 'SKILL' | 'MCP' | 'HOOK';
+export type CapabilityAssetType =
+  | 'SKILL' | 'PLUGIN' | 'MCP' | 'HOOK' | 'TOOL_POLICY' | 'AGENT_DEFINITION'
+  | 'CONTEXT_POLICY' | 'MEMORY_POLICY' | 'CRITIC_POLICY' | 'AGENT_PROFILE';
 export interface CapabilityRef {
   id?: string; capability_id?: string; capability_type: CapabilityAssetType; capability_key: string;
   normalized_config: Record<string, unknown>; position?: number;
@@ -26,11 +37,11 @@ export interface CapabilityAsset {
   dependency_build_state: 'NOT_REQUIRED' | 'PENDING' | 'READY' | 'FAILED';
   dependency_build_error?: string | null;
 }
-export interface SkillCollection {
+export interface CapabilityCollection {
   id: string; name: string; category: string; description: string; row_version: number;
   members: CapabilityAsset[]; created_at: string; updated_at: string;
 }
-export interface SkillCollectionWrite {
+export interface CapabilityCollectionWrite {
   name: string; category: string; description: string; capability_ids: string[];
   row_version?: number | null;
 }
@@ -41,9 +52,20 @@ export interface CapabilityImportResult {
   id: string; capability_type: CapabilityAssetType; filename: string;
   content_hash: string; storage_key: string; capabilities: CapabilityAsset[];
 }
+export interface PluginSourceResolution {
+  id: string; source_url: string; requested_commit: string; repo_path?: string | null;
+  state: 'PENDING' | 'READY' | 'PUBLISHED' | 'FAILED' | 'EXPIRED'; state_version: number;
+  content_hash?: string | null; byte_size?: number | null; error_detail?: string | null;
+  preview: {
+    contributions?: { skills?: string[]; commands?: string[]; mcp_servers?: string[]; hook_events?: string[] };
+    file_count?: number;
+  };
+  capability?: { capability_id: string; capability_type: 'PLUGIN'; capability_key?: string } | null;
+  expires_at: string; resolved_at?: string | null; published_at?: string | null;
+}
 export interface NamedDeleteReference { id: string; name: string }
 export interface BlockedCapabilityDelete {
-  id: string; name: string; relation: 'NODE_CAPABILITY' | 'SKILL_COLLECTION';
+  id: string; name: string; relation: 'NODE_CAPABILITY' | 'CAPABILITY_COLLECTION' | 'BUILTIN_CAPABILITY';
   nodes: NamedDeleteReference[]; collections?: NamedDeleteReference[];
 }
 export interface BlockedNodeDelete {
@@ -163,20 +185,36 @@ export interface GateEvaluation {
 }
 export type AttemptState =
   | 'WAITING_INPUT' | 'START_GATES' | 'START_BLOCKED' | 'WAITING_START_CONFIRMATION'
-  | 'EXECUTING' | 'WAITING_HUMAN' | 'END_GATES' | 'END_BLOCKED'
+  | 'EXECUTING' | 'WAITING_HUMAN' | 'WAITING_CONFIRMATION' | 'END_GATES' | 'END_BLOCKED'
   | 'WAITING_ACCEPTANCE' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED';
+export interface RuntimeConfirmationAction {
+  action_id: string; tool_call_id: string; tool_name: string;
+  arguments: Record<string, unknown>; security_risk: string; summary: string; digest: string;
+}
+export interface RuntimeConfirmationBatch {
+  id: string; attempt_id: string; conversation_id: string; runtime_conversation_id: string;
+  runtime_cursor?: string | null; pending_actions_digest: string;
+  pending_actions: RuntimeConfirmationAction[];
+  risk_summary: Array<{ action_id: string; security_risk: string; summary: string }>;
+  action_count: number; state: 'PENDING' | 'DECIDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED';
+  decision_accept?: boolean | null; decision_reason?: string | null; decided_by?: string | null;
+  decided_at?: string | null; runtime_response_cursor?: string | null; state_version: number;
+  created_at: string; updated_at: string;
+}
 export interface NodeAttempt {
   id: string; node_run_id: string; attempt_no: number; snapshot_id: string;
   state: AttemptState; state_version: number; runtime_phase?: string | null;
   runtime_adapter?: string | null;
   runtime_job_id?: string | null; conversation_id?: string | null; runtime_cursor?: string | null;
   workspace_ref?: string | null; error_code?: string | null; error_detail?: string | null;
+  runtime_cancel_recovery_modes: Array<'RECONCILE_PARENT' | 'DELETE_MANAGED_RUNTIME'>;
   startup_mode?: 'SKILL' | 'PROMPT'; startup_capability_key?: string | null;
   startup_prompt?: string | null;
-  model_name?: string | null; reasoning_effort?: string | null;
+  model_name?: string | null; reasoning_effort?: string | null; confirmation_policy: 'ALWAYS' | 'NEVER';
   output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
-  gate_evaluations: GateEvaluation[]; created_at: string; updated_at: string;
+  gate_evaluations: GateEvaluation[]; runtime_confirmation_batches: RuntimeConfirmationBatch[];
+  created_at: string; updated_at: string;
 }
 export interface NodeRun {
   id: string; flow_run_id: string; flow_node_snapshot_key: string; sequence_no: number;
@@ -219,7 +257,7 @@ export interface ArtifactInput {
 }
 
 
-export type ConversationState = 'CREATING' | 'IDLE' | 'GENERATING' | 'STOPPING' | 'WAITING_HUMAN' | 'WAITING_SUBAGENTS' | 'FAILED' | 'READ_ONLY';
+export type ConversationState = 'CREATING' | 'IDLE' | 'CONDENSING' | 'GENERATING' | 'STOPPING' | 'WAITING_HUMAN' | 'WAITING_CONFIRMATION' | 'FAILED' | 'READ_ONLY';
 export type MessageDeliveryState = 'QUEUED' | 'DELIVERING' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
 export interface AgentMessageTextPart { type: 'text'; text: string }
 export interface AgentMessageAttachmentPart {
@@ -250,11 +288,37 @@ export interface AgentMessage {
   created_by?: string | null; created_at: string; delivered_at?: string | null;
   conversation_state_version?: number;
 }
+export interface RuntimeCondensation {
+  id: string; attempt_id: string; conversation_id: string;
+  runtime_event_id: string; runtime_cursor: string; event_type: 'REQUESTED' | 'COMPLETED';
+  forgotten_event_ids: string[]; summary?: string | null; summary_offset?: number | null;
+  llm_response_id?: string | null; created_at: string;
+}
+export interface RuntimeSubagentTask {
+  id: string; attempt_id: string; conversation_id: string;
+  action_event_id: string; action_cursor?: string | null;
+  tool_call_id?: string | null; llm_response_id?: string | null;
+  observation_event_id?: string | null; observation_cursor?: string | null;
+  runtime_task_id?: string | null; subagent_type: string;
+  description?: string | null; resume_task_id?: string | null;
+  state: 'REQUESTED' | 'COMPLETED' | 'ERROR'; native_status?: string | null;
+  result?: string | null; error_detail?: string | null;
+  usage?: RuntimeSubagentTaskUsage | null;
+  created_at: string; completed_at?: string | null; updated_at: string;
+}
+export interface RuntimeSubagentTaskUsage {
+  runtime_task_id: string; source_cursor?: string | null; snapshot_digest: string;
+  usage_version: number; model_name: string; accumulated_cost_usd: number;
+  prompt_tokens: number; completion_tokens: number; cache_read_tokens: number;
+  cache_write_tokens: number; reasoning_tokens: number; context_window: number;
+  per_turn_tokens: number; budget_limit_usd?: number | null;
+  budget_state: 'UNBOUNDED' | 'WITHIN' | 'EXCEEDED';
+  budget_exceeded_at?: string | null; updated_at: string;
+}
 export interface AgentConversation {
-  id: string; parent_conversation_id?: string | null; attempt_id: string; conversation_no: number;
-  kind: 'AUTO' | 'HUMAN_CREATED' | 'SUBAGENT'; title: string; state: ConversationState;
+  id: string; attempt_id: string; conversation_no: number;
+  kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
   editable_message_id?: string | null;
-  delegation_batch_key?: string | null; delegation_instruction?: string | null;
   state_version: number; model_name?: string | null; reasoning_effort?: string | null; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
   runtime_resource?: {
     sandbox_id: string; container_name: string; owner_type: 'ATTEMPT' | 'CONVERSATION'; owner_id: string;
@@ -263,5 +327,6 @@ export interface AgentConversation {
   } | null;
   connection_status?: { phase: 'WAITING_WORKER' | 'PREPARING_CONTEXT' | 'STARTING_RUNTIME' | 'CONNECTING_AGENT' | 'READY' | 'FAILED'; started_at: string; elapsed_seconds?: number; detail?: string | null };
   context_baseline: Record<string, unknown>; message_count: number;
-  last_message?: AgentMessage | null; created_at: string; updated_at: string;
+  last_message?: AgentMessage | null; runtime_condensations: RuntimeCondensation[];
+  created_at: string; updated_at: string;
 }

@@ -22,12 +22,25 @@ RUN apt-get -o Acquire::Retries=5 update \
 COPY infra/openhands/pyproject.toml infra/openhands/uv.lock ./
 ENV UV_PROJECT_ENV=/runtime/.venv
 RUN uv sync --frozen --no-dev
-COPY --from=openhands_sdk / /opt/software-agent-sdk/
+COPY infra/openhands/source.lock.json /runtime/openhands-source.lock.json
+COPY infra/openhands/fetch_source.py /runtime/fetch_openhands_source.py
+COPY infra/openhands/patch_ambient_plugins.py /runtime/patch_ambient_plugins.py
+RUN /usr/local/bin/python /runtime/fetch_openhands_source.py \
+      --lock /runtime/openhands-source.lock.json \
+      --destination /opt/openhands-source \
+      --provenance /runtime/openhands-source-provenance.json \
+      --overlay /runtime/patch_ambient_plugins.py
 RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
-      /opt/software-agent-sdk/openhands-sdk \
-      /opt/software-agent-sdk/openhands-tools \
-      /opt/software-agent-sdk/openhands-workspace \
-      /opt/software-agent-sdk/openhands-agent-server
+      /opt/openhands-source/openhands-sdk \
+      /opt/openhands-source/openhands-tools \
+      /opt/openhands-source/openhands-workspace \
+      /opt/openhands-source/openhands-agent-server
+RUN /runtime/.venv/bin/python -c \
+      "from importlib.metadata import version; expected='1.42.0'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
+RUN /runtime/.venv/bin/python /runtime/patch_ambient_plugins.py
+COPY infra/openhands/contract_check.py /runtime/contract_check.py
+COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
+RUN /runtime/.venv/bin/python /runtime/contract_check.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \

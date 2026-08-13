@@ -925,6 +925,37 @@ chmod 0700 "$target"
         target = runtime_root.joinpath(*relative.parts)
         managed_relative = PurePosixPath(".managed-assets").joinpath(*relative.parts)
         managed_target = managed_runtime_root.joinpath(*relative.parts)
+        memory_enabled = bool((resource.spec_json or {}).get("memory_enabled"))
+        memory_working_raw = str(
+            (resource.spec_json or {}).get("memory_working_dir_relative") or ""
+        )
+        memory_working = PurePosixPath(memory_working_raw)
+        if memory_enabled and (
+            resource.owner_type not in {"ATTEMPT", "CONVERSATION"}
+            or not memory_working_raw
+            or memory_working.is_absolute()
+            or any(part in {"", ".", ".."} for part in memory_working.parts)
+        ):
+            raise DomainError(
+                "SANDBOX_WORKSPACE_INVALID",
+                "The governed Memory mount contract is invalid",
+                422,
+            )
+        owner_key = re.sub(r"[^A-Za-z0-9._-]+", "-", resource.owner_id).strip(".-")
+        if memory_enabled and not owner_key:
+            raise DomainError(
+                "SANDBOX_WORKSPACE_INVALID",
+                "The governed Memory owner identity is invalid",
+                422,
+            )
+        memory_relative = (
+            PurePosixPath(".managed-memory")
+            / resource.owner_type.lower()
+            / owner_key[:160]
+            / "runtime"
+        )
+        user_memory_target = PurePosixPath("/home/flowweave/.openhands/memory")
+        project_memory_target = target.joinpath(*memory_working.parts) / ".openhands" / "memory"
         if mount_type == "bind":
             source = PurePosixPath(str(source_mount.get("Source") or ""))
             if not source.is_absolute() or any(character in str(source) for character in ",="):
@@ -939,6 +970,20 @@ chmod 0700 "$target"
                 f"type=bind,src={isolated_source},dst={target}",
                 (f"type=bind,src={managed_source},dst={managed_target},readonly"),
             ]
+            if memory_enabled:
+                memory_source = source.joinpath(*memory_relative.parts)
+                specifications.extend(
+                    [
+                        (
+                            f"type=bind,src={memory_source / 'user'},"
+                            f"dst={user_memory_target},readonly"
+                        ),
+                        (
+                            f"type=bind,src={memory_source / 'project'},"
+                            f"dst={project_memory_target},readonly"
+                        ),
+                    ]
+                )
         elif mount_type == "volume":
             name = str(source_mount.get("Name") or "")
             if not name or any(character in name for character in ",="):
@@ -954,6 +999,19 @@ chmod 0700 "$target"
                     f"volume-subpath={managed_relative.as_posix()},readonly"
                 ),
             ]
+            if memory_enabled:
+                specifications.extend(
+                    [
+                        (
+                            f"type=volume,src={name},dst={user_memory_target},"
+                            f"volume-subpath={(memory_relative / 'user').as_posix()},readonly"
+                        ),
+                        (
+                            f"type=volume,src={name},dst={project_memory_target},"
+                            f"volume-subpath={(memory_relative / 'project').as_posix()},readonly"
+                        ),
+                    ]
+                )
         else:
             raise DomainError(
                 "SANDBOX_WORKSPACE_SOURCE_INVALID",
@@ -1332,6 +1390,8 @@ def backend_name(
         "ATTEMPT": "auto",
         "CONVERSATION": "conv",
         "SETUP_SESSION": "setup",
+        "CAPABILITY_VALIDATION": "probe",
+        "MCP_OAUTH_AUTHORIZATION": "oauth",
     }.get(owner_type, "owner")
     owner_key = re.sub(r"[^a-z0-9]", "", owner_id.lower())[:8] or "unknown"
     return f"fw-sbx-{owner_kind}-{owner_key}-{resource_key}"

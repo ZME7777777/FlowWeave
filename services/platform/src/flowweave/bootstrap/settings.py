@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # Transitional switch used only until synchronous orchestration is removed.
     execution_mode: str = "worker"
     runtime_poll_seconds: float = Field(default=1.0, gt=0)
+    runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
+    runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
+    runtime_task_usage_visibility_max_polls: int = Field(default=5, ge=1, le=100)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
     openhands_base_url: str = "http://openhands-agent-server:8000"
@@ -69,6 +72,10 @@ class Settings(BaseSettings):
     dependency_builder_backend: str = "disabled"
     dependency_builder_image: str = "flowweave-dependency-builder:1"
     dependency_builder_timeout_seconds: int = Field(default=300, ge=30, le=1800)
+    plugin_resolver_backend: str = "disabled"
+    plugin_resolver_image: str = "flowweave-openhands-runtime:1"
+    plugin_resolver_timeout_seconds: int = Field(default=300, ge=30, le=1800)
+    plugin_resolver_allowed_hosts: str = "github.com,gitlab.com"
 
     terminal_environment_backend: str = "disabled"
     terminal_environment_base_image: str = "flowweave-openhands-runtime:1"
@@ -100,10 +107,14 @@ class Settings(BaseSettings):
     def validate_production_secrets(self) -> Settings:
         if self.task_heartbeat_seconds >= self.task_lease_seconds:
             raise ValueError("TASK_HEARTBEAT_SECONDS must be less than TASK_LEASE_SECONDS")
+        if self.runtime_wakeup_timeout_seconds >= self.task_lease_seconds:
+            raise ValueError("RUNTIME_WAKEUP_TIMEOUT_SECONDS must be less than TASK_LEASE_SECONDS")
         if self.sandbox_backend not in {"process", "docker"}:
             raise ValueError("SANDBOX_BACKEND must be process or docker")
         if self.dependency_builder_backend not in {"disabled", "docker"}:
             raise ValueError("DEPENDENCY_BUILDER_BACKEND must be disabled or docker")
+        if self.plugin_resolver_backend not in {"disabled", "docker"}:
+            raise ValueError("PLUGIN_RESOLVER_BACKEND must be disabled or docker")
         if self.terminal_environment_backend not in {"disabled", "docker"}:
             raise ValueError("TERMINAL_ENVIRONMENT_BACKEND must be disabled or docker")
         if self.docker_controller_mode not in {"local", "remote"}:
@@ -126,6 +137,7 @@ class Settings(BaseSettings):
             self.terminal_environment_backend == "docker"
             or self.sandbox_backend == "docker"
             or self.dependency_builder_backend == "docker"
+            or self.plugin_resolver_backend == "docker"
         )
         if docker_control_enabled and not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", self.sandbox_manager_scope

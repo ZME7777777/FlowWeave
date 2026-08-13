@@ -17,8 +17,13 @@ import yaml
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.catalog.application.capability_repository import (
+    list_versions,
+    publish_dependency_build,
+    publish_import,
+    resolve_version,
+)
 from flowweave.modules.tasks.public import enqueue
-from flowweave.runtime.workspace import materialize_node_workspace
 from flowweave.shared.application.transactions import (
     finish,
     register_commit_action,
@@ -26,13 +31,27 @@ from flowweave.shared.application.transactions import (
 )
 from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.dependency_builder import get_dependency_builder
+from flowweave.shared.domain.agent_definition import (
+    normalize_agent_definition_document,
+)
+from flowweave.shared.domain.runtime_policy import (
+    normalize_agent_profile_document,
+    normalize_context_policy_document,
+    normalize_critic_policy_document,
+    normalize_memory_policy_document,
+)
+from flowweave.shared.domain.tool_policy import (
+    DEFAULT_TOOL_POLICY_KEY,
+    normalize_tool_policy_document,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
+    CapabilityCollection,
+    CapabilityCollectionItem,
     CapabilityImport,
+    CapabilityVersion,
     NodeAsset,
     NodeCapabilityRef,
-    SkillCollection,
-    SkillCollectionItem,
 )
 from flowweave.shared.schemas import CapabilityValidateWrite
 from flowweave.shared.settings import get_settings
@@ -299,29 +318,6 @@ def _dependencies(value: object) -> dict[str, dict[str, str]]:
     return result
 
 
-def _parse_capability_id(capability_id: str) -> tuple[str, int]:
-    import_id, separator, raw_position = capability_id.rpartition(":")
-    if not separator or not raw_position.isdigit():
-        raise DomainError("CAPABILITY_REFERENCE_INVALID", "Capability reference is invalid", 422)
-    return import_id, int(raw_position)
-
-
-def _capability_entry(
-    db: Session, capability_id: str, *, include_deleted: bool = False
-) -> tuple[CapabilityImport, int, dict[str, Any]]:
-    import_id, position = _parse_capability_id(capability_id)
-    item = db.get(CapabilityImport, import_id)
-    if item is None or item.state != "COMMITTED":
-        raise DomainError("CAPABILITY_REFERENCE_INVALID", "Capability version is unavailable", 404)
-    entries = item.preview_json.get("capabilities", [])
-    if position >= len(entries) or not isinstance(entries[position], dict):
-        raise DomainError("CAPABILITY_REFERENCE_INVALID", "Capability version is unavailable", 404)
-    entry = cast(dict[str, Any], entries[position])
-    if entry.get("deleted_at") and not include_deleted:
-        raise DomainError("CAPABILITY_REFERENCE_INVALID", "Capability version is unavailable", 404)
-    return item, position, entry
-
-
 def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
     if len(content) > ZIP_MAX_COMPRESSED_BYTES:
         raise _reject("ZIP exceeds 25 MiB", max_bytes=ZIP_MAX_COMPRESSED_BYTES)
@@ -420,6 +416,223 @@ def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
         raise _reject("Invalid ZIP file") from exc
 
 
+def _validate_plugin(content: bytes, fallback_name: str) -> dict[str, Any]:
+    """Validate one OpenHands Plugin directory without executing its content."""
+
+    if len(content) > ZIP_MAX_COMPRESSED_BYTES:
+        raise _reject("ZIP exceeds 25 MiB", max_bytes=ZIP_MAX_COMPRESSED_BYTES)
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            entries = archive.infolist()
+            if len(entries) > ZIP_MAX_RAW_ENTRIES:
+                raise _reject(
+                    f"ZIP contains {len(entries)} raw entries; maximum is {ZIP_MAX_RAW_ENTRIES}",
+                    actual_entries=len(entries),
+                    max_entries=ZIP_MAX_RAW_ENTRIES,
+                )
+            files: dict[str, bytes] = {}
+            total = 0
+            for item in entries:
+                path = PurePosixPath(item.filename.replace("\\", "/"))
+                if path.is_absolute() or ".." in path.parts:
+                    raise _reject("Unsafe ZIP path", filename=item.filename)
+                mode_type = (item.external_attr >> 16) & 0o170000
+                if not item.is_dir() and mode_type not in {0, 0o100000}:
+                    raise _reject("Plugin ZIP contains a non-regular file", filename=item.filename)
+                if item.is_dir() or _ignored_archive_entry(path):
+                    continue
+                if len(files) >= ZIP_MAX_FILES:
+                    raise _reject(
+                        f"ZIP contains more than {ZIP_MAX_FILES} effective entries",
+                        max_entries=ZIP_MAX_FILES,
+                    )
+                if len(path.parts) > ZIP_MAX_DEPTH:
+                    raise _reject("ZIP path nesting exceeds limit", filename=item.filename)
+                if item.file_size > ZIP_MAX_FILE_BYTES:
+                    raise _reject(
+                        "ZIP file exceeds 25 MiB per-file limit",
+                        filename=item.filename,
+                        max_bytes=ZIP_MAX_FILE_BYTES,
+                    )
+                if path.suffix.lower() in NESTED_ARCHIVE_SUFFIXES:
+                    raise _reject("Nested archives are not allowed", filename=item.filename)
+                if (
+                    path.suffix.lower() not in SKILL_ALLOWED_SUFFIXES
+                    and path.name.lower() not in SKILL_ALLOWED_EXTENSIONLESS
+                ):
+                    raise _reject("ZIP file extension is not allowed", filename=item.filename)
+                data = archive.read(item)
+                total += len(data)
+                if total > ZIP_MAX_EXPANDED_BYTES:
+                    raise _reject("Expanded ZIP exceeds 100 MiB", max_bytes=ZIP_MAX_EXPANDED_BYTES)
+                normalized_path = path.as_posix()
+                if normalized_path in files:
+                    raise _reject("ZIP contains duplicate paths", filename=normalized_path)
+                files[normalized_path] = data
+
+            manifests = sorted(
+                path
+                for path in files
+                if path.endswith("/.plugin/plugin.json")
+                or path.endswith("/.claude-plugin/plugin.json")
+                or path in {".plugin/plugin.json", ".claude-plugin/plugin.json"}
+            )
+            if len(manifests) != 1:
+                raise _reject(
+                    "Plugin ZIP must contain exactly one .plugin/plugin.json or "
+                    ".claude-plugin/plugin.json",
+                    manifest_count=len(manifests),
+                )
+            manifest_path = PurePosixPath(manifests[0])
+            plugin_prefix = manifest_path.parent.parent
+            prefix = "." if plugin_prefix == PurePosixPath(".") else plugin_prefix.as_posix()
+            relative_files: dict[str, bytes] = {}
+            for path, data in files.items():
+                source = PurePosixPath(path)
+                try:
+                    relative = source.relative_to(plugin_prefix)
+                except ValueError as exc:
+                    raise _reject(
+                        "Plugin ZIP contains files outside its Plugin root", filename=path
+                    ) from exc
+                relative_files[relative.as_posix()] = data
+            try:
+                manifest_object = json.loads(files[manifests[0]].decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise _reject("Plugin manifest must be valid UTF-8 JSON") from exc
+            if not isinstance(manifest_object, dict):
+                raise _reject("Plugin manifest must be an object")
+            manifest = cast(dict[str, Any], manifest_object)
+            _validate_config_structure(manifest)
+            _reject_sensitive(manifest)
+            name = str(manifest.get("name") or fallback_name).strip()
+            version = str(manifest.get("version") or "1.0.0").strip()
+            if not name or len(name) > 200 or not version or len(version) > 100:
+                raise _reject("Plugin name or version is invalid")
+
+            skill_files = sorted(
+                path
+                for path in relative_files
+                if path.startswith("skills/") and path.endswith("/SKILL.md")
+            )
+            agent_files = sorted(
+                path
+                for path in relative_files
+                if path.startswith("agents/") and path.endswith(".md")
+            )
+            if agent_files:
+                raise _reject(
+                    "OpenHands 1.40.0 loads Plugin agents but does not merge them into the "
+                    "running Agent; publish Agent Definitions separately",
+                    filenames=agent_files,
+                )
+            command_files = sorted(
+                path
+                for path in relative_files
+                if path.startswith("commands/") and path.endswith(".md")
+            )
+
+            skill_names: list[str] = []
+            for skill_file in skill_files:
+                try:
+                    skill_text = relative_files[skill_file].decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise _reject("Plugin Skill files must be UTF-8", filename=skill_file) from exc
+                metadata = _frontmatter(skill_text)
+                _reject_sensitive(metadata, f"$.{skill_file}.frontmatter")
+                skill_name = str(
+                    metadata.get("name") or PurePosixPath(skill_file).parent.name
+                ).strip()
+                if not skill_name or len(skill_name) > 200:
+                    raise _reject("Plugin Skill name is invalid", filename=skill_file)
+                skill_names.append(skill_name)
+            if len(skill_names) != len(set(skill_names)):
+                raise _reject("Plugin Skill names must be unique")
+
+            command_names: list[str] = []
+            for command_file in command_files:
+                try:
+                    command_text = relative_files[command_file].decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise _reject(
+                        "Plugin Command files must be UTF-8", filename=command_file
+                    ) from exc
+                metadata = _frontmatter(command_text)
+                _reject_sensitive(metadata, f"$.{command_file}.frontmatter")
+                command_name = str(metadata.get("name") or PurePosixPath(command_file).stem).strip()
+                if not command_name or len(command_name) > 200:
+                    raise _reject("Plugin Command name is invalid", filename=command_file)
+                command_names.append(command_name)
+            if len(command_names) != len(set(command_names)):
+                raise _reject("Plugin Command names must be unique")
+
+            mcp_names: list[str] = []
+            if ".mcp.json" in relative_files:
+                try:
+                    mcp_object = json.loads(relative_files[".mcp.json"].decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise _reject("Plugin .mcp.json must be valid UTF-8 JSON") from exc
+                if not isinstance(mcp_object, dict):
+                    raise _reject("Plugin .mcp.json root must be an object")
+                mcp_document = cast(dict[str, Any], mcp_object)
+                _validate_config_structure(mcp_document)
+                _reject_sensitive(mcp_document, "$.mcp")
+                mcp_names = [
+                    str(item["capability_key"]) for item in _mcp_capabilities(mcp_document)
+                ]
+
+            hook_events: list[str] = []
+            if "hooks/hooks.json" in relative_files:
+                try:
+                    hook_object = json.loads(relative_files["hooks/hooks.json"].decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise _reject("Plugin hooks/hooks.json must be valid UTF-8 JSON") from exc
+                if not isinstance(hook_object, dict):
+                    raise _reject("Plugin hooks/hooks.json root must be an object")
+                hook_document = cast(dict[str, Any], hook_object)
+                _validate_config_structure(hook_document)
+                _reject_sensitive(hook_document, "$.hooks")
+                _hook_name, _hook_description, hook_config = _normalize_hook_config(hook_document)
+                hook_events = sorted(hook_config)
+
+            if not any((skill_names, command_names, mcp_names, hook_events)):
+                raise _reject("Plugin must contribute at least one Skill, Command, MCP, or Hook")
+            contributions = {
+                "skills": skill_names,
+                "mcp_servers": mcp_names,
+                "hook_events": hook_events,
+                "commands": command_names,
+            }
+            file_hashes = {
+                path: hashlib.sha256(data).hexdigest()
+                for path, data in sorted(relative_files.items())
+            }
+            normalized = {
+                "entry": prefix,
+                "manifest": manifest,
+                "description": str(manifest.get("description") or "")[:2000],
+                "version": version,
+                "contributions": contributions,
+                "file_hashes": file_hashes,
+                "package_format": "openhands-plugin-v1",
+            }
+            return {
+                "capabilities": [{"capability_key": name, "normalized_config": normalized}],
+                "plugin_manifest": manifest,
+                "contributions": contributions,
+                "files": list(file_hashes)[:50],
+                "file_count": len(file_hashes),
+            }
+    except zipfile.BadZipFile as exc:
+        raise _reject("Invalid ZIP file") from exc
+
+
+def validate_plugin_archive(content: bytes, fallback_name: str) -> dict[str, Any]:
+    """Public catalog validator shared by upload and isolated Git resolution."""
+
+    return _validate_plugin(content, fallback_name)
+
+
 def _string_mapping(value: object, *, server: str, field: str) -> dict[str, str]:
     if not isinstance(value, dict) or any(
         not isinstance(key, str) or not isinstance(child, str)
@@ -490,8 +703,16 @@ def _normalize_mcp_server(name: str, value: object) -> dict[str, Any]:
     for field in ("keep_alive", "enabled"):
         if field in server and not isinstance(server[field], bool):
             raise _reject("MCP field must be boolean", server=name, field=field)
-    if "auth" in server and not isinstance(server["auth"], dict):
-        raise _reject("MCP auth must be an object", server=name, field="auth")
+    if "auth" in server:
+        if not isinstance(server["auth"], dict):
+            raise _reject("MCP auth must be an object", server=name, field="auth")
+        auth = cast(dict[object, object], server["auth"])
+        if "state" in auth:
+            raise _reject(
+                "MCP OAuth state must use a governed Secret Reference",
+                server=name,
+                field="auth.state",
+            )
     return server
 
 
@@ -866,10 +1087,15 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     filename = Path(payload.filename).name
     if filename != payload.filename or not filename:
         raise _reject("Invalid filename")
-    if payload.capability_type == "SKILL":
+    if payload.capability_type in {"SKILL", "PLUGIN"}:
         if not filename.lower().endswith(".zip"):
-            raise _reject("Skill must be a ZIP")
-        return content, _validate_skill(content, Path(filename).stem)
+            raise _reject(f"{payload.capability_type.title()} must be a ZIP")
+        if payload.mcp_scripts or payload.hook_scripts:
+            raise _reject("ZIP capabilities cannot include detached scripts")
+        validator = (
+            _validate_skill if payload.capability_type == "SKILL" else validate_plugin_archive
+        )
+        return content, validator(content, Path(filename).stem)
     suffix = Path(filename).suffix.lower()
     if suffix != ".json":
         raise _reject(f"{payload.capability_type} config must be JSON")
@@ -885,11 +1111,45 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
         raise _reject("Config root must be an object")
     parsed = cast(dict[str, Any], parsed_object)
     _reject_sensitive(parsed)
-    capabilities = (
-        _mcp_capabilities(parsed)
-        if payload.capability_type == "MCP"
-        else _hook_capabilities(parsed, Path(filename).stem)
-    )
+    if payload.capability_type == "MCP":
+        capabilities = _mcp_capabilities(parsed)
+    elif payload.capability_type == "HOOK":
+        capabilities = _hook_capabilities(parsed, Path(filename).stem)
+    elif payload.capability_type == "TOOL_POLICY":
+        try:
+            capability_key, normalized = normalize_tool_policy_document(
+                parsed, fallback_key=Path(filename).stem
+            )
+        except ValueError as exc:
+            raise _reject(str(exc)) from exc
+        capabilities = [{"capability_key": capability_key, "normalized_config": normalized}]
+    elif payload.capability_type == "AGENT_DEFINITION":
+        try:
+            capability_key, normalized = normalize_agent_definition_document(
+                parsed, fallback_key=Path(filename).stem
+            )
+        except ValueError as exc:
+            raise _reject(str(exc)) from exc
+        capabilities = [{"capability_key": capability_key, "normalized_config": normalized}]
+    elif payload.capability_type in {
+        "CONTEXT_POLICY",
+        "MEMORY_POLICY",
+        "CRITIC_POLICY",
+        "AGENT_PROFILE",
+    }:
+        normalizer = {
+            "CONTEXT_POLICY": normalize_context_policy_document,
+            "MEMORY_POLICY": normalize_memory_policy_document,
+            "CRITIC_POLICY": normalize_critic_policy_document,
+            "AGENT_PROFILE": normalize_agent_profile_document,
+        }[payload.capability_type]
+        try:
+            capability_key, normalized = normalizer(parsed, fallback_key=Path(filename).stem)
+        except ValueError as exc:
+            raise _reject(str(exc)) from exc
+        capabilities = [{"capability_key": capability_key, "normalized_config": normalized}]
+    else:
+        raise _reject("Capability type is no longer supported")
     if payload.capability_type == "MCP":
         content, capabilities = _mcp_bundle(content, capabilities, payload)
     elif payload.capability_type == "HOOK":
@@ -932,10 +1192,7 @@ class CapabilityCommitPlan:
 @dataclass(frozen=True, slots=True)
 class PreparedSkillUpdate:
     capability_id: str
-    import_id: str
-    position: int
-    expected_content_hash: str
-    expected_storage_key: str
+    expected_digest: str
     prepared: PreparedCapabilityImport
 
 
@@ -1046,7 +1303,18 @@ def prepare_commit(db: Session, token: str) -> CapabilityCommitPlan:
     item = db.scalar(stmt)
     if not item or item.state != "VALIDATED":
         raise _reject("Import token is invalid, expired, or already consumed")
-    if item.capability_type not in {"SKILL", "MCP", "HOOK"}:
+    if item.capability_type not in {
+        "SKILL",
+        "PLUGIN",
+        "MCP",
+        "HOOK",
+        "TOOL_POLICY",
+        "AGENT_DEFINITION",
+        "CONTEXT_POLICY",
+        "MEMORY_POLICY",
+        "CRITIC_POLICY",
+        "AGENT_PROFILE",
+    }:
         raise _reject("Capability type is no longer supported")
     expired = _utc(item.expires_at) <= datetime.now(UTC)
     if expired:
@@ -1109,6 +1377,7 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     item = db.get(CapabilityImport, plan.import_id)
     if item is None:
         raise _reject("Import token is invalid, expired, or already consumed")
+    published = publish_import(db, item)
     for position, entry in enumerate(item.preview_json.get("capabilities", [])):
         normalized = cast(dict[str, Any], entry.get("normalized_config", {}))
         dependencies = normalized.get("dependencies")
@@ -1124,18 +1393,12 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     finish(db)
     capabilities = [
         {
-            "capability_id": f"{item.id}:{position}",
-            "capability_type": item.capability_type,
-            "capability_key": entry["capability_key"],
-            "normalized_config": {
-                **entry.get("normalized_config", {}),
-                "import_id": item.id,
-                "filename": item.filename,
-                "content_hash": item.content_hash,
-                "storage_key": final_key,
-            },
+            "capability_id": capability.version.id,
+            "capability_type": capability.package.capability_type,
+            "capability_key": capability.package.capability_key,
+            "normalized_config": capability.runtime_config(),
         }
-        for position, entry in enumerate(item.preview_json.get("capabilities", []))
+        for capability in published
     ]
     return {
         "id": item.id,
@@ -1151,86 +1414,19 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
 
 
 def list_capabilities(db: Session) -> list[dict[str, Any]]:
-    """Expand committed imports into immutable, reusable capability versions."""
+    """List immutable repository versions; imports are source audit only."""
 
-    imports = db.scalars(
-        select(CapabilityImport)
-        .where(
-            CapabilityImport.state == "COMMITTED",
-            CapabilityImport.capability_type.in_(("SKILL", "MCP", "HOOK")),
-        )
-        .order_by(CapabilityImport.created_at, CapabilityImport.id)
-    ).all()
-    reference_counts: dict[tuple[str, str, str], int] = {}
-    refs = db.scalars(
-        select(NodeCapabilityRef)
-        .join(NodeAsset, NodeAsset.id == NodeCapabilityRef.node_asset_id)
-        .where(NodeAsset.deleted_at.is_(None))
-    ).all()
-    for ref in refs:
-        import_id = ref.normalized_config.get("import_id")
-        if isinstance(import_id, str):
-            identity = (import_id, ref.capability_type, ref.capability_key)
-            reference_counts[identity] = reference_counts.get(identity, 0) + 1
-    result: list[dict[str, Any]] = []
-    revision_numbers: dict[tuple[str, str], int] = {}
-    latest_by_lineage: dict[str, str] = {}
-    for item in imports:
-        for position, entry in enumerate(item.preview_json.get("capabilities", [])):
-            capability_key = str(entry.get("capability_key") or "")
-            identity = (item.capability_type, capability_key)
-            revision_numbers[identity] = revision_numbers.get(identity, 0) + 1
-            if entry.get("deleted_at"):
-                continue
-            normalized = cast(dict[str, Any], entry.get("normalized_config", {}))
-            capability_id = f"{item.id}:{position}"
-            lineage_digest = hashlib.sha256(
-                f"{item.capability_type}\0{capability_key}".encode()
-            ).hexdigest()[:24]
-            lineage_id = f"{item.capability_type.lower()}-{lineage_digest}"
-            result.append(
-                {
-                    "id": capability_id,
-                    "lineage_id": lineage_id,
-                    "revision_number": revision_numbers[identity],
-                    "is_latest": False,
-                    "capability_type": item.capability_type,
-                    "capability_key": capability_key,
-                    "description": str(normalized.get("description") or ""),
-                    "version": str(normalized.get("version") or ""),
-                    "filename": item.filename,
-                    "content_hash": item.content_hash,
-                    "byte_size": item.byte_size,
-                    "import_id": item.id,
-                    "created_at": (item.consumed_at or item.created_at).isoformat(),
-                    "reference_count": reference_counts.get(
-                        (item.id, item.capability_type, capability_key),
-                        0,
-                    ),
-                    "dependencies": normalized.get("dependencies", {}),
-                    "dependency_build_state": normalized.get(
-                        "dependency_build_state", "NOT_REQUIRED"
-                    ),
-                    "dependency_build_error": normalized.get("dependency_build_error"),
-                }
-            )
-            latest_by_lineage[lineage_id] = capability_id
-    for capability in result:
-        capability["is_latest"] = (
-            latest_by_lineage[cast(str, capability["lineage_id"])] == capability["id"]
-        )
-    result.sort(key=lambda capability: (capability["created_at"], capability["id"]), reverse=True)
-    return result
+    return list_versions(db)
 
 
 def read_skill_source(db: Session, capability_id: str) -> dict[str, Any]:
-    item, _position, entry = _capability_entry(db, capability_id)
-    if item.capability_type != "SKILL":
+    published = resolve_version(db, capability_id)
+    if published.package.capability_type != "SKILL":
         raise DomainError("CAPABILITY_NOT_EDITABLE", "Only Skill source can be edited", 422)
-    normalized = cast(dict[str, Any], entry.get("normalized_config", {}))
+    normalized = published.version.normalized_config_json or {}
     skill_file = str(normalized.get("entry") or "")
     try:
-        package = get_artifact_store().read(item.storage_key)
+        package = get_artifact_store().read(published.blob.storage_key)
         with zipfile.ZipFile(io.BytesIO(package)) as archive:
             content = archive.read(skill_file).decode("utf-8")
     except (FileNotFoundError, KeyError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
@@ -1239,21 +1435,21 @@ def read_skill_source(db: Session, capability_id: str) -> dict[str, Any]:
         ) from exc
     return {
         "id": capability_id,
-        "capability_key": str(entry.get("capability_key") or ""),
-        "filename": item.filename,
+        "capability_key": published.package.capability_key,
+        "filename": published.version.source_filename,
         "entry": skill_file,
         "content": content,
     }
 
 
 def prepare_skill_update(db: Session, capability_id: str, content: str) -> PreparedSkillUpdate:
-    item, position, entry = _capability_entry(db, capability_id)
-    if item.capability_type != "SKILL":
+    published = resolve_version(db, capability_id)
+    if published.package.capability_type != "SKILL":
         raise DomainError("CAPABILITY_NOT_EDITABLE", "Only Skill source can be edited", 422)
-    normalized = cast(dict[str, Any], entry.get("normalized_config", {}))
+    normalized = published.version.normalized_config_json or {}
     skill_file = str(normalized.get("entry") or "")
     try:
-        source = get_artifact_store().read(item.storage_key)
+        source = get_artifact_store().read(published.blob.storage_key)
         output = io.BytesIO()
         replaced = False
         with (
@@ -1280,7 +1476,7 @@ def prepare_skill_update(db: Session, capability_id: str, content: str) -> Prepa
         ) from exc
     payload = CapabilityValidateWrite(
         capability_type="SKILL",
-        filename=item.filename,
+        filename=published.version.source_filename,
         content_base64=base64.b64encode(output.getvalue()).decode("ascii"),
     )
     prepared = prepare_validation(payload)
@@ -1296,7 +1492,7 @@ def prepare_skill_update(db: Session, capability_id: str, content: str) -> Prepa
             422,
         )
     revised_key = str(revised_entries[0].get("capability_key") or "")
-    original_key = str(entry.get("capability_key") or "")
+    original_key = published.package.capability_key
     if revised_key != original_key:
         raise DomainError(
             "CAPABILITY_IDENTITY_CHANGED",
@@ -1308,10 +1504,7 @@ def prepare_skill_update(db: Session, capability_id: str, content: str) -> Prepa
     preview["capabilities"] = revised_entries
     return PreparedSkillUpdate(
         capability_id=capability_id,
-        import_id=item.id,
-        position=position,
-        expected_content_hash=item.content_hash,
-        expected_storage_key=item.storage_key,
+        expected_digest=published.version.digest,
         prepared=replace(prepared, preview=preview),
     )
 
@@ -1326,7 +1519,7 @@ def finalize_skill_update_source(update_plan: PreparedSkillUpdate) -> str:
         raise RuntimeError("Capability update source was not stored")
     final_key = (
         f"capability-imports/{update_plan.prepared.content_hash[:2]}/"
-        f"{update_plan.prepared.content_hash}-{update_plan.import_id}-"
+        f"{update_plan.prepared.content_hash}-{update_plan.capability_id}-"
         f"{update_plan.prepared.token_digest[:12]}"
     )
     try:
@@ -1343,170 +1536,80 @@ def finalize_skill_update_source(update_plan: PreparedSkillUpdate) -> str:
         ) from exc
 
 
-def _updated_capability_config(
-    item: CapabilityImport, capability_id: str, entry: dict[str, Any]
-) -> dict[str, Any]:
-    return {
-        **cast(dict[str, Any], entry.get("normalized_config", {})),
-        "capability_id": capability_id,
-        "import_id": item.id,
-        "filename": item.filename,
-        "content_hash": item.content_hash,
-        "storage_key": item.storage_key,
-    }
-
-
-def _refresh_node_workspace(asset: dict[str, Any]) -> None:
-    materialize_node_workspace(asset)
-
-
 def confirm_skill_update(
     db: Session, update_plan: PreparedSkillUpdate, final_key: str
 ) -> dict[str, Any]:
-    """Replace one editable Skill in place while preserving historical snapshot objects."""
+    """Publish a new immutable Skill version without rebinding consumers."""
 
     register_rollback_action(db, lambda: get_artifact_store().delete(final_key))
-    item = db.get(CapabilityImport, update_plan.import_id)
+    baseline = db.scalar(
+        select(CapabilityVersion)
+        .where(CapabilityVersion.id == update_plan.capability_id)
+        .with_for_update()
+    )
     if (
-        item is None
-        or item.state != "COMMITTED"
-        or item.content_hash != update_plan.expected_content_hash
-        or item.storage_key != update_plan.expected_storage_key
+        baseline is None
+        or baseline.state != "PUBLISHED"
+        or baseline.digest != update_plan.expected_digest
     ):
         raise DomainError(
             "CAPABILITY_SOURCE_CONFLICT",
             "Capability source changed while it was being edited",
             409,
         )
-
-    entries = cast(list[dict[str, Any]], item.preview_json.get("capabilities", []))
-    if update_plan.position >= len(entries) or entries[update_plan.position].get("deleted_at"):
-        raise DomainError("CAPABILITY_REFERENCE_INVALID", "Capability is unavailable", 404)
-    updated_entries = cast(
-        list[dict[str, Any]], update_plan.prepared.preview.get("capabilities", [])
+    now = datetime.now(UTC)
+    imported = CapabilityImport(
+        token_digest=update_plan.prepared.token_digest,
+        capability_type="SKILL",
+        filename=update_plan.prepared.filename,
+        content_hash=update_plan.prepared.content_hash,
+        storage_key=final_key,
+        byte_size=len(update_plan.prepared.content),
+        preview_json=update_plan.prepared.preview,
+        state="COMMITTED",
+        expires_at=update_plan.prepared.expires_at,
+        consumed_at=now,
     )
-    if len(updated_entries) != 1:
+    db.add(imported)
+    db.flush()
+    published = publish_import(db, imported)
+    if len(published) != 1:
         raise DomainError("CAPABILITY_SOURCE_INVALID", "Capability source is invalid", 422)
-
-    capability_key = str(entries[update_plan.position].get("capability_key") or "")
-    preview = deepcopy(item.preview_json)
-    preview_entries = cast(list[dict[str, Any]], preview.get("capabilities", []))
-    preview_entries[update_plan.position] = deepcopy(updated_entries[0])
-    item.preview_json = preview
-    item.content_hash = update_plan.prepared.content_hash
-    item.storage_key = final_key
-    item.byte_size = len(update_plan.prepared.content)
-    item.consumed_at = datetime.now(UTC)
-
-    # Older records created by the former publish-new-version behavior are
-    # collapsed into this editable capability. Their objects remain available
-    # to immutable run snapshots, but they no longer appear in the live pool.
-    imports = db.scalars(
-        select(CapabilityImport).where(
-            CapabilityImport.state == "COMMITTED",
-            CapabilityImport.capability_type == item.capability_type,
+    revised = published[0]
+    if revised.package.id != baseline.package_id:
+        raise DomainError(
+            "CAPABILITY_IDENTITY_CHANGED",
+            "Editing a capability cannot change its identity",
+            422,
         )
-    ).all()
-    for candidate in imports:
-        candidate_preview = deepcopy(candidate.preview_json)
-        candidate_entries = cast(list[dict[str, Any]], candidate_preview.get("capabilities", []))
-        changed = False
-        for position, candidate_entry in enumerate(candidate_entries):
-            if (
-                candidate_entry.get("capability_key") == capability_key
-                and not (candidate.id == item.id and position == update_plan.position)
-                and not candidate_entry.get("deleted_at")
-            ):
-                candidate_entry["deleted_at"] = datetime.now(UTC).isoformat()
-                changed = True
-        if changed:
-            candidate.preview_json = candidate_preview
-
-    normalized_by_key = {
-        str(candidate.get("capability_key") or ""): _updated_capability_config(
-            item, f"{item.id}:{position}", candidate
-        )
-        for position, candidate in enumerate(preview_entries)
-        if not candidate.get("deleted_at")
-    }
-    normalized = normalized_by_key[capability_key]
-    active_nodes = db.scalars(
-        select(NodeAsset).where(NodeAsset.deleted_at.is_(None)).order_by(NodeAsset.id)
-    ).all()
-    assets_to_refresh: list[dict[str, Any]] = []
-    has_dependencies = bool(normalized.get("dependencies"))
-    for node in active_nodes:
-        refs = db.scalars(
-            select(NodeCapabilityRef).where(
-                NodeCapabilityRef.node_asset_id == node.id,
-                NodeCapabilityRef.capability_type == item.capability_type,
-            )
-        ).all()
-        changed = False
-        node_waits_for_dependencies = False
-        for ref in refs:
-            ref_config = ref.normalized_config or {}
-            replacement = normalized_by_key.get(ref.capability_key)
-            if ref.capability_key == capability_key:
-                replacement = normalized
-            elif ref_config.get("import_id") != item.id:
-                replacement = None
-            if replacement is None:
-                continue
-            ref.normalized_config = dict(replacement)
-            changed = True
-            if ref.capability_key == capability_key and has_dependencies:
-                node_waits_for_dependencies = True
-        if not changed:
-            continue
-        db.flush()
-        if not node_waits_for_dependencies:
-            from flowweave.modules.catalog.application.service import asset_dict
-
-            assets_to_refresh.append(asset_dict(db, node))
-
-    if has_dependencies:
+    normalized = revised.version.normalized_config_json or {}
+    if normalized.get("dependencies"):
         enqueue(
             db,
             task_type="BUILD_CAPABILITY_DEPENDENCIES",
             aggregate_type="CAPABILITY_IMPORT",
-            aggregate_id=item.id,
-            idempotency_key=(
-                f"build-capability-dependencies:{item.id}:"
-                f"{update_plan.position}:{item.content_hash}"
-            ),
-            payload={"position": update_plan.position},
+            aggregate_id=imported.id,
+            idempotency_key=f"build-capability-dependencies:{imported.id}:0",
+            payload={"position": 0},
         )
-    else:
-        for asset in assets_to_refresh:
-            register_commit_action(db, lambda asset=asset: _refresh_node_workspace(asset))
-
+    revised_id = revised.version.id
     finish(db)
-    return next(
-        capability
-        for capability in list_capabilities(db)
-        if capability["id"] == update_plan.capability_id
-    )
+    return next(item for item in list_versions(db) if item["id"] == revised_id)
 
 
 def process_dependency_build(db: Session, import_id: str, position: int) -> None:
     """Build a pinned dependency bundle without holding a database transaction."""
 
-    item = db.get(CapabilityImport, import_id)
-    raw_entries: object = item.preview_json.get("capabilities", []) if item else []
-    entries = cast(list[object], raw_entries) if isinstance(raw_entries, list) else []
-    if (
-        item is None
-        or item.state != "COMMITTED"
-        or position < 0
-        or position >= len(entries)
-        or not isinstance(entries[position], dict)
-    ):
+    source_version = db.scalar(
+        select(CapabilityVersion).where(
+            CapabilityVersion.source_import_id == import_id,
+            CapabilityVersion.source_position == position,
+        )
+    )
+    if source_version is None or source_version.state != "PUBLISHED":
         raise RuntimeError("Capability version is unavailable")
-    entry = cast(dict[str, Any], entries[position])
-    if entry.get("deleted_at"):
-        return
-    normalized = cast(dict[str, Any], entry.get("normalized_config", {}))
+    source = resolve_version(db, source_version.id)
+    normalized = dict(source.version.normalized_config_json or {})
     raw_dependencies = normalized.get("dependencies")
     dependencies = (
         cast(dict[str, dict[str, str]], raw_dependencies)
@@ -1517,6 +1620,7 @@ def process_dependency_build(db: Session, import_id: str, position: int) -> None
         return
     if normalized.get("dependency_build_state") == "READY":
         return
+    source_digest = source.version.digest
 
     # The builder can access package registries, so close the database transaction first.
     # Its container receives only this validated manifest and never application credentials.
@@ -1526,26 +1630,15 @@ def process_dependency_build(db: Session, import_id: str, position: int) -> None
     storage_key = f"capability-dependencies/{digest[:2]}/{digest}.zip"
     try:
         get_artifact_store().put(storage_key, bundle.content)
-        current = db.get(CapabilityImport, import_id)
-        raw_current_entries: object = (
-            current.preview_json.get("capabilities", []) if current else []
-        )
-        current_entries = (
-            cast(list[object], raw_current_entries) if isinstance(raw_current_entries, list) else []
-        )
+        current_version = db.get(CapabilityVersion, source.version.id)
         if (
-            current is None
-            or current.state != "COMMITTED"
-            or position >= len(current_entries)
-            or not isinstance(current_entries[position], dict)
+            current_version is None
+            or current_version.state != "PUBLISHED"
+            or current_version.digest != source_digest
         ):
             raise RuntimeError("Capability version disappeared during dependency build")
-        preview = deepcopy(current.preview_json)
-        current_entry = cast(dict[str, Any], preview["capabilities"][position])
-        if current_entry.get("deleted_at"):
-            get_artifact_store().delete(storage_key)
-            return
-        current_normalized = cast(dict[str, Any], current_entry.setdefault("normalized_config", {}))
+        current = resolve_version(db, current_version.id)
+        current_normalized = dict(current.version.normalized_config_json or {})
         if current_normalized.get("dependencies") != dependencies:
             raise RuntimeError("Capability dependencies changed during build")
         current_normalized.update(
@@ -1557,33 +1650,9 @@ def process_dependency_build(db: Session, import_id: str, position: int) -> None
             }
         )
         current_normalized.pop("dependency_build_error", None)
-        current.preview_json = preview
-        capability_id = f"{current.id}:{position}"
-        capability_key = str(current_entry.get("capability_key") or "")
-        normalized = _updated_capability_config(current, capability_id, current_entry)
-        nodes = db.scalars(
-            select(NodeAsset).where(NodeAsset.deleted_at.is_(None)).order_by(NodeAsset.id)
-        ).all()
-        assets_to_refresh: list[dict[str, Any]] = []
-        for node in nodes:
-            refs = db.scalars(
-                select(NodeCapabilityRef).where(
-                    NodeCapabilityRef.node_asset_id == node.id,
-                    NodeCapabilityRef.capability_type == current.capability_type,
-                    NodeCapabilityRef.capability_key == capability_key,
-                )
-            ).all()
-            if not refs:
-                continue
-            for ref in refs:
-                ref.normalized_config = dict(normalized)
-            db.flush()
-            from flowweave.modules.catalog.application.service import asset_dict
-
-            assets_to_refresh.append(asset_dict(db, node))
-        for asset in assets_to_refresh:
-            register_commit_action(db, lambda asset=asset: _refresh_node_workspace(asset))
-        register_rollback_action(db, lambda: get_artifact_store().delete(storage_key))
+        _derived, created = publish_dependency_build(db, current, current_normalized)
+        if created:
+            register_rollback_action(db, lambda: get_artifact_store().delete(storage_key))
         finish(db)
     except BaseException:
         if not db.in_transaction():
@@ -1591,61 +1660,58 @@ def process_dependency_build(db: Session, import_id: str, position: int) -> None
         raise
 
 
-def _references(
-    db: Session, capability_id: str, item: CapabilityImport, entry: dict[str, Any]
-) -> list[dict[str, str]]:
-    key = str(entry.get("capability_key") or "")
-    result: list[dict[str, str]] = []
+def _references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
     rows = db.execute(
-        select(NodeCapabilityRef, NodeAsset.name)
+        select(NodeCapabilityRef.node_asset_id, NodeAsset.name)
         .join(NodeAsset, NodeAsset.id == NodeCapabilityRef.node_asset_id)
-        .where(NodeAsset.deleted_at.is_(None))
+        .where(
+            NodeAsset.deleted_at.is_(None),
+            NodeCapabilityRef.capability_version_id == capability_version_id,
+        )
         .order_by(NodeAsset.name, NodeAsset.id)
     ).all()
-    for ref, node_name in rows:
-        config = cast(dict[str, Any], ref.normalized_config or {})
-        if config.get("capability_id") == capability_id or (
-            config.get("import_id") == item.id
-            and ref.capability_type == item.capability_type
-            and ref.capability_key == key
-        ):
-            result.append({"id": ref.node_asset_id, "name": node_name})
-    return result
+    return [{"id": node_id, "name": node_name} for node_id, node_name in rows]
 
 
-def _collection_references(
-    db: Session, item: CapabilityImport, position: int
-) -> list[dict[str, str]]:
+def _collection_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
     rows = db.execute(
-        select(SkillCollection.id, SkillCollection.name)
+        select(CapabilityCollection.id, CapabilityCollection.name)
         .join(
-            SkillCollectionItem,
-            SkillCollectionItem.collection_id == SkillCollection.id,
+            CapabilityCollectionItem,
+            CapabilityCollectionItem.collection_id == CapabilityCollection.id,
         )
-        .where(
-            SkillCollectionItem.capability_import_id == item.id,
-            SkillCollectionItem.capability_position == position,
-        )
-        .order_by(SkillCollection.name, SkillCollection.id)
+        .where(CapabilityCollectionItem.capability_version_id == capability_version_id)
+        .order_by(CapabilityCollection.name, CapabilityCollection.id)
     ).all()
     return [{"id": collection_id, "name": name} for collection_id, name in rows]
 
 
 def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any]:
     unique_ids = list(dict.fromkeys(capability_ids))
-    resolved = [
-        (*_capability_entry(db, capability_id), capability_id) for capability_id in unique_ids
-    ]
     blocked: list[dict[str, Any]] = []
-    deletable: list[tuple[CapabilityImport, int, dict[str, Any], str]] = []
-    for item, position, entry, capability_id in resolved:
-        nodes = _references(db, capability_id, item, entry)
-        collections = _collection_references(db, item, position)
+    deletable: list[CapabilityVersion] = []
+    for capability_id in unique_ids:
+        published = resolve_version(db, capability_id)
+        if (
+            published.package.capability_type == "TOOL_POLICY"
+            and published.package.capability_key == DEFAULT_TOOL_POLICY_KEY
+        ):
+            blocked.append(
+                {
+                    "id": capability_id,
+                    "name": published.package.capability_key,
+                    "relation": "BUILTIN_CAPABILITY",
+                    "nodes": [],
+                }
+            )
+            continue
+        nodes = _references(db, capability_id)
+        collections = _collection_references(db, capability_id)
         if nodes or collections:
             reference: dict[str, Any] = {
                 "id": capability_id,
-                "name": str(entry.get("capability_key") or ""),
-                "relation": "NODE_CAPABILITY" if nodes else "SKILL_COLLECTION",
+                "name": published.package.capability_key,
+                "relation": "NODE_CAPABILITY" if nodes else "CAPABILITY_COLLECTION",
                 "nodes": nodes,
             }
             # Preserve the existing node-only response shape while exposing
@@ -1654,25 +1720,12 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
                 reference["collections"] = collections
             blocked.append(reference)
         else:
-            deletable.append((item, position, entry, capability_id))
+            deletable.append(published.version)
 
-    by_import: dict[str, list[int]] = {}
-    for item, position, _entry, _capability_id in deletable:
-        by_import.setdefault(item.id, []).append(position)
-    deleted_at = datetime.now(UTC).isoformat()
-    for import_id, positions in by_import.items():
-        item = db.get(CapabilityImport, import_id)
-        if item is None:
-            continue
-        preview = deepcopy(item.preview_json)
-        entries = cast(list[dict[str, Any]], preview.get("capabilities", []))
-        for position in positions:
-            entries[position]["deleted_at"] = deleted_at
-        # Pool deletion is deliberately logical. Historical run snapshots may
-        # still contain this immutable storage key even when no live node does.
-        item.preview_json = preview
+    for version in deletable:
+        version.state = "RETIRED"
     finish(db)
     return {
-        "deleted_ids": [capability_id for *_rest, capability_id in deletable],
+        "deleted_ids": [version.id for version in deletable],
         "blocked": blocked,
     }

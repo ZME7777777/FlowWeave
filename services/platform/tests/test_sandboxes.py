@@ -9,11 +9,15 @@ from sqlalchemy import func, select, text
 
 from flowweave.modules.sandboxes.application.service import (
     ReconcileReport,
+    _owner_is_active,
+    cleanup_unclaimed_runtime_memory,
     create_runtime_sandbox,
     create_setup_sandbox,
+    delete_sandbox_now,
     mark_runtime_bound,
     reconcile_managed_sandboxes,
     request_delete_durable,
+    runtime_memory_cleanup_pending,
     touch_runtime,
 )
 from flowweave.modules.sandboxes.infrastructure.docker import (
@@ -449,6 +453,77 @@ def test_runtime_bind_mount_exposes_only_the_selected_node_workspace(settings, m
             "{{json .}}",
         ]
     ]
+
+
+def test_runtime_memory_mounts_fixed_user_and_project_indexes_read_only(settings, monkeypatch):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.spec_json = {
+        **resource.spec_json,
+        "memory_enabled": True,
+        "memory_working_dir_relative": "sessions/run-1/node-run-1/1",
+    }
+    monkeypatch.setattr(
+        provider,
+        "_run",
+        lambda *_args, **_kwargs: _workspace_source_inspection(
+            [
+                {
+                    "Type": "bind",
+                    "Source": "/srv/flowweave/workspaces",
+                    "Destination": "/workspaces",
+                }
+            ]
+        ),
+    )
+
+    mounts = provider._runtime_workspace_mount(resource)
+
+    assert (
+        "type=bind,src=/srv/flowweave/workspaces/.managed-memory/attempt/"
+        "attempt-1/runtime/user,dst=/home/flowweave/.openhands/memory,readonly"
+    ) in mounts
+    assert (
+        "type=bind,src=/srv/flowweave/workspaces/.managed-memory/attempt/"
+        "attempt-1/runtime/project,dst=/workspaces/nodes/node-1/sessions/run-1/"
+        "node-run-1/1/.openhands/memory,readonly"
+    ) in mounts
+
+
+def test_runtime_named_volume_mounts_governed_memory_read_only(settings, monkeypatch):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.spec_json = {
+        **resource.spec_json,
+        "memory_enabled": True,
+        "memory_working_dir_relative": "sessions/run-1/node-run-1/1",
+    }
+    monkeypatch.setattr(
+        provider,
+        "_run",
+        lambda *_args, **_kwargs: _workspace_source_inspection(
+            [
+                {
+                    "Type": "volume",
+                    "Name": "flowweave-workspaces",
+                    "Destination": "/workspaces",
+                }
+            ]
+        ),
+    )
+
+    mounts = provider._runtime_workspace_mount(resource)
+
+    assert (
+        "type=volume,src=flowweave-workspaces,"
+        "dst=/home/flowweave/.openhands/memory,"
+        "volume-subpath=.managed-memory/attempt/attempt-1/runtime/user,readonly"
+    ) in mounts
+    assert (
+        "type=volume,src=flowweave-workspaces,"
+        "dst=/workspaces/nodes/node-1/sessions/run-1/node-run-1/1/.openhands/memory,"
+        "volume-subpath=.managed-memory/attempt/attempt-1/runtime/project,readonly"
+    ) in mounts
 
 
 def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_paths(
@@ -1032,6 +1107,152 @@ def test_reconciler_deletes_auxiliary_resources_when_container_is_already_missin
     assert deleted == [resource_id]
 
 
+def test_reconciler_cleans_memory_only_after_runtime_deletion(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    with db_session_factory() as db:
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="ATTEMPT",
+            owner_id="attempt-memory-cleanup",
+            backend="docker",
+            backend_resource_name="fw-sbx-memory-cleanup",
+            desired_state="DELETED",
+            observed_state="RUNNING",
+            image_reference="runtime:locked",
+            spec_json={"memory_enabled": True},
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now - timedelta(seconds=1),
+        )
+        db.add(resource)
+        db.commit()
+        resource_id = resource.id
+
+    actions: list[str] = []
+    monkeypatch.setattr(DockerSandboxProvider, "inspect", lambda self, _name: None)
+    monkeypatch.setattr(
+        DockerSandboxProvider, "delete", lambda self, _item: actions.append("docker")
+    )
+    monkeypatch.setattr(
+        "flowweave.modules.sandboxes.application.service.cleanup_runtime_memory",
+        lambda **_kwargs: actions.append("memory"),
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+
+    with db_session_factory() as db:
+        persisted = db.get(ManagedSandbox, resource_id)
+        assert persisted is not None
+        assert persisted.observed_state == "DELETED"
+    assert report.deleted == 1
+    assert actions == ["docker", "memory"]
+
+
+def test_failed_runtime_ledger_retains_memory_until_durable_deletion(
+    db_session_factory, monkeypatch
+):
+    now = datetime.now(UTC)
+    with db_session_factory() as db:
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="CONVERSATION",
+            owner_id="conversation-memory-provisioning-failed",
+            backend="docker",
+            backend_resource_name="fw-sbx-memory-provisioning-failed",
+            desired_state="DELETED",
+            observed_state="ERROR",
+            image_reference="runtime:locked",
+            spec_json={"memory_enabled": True},
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now,
+        )
+        db.add(resource)
+        db.commit()
+
+    cleaned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "flowweave.modules.sandboxes.application.service.cleanup_runtime_memory",
+        lambda *, owner_type, owner_id: cleaned.append((owner_type, owner_id)),
+    )
+
+    with db_session_factory() as db:
+        assert runtime_memory_cleanup_pending(
+            db,
+            owner_type="CONVERSATION",
+            owner_id="conversation-memory-provisioning-failed",
+        )
+        assert not cleanup_unclaimed_runtime_memory(
+            db,
+            owner_type="CONVERSATION",
+            owner_id="conversation-memory-provisioning-failed",
+        )
+        assert cleaned == []
+        resource = db.scalar(
+            select(ManagedSandbox).where(ManagedSandbox.owner_id == resource.owner_id)
+        )
+        assert resource is not None
+        resource.observed_state = "DELETED"
+        db.commit()
+        assert not runtime_memory_cleanup_pending(
+            db,
+            owner_type="CONVERSATION",
+            owner_id="conversation-memory-provisioning-failed",
+        )
+        assert cleanup_unclaimed_runtime_memory(
+            db,
+            owner_type="CONVERSATION",
+            owner_id="conversation-memory-provisioning-failed",
+        )
+        assert cleaned == [("CONVERSATION", "conversation-memory-provisioning-failed")]
+
+
+def test_immediate_runtime_deletion_cleans_memory_after_docker(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    with db_session_factory() as db:
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="ATTEMPT",
+            owner_id="attempt-memory-immediate-cleanup",
+            backend="docker",
+            backend_resource_name="fw-sbx-memory-immediate-cleanup",
+            desired_state="RUNNING",
+            observed_state="RUNNING",
+            image_reference="runtime:locked",
+            spec_json={"memory_enabled": True},
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now,
+        )
+        db.add(resource)
+        db.commit()
+        resource_id = resource.id
+
+    actions: list[str] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider, "delete", lambda self, _item: actions.append("docker")
+    )
+    monkeypatch.setattr(
+        "flowweave.modules.sandboxes.application.service.cleanup_runtime_memory",
+        lambda **_kwargs: actions.append("memory"),
+    )
+
+    with settings_context(configured), db_session_factory() as db:
+        delete_sandbox_now(db, resource_id)
+        db.commit()
+
+    with db_session_factory() as db:
+        persisted = db.get(ManagedSandbox, resource_id)
+        assert persisted is not None
+        assert persisted.observed_state == "DELETED"
+    assert actions == ["docker", "memory"]
+
+
 def test_runtime_reallocation_increments_generation(settings, db_session_factory, monkeypatch):
     configured = _docker_settings(settings)
 
@@ -1228,6 +1449,32 @@ def test_reconciler_hard_expiry_overrides_bound_active_runtime_owner(
     assert report.expired == 1
     assert report.deleted == 1
     assert deleted == [resource_id]
+
+
+def test_reconciler_dispatches_mcp_oauth_authorization_owner(db_session_factory, monkeypatch):
+    now = datetime.now(UTC)
+    resource = ManagedSandbox(
+        kind="AGENT_RUNTIME",
+        owner_type="MCP_OAUTH_AUTHORIZATION",
+        owner_id="authorization-active",
+        backend="docker",
+        backend_resource_name="fw-sbx-oauth-active",
+        observed_state="RUNNING",
+        image_reference="runtime:locked",
+        spec_json={"port": 8000, "bound": False},
+        created_at=now - timedelta(minutes=10),
+        idle_expires_at=now + timedelta(minutes=5),
+        hard_expires_at=now + timedelta(hours=1),
+        next_reconcile_at=now,
+    )
+    observed: list[str] = []
+    monkeypatch.setattr(
+        "flowweave.modules.catalog.public.mcp_oauth_authorization_owner_is_active",
+        lambda _db, owner_id: observed.append(owner_id) or True,
+    )
+    with db_session_factory() as db:
+        assert _owner_is_active(db, resource, now=now, binding_grace_seconds=1) is True
+    assert observed == ["authorization-active"]
 
 
 @pytest.mark.parametrize(

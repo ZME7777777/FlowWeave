@@ -866,6 +866,7 @@
 .subagent-activity-list small { display: block; }
 .subagent-activity-list b { font-size: 10px; }
 .subagent-activity-list small { margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.subagent-activity-list small.subagent-budget-exceeded { color: var(--red); font-weight: 650; }
 .subagent-activity-list em { color: var(--muted); font-size: 9px; font-style: normal; white-space: nowrap; }
 
 .message-timeline-content > .agent-activity-status {
@@ -940,6 +941,24 @@
     white-space: normal;
   }
 }
+
+.condensation-audit { display: grid; gap: 7px; margin: 12px 0 16px; }
+.condensation-audit-requested, .condensation-audit-completed { border: 1px solid #d8e0ef; border-radius: 8px; background: #f7f9fd; color: #526078; }
+.condensation-audit-requested { display: flex; align-items: center; gap: 8px; padding: 9px 12px; font-size: 11px; }
+.condensation-audit-requested time { margin-left: auto; color: #8993a5; font: 9px 'DM Mono', monospace; }
+.condensation-audit-completed summary { display: flex; align-items: center; gap: 9px; padding: 10px 12px; cursor: pointer; list-style: none; }
+.condensation-audit-completed summary::-webkit-details-marker { display: none; }
+.condensation-audit-completed summary > span { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; }
+.condensation-audit-completed summary b { font-size: 11px; color: #3e4d68; }
+.condensation-audit-completed summary small { overflow: hidden; color: #78849a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.condensation-audit-completed summary time { color: #8993a5; font: 9px 'DM Mono', monospace; }
+.condensation-audit-completed summary > svg:last-child { transition: transform .18s ease; }
+.condensation-audit-completed[open] summary > svg:last-child { transform: rotate(90deg); }
+.condensation-audit-completed > div { padding: 0 12px 12px 34px; }
+.condensation-audit-completed > div > p { margin: 0 0 9px; color: #778297; font-size: 10px; line-height: 1.5; }
+.condensation-audit-completed dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 9px; margin: 9px 0 0; font: 9px 'DM Mono', monospace; }
+.condensation-audit-completed dt { color: #8993a5; }
+.condensation-audit-completed dd { min-width: 0; margin: 0; overflow: hidden; color: #536077; text-overflow: ellipsis; white-space: nowrap; }
 
 .composer-runtime-actions {
   display: flex;

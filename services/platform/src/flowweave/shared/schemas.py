@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 def _empty_any_dict() -> dict[str, Any]:
@@ -74,6 +74,28 @@ def _empty_io_fields() -> list[IOFieldWrite]:
     return []
 
 
+class CondenserWrite(ApiModel):
+    kind: Literal["NO_OP", "LLM_SUMMARIZING"] = "NO_OP"
+    model_provider_id: str | None = None
+    model_name: str | None = Field(default=None, max_length=240)
+    max_size: int = Field(default=240, ge=20, le=10000)
+    max_tokens: int | None = Field(default=None, ge=1)
+    keep_first: int = Field(default=2, ge=0)
+    minimum_progress: float = Field(default=0.1, gt=0.0, lt=1.0)
+    hard_context_reset_max_retries: int = Field(default=5, ge=1, le=100)
+    hard_context_reset_context_scaling: float = Field(default=0.8, gt=0.0, lt=1.0)
+
+    @model_validator(mode="after")
+    def validate_strategy(self) -> CondenserWrite:
+        if self.kind == "NO_OP":
+            if self.model_provider_id is not None or self.model_name is not None:
+                raise ValueError("NO_OP condenser cannot select a model")
+            return self
+        if self.keep_first >= self.max_size // 2 - 1:
+            raise ValueError("keep_first must be less than max_size // 2 - 1 for condensation")
+        return self
+
+
 class ExecutorWrite(ApiModel):
     model_provider_id: str | None = None
     model_name: str | None = None
@@ -81,13 +103,35 @@ class ExecutorWrite(ApiModel):
     context_prompt: str = ""
     timeout_seconds: int = Field(default=900, ge=1, le=86400)
     max_iterations: int = Field(default=100, ge=1, le=1000)
+    confirmation_policy: Literal["ALWAYS", "NEVER"] = "ALWAYS"
+    condenser: CondenserWrite = Field(default_factory=CondenserWrite)
 
 
 class CapabilityWrite(ApiModel):
-    capability_id: str | None = Field(default=None, min_length=38, max_length=48)
+    capability_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        ),
+    )
     # Read models from older clients may still echo these fields. The server
     # ignores them and resolves the canonical version by capability_id.
-    capability_type: Literal["SKILL", "MCP", "HOOK"] | None = None
+    capability_type: (
+        Literal[
+            "SKILL",
+            "PLUGIN",
+            "MCP",
+            "HOOK",
+            "TOOL_POLICY",
+            "AGENT_DEFINITION",
+            "CONTEXT_POLICY",
+            "MEMORY_POLICY",
+            "CRITIC_POLICY",
+            "AGENT_PROFILE",
+        ]
+        | None
+    ) = None
     capability_key: str | None = Field(default=None, max_length=200)
     normalized_config: dict[str, Any] | None = None
 
@@ -153,7 +197,45 @@ class CapabilitySkillRevisionWrite(ApiModel):
     content: str = Field(min_length=1, max_length=1_048_576)
 
 
-class SkillCollectionWrite(ApiModel):
+class AgentProfileRevisionWrite(ApiModel):
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    document: dict[str, Any]
+
+
+class AgentProfileCopyWrite(ApiModel):
+    capability_key: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+
+
+class AgentProfileRetireWrite(ApiModel):
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AgentProfileSwitchWrite(ApiModel):
+    expected_active_version: int = Field(ge=1)
+    flow_node_key: str = Field(min_length=1, max_length=200)
+    profile_version_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    source_profile_version_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        ),
+    )
+    expected_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    copy_input_bindings_from_attempt_id: str | None = None
+    model_cost_comparison: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class CapabilityCollectionWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     category: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=2000)
@@ -161,14 +243,14 @@ class SkillCollectionWrite(ApiModel):
     row_version: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
-    def validate_collection(self) -> SkillCollectionWrite:
+    def validate_collection(self) -> CapabilityCollectionWrite:
         self.name = self.name.strip()
         self.category = self.category.strip()
         self.description = self.description.strip()
         if not self.name:
             raise ValueError("name cannot be blank")
         if len(self.capability_ids) != len(set(self.capability_ids)):
-            raise ValueError("Skill collection members must be unique")
+            raise ValueError("Capability collection members must be unique")
         return self
 
 
@@ -328,6 +410,10 @@ class AttemptVersionWrite(ApiModel):
     expected_state_version: int = Field(ge=1)
 
 
+class RuntimeCancelRecoveryWrite(AttemptVersionWrite):
+    mode: Literal["RECONCILE_PARENT", "DELETE_MANAGED_RUNTIME"] = "RECONCILE_PARENT"
+
+
 class AttemptStartWrite(AttemptVersionWrite):
     startup_mode: Literal["SKILL", "PROMPT"] = "PROMPT"
     capability_key: str | None = None
@@ -352,6 +438,11 @@ class HumanInputWrite(AttemptVersionWrite):
     content: str = Field(min_length=1)
     model_name: str | None = Field(default=None, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
+
+
+class RuntimeConfirmationDecisionWrite(ApiModel):
+    accept: bool
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 class RejectWrite(AttemptVersionWrite):
@@ -383,7 +474,18 @@ def _empty_hook_scripts() -> list[HookScriptWrite]:
 
 
 class CapabilityValidateWrite(ApiModel):
-    capability_type: Literal["SKILL", "MCP", "HOOK"]
+    capability_type: Literal[
+        "SKILL",
+        "PLUGIN",
+        "MCP",
+        "HOOK",
+        "TOOL_POLICY",
+        "AGENT_DEFINITION",
+        "CONTEXT_POLICY",
+        "MEMORY_POLICY",
+        "CRITIC_POLICY",
+        "AGENT_PROFILE",
+    ]
     filename: str
     content_base64: str
     mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
@@ -392,6 +494,115 @@ class CapabilityValidateWrite(ApiModel):
 
 class CapabilityCommitWrite(ApiModel):
     import_token: str
+
+
+class MCPReadOnlyToolCallWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+
+class MCPProbeWrite(ApiModel):
+    environment_version_id: str
+    timeout: float = Field(default=15.0, gt=0, le=120)
+    read_only_tool_call: MCPReadOnlyToolCallWrite | None = None
+    oauth_secret_reference_id: str | None = None
+    expected_oauth_secret_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_oauth_reference(self) -> MCPProbeWrite:
+        if (self.oauth_secret_reference_id is None) != (self.expected_oauth_secret_version is None):
+            raise ValueError(
+                "oauth_secret_reference_id and expected_oauth_secret_version "
+                "must be supplied together"
+            )
+        return self
+
+
+class MCPOAuthSecretReferenceWrite(ApiModel):
+    environment_version_id: str
+
+
+class MCPOAuthSecretReferenceRevokeWrite(ApiModel):
+    expected_state_version: int = Field(ge=1)
+
+
+class MCPOAuthAuthorizationStartWrite(ApiModel):
+    expected_state_version: int = Field(ge=1)
+    timeout: float = Field(default=15.0, gt=0, le=120)
+
+
+class MCPOAuthAuthorizationCallbackWrite(ApiModel):
+    expected_authorization_version: int = Field(ge=1)
+    callback_url: SecretStr
+
+
+class PluginSourceResolveWrite(ApiModel):
+    source_url: str = Field(min_length=1, max_length=2048)
+    commit: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
+    repo_path: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+    )
+
+
+class MarketplacePluginSourceResolveWrite(ApiModel):
+    marketplace_source_url: str = Field(min_length=1, max_length=2048)
+    marketplace_commit: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
+    marketplace_repo_path: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+    )
+    plugin_name: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+
+
+class PluginSourcePublishWrite(ApiModel):
+    expected_state_version: int = Field(ge=1)
+
+
+class PluginProbeWrite(ApiModel):
+    environment_version_id: str
+
+
+class MemorySourceCreateWrite(ApiModel):
+    source_key: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    display_name: str = Field(min_length=1, max_length=200)
+    owner_id: str = Field(min_length=1, max_length=200)
+    scope: Literal["USER", "PROJECT"]
+    scope_key: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=262_144)
+
+
+class MemorySourceRevisionWrite(ApiModel):
+    content: str = Field(min_length=1, max_length=262_144)
+
+
+class MemorySourceReviewWrite(ApiModel):
+    expected_governance_version: int = Field(ge=1)
+    decision: Literal["APPROVE", "REJECT"]
+    note: str = Field(default="", max_length=2000)
+
+
+class MemorySourceScanWrite(ApiModel):
+    expected_governance_version: int = Field(ge=1)
+
+
+class MemorySourceActivateWrite(ApiModel):
+    expected_governance_version: int = Field(ge=1)
+    retention_days: int = Field(default=30, ge=1, le=3650)
+
+
+class MemorySourceLifecycleWrite(ApiModel):
+    expected_governance_version: int = Field(ge=1)
 
 
 class ConversationCreateWrite(ApiModel):
@@ -411,9 +622,71 @@ class ConversationStopWrite(ApiModel):
     expected_conversation_version: int = Field(ge=1)
 
 
+class ConversationCondenseWrite(ApiModel):
+    expected_conversation_version: int = Field(ge=1)
+
+
+class RuntimeSubagentTaskUsageRead(ApiModel):
+    runtime_task_id: str
+    source_cursor: str | None = None
+    snapshot_digest: str
+    usage_version: int
+    model_name: str
+    accumulated_cost_usd: float
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    reasoning_tokens: int
+    context_window: int
+    per_turn_tokens: int
+    budget_limit_usd: float | None = None
+    budget_state: Literal["UNBOUNDED", "WITHIN", "EXCEEDED"]
+    budget_exceeded_at: str | None = None
+    updated_at: str
+
+
+class RuntimeSubagentTaskRead(ApiModel):
+    id: str
+    attempt_id: str
+    conversation_id: str
+    action_event_id: str
+    action_cursor: str | None = None
+    tool_call_id: str | None = None
+    llm_response_id: str | None = None
+    observation_event_id: str | None = None
+    observation_cursor: str | None = None
+    runtime_task_id: str | None = None
+    subagent_type: str
+    description: str | None = None
+    resume_task_id: str | None = None
+    state: Literal["REQUESTED", "COMPLETED", "ERROR"]
+    native_status: str | None = None
+    result: str | None = None
+    error_detail: str | None = None
+    usage: RuntimeSubagentTaskUsageRead | None = None
+    created_at: str
+    completed_at: str | None = None
+    updated_at: str
+
+
 class ConversationForkWrite(ApiModel):
     expected_conversation_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=160)
+    fork_kind: Literal["RUNTIME", "SEMANTIC"] = "RUNTIME"
+    fork_scope: Literal["MESSAGE", "FULL"] = "MESSAGE"
+    reset_metrics: bool = True
+    acknowledge_semantic_state_loss: bool = False
+
+    @model_validator(mode="after")
+    def validate_fork_kind(self) -> ConversationForkWrite:
+        if self.fork_kind == "SEMANTIC" and not self.acknowledge_semantic_state_loss:
+            raise ValueError(
+                "Semantic Fork requires explicit acknowledgement of Runtime state loss"
+            )
+        if self.fork_kind == "RUNTIME" and self.acknowledge_semantic_state_loss:
+            raise ValueError("Runtime Fork must not acknowledge Semantic Fork state loss")
+        return self
 
 
 class ConversationReviseWrite(ApiModel):

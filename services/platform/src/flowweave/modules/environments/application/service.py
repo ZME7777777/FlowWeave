@@ -14,9 +14,11 @@ from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     BackgroundTask,
+    CapabilityValidation,
     EnvironmentSetupSession,
     EnvironmentVersion,
     FlowRun,
+    MCPOAuthSecretReference,
     NodeAsset,
     TaskState,
     TerminalEnvironment,
@@ -908,7 +910,29 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
             | (EnvironmentSetupSession.container_id != ""),
         )
     )
-    if node_reference_count or run_reference_count or setup_reference is not None:
+    validation_reference_count = int(
+        db.scalar(
+            select(func.count(CapabilityValidation.id)).where(
+                CapabilityValidation.environment_version_id == version.id
+            )
+        )
+        or 0
+    )
+    oauth_reference_count = int(
+        db.scalar(
+            select(func.count(MCPOAuthSecretReference.id)).where(
+                MCPOAuthSecretReference.environment_version_id == version.id
+            )
+        )
+        or 0
+    )
+    if (
+        node_reference_count
+        or run_reference_count
+        or setup_reference is not None
+        or validation_reference_count
+        or oauth_reference_count
+    ):
         details: dict[str, Any] = {
             "environment_id": environment_id,
             "version_id": version.id,
@@ -917,6 +941,10 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
         }
         if setup_reference is not None:
             details["setup_reference_count"] = 1
+        if validation_reference_count:
+            details["capability_validation_reference_count"] = validation_reference_count
+        if oauth_reference_count:
+            details["mcp_oauth_secret_reference_count"] = oauth_reference_count
         raise DomainError(
             "ENVIRONMENT_VERSION_IN_USE",
             "The terminal environment version is still referenced",
@@ -981,6 +1009,21 @@ def delete_environment(db: Session, environment_id: str) -> None:
         )
     )
     version_ids = [version.id for version in versions]
+    oauth_reference_count = int(
+        db.scalar(
+            select(func.count(MCPOAuthSecretReference.id)).where(
+                MCPOAuthSecretReference.environment_version_id.in_(version_ids)
+            )
+        )
+        or 0
+    )
+    if oauth_reference_count:
+        raise DomainError(
+            "ENVIRONMENT_IN_USE",
+            "The terminal environment is referenced by MCP OAuth audit history",
+            409,
+            {"mcp_oauth_secret_reference_count": oauth_reference_count},
+        )
     referenced = db.scalar(
         select(NodeAsset.id).where(
             NodeAsset.environment_version_id.in_(version_ids),

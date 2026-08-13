@@ -36,6 +36,7 @@ from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.dependency_builder import dependency_builder_context
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.database import Database
+from flowweave.shared.plugin_resolver import plugin_resolver_context
 from flowweave.shared.sandbox import sandbox_context
 from flowweave.shared.settings import settings_context
 
@@ -121,12 +122,15 @@ class TaskWorker:
             runtime_context(self.container.runtime),
             artifact_store_context(self.container.artifact_store),
             dependency_builder_context(self.container.dependency_builder),
+            plugin_resolver_context(self.container.plugin_resolver),
             sandbox_context(self.container.sandbox),
         )
 
     async def recover_startup(self) -> None:
-        settings, runtime, artifacts, dependency_builder, sandbox = self._contexts()
-        with settings, runtime, artifacts, dependency_builder, sandbox:
+        settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (
+            self._contexts()
+        )
+        with settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox:
             async with self.container.database.session() as session:
                 try:
                     await session.run_sync(
@@ -150,8 +154,10 @@ class TaskWorker:
                     raise
 
     async def run_once(self) -> bool:
-        settings, runtime, artifacts, dependency_builder, sandbox = self._contexts()
-        with settings, runtime, artifacts, dependency_builder, sandbox:
+        settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (
+            self._contexts()
+        )
+        with settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox:
             async with self.container.database.session() as session:
                 claimed = await session.run_sync(
                     lambda db: claim(
@@ -228,8 +234,10 @@ class TaskWorker:
             return True
 
     async def run_maintenance(self) -> int:
-        settings, runtime, artifacts, dependency_builder, sandbox = self._contexts()
-        with settings, runtime, artifacts, dependency_builder, sandbox:
+        settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (
+            self._contexts()
+        )
+        with settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox:
             async with self.container.database.session() as session:
                 try:
                     expired = await session.run_sync(

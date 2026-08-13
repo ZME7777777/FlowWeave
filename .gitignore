@@ -37,3 +37,7 @@ services/platform/test-artifacts/
 services/platform/test-workspaces/
 
 .tmp/
+
+# Keep repository collaboration policy versioned even when a global excludes
+# file ignores AGENTS.md.
+!/AGENTS.md

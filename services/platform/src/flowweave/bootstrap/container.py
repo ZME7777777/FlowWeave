@@ -12,10 +12,12 @@ from flowweave.runtime.mock import MockRuntime
 from flowweave.runtime.openhands import OpenHandsRuntime
 from flowweave.shared.application.artifact_store import ArtifactStorePort
 from flowweave.shared.application.dependency_builder import DependencyBuilderPort
+from flowweave.shared.application.plugin_resolver import PluginResolverPort
 from flowweave.shared.application.sandbox import SandboxPort
 from flowweave.shared.infrastructure.artifact_store import build_artifact_store
 from flowweave.shared.infrastructure.database import Database
 from flowweave.shared.infrastructure.dependency_builder import build_dependency_builder
+from flowweave.shared.infrastructure.plugin_resolver import build_plugin_resolver
 from flowweave.shared.infrastructure.sandbox import build_sandbox
 
 
@@ -28,6 +30,7 @@ class Container:
     runtime: RuntimePort
     artifact_store: ArtifactStorePort
     dependency_builder: DependencyBuilderPort
+    plugin_resolver: PluginResolverPort
     sandbox: SandboxPort
     run_event_listener: RunEventListener
 
@@ -52,6 +55,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         runtime=runtime,
         artifact_store=build_artifact_store(settings),
         dependency_builder=build_dependency_builder(settings),
+        plugin_resolver=build_plugin_resolver(settings),
         sandbox=build_sandbox(settings),
         run_event_listener=RunEventListener(settings.database_url),
     )

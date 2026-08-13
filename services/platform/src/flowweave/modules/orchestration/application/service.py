@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -7,13 +8,18 @@ import shutil
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from flowweave.modules.catalog.public import describe_asset
+from flowweave.modules.catalog.public import (
+    describe_agent_profile_version,
+    describe_asset,
+    hold_snapshot_memory_references,
+    resolve_snapshot_memory,
+)
 from flowweave.modules.conversations import public as conversations
 from flowweave.modules.environments.public import lock_referenceable_version
 from flowweave.modules.flows.public import describe_flow, load_flow
@@ -31,21 +37,38 @@ from flowweave.modules.runs.public import (
 )
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
-from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
+from flowweave.runtime.base import (
+    RuntimeHandle,
+    RuntimePendingConfirmation,
+    RuntimeResult,
+    StartAttemptRequest,
+)
 from flowweave.runtime.dependencies import get_runtime
+from flowweave.runtime.manifest import (
+    runtime_manifest_hash as _runtime_manifest_hash,
+)
+from flowweave.runtime.manifest import (
+    runtime_node,
+)
 from flowweave.runtime.request import (
     build_runtime_request,
+    frozen_memory_policy,
     resolve_runtime_provider,
     resolve_runtime_selection,
 )
 from flowweave.runtime.routing import runtime_for
-from flowweave.runtime.workspace import attempt_workspace_path
+from flowweave.runtime.workspace import (
+    attempt_workspace_path,
+    cleanup_runtime_memory,
+    materialize_runtime_memory,
+)
 from flowweave.shared.application.transactions import (
     finish,
     register_commit_action,
     register_rollback_action,
 )
 from flowweave.shared.artifact_store import get_artifact_store
+from flowweave.shared.domain.tool_policy import OPENHANDS_VERSION
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.models import (
     AgentConversation,
@@ -65,18 +88,23 @@ from flowweave.shared.models import (
     NodeRunState,
     RunEvent,
     RunSnapshot,
+    RuntimeConfirmationBatch,
     TaskState,
     now,
 )
 from flowweave.shared.schemas import (
+    AgentProfileSwitchWrite,
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    CondenserWrite,
     HumanInputWrite,
     InputBindingsWrite,
     NodeRunStart,
     RejectWrite,
     RunStart,
+    RuntimeCancelRecoveryWrite,
+    RuntimeConfirmationDecisionWrite,
     SyncSnapshotWrite,
 )
 from flowweave.shared.settings import get_settings
@@ -119,6 +147,160 @@ def attempt_sandbox_owner_is_active(
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
+    """Compile the complete, replayable Agent specification for every node."""
+
+    nodes: dict[str, dict[str, Any]] = {}
+    raw_nodes: object = definition.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raise DomainError("SNAPSHOT_INVALID", "Snapshot nodes are invalid", 409)
+    for raw_node in cast(list[object], raw_nodes):
+        if not isinstance(raw_node, dict):
+            raise DomainError("SNAPSHOT_INVALID", "Snapshot node is invalid", 409)
+        node = cast(dict[str, Any], raw_node)
+        instance_key = str(node.get("instance_key") or "")
+        raw_asset: object = node.get("asset")
+        if not instance_key or not isinstance(raw_asset, dict):
+            raise DomainError("SNAPSHOT_INVALID", "Snapshot node asset is invalid", 409)
+        asset = cast(dict[str, Any], raw_asset)
+        raw_capabilities: object = asset.get("capabilities", [])
+        if not isinstance(raw_capabilities, list):
+            raise DomainError("SNAPSHOT_INVALID", "Snapshot capabilities are invalid", 409)
+        capabilities: list[dict[str, Any]] = []
+        tool_policies: list[dict[str, Any]] = []
+        context_policies: list[dict[str, Any]] = []
+        memory_policies: list[dict[str, Any]] = []
+        critic_policies: list[dict[str, Any]] = []
+        agent_profiles: list[dict[str, Any]] = []
+        agent_definitions: list[dict[str, Any]] = []
+        plugins: list[dict[str, Any]] = []
+        for raw_capability in cast(list[object], raw_capabilities):
+            if not isinstance(raw_capability, dict):
+                raise DomainError("SNAPSHOT_INVALID", "Snapshot capability is invalid", 409)
+            capability = cast(dict[str, Any], raw_capability)
+            raw_config: object = capability.get("normalized_config")
+            if not isinstance(raw_config, dict):
+                raise DomainError("SNAPSHOT_INVALID", "Snapshot capability config is invalid", 409)
+            config = cast(dict[str, Any], raw_config)
+            version_id = str(
+                capability.get("capability_id") or config.get("capability_version_id") or ""
+            )
+            digest = str(config.get("digest") or "")
+            content_hash = str(config.get("content_hash") or "")
+            if len(version_id) != 36 or len(digest) != 64 or len(content_hash) != 64:
+                raise DomainError(
+                    "SNAPSHOT_INVALID",
+                    "Snapshot capability lacks an immutable version",
+                    409,
+                    {"instance_key": instance_key},
+                )
+            frozen = {
+                "capability_version_id": version_id,
+                "capability_type": str(capability.get("capability_type") or ""),
+                "capability_key": str(capability.get("capability_key") or ""),
+                "digest": digest,
+                "content_hash": content_hash,
+                "runtime_config": copy.deepcopy(config),
+            }
+            if frozen["capability_type"] == "TOOL_POLICY":
+                tool_policies.append(frozen)
+            elif frozen["capability_type"] == "CONTEXT_POLICY":
+                context_policies.append(frozen)
+            elif frozen["capability_type"] == "MEMORY_POLICY":
+                memory_policies.append(frozen)
+            elif frozen["capability_type"] == "CRITIC_POLICY":
+                critic_policies.append(frozen)
+            elif frozen["capability_type"] == "AGENT_PROFILE":
+                agent_profiles.append(frozen)
+            elif frozen["capability_type"] == "AGENT_DEFINITION":
+                agent_definitions.append(frozen)
+            elif frozen["capability_type"] == "PLUGIN":
+                plugins.append(frozen)
+            else:
+                capabilities.append(frozen)
+        if len(tool_policies) != 1:
+            raise DomainError(
+                "SNAPSHOT_INVALID",
+                "Snapshot node must freeze exactly one Tool Policy",
+                409,
+                {"instance_key": instance_key, "tool_policy_count": len(tool_policies)},
+            )
+        if len(context_policies) != 1:
+            raise DomainError(
+                "SNAPSHOT_INVALID",
+                "Snapshot node must freeze exactly one Context Policy",
+                409,
+                {
+                    "instance_key": instance_key,
+                    "context_policy_count": len(context_policies),
+                },
+            )
+        if len(memory_policies) != 1:
+            raise DomainError(
+                "SNAPSHOT_INVALID",
+                "Snapshot node must freeze exactly one Memory Policy",
+                409,
+                {
+                    "instance_key": instance_key,
+                    "memory_policy_count": len(memory_policies),
+                },
+            )
+        if len(critic_policies) != 1:
+            raise DomainError(
+                "SNAPSHOT_INVALID",
+                "Snapshot node must freeze exactly one Critic Policy",
+                409,
+                {
+                    "instance_key": instance_key,
+                    "critic_policy_count": len(critic_policies),
+                },
+            )
+        if len(agent_profiles) > 1:
+            raise DomainError(
+                "SNAPSHOT_INVALID",
+                "Snapshot node can freeze at most one Agent Profile",
+                409,
+                {
+                    "instance_key": instance_key,
+                    "agent_profile_count": len(agent_profiles),
+                },
+            )
+        executor = asset.get("executor")
+        if not isinstance(executor, dict):
+            raise DomainError("SNAPSHOT_INVALID", "Snapshot executor is invalid", 409)
+        executor_config = cast(dict[str, Any], executor)
+        nodes[instance_key] = {
+            "node_asset_id": str(node.get("node_asset_id") or asset.get("id") or ""),
+            "capabilities": capabilities,
+            "agent_spec": {
+                "schema_version": 1,
+                "agent_kind": "OPENHANDS",
+                "openhands_version": OPENHANDS_VERSION,
+                "tool_policy": tool_policies[0],
+                "context_policy": context_policies[0],
+                "memory_policy": memory_policies[0],
+                "critic_policy": critic_policies[0],
+                "agent_profile": agent_profiles[0] if agent_profiles else None,
+                "agent_definitions": agent_definitions,
+                "plugins": plugins,
+                "confirmation_policy": str(executor_config.get("confirmation_policy") or "ALWAYS"),
+                "condenser": copy.deepcopy(executor_config.get("condenser") or {"kind": "NO_OP"}),
+                "budgets": {"max_iterations": int(executor_config.get("max_iterations") or 100)},
+            },
+        }
+    return {"schema_version": 2, "openhands_version": OPENHANDS_VERSION, "nodes": nodes}
+
+
+def _runtime_node(snapshot: RunSnapshot, instance_key: str) -> dict[str, Any]:
+    return runtime_node(
+        definition=snapshot.definition_json,
+        manifest=snapshot.runtime_manifest_json or {},
+        expected_hash=snapshot.runtime_manifest_hash,
+        snapshot_id=snapshot.id,
+        instance_key=instance_key,
+    )
 
 
 def _event(
@@ -180,6 +362,43 @@ def _node(snapshot: RunSnapshot, instance_key: str) -> dict[str, Any]:
         if item["instance_key"] == instance_key:
             return item
     raise not_found("flow_node_snapshot", instance_key)
+
+
+def _confirmation_policy(value: object, *, source: str) -> Literal["ALWAYS", "NEVER"]:
+    policy = str(value or "ALWAYS")
+    if policy not in {"ALWAYS", "NEVER"}:
+        raise DomainError(
+            "SNAPSHOT_INVALID",
+            "OpenHands confirmation policy is invalid",
+            409,
+            {"source": source, "confirmation_policy": policy},
+        )
+    return cast(Literal["ALWAYS", "NEVER"], policy)
+
+
+def _snapshot_confirmation_policy(node: dict[str, Any]) -> Literal["ALWAYS", "NEVER"]:
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    return _confirmation_policy(
+        executor.get("confirmation_policy"), source="snapshot.node.asset.executor"
+    )
+
+
+def _snapshot_condenser_config(node: dict[str, Any]) -> dict[str, Any]:
+    """Validate and freeze the governed condenser policy from a Run Snapshot."""
+
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    raw = executor.get("condenser") or {"kind": "NO_OP"}
+    try:
+        return CondenserWrite.model_validate(raw).model_dump(mode="json")
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_INVALID",
+            "OpenHands condenser policy is invalid",
+            409,
+            {"source": "snapshot.node.asset.executor.condenser"},
+        ) from exc
 
 
 def _run(db: Session, run_id: str) -> FlowRun:
@@ -514,20 +733,217 @@ def _dispatch_gates(db: Session, attempt: NodeAttempt, stage: str) -> None:
     )
 
 
-def _dispatch_poll(db: Session, attempt: NodeAttempt, poll_no: int, *, delayed: bool) -> None:
+def _dispatch_poll(
+    db: Session,
+    attempt: NodeAttempt,
+    poll_no: int,
+    *,
+    delayed: bool,
+    task_usage_recovery_no: int = 0,
+) -> None:
     enqueue(
         db,
         task_type="POLL_RUNTIME",
         aggregate_type="ATTEMPT",
         aggregate_id=attempt.id,
         idempotency_key=f"poll-runtime:{attempt.id}:{poll_no}",
-        payload={"poll_no": poll_no},
+        payload={
+            "poll_no": poll_no,
+            **(
+                {"task_usage_recovery_no": task_usage_recovery_no} if task_usage_recovery_no else {}
+            ),
+        },
         available_at=(
             datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds)
             if delayed
             else None
         ),
     )
+
+
+def _dispatch_runtime_wakeup(
+    db: Session,
+    attempt: NodeAttempt,
+    wakeup_no: int,
+    *,
+    delayed: bool = False,
+) -> None:
+    task = enqueue(
+        db,
+        task_type="WAIT_RUNTIME_WAKEUP",
+        aggregate_type="ATTEMPT",
+        aggregate_id=attempt.id,
+        idempotency_key=f"wait-runtime-wakeup:{attempt.id}:v{attempt.state_version}:{wakeup_no}",
+        payload={"wakeup_no": wakeup_no},
+        available_at=(
+            datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds)
+            if delayed
+            else None
+        ),
+    )
+    task.max_attempts = max(task.max_attempts, 100)
+
+
+def process_runtime_wakeup(
+    db: Session,
+    attempt_id: str,
+    wakeup_no: int,
+    lease: Lease,
+    *,
+    backoff_no: int = 0,
+    commit: bool = True,
+) -> None:
+    attempt = _attempt(db, attempt_id)
+    if attempt.state != AttemptState.EXECUTING or attempt.runtime_phase != "RUNNING":
+        return
+    expected_version = attempt.state_version
+    sandbox = sandboxes.sandbox_snapshot(db, attempt.runtime_sandbox_id) or {}
+    handle = RuntimeHandle(
+        attempt.runtime_job_id or "",
+        attempt.conversation_id or "",
+        attempt.runtime_cursor,
+        str(sandbox.get("id") or ""),
+        str(sandbox.get("backend_resource_name") or ""),
+    )
+    _release_worker_read_transaction(db, lease)
+    try:
+        wakeup = get_runtime().wait_for_wakeup(
+            handle,
+            channel="CONVERSATION",
+            timeout_seconds=get_settings().runtime_wakeup_timeout_seconds,
+        )
+    except DomainError:
+        wakeup = None
+    _require_current_lease(db, lease)
+    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
+    current = _attempt(db, attempt_id)
+    if (
+        current.state != AttemptState.EXECUTING
+        or current.runtime_phase != "RUNNING"
+        or current.state_version != expected_version
+    ):
+        return
+    if wakeup is not None and wakeup.notified:
+        poll_task = enqueue(
+            db,
+            task_type="POLL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=current.id,
+            idempotency_key=f"poll-runtime-wakeup:{current.id}:v{current.state_version}:{wakeup_no}",
+            payload={"poll_no": wakeup_no},
+        )
+        poll_task.max_attempts = max(poll_task.max_attempts, 10)
+    next_backoff = 0 if wakeup is not None else min(backoff_no + 1, 8)
+    task = enqueue(
+        db,
+        task_type="WAIT_RUNTIME_WAKEUP",
+        aggregate_type="ATTEMPT",
+        aggregate_id=current.id,
+        idempotency_key=(
+            f"wait-runtime-wakeup:{current.id}:v{current.state_version}:{wakeup_no + 1}"
+        ),
+        payload={"wakeup_no": wakeup_no + 1, "backoff_no": next_backoff},
+        available_at=datetime.now(UTC)
+        + timedelta(
+            seconds=(
+                min(
+                    get_settings().runtime_wakeup_backoff_max_seconds,
+                    max(get_settings().runtime_poll_seconds, float(2**next_backoff)),
+                )
+                if next_backoff
+                else get_settings().runtime_poll_seconds
+            )
+        ),
+    )
+    task.max_attempts = max(task.max_attempts, 100)
+    _finish_transaction(db, commit)
+
+
+def _confirmation_dict(item: RuntimeConfirmationBatch) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "attempt_id": item.attempt_id,
+        "conversation_id": item.conversation_id,
+        "runtime_conversation_id": item.runtime_conversation_id,
+        "runtime_cursor": item.runtime_cursor,
+        "pending_actions_digest": item.pending_actions_digest,
+        "pending_actions": item.pending_actions_json,
+        "risk_summary": item.risk_summary_json,
+        "action_count": item.action_count,
+        "state": item.state,
+        "decision_accept": item.decision_accept,
+        "decision_reason": item.decision_reason,
+        "decided_by": item.decided_by,
+        "decided_at": item.decided_at.isoformat() if item.decided_at else None,
+        "runtime_response_cursor": item.runtime_response_cursor,
+        "state_version": item.state_version,
+        "created_at": item.created_at.isoformat(),
+        "updated_at": item.updated_at.isoformat(),
+    }
+
+
+def _freeze_runtime_confirmation(
+    db: Session, attempt: NodeAttempt, pending: RuntimePendingConfirmation
+) -> RuntimeConfirmationBatch:
+    conversation = db.scalar(
+        select(AgentConversation).where(
+            AgentConversation.attempt_id == attempt.id,
+            AgentConversation.kind == "AUTO",
+        )
+    )
+    if conversation is None or not attempt.conversation_id:
+        raise DomainError(
+            "RUNTIME_PROTOCOL_ERROR",
+            "OpenHands confirmation is missing its durable conversation mapping",
+            502,
+        )
+    active = db.scalar(
+        select(RuntimeConfirmationBatch)
+        .where(
+            RuntimeConfirmationBatch.conversation_id == conversation.id,
+            RuntimeConfirmationBatch.state.in_(["PENDING", "DECIDING"]),
+        )
+        .with_for_update()
+    )
+    if active is not None:
+        if active.pending_actions_digest == pending.pending_actions_digest:
+            return active
+        active.state = "EXPIRED"
+        active.state_version += 1
+
+    actions = [
+        {
+            "action_id": action.action_id,
+            "tool_call_id": action.tool_call_id,
+            "tool_name": action.tool_name,
+            "arguments": action.arguments,
+            "security_risk": action.security_risk,
+            "summary": action.summary,
+            "digest": action.digest,
+        }
+        for action in pending.actions
+    ]
+    item = RuntimeConfirmationBatch(
+        attempt_id=attempt.id,
+        conversation_id=conversation.id,
+        runtime_conversation_id=attempt.conversation_id,
+        runtime_cursor=pending.cursor,
+        pending_actions_digest=pending.pending_actions_digest,
+        pending_actions_json=actions,
+        risk_summary_json=[
+            {
+                "action_id": action.action_id,
+                "security_risk": action.security_risk,
+                "summary": action.summary,
+            }
+            for action in pending.actions
+        ],
+        action_count=len(actions),
+        state="PENDING",
+    )
+    db.add(item)
+    db.flush()
+    return item
 
 
 def _require_current_lease(db: Session, lease: Lease | None) -> None:
@@ -844,6 +1260,8 @@ def _create_node_run(
     asset_id = str(asset.get("id") or "")
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
+    confirmation_policy = _snapshot_confirmation_policy(node)
+    condenser_config = _snapshot_condenser_config(node)
     _validate_input_bindings(db, run, node, artifact_ids)
     # Automatic port propagation targets the latest waiting work item so the
     # same mapping stays idempotent. A human start is intentionally different:
@@ -910,6 +1328,8 @@ def _create_node_run(
             node_run_id=existing.id,
             attempt_no=next_attempt_no,
             snapshot_id=snapshot.id,
+            confirmation_policy=confirmation_policy,
+            condenser_config_json=copy.deepcopy(condenser_config),
             workspace_ref=str(
                 attempt_workspace_path(
                     asset_id=asset_id,
@@ -956,6 +1376,8 @@ def _create_node_run(
         node_run_id=node_run.id,
         attempt_no=1,
         snapshot_id=snapshot.id,
+        confirmation_policy=confirmation_policy,
+        condenser_config_json=copy.deepcopy(condenser_config),
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=asset_id,
@@ -1017,14 +1439,23 @@ def start_flow(
     )
     db.add(run)
     db.flush()
+    runtime_manifest = _compile_runtime_manifest(definition)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
+        schema_version=2,
         definition_json=definition,
         definition_hash=_hash(definition),
+        runtime_manifest_json=runtime_manifest,
+        runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
     )
     db.add(snapshot)
     db.flush()
+    hold_snapshot_memory_references(
+        db,
+        snapshot_id=snapshot.id,
+        runtime_manifest=runtime_manifest,
+    )
     run.active_snapshot_id = snapshot.id
     _event(
         db,
@@ -1191,6 +1622,7 @@ def confirm_start(
     selected_model, selected_effort = resolve_runtime_selection(
         db, node, payload.model_name, payload.reasoning_effort
     )
+    _confirmation_policy(current.confirmation_policy, source="node_attempt")
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -1299,6 +1731,10 @@ def recover_runtime_tasks(db: Session) -> int:
                     (NodeAttempt.state == AttemptState.CANCELLED)
                     & (NodeAttempt.runtime_phase == "CANCELLING")
                 )
+                | (
+                    (NodeAttempt.state == AttemptState.WAITING_CONFIRMATION)
+                    & (NodeAttempt.runtime_phase == "CONFIRMING")
+                )
             )
             .order_by(NodeAttempt.updated_at, NodeAttempt.id)
             .with_for_update(skip_locked=True)
@@ -1317,6 +1753,36 @@ def recover_runtime_tasks(db: Session) -> int:
             payload = {"poll_no": 1}
         elif attempt.runtime_phase == "CANCELLING":
             task_type = "CANCEL_RUNTIME"
+            recovery_action = db.scalar(
+                select(HumanAction)
+                .where(
+                    HumanAction.attempt_id == attempt.id,
+                    HumanAction.action_type == "RETRY_RUNTIME_CANCEL",
+                )
+                .order_by(HumanAction.created_at.desc(), HumanAction.id.desc())
+                .limit(1)
+            )
+            recovery_mode = (
+                str((recovery_action.payload_json or {}).get("mode") or "")
+                if recovery_action is not None
+                else ""
+            )
+            if recovery_mode in {"RECONCILE_PARENT", "DELETE_MANAGED_RUNTIME"}:
+                payload = {"recovery_mode": recovery_mode}
+        elif attempt.runtime_phase == "CONFIRMING":
+            confirmation = db.scalar(
+                select(RuntimeConfirmationBatch)
+                .where(
+                    RuntimeConfirmationBatch.attempt_id == attempt.id,
+                    RuntimeConfirmationBatch.state == "DECIDING",
+                )
+                .order_by(RuntimeConfirmationBatch.created_at.desc())
+                .limit(1)
+            )
+            if confirmation is None:
+                continue
+            task_type = "RESPOND_RUNTIME_CONFIRMATION"
+            payload = {"confirmation_batch_id": confirmation.id}
         else:
             action = db.scalar(
                 select(HumanAction)
@@ -1332,9 +1798,14 @@ def recover_runtime_tasks(db: Session) -> int:
             task_type = "RESUME_RUNTIME"
             payload = {"action_id": action.id}
 
+        aggregate_id = (
+            str(payload["confirmation_batch_id"])
+            if task_type == "RESPOND_RUNTIME_CONFIRMATION"
+            else attempt.id
+        )
         active = db.scalar(
             select(BackgroundTask.id).where(
-                BackgroundTask.aggregate_id == attempt.id,
+                BackgroundTask.aggregate_id == aggregate_id,
                 BackgroundTask.task_type == task_type,
                 BackgroundTask.state.in_(active_states),
             )
@@ -1347,15 +1818,21 @@ def recover_runtime_tasks(db: Session) -> int:
             select(BackgroundTask).where(BackgroundTask.idempotency_key == recovery_key)
         )
         if existing is None:
-            enqueue(
+            recovered_task = enqueue(
                 db,
                 task_type=task_type,
-                aggregate_type="ATTEMPT",
-                aggregate_id=attempt.id,
+                aggregate_type=(
+                    "RUNTIME_CONFIRMATION"
+                    if task_type == "RESPOND_RUNTIME_CONFIRMATION"
+                    else "ATTEMPT"
+                ),
+                aggregate_id=aggregate_id,
                 idempotency_key=recovery_key,
                 payload=payload,
                 available_at=now_utc,
             )
+            if task_type == "CANCEL_RUNTIME":
+                recovered_task.max_attempts = 20
         else:
             existing.state = TaskState.RETRY
             existing.available_at = now_utc
@@ -1363,7 +1840,20 @@ def recover_runtime_tasks(db: Session) -> int:
             existing.lease_until = None
             existing.last_error = "STARTUP_RECOVERY"
             existing.payload_json = payload
+            if task_type == "CANCEL_RUNTIME":
+                existing.max_attempts = 20
         recovered += 1
+        if attempt.runtime_phase == "RUNNING":
+            wakeup_active = db.scalar(
+                select(BackgroundTask.id).where(
+                    BackgroundTask.aggregate_id == attempt.id,
+                    BackgroundTask.task_type == "WAIT_RUNTIME_WAKEUP",
+                    BackgroundTask.state.in_(active_states),
+                )
+            )
+            if wakeup_active is None:
+                _dispatch_runtime_wakeup(db, attempt, 1)
+                recovered += 1
     finish(db)
     return recovered
 
@@ -1376,7 +1866,20 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         if run.environment_version_id
         else None
     )
-    node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
+    snapshot = _snapshot(db, attempt.snapshot_id)
+    node = _runtime_node(snapshot, node_run.flow_node_snapshot_key)
+    memory_enabled, source_refs = frozen_memory_policy(node, runtime_scope="ATTEMPT")
+    settings = get_settings()
+    if memory_enabled and (
+        environment is None
+        or settings.runtime_adapter != "openhands"
+        or settings.terminal_environment_backend != "docker"
+    ):
+        raise DomainError(
+            "MEMORY_SOURCE_UNAVAILABLE",
+            "Enabled Memory requires an isolated managed Runtime",
+            409,
+        )
     asset = cast(dict[str, Any], node.get("asset") or {})
     input_contracts = {
         str(item.get("field_key") or ""): item
@@ -1404,7 +1907,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
                 "artifact": _artifact_dict(artifact),
             }
         )
-    return build_runtime_request(
+    request = build_runtime_request(
         db,
         attempt_id=attempt.id,
         execution_key=f"attempt:{attempt.id}:start",
@@ -1420,7 +1923,17 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         environment_id=environment.environment_id if environment else None,
         environment_version_id=environment.id if environment else None,
         environment_version_no=environment.version_no if environment else None,
+        memory_materialized=memory_enabled,
     )
+    if memory_enabled:
+        materials = resolve_snapshot_memory(
+            db,
+            snapshot_id=snapshot.id,
+            source_refs=source_refs,
+            allowed_scopes={"USER", "PROJECT"},
+        )
+        materialize_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id, materials=materials)
+    return request
 
 
 def _release_worker_read_transaction(db: Session, lease: Lease | None) -> None:
@@ -1490,23 +2003,37 @@ def process_start_runtime(
             process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
         else:
             _dispatch_poll(db, claimed, 1, delayed=False)
+            _dispatch_runtime_wakeup(db, claimed, 1)
             _finish_transaction(db, commit)
         return
 
     current_attempt_id = attempt.id
-    request = _runtime_request(db, attempt)
+    try:
+        request = _runtime_request(db, attempt)
+    except BaseException:
+        cleanup_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id)
+        raise
     allocation = None
     if request.environment_image and get_settings().runtime_adapter != "mock":
-        allocation = sandboxes.create_runtime_sandbox(
-            db,
-            owner_type="ATTEMPT",
-            owner_id=attempt.id,
-            image=request.environment_image,
-            environment_id=request.environment_id,
-            environment_version_id=request.environment_version_id,
-            environment_version_no=request.environment_version_no,
-            workspace_relative=request.runtime_workspace_relative,
-        )
+        try:
+            allocation = sandboxes.create_runtime_sandbox(
+                db,
+                owner_type="ATTEMPT",
+                owner_id=attempt.id,
+                image=request.environment_image,
+                environment_id=request.environment_id,
+                environment_version_id=request.environment_version_id,
+                environment_version_no=request.environment_version_no,
+                workspace_relative=request.runtime_workspace_relative,
+                memory_enabled=request.memory_enabled,
+                memory_working_dir_relative=request.runtime_working_dir_relative,
+            )
+        except BaseException:
+            if request.memory_enabled:
+                sandboxes.cleanup_unclaimed_runtime_memory(
+                    db, owner_type="ATTEMPT", owner_id=attempt.id
+                )
+            raise
         request = replace(
             request,
             runtime_sandbox_id=allocation.id,
@@ -1562,6 +2089,7 @@ def process_start_runtime(
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
     else:
         _dispatch_poll(db, claimed, 1, delayed=False)
+        _dispatch_runtime_wakeup(db, claimed, 1)
         _finish_transaction(db, commit)
 
 
@@ -1572,13 +2100,41 @@ def _apply_runtime_result(
     *,
     prepared_outputs: list[PreparedArtifact],
     result_key: str,
+    pending_confirmation: RuntimePendingConfirmation | None = None,
+    failure_code: str = "RUNTIME_FAILED",
     commit: bool = True,
 ) -> dict[str, Any]:
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
     attempt.runtime_cursor = result.cursor
     conversations.project_auto_runtime_result(db, attempt.id, result, result_key=result_key)
-    if result.status == "HUMAN_INPUT_REQUIRED":
+    if result.status == "CONFIRMATION_REQUIRED":
+        if pending_confirmation is None:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands requested confirmation without a pending action batch",
+                502,
+            )
+        confirmation = _freeze_runtime_confirmation(db, attempt, pending_confirmation)
+        attempt.state = AttemptState.WAITING_CONFIRMATION
+        attempt.runtime_phase = "WAITING_CONFIRMATION"
+        conversations.set_auto_conversation_state(
+            db, attempt.id, conversations.ConversationState.WAITING_CONFIRMATION
+        )
+        run.state = FlowRunState.WAITING_HUMAN
+        _event(
+            db,
+            run.id,
+            "RUNTIME_CONFIRMATION_REQUIRED",
+            {
+                "confirmation_batch_id": confirmation.id,
+                "pending_actions_digest": confirmation.pending_actions_digest,
+                "action_count": confirmation.action_count,
+            },
+            node_run.id,
+            attempt.id,
+        )
+    elif result.status == "HUMAN_INPUT_REQUIRED":
         attempt.state = AttemptState.WAITING_HUMAN
         conversations.set_auto_conversation_state(
             db, attempt.id, conversations.ConversationState.WAITING_HUMAN
@@ -1623,7 +2179,7 @@ def _apply_runtime_result(
         )
         attempt.state = AttemptState.END_BLOCKED
         attempt.runtime_phase = "FAILED"
-        attempt.error_code = "RUNTIME_FAILED"
+        attempt.error_code = failure_code
         attempt.error_detail = result.error
         run.state = FlowRunState.WAITING_HUMAN
         _event(db, run.id, "RUNTIME_FAILED", {"error": result.error}, node_run.id, attempt.id)
@@ -1673,6 +2229,7 @@ def process_poll_runtime(
     poll_no: int,
     lease: Lease | None = None,
     *,
+    task_usage_recovery_no: int = 0,
     commit: bool = True,
 ) -> None:
     attempt = _attempt(db, attempt_id)
@@ -1688,6 +2245,13 @@ def process_poll_runtime(
     batch = runtime.read_events(handle)
     result = batch.result or runtime.inspect(
         RuntimeHandle(handle.job_id, handle.conversation_id, batch.cursor or handle.cursor)
+    )
+    pending_confirmation = (
+        runtime.get_pending_confirmation(
+            RuntimeHandle(handle.job_id, handle.conversation_id, batch.cursor or handle.cursor)
+        )
+        if result.status == "CONFIRMATION_REQUIRED"
+        else None
     )
     sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     try:
@@ -1721,6 +2285,46 @@ def process_poll_runtime(
             event_type=runtime_event.event_type,
             payload=runtime_event.payload,
         )
+    auto_conversation = db.scalar(
+        select(AgentConversation).where(
+            AgentConversation.attempt_id == claimed.id,
+            AgentConversation.kind == "AUTO",
+        )
+    )
+    if auto_conversation is not None:
+        conversations.project_runtime_task_usage(db, auto_conversation, batch.task_usage)
+    missing_task_usage_ids = (
+        conversations.missing_runtime_task_usage_ids(
+            db,
+            auto_conversation,
+            observed_stats_task_ids=tuple(snapshot.task_id for snapshot in batch.task_usage),
+        )
+        if auto_conversation is not None and result.status in {"COMPLETED", "FAILED"}
+        else ()
+    )
+    failure_code = "RUNTIME_FAILED"
+    if auto_conversation is not None and missing_task_usage_ids:
+        next_recovery_no = task_usage_recovery_no + 1
+        exhausted = next_recovery_no >= get_settings().runtime_task_usage_visibility_max_polls
+        conversations.record_runtime_task_usage_recovery(
+            db,
+            auto_conversation,
+            missing_task_ids=missing_task_usage_ids,
+            recovery_poll=next_recovery_no,
+            exhausted=exhausted,
+        )
+        if exhausted:
+            failure_code = "RUNTIME_TASK_USAGE_UNAVAILABLE"
+            result = RuntimeResult(
+                status="FAILED",
+                cursor=result.cursor or batch.cursor,
+                error=(
+                    "OpenHands terminal Task stats remained unavailable after bounded recovery: "
+                    + ", ".join(missing_task_usage_ids)
+                ),
+            )
+        else:
+            result = RuntimeResult(status="RUNNING", cursor=result.cursor or batch.cursor)
     if result.cursor is None and batch.cursor is not None:
         result = RuntimeResult(
             status=result.status,
@@ -1735,10 +2339,18 @@ def process_poll_runtime(
         result,
         prepared_outputs=prepared_outputs,
         result_key=f"poll:{poll_no}:{result.cursor or batch.cursor or '0'}",
+        pending_confirmation=pending_confirmation,
+        failure_code=failure_code,
         commit=commit,
     )
     if result.status == "RUNNING":
-        _dispatch_poll(db, claimed, poll_no + 1, delayed=True)
+        _dispatch_poll(
+            db,
+            claimed,
+            poll_no + 1,
+            delayed=True,
+            task_usage_recovery_no=(task_usage_recovery_no + 1 if missing_task_usage_ids else 0),
+        )
         _finish_transaction(db, commit)
 
 
@@ -1818,6 +2430,254 @@ def human_input(
     return attempt_detail(db, attempt.id)
 
 
+def decide_runtime_confirmation(
+    db: Session,
+    batch_id: str,
+    payload: RuntimeConfirmationDecisionWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Durably freeze one batch-level decision before external Runtime I/O."""
+
+    duplicate = db.scalar(
+        select(RuntimeConfirmationBatch).where(
+            RuntimeConfirmationBatch.decision_idempotency_key == idempotency_key
+        )
+    )
+    if duplicate is not None:
+        if duplicate.id != batch_id:
+            raise conflict(
+                "confirmation idempotency key is already used",
+                confirmation_batch_id=duplicate.id,
+            )
+        if (
+            duplicate.decision_accept != payload.accept
+            or duplicate.decision_reason != payload.reason
+        ):
+            raise conflict(
+                "confirmation decision does not match the idempotent request",
+                confirmation_batch_id=batch_id,
+            )
+        return _confirmation_dict(duplicate)
+
+    batch = db.scalar(
+        select(RuntimeConfirmationBatch)
+        .where(RuntimeConfirmationBatch.id == batch_id)
+        .with_for_update()
+    )
+    if batch is None:
+        raise not_found("runtime_confirmation_batch", batch_id)
+    if batch.state != "PENDING":
+        raise conflict(
+            "runtime confirmation batch is no longer pending",
+            confirmation_batch_id=batch.id,
+            state=batch.state,
+        )
+    attempt = db.scalar(
+        select(NodeAttempt).where(NodeAttempt.id == batch.attempt_id).with_for_update()
+    )
+    if attempt is None:
+        raise not_found("node_attempt", batch.attempt_id)
+    if (
+        attempt.state != AttemptState.WAITING_CONFIRMATION
+        or attempt.runtime_phase != "WAITING_CONFIRMATION"
+    ):
+        raise conflict(
+            "attempt is no longer waiting for this confirmation",
+            attempt_id=attempt.id,
+            state=attempt.state,
+            runtime_phase=attempt.runtime_phase,
+        )
+
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    batch.state = "DECIDING"
+    batch.decision_accept = payload.accept
+    batch.decision_reason = payload.reason
+    batch.decision_idempotency_key = idempotency_key
+    batch.decided_by = "API_USER"
+    batch.decided_at = now()
+    batch.state_version += 1
+    attempt.runtime_phase = "CONFIRMING"
+    attempt.state_version += 1
+    _action(
+        db,
+        run.id,
+        "RUNTIME_CONFIRMATION_DECISION",
+        idempotency_key,
+        {
+            "confirmation_batch_id": batch.id,
+            "accept": payload.accept,
+            "reason": payload.reason,
+            "pending_actions_digest": batch.pending_actions_digest,
+        },
+        node_run.id,
+        attempt.id,
+    )
+    enqueue(
+        db,
+        task_type="RESPOND_RUNTIME_CONFIRMATION",
+        aggregate_type="RUNTIME_CONFIRMATION",
+        aggregate_id=batch.id,
+        idempotency_key=f"respond-runtime-confirmation:{batch.id}:v{batch.state_version}",
+    )
+    _event(
+        db,
+        run.id,
+        "RUNTIME_CONFIRMATION_DECISION_RECORDED",
+        {
+            "confirmation_batch_id": batch.id,
+            "accept": payload.accept,
+            "pending_actions_digest": batch.pending_actions_digest,
+        },
+        node_run.id,
+        attempt.id,
+    )
+    finish(db)
+    if _inline_execution():
+        process_runtime_confirmation(db, batch.id)
+    return _confirmation_dict(db.get(RuntimeConfirmationBatch, batch.id) or batch)
+
+
+def process_runtime_confirmation(
+    db: Session,
+    batch_id: str,
+    lease: Lease | None = None,
+    *,
+    commit: bool = True,
+) -> None:
+    batch = db.get(RuntimeConfirmationBatch, batch_id)
+    if batch is None or batch.state != "DECIDING":
+        return
+    attempt = _attempt(db, batch.attempt_id)
+    if attempt.state != AttemptState.WAITING_CONFIRMATION or attempt.runtime_phase != "CONFIRMING":
+        return
+    if batch.decision_accept is None or batch.decision_reason is None:
+        raise DomainError(
+            "RUNTIME_CONFIRMATION_INVALID",
+            "Runtime confirmation decision is incomplete",
+            409,
+        )
+
+    batch_version = batch.state_version
+    attempt_version = attempt.state_version
+    attempt_id = attempt.id
+    handle = RuntimeHandle(
+        attempt.runtime_job_id or "",
+        attempt.conversation_id or batch.runtime_conversation_id,
+        attempt.runtime_cursor,
+    )
+    expected_digest = batch.pending_actions_digest
+    accept = batch.decision_accept
+    reason = batch.decision_reason
+    _release_worker_read_transaction(db, lease)
+    runtime = get_runtime()
+    pending = runtime.get_pending_confirmation(handle)
+    response_cursor = pending.cursor if pending is not None else handle.cursor
+    if pending is not None and pending.pending_actions_digest != expected_digest:
+        _require_current_lease(db, lease)
+        current = db.scalar(
+            select(RuntimeConfirmationBatch)
+            .where(
+                RuntimeConfirmationBatch.id == batch_id,
+                RuntimeConfirmationBatch.state == "DECIDING",
+                RuntimeConfirmationBatch.state_version == batch_version,
+            )
+            .with_for_update()
+        )
+        current_attempt = db.scalar(
+            select(NodeAttempt).where(NodeAttempt.id == attempt_id).with_for_update()
+        )
+        if current_attempt is None:
+            db.rollback()
+            return
+        if current is None or current_attempt.state_version != attempt_version:
+            db.rollback()
+            return
+        current.state = "EXPIRED"
+        current.state_version += 1
+        current_attempt.runtime_phase = "WAITING_CONFIRMATION"
+        current_attempt.state_version += 1
+        replacement = _freeze_runtime_confirmation(db, current_attempt, pending)
+        node_run = _node_run(db, current_attempt.node_run_id)
+        _event(
+            db,
+            node_run.flow_run_id,
+            "RUNTIME_CONFIRMATION_DRIFTED",
+            {
+                "expired_batch_id": current.id,
+                "replacement_batch_id": replacement.id,
+                "expected_pending_digest": expected_digest,
+                "actual_pending_digest": pending.pending_actions_digest,
+            },
+            node_run.id,
+            current_attempt.id,
+        )
+        _finish_transaction(db, commit)
+        return
+
+    runtime_decision_reconciled = pending is None
+    if pending is not None:
+        result = runtime.respond_to_confirmation(handle, expected_digest, accept, reason)
+        response_cursor = result.cursor or response_cursor
+    # OpenHands 1.40.0 restarts automatically on accept. Reject only appends
+    # UserRejectObservation, so continue through the formal run endpoint.
+    if not accept:
+        result = runtime.run(RuntimeHandle(handle.job_id, handle.conversation_id, response_cursor))
+        response_cursor = result.cursor or response_cursor
+    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
+    _require_current_lease(db, lease)
+
+    current = db.scalar(
+        select(RuntimeConfirmationBatch)
+        .where(
+            RuntimeConfirmationBatch.id == batch_id,
+            RuntimeConfirmationBatch.state == "DECIDING",
+            RuntimeConfirmationBatch.state_version == batch_version,
+        )
+        .with_for_update()
+    )
+    if current is None:
+        db.rollback()
+        return
+    claimed = _claim_runtime_phase(
+        db,
+        attempt_id,
+        attempt_version,
+        AttemptState.WAITING_CONFIRMATION,
+        "CONFIRMING",
+        state=AttemptState.EXECUTING,
+        runtime_phase="RUNNING",
+        runtime_cursor=response_cursor,
+    )
+    if claimed is None:
+        db.rollback()
+        return
+    current.state = "APPROVED" if accept else "REJECTED"
+    current.runtime_response_cursor = response_cursor
+    current.state_version += 1
+    conversations.set_auto_conversation_state(
+        db, claimed.id, conversations.ConversationState.GENERATING
+    )
+    node_run = _node_run(db, claimed.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    run.state = FlowRunState.ACTIVE
+    _event(
+        db,
+        run.id,
+        "RUNTIME_CONFIRMATION_RESOLVED",
+        {
+            "confirmation_batch_id": current.id,
+            "accept": accept,
+            "pending_actions_digest": expected_digest,
+            "runtime_decision_reconciled": runtime_decision_reconciled,
+        },
+        node_run.id,
+        claimed.id,
+    )
+    _dispatch_poll(db, claimed, 1, delayed=True)
+    _finish_transaction(db, commit)
+
+
 def process_resume_runtime(
     db: Session,
     attempt_id: str,
@@ -1888,17 +2748,24 @@ def process_resume_runtime(
 
 def _runtime_cancel_targets(
     db: Session, attempt: NodeAttempt
-) -> list[tuple[str | None, RuntimeHandle]]:
-    targets: list[tuple[str | None, RuntimeHandle]] = []
+) -> list[tuple[str | None, RuntimeHandle, str | None]]:
+    targets: list[tuple[str | None, RuntimeHandle, str | None]] = []
     seen: set[str] = set()
     if attempt.runtime_job_id and attempt.conversation_id:
         seen.add(attempt.conversation_id)
+        automatic = db.scalar(
+            select(AgentConversation).where(
+                AgentConversation.attempt_id == attempt.id,
+                AgentConversation.runtime_conversation_id == attempt.conversation_id,
+            )
+        )
         targets.append(
             (
                 attempt.runtime_adapter,
                 RuntimeHandle(
                     attempt.runtime_job_id, attempt.conversation_id, attempt.runtime_cursor
                 ),
+                automatic.id if automatic is not None else None,
             )
         )
     for conversation in db.scalars(
@@ -1916,9 +2783,39 @@ def _runtime_cancel_targets(
                     conversation_id,
                     conversation.runtime_cursor,
                 ),
+                conversation.id,
             )
         )
     return targets
+
+
+def _managed_runtime_sandbox_ids(db: Session, attempt: NodeAttempt) -> set[str]:
+    return {
+        sandbox_id
+        for sandbox_id in (
+            attempt.runtime_sandbox_id,
+            *(
+                conversation.runtime_sandbox_id
+                for conversation in db.scalars(
+                    select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
+                )
+            ),
+        )
+        if sandbox_id
+    }
+
+
+def _runtime_cancel_recovery_modes(db: Session, attempt: NodeAttempt) -> list[str]:
+    if attempt.state != AttemptState.CANCELLED or attempt.runtime_phase != "CANCEL_FAILED":
+        return []
+    modes = ["RECONCILE_PARENT"]
+    if any(
+        (snapshot := sandboxes.sandbox_snapshot(db, sandbox_id)) is not None
+        and snapshot["observed_state"] != "DELETED"
+        for sandbox_id in _managed_runtime_sandbox_ids(db, attempt)
+    ):
+        modes.append("DELETE_MANAGED_RUNTIME")
+    return modes
 
 
 def process_cancel_runtime(
@@ -1926,6 +2823,7 @@ def process_cancel_runtime(
     attempt_id: str,
     lease: Lease | None = None,
     *,
+    recovery_mode: str | None = None,
     commit: bool = True,
 ) -> None:
     attempt = _attempt(db, attempt_id)
@@ -1934,11 +2832,179 @@ def process_cancel_runtime(
     expected_version = attempt.state_version
     current_attempt_id = attempt.id
     targets = _runtime_cancel_targets(db, attempt)
+    pending_task_facts = conversations.pending_runtime_task_control_facts(db, attempt.id)
+    managed_sandbox_ids = _managed_runtime_sandbox_ids(db, attempt)
+    observed_task_usage_ids: dict[str, tuple[str, ...]] = {}
     if targets:
         _release_worker_read_transaction(db, lease)
-        for adapter, handle in targets:
-            runtime_for(adapter, handle).cancel(handle)
+        observed_batches: list[tuple[str, Any]] = []
+        for adapter, handle, conversation_id in targets:
+            runtime = runtime_for(adapter, handle)
+            if recovery_mode != "DELETE_MANAGED_RUNTIME" and conversation_id is not None:
+                observed_batches.append((conversation_id, runtime.read_events(handle)))
+            runtime.cancel(handle)
         _require_current_lease(db, lease)
+        for conversation_id, batch in observed_batches:
+            for runtime_event in batch.events:
+                conversations.project_runtime_conversation_event(
+                    db,
+                    conversation_id,
+                    cursor=runtime_event.cursor,
+                    event_type=runtime_event.event_type,
+                    payload=runtime_event.payload,
+                )
+            conversation = db.get(AgentConversation, conversation_id)
+            if conversation is not None:
+                conversation.runtime_cursor = batch.cursor or conversation.runtime_cursor
+                conversations.project_runtime_task_usage(db, conversation, batch.task_usage)
+                observed_task_usage_ids[conversation.id] = tuple(
+                    snapshot.task_id for snapshot in batch.task_usage
+                )
+        pending_task_facts = conversations.pending_runtime_task_control_facts(db, attempt.id)
+    missing_usage_by_conversation: dict[str, tuple[str, ...]] = {}
+    if recovery_mode != "DELETE_MANAGED_RUNTIME":
+        for conversation in db.scalars(
+            select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
+        ):
+            missing_ids = conversations.missing_runtime_task_usage_ids(
+                db,
+                conversation,
+                observed_stats_task_ids=observed_task_usage_ids.get(conversation.id, ()),
+            )
+            if missing_ids:
+                missing_usage_by_conversation[conversation.id] = missing_ids
+    if missing_usage_by_conversation:
+        previous_recoveries = (
+            db.scalar(
+                select(func.count(RunEvent.cursor)).where(
+                    RunEvent.attempt_id == attempt.id,
+                    RunEvent.event_type.in_(
+                        [
+                            "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_PENDING",
+                            "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_EXHAUSTED",
+                        ]
+                    ),
+                )
+            )
+            or 0
+        )
+        recovery_poll = previous_recoveries + 1
+        exhausted = recovery_poll >= get_settings().runtime_task_usage_visibility_max_polls
+        missing_task_ids = tuple(
+            sorted({task_id for ids in missing_usage_by_conversation.values() for task_id in ids})
+        )
+        for conversation_id, missing_ids in missing_usage_by_conversation.items():
+            conversation = db.get(AgentConversation, conversation_id)
+            if conversation is not None:
+                conversations.record_runtime_task_usage_recovery(
+                    db,
+                    conversation,
+                    missing_task_ids=missing_ids,
+                    recovery_poll=recovery_poll,
+                    exhausted=exhausted,
+                )
+        node_run = _node_run(db, attempt.node_run_id)
+        _event(
+            db,
+            node_run.flow_run_id,
+            (
+                "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_EXHAUSTED"
+                if exhausted
+                else "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_PENDING"
+            ),
+            {
+                "runtime_task_ids": list(missing_task_ids),
+                "recovery_poll": recovery_poll,
+            },
+            node_run.id,
+            attempt.id,
+        )
+        if exhausted:
+            claimed = _claim_runtime_phase(
+                db,
+                current_attempt_id,
+                expected_version,
+                AttemptState.CANCELLED,
+                "CANCELLING",
+                runtime_phase="CANCEL_FAILED",
+                error_code="RUNTIME_TASK_USAGE_UNAVAILABLE",
+                error_detail=(
+                    "OpenHands terminal Task stats remained unavailable after bounded "
+                    "cancellation recovery: " + ", ".join(missing_task_ids)
+                ),
+            )
+            if claimed is not None:
+                _finish_transaction(db, commit)
+            return
+        enqueue(
+            db,
+            task_type="CANCEL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=attempt.id,
+            idempotency_key=(
+                f"cancel-task-usage-recovery:{attempt.id}:v{attempt.state_version}:p{recovery_poll}"
+            ),
+            payload={"recovery_mode": recovery_mode or "RECONCILE_PARENT"},
+            available_at=datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds),
+        ).max_attempts = 20
+        _finish_transaction(db, commit)
+        return
+    if recovery_mode == "DELETE_MANAGED_RUNTIME" and not managed_sandbox_ids:
+        raise DomainError(
+            "MANAGED_RUNTIME_REQUIRED",
+            "Whole-Runtime cleanup requires a managed Runtime sandbox",
+            409,
+        )
+    delete_managed_runtime = bool(managed_sandbox_ids) and recovery_mode in {
+        None,
+        "DELETE_MANAGED_RUNTIME",
+    }
+    if pending_task_facts and delete_managed_runtime:
+        for sandbox_id in managed_sandbox_ids:
+            sandboxes.request_delete_durable(db, sandbox_id)
+        db.expire_all()
+        pending_deletions = [
+            sandbox_id
+            for sandbox_id in sorted(managed_sandbox_ids)
+            if (snapshot := sandboxes.sandbox_snapshot(db, sandbox_id)) is not None
+            and snapshot["observed_state"] != "DELETED"
+        ]
+        if pending_deletions:
+            raise DomainError(
+                "RUNTIME_SANDBOX_DELETE_PENDING",
+                "Managed Runtime deletion is still pending for an in-flight OpenHands Task",
+                503,
+                {"sandbox_ids": pending_deletions},
+            )
+    elif pending_task_facts:
+        claimed = _claim_runtime_phase(
+            db,
+            current_attempt_id,
+            expected_version,
+            AttemptState.CANCELLED,
+            "CANCELLING",
+            runtime_phase="CANCEL_FAILED",
+            error_code="RUNTIME_TASK_CANCEL_UNCONFIRMED",
+            error_detail=(
+                "OpenHands 1.40.0 parent interrupt cannot prove that an already-running "
+                "synchronous Task executor stopped"
+            ),
+        )
+        if claimed is not None:
+            node_run = _node_run(db, claimed.node_run_id)
+            _event(
+                db,
+                node_run.flow_run_id,
+                "RUNTIME_SUBAGENT_CANCEL_UNCONFIRMED",
+                {
+                    "control_scope": "PARENT_CONVERSATION_INTERRUPT",
+                    "pending_tasks": list(pending_task_facts),
+                },
+                node_run.id,
+                claimed.id,
+            )
+            _finish_transaction(db, commit)
+        return
     if attempt.runtime_sandbox_id:
         sandboxes.request_delete(db, attempt.runtime_sandbox_id)
     for conversation in db.scalars(
@@ -1957,6 +3023,20 @@ def process_cancel_runtime(
     if claimed is not None:
         claimed.error_code = None
         claimed.error_detail = None
+        if pending_task_facts:
+            node_run = _node_run(db, claimed.node_run_id)
+            _event(
+                db,
+                node_run.flow_run_id,
+                "RUNTIME_SUBAGENT_EXECUTION_STOPPED_BY_SANDBOX_DELETION",
+                {
+                    "control_scope": "MANAGED_RUNTIME",
+                    "sandbox_ids": sorted(managed_sandbox_ids),
+                    "pending_tasks": list(pending_task_facts),
+                },
+                node_run.id,
+                claimed.id,
+            )
         _finish_transaction(db, commit)
 
 
@@ -1985,17 +3065,30 @@ def record_runtime_task_failure(
 
 
 def retry_runtime_cancel(
-    db: Session, attempt_id: str, payload: AttemptVersionWrite, idempotency_key: str
+    db: Session, attempt_id: str, payload: RuntimeCancelRecoveryWrite, idempotency_key: str
 ) -> dict[str, Any]:
+    existing_action = db.scalar(
+        select(HumanAction).where(HumanAction.idempotency_key == idempotency_key)
+    )
+    if existing_action is not None:
+        return attempt_detail(db, attempt_id)
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
+    available_modes = _runtime_cancel_recovery_modes(db, attempt)
+    if payload.mode not in available_modes:
+        raise illegal(
+            "attempt runtime cancellation recovery mode is unavailable",
+            mode=payload.mode,
+            available_modes=available_modes,
+        )
     _action(
         db,
         run.id,
         "RETRY_RUNTIME_CANCEL",
         idempotency_key,
         node_run_id=node_run.id,
+        payload={"mode": payload.mode},
         attempt_id=attempt.id,
     )
     claimed_id = db.scalar(
@@ -2035,8 +3128,19 @@ def retry_runtime_cancel(
         aggregate_type="ATTEMPT",
         aggregate_id=claimed.id,
         idempotency_key=f"retry-cancel-runtime:{claimed.id}:v{claimed.state_version}",
+        payload={"recovery_mode": payload.mode},
+    ).max_attempts = 20
+    if payload.mode == "DELETE_MANAGED_RUNTIME":
+        for sandbox_id in _managed_runtime_sandbox_ids(db, claimed):
+            sandboxes.request_delete_durable(db, sandbox_id)
+    _event(
+        db,
+        run.id,
+        "ATTEMPT_CANCEL_RECOVERY_REQUESTED",
+        {"mode": payload.mode},
+        node_run.id,
+        claimed.id,
     )
-    _event(db, run.id, "ATTEMPT_CANCEL_RETRIED", {}, node_run.id, claimed.id)
     finish(db)
     return attempt_detail(db, claimed.id)
 
@@ -2075,6 +3179,14 @@ def cancel_attempt(
     targets = _runtime_cancel_targets(db, attempt)
     attempt.state = AttemptState.CANCELLED
     attempt.state_version += 1
+    for confirmation in db.scalars(
+        select(RuntimeConfirmationBatch).where(
+            RuntimeConfirmationBatch.attempt_id == attempt.id,
+            RuntimeConfirmationBatch.state.in_(["PENDING", "DECIDING"]),
+        )
+    ):
+        confirmation.state = "CANCELLED"
+        confirmation.state_version += 1
     node_run.state = NodeRunState.CANCELLED
     conversations.set_attempt_conversations_state(
         db, attempt.id, conversations.ConversationState.READ_ONLY
@@ -2087,7 +3199,7 @@ def cancel_attempt(
             aggregate_type="ATTEMPT",
             aggregate_id=attempt.id,
             idempotency_key=f"cancel-runtime:{attempt.id}:v{attempt.state_version}",
-        )
+        ).max_attempts = 20
     else:
         attempt.runtime_phase = "CANCELLED"
     _event(db, run.id, "ATTEMPT_CANCELLED", {}, node_run.id, attempt.id)
@@ -2118,6 +3230,7 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
                 AttemptState.WAITING_START_CONFIRMATION,
                 AttemptState.WAITING_ACCEPTANCE,
                 AttemptState.WAITING_HUMAN,
+                AttemptState.WAITING_CONFIRMATION,
                 AttemptState.START_BLOCKED,
                 AttemptState.END_BLOCKED,
             }
@@ -2225,10 +3338,14 @@ def reject_attempt(
     next_asset_id = str(next_asset.get("id") or "")
     if not next_asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
+    confirmation_policy = _snapshot_confirmation_policy(next_node)
+    condenser_config = _snapshot_condenser_config(next_node)
     next_attempt = NodeAttempt(
         node_run_id=node_run.id,
         attempt_no=next_no,
         snapshot_id=run.active_snapshot_id,
+        confirmation_policy=confirmation_policy,
+        condenser_config_json=copy.deepcopy(condenser_config),
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=next_asset_id,
@@ -2302,20 +3419,283 @@ def sync_snapshot(
     if _hash(definition) == current.definition_hash:
         return run_detail(db, run.id)
     action = _action(db, run.id, "SYNC_SNAPSHOT", idempotency_key)
+    runtime_manifest = _compile_runtime_manifest(definition)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=current.version + 1,
+        schema_version=2,
         definition_json=definition,
         definition_hash=_hash(definition),
+        runtime_manifest_json=runtime_manifest,
+        runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
         created_by_action_id=action.id,
     )
     db.add(snapshot)
     db.flush()
+    hold_snapshot_memory_references(
+        db,
+        snapshot_id=snapshot.id,
+        runtime_manifest=runtime_manifest,
+    )
     run.active_snapshot_id = snapshot.id
     run.row_version += 1
     _event(db, run.id, "SNAPSHOT_SYNCED", {"version": snapshot.version})
     finish(db)
     return run_detail(db, run.id)
+
+
+def _profile_entry_from_snapshot(node: dict[str, Any]) -> dict[str, Any] | None:
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    capabilities = cast(list[object], asset.get("capabilities") or [])
+    matches: list[dict[str, Any]] = []
+    for item in capabilities:
+        if not isinstance(item, dict):
+            continue
+        entry = cast(dict[str, Any], item)
+        if entry.get("capability_type") == "AGENT_PROFILE":
+            matches.append(entry)
+    if len(matches) > 1:
+        raise DomainError("SNAPSHOT_INVALID", "Snapshot node has multiple Agent Profiles", 409)
+    return matches[0] if matches else None
+
+
+def _profile_diff(
+    source: dict[str, Any] | None, target: dict[str, Any]
+) -> dict[str, dict[str, object]]:
+    source_config = cast(dict[str, object], source.get("runtime_config") or {}) if source else {}
+    target_config = cast(dict[str, object], target.get("runtime_config") or {})
+    fields = sorted(set(source_config) | set(target_config))
+    return {
+        field: {"from": source_config.get(field), "to": target_config.get(field)}
+        for field in fields
+        if source_config.get(field) != target_config.get(field) and field not in {"storage_key"}
+    }
+
+
+def preview_agent_profile_switch(
+    db: Session, run_id: str, flow_node_key: str, profile_version_id: str
+) -> dict[str, Any]:
+    run = _run(db, run_id)
+    current = _active_snapshot(db, run)
+    node = _node(current, flow_node_key)
+    current_profile = _profile_entry_from_snapshot(node)
+    try:
+        target = cast(dict[str, Any], describe_agent_profile_version(db, profile_version_id))
+    except ValueError as exc:
+        raise DomainError("AGENT_PROFILE_INVALID", str(exc), 422) from exc
+    return {
+        "flow_run_id": run.id,
+        "flow_node_key": flow_node_key,
+        "active_snapshot_id": current.id,
+        "active_snapshot_version": current.version,
+        "source_profile_version_id": (
+            str(current_profile.get("capability_id") or "") if current_profile else None
+        ),
+        "target_profile_version_id": target["capability_version_id"],
+        "target_profile_digest": target["digest"],
+        "changes": _profile_diff(current_profile, target),
+        "requires_new_snapshot": True,
+        "existing_attempts_unchanged": True,
+    }
+
+
+def switch_agent_profile(
+    db: Session,
+    run_id: str,
+    payload: AgentProfileSwitchWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Select an immutable Profile for a new Snapshot and a new Attempt."""
+
+    run = _run(db, run_id)
+    current = _active_snapshot(db, run)
+    if current.version != payload.expected_active_version:
+        raise conflict(
+            "active snapshot changed",
+            expected=payload.expected_active_version,
+            actual=current.version,
+        )
+    node = _node(current, payload.flow_node_key)
+    current_profile = _profile_entry_from_snapshot(node)
+    current_profile_id = (
+        str(current_profile.get("capability_id") or "") if current_profile else None
+    )
+    if payload.source_profile_version_id != current_profile_id:
+        raise DomainError(
+            "AGENT_PROFILE_SWITCH_CONFLICT",
+            "The active Profile changed before the switch",
+            409,
+            {"expected": payload.source_profile_version_id, "actual": current_profile_id},
+        )
+    try:
+        target = cast(
+            dict[str, Any], describe_agent_profile_version(db, payload.profile_version_id)
+        )
+    except ValueError as exc:
+        raise DomainError("AGENT_PROFILE_INVALID", str(exc), 422) from exc
+    if target["digest"] != payload.expected_profile_digest:
+        raise DomainError(
+            "AGENT_PROFILE_VERSION_CONFLICT",
+            "Target Agent Profile digest changed",
+            409,
+            {"expected": payload.expected_profile_digest, "actual": target["digest"]},
+        )
+
+    definition = copy.deepcopy(current.definition_json)
+    target_node: dict[str, Any] | None = None
+    for item in cast(list[object], definition.get("nodes") or []):
+        if not isinstance(item, dict):
+            continue
+        candidate = cast(dict[str, Any], item)
+        if candidate.get("instance_key") == payload.flow_node_key:
+            target_node = candidate
+            break
+    if target_node is None:
+        raise DomainError("SNAPSHOT_INVALID", "Target node is missing", 409)
+    asset = cast(dict[str, Any], target_node.get("asset") or {})
+    capabilities = cast(list[dict[str, Any]], asset.get("capabilities") or [])
+    capabilities = [item for item in capabilities if item.get("capability_type") != "AGENT_PROFILE"]
+    target_config = cast(dict[str, Any], target["runtime_config"])
+    referenced = {
+        "TOOL_POLICY": target_config["tool_policy_version_id"],
+        "CONTEXT_POLICY": target_config["context_policy_version_id"],
+        "MEMORY_POLICY": target_config["memory_policy_version_id"],
+        "CRITIC_POLICY": target_config["critic_policy_version_id"],
+    }
+    for capability_type, version_id in referenced.items():
+        matches = [item for item in capabilities if item.get("capability_type") == capability_type]
+        if len(matches) != 1 or matches[0].get("capability_id") != version_id:
+            raise DomainError(
+                "AGENT_PROFILE_REFERENCE_MISMATCH",
+                "Target Profile references do not match the active Snapshot node",
+                422,
+                {"capability_type": capability_type, "profile": version_id},
+            )
+    capabilities.append(
+        {
+            "id": None,
+            "capability_id": target["capability_version_id"],
+            "capability_type": "AGENT_PROFILE",
+            "capability_key": target["capability_key"],
+            "normalized_config": target["runtime_config"],
+            "position": len(capabilities),
+        }
+    )
+    asset["capabilities"] = capabilities
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    executor["confirmation_policy"] = target_config["confirmation_policy"]
+    executor["max_iterations"] = target_config["max_iterations"]
+    profile_condenser = target_config.get("condenser")
+    if profile_condenser is not None:
+        if not isinstance(profile_condenser, dict):
+            raise DomainError("AGENT_PROFILE_INVALID", "Profile condenser is invalid", 422)
+        upstream_condenser = cast(dict[str, Any], profile_condenser)
+        kind = str(upstream_condenser.get("condenser_kind") or "llm_summarizing")
+        if kind == "no_op":
+            executor["condenser"] = {"kind": "NO_OP"}
+        elif kind == "llm_summarizing":
+            executor["condenser"] = {
+                "kind": "LLM_SUMMARIZING",
+                "model_provider_id": executor.get("model_provider_id"),
+                "model_name": executor.get("model_name"),
+                "max_size": upstream_condenser.get("max_size", 240),
+                "max_tokens": upstream_condenser.get("max_tokens"),
+                "keep_first": upstream_condenser.get("keep_first", 2),
+                "minimum_progress": upstream_condenser.get("minimum_progress", 0.1),
+                "hard_context_reset_max_retries": upstream_condenser.get(
+                    "hard_context_reset_max_retries", 5
+                ),
+                "hard_context_reset_context_scaling": upstream_condenser.get(
+                    "hard_context_reset_context_scaling", 0.8
+                ),
+            }
+        else:
+            raise DomainError("AGENT_PROFILE_INVALID", "Profile condenser kind is unsupported", 422)
+
+    action = _action(
+        db,
+        run.id,
+        "SWITCH_AGENT_PROFILE",
+        idempotency_key,
+        {
+            "flow_node_key": payload.flow_node_key,
+            "source_profile_version_id": current_profile_id,
+            "target_profile_version_id": target["capability_version_id"],
+            "target_profile_digest": target["digest"],
+            "changes": _profile_diff(current_profile, target),
+            "model_cost_comparison": payload.model_cost_comparison,
+            "rollback_profile_version_id": current_profile_id,
+        },
+    )
+    runtime_manifest = _compile_runtime_manifest(definition)
+    # Compile-time validation must reject a Profile whose compatibility
+    # declarations drift from the frozen node policies before anything is
+    # persisted or a new Attempt is created.
+    runtime_node(
+        definition=definition,
+        manifest=runtime_manifest,
+        expected_hash=_runtime_manifest_hash(runtime_manifest),
+        snapshot_id="profile-switch-preview",
+        instance_key=payload.flow_node_key,
+    )
+    snapshot = RunSnapshot(
+        flow_run_id=run.id,
+        version=current.version + 1,
+        schema_version=2,
+        definition_json=definition,
+        definition_hash=_hash(definition),
+        runtime_manifest_json=runtime_manifest,
+        runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
+        created_by_action_id=action.id,
+    )
+    db.add(snapshot)
+    db.flush()
+    hold_snapshot_memory_references(db, snapshot_id=snapshot.id, runtime_manifest=runtime_manifest)
+    run.active_snapshot_id = snapshot.id
+    run.row_version += 1
+
+    artifact_ids: dict[str, str] = {}
+    if payload.copy_input_bindings_from_attempt_id:
+        source_attempt = _attempt(db, payload.copy_input_bindings_from_attempt_id)
+        source_node_run = _node_run(db, source_attempt.node_run_id)
+        if (
+            source_node_run.flow_run_id != run.id
+            or source_node_run.flow_node_snapshot_key != payload.flow_node_key
+        ):
+            raise DomainError(
+                "AGENT_PROFILE_SWITCH_INPUT_INVALID",
+                "Input bindings must come from the same Run and node",
+                422,
+            )
+        artifact_ids = {
+            binding.input_field_key: binding.artifact_version_id
+            for binding in _bindings(db, source_attempt.id)
+        }
+    node_run, attempt = _create_node_run(
+        db, run, payload.flow_node_key, artifact_ids, "PROFILE_SWITCH"
+    )
+    _event(
+        db,
+        run.id,
+        "AGENT_PROFILE_SWITCHED",
+        {
+            "snapshot_version": snapshot.version,
+            "source_profile_version_id": current_profile_id,
+            "target_profile_version_id": target["capability_version_id"],
+            "target_profile_digest": target["digest"],
+            "model_cost_comparison": payload.model_cost_comparison,
+            "existing_attempts_unchanged": True,
+        },
+        node_run.id,
+        attempt.id,
+    )
+    finish(db)
+    return {
+        "snapshot_id": snapshot.id,
+        "snapshot_version": snapshot.version,
+        "attempt": attempt_detail(db, attempt.id),
+        "rollback_profile_version_id": current_profile_id,
+    }
 
 
 def complete_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]:
@@ -2396,7 +3776,7 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
                 aggregate_type="ATTEMPT",
                 aggregate_id=attempt.id,
                 idempotency_key=f"cancel-runtime:{attempt.id}:{attempt.runtime_job_id}",
-            )
+            ).max_attempts = 20
         else:
             attempt.runtime_phase = "CANCELLED"
     _event(db, run.id, "FLOW_RUN_CANCELLED")
@@ -2550,6 +3930,13 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
             .order_by(GateEvaluation.stage, GateEvaluation.policy_position)
         )
     )
+    confirmation_batches = list(
+        db.scalars(
+            select(RuntimeConfirmationBatch)
+            .where(RuntimeConfirmationBatch.attempt_id == attempt.id)
+            .order_by(RuntimeConfirmationBatch.created_at.desc())
+        )
+    )
     return {
         "id": attempt.id,
         "node_run_id": attempt.node_run_id,
@@ -2568,9 +3955,12 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_prompt": attempt.startup_prompt,
         "model_name": attempt.model_name,
         "reasoning_effort": attempt.reasoning_effort,
+        "confirmation_policy": attempt.confirmation_policy,
+        "condenser": copy.deepcopy(attempt.condenser_config_json),
         "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,
         "error_detail": attempt.error_detail,
+        "runtime_cancel_recovery_modes": _runtime_cancel_recovery_modes(db, attempt),
         "input_bindings": [
             {
                 "id": x.id,
@@ -2596,6 +3986,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
             }
             for x in gates
         ],
+        "runtime_confirmation_batches": [_confirmation_dict(item) for item in confirmation_batches],
         "created_at": attempt.created_at.isoformat(),
         "updated_at": attempt.updated_at.isoformat(),
     }
@@ -2692,6 +4083,8 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
                 "schema_version": x.schema_version,
                 "definition_hash": x.definition_hash,
                 "definition": x.definition_json,
+                "runtime_manifest_hash": x.runtime_manifest_hash,
+                "runtime_manifest": x.runtime_manifest_json,
                 "created_at": x.created_at.isoformat(),
             }
             for x in snapshots

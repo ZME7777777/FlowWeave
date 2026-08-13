@@ -11,15 +11,79 @@ from flowweave.modules.model_providers.application.service import (
     prompt_provider_snapshot,
 )
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
-from flowweave.runtime.base import RuntimeProvider, StartAttemptRequest
+from flowweave.runtime.base import (
+    RuntimeAgentContext,
+    RuntimeAgentDefinition,
+    RuntimeAgentProfile,
+    RuntimeAgentSpec,
+    RuntimeBudgets,
+    RuntimeCondenser,
+    RuntimeCritic,
+    RuntimeProvider,
+    RuntimeTool,
+    StartAttemptRequest,
+)
 from flowweave.runtime.workspace import (
-    isolated_runtime_workspace_relative,
+    isolated_runtime_workspace_paths,
     materialize_hook_config,
     materialize_node_workspace,
 )
+from flowweave.shared.domain.agent_definition import normalize_agent_definition_document
+from flowweave.shared.domain.capability_digest import normalized_capability_config
+from flowweave.shared.domain.runtime_policy import (
+    normalize_agent_profile_document,
+    normalize_context_policy_document,
+    normalize_critic_policy_document,
+    normalize_memory_policy_document,
+)
+from flowweave.shared.domain.tool_policy import normalize_tool_policy_document
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import ProviderModel
 from flowweave.shared.settings import get_settings
+
+
+def runtime_memory_policy(
+    node: dict[str, Any], *, scope: Literal["ATTEMPT", "CONVERSATION"]
+) -> dict[str, Any] | None:
+    """Return the enabled frozen Memory Policy for one Runtime owner scope."""
+
+    raw_agent_spec = node.get("runtime_agent_spec")
+    raw_policy = (
+        cast(dict[str, Any], raw_agent_spec).get("memory_policy")
+        if isinstance(raw_agent_spec, dict)
+        else None
+    )
+    if not isinstance(raw_policy, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory Policy is missing",
+            409,
+        )
+    policy = cast(dict[str, Any], raw_policy)
+    raw_config = policy.get("runtime_config")
+    try:
+        policy_key, config = normalize_memory_policy_document(
+            normalized_capability_config(cast(dict[str, Any], raw_config))
+            if isinstance(raw_config, dict)
+            else raw_config,
+            fallback_key=str(policy.get("capability_key") or ""),
+        )
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory Policy is invalid",
+            409,
+            {"reason": str(exc)},
+        ) from exc
+    if policy_key != policy.get("capability_key"):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory Policy identity drifted",
+            409,
+        )
+    if not config["enabled"] or scope not in config["scopes"]:
+        return None
+    return config
 
 
 def resolve_runtime_selection(
@@ -159,6 +223,101 @@ def resolve_runtime_provider(
     return runtime_provider(db, node, model_name, reasoning_effort)
 
 
+def _runtime_condenser(
+    db: Session, node: dict[str, Any], config: dict[str, Any]
+) -> tuple[RuntimeCondenser, RuntimeProvider | None]:
+    kind = str(config.get("kind") or "NO_OP")
+    if kind == "NO_OP":
+        return RuntimeCondenser(), None
+    if kind != "LLM_SUMMARIZING":
+        raise DomainError(
+            "SNAPSHOT_INVALID",
+            "OpenHands condenser policy is invalid",
+            409,
+            {"kind": kind},
+        )
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    provider_id = str(config.get("model_provider_id") or executor.get("model_provider_id") or "")
+    model_name = str(config.get("model_name") or "") or None
+    if not provider_id:
+        raise DomainError(
+            "MODEL_PROVIDER_REQUIRED",
+            "The condenser must select a model provider before it can run",
+            422,
+        )
+    condenser_node = {
+        "asset": {
+            "executor": {
+                "model_provider_id": provider_id,
+                "model_name": model_name,
+            }
+        }
+    }
+    provider = (
+        runtime_provider(db, condenser_node, model_name)
+        if get_settings().runtime_adapter != "mock"
+        else None
+    )
+    return (
+        RuntimeCondenser(
+            kind="LLM_SUMMARIZING",
+            max_size=int(config.get("max_size") or 240),
+            max_tokens=(
+                int(config["max_tokens"]) if config.get("max_tokens") is not None else None
+            ),
+            keep_first=int(config.get("keep_first") or 0),
+            minimum_progress=float(config.get("minimum_progress") or 0.1),
+            hard_context_reset_max_retries=int(config.get("hard_context_reset_max_retries") or 5),
+            hard_context_reset_context_scaling=float(
+                config.get("hard_context_reset_context_scaling") or 0.8
+            ),
+        ),
+        provider,
+    )
+
+
+def frozen_memory_policy(
+    node: dict[str, Any], *, runtime_scope: Literal["ATTEMPT", "CONVERSATION"]
+) -> tuple[bool, list[dict[str, str]]]:
+    """Read one frozen Memory Policy without exposing governed content."""
+
+    raw_spec = node.get("runtime_agent_spec")
+    spec = cast(dict[str, Any], raw_spec) if isinstance(raw_spec, dict) else {}
+    raw_policy = spec.get("memory_policy")
+    if not isinstance(raw_policy, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory Policy is missing",
+            409,
+        )
+    entry = cast(dict[str, Any], raw_policy)
+    raw_config = entry.get("runtime_config")
+    try:
+        key, config = normalize_memory_policy_document(
+            normalized_capability_config(cast(dict[str, Any], raw_config))
+            if isinstance(raw_config, dict)
+            else raw_config,
+            fallback_key=str(entry.get("capability_key") or ""),
+        )
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory Policy is invalid",
+            409,
+            {"reason": str(exc)},
+        ) from exc
+    if key != entry.get("capability_key"):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory Policy identity drifted",
+            409,
+        )
+    enabled = bool(config["enabled"] and runtime_scope in config["scopes"])
+    refs = [cast(dict[str, str], item) for item in config["source_refs"]]
+    return enabled, refs if enabled else []
+
+
 def build_runtime_request(
     db: Session,
     *,
@@ -172,8 +331,7 @@ def build_runtime_request(
     startup_capability_key: str | None = None,
     model_name: str | None = None,
     reasoning_effort: str | None = None,
-    conversation_history: tuple[dict[str, str], ...] = (),
-    delegation_enabled: bool = False,
+    semantic_history: tuple[dict[str, str], ...] = (),
     output_targets: dict[str, dict[str, str]] | None = None,
     environment_image: str | None = None,
     environment_id: str | None = None,
@@ -182,33 +340,371 @@ def build_runtime_request(
     runtime_sandbox_id: str = "",
     runtime_resource_name: str = "",
     runtime_base_url: str = "",
+    memory_materialized: bool = False,
 ) -> StartAttemptRequest:
     asset = cast(dict[str, Any], node.get("asset") or {})
-    skills, mcp_servers, node_workspace_ref = materialize_node_workspace(asset)
-    runtime_workspace_relative = isolated_runtime_workspace_relative(
+    skills, plugins, mcp_servers, node_workspace_ref = materialize_node_workspace(asset)
+    runtime_workspace_relative, runtime_working_dir_relative = isolated_runtime_workspace_paths(
         workspace_ref, node_workspace_ref
     )
     asset_environment = cast(dict[str, Any], asset.get("environment_version") or {})
+    raw_agent_spec = node.get("runtime_agent_spec")
+    if not isinstance(raw_agent_spec, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec is missing from the frozen Snapshot",
+            409,
+        )
+    frozen_spec = cast(dict[str, Any], raw_agent_spec)
+    raw_tool_policy = frozen_spec.get("tool_policy")
+    if not isinstance(raw_tool_policy, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Tool Policy is missing",
+            409,
+        )
+    raw_policy_config = cast(dict[str, Any], raw_tool_policy).get("runtime_config")
+    if not isinstance(raw_policy_config, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Tool Policy config is invalid",
+            409,
+        )
+    try:
+        policy_key, normalized_tool_policy = normalize_tool_policy_document(
+            normalized_capability_config(cast(dict[str, Any], raw_policy_config)),
+            fallback_key=str(cast(dict[str, Any], raw_tool_policy).get("capability_key") or ""),
+        )
+        tool_entries = cast(list[dict[str, Any]], normalized_tool_policy["tools"])
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Tool Policy is invalid",
+            409,
+            {"reason": str(exc)},
+        ) from exc
+    if policy_key != cast(dict[str, Any], raw_tool_policy).get("capability_key"):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Tool Policy identity drifted",
+            409,
+        )
+    if (
+        normalized_capability_config(cast(dict[str, Any], raw_policy_config))
+        != normalized_tool_policy
+    ):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Tool Policy predates the governed catalog",
+            409,
+        )
+    policy_tool_names = {str(item["name"]) for item in tool_entries}
+    raw_context_policy = frozen_spec.get("context_policy")
+    if not isinstance(raw_context_policy, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Context Policy is missing",
+            409,
+        )
+    context_entry = cast(dict[str, Any], raw_context_policy)
+    raw_context_config = context_entry.get("runtime_config")
+    try:
+        context_key, context_config = normalize_context_policy_document(
+            normalized_capability_config(cast(dict[str, Any], raw_context_config))
+            if isinstance(raw_context_config, dict)
+            else raw_context_config,
+            fallback_key=str(context_entry.get("capability_key") or ""),
+        )
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Context Policy is invalid",
+            409,
+            {"reason": str(exc)},
+        ) from exc
+    if context_key != context_entry.get("capability_key"):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Context Policy identity drifted",
+            409,
+        )
+    raw_memory_policy = frozen_spec.get("memory_policy")
+    raw_critic_policy = frozen_spec.get("critic_policy")
+    if not isinstance(raw_memory_policy, dict) or not isinstance(raw_critic_policy, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory or Critic Policy is missing",
+            409,
+        )
+    memory_entry = cast(dict[str, Any], raw_memory_policy)
+    critic_entry = cast(dict[str, Any], raw_critic_policy)
+    try:
+        memory_key, memory_config = normalize_memory_policy_document(
+            normalized_capability_config(cast(dict[str, Any], memory_entry.get("runtime_config")))
+            if isinstance(memory_entry.get("runtime_config"), dict)
+            else memory_entry.get("runtime_config"),
+            fallback_key=str(memory_entry.get("capability_key") or ""),
+        )
+        critic_key, critic_config = normalize_critic_policy_document(
+            normalized_capability_config(cast(dict[str, Any], critic_entry.get("runtime_config")))
+            if isinstance(critic_entry.get("runtime_config"), dict)
+            else critic_entry.get("runtime_config"),
+            fallback_key=str(critic_entry.get("capability_key") or ""),
+        )
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec Memory or Critic Policy is invalid",
+            409,
+            {"reason": str(exc)},
+        ) from exc
+    if memory_key != memory_entry.get("capability_key") or critic_key != critic_entry.get(
+        "capability_key"
+    ):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec policy identity drifted",
+            409,
+        )
+    runtime_memory_scope = "ATTEMPT" if interaction_mode == "EXECUTION" else "CONVERSATION"
+    memory_enabled = bool(
+        memory_config["enabled"] and runtime_memory_scope in memory_config["scopes"]
+    )
+    if memory_enabled:
+        if not memory_materialized or not (
+            environment_image or asset_environment.get("image_digest")
+        ):
+            raise DomainError(
+                "MEMORY_SOURCE_UNAVAILABLE",
+                "Enabled Memory requires an isolated managed Runtime",
+                409,
+            )
+    critic = (
+        RuntimeCritic(
+            mode=(
+                "all_actions" if critic_config["mode"] == "ALL_ACTIONS" else "finish_and_message"
+            ),
+            success_threshold=float(critic_config["threshold"]),
+            max_iterations=int(critic_config["max_refinement_iterations"]),
+        )
+        if critic_config["enabled"]
+        else None
+    )
+    raw_definitions = frozen_spec.get("agent_definitions", [])
+    if not isinstance(raw_definitions, list):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Definitions are invalid",
+            409,
+        )
+    agent_definitions: list[RuntimeAgentDefinition] = []
+    for raw_definition in cast(list[object], raw_definitions):
+        if not isinstance(raw_definition, dict):
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Agent Definition is invalid",
+                409,
+            )
+        raw_config = cast(dict[str, Any], raw_definition).get("runtime_config")
+        normalized_config = (
+            normalized_capability_config(cast(dict[str, Any], raw_config))
+            if isinstance(raw_config, dict)
+            else raw_config
+        )
+        try:
+            definition_key = str(cast(dict[str, Any], raw_definition).get("capability_key") or "")
+            name, definition = normalize_agent_definition_document(
+                normalized_config, fallback_key=definition_key
+            )
+        except ValueError as exc:
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Agent Definition is invalid",
+                409,
+                {"reason": str(exc)},
+            ) from exc
+        definition_tools = tuple(cast(list[str], definition["tools"]))
+        if (
+            "task_tool_set" not in policy_tool_names
+            or not set(definition_tools) <= policy_tool_names
+        ):
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Agent Definition exceeds the frozen Tool Policy",
+                409,
+                {"name": name},
+            )
+        agent_definitions.append(
+            RuntimeAgentDefinition(
+                name=name,
+                description=str(definition["description"]),
+                tools=definition_tools,
+                system_prompt=str(definition["system_prompt"]),
+                when_to_use_examples=tuple(cast(list[str], definition["when_to_use_examples"])),
+                permission_mode=cast(str | None, definition["permission_mode"]),
+                max_iteration_per_run=cast(int | None, definition["max_iteration_per_run"]),
+                max_budget_per_run=cast(float | None, definition["max_budget_per_run"]),
+            )
+        )
+    confirmation = str(frozen_spec.get("confirmation_policy") or "")
+    if confirmation not in {"ALWAYS", "NEVER"}:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec confirmation policy is invalid",
+            409,
+        )
+    confirmation_required_tools = cast(
+        list[str], normalized_tool_policy["confirmation_required_tools"]
+    )
+    if confirmation_required_tools and confirmation != "ALWAYS":
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec disables confirmation required by its Tool Policy",
+            409,
+            {"tools": confirmation_required_tools},
+        )
+    raw_condenser_value = frozen_spec.get("condenser")
+    if not isinstance(raw_condenser_value, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec condenser policy is invalid",
+            409,
+        )
+    raw_condenser = cast(dict[str, Any], raw_condenser_value)
+    raw_budgets = frozen_spec.get("budgets")
+    if not isinstance(raw_budgets, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec budgets are invalid",
+            409,
+        )
+    max_iterations = cast(dict[str, Any], raw_budgets).get("max_iterations")
+    if (
+        not isinstance(max_iterations, int)
+        or isinstance(max_iterations, bool)
+        or not (1 <= max_iterations <= 1000)
+    ):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec iteration budget is invalid",
+            409,
+        )
+    raw_profile = frozen_spec.get("agent_profile")
+    agent_profile: RuntimeAgentProfile | None = None
+    if raw_profile is not None:
+        if not isinstance(raw_profile, dict):
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Agent Profile is invalid",
+                409,
+            )
+        profile_entry = cast(dict[str, Any], raw_profile)
+        raw_profile_config = profile_entry.get("runtime_config")
+        profile_config = (
+            normalized_capability_config(cast(dict[str, Any], raw_profile_config))
+            if isinstance(raw_profile_config, dict)
+            else raw_profile_config
+        )
+        try:
+            profile_key, normalized_profile = normalize_agent_profile_document(
+                profile_config,
+                fallback_key=str(profile_entry.get("capability_key") or ""),
+            )
+        except ValueError as exc:
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Agent Profile is invalid",
+                409,
+                {"reason": str(exc)},
+            ) from exc
+        expected_references = {
+            "tool_policy_version_id": str(
+                cast(dict[str, Any], raw_tool_policy).get("capability_version_id") or ""
+            ),
+            "context_policy_version_id": str(context_entry.get("capability_version_id") or ""),
+            "memory_policy_version_id": str(memory_entry.get("capability_version_id") or ""),
+            "critic_policy_version_id": str(critic_entry.get("capability_version_id") or ""),
+        }
+        version_id = str(profile_entry.get("capability_version_id") or "")
+        digest = str(profile_entry.get("digest") or "")
+        content_hash = str(profile_entry.get("content_hash") or "")
+        if (
+            profile_entry.get("capability_type") != "AGENT_PROFILE"
+            or len(version_id) != 36
+            or len(digest) != 64
+            or len(content_hash) != 64
+            or profile_key != profile_entry.get("capability_key")
+            or any(
+                normalized_profile.get(field) != expected
+                for field, expected in expected_references.items()
+            )
+            or normalized_profile.get("confirmation_policy") != confirmation
+            or normalized_profile.get("max_iterations") != max_iterations
+        ):
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Agent Profile drifted from the materialized Agent Spec",
+                409,
+            )
+        agent_profile = RuntimeAgentProfile(
+            capability_version_id=version_id,
+            capability_key=profile_key,
+            digest=digest,
+            content_hash=content_hash,
+            schema_version=int(normalized_profile["schema_version"]),
+            source_profile_id=cast(str | None, normalized_profile["source_profile_id"]),
+            source_revision=int(normalized_profile["source_revision"]),
+        )
+    condenser, condenser_provider = _runtime_condenser(db, node, raw_condenser)
+    provider = (
+        runtime_provider(db, node, model_name, reasoning_effort)
+        if get_settings().runtime_adapter != "mock"
+        else None
+    )
+    agent_spec = RuntimeAgentSpec(
+        schema_version=int(frozen_spec.get("schema_version") or 0),
+        agent_kind=cast(Literal["OPENHANDS", "ACP"], frozen_spec.get("agent_kind")),
+        agent_profile=agent_profile,
+        provider=provider,
+        tools=tuple(
+            RuntimeTool(name=str(tool["name"]), params=cast(dict[str, Any], tool["params"]))
+            for tool in tool_entries
+        ),
+        tool_concurrency_limit=int(normalized_tool_policy["tool_concurrency_limit"]),
+        agent_context=RuntimeAgentContext(
+            system_message_suffix=str(context_config["system_message_suffix"]),
+            user_message_suffix=str(context_config["user_message_suffix"]),
+            load_user_skills=False,
+            load_public_skills=False,
+            marketplace_path=None,
+            registered_marketplaces=(),
+            load_project_skills=False,
+            load_memory=memory_enabled,
+            disabled_skills=tuple(cast(list[str], context_config["disabled_skills"])),
+        ),
+        agent_definitions=tuple(agent_definitions),
+        plugins=plugins,
+        skills=skills,
+        mcp_servers=mcp_servers,
+        hook_config=materialize_hook_config(asset),
+        confirmation_policy=cast(Literal["ALWAYS", "NEVER"], confirmation),
+        condenser=condenser,
+        condenser_provider=condenser_provider,
+        critic=critic,
+        budgets=RuntimeBudgets(max_iterations=max_iterations),
+    )
     return StartAttemptRequest(
         attempt_id=attempt_id,
         execution_key=execution_key,
         node=node,
         bindings=bindings,
         workspace_ref=workspace_ref,
+        agent_spec=agent_spec,
         node_workspace_ref=node_workspace_ref,
-        provider=(
-            runtime_provider(db, node, model_name, reasoning_effort)
-            if get_settings().runtime_adapter != "mock"
-            else None
-        ),
-        skills=skills,
-        mcp_servers=mcp_servers,
-        hook_config=materialize_hook_config(asset),
         interaction_mode=interaction_mode,
         startup_prompt=startup_prompt,
         startup_capability_key=startup_capability_key,
-        conversation_history=conversation_history,
-        delegation_enabled=delegation_enabled,
+        semantic_history=semantic_history,
         output_targets=output_targets or {},
         environment_image=environment_image
         if environment_image is not None
@@ -229,6 +725,8 @@ def build_runtime_request(
             else int(asset_environment.get("version_no") or 0)
         ),
         runtime_workspace_relative=runtime_workspace_relative,
+        runtime_working_dir_relative=runtime_working_dir_relative,
+        memory_enabled=memory_enabled,
         runtime_sandbox_id=runtime_sandbox_id,
         runtime_resource_name=runtime_resource_name,
         runtime_base_url=runtime_base_url,

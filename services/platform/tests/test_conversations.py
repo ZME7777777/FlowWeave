@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import delete, func, select
 
 from flowweave.bootstrap.worker import TaskWorker
@@ -12,18 +13,33 @@ from flowweave.modules.conversations.application.service import (
     _append,
     _append_runtime_payload,
     _apply_conversation_result,
+    _runtime_message_payload,
     list_subagents,
+    process_conversation_condensation,
+    process_poll_conversation,
+    project_runtime_task_usage,
     recover_conversation_tasks,
     terminal_resource_details,
 )
 from flowweave.modules.conversations.domain.enums import (
+    ConversationState,
     DeliveryMode,
     DeliveryState,
     MessageSource,
     MessageType,
 )
-from flowweave.runtime.base import RuntimeHandle, RuntimeResult, StartAttemptRequest
+from flowweave.modules.tasks.application.service import Lease
+from flowweave.runtime.base import (
+    RuntimeEvent,
+    RuntimeEventBatch,
+    RuntimeHandle,
+    RuntimeResult,
+    RuntimeTaskUsageSnapshot,
+    StartAttemptRequest,
+)
+from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
+from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversation,
     AgentMessage,
@@ -31,8 +47,29 @@ from flowweave.shared.models import (
     EnvironmentVersion,
     ManagedSandbox,
     NodeAttempt,
+    RunEvent,
+    RuntimeCondensation,
+    RuntimeCondensationCommand,
+    RuntimeSubagentTask,
+    RuntimeSubagentTaskUsage,
+    TaskState,
     TerminalEnvironment,
 )
+from flowweave.shared.settings import settings_context
+
+
+def test_runtime_message_payload_uses_native_skill_trigger_without_prompt_directive():
+    content = {
+        "parts": [{"type": "text", "text": "$test-skill review this"}],
+        "capability_refs": [{"capability_type": "SKILL", "capability_key": "test-skill"}],
+    }
+
+    rendered, image_urls = _runtime_message_payload(content)
+
+    assert rendered == "$test-skill review this"
+    assert rendered.count("$test-skill") == 1
+    assert "先读取并遵循" not in rendered
+    assert image_urls == ()
 
 
 def _asset_payload(skill: dict[str, object] | None) -> dict[str, object]:
@@ -64,8 +101,36 @@ def _asset_payload(skill: dict[str, object] | None) -> dict[str, object]:
     }
 
 
-def _create_run(api_client, skill: dict[str, object] | None) -> tuple[str, str]:
-    asset_response = api_client.post("/api/v1/node-assets", json=_asset_payload(skill))
+def test_runtime_message_payload_maps_selected_skill_to_one_native_keyword_trigger(settings):
+    selected = {
+        "parts": [{"type": "text", "text": "请复核异常处理。"}],
+        "capability_refs": [{"capability_type": "SKILL", "capability_key": "test-skill"}],
+    }
+    already_triggered = {
+        **selected,
+        "parts": [{"type": "text", "text": "$test-skill 请复核异常处理。"}],
+    }
+
+    with settings_context(settings):
+        selected_text, selected_images = _runtime_message_payload(selected)
+        existing_text, existing_images = _runtime_message_payload(already_triggered)
+
+    assert selected_text == "$test-skill\n\n请复核异常处理。"
+    assert existing_text == "$test-skill 请复核异常处理。"
+    assert selected_images == existing_images == ()
+    assert "先读取并遵循" not in selected_text
+
+
+def _create_run(
+    api_client,
+    skill: dict[str, object] | None,
+    *,
+    extra_capabilities: list[dict[str, object]] | None = None,
+) -> tuple[str, str]:
+    payload = _asset_payload(skill)
+    payload["capabilities"] = [skill] if skill else []
+    payload["capabilities"].extend(extra_capabilities or [])
+    asset_response = api_client.post("/api/v1/node-assets", json=payload)
     assert asset_response.status_code == 201, asset_response.text
     asset = asset_response.json()
     flow_response = api_client.post(
@@ -95,6 +160,353 @@ def _create_run(api_client, skill: dict[str, object] | None) -> tuple[str, str]:
     assert run_response.status_code == 201, run_response.text
     run = run_response.json()
     return run["id"], run["node_runs"][0]["attempts"][0]["id"]
+
+
+def _import_task_capabilities(client) -> list[dict[str, object]]:
+    def publish(capability_type: str, name: str, document: dict[str, object]):
+        import json
+
+        validated = client.post(
+            "/api/v1/capability-imports/validate",
+            json={
+                "capability_type": capability_type,
+                "filename": f"{name}.json",
+                "content_base64": base64.b64encode(
+                    json.dumps(document, sort_keys=True).encode()
+                ).decode(),
+            },
+        )
+        assert validated.status_code == 200, validated.text
+        committed = client.post(
+            "/api/v1/capability-imports",
+            json={"import_token": validated.json()["import_token"]},
+        )
+        assert committed.status_code == 201, committed.text
+        return committed.json()["capabilities"][0]
+
+    policy = publish(
+        "TOOL_POLICY",
+        "usage-tools",
+        {"name": "usage-tools", "tools": [{"name": "task_tool_set"}, {"name": "terminal"}]},
+    )
+    definition = publish(
+        "AGENT_DEFINITION",
+        "reviewer",
+        {
+            "name": "reviewer",
+            "description": "Governed usage reviewer",
+            "model": "inherit",
+            "tools": ["terminal"],
+            "system_prompt": "Review safely.",
+            "when_to_use_examples": ["Review a change"],
+            "permission_mode": "never_confirm",
+            "max_budget_per_run": 0.12,
+            "condenser": {"kind": "NoOpCondenser"},
+        },
+    )
+    return [policy, definition]
+
+
+def _prepare_manual_condensation(client, db_session_factory):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": f"manual-condensation-conversation-{attempt_id}"},
+    )
+    assert created.status_code == 202, created.text
+    conversation_id = created.json()["id"]
+    frozen = {
+        "kind": "LLM_SUMMARIZING",
+        "model_provider_id": "provider-1",
+        "model_name": "summary-model",
+        "max_size": 80,
+        "max_tokens": None,
+        "keep_first": 2,
+        "minimum_progress": 0.1,
+        "hard_context_reset_max_retries": 5,
+        "hard_context_reset_context_scaling": 0.8,
+    }
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        attempt_row = db.get(NodeAttempt, attempt_id)
+        assert conversation is not None and attempt_row is not None
+        attempt_row.condenser_config_json = frozen
+        conversation.context_baseline_json = {
+            **conversation.context_baseline_json,
+            "condenser": frozen,
+        }
+        conversation.state = ConversationState.IDLE
+        conversation.state_version += 1
+        conversation.runtime_adapter = "mock"
+        conversation.runtime_job_id = f"mock-job-{conversation_id}"
+        conversation.runtime_conversation_id = f"mock-runtime-{conversation_id}"
+        conversation.runtime_cursor = "event-0"
+        db.execute(
+            delete(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation_id,
+                BackgroundTask.task_type == "CREATE_CONVERSATION",
+            )
+        )
+        version = conversation.state_version
+        db.commit()
+
+    requested = client.post(
+        f"/api/v1/agent-conversations/{conversation_id}/condense",
+        json={"expected_conversation_version": version},
+        headers={"Idempotency-Key": f"manual-condensation-{conversation_id}"},
+    )
+    assert requested.status_code == 202, requested.text
+    command_id = requested.json()["id"]
+    with db_session_factory() as db:
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == command_id,
+                BackgroundTask.task_type == "CONDENSE_CONVERSATION",
+            )
+        )
+        assert task is not None
+        assert task.max_attempts == 20
+        task.state = TaskState.RUNNING
+        task.lease_owner = "condensation-test"
+        task.lease_until = datetime.now(UTC) + timedelta(minutes=5)
+        task.lease_generation += 1
+        task.attempts += 1
+        lease = Lease(task.id, task.lease_owner, task.lease_generation)
+        db.commit()
+    return conversation_id, command_id, lease
+
+
+class _ControlledCondensationRuntime(MockRuntime):
+    def __init__(self, *, visible_after_post: str, fail_after_post: bool = False) -> None:
+        super().__init__()
+        self.visible = "none"
+        self.visible_after_post = visible_after_post
+        self.fail_after_post = fail_after_post
+        self.condense_calls = 0
+
+    @staticmethod
+    def _request_event() -> RuntimeEvent:
+        return RuntimeEvent(
+            "condense-request-1",
+            "CONDENSATION_REQUESTED",
+            {"event_name": "CondensationRequest"},
+        )
+
+    @staticmethod
+    def _completion_event() -> RuntimeEvent:
+        return RuntimeEvent(
+            "condensation-1",
+            "CONDENSATION_COMPLETED",
+            {
+                "event_name": "Condensation",
+                "forgotten_event_ids": ["event-2", "event-3"],
+                "summary": "Earlier work was summarized.",
+                "summary_offset": 2,
+                "llm_response_id": "response-1",
+            },
+        )
+
+    def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
+        if self.visible == "none":
+            return RuntimeEventBatch(cursor=handle.cursor)
+        events = []
+        if self.visible != "completion_only":
+            events.append(self._request_event())
+        if self.visible == "two_requests":
+            events.append(
+                RuntimeEvent(
+                    "condense-request-2",
+                    "CONDENSATION_REQUESTED",
+                    {"event_name": "CondensationRequest"},
+                )
+            )
+        if self.visible in {"complete", "completion_only", "two_requests"}:
+            events.append(self._completion_event())
+        return RuntimeEventBatch(events=tuple(events), cursor=events[-1].cursor)
+
+    def condense(self, handle: RuntimeHandle) -> RuntimeResult:
+        self.condense_calls += 1
+        self.visible = self.visible_after_post
+        if self.fail_after_post:
+            raise RuntimeError("response lost after native condensation")
+        return RuntimeResult(status="RUNNING", cursor=handle.cursor)
+
+
+def _renew_condensation_lease(db_session_factory, lease: Lease) -> Lease:
+    with db_session_factory() as db:
+        task = db.get(BackgroundTask, lease.task_id)
+        assert task is not None
+        task.state = TaskState.RUNNING
+        task.lease_owner = "condensation-retry"
+        task.lease_until = datetime.now(UTC) + timedelta(minutes=5)
+        task.lease_generation += 1
+        task.attempts += 1
+        renewed = Lease(task.id, task.lease_owner, task.lease_generation)
+        db.commit()
+        return renewed
+
+
+def _assert_condensation_succeeded(db_session_factory, conversation_id: str, command_id: str):
+    with db_session_factory() as db:
+        command = db.get(RuntimeCondensationCommand, command_id)
+        conversation = db.get(AgentConversation, conversation_id)
+        assert command is not None and conversation is not None
+        assert command.state == "SUCCEEDED"
+        assert command.request_event_id == "condense-request-1"
+        assert command.completion_event_id == "condensation-1"
+        assert conversation.state == ConversationState.IDLE
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(RuntimeCondensation)
+                .where(RuntimeCondensation.conversation_id == conversation_id)
+            )
+            == 2
+        )
+
+
+def test_condensation_completion_is_projected_idempotently(client, db_session_factory):
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "condensation-projection"},
+    )
+    assert created.status_code == 202, created.text
+
+    payload = {
+        "forgotten_event_ids": ["event-3", "event-2", "event-2"],
+        "summary": "Earlier work was summarized.",
+        "summary_offset": 2,
+        "llm_response_id": "response-1",
+    }
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, created.json()["id"])
+        assert conversation is not None
+        for _ in range(2):
+            _append_runtime_payload(
+                db,
+                conversation,
+                cursor="condensation-1",
+                event_type="CONDENSATION_COMPLETED",
+                payload=payload,
+            )
+        db.flush()
+
+        rows = list(
+            db.scalars(
+                select(RuntimeCondensation).where(
+                    RuntimeCondensation.conversation_id == conversation.id
+                )
+            )
+        )
+        assert len(rows) == 1
+        assert rows[0].runtime_event_id == "condensation-1"
+        assert rows[0].forgotten_event_ids_json == ["event-2", "event-3"]
+        assert rows[0].summary == "Earlier work was summarized."
+        assert rows[0].summary_offset == 2
+        assert rows[0].llm_response_id == "response-1"
+        audits = list(
+            db.scalars(
+                select(RunEvent).where(
+                    RunEvent.attempt_id == attempt_id,
+                    RunEvent.event_type == "CONVERSATION_CONDENSATION_COMPLETED",
+                )
+            )
+        )
+        assert len(audits) == 1
+        assert audits[0].payload_json["forgotten_event_count"] == 2
+
+
+def test_manual_condensation_projects_native_events_once(client, db_session_factory, settings):
+    conversation_id, command_id, lease = _prepare_manual_condensation(client, db_session_factory)
+    runtime = _ControlledCondensationRuntime(visible_after_post="complete")
+    with (
+        settings_context(settings),
+        runtime_context(runtime),
+        db_session_factory() as db,
+    ):
+        process_conversation_condensation(db, command_id, lease)
+
+    assert runtime.condense_calls == 1
+    _assert_condensation_succeeded(db_session_factory, conversation_id, command_id)
+
+
+def test_manual_condensation_reconciles_after_response_loss_without_second_post(
+    client, db_session_factory, settings
+):
+    conversation_id, command_id, lease = _prepare_manual_condensation(client, db_session_factory)
+    runtime = _ControlledCondensationRuntime(visible_after_post="complete", fail_after_post=True)
+    with (
+        settings_context(settings),
+        runtime_context(runtime),
+        db_session_factory() as db,
+    ):
+        with pytest.raises(RuntimeError, match="response lost"):
+            process_conversation_condensation(db, command_id, lease)
+
+    runtime.fail_after_post = False
+    renewed = _renew_condensation_lease(db_session_factory, lease)
+    with (
+        settings_context(settings),
+        runtime_context(runtime),
+        db_session_factory() as db,
+    ):
+        process_conversation_condensation(db, command_id, renewed)
+
+    assert runtime.condense_calls == 1
+    _assert_condensation_succeeded(db_session_factory, conversation_id, command_id)
+
+
+def test_manual_condensation_waits_for_completion_without_second_post(
+    client, db_session_factory, settings
+):
+    conversation_id, command_id, lease = _prepare_manual_condensation(client, db_session_factory)
+    runtime = _ControlledCondensationRuntime(visible_after_post="request")
+    with (
+        settings_context(settings),
+        runtime_context(runtime),
+        db_session_factory() as db,
+    ):
+        with pytest.raises(DomainError) as pending:
+            process_conversation_condensation(db, command_id, lease)
+    assert pending.value.code == "RUNTIME_CONDENSATION_PENDING"
+
+    runtime.visible = "complete"
+    renewed = _renew_condensation_lease(db_session_factory, lease)
+    with (
+        settings_context(settings),
+        runtime_context(runtime),
+        db_session_factory() as db,
+    ):
+        process_conversation_condensation(db, command_id, renewed)
+
+    assert runtime.condense_calls == 1
+    _assert_condensation_succeeded(db_session_factory, conversation_id, command_id)
+
+
+@pytest.mark.parametrize("visible", ["completion_only", "two_requests"])
+def test_manual_condensation_fails_closed_on_unattributable_native_events(
+    client, db_session_factory, settings, visible
+):
+    _conversation_id, command_id, lease = _prepare_manual_condensation(client, db_session_factory)
+    runtime = _ControlledCondensationRuntime(visible_after_post="complete")
+    runtime.visible = visible
+    with (
+        settings_context(settings),
+        runtime_context(runtime),
+        db_session_factory() as db,
+    ):
+        with pytest.raises(DomainError) as drifted:
+            process_conversation_condensation(db, command_id, lease)
+
+    assert drifted.value.code == "RUNTIME_CONDENSATION_DRIFTED"
+    assert runtime.condense_calls == 0
 
 
 def test_human_conversation_projects_intermediate_agent_message_as_progress(
@@ -264,6 +676,443 @@ def test_human_conversation_projects_intermediate_agent_message_as_progress(
             item for item in turn_messages if item.runtime_event_id == "intermediate-message-3"
         )
         assert duplicate_progress.content_json["superseded_by_final"] is True
+
+
+def test_native_task_events_are_persisted_as_structured_runtime_facts(client, db_session_factory):
+    from flowweave.runtime.openhands import OpenHandsRuntime
+
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "native-task-runtime-facts"},
+    )
+    assert created.status_code == 202, created.text
+    conversation_id = created.json()["id"]
+
+    requested = OpenHandsRuntime._event_payload(
+        {
+            "id": "native-task-action-1",
+            "kind": "ActionEvent",
+            "source": "agent",
+            "tool_name": "task_tool_set",
+            "tool_call_id": "call-native-task-1",
+            "llm_response_id": "response-native-task-1",
+            "action": {
+                "kind": "TaskAction",
+                "description": "Review patch",
+                "prompt": "Review the patch without exposing secrets.",
+                "subagent_type": "reviewer",
+                "resume": None,
+            },
+        }
+    )
+    completed = OpenHandsRuntime._event_payload(
+        {
+            "id": "native-task-observation-1",
+            "kind": "ObservationEvent",
+            "source": "environment",
+            "tool_name": "task_tool_set",
+            "tool_call_id": "call-native-task-1",
+            "action_id": "native-task-action-1",
+            "observation": {
+                "kind": "TaskObservation",
+                "content": [{"type": "text", "text": "Review passed."}],
+                "is_error": False,
+                "task_id": "task_00000001",
+                "subagent": "reviewer",
+                "status": "completed",
+            },
+        }
+    )
+
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="native-task-requested-1",
+            event_type="TOOL_CALL",
+            payload=requested,
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="native-task-completed-1",
+            event_type="TOOL_RESULT",
+            payload=completed,
+        )
+        db.commit()
+
+    messages = client.get(f"/api/v1/agent-conversations/{conversation_id}/messages").json()
+    task_messages = [
+        item for item in messages if item["message_type"] in {"TOOL_CALL", "TOOL_RESULT"}
+    ]
+    assert [item["content"]["tool"]["runtime_task"] for item in task_messages] == [
+        {
+            "phase": "REQUESTED",
+            "action_event_id": "native-task-action-1",
+            "tool_call_id": "call-native-task-1",
+            "llm_response_id": "response-native-task-1",
+            "subagent_type": "reviewer",
+            "description": "Review patch",
+            "resume_task_id": None,
+        },
+        {
+            "phase": "COMPLETED",
+            "action_event_id": "native-task-action-1",
+            "observation_event_id": "native-task-observation-1",
+            "tool_call_id": "call-native-task-1",
+            "task_id": "task_00000001",
+            "subagent_type": "reviewer",
+            "status": "completed",
+        },
+    ]
+    tasks = client.get(f"/api/v1/agent-conversations/{conversation_id}/subagents").json()
+    assert len(tasks) == 1
+    assert tasks[0] | {"created_at": None, "updated_at": None, "completed_at": None} == {
+        **tasks[0],
+        "created_at": None,
+        "updated_at": None,
+        "completed_at": None,
+    }
+    assert {
+        key: tasks[0][key]
+        for key in (
+            "action_event_id",
+            "tool_call_id",
+            "llm_response_id",
+            "observation_event_id",
+            "runtime_task_id",
+            "subagent_type",
+            "description",
+            "state",
+            "native_status",
+            "result",
+            "error_detail",
+        )
+    } == {
+        "action_event_id": "native-task-action-1",
+        "tool_call_id": "call-native-task-1",
+        "llm_response_id": "response-native-task-1",
+        "observation_event_id": "native-task-observation-1",
+        "runtime_task_id": "task_00000001",
+        "subagent_type": "reviewer",
+        "description": "Review patch",
+        "state": "COMPLETED",
+        "native_status": "completed",
+        "result": "Review passed.",
+        "error_detail": None,
+    }
+
+
+def test_native_task_projection_handles_observation_before_action_and_replay(
+    client, db_session_factory
+):
+    run_id, attempt_id = _create_run(client, None)
+    attempt = client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "native-task-out-of-order"},
+    )
+    conversation_id = created.json()["id"]
+    observation = {
+        "content": "Review failed safely.",
+        "runtime_task": {
+            "phase": "ERROR",
+            "action_event_id": "task-action-out-of-order",
+            "observation_event_id": "task-observation-out-of-order",
+            "tool_call_id": "call-out-of-order",
+            "task_id": "task_00000002",
+            "subagent_type": "reviewer",
+            "status": "error",
+        },
+    }
+    action = {
+        "runtime_task": {
+            "phase": "REQUESTED",
+            "action_event_id": "task-action-out-of-order",
+            "tool_call_id": "call-out-of-order",
+            "llm_response_id": "response-out-of-order",
+            "subagent_type": "reviewer",
+            "description": "Review safely",
+            "resume_task_id": None,
+        }
+    }
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="observation-first",
+            event_type="TOOL_RESULT",
+            payload=observation,
+        )
+        _append_runtime_payload(
+            db, conversation, cursor="action-second", event_type="TOOL_CALL", payload=action
+        )
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="observation-first",
+            event_type="TOOL_RESULT",
+            payload=observation,
+        )
+        db.commit()
+
+    with db_session_factory() as db:
+        rows = list(
+            db.scalars(
+                select(RuntimeSubagentTask).where(
+                    RuntimeSubagentTask.conversation_id == conversation_id
+                )
+            )
+        )
+        assert len(rows) == 1
+        task = rows[0]
+        assert task.state == "ERROR"
+        assert task.error_detail == "Review failed safely."
+        assert task.description == "Review safely"
+        assert task.llm_response_id == "response-out-of-order"
+
+        with pytest.raises(DomainError, match="identity changed") as drifted:
+            _append_runtime_payload(
+                db,
+                task_conversation := db.get(AgentConversation, conversation_id),
+                cursor="observation-drifted",
+                event_type="TOOL_RESULT",
+                payload={
+                    "runtime_task": {
+                        **observation["runtime_task"],
+                        "observation_event_id": "different-observation",
+                    }
+                },
+            )
+        assert task_conversation is not None
+        assert drifted.value.code == "RUNTIME_TASK_PROTOCOL_DRIFT"
+
+
+def test_native_task_usage_resume_replaces_one_ledger_without_double_counting(
+    client, db_session_factory
+):
+    run_id, attempt_id = _create_run(client, None)
+    attempt = client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "native-task-usage-resume"},
+    )
+    conversation_id = created.json()["id"]
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None
+        for suffix in ("first", "resume"):
+            _append_runtime_payload(
+                db,
+                conversation,
+                cursor=f"resume-observation-{suffix}",
+                event_type="TOOL_RESULT",
+                payload={
+                    "runtime_task": {
+                        "phase": "COMPLETED",
+                        "action_event_id": f"resume-action-{suffix}",
+                        "observation_event_id": f"resume-observation-{suffix}",
+                        "task_id": "task_resumed",
+                        "subagent_type": "reviewer",
+                        "status": "completed",
+                    }
+                },
+            )
+        project_runtime_task_usage(
+            db,
+            conversation,
+            (
+                RuntimeTaskUsageSnapshot(
+                    "task_resumed",
+                    "resume-observation-resume",
+                    "c" * 64,
+                    "model",
+                    0.3,
+                    30,
+                    10,
+                    0,
+                    0,
+                    0,
+                    100,
+                    40,
+                ),
+            ),
+        )
+        db.commit()
+        assert db.scalar(select(func.count(RuntimeSubagentTask.id))) == 2
+        assert db.scalar(select(func.count(RuntimeSubagentTaskUsage.id))) == 1
+
+
+def test_native_task_usage_projection_replaces_cumulative_snapshot_and_is_idempotent(
+    client, db_session_factory
+):
+    run_id, attempt_id = _create_run(
+        client, None, extra_capabilities=_import_task_capabilities(client)
+    )
+    attempt = client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "native-task-usage"},
+    )
+    conversation_id = created.json()["id"]
+    observation = {
+        "content": "Review complete.",
+        "runtime_task": {
+            "phase": "COMPLETED",
+            "action_event_id": "usage-action-1",
+            "observation_event_id": "usage-observation-1",
+            "tool_call_id": "usage-call-1",
+            "task_id": "task_00000009",
+            "subagent_type": "reviewer",
+            "status": "completed",
+        },
+    }
+
+    def usage(cost: float, prompt: int, completion: int) -> RuntimeTaskUsageSnapshot:
+        values = {
+            "task_id": "task_00000009",
+            "model_name": "openai/test-model",
+            "accumulated_cost": cost,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 2,
+            "context_window": 4096,
+            "per_turn_tokens": prompt + completion,
+        }
+        import hashlib
+        import json
+
+        return RuntimeTaskUsageSnapshot(
+            **values,
+            source_cursor="usage-observation-1",
+            digest=hashlib.sha256(
+                json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        )
+
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="usage-observation-1",
+            event_type="TOOL_RESULT",
+            payload=observation,
+        )
+        first = usage(0.1, 100, 20)
+        project_runtime_task_usage(db, conversation, (first,))
+        project_runtime_task_usage(db, conversation, (first,))
+        project_runtime_task_usage(db, conversation, (usage(0.15, 140, 30),))
+        db.commit()
+
+    response = client.get(f"/api/v1/agent-conversations/{conversation_id}/subagents").json()
+    assert len(response) == 1
+    assert response[0]["usage"] | {"updated_at": None} == {
+        "runtime_task_id": "task_00000009",
+        "source_cursor": "usage-observation-1",
+        "snapshot_digest": response[0]["usage"]["snapshot_digest"],
+        "usage_version": 2,
+        "model_name": "openai/test-model",
+        "accumulated_cost_usd": 0.15,
+        "prompt_tokens": 140,
+        "completion_tokens": 30,
+        "cache_read_tokens": 10,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 2,
+        "context_window": 4096,
+        "per_turn_tokens": 170,
+        "budget_limit_usd": 0.12,
+        "budget_state": "EXCEEDED",
+        "budget_exceeded_at": response[0]["usage"]["budget_exceeded_at"],
+        "updated_at": None,
+    }
+    with db_session_factory() as db:
+        assert db.scalar(select(func.count(RuntimeSubagentTaskUsage.id))) == 1
+        assert (
+            db.scalar(
+                select(func.count(RunEvent.cursor)).where(
+                    RunEvent.event_type == "RUNTIME_SUBAGENT_USAGE_PROJECTED"
+                )
+            )
+            == 2
+        )
+        assert (
+            db.scalar(
+                select(func.count(RunEvent.cursor)).where(
+                    RunEvent.event_type == "RUNTIME_SUBAGENT_BUDGET_EXCEEDED"
+                )
+            )
+            == 1
+        )
+
+
+def test_native_task_usage_rejects_cumulative_regression(client, db_session_factory):
+    run_id, attempt_id = _create_run(client, None)
+    attempt = client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "native-task-usage-regression"},
+    )
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, created.json()["id"])
+        assert conversation is not None
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor="regression-observation",
+            event_type="TOOL_RESULT",
+            payload={
+                "runtime_task": {
+                    "phase": "COMPLETED",
+                    "action_event_id": "regression-action",
+                    "observation_event_id": "regression-observation",
+                    "task_id": "task_regression",
+                    "subagent_type": "reviewer",
+                    "status": "completed",
+                }
+            },
+        )
+        baseline = RuntimeTaskUsageSnapshot(
+            "task_regression", "cursor-2", "a" * 64, "model", 0.2, 20, 10, 0, 0, 0, 100, 30
+        )
+        project_runtime_task_usage(db, conversation, (baseline,))
+        with pytest.raises(DomainError) as raised:
+            project_runtime_task_usage(
+                db,
+                conversation,
+                (
+                    RuntimeTaskUsageSnapshot(
+                        "task_regression",
+                        "cursor-1",
+                        "b" * 64,
+                        "model",
+                        0.1,
+                        10,
+                        5,
+                        0,
+                        0,
+                        0,
+                        100,
+                        15,
+                    ),
+                ),
+            )
+        assert raised.value.code == "RUNTIME_TASK_USAGE_REGRESSION"
 
 
 def test_conversation_fork_only_accepts_agent_reply_and_copies_history(client, db_session_factory):
@@ -499,7 +1348,7 @@ def test_conversation_result_projection_is_idempotent(client, db_session_factory
         assert conversation.state == "IDLE"
 
 
-def test_human_conversation_delegates_and_resumes_after_all_children(client, db_session_factory):
+def test_private_delegation_envelope_is_not_executed_by_platform(client, db_session_factory):
     run_id, attempt_id = _create_run(client, None)
     run = client.get(f"/api/v1/flow-runs/{run_id}").json()
     attempt = run["node_runs"][0]["attempts"][0]
@@ -528,50 +1377,16 @@ def test_human_conversation_delegates_and_resumes_after_all_children(client, db_
         )
         db.flush()
 
-        children = list_subagents(db, parent.id)
-        assert parent.state == "WAITING_SUBAGENTS"
-        assert [item["title"] for item in children] == ["后端检查", "前端检查"]
-        assert all(item["kind"] == "SUBAGENT" for item in children)
-        assert all(item["parent_conversation_id"] == parent.id for item in children)
-        assert all(item["state"] == "CREATING" for item in children)
-
-        child_rows = [db.get(AgentConversation, item["id"]) for item in children]
-        assert all(item is not None for item in child_rows)
-        for index, child in enumerate(child_rows):
-            assert child is not None
-            child.state = "GENERATING"
-            _apply_conversation_result(
-                db,
-                child,
-                RuntimeResult(
-                    status="COMPLETED",
-                    final_message=f"子任务 {index + 1} 结果",
-                    cursor=f"child-{index + 1}",
-                ),
-                message_id=f"child-message-{index + 1}",
-            )
-            db.flush()
-
-        db.refresh(parent)
-        assert parent.state == "GENERATING"
-        result_message = db.scalar(
+        assert parent.state == "IDLE"
+        assert list_subagents(db, parent.id) == []
+        projected = db.scalar(
             select(AgentMessage).where(
                 AgentMessage.conversation_id == parent.id,
-                AgentMessage.client_message_id.like("subagent-results:%"),
+                AgentMessage.runtime_event_id == "delivery-result:delegate-message:delegate-1",
             )
         )
-        assert result_message is not None
-        assert result_message.delivery_state == "DELIVERING"
-        result_text = result_message.content_json["parts"][0]["text"]
-        assert "子任务 1 结果" in result_text
-        assert "子任务 2 结果" in result_text
-        delivery = db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.aggregate_id == result_message.id,
-                BackgroundTask.task_type == "DELIVER_CONVERSATION_MESSAGE",
-            )
-        )
-        assert delivery is not None
+        assert projected is not None
+        assert projected.content_json["parts"][0]["text"] == envelope
 
 
 def test_dead_conversation_poll_projects_visible_failure(client, db_session_factory):
@@ -645,6 +1460,113 @@ def test_conversation_recovery_requeues_missing_poll_with_extended_retries(
         assert recovered is not None
         assert recovered.max_attempts == 10
         db.rollback()
+
+
+def test_rest_poll_projects_events_when_websocket_is_unavailable(
+    client, db_session_factory, settings
+):
+    """WebSocket is only a wake-up/text channel; REST cursor polling is durable."""
+
+    run_id, attempt_id = _create_run(client, None)
+    run = client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = run["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": "rest-poll-without-websocket"},
+    )
+    assert created.status_code == 202, created.text
+    conversation_id = created.json()["id"]
+
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None
+        conversation.state = ConversationState.GENERATING
+        conversation.runtime_adapter = "mock"
+        conversation.runtime_job_id = f"mock-job-{conversation_id}"
+        conversation.runtime_conversation_id = f"mock-runtime-{conversation_id}"
+        conversation.runtime_cursor = "anchor-1"
+        _append(
+            db,
+            conversation,
+            source=MessageSource.HUMAN,
+            message_type=MessageType.TEXT,
+            content={"parts": [{"type": "text", "text": "continue"}]},
+            delivery_state=DeliveryState.DELIVERED,
+            client_message_id="rest-poll-human-turn",
+        )
+        db.execute(
+            delete(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation_id,
+                BackgroundTask.task_type == "CREATE_CONVERSATION",
+            )
+        )
+        task = BackgroundTask(
+            task_type="POLL_CONVERSATION",
+            aggregate_type="CONVERSATION",
+            aggregate_id=conversation_id,
+            idempotency_key=f"rest-poll:{conversation_id}",
+            state=TaskState.RUNNING,
+            lease_owner="rest-poll-test",
+            lease_until=datetime.now(UTC) + timedelta(minutes=5),
+            lease_generation=1,
+            attempts=1,
+        )
+        db.add(task)
+        db.commit()
+        lease = Lease(task.id, "rest-poll-test", 1)
+
+    class RestOnlyRuntime(MockRuntime):
+        read_calls = 0
+        stream_calls = 0
+
+        def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
+            self.read_calls += 1
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        "message-2",
+                        "MESSAGE",
+                        {"source": "agent", "content": "durable progress"},
+                    ),
+                    RuntimeEvent("finish-3", "COMPLETED", {}),
+                ),
+                cursor="finish-3",
+                result=RuntimeResult(
+                    status="COMPLETED",
+                    final_message="durable final",
+                    cursor="finish-3",
+                ),
+            )
+
+        async def stream_events(self, _handle: RuntimeHandle):
+            self.stream_calls += 1
+            raise AssertionError("durable polling must not depend on WebSocket")
+            yield {}
+
+    runtime = RestOnlyRuntime()
+    with (
+        settings_context(settings),
+        runtime_context(runtime),
+        db_session_factory() as db,
+    ):
+        process_poll_conversation(db, conversation_id, 1, lease)
+
+    assert runtime.read_calls == 1
+    assert runtime.stream_calls == 0
+    projected = client.get(f"/api/v1/agent-conversations/{conversation_id}").json()
+    assert projected["state"] == "IDLE"
+    with db_session_factory() as db:
+        persisted = db.get(AgentConversation, conversation_id)
+        assert persisted is not None
+        assert persisted.runtime_cursor == "finish-3"
+    messages = client.get(f"/api/v1/agent-conversations/{conversation_id}/messages").json()
+    assert any(
+        message["content"].get("presentation") == "progress"
+        and message["content"]["parts"][0]["text"] == "durable progress"
+        for message in messages
+    )
+    assert messages[-1]["content"]["parts"][0]["text"] == "durable final"
 
 
 def test_run_environment_is_used_by_execution_and_collaboration_runtime(
@@ -1035,7 +1957,7 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert unavailable.json()["error"]["code"] == "CAPABILITY_NOT_AVAILABLE"
     payload = {
         "client_message_id": "client-message-1",
-        "content": [{"type": "text", "text": "$test-skill 请复核异常处理。"}],
+        "content": [{"type": "text", "text": "请复核异常处理。"}],
         "capability_refs": [{"capability_type": "SKILL", "capability_key": "test-skill"}],
         "delivery_mode": "QUEUE_AFTER_TURN",
         "expected_conversation_version": conversation["state_version"],
@@ -1066,7 +1988,8 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
         {"capability_type": "SKILL", "capability_key": "test-skill"}
     ]
     assert "Mock response" in messages[2]["content"]["parts"][0]["text"]
-    assert 'Skill "test-skill"' in messages[2]["content"]["parts"][0]["text"]
+    assert "$test-skill\n\n请复核异常处理。" in messages[2]["content"]["parts"][0]["text"]
+    assert "先读取并遵循" not in messages[2]["content"]["parts"][0]["text"]
 
     with db_session_factory() as db:
         generating = db.get(AgentConversation, conversation["id"])

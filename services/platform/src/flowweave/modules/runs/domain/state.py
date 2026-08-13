@@ -8,10 +8,12 @@ TRANSITIONS = {
     AttemptState.WAITING_START_CONFIRMATION: {AttemptState.EXECUTING, AttemptState.CANCELLED},
     AttemptState.EXECUTING: {
         AttemptState.WAITING_HUMAN,
+        AttemptState.WAITING_CONFIRMATION,
         AttemptState.END_GATES,
         AttemptState.CANCELLED,
     },
     AttemptState.WAITING_HUMAN: {AttemptState.EXECUTING, AttemptState.CANCELLED},
+    AttemptState.WAITING_CONFIRMATION: {AttemptState.EXECUTING, AttemptState.CANCELLED},
     AttemptState.END_GATES: {AttemptState.WAITING_ACCEPTANCE, AttemptState.END_BLOCKED},
     AttemptState.END_BLOCKED: {
         AttemptState.END_GATES,

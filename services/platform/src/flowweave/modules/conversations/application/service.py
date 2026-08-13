@@ -8,17 +8,17 @@ import json
 import mimetypes
 import os
 import re
-import shutil
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.catalog.public import resolve_snapshot_memory
 from flowweave.modules.conversations.domain.enums import (
     CONVERSATION_ENABLED_ATTEMPT_STATES,
     TERMINAL_ATTEMPT_STATES,
@@ -30,17 +30,33 @@ from flowweave.modules.conversations.domain.enums import (
     MessageType,
     transport_role,
 )
-from flowweave.modules.conversations.infrastructure.models import AgentConversation, AgentMessage
+from flowweave.modules.conversations.infrastructure.models import (
+    AgentConversation,
+    AgentMessage,
+    RuntimeCondensation,
+    RuntimeCondensationCommand,
+    RuntimeConversationFork,
+    RuntimeSubagentTask,
+    RuntimeSubagentTaskUsage,
+)
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
-from flowweave.runtime.base import RuntimeHandle, RuntimeResult
+from flowweave.runtime.base import (
+    RuntimeEvent,
+    RuntimeHandle,
+    RuntimeResult,
+    RuntimeTaskUsageSnapshot,
+)
 from flowweave.runtime.dependencies import get_runtime
+from flowweave.runtime.manifest import runtime_node
 from flowweave.runtime.request import (
     build_runtime_request,
+    frozen_memory_policy,
     resolve_runtime_provider,
     resolve_runtime_selection,
 )
 from flowweave.runtime.routing import runtime_for
+from flowweave.runtime.workspace import materialize_runtime_memory
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
@@ -58,6 +74,7 @@ from flowweave.shared.models import (
     now,
 )
 from flowweave.shared.schemas import (
+    ConversationCondenseWrite,
     ConversationCreateWrite,
     ConversationForkWrite,
     ConversationPatchWrite,
@@ -78,7 +95,6 @@ _WORKSPACE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
 _MESSAGE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
 _MESSAGE_ATTACHMENTS_MAX_BYTES = 20 * 1024 * 1024
 _SAFE_ATTACHMENT_NAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
-_SUBAGENT_LIMIT = 4
 
 
 @dataclass(frozen=True)
@@ -131,6 +147,19 @@ def conversation_sandbox_owner_is_active(
     """Report whether a human conversation still authorizes its Runtime sandbox."""
 
     item = db.get(AgentConversation, owner_id)
+    shared_branch_active = (
+        db.scalar(
+            select(AgentConversation.id)
+            .where(
+                AgentConversation.runtime_sandbox_id == sandbox_id,
+                AgentConversation.state.not_in(
+                    [ConversationState.FAILED, ConversationState.READ_ONLY]
+                ),
+            )
+            .limit(1)
+        )
+        is not None
+    )
     provisioning = bool(
         item is not None
         and item.runtime_sandbox_id is None
@@ -139,12 +168,51 @@ def conversation_sandbox_owner_is_active(
     )
     return bool(
         provisioning
+        or shared_branch_active
         or (
             item is not None
             and item.runtime_sandbox_id == sandbox_id
             and item.state not in {ConversationState.FAILED, ConversationState.READ_ONLY}
         )
     )
+
+
+def _runtime_sandbox_id(db: Session, item: AgentConversation) -> str | None:
+    if item.runtime_sandbox_id is not None:
+        return item.runtime_sandbox_id
+    if item.kind == ConversationKind.AUTO:
+        return _attempt(db, item.attempt_id).runtime_sandbox_id
+    return None
+
+
+def _runtime_sandbox_has_other_active_conversations(
+    db: Session,
+    sandbox_id: str | None,
+    *,
+    excluding_conversation_id: str,
+) -> bool:
+    if sandbox_id is None:
+        return False
+    return (
+        db.scalar(
+            select(AgentConversation.id)
+            .where(
+                AgentConversation.id != excluding_conversation_id,
+                AgentConversation.runtime_sandbox_id == sandbox_id,
+                AgentConversation.runtime_conversation_id.is_not(None),
+                AgentConversation.state.not_in(
+                    [ConversationState.FAILED, ConversationState.READ_ONLY]
+                ),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _runtime_sandbox_is_conversation_owned(db: Session, sandbox_id: str | None) -> bool:
+    snapshot = sandboxes.sandbox_snapshot(db, sandbox_id)
+    return snapshot is not None and snapshot.get("owner_type") == "CONVERSATION"
 
 
 def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
@@ -220,6 +288,8 @@ def _baseline(db: Session, attempt: NodeAttempt) -> dict[str, Any]:
         ],
         "selected_artifact_ids": artifacts,
         "workspace_ref": attempt.workspace_ref,
+        "confirmation_policy": attempt.confirmation_policy,
+        "condenser": copy.deepcopy(attempt.condenser_config_json or {"kind": "NO_OP"}),
         "context_policy": "ATTEMPT_FACTS_NO_CROSS_CONVERSATION_MESSAGES",
     }
 
@@ -242,20 +312,34 @@ def _runtime_message_payload(content: dict[str, Any]) -> tuple[str, tuple[str, .
         else []
     )
     sections: list[str] = []
-    if refs:
-        directives = ["用户显式指定本条消息必须调用以下能力："]
-        for ref in refs:
-            capability_type = str(ref.get("capability_type") or "")
-            capability_key = str(ref.get("capability_key") or "")
-            if capability_type == "SKILL":
-                directives.append(f'- Skill "{capability_key}"：先读取并遵循该 Skill，再完成请求。')
-            else:
-                directives.append(
-                    f'- MCP "{capability_key}"：优先使用该 Server 暴露的合适工具完成请求。'
-                )
-        sections.append("\n".join(directives))
+    skill_triggers: list[str] = []
+    lowered_text = text.lower()
+    for ref in refs:
+        if str(ref.get("capability_type") or "") != "SKILL":
+            continue
+        trigger = f"${str(ref.get('capability_key') or '')}"
+        if not re.search(
+            rf"(?<![a-z0-9]){re.escape(trigger.lower())}(?![a-z0-9])",
+            lowered_text,
+        ):
+            skill_triggers.append(trigger)
+    if skill_triggers:
+        # These are frozen KeywordTrigger values on the governed AgentSkills.
+        # OpenHands records the activation on its MessageEvent; this is not a
+        # FlowWeave prompt instruction or a private tool-control protocol.
+        sections.append("\n".join(skill_triggers))
+    mcp_refs = [
+        str(ref.get("capability_key") or "")
+        for ref in refs
+        if str(ref.get("capability_type") or "") == "MCP"
+    ]
+    if mcp_refs:
+        sections.append(
+            "用户显式指定本条消息优先使用以下 MCP Server 的合适工具：\n"
+            + "\n".join(f'- MCP "{name}"' for name in mcp_refs)
+        )
     if text:
-        sections.append(("以下是用户原始消息：\n" if refs else "") + text)
+        sections.append(text)
 
     attachment_lines: list[str] = []
     image_urls: list[str] = []
@@ -458,6 +542,103 @@ def _message_is_progress(item: AgentMessage) -> bool:
     return item.content_json.get("presentation") == "progress"
 
 
+def _condensation_dict(item: RuntimeCondensation) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "attempt_id": item.attempt_id,
+        "conversation_id": item.conversation_id,
+        "runtime_event_id": item.runtime_event_id,
+        "runtime_cursor": item.runtime_cursor,
+        "event_type": item.event_type,
+        "forgotten_event_ids": item.forgotten_event_ids_json,
+        "summary": item.summary,
+        "summary_offset": item.summary_offset,
+        "llm_response_id": item.llm_response_id,
+        "created_at": item.created_at.isoformat(),
+    }
+
+
+def _condensation_command_dict(item: RuntimeCondensationCommand) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "attempt_id": item.attempt_id,
+        "conversation_id": item.conversation_id,
+        "runtime_conversation_id": item.runtime_conversation_id,
+        "baseline_cursor": item.baseline_cursor,
+        "request_event_id": item.request_event_id,
+        "completion_event_id": item.completion_event_id,
+        "state": item.state,
+        "state_version": item.state_version,
+        "error_code": item.error_code,
+        "error_detail": item.error_detail,
+        "created_at": item.created_at.isoformat(),
+        "started_at": item.started_at.isoformat() if item.started_at else None,
+        "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+    }
+
+
+def project_runtime_condensation(
+    db: Session,
+    conversation: AgentConversation,
+    *,
+    cursor: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> RuntimeCondensation:
+    existing = db.scalar(
+        select(RuntimeCondensation).where(
+            RuntimeCondensation.conversation_id == conversation.id,
+            RuntimeCondensation.runtime_event_id == cursor,
+        )
+    )
+    if existing is not None:
+        return existing
+    completed = event_type == "CONDENSATION_COMPLETED"
+    raw_ids = payload.get("forgotten_event_ids") if completed else None
+    forgotten_event_ids = (
+        sorted(
+            {
+                value[:200]
+                for value in cast(list[object], raw_ids)[:10_000]
+                if isinstance(value, str)
+            }
+        )
+        if isinstance(raw_ids, list)
+        else []
+    )
+    raw_summary = payload.get("summary") if completed else None
+    summary = str(raw_summary)[:200_000] if raw_summary is not None else None
+    raw_offset = payload.get("summary_offset") if completed else None
+    summary_offset = raw_offset if isinstance(raw_offset, int) and raw_offset >= 0 else None
+    raw_response_id = payload.get("llm_response_id") if completed else None
+    item = RuntimeCondensation(
+        attempt_id=conversation.attempt_id,
+        conversation_id=conversation.id,
+        runtime_event_id=cursor,
+        runtime_cursor=cursor,
+        event_type=("COMPLETED" if completed else "REQUESTED"),
+        forgotten_event_ids_json=forgotten_event_ids,
+        summary=summary,
+        summary_offset=summary_offset,
+        llm_response_id=(str(raw_response_id)[:200] if raw_response_id is not None else None),
+    )
+    db.add(item)
+    db.flush()
+    conversation.runtime_cursor = cursor
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_CONDENSATION_" + item.event_type,
+        {
+            "runtime_event_id": cursor,
+            "forgotten_event_count": len(forgotten_event_ids),
+            "has_summary": summary is not None,
+            "llm_response_id": item.llm_response_id,
+        },
+    )
+    return item
+
+
 def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
     active_messages = [
         message
@@ -477,7 +658,6 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
     )
     return {
         "id": item.id,
-        "parent_conversation_id": item.parent_conversation_id,
         "attempt_id": item.attempt_id,
         "conversation_no": item.conversation_no,
         "kind": item.kind,
@@ -489,16 +669,39 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
         "runtime_adapter": item.runtime_adapter,
         "runtime_job_id": item.runtime_job_id,
         "runtime_conversation_id": item.runtime_conversation_id,
+        "fork_kind": item.fork_kind,
+        "source_conversation_id": item.source_conversation_id,
+        "source_runtime_conversation_id": item.source_runtime_conversation_id,
+        "source_runtime_event_id": item.source_runtime_event_id,
+        "runtime_branch_metadata": item.runtime_branch_metadata_json,
+        "metrics_reset": item.metrics_reset,
         "runtime_resource": runtime_resource,
         "connection_status": connection,
         "context_baseline": item.context_baseline_json,
         "editable_message_id": cast(
             dict[str, Any], item.context_baseline_json.get("stopped_turn") or {}
         ).get("editable_message_id"),
-        "delegation_batch_key": item.delegation_batch_key,
-        "delegation_instruction": item.delegation_instruction,
         "message_count": count,
         "last_message": _message_dict(last) if last else None,
+        "runtime_condensations": [
+            _condensation_dict(condensation)
+            for condensation in db.scalars(
+                select(RuntimeCondensation)
+                .where(RuntimeCondensation.conversation_id == item.id)
+                .order_by(RuntimeCondensation.created_at, RuntimeCondensation.id)
+            )
+        ],
+        "runtime_condensation_commands": [
+            _condensation_command_dict(command)
+            for command in db.scalars(
+                select(RuntimeCondensationCommand)
+                .where(RuntimeCondensationCommand.conversation_id == item.id)
+                .order_by(
+                    RuntimeCondensationCommand.created_at,
+                    RuntimeCondensationCommand.id,
+                )
+            )
+        ],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -531,7 +734,7 @@ def _runtime_resource(db: Session, item: AgentConversation) -> dict[str, Any] | 
         "lifecycle": lifecycle,
         "cleanup_policy": (
             "DELETE_WITH_CONVERSATION"
-            if item.kind != ConversationKind.AUTO
+            if sandbox.get("owner_type") == "CONVERSATION"
             else "DELETE_WITH_ATTEMPT"
         ),
     }
@@ -799,6 +1002,86 @@ def project_runtime_event(
     )
     if conversation is None:
         return
+    if event_type in {"CONDENSATION_REQUESTED", "CONDENSATION_COMPLETED"}:
+        project_runtime_condensation(
+            db, conversation, cursor=cursor, event_type=event_type, payload=payload
+        )
+        return
+    if event_type in {"TOOL", "TOOL_CALL", "TOOL_RESULT"}:
+        _project_runtime_subagent_task(db, conversation, cursor=cursor, payload=payload)
+    existing = db.scalar(
+        select(AgentMessage.id).where(
+            AgentMessage.conversation_id == conversation.id,
+            AgentMessage.runtime_event_id == cursor,
+        )
+    )
+    if existing:
+        return
+    content: dict[str, Any]
+    if event_type == "MESSAGE":
+        role = str(payload.get("role") or payload.get("source") or "").lower()
+        if role in {"user", "human", "program"}:
+            return
+        raw: object = (
+            payload.get("content") or payload.get("message") or payload.get("text") or payload
+        )
+        if isinstance(raw, dict) and "parts" in raw:
+            content = cast(dict[str, Any], raw)
+        else:
+            rendered = (
+                str(raw)
+                if isinstance(raw, str | int | float | bool)
+                else json.dumps(payload, ensure_ascii=False, default=str)
+            )
+            content = {"parts": [{"type": "text", "text": rendered}]}
+        kind = MessageType.TEXT
+    elif event_type in {"TOOL", "TOOL_CALL", "TOOL_RESULT"}:
+        content = {"tool": payload}
+        kind = MessageType.TOOL_RESULT if event_type == "TOOL_RESULT" else MessageType.TOOL_CALL
+    elif event_type == "THOUGHT":
+        content = {"state": payload}
+        kind = MessageType.STATE
+    elif event_type == "ERROR":
+        content = {"error": payload}
+        kind = MessageType.ERROR
+    else:
+        return
+    _append(
+        db,
+        conversation,
+        source=MessageSource.AGENT,
+        message_type=kind,
+        content=content,
+        delivery_state=DeliveryState.DELIVERED,
+        runtime_event_id=cursor,
+        runtime_cursor=cursor,
+    )
+    conversation.runtime_cursor = cursor
+
+
+def project_runtime_conversation_event(
+    db: Session,
+    conversation_id: str,
+    *,
+    cursor: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Project a formal Runtime event onto its exact durable conversation.
+
+    Cancellation recovery can cover AUTO and human-created conversations owned by
+    the same Attempt. The caller supplies the database conversation identity
+    resolved from the Runtime handle; no event ordering or display name is used.
+    """
+
+    conversation = _conversation(db, conversation_id)
+    if event_type in {"CONDENSATION_REQUESTED", "CONDENSATION_COMPLETED"}:
+        project_runtime_condensation(
+            db, conversation, cursor=cursor, event_type=event_type, payload=payload
+        )
+        return
+    if event_type in {"TOOL", "TOOL_CALL", "TOOL_RESULT"}:
+        _project_runtime_subagent_task(db, conversation, cursor=cursor, payload=payload)
     existing = db.scalar(
         select(AgentMessage.id).where(
             AgentMessage.conversation_id == conversation.id,
@@ -1133,7 +1416,7 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
             select(AgentConversation)
             .where(
                 AgentConversation.attempt_id == attempt_id,
-                AgentConversation.kind != ConversationKind.SUBAGENT,
+                AgentConversation.kind != "SUBAGENT",
             )
             .order_by(AgentConversation.conversation_no)
         )
@@ -1145,228 +1428,97 @@ def list_subagents(db: Session, conversation_id: str) -> list[dict[str, Any]]:
     _conversation(db, conversation_id)
     rows = list(
         db.scalars(
-            select(AgentConversation)
+            select(RuntimeSubagentTask)
+            .where(RuntimeSubagentTask.conversation_id == conversation_id)
+            .order_by(RuntimeSubagentTask.created_at, RuntimeSubagentTask.id)
+        )
+    )
+    usage_by_task = {
+        item.runtime_subagent_task_id: item
+        for item in db.scalars(
+            select(RuntimeSubagentTaskUsage).where(
+                RuntimeSubagentTaskUsage.conversation_id == conversation_id
+            )
+        )
+    }
+    return [_subagent_task_dict(item, usage_by_task.get(item.id)) for item in rows]
+
+
+def pending_runtime_task_control_facts(
+    db: Session, attempt_id: str
+) -> tuple[dict[str, str | None], ...]:
+    """Return redacted formal identities for Task invocations without an Observation."""
+
+    return tuple(
+        {
+            "runtime_subagent_task_id": item.id,
+            "conversation_id": item.conversation_id,
+            "action_event_id": item.action_event_id,
+            "tool_call_id": item.tool_call_id,
+        }
+        for item in db.scalars(
+            select(RuntimeSubagentTask)
             .where(
-                AgentConversation.parent_conversation_id == conversation_id,
-                AgentConversation.kind == ConversationKind.SUBAGENT,
+                RuntimeSubagentTask.attempt_id == attempt_id,
+                RuntimeSubagentTask.state == "REQUESTED",
             )
-            .order_by(AgentConversation.created_at, AgentConversation.conversation_no)
+            .order_by(RuntimeSubagentTask.created_at, RuntimeSubagentTask.id)
         )
     )
-    return [_conversation_dict(db, item) for item in rows]
 
 
-def _delegation_tasks(text: str) -> list[dict[str, str]] | None:
-    """Parse the model-only delegation envelope without accepting prose or fences."""
-
-    try:
-        value: object = json.loads(text.strip())
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(value, dict):
-        return None
-    envelope = cast(dict[str, object], value).get("flowweave")
-    if not isinstance(envelope, dict):
-        return None
-    command = cast(dict[str, object], envelope)
-    raw_tasks = command.get("tasks")
-    if command.get("action") != "delegate" or not isinstance(raw_tasks, list):
-        return None
-    task_items = cast(list[object], raw_tasks)
-    if not 1 <= len(task_items) <= _SUBAGENT_LIMIT:
-        return None
-    tasks: list[dict[str, str]] = []
-    for raw in task_items:
-        if not isinstance(raw, dict):
-            return None
-        item = cast(dict[str, object], raw)
-        title = str(item.get("title") or "").strip()
-        instruction = str(item.get("instruction") or "").strip()
-        if not title or len(title) > 80 or not instruction or len(instruction) > 20_000:
-            return None
-        tasks.append({"title": title, "instruction": instruction})
-    return tasks
-
-
-def _start_delegation(
-    db: Session,
-    parent: AgentConversation,
-    tasks: list[dict[str, str]],
-    *,
-    result_key: str,
-) -> bool:
-    if parent.kind != ConversationKind.HUMAN_CREATED:
-        return False
-    batch_key = hashlib.sha256(f"{parent.id}:{result_key}".encode()).hexdigest()[:32]
-    existing = db.scalar(
-        select(AgentConversation.id).where(
-            AgentConversation.parent_conversation_id == parent.id,
-            AgentConversation.delegation_batch_key == batch_key,
-        )
-    )
-    if existing is not None:
-        return True
-    maximum = (
-        db.scalar(
-            select(func.max(AgentConversation.conversation_no)).where(
-                AgentConversation.attempt_id == parent.attempt_id
-            )
-        )
-        or 0
-    )
-    baseline = copy.deepcopy(parent.context_baseline_json or {})
-    for offset, task in enumerate(tasks, start=1):
-        child = AgentConversation(
-            parent_conversation_id=parent.id,
-            attempt_id=parent.attempt_id,
-            conversation_no=int(maximum) + offset,
-            kind=ConversationKind.SUBAGENT,
-            title=task["title"],
-            state=ConversationState.CREATING,
-            context_baseline_json=baseline,
-            delegation_batch_key=batch_key,
-            delegation_instruction=task["instruction"],
-            created_by_type=MessageSource.AGENT,
-        )
-        db.add(child)
-        db.flush()
-        _append(
-            db,
-            child,
-            # This is the parent Agent's delegated request.  It must remain
-            # queued until the child's Runtime is ready; CREATE_CONVERSATION
-            # only auto-delivers bootstrap PROGRAM messages.
-            source=MessageSource.HUMAN,
-            message_type=MessageType.TEXT,
-            content={
-                "presentation": "subagent-task",
-                "parts": [{"type": "text", "text": task["instruction"]}],
-            },
-            delivery_state=DeliveryState.QUEUED,
-            client_message_id=f"subagent-task:{child.id}",
-        )
-        enqueue(
-            db,
-            task_type="CREATE_CONVERSATION",
-            aggregate_type="CONVERSATION",
-            aggregate_id=child.id,
-            idempotency_key=f"create-subagent:{child.id}",
-        )
-        _event(
-            db,
-            child,
-            "SUBAGENT_CREATED",
-            {"parent_conversation_id": parent.id, "batch_key": batch_key},
-        )
-    previous = parent.state
-    parent.state = ConversationState.WAITING_SUBAGENTS
-    parent.state_version += 1
-    _event(
-        db,
-        parent,
-        "CONVERSATION_STATE_CHANGED",
-        {"from": previous, "to": parent.state, "version": parent.state_version},
-    )
-    return True
-
-
-def _subagent_result(db: Session, child: AgentConversation) -> dict[str, str]:
-    message = db.scalar(
-        select(AgentMessage)
-        .where(
-            AgentMessage.conversation_id == child.id,
-            AgentMessage.source == MessageSource.AGENT,
-            AgentMessage.message_type.in_([MessageType.TEXT, MessageType.ERROR]),
-        )
-        .order_by(AgentMessage.sequence_no.desc())
-        .limit(1)
-    )
-    text = _message_text(message.content_json) if message else ""
-    if message and message.message_type == MessageType.ERROR:
-        error = cast(dict[str, object], message.content_json.get("error") or {})
-        text = str(error.get("message") or text or "子智能体执行失败")
+def _subagent_task_dict(
+    item: RuntimeSubagentTask, usage: RuntimeSubagentTaskUsage | None
+) -> dict[str, Any]:
     return {
-        "id": child.id,
-        "title": child.title,
-        "state": child.state,
-        "result": text,
+        "id": item.id,
+        "attempt_id": item.attempt_id,
+        "conversation_id": item.conversation_id,
+        "action_event_id": item.action_event_id,
+        "action_cursor": item.action_cursor,
+        "tool_call_id": item.tool_call_id,
+        "llm_response_id": item.llm_response_id,
+        "observation_event_id": item.observation_event_id,
+        "observation_cursor": item.observation_cursor,
+        "runtime_task_id": item.runtime_task_id,
+        "subagent_type": item.subagent_type,
+        "description": item.description,
+        "resume_task_id": item.resume_task_id,
+        "state": item.state,
+        "native_status": item.native_status,
+        "result": item.result,
+        "error_detail": item.error_detail,
+        "usage": _subagent_usage_dict(usage) if usage is not None else None,
+        "created_at": item.created_at.isoformat(),
+        "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+        "updated_at": item.updated_at.isoformat(),
     }
 
 
-def _resume_parent_after_subagents(db: Session, child: AgentConversation) -> bool:
-    if child.kind != ConversationKind.SUBAGENT or not child.parent_conversation_id:
-        return False
-    siblings = list(
-        db.scalars(
-            select(AgentConversation)
-            .where(
-                AgentConversation.parent_conversation_id == child.parent_conversation_id,
-                AgentConversation.delegation_batch_key == child.delegation_batch_key,
-            )
-            .order_by(AgentConversation.created_at, AgentConversation.conversation_no)
-        )
-    )
-    terminal = {ConversationState.READ_ONLY, ConversationState.FAILED}
-    if not siblings or any(item.state not in terminal for item in siblings):
-        return False
-    parent = _conversation(db, child.parent_conversation_id, lock=True)
-    batch_key = child.delegation_batch_key or "unknown"
-    client_id = f"subagent-results:{batch_key}"
-    existing = db.scalar(
-        select(AgentMessage.id).where(
-            AgentMessage.conversation_id == parent.id,
-            AgentMessage.client_message_id == client_id,
-        )
-    )
-    if existing is not None:
-        return False
-    results = [_subagent_result(db, item) for item in siblings]
-    text = (
-        "平台创建的子智能体已经全部结束。请基于以下结构化结果综合回答用户；"
-        "不得再次委派同一批任务。\n" + json.dumps({"subagent_results": results}, ensure_ascii=False)
-    )
-    message = _append(
-        db,
-        parent,
-        source=MessageSource.PROGRAM,
-        message_type=MessageType.TEXT,
-        content={
-            "presentation": "subagent-results",
-            "parts": [{"type": "text", "text": text}],
-        },
-        delivery_state=DeliveryState.DELIVERING,
-        delivery_mode=DeliveryMode.QUEUE_AFTER_TURN,
-        client_message_id=client_id,
-    )
-    previous = parent.state
-    parent.state = ConversationState.GENERATING
-    parent.state_version += 1
-    enqueue(
-        db,
-        task_type="DELIVER_CONVERSATION_MESSAGE",
-        aggregate_type="MESSAGE",
-        aggregate_id=message.id,
-        idempotency_key=f"deliver-subagent-results:{parent.id}:{batch_key}",
-    )
-    _event(
-        db,
-        parent,
-        "CONVERSATION_STATE_CHANGED",
-        {"from": previous, "to": parent.state, "version": parent.state_version},
-    )
-    return True
-
-
-def _finish_subagent(db: Session, child: AgentConversation) -> None:
-    """Close one child Runtime and resume its parent when the batch is done."""
-
-    if child.kind != ConversationKind.SUBAGENT:
-        return
-    if child.state != ConversationState.FAILED:
-        child.state = ConversationState.READ_ONLY
-        child.state_version += 1
-    _ensure_conversation_runtime_cleanup(db, child)
-    _resume_parent_after_subagents(db, child)
+def _subagent_usage_dict(item: RuntimeSubagentTaskUsage) -> dict[str, Any]:
+    return {
+        "runtime_task_id": item.runtime_task_id,
+        "source_cursor": item.source_cursor,
+        "snapshot_digest": item.snapshot_digest,
+        "usage_version": item.usage_version,
+        "model_name": item.model_name,
+        "accumulated_cost_usd": float(item.accumulated_cost_usd),
+        "prompt_tokens": item.prompt_tokens,
+        "completion_tokens": item.completion_tokens,
+        "cache_read_tokens": item.cache_read_tokens,
+        "cache_write_tokens": item.cache_write_tokens,
+        "reasoning_tokens": item.reasoning_tokens,
+        "context_window": item.context_window,
+        "per_turn_tokens": item.per_turn_tokens,
+        "budget_limit_usd": (
+            float(item.budget_limit_usd) if item.budget_limit_usd is not None else None
+        ),
+        "budget_state": item.budget_state,
+        "budget_exceeded_at": (
+            item.budget_exceeded_at.isoformat() if item.budget_exceeded_at else None
+        ),
+        "updated_at": item.updated_at.isoformat(),
+    }
 
 
 def get_conversation(db: Session, conversation_id: str) -> dict[str, Any]:
@@ -1386,9 +1538,7 @@ def runtime_stream_details(db: Session, conversation_id: str) -> tuple[str | Non
         sandbox_id = _attempt(db, item.attempt_id).runtime_sandbox_id
     sandbox = sandboxes.sandbox_snapshot(db, sandbox_id)
     resource_id = str(sandbox.get("id") or "") if sandbox is not None else ""
-    resource_name = (
-        str(sandbox.get("backend_resource_name") or "") if sandbox is not None else ""
-    )
+    resource_name = str(sandbox.get("backend_resource_name") or "") if sandbox is not None else ""
     return item.runtime_adapter, RuntimeHandle(
         item.runtime_job_id or item.runtime_conversation_id,
         item.runtime_conversation_id,
@@ -1430,68 +1580,13 @@ def _fork_runtime_history(messages: list[AgentMessage]) -> tuple[dict[str, str],
     return tuple(history)
 
 
-def _copy_fork_attachments(
-    content: dict[str, Any],
-    *,
-    attempt: NodeAttempt,
-    conversation_id: str,
-    message_id: str,
-) -> dict[str, Any]:
-    """Copy attachment bytes so deleting the source branch cannot break the fork."""
-
-    cloned = copy.deepcopy(content)
-    raw_parts = cast(list[object], cloned.get("parts") or [])
-    retained_parts: list[object] = []
-    if not attempt.workspace_ref:
-        cloned["parts"] = [
-            part
-            for part in raw_parts
-            if not isinstance(part, dict)
-            or cast(dict[str, object], part).get("type") != "attachment"
-        ]
-        return cloned
-    settings = get_settings()
-    workspace_root = settings.workspace_root.resolve()
-    attempt_root = Path(attempt.workspace_ref).resolve()
-    if not attempt_root.is_relative_to(workspace_root):
-        cloned["parts"] = [
-            part
-            for part in raw_parts
-            if not isinstance(part, dict)
-            or cast(dict[str, object], part).get("type") != "attachment"
-        ]
-        return cloned
-    runtime_root = settings.openhands_workspace_root / attempt_root.relative_to(workspace_root)
-    target_root = attempt_root / "files" / "chat" / conversation_id / f"fork-{message_id}"
-    for raw in raw_parts:
-        if not isinstance(raw, dict):
-            retained_parts.append(raw)
-            continue
-        part = cast(dict[str, Any], raw)
-        if part.get("type") != "attachment":
-            retained_parts.append(part)
-            continue
-        source = (workspace_root / str(part.get("storage_path") or "")).resolve()
-        if not source.is_relative_to(attempt_root) or not source.is_file():
-            continue
-        target_root.mkdir(parents=True, exist_ok=True)
-        destination = target_root / source.name
-        if not destination.exists():
-            shutil.copy2(source, destination)
-        part["storage_path"] = str(destination.relative_to(workspace_root))
-        part["runtime_path"] = str(runtime_root / destination.relative_to(attempt_root))
-        retained_parts.append(part)
-    cloned["parts"] = retained_parts
-    return cloned
-
-
 def fork_conversation(
     db: Session,
     message_id: str,
     payload: ConversationForkWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """Create an independent conversation ending at one Agent text reply."""
+    """Create an explicitly selected native or lossy semantic fork."""
 
     existing_action = db.scalar(
         select(HumanAction).where(HumanAction.idempotency_key == idempotency_key)
@@ -1511,6 +1606,12 @@ def fork_conversation(
         raise DomainError(
             "MESSAGE_NOT_FORKABLE",
             "Only an active Agent text reply can be forked",
+            409,
+        )
+    if source.state != ConversationState.IDLE:
+        raise DomainError(
+            "CONVERSATION_NOT_IDLE",
+            "Native Runtime fork requires an idle source conversation",
             409,
         )
     if source.state_version != payload.expected_conversation_version:
@@ -1539,33 +1640,156 @@ def fork_conversation(
     if count >= get_settings().conversation_limit_per_attempt:
         raise DomainError("CONVERSATION_LIMIT_REACHED", "Conversation limit reached", 422)
 
-    cutoff = source_message.sequence_no
-    history_rows = list(
-        db.scalars(
-            select(AgentMessage)
-            .where(
-                AgentMessage.conversation_id == source.id,
-                AgentMessage.sequence_no <= cutoff,
-                AgentMessage.source != MessageSource.PROGRAM,
-            )
-            .order_by(AgentMessage.sequence_no)
-        )
-    )
     number = int(count) + 1
     baseline = _baseline(db, attempt)
-    history_rows = [row for row in history_rows if not _message_is_superseded(row)]
-    baseline["fork"] = {
+    node_run, run_id = _context(db, attempt)
+    if payload.fork_kind == "SEMANTIC":
+        source_messages = list(
+            db.scalars(
+                select(AgentMessage)
+                .where(
+                    AgentMessage.conversation_id == source.id,
+                    AgentMessage.sequence_no <= source_message.sequence_no,
+                )
+                .order_by(AgentMessage.sequence_no)
+            )
+        )
+        history = _fork_runtime_history(source_messages)
+        losses = [
+            "tool_and_observation_state",
+            "agent_state",
+            "activated_skills",
+            "condensation_state",
+            "usage_stats",
+            "runtime_head",
+        ]
+        baseline["semantic_fork"] = {
+            "schema_version": 1,
+            "source_conversation_id": source.id,
+            "source_message_id": source_message.id,
+            "history": list(history),
+            "losses": losses,
+            "explicitly_acknowledged": True,
+        }
+        item = AgentConversation(
+            attempt_id=attempt.id,
+            conversation_no=number,
+            kind=ConversationKind.HUMAN_CREATED,
+            title=payload.title or f"语义分支 · {source.title}",
+            state=ConversationState.CREATING,
+            fork_kind="SEMANTIC",
+            source_conversation_id=source.id,
+            source_runtime_conversation_id=source.runtime_conversation_id,
+            source_runtime_event_id=source_message.runtime_cursor,
+            runtime_branch_metadata_json={
+                "scope": payload.fork_scope,
+                "losses": losses,
+                "explicitly_acknowledged": True,
+            },
+            metrics_reset=True,
+            context_baseline_json=baseline,
+            created_by_type=MessageSource.HUMAN,
+        )
+        db.add(item)
+        db.flush()
+        _append(
+            db,
+            item,
+            source=MessageSource.PROGRAM,
+            message_type=MessageType.TEXT,
+            content={
+                "parts": [
+                    {
+                        "type": "text",
+                        "text": "已创建显式语义分支；仅复制可见文本，不继承 Runtime 状态。",
+                    }
+                ],
+                "semantic_fork": {"losses": losses, "explicitly_acknowledged": True},
+            },
+            delivery_state=DeliveryState.DELIVERED,
+        )
+        db.add(
+            HumanAction(
+                flow_run_id=run_id,
+                node_run_id=node_run.id,
+                attempt_id=attempt.id,
+                action_type="SEMANTIC_FORK_AGENT_CONVERSATION",
+                idempotency_key=idempotency_key,
+                payload_json={
+                    "conversation_id": item.id,
+                    "source_conversation_id": source.id,
+                    "source_message_id": source_message.id,
+                    "losses": losses,
+                },
+            )
+        )
+        enqueue(
+            db,
+            task_type="CREATE_CONVERSATION",
+            aggregate_type="CONVERSATION",
+            aggregate_id=item.id,
+            idempotency_key=f"create-semantic-conversation:{item.id}:v1",
+        )
+        _event(
+            db,
+            item,
+            "SEMANTIC_CONVERSATION_FORK_CREATED",
+            {"source_message_id": source_message.id, "losses": losses},
+        )
+        finish(db)
+        return _conversation_dict(db, item)
+
+    if not source.runtime_conversation_id or not source.runtime_adapter:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_UNAVAILABLE",
+            "Native Runtime fork requires an available source Runtime; "
+            "select SEMANTIC explicitly to degrade",
+            409,
+        )
+    if not source.runtime_cursor:
+        raise DomainError(
+            "RUNTIME_HEAD_IDENTITY_UNAVAILABLE",
+            "Native Runtime fork requires a frozen source HEAD identity",
+            409,
+        )
+    if payload.fork_scope == "MESSAGE" and not source_message.runtime_cursor:
+        raise DomainError(
+            "RUNTIME_EVENT_IDENTITY_UNAVAILABLE",
+            "The selected reply has no formal Runtime event identity",
+            409,
+        )
+    from_event_id = source_message.runtime_cursor if payload.fork_scope == "MESSAGE" else None
+    baseline["runtime_fork"] = {
+        "kind": "RUNTIME",
         "source_conversation_id": source.id,
         "source_message_id": source_message.id,
-        "source_sequence_no": source_message.sequence_no,
-        "history": list(_fork_runtime_history(history_rows)),
+        "source_runtime_conversation_id": source.runtime_conversation_id,
+        "source_runtime_event_id": from_event_id,
+        "source_runtime_head_event_id": source.runtime_cursor,
+        "scope": payload.fork_scope,
+        "metrics_reset": payload.reset_metrics,
     }
+    source_sandbox_id = _runtime_sandbox_id(db, source)
+    target_runtime_id = str(uuid4())
     item = AgentConversation(
         attempt_id=attempt.id,
         conversation_no=number,
         kind=ConversationKind.HUMAN_CREATED,
         title=payload.title or f"分支 · {source.title}",
         state=ConversationState.CREATING,
+        runtime_adapter=source.runtime_adapter,
+        runtime_job_id=source.runtime_job_id,
+        runtime_sandbox_id=source_sandbox_id,
+        fork_kind="RUNTIME",
+        source_conversation_id=source.id,
+        source_runtime_conversation_id=source.runtime_conversation_id,
+        source_runtime_event_id=from_event_id,
+        runtime_branch_metadata_json={
+            "target_runtime_conversation_id": target_runtime_id,
+            "scope": payload.fork_scope,
+            "source_runtime_head_event_id": source.runtime_cursor,
+        },
+        metrics_reset=payload.reset_metrics,
         context_baseline_json=baseline,
         created_by_type=MessageSource.HUMAN,
     )
@@ -1578,28 +1802,28 @@ def fork_conversation(
         message_type=MessageType.TEXT,
         content={
             "parts": [{"type": "text", "text": "已从既有会话创建上下文分支。"}],
-            "fork": baseline["fork"],
+            "runtime_fork": baseline["runtime_fork"],
         },
         delivery_state=DeliveryState.DELIVERING,
     )
-    for source_row in history_rows:
-        cloned = _append(
-            db,
-            item,
-            source=source_row.source,
-            message_type=source_row.message_type,
-            content=copy.deepcopy(source_row.content_json),
-            delivery_state=DeliveryState.DELIVERED,
-            delivery_mode=source_row.delivery_mode,
-            created_by=source_row.created_by,
-        )
-        cloned.content_json = _copy_fork_attachments(
-            cloned.content_json,
-            attempt=attempt,
-            conversation_id=item.id,
-            message_id=cloned.id,
-        )
-    node_run, run_id = _context(db, attempt)
+    command = RuntimeConversationFork(
+        attempt_id=attempt.id,
+        source_conversation_id=source.id,
+        target_conversation_id=item.id,
+        runtime_adapter=source.runtime_adapter,
+        runtime_job_id=source.runtime_job_id or source.runtime_conversation_id,
+        runtime_sandbox_id=source_sandbox_id,
+        source_runtime_conversation_id=source.runtime_conversation_id,
+        target_runtime_conversation_id=target_runtime_id,
+        requested_from_event_id=from_event_id,
+        source_head_event_id=source.runtime_cursor,
+        reset_metrics=payload.reset_metrics,
+        source_state_version=source.state_version + 1,
+        idempotency_key=idempotency_key,
+    )
+    db.add(command)
+    source.state = ConversationState.FORKING
+    source.state_version += 1
     db.add(
         HumanAction(
             flow_run_id=run_id,
@@ -1611,24 +1835,468 @@ def fork_conversation(
                 "conversation_id": item.id,
                 "source_conversation_id": source.id,
                 "source_message_id": source_message.id,
+                "runtime_fork_id": command.id,
             },
         )
     )
     enqueue(
         db,
-        task_type="CREATE_CONVERSATION",
-        aggregate_type="CONVERSATION",
-        aggregate_id=item.id,
-        idempotency_key=f"create-fork-conversation:{item.id}",
+        task_type="FORK_CONVERSATION",
+        aggregate_type="RUNTIME_CONVERSATION_FORK",
+        aggregate_id=command.id,
+        idempotency_key=f"fork-conversation:{command.id}:v1",
     )
     _event(
         db,
         item,
         "CONVERSATION_CREATED",
-        {"kind": item.kind, "forked_from_message_id": source_message.id},
+        {
+            "kind": item.kind,
+            "fork_kind": "RUNTIME",
+            "forked_from_message_id": source_message.id,
+        },
     )
     finish(db)
     return _conversation_dict(db, item)
+
+
+def process_fork_conversation(
+    db: Session, fork_id: str, lease: Lease, *, commit: bool = True
+) -> None:
+    command = db.scalar(
+        select(RuntimeConversationFork)
+        .where(RuntimeConversationFork.id == fork_id)
+        .with_for_update()
+    )
+    if command is None or command.state != "PENDING":
+        return
+    source = (
+        _conversation(db, command.source_conversation_id)
+        if command.source_conversation_id
+        else None
+    )
+    target = _conversation(db, command.target_conversation_id)
+    if (
+        source is None
+        or source.state != ConversationState.FORKING
+        or source.state_version != command.source_state_version
+        or source.runtime_conversation_id != command.source_runtime_conversation_id
+        or _runtime_sandbox_id(db, source) != command.runtime_sandbox_id
+        or target.state != ConversationState.CREATING
+    ):
+        raise DomainError(
+            "RUNTIME_FORK_IDENTITY_DRIFT",
+            "Native Runtime fork source identity changed",
+            409,
+        )
+    expected_target_version = target.state_version
+    handle = RuntimeHandle(
+        command.runtime_job_id,
+        command.source_runtime_conversation_id,
+        source.runtime_cursor,
+    )
+    adapter = command.runtime_adapter
+    target_title = target.title
+    db.rollback()
+    result = runtime_for(adapter, handle).fork_conversation(
+        handle,
+        target_conversation_id=command.target_runtime_conversation_id,
+        title=target_title,
+        from_event_id=command.requested_from_event_id,
+        expected_source_leaf_event_id=command.source_head_event_id,
+        reset_metrics=command.reset_metrics,
+    )
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost during native Runtime fork")
+    command = db.scalar(
+        select(RuntimeConversationFork)
+        .where(RuntimeConversationFork.id == fork_id)
+        .with_for_update()
+    )
+    if command is None or command.state != "PENDING":
+        return
+    source = _conversation(db, command.source_conversation_id or "", lock=True)
+    target = _conversation(db, command.target_conversation_id, lock=True)
+    if (
+        source.state != ConversationState.FORKING
+        or source.state_version != command.source_state_version
+        or target.state != ConversationState.CREATING
+        or target.state_version != expected_target_version
+    ):
+        raise DomainError(
+            "RUNTIME_FORK_IDENTITY_DRIFT",
+            "Native Runtime fork control-plane identity changed",
+            409,
+        )
+    target.runtime_conversation_id = result.handle.conversation_id
+    target.runtime_cursor = result.leaf_event_id
+    target.runtime_branch_metadata_json = {
+        **target.runtime_branch_metadata_json,
+        "forked_from_conversation_id": result.source_conversation_id,
+        "forked_from_event_id": result.source_event_id,
+        "source_head_event_id": command.source_head_event_id,
+        "leaf_event_id": result.leaf_event_id,
+    }
+    target.state = ConversationState.IDLE
+    target.state_version += 1
+    source.state = ConversationState.IDLE
+    source.state_version += 1
+    command.resolved_source_event_id = result.source_event_id
+    command.fork_leaf_event_id = result.leaf_event_id
+    command.state = "SUCCEEDED"
+    command.state_version += 1
+    command.completed_at = now()
+    program = db.scalar(
+        select(AgentMessage)
+        .where(
+            AgentMessage.conversation_id == target.id,
+            AgentMessage.source == MessageSource.PROGRAM,
+        )
+        .order_by(AgentMessage.sequence_no)
+        .limit(1)
+    )
+    if program is not None:
+        program.delivery_state = DeliveryState.DELIVERED
+        program.delivered_at = now()
+    _event(
+        db,
+        target,
+        "RUNTIME_CONVERSATION_FORK_CREATED",
+        {
+            "runtime_fork_id": command.id,
+            "source_runtime_conversation_id": result.source_conversation_id,
+            "source_runtime_event_id": result.source_event_id,
+            "target_runtime_conversation_id": result.handle.conversation_id,
+            "leaf_event_id": result.leaf_event_id,
+            "metrics_reset": command.reset_metrics,
+        },
+    )
+    db.commit() if commit else db.flush()
+
+
+def record_fork_conversation_failure(
+    db: Session, fork_id: str, error: str, *, terminal: bool
+) -> None:
+    if not terminal:
+        return
+    command = db.scalar(
+        select(RuntimeConversationFork)
+        .where(RuntimeConversationFork.id == fork_id)
+        .with_for_update()
+    )
+    if command is None or command.state != "PENDING":
+        return
+    detail = error[:2000]
+    command.state = "FAILED"
+    command.state_version += 1
+    command.error_code = "RUNTIME_FORK_FAILED"
+    command.error_detail = detail
+    command.completed_at = now()
+    target = _conversation(db, command.target_conversation_id, lock=True)
+    target.state = ConversationState.FAILED
+    target.state_version += 1
+    target.runtime_conversation_id = (
+        target.runtime_conversation_id or command.target_runtime_conversation_id
+    )
+    source = (
+        _conversation(db, command.source_conversation_id, lock=True)
+        if command.source_conversation_id
+        else None
+    )
+    if (
+        source is not None
+        and source.state == ConversationState.FORKING
+        and source.state_version == command.source_state_version
+    ):
+        source.state = ConversationState.IDLE
+        source.state_version += 1
+    _event(
+        db,
+        target,
+        "RUNTIME_CONVERSATION_FORK_FAILED",
+        {"runtime_fork_id": command.id, "error": detail},
+    )
+    cleanup = enqueue(
+        db,
+        task_type="CLEANUP_CONVERSATION_RUNTIME",
+        aggregate_type="CONVERSATION",
+        aggregate_id=target.id,
+        idempotency_key=f"cleanup-failed-runtime-fork:{command.id}",
+    )
+    cleanup.max_attempts = max(cleanup.max_attempts, 10)
+    db.flush()
+
+
+def request_conversation_condensation(
+    db: Session,
+    conversation_id: str,
+    payload: ConversationCondenseWrite,
+    idempotency_key: str,
+    actor: str | None,
+) -> dict[str, Any]:
+    """Freeze a governed native condensation request before Runtime I/O."""
+
+    duplicate = db.scalar(
+        select(RuntimeCondensationCommand).where(
+            RuntimeCondensationCommand.idempotency_key == idempotency_key
+        )
+    )
+    if duplicate is not None:
+        if duplicate.conversation_id != conversation_id:
+            raise conflict(
+                "condensation idempotency key is already used",
+                condensation_command_id=duplicate.id,
+            )
+        return _condensation_command_dict(duplicate)
+
+    conversation = _conversation(db, conversation_id, lock=True)
+    if conversation.state_version != payload.expected_conversation_version:
+        raise conflict(
+            "conversation version changed",
+            expected=payload.expected_conversation_version,
+            actual=conversation.state_version,
+        )
+    if conversation.state != ConversationState.IDLE:
+        raise DomainError(
+            "CONVERSATION_NOT_IDLE",
+            "Manual condensation requires an idle conversation",
+            409,
+            {"state": conversation.state},
+        )
+    if not conversation.runtime_conversation_id:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_UNAVAILABLE",
+            "Conversation has no active OpenHands Runtime",
+            409,
+        )
+    attempt = _attempt(db, conversation.attempt_id)
+    condenser = cast(
+        dict[str, Any],
+        conversation.context_baseline_json.get("condenser")
+        or attempt.condenser_config_json
+        or {"kind": "NO_OP"},
+    )
+    if condenser.get("kind") != "LLM_SUMMARIZING":
+        raise DomainError(
+            "CONDENSER_NOT_AVAILABLE",
+            "Manual condensation requires the frozen LLM summarizing condenser",
+            409,
+        )
+    active = db.scalar(
+        select(RuntimeCondensationCommand).where(
+            RuntimeCondensationCommand.conversation_id == conversation.id,
+            RuntimeCondensationCommand.state == "PENDING",
+        )
+    )
+    if active is not None:
+        raise conflict(
+            "conversation already has an active condensation command",
+            condensation_command_id=active.id,
+        )
+
+    command = RuntimeCondensationCommand(
+        attempt_id=attempt.id,
+        conversation_id=conversation.id,
+        runtime_conversation_id=conversation.runtime_conversation_id,
+        baseline_cursor=conversation.runtime_cursor,
+        idempotency_key=idempotency_key,
+        requested_by=actor,
+    )
+    db.add(command)
+    db.flush()
+    previous = conversation.state
+    conversation.state = ConversationState.CONDENSING
+    conversation.state_version += 1
+    task = enqueue(
+        db,
+        task_type="CONDENSE_CONVERSATION",
+        aggregate_type="RUNTIME_CONDENSATION_COMMAND",
+        aggregate_id=command.id,
+        idempotency_key=f"condense-conversation:{command.id}:v1",
+    )
+    task.max_attempts = max(task.max_attempts, 20)
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_CONDENSATION_COMMAND_CREATED",
+        {
+            "condensation_command_id": command.id,
+            "baseline_cursor": command.baseline_cursor,
+        },
+    )
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_STATE_CHANGED",
+        {
+            "from": previous,
+            "to": conversation.state,
+            "version": conversation.state_version,
+        },
+    )
+    finish(db)
+    return _condensation_command_dict(command)
+
+
+def process_conversation_condensation(
+    db: Session,
+    command_id: str,
+    lease: Lease,
+    *,
+    commit: bool = True,
+) -> None:
+    """Execute or reconcile one native manual condensation with lease fencing."""
+
+    command = db.get(RuntimeCondensationCommand, command_id)
+    if command is None or command.state != "PENDING":
+        return
+    conversation = _conversation(db, command.conversation_id)
+    attempt = _attempt(db, conversation.attempt_id)
+    if (
+        conversation.runtime_conversation_id != command.runtime_conversation_id
+        or conversation.state != ConversationState.CONDENSING
+        or attempt.state in TERMINAL_ATTEMPT_STATES
+    ):
+        command.state = "CANCELLED"
+        command.state_version += 1
+        command.completed_at = now()
+        if conversation.state == ConversationState.CONDENSING:
+            conversation.state = ConversationState.IDLE
+            conversation.state_version += 1
+        db.commit() if commit else db.flush()
+        return
+
+    command_version = command.state_version
+    handle = RuntimeHandle(
+        conversation.runtime_job_id or command.runtime_conversation_id,
+        command.runtime_conversation_id,
+        command.baseline_cursor,
+    )
+    runtime_adapter = conversation.runtime_adapter
+    runtime_sandbox_id = conversation.runtime_sandbox_id
+    db.rollback()
+
+    runtime = runtime_for(runtime_adapter, handle)
+
+    def native_pair(events: tuple[RuntimeEvent, ...]) -> tuple[str | None, str | None]:
+        """Return the single ordered Request -> Condensation pair after the baseline.
+
+        OpenHands 1.40.0 does not expose a command/correlation id for manual
+        condensation.  Its synchronous endpoint appends exactly one
+        ``CondensationRequest`` followed by exactly one ``Condensation``.  The
+        frozen event cursor is therefore the command boundary; accepting an
+        orphaned completion or multiple requests would attribute an unrelated
+        native operation to this durable command.
+        """
+
+        request_id: str | None = None
+        completion_id: str | None = None
+        for event in events:
+            if event.event_type == "CONDENSATION_REQUESTED":
+                if request_id is not None:
+                    raise DomainError(
+                        "RUNTIME_CONDENSATION_DRIFTED",
+                        "OpenHands emitted multiple condensation requests after the frozen cursor",
+                        409,
+                        {
+                            "first_request_event_id": request_id,
+                            "unexpected_request_event_id": event.cursor,
+                        },
+                    )
+                request_id = event.cursor
+            elif event.event_type == "CONDENSATION_COMPLETED":
+                if request_id is None or completion_id is not None:
+                    raise DomainError(
+                        "RUNTIME_CONDENSATION_DRIFTED",
+                        (
+                            "OpenHands condensation events do not form one ordered "
+                            "request/completion pair"
+                        ),
+                        409,
+                        {
+                            "request_event_id": request_id,
+                            "unexpected_completion_event_id": event.cursor,
+                        },
+                    )
+                completion_id = event.cursor
+        return request_id, completion_id
+
+    before = runtime.read_events(handle)
+    request_id, completion_id = native_pair(before.events)
+    observed = before
+    if request_id is None:
+        runtime.condense(handle)
+        observed = runtime.read_events(handle)
+        request_id, completion_id = native_pair(observed.events)
+    if request_id is None or completion_id is None:
+        raise DomainError(
+            "RUNTIME_CONDENSATION_PENDING",
+            "OpenHands condensation is accepted but its durable completion event is not visible",
+            503,
+            {
+                "request_event_id": request_id,
+                "completion_event_id": completion_id,
+            },
+        )
+    sandboxes.touch_runtime(db, runtime_sandbox_id)
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost during conversation condensation")
+
+    current = db.scalar(
+        select(RuntimeCondensationCommand)
+        .where(
+            RuntimeCondensationCommand.id == command_id,
+            RuntimeCondensationCommand.state == "PENDING",
+            RuntimeCondensationCommand.state_version == command_version,
+        )
+        .with_for_update()
+    )
+    if current is None:
+        db.rollback()
+        return
+    current_conversation = _conversation(db, current.conversation_id, lock=True)
+    if current_conversation.state != ConversationState.CONDENSING:
+        db.rollback()
+        return
+    for event in observed.events:
+        _append_runtime_payload(
+            db,
+            current_conversation,
+            cursor=event.cursor,
+            event_type=event.event_type,
+            payload=event.payload,
+        )
+    current.request_event_id = request_id
+    current.completion_event_id = completion_id
+    current.state = "SUCCEEDED"
+    current.state_version += 1
+    current.started_at = current.started_at or current.created_at
+    current.completed_at = now()
+    current_conversation.runtime_cursor = observed.cursor or completion_id
+    previous = current_conversation.state
+    current_conversation.state = ConversationState.IDLE
+    current_conversation.state_version += 1
+    _event(
+        db,
+        current_conversation,
+        "CONVERSATION_CONDENSATION_COMMAND_SUCCEEDED",
+        {
+            "condensation_command_id": current.id,
+            "request_event_id": request_id,
+            "completion_event_id": completion_id,
+        },
+    )
+    _event(
+        db,
+        current_conversation,
+        "CONVERSATION_STATE_CHANGED",
+        {
+            "from": previous,
+            "to": current_conversation.state,
+            "version": current_conversation.state_version,
+        },
+    )
+    db.commit() if commit else db.flush()
 
 
 def revise_message(
@@ -2039,7 +2707,13 @@ def delete_conversation(db: Session, conversation_id: str) -> None:
     # The conversation row is the sandbox owner. Persist the monotonic delete
     # intent before removing that owner so cleanup is explicit, crash-safe, and
     # auditable in managed_sandboxes even after the conversation disappears.
-    sandboxes.request_delete_durable(db, current.runtime_sandbox_id)
+    runtime_sandbox_id = _runtime_sandbox_id(db, current)
+    if _runtime_sandbox_is_conversation_owned(
+        db, runtime_sandbox_id
+    ) and not _runtime_sandbox_has_other_active_conversations(
+        db, runtime_sandbox_id, excluding_conversation_id=current.id
+    ):
+        sandboxes.request_delete_durable(db, runtime_sandbox_id)
     db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id.in_(aggregate_ids)))
     db.delete(current)
     finish(db)
@@ -2184,7 +2858,7 @@ def send_message(
     if existing:
         return _message_dict(existing)
     allow_stale_queue = (
-        item.state in {ConversationState.GENERATING, ConversationState.WAITING_SUBAGENTS}
+        item.state == ConversationState.GENERATING
         and payload.delivery_mode == DeliveryMode.QUEUE_AFTER_TURN
     )
     if item.state_version != payload.expected_conversation_version and not allow_stale_queue:
@@ -2204,6 +2878,12 @@ def send_message(
         )
     if item.state == ConversationState.CREATING:
         raise DomainError("CONVERSATION_NOT_READY", "Conversation is not ready", 409)
+    if item.state == ConversationState.CONDENSING:
+        raise DomainError(
+            "CONVERSATION_CONDENSING",
+            "Conversation context is being condensed; retry after it returns to idle",
+            409,
+        )
     text = "\n".join(part.text for part in payload.content if part.type == "text")
     if len(text) > get_settings().conversation_message_max_chars:
         raise DomainError("MESSAGE_TOO_LARGE", "Message is too large", 422)
@@ -2224,10 +2904,7 @@ def send_message(
         "model_name": selected_model,
         "reasoning_effort": selected_effort,
     }
-    queued_during_turn = item.state in {
-        ConversationState.GENERATING,
-        ConversationState.WAITING_SUBAGENTS,
-    }
+    queued_during_turn = item.state == ConversationState.GENERATING
     message = _append(
         db,
         item,
@@ -2521,11 +3198,12 @@ def recover_conversation_tasks(db: Session) -> int:
                 AgentConversation.state.in_(
                     [
                         ConversationState.CREATING,
+                        ConversationState.FORKING,
+                        ConversationState.CONDENSING,
                         ConversationState.IDLE,
                         ConversationState.GENERATING,
                         ConversationState.STOPPING,
                         ConversationState.WAITING_HUMAN,
-                        ConversationState.WAITING_SUBAGENTS,
                         ConversationState.READ_ONLY,
                     ]
                 )
@@ -2536,15 +3214,57 @@ def recover_conversation_tasks(db: Session) -> int:
     )
     recovered = 0
     for conversation in conversations:
-        if conversation.state == ConversationState.WAITING_SUBAGENTS:
-            children = list(
-                db.scalars(
-                    select(AgentConversation).where(
-                        AgentConversation.parent_conversation_id == conversation.id
-                    )
+        if conversation.state == ConversationState.FORKING:
+            command = db.scalar(
+                select(RuntimeConversationFork)
+                .where(
+                    RuntimeConversationFork.source_conversation_id == conversation.id,
+                    RuntimeConversationFork.state == "PENDING",
                 )
+                .order_by(RuntimeConversationFork.created_at.desc())
+                .limit(1)
             )
-            if children and _resume_parent_after_subagents(db, children[-1]):
+            if command is not None and _recover_delivery(
+                db,
+                task_type="FORK_CONVERSATION",
+                aggregate_type="RUNTIME_CONVERSATION_FORK",
+                aggregate_id=command.id,
+                recovery_key=f"recovery:fork-conversation:{command.id}:v{command.state_version}",
+            ):
+                recovered += 1
+            continue
+        if conversation.state == ConversationState.CONDENSING:
+            command = db.scalar(
+                select(RuntimeCondensationCommand)
+                .where(
+                    RuntimeCondensationCommand.conversation_id == conversation.id,
+                    RuntimeCondensationCommand.state == "PENDING",
+                )
+                .order_by(RuntimeCondensationCommand.created_at.desc())
+                .limit(1)
+            )
+            if command is None:
+                previous = conversation.state
+                conversation.state = ConversationState.IDLE
+                conversation.state_version += 1
+                _event(
+                    db,
+                    conversation,
+                    "CONVERSATION_STATE_CHANGED",
+                    {
+                        "from": previous,
+                        "to": conversation.state,
+                        "version": conversation.state_version,
+                        "reason": "MISSING_CONDENSATION_COMMAND",
+                    },
+                )
+            elif _recover_delivery(
+                db,
+                task_type="CONDENSE_CONVERSATION",
+                aggregate_type="RUNTIME_CONDENSATION_COMMAND",
+                aggregate_id=command.id,
+                recovery_key=f"condense-conversation:{command.id}:v1",
+            ):
                 recovered += 1
             continue
         if conversation.state == ConversationState.STOPPING:
@@ -2657,17 +3377,34 @@ def recover_conversation_tasks(db: Session) -> int:
                 recovery_key=f"recovery:deliver-conversation-message:{queued.id}",
             ):
                 recovered += 1
-        elif conversation.runtime_conversation_id and _recover_delivery(
-            db,
-            task_type="POLL_CONVERSATION",
-            aggregate_type="CONVERSATION",
-            aggregate_id=conversation.id,
-            recovery_key=(
-                f"recovery:poll-conversation:{conversation.id}:v{conversation.state_version}"
-            ),
-            payload={"poll_no": 1},
-        ):
-            recovered += 1
+        elif conversation.runtime_conversation_id:
+            if _recover_delivery(
+                db,
+                task_type="POLL_CONVERSATION",
+                aggregate_type="CONVERSATION",
+                aggregate_id=conversation.id,
+                recovery_key=(
+                    f"recovery:poll-conversation:{conversation.id}:v{conversation.state_version}"
+                ),
+                payload={"poll_no": 1},
+            ):
+                recovered += 1
+            active_wakeup_channels = {
+                str((task.payload_json or {}).get("channel") or "CONVERSATION")
+                for task in db.scalars(
+                    select(BackgroundTask).where(
+                        BackgroundTask.aggregate_id == conversation.id,
+                        BackgroundTask.task_type == "WAIT_CONVERSATION_WAKEUP",
+                        BackgroundTask.state.in_(
+                            [TaskState.PENDING, TaskState.RETRY, TaskState.RUNNING]
+                        ),
+                    )
+                )
+            }
+            for channel in ("CONVERSATION", "BASH"):
+                if channel not in active_wakeup_channels:
+                    _schedule_conversation_wakeup(db, conversation, channel, 1)
+                    recovered += 1
     finish(db)
     return recovered
 
@@ -2690,11 +3427,27 @@ def process_create_conversation(
         if run and run.environment_version_id
         else None
     )
-    raw_nodes: object = snapshot.definition_json.get("nodes", []) if snapshot else []
-    nodes = cast(list[dict[str, Any]], raw_nodes) if isinstance(raw_nodes, list) else []
-    node = next(
-        item for item in nodes if item.get("instance_key") == node_run.flow_node_snapshot_key
+    if snapshot is None:
+        raise DomainError("SNAPSHOT_INVALID", "Attempt Snapshot is unavailable", 409)
+    node = runtime_node(
+        definition=snapshot.definition_json,
+        manifest=snapshot.runtime_manifest_json or {},
+        expected_hash=snapshot.runtime_manifest_hash,
+        snapshot_id=snapshot.id,
+        instance_key=node_run.flow_node_snapshot_key,
     )
+    memory_enabled, source_refs = frozen_memory_policy(node, runtime_scope="CONVERSATION")
+    settings = get_settings()
+    if memory_enabled and (
+        environment is None
+        or settings.runtime_adapter != "openhands"
+        or settings.terminal_environment_backend != "docker"
+    ):
+        raise DomainError(
+            "MEMORY_SOURCE_UNAVAILABLE",
+            "Enabled Memory requires an isolated managed Runtime",
+            409,
+        )
     asset = cast(dict[str, Any], node.get("asset") or {})
     input_contracts = {
         str(item.get("field_key") or ""): item
@@ -2737,11 +3490,12 @@ def process_create_conversation(
         interaction_mode="COLLABORATION",
         model_name=runtime_selection.get("model_name"),
         reasoning_effort=runtime_selection.get("reasoning_effort"),
-        delegation_enabled=item.kind == ConversationKind.HUMAN_CREATED,
-        conversation_history=tuple(
+        semantic_history=tuple(
             cast(
                 list[dict[str, str]],
-                cast(dict[str, Any], item.context_baseline_json.get("fork") or {}).get("history")
+                cast(dict[str, Any], item.context_baseline_json.get("semantic_fork") or {}).get(
+                    "history"
+                )
                 or [],
             )
         ),
@@ -2749,19 +3503,37 @@ def process_create_conversation(
         environment_id=environment.environment_id if environment else None,
         environment_version_id=environment.id if environment else None,
         environment_version_no=environment.version_no if environment else None,
+        memory_materialized=memory_enabled,
     )
+    if memory_enabled:
+        materials = resolve_snapshot_memory(
+            db,
+            snapshot_id=snapshot.id,
+            source_refs=source_refs,
+            allowed_scopes={"USER", "PROJECT"},
+        )
+        materialize_runtime_memory(owner_type="CONVERSATION", owner_id=item.id, materials=materials)
     allocation = None
     if request.environment_image and get_settings().runtime_adapter != "mock":
-        allocation = sandboxes.create_runtime_sandbox(
-            db,
-            owner_type="CONVERSATION",
-            owner_id=item.id,
-            image=request.environment_image,
-            environment_id=request.environment_id,
-            environment_version_id=request.environment_version_id,
-            environment_version_no=request.environment_version_no,
-            workspace_relative=request.runtime_workspace_relative,
-        )
+        try:
+            allocation = sandboxes.create_runtime_sandbox(
+                db,
+                owner_type="CONVERSATION",
+                owner_id=item.id,
+                image=request.environment_image,
+                environment_id=request.environment_id,
+                environment_version_id=request.environment_version_id,
+                environment_version_no=request.environment_version_no,
+                workspace_relative=request.runtime_workspace_relative,
+                memory_enabled=request.memory_enabled,
+                memory_working_dir_relative=request.runtime_working_dir_relative,
+            )
+        except BaseException:
+            if request.memory_enabled:
+                sandboxes.cleanup_unclaimed_runtime_memory(
+                    db, owner_type="CONVERSATION", owner_id=item.id
+                )
+            raise
         request = replace(
             request,
             runtime_sandbox_id=allocation.id,
@@ -2830,6 +3602,7 @@ def process_create_conversation(
         {"to": current.state, "version": current.state_version},
     )
     _schedule_next_message(db, current)
+    _schedule_conversation_wakeup(db, current, "BASH", 1)
     db.commit() if commit else db.flush()
 
 
@@ -2865,7 +3638,13 @@ def process_cleanup_conversation_runtime(
         current.runtime_job_id = None
         current.runtime_conversation_id = None
         current.runtime_cursor = None
-        if runtime_sandbox_id:
+        if (
+            runtime_sandbox_id is not None
+            and _runtime_sandbox_is_conversation_owned(db, runtime_sandbox_id)
+            and not _runtime_sandbox_has_other_active_conversations(
+                db, runtime_sandbox_id, excluding_conversation_id=current.id
+            )
+        ):
             sandboxes.request_delete(db, runtime_sandbox_id)
     db.commit() if commit else db.flush()
 
@@ -2882,7 +3661,11 @@ def process_stop_conversation_runtime(
     # Sandbox deletion is the authoritative force-stop. Persist it outside the
     # worker transaction before asking the Agent API to interrupt, so a wedged
     # Agent cannot keep the terminal container alive.
-    if runtime_sandbox_id:
+    if _runtime_sandbox_is_conversation_owned(
+        db, runtime_sandbox_id
+    ) and not _runtime_sandbox_has_other_active_conversations(
+        db, runtime_sandbox_id, excluding_conversation_id=item.id
+    ):
         sandboxes.request_delete_durable(db, runtime_sandbox_id)
     if runtime_conversation_id:
         handle = RuntimeHandle(
@@ -3011,7 +3794,54 @@ def record_poll_conversation_failure(
             "error": detail,
         },
     )
-    _finish_subagent(db, item)
+    db.flush()
+
+
+def record_conversation_condensation_failure(
+    db: Session, command_id: str, error: str, *, terminal: bool
+) -> None:
+    """Release a conversation when native manual condensation exhausts retries."""
+
+    if not terminal:
+        return
+    command = db.scalar(
+        select(RuntimeCondensationCommand)
+        .where(
+            RuntimeCondensationCommand.id == command_id,
+            RuntimeCondensationCommand.state == "PENDING",
+        )
+        .with_for_update()
+    )
+    if command is None:
+        return
+    conversation = _conversation(db, command.conversation_id, lock=True)
+    detail = error[:2000]
+    command.state = "FAILED"
+    command.state_version += 1
+    command.error_code = "RUNTIME_CONDENSATION_FAILED"
+    command.error_detail = detail
+    command.completed_at = now()
+    if conversation.state == ConversationState.CONDENSING:
+        previous = conversation.state
+        conversation.state = ConversationState.IDLE
+        conversation.state_version += 1
+        _event(
+            db,
+            conversation,
+            "CONVERSATION_STATE_CHANGED",
+            {
+                "from": previous,
+                "to": conversation.state,
+                "version": conversation.state_version,
+                "error": detail,
+            },
+        )
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_CONDENSATION_COMMAND_FAILED",
+        {"condensation_command_id": command.id, "error": detail},
+    )
     db.flush()
 
 
@@ -3049,8 +3879,347 @@ def record_create_conversation_failure(
             "error": detail,
         },
     )
-    _finish_subagent(db, item)
     db.flush()
+
+
+def _task_text(value: object, *, maximum: int) -> str | None:
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text[:maximum]
+
+
+def _project_runtime_subagent_task(
+    db: Session,
+    conversation: AgentConversation,
+    *,
+    cursor: str,
+    payload: dict[str, Any],
+) -> RuntimeSubagentTask | None:
+    raw_task = payload.get("runtime_task")
+    if not isinstance(raw_task, dict):
+        return None
+    task = cast(dict[str, Any], raw_task)
+    phase = str(task.get("phase") or "")
+    if phase not in {"REQUESTED", "COMPLETED", "ERROR"}:
+        return None
+    action_event_id = str(task.get("action_event_id") or "")
+    if not action_event_id:
+        raise DomainError(
+            "RUNTIME_TASK_PROTOCOL_DRIFT",
+            "OpenHands Task event has no action identity",
+            502,
+        )
+    item = db.scalar(
+        select(RuntimeSubagentTask)
+        .where(
+            RuntimeSubagentTask.conversation_id == conversation.id,
+            RuntimeSubagentTask.action_event_id == action_event_id,
+        )
+        .with_for_update()
+    )
+    tool_call_id = str(task.get("tool_call_id") or "") or None
+    if item is None:
+        item = RuntimeSubagentTask(
+            attempt_id=conversation.attempt_id,
+            conversation_id=conversation.id,
+            action_event_id=action_event_id,
+            subagent_type=str(task.get("subagent_type") or "unknown")[:200],
+        )
+        db.add(item)
+        db.flush()
+    elif item.tool_call_id and tool_call_id and item.tool_call_id != tool_call_id:
+        raise DomainError(
+            "RUNTIME_TASK_PROTOCOL_DRIFT",
+            "OpenHands Task tool-call identity changed",
+            502,
+            {"action_event_id": action_event_id},
+        )
+
+    item.tool_call_id = item.tool_call_id or tool_call_id
+    if phase == "REQUESTED":
+        llm_response_id = str(task.get("llm_response_id") or "") or None
+        if item.llm_response_id and llm_response_id and item.llm_response_id != llm_response_id:
+            raise DomainError(
+                "RUNTIME_TASK_PROTOCOL_DRIFT",
+                "OpenHands Task LLM response identity changed",
+                502,
+                {"action_event_id": action_event_id},
+            )
+        item.action_cursor = item.action_cursor or cursor
+        item.llm_response_id = item.llm_response_id or llm_response_id
+        item.subagent_type = str(task.get("subagent_type") or item.subagent_type)[:200]
+        item.description = _task_text(task.get("description"), maximum=2_000)
+        item.resume_task_id = _task_text(task.get("resume_task_id"), maximum=100)
+        return item
+
+    observation_event_id = str(task.get("observation_event_id") or "")
+    runtime_task_id = str(task.get("task_id") or "")
+    if not observation_event_id or not runtime_task_id:
+        raise DomainError(
+            "RUNTIME_TASK_PROTOCOL_DRIFT",
+            "OpenHands Task observation has no formal identity",
+            502,
+            {"action_event_id": action_event_id},
+        )
+    if (item.observation_event_id and item.observation_event_id != observation_event_id) or (
+        item.runtime_task_id and item.runtime_task_id != runtime_task_id
+    ):
+        raise DomainError(
+            "RUNTIME_TASK_PROTOCOL_DRIFT",
+            "OpenHands Task observation identity changed",
+            502,
+            {"action_event_id": action_event_id},
+        )
+    item.observation_event_id = observation_event_id
+    item.observation_cursor = cursor
+    item.runtime_task_id = runtime_task_id[:100]
+    item.subagent_type = str(task.get("subagent_type") or item.subagent_type)[:200]
+    item.native_status = str(task.get("status") or "error")[:40]
+    item.state = phase
+    # The Task lifecycle envelope intentionally carries no prompt/result copy.
+    # Project the user-visible native Observation text already normalized at
+    # the Runtime boundary, keeping one durable result without duplicating the
+    # sub-agent execution input in FlowWeave.
+    result = _task_text(payload.get("content"), maximum=100_000)
+    if phase == "ERROR":
+        item.error_detail = result or "OpenHands sub-agent task failed"
+        item.result = None
+    else:
+        item.result = result
+        item.error_detail = None
+    item.completed_at = item.completed_at or now()
+    return item
+
+
+def _subagent_budget_limit(
+    db: Session, conversation: AgentConversation, task: RuntimeSubagentTask
+) -> float | None:
+    """Resolve the immutable Agent Definition budget used by OpenHands 1.40.0."""
+
+    snapshot = db.get(RunSnapshot, _attempt(db, conversation.attempt_id).snapshot_id)
+    node_run, _ = _context(db, _attempt(db, conversation.attempt_id))
+    if snapshot is None:
+        raise DomainError("SNAPSHOT_INVALID", "Attempt Snapshot is unavailable", 409)
+    node = runtime_node(
+        definition=snapshot.definition_json,
+        manifest=snapshot.runtime_manifest_json or {},
+        expected_hash=snapshot.runtime_manifest_hash,
+        snapshot_id=snapshot.id,
+        instance_key=node_run.flow_node_snapshot_key,
+    )
+    agent_spec = cast(dict[str, Any], node.get("runtime_agent_spec") or {})
+    for raw in cast(list[object], agent_spec.get("agent_definitions") or []):
+        if not isinstance(raw, dict):
+            continue
+        raw_entry = cast(dict[str, object], raw)
+        raw_config = raw_entry.get("runtime_config")
+        config = cast(dict[str, Any], raw_config) if isinstance(raw_config, dict) else {}
+        if str(config.get("name") or "") != task.subagent_type:
+            continue
+        value = config.get("max_budget_per_run")
+        return (
+            float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+        )
+    return None
+
+
+def project_runtime_task_usage(
+    db: Session,
+    conversation: AgentConversation,
+    snapshots: tuple[RuntimeTaskUsageSnapshot, ...],
+) -> None:
+    """CAS-project cumulative Task stats without adding them into parent totals."""
+
+    for snapshot in snapshots:
+        tasks = list(
+            db.scalars(
+                select(RuntimeSubagentTask)
+                .where(
+                    RuntimeSubagentTask.conversation_id == conversation.id,
+                    RuntimeSubagentTask.runtime_task_id == snapshot.task_id,
+                )
+                .with_for_update()
+            )
+        )
+        if not tasks:
+            # Stats can become visible just before the matching Observation page.
+            # The next poll will retry after that formal identity is projected.
+            continue
+        # A resumed Task reuses the formal task_id but emits a new Action /
+        # Observation invocation. Attribute the one cumulative ledger row to
+        # the latest completed invocation without duplicating its cost.
+        task = max(
+            tasks,
+            key=lambda item: (
+                item.completed_at or item.created_at,
+                item.observation_event_id or "",
+                item.id,
+            ),
+        )
+        existing = db.scalar(
+            select(RuntimeSubagentTaskUsage)
+            .where(
+                RuntimeSubagentTaskUsage.conversation_id == conversation.id,
+                RuntimeSubagentTaskUsage.runtime_task_id == snapshot.task_id,
+            )
+            .with_for_update()
+        )
+        counters = (
+            snapshot.accumulated_cost,
+            snapshot.prompt_tokens,
+            snapshot.completion_tokens,
+            snapshot.cache_read_tokens,
+            snapshot.cache_write_tokens,
+            snapshot.reasoning_tokens,
+        )
+        if existing is not None:
+            if existing.snapshot_digest == snapshot.digest:
+                continue
+            previous = (
+                float(existing.accumulated_cost_usd),
+                existing.prompt_tokens,
+                existing.completion_tokens,
+                existing.cache_read_tokens,
+                existing.cache_write_tokens,
+                existing.reasoning_tokens,
+            )
+            if any(current < old for current, old in zip(counters, previous, strict=True)):
+                raise DomainError(
+                    "RUNTIME_TASK_USAGE_REGRESSION",
+                    "OpenHands cumulative Task usage moved backwards",
+                    502,
+                    {"task_id": snapshot.task_id},
+                )
+        budget_limit = (
+            float(existing.budget_limit_usd)
+            if existing is not None and existing.budget_limit_usd is not None
+            else _subagent_budget_limit(db, conversation, task)
+        )
+        budget_state = (
+            "UNBOUNDED"
+            if budget_limit is None
+            else "EXCEEDED"
+            if snapshot.accumulated_cost >= budget_limit
+            else "WITHIN"
+        )
+        exceeded_now = budget_state == "EXCEEDED" and (
+            existing is None or existing.budget_state != "EXCEEDED"
+        )
+        if existing is None:
+            existing = RuntimeSubagentTaskUsage(
+                attempt_id=conversation.attempt_id,
+                conversation_id=conversation.id,
+                runtime_subagent_task_id=task.id,
+                runtime_task_id=snapshot.task_id,
+                usage_version=1,
+                budget_exceeded_at=now() if exceeded_now else None,
+            )
+            db.add(existing)
+        else:
+            existing.usage_version += 1
+            existing.runtime_subagent_task_id = task.id
+            if exceeded_now:
+                existing.budget_exceeded_at = now()
+        existing.source_cursor = snapshot.source_cursor
+        existing.snapshot_digest = snapshot.digest
+        existing.model_name = snapshot.model_name
+        existing.accumulated_cost_usd = snapshot.accumulated_cost
+        existing.prompt_tokens = snapshot.prompt_tokens
+        existing.completion_tokens = snapshot.completion_tokens
+        existing.cache_read_tokens = snapshot.cache_read_tokens
+        existing.cache_write_tokens = snapshot.cache_write_tokens
+        existing.reasoning_tokens = snapshot.reasoning_tokens
+        existing.context_window = snapshot.context_window
+        existing.per_turn_tokens = snapshot.per_turn_tokens
+        existing.budget_limit_usd = budget_limit
+        existing.budget_state = budget_state
+        db.flush()
+        _event(
+            db,
+            conversation,
+            "RUNTIME_SUBAGENT_USAGE_PROJECTED",
+            {
+                "runtime_subagent_task_id": task.id,
+                "runtime_task_id": snapshot.task_id,
+                "source_cursor": snapshot.source_cursor,
+                "snapshot_digest": snapshot.digest,
+                "usage_version": existing.usage_version,
+                "accumulated_cost_usd": snapshot.accumulated_cost,
+                "prompt_tokens": snapshot.prompt_tokens,
+                "completion_tokens": snapshot.completion_tokens,
+                "budget_limit_usd": budget_limit,
+                "budget_state": budget_state,
+            },
+        )
+        if exceeded_now:
+            _event(
+                db,
+                conversation,
+                "RUNTIME_SUBAGENT_BUDGET_EXCEEDED",
+                {
+                    "runtime_subagent_task_id": task.id,
+                    "runtime_task_id": snapshot.task_id,
+                    "accumulated_cost_usd": snapshot.accumulated_cost,
+                    "budget_limit_usd": budget_limit,
+                    "control_action": "NONE_UPSTREAM_TASK_ALREADY_TERMINAL",
+                },
+            )
+
+
+def missing_runtime_task_usage_ids(
+    db: Session,
+    conversation: AgentConversation,
+    *,
+    observed_stats_task_ids: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Return formal Task identities not yet joined to a durable lifecycle row."""
+
+    terminal_task_ids = {
+        task_id
+        for task_id in db.scalars(
+            select(RuntimeSubagentTask.runtime_task_id).where(
+                RuntimeSubagentTask.conversation_id == conversation.id,
+                RuntimeSubagentTask.state.in_(("COMPLETED", "ERROR")),
+                RuntimeSubagentTask.runtime_task_id.is_not(None),
+                RuntimeSubagentTask.runtime_task_id != "unknown",
+            )
+        )
+        if task_id
+    }
+    projected_task_ids = set(
+        db.scalars(
+            select(RuntimeSubagentTaskUsage.runtime_task_id).where(
+                RuntimeSubagentTaskUsage.conversation_id == conversation.id
+            )
+        )
+    )
+    return tuple(sorted((terminal_task_ids | set(observed_stats_task_ids)) - projected_task_ids))
+
+
+def record_runtime_task_usage_recovery(
+    db: Session,
+    conversation: AgentConversation,
+    *,
+    missing_task_ids: tuple[str, ...],
+    recovery_poll: int,
+    exhausted: bool,
+) -> None:
+    """Append a redacted audit fact for the bounded stats/event visibility recovery."""
+
+    _event(
+        db,
+        conversation,
+        (
+            "RUNTIME_SUBAGENT_USAGE_RECOVERY_EXHAUSTED"
+            if exhausted
+            else "RUNTIME_SUBAGENT_USAGE_RECOVERY_PENDING"
+        ),
+        {
+            "runtime_task_ids": list(missing_task_ids),
+            "recovery_poll": recovery_poll,
+        },
+    )
 
 
 def _append_runtime_payload(
@@ -3061,6 +4230,13 @@ def _append_runtime_payload(
     event_type: str,
     payload: dict[str, Any],
 ) -> None:
+    if event_type in {"CONDENSATION_REQUESTED", "CONDENSATION_COMPLETED"}:
+        project_runtime_condensation(
+            db, conversation, cursor=cursor, event_type=event_type, payload=payload
+        )
+        return
+    if event_type in {"TOOL", "TOOL_CALL", "TOOL_RESULT"}:
+        _project_runtime_subagent_task(db, conversation, cursor=cursor, payload=payload)
     existing = db.scalar(
         select(AgentMessage.id).where(
             AgentMessage.conversation_id == conversation.id,
@@ -3222,11 +4398,6 @@ def _apply_conversation_result(
         text = result.final_message or (
             "\n".join(value[1] for value in result.outputs.values()) if result.outputs else ""
         )
-        tasks = _delegation_tasks(text) if text else None
-        if tasks is not None and _start_delegation(
-            db, conversation, tasks, result_key=f"{message_id}:{result.cursor or ''}"
-        ):
-            return
         if text:
             supersede_duplicate_progress(text)
             append_once(
@@ -3247,8 +4418,6 @@ def _apply_conversation_result(
             "CONVERSATION_STATE_CHANGED",
             {"from": previous, "to": next_state, "version": conversation.state_version},
         )
-    if result.status != "RUNNING" and conversation.kind == ConversationKind.SUBAGENT:
-        _finish_subagent(db, conversation)
 
 
 def _schedule_next_message(db: Session, conversation: AgentConversation) -> None:
@@ -3283,12 +4452,152 @@ def _schedule_next_message(db: Session, conversation: AgentConversation) -> None
     )
 
 
+def _schedule_conversation_wakeup(
+    db: Session,
+    conversation: AgentConversation,
+    channel: str,
+    wakeup_no: int,
+    *,
+    cursor: str | None = None,
+    delayed: bool = False,
+) -> None:
+    task = enqueue(
+        db,
+        task_type="WAIT_CONVERSATION_WAKEUP",
+        aggregate_type="CONVERSATION",
+        aggregate_id=conversation.id,
+        idempotency_key=(
+            f"wait-conversation-wakeup:{conversation.id}:v{conversation.state_version}:"
+            f"{channel.lower()}:{wakeup_no}"
+        ),
+        payload={
+            "channel": channel,
+            "wakeup_no": wakeup_no,
+            **({"cursor": cursor} if cursor else {}),
+        },
+        available_at=(
+            datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds)
+            if delayed
+            else None
+        ),
+    )
+    task.max_attempts = max(task.max_attempts, 100)
+
+
+def process_conversation_wakeup(
+    db: Session,
+    conversation_id: str,
+    channel: str,
+    wakeup_no: int,
+    cursor: str | None,
+    lease: Lease,
+    *,
+    backoff_no: int = 0,
+    commit: bool = True,
+) -> None:
+    if channel not in {"CONVERSATION", "BASH"}:
+        raise DomainError("RUNTIME_WAKEUP_CHANNEL_INVALID", "Unknown Runtime wake-up channel", 422)
+    conversation = _conversation(db, conversation_id)
+    if conversation.state != ConversationState.GENERATING:
+        return
+    expected_version = conversation.state_version
+    runtime_handle = runtime_stream_details(db, conversation_id)[1]
+    db.rollback()
+    try:
+        wakeup = get_runtime().wait_for_wakeup(
+            runtime_handle,
+            channel=cast(Literal["CONVERSATION", "BASH"], channel),
+            timeout_seconds=get_settings().runtime_wakeup_timeout_seconds,
+            cursor=cursor,
+        )
+    except DomainError:
+        wakeup = None
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost during Runtime wake-up")
+    sandboxes.touch_runtime(db, conversation.runtime_sandbox_id)
+    current = _conversation(db, conversation_id, lock=True)
+    if current.state != ConversationState.GENERATING or current.state_version != expected_version:
+        return
+    if wakeup is not None and wakeup.notified and channel == "CONVERSATION":
+        poll_task = enqueue(
+            db,
+            task_type="POLL_CONVERSATION",
+            aggregate_type="CONVERSATION",
+            aggregate_id=current.id,
+            idempotency_key=(
+                f"poll-conversation-wakeup:{current.id}:v{current.state_version}:"
+                f"{channel.lower()}:{wakeup_no}"
+            ),
+            payload={"poll_no": wakeup_no},
+        )
+        poll_task.max_attempts = max(poll_task.max_attempts, 10)
+    if wakeup is not None and channel == "BASH" and wakeup.events:
+        for event in wakeup.events:
+            cursor_id = f"bash:{event['event_id']}"
+            _append_runtime_payload(
+                db,
+                current,
+                cursor=cursor_id,
+                event_type="TOOL_RESULT",
+                payload={
+                    "actor": "HUMAN_OR_SYSTEM",
+                    "source": "DIRECT_BASH",
+                    **event,
+                },
+            )
+            _event(
+                db,
+                current,
+                "DIRECT_BASH_ACTIVITY_OBSERVED",
+                {
+                    "actor": "HUMAN_OR_SYSTEM",
+                    "source": "DIRECT_BASH",
+                    **event,
+                },
+            )
+    next_backoff = 0 if wakeup is not None else min(backoff_no + 1, 8)
+    task = enqueue(
+        db,
+        task_type="WAIT_CONVERSATION_WAKEUP",
+        aggregate_type="CONVERSATION",
+        aggregate_id=current.id,
+        idempotency_key=(
+            f"wait-conversation-wakeup:{current.id}:v{current.state_version}:"
+            f"{channel.lower()}:{wakeup_no + 1}"
+        ),
+        payload={
+            "channel": channel,
+            "wakeup_no": wakeup_no + 1,
+            "backoff_no": next_backoff,
+            **(
+                {"cursor": wakeup.cursor}
+                if wakeup is not None and wakeup.cursor
+                else ({"cursor": cursor} if cursor else {})
+            ),
+        },
+        available_at=datetime.now(UTC)
+        + timedelta(
+            seconds=(
+                min(
+                    get_settings().runtime_wakeup_backoff_max_seconds,
+                    max(get_settings().runtime_poll_seconds, float(2**next_backoff)),
+                )
+                if next_backoff
+                else get_settings().runtime_poll_seconds
+            )
+        ),
+    )
+    task.max_attempts = max(task.max_attempts, 100)
+    db.commit() if commit else db.flush()
+
+
 def process_poll_conversation(
     db: Session,
     conversation_id: str,
     poll_no: int,
     lease: Lease,
     *,
+    task_usage_recovery_no: int = 0,
     commit: bool = True,
 ) -> None:
     conversation = _conversation(db, conversation_id)
@@ -3301,7 +4610,6 @@ def process_poll_conversation(
         return
     if not conversation.runtime_conversation_id:
         conversation.state = ConversationState.FAILED
-        _finish_subagent(db, conversation)
         conversation.state_version += 1
         db.commit() if commit else db.flush()
         return
@@ -3331,6 +4639,36 @@ def process_poll_conversation(
         _append_runtime_payload(
             db, current, cursor=event.cursor, event_type=event.event_type, payload=event.payload
         )
+    project_runtime_task_usage(db, current, batch.task_usage)
+    missing_task_usage_ids = (
+        missing_runtime_task_usage_ids(
+            db,
+            current,
+            observed_stats_task_ids=tuple(snapshot.task_id for snapshot in batch.task_usage),
+        )
+        if result.status in {"COMPLETED", "FAILED"}
+        else ()
+    )
+    if missing_task_usage_ids:
+        next_recovery_no = task_usage_recovery_no + 1
+        exhausted = next_recovery_no >= get_settings().runtime_task_usage_visibility_max_polls
+        record_runtime_task_usage_recovery(
+            db,
+            current,
+            missing_task_ids=missing_task_usage_ids,
+            recovery_poll=next_recovery_no,
+            exhausted=exhausted,
+        )
+        result = RuntimeResult(
+            status="FAILED" if exhausted else "RUNNING",
+            cursor=result.cursor or batch.cursor,
+            error=(
+                "OpenHands terminal Task stats remained unavailable after bounded recovery: "
+                + ", ".join(missing_task_usage_ids)
+                if exhausted
+                else None
+            ),
+        )
     if result.cursor is None and batch.cursor is not None:
         result = RuntimeResult(
             status=result.status,
@@ -3352,7 +4690,14 @@ def process_poll_conversation(
             idempotency_key=(
                 f"poll-conversation:{current.id}:v{current.state_version}:{poll_no + 1}"
             ),
-            payload={"poll_no": poll_no + 1},
+            payload={
+                "poll_no": poll_no + 1,
+                **(
+                    {"task_usage_recovery_no": task_usage_recovery_no + 1}
+                    if missing_task_usage_ids
+                    else {}
+                ),
+            },
             available_at=datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds),
         )
         poll_task.max_attempts = max(poll_task.max_attempts, 10)
@@ -3392,7 +4737,6 @@ def process_deliver_message(
         message.error_code = "RUNTIME_CONVERSATION_UNAVAILABLE"
         conversation.state = ConversationState.FAILED
         conversation.state_version += 1
-        _finish_subagent(db, conversation)
         db.commit() if commit else db.flush()
         return
     message.delivery_state = DeliveryState.DELIVERING
@@ -3435,7 +4779,6 @@ def process_deliver_message(
             failed.error_detail = exc.message
         current.state = ConversationState.FAILED
         current.state_version += 1
-        _finish_subagent(db, current)
         _event(
             db,
             current,
@@ -3484,6 +4827,8 @@ def process_deliver_message(
             available_at=datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds),
         )
         poll_task.max_attempts = max(poll_task.max_attempts, 10)
+        _schedule_conversation_wakeup(db, current, "CONVERSATION", 1)
+        _schedule_conversation_wakeup(db, current, "BASH", 1)
     else:
         _schedule_next_message(db, current)
     db.commit() if commit else db.flush()

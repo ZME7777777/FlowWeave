@@ -16,12 +16,14 @@ from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
 from flowweave.shared.schemas import (
+    ConversationCondenseWrite,
     ConversationCreateWrite,
     ConversationForkWrite,
     ConversationPatchWrite,
     ConversationReviseWrite,
     ConversationStopWrite,
     MessageSendWrite,
+    RuntimeSubagentTaskRead,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -93,7 +95,10 @@ async def conversation_stream(
         reset_settings(settings_token)
 
 
-@router.get("/agent-conversations/{conversation_id}/subagents")
+@router.get(
+    "/agent-conversations/{conversation_id}/subagents",
+    response_model=list[RuntimeSubagentTaskRead],
+)
 async def subagents(conversation_id: str, db: Db) -> list[dict[str, Any]]:
     return await run_sync(db, lambda session: service.list_subagents(session, conversation_id))
 
@@ -205,6 +210,26 @@ async def stop_conversation(
             conversation_id,
             payload,
             _key(idempotency_key, "stop-conversation", conversation_id),
+        ),
+    )
+
+
+@router.post("/agent-conversations/{conversation_id}/condense", status_code=202)
+async def condense_conversation(
+    conversation_id: str,
+    payload: ConversationCondenseWrite,
+    db: Db,
+    actor: Actor = None,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.request_conversation_condensation(
+            session,
+            conversation_id,
+            payload,
+            _key(idempotency_key, "condense-conversation", conversation_id),
+            actor,
         ),
     )
 

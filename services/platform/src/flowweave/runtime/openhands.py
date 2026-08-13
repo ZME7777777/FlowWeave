@@ -1,30 +1,51 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
+from websockets.sync.client import connect as sync_connect
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import (
+    RuntimeCondenser,
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeEventType,
+    RuntimeForkResult,
     RuntimeHandle,
+    RuntimeMCP,
+    RuntimeMCPOAuthCallbackRequest,
+    RuntimeMCPOAuthJobRequest,
+    RuntimeMCPOAuthStartRequest,
+    RuntimeMCPOAuthStatus,
+    RuntimeMCPProbeRequest,
+    RuntimeMCPProbeResult,
+    RuntimePendingAction,
+    RuntimePendingConfirmation,
+    RuntimePluginValidationRequest,
+    RuntimePluginValidationResult,
     RuntimeProvider,
     RuntimeResult,
+    RuntimeTaskUsageSnapshot,
+    RuntimeWakeup,
     StartAttemptRequest,
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
+    DockerControllerError,
     controller_is_remote,
+    validate_owned_runtime_plugin,
 )
 
 
@@ -110,6 +131,382 @@ class OpenHandsRuntime:
                 503,
             ) from exc
 
+    def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
+        """Probe one MCP server through the target environment's Agent Server."""
+
+        config = dict(request.server.config)
+        transport = str(config.pop("transport", config.pop("type", "")) or "")
+        if not transport:
+            transport = "stdio" if config.get("command") else "streamable-http"
+        server: dict[str, Any] = {
+            key: value
+            for key, value in config.items()
+            if key
+            in {
+                "command",
+                "args",
+                "env",
+                "cwd",
+                "url",
+                "headers",
+                "auth",
+                "timeout",
+                "sse_read_timeout",
+                "keep_alive",
+            }
+        }
+        server["type"] = transport
+        if request.oauth_secret_reference_id is not None:
+            raw_auth = server.get("auth")
+            if not isinstance(raw_auth, dict):
+                raise DomainError(
+                    "MCP_OAUTH_PROTOCOL_ERROR",
+                    "Governed OAuth state requires auth.strategy=oauth2",
+                    422,
+                )
+            auth = cast(dict[str, Any], raw_auth)
+            if auth.get("strategy") != "oauth2":
+                raise DomainError(
+                    "MCP_OAUTH_PROTOCOL_ERROR",
+                    "Governed OAuth state requires auth.strategy=oauth2",
+                    422,
+                )
+            oauth_auth = dict(auth)
+            if request.oauth_state is not None:
+                oauth_auth["state"] = request.oauth_state
+            server["auth"] = oauth_auth
+        payload: dict[str, Any] = {
+            "name": request.server.name,
+            "server": server,
+            "timeout": request.timeout,
+        }
+        if request.read_only_tool_call is not None:
+            payload["tool_call"] = {
+                "name": request.read_only_tool_call.name,
+                "arguments": dict(request.read_only_tool_call.arguments),
+            }
+        response = self._request(
+            "POST",
+            "/api/mcp/test",
+            base_url=request.base_url,
+            session_api_key=self._session_key_for_resource(request.runtime_resource_name),
+            json=payload,
+        )
+        raw_oauth_state = response.get("oauth_state")
+        if raw_oauth_state is not None and request.oauth_secret_reference_id is None:
+            raise DomainError(
+                "MCP_OAUTH_LIFECYCLE_REQUIRED",
+                "MCP OAuth state requires Secret Reference governance",
+                422,
+            )
+        if raw_oauth_state is not None and not isinstance(raw_oauth_state, dict):
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned invalid MCP OAuth state",
+                502,
+            )
+        ok = response.get("ok")
+        if ok is False:
+            error_kind = str(response.get("error_kind") or "unknown")
+            if error_kind not in {"timeout", "connection", "unknown"}:
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands returned an invalid MCP probe error kind",
+                    502,
+                )
+            return RuntimeMCPProbeResult(
+                ok=False,
+                error_kind=cast(Literal["timeout", "connection", "unknown"], error_kind),
+            )
+        if ok is not True:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned an invalid MCP probe response",
+                502,
+            )
+        raw_tools: object = response.get("tools")
+        if not isinstance(raw_tools, list):
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands MCP probe omitted the Tool catalog",
+                502,
+            )
+        tool_names: list[str] = []
+        for raw_tool in cast(list[object], raw_tools):
+            if not isinstance(raw_tool, str):
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands MCP probe omitted the Tool catalog",
+                    502,
+                )
+            tool_names.append(raw_tool)
+        tool_result: object = response.get("tool_result")
+        tool_call_is_error: bool | None = None
+        tool_call_text: str | None = None
+        if tool_result is not None:
+            if not isinstance(tool_result, dict):
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands returned an invalid MCP Tool result",
+                    502,
+                )
+            tool_result_mapping = cast(dict[object, object], tool_result)
+            raw_is_error = tool_result_mapping.get("is_error")
+            raw_text = tool_result_mapping.get("text")
+            if not isinstance(raw_is_error, bool) or not isinstance(raw_text, str):
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands returned an invalid MCP Tool result",
+                    502,
+                )
+            tool_call_is_error = raw_is_error
+            tool_call_text = raw_text
+        return RuntimeMCPProbeResult(
+            ok=True,
+            tools=tuple(dict.fromkeys(tool_names)),
+            tool_call_is_error=tool_call_is_error,
+            tool_call_text=tool_call_text,
+            oauth_state=(
+                cast(dict[str, Any], raw_oauth_state) if isinstance(raw_oauth_state, dict) else None
+            ),
+        )
+
+    def validate_plugin(
+        self, request: RuntimePluginValidationRequest
+    ) -> RuntimePluginValidationResult:
+        """Run the native Plugin loader through one ownership-checked Runtime."""
+
+        try:
+            if controller_is_remote(self.settings):
+                response = DockerControllerClient(self.settings).post(
+                    "/v1/runtimes/validate-plugin",
+                    {
+                        "resource_name": request.runtime_resource_name,
+                        "resource_id": request.runtime_resource_id,
+                        "validation_id": request.validation_id,
+                        "plugin_path": request.plugin.source,
+                    },
+                    timeout=30,
+                )
+            else:
+                response = validate_owned_runtime_plugin(
+                    self.settings,
+                    resource_name=request.runtime_resource_name,
+                    resource_id=request.runtime_resource_id,
+                    validation_id=request.validation_id,
+                    plugin_path=request.plugin.source,
+                )
+        except DomainError:
+            raise
+        except Exception as exc:
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "The target Runtime Plugin loader is unavailable",
+                503,
+            ) from exc
+        fields = {
+            "plugin_name": str,
+            "plugin_version": str,
+            "skill_count": int,
+            "command_count": int,
+            "agent_count": int,
+            "mcp_server_count": int,
+            "has_hooks": bool,
+        }
+        if any(
+            key not in response
+            or isinstance(response[key], bool) != (expected is bool)
+            or not isinstance(response[key], expected)
+            for key, expected in fields.items()
+        ):
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "The target Runtime returned an invalid Plugin loader report",
+                502,
+            )
+        counts = (
+            response["skill_count"],
+            response["command_count"],
+            response["agent_count"],
+            response["mcp_server_count"],
+        )
+        if any(value < 0 for value in counts):
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "The target Runtime returned an invalid Plugin loader report",
+                502,
+            )
+        return RuntimePluginValidationResult(
+            plugin_name=response["plugin_name"],
+            plugin_version=response["plugin_version"],
+            skill_count=response["skill_count"],
+            command_count=response["command_count"],
+            agent_count=response["agent_count"],
+            mcp_server_count=response["mcp_server_count"],
+            has_hooks=response["has_hooks"],
+        )
+
+    @staticmethod
+    def _mcp_server_payload(server: RuntimeMCP) -> dict[str, Any]:
+        config = dict(server.config)
+        transport = str(config.pop("transport", config.pop("type", "")) or "")
+        if not transport:
+            transport = "stdio" if config.get("command") else "streamable-http"
+        payload = {
+            key: value
+            for key, value in config.items()
+            if key
+            in {
+                "command",
+                "args",
+                "env",
+                "cwd",
+                "url",
+                "headers",
+                "auth",
+                "timeout",
+                "sse_read_timeout",
+                "keep_alive",
+            }
+        }
+        payload["type"] = transport
+        return payload
+
+    @staticmethod
+    def _oauth_status(response: dict[str, Any]) -> RuntimeMCPOAuthStatus:
+        raw_status = response.get("status")
+        if raw_status is None and response.get("authorization_url") is not None:
+            raw_status = "authorizing"
+        if raw_status is None and response.get("ok") is False:
+            raw_status = "failed"
+        if raw_status not in {"pending", "authorizing", "succeeded", "failed"}:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned an invalid MCP OAuth status",
+                502,
+            )
+        job_id = response.get("job_id")
+        if not isinstance(job_id, str) or not job_id:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands omitted the MCP OAuth job identity",
+                502,
+            )
+        raw_url = response.get("authorization_url")
+        if raw_url is not None and (not isinstance(raw_url, str) or not raw_url):
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned an invalid MCP OAuth authorization URL",
+                502,
+            )
+        raw_tools = response.get("tools")
+        tools: tuple[str, ...] = ()
+        if raw_tools is not None:
+            if not isinstance(raw_tools, list):
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands returned an invalid MCP OAuth Tool catalog",
+                    502,
+                )
+            raw_tool_items = cast(list[object], raw_tools)
+            if not all(isinstance(item, str) for item in raw_tool_items):
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands returned an invalid MCP OAuth Tool catalog",
+                    502,
+                )
+            tools = tuple(dict.fromkeys(item for item in raw_tool_items if isinstance(item, str)))
+        raw_state = response.get("oauth_state")
+        if raw_state is not None and not isinstance(raw_state, dict):
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned invalid MCP OAuth state",
+                502,
+            )
+        raw_error_kind = response.get("error_kind")
+        if raw_error_kind is not None and raw_error_kind not in {
+            "timeout",
+            "connection",
+            "unknown",
+        }:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned an invalid MCP OAuth error kind",
+                502,
+            )
+        return RuntimeMCPOAuthStatus(
+            ok=response.get("ok") is True,
+            status=cast(
+                Literal["pending", "authorizing", "succeeded", "failed"],
+                raw_status,
+            ),
+            job_id=job_id,
+            authorization_url=raw_url,
+            callback_ready=response.get("callback_ready") is True,
+            tools=tools,
+            error_kind=cast(
+                Literal["timeout", "connection", "unknown"] | None,
+                raw_error_kind,
+            ),
+            oauth_state=(cast(dict[str, Any], raw_state) if isinstance(raw_state, dict) else None),
+        )
+
+    def start_mcp_oauth(self, request: RuntimeMCPOAuthStartRequest) -> RuntimeMCPOAuthStatus:
+        server = self._mcp_server_payload(request.server)
+        raw_auth: object = server.get("auth")
+        if not isinstance(raw_auth, dict):
+            raise DomainError(
+                "MCP_OAUTH_PROTOCOL_ERROR",
+                "MCP OAuth start requires auth.strategy=oauth2",
+                422,
+            )
+        auth = cast(dict[str, Any], raw_auth)
+        if auth.get("strategy") != "oauth2":
+            raise DomainError(
+                "MCP_OAUTH_PROTOCOL_ERROR",
+                "MCP OAuth start requires auth.strategy=oauth2",
+                422,
+            )
+        if "state" in auth:
+            raise DomainError(
+                "MCP_OAUTH_PROTOCOL_ERROR",
+                "Initial MCP OAuth authorization cannot include stored state",
+                422,
+            )
+        response = self._request(
+            "POST",
+            "/api/mcp/oauth/start",
+            base_url=request.base_url,
+            session_api_key=self._session_key_for_resource(request.runtime_resource_name),
+            json={
+                "name": request.server.name,
+                "server": server,
+                "timeout": request.timeout,
+            },
+        )
+        return self._oauth_status(response)
+
+    def read_mcp_oauth(self, request: RuntimeMCPOAuthJobRequest) -> RuntimeMCPOAuthStatus:
+        response = self._request(
+            "GET",
+            f"/api/mcp/oauth/status/{request.job_id}",
+            base_url=request.base_url,
+            session_api_key=self._session_key_for_resource(request.runtime_resource_name),
+        )
+        return self._oauth_status(response)
+
+    def submit_mcp_oauth_callback(
+        self, request: RuntimeMCPOAuthCallbackRequest
+    ) -> RuntimeMCPOAuthStatus:
+        response = self._request(
+            "POST",
+            f"/api/mcp/oauth/callback/{request.job_id}",
+            base_url=request.base_url,
+            session_api_key=self._session_key_for_resource(request.runtime_resource_name),
+            json={"callback_url": request.callback_url},
+        )
+        return self._oauth_status(response)
+
     @staticmethod
     def _model_name(model: str) -> str:
         return model if "/" in model else f"openai/{model}"
@@ -140,6 +537,41 @@ class OpenHandsRuntime:
                 }
             )
         return llm
+
+    def _condenser_payload(
+        self, condenser: RuntimeCondenser, provider: RuntimeProvider | None
+    ) -> dict[str, Any]:
+        if condenser.kind == "NO_OP":
+            return {"kind": "NoOpCondenser"}
+        if condenser.kind != "LLM_SUMMARIZING":
+            raise DomainError(
+                "RUNTIME_CONFIGURATION_INVALID",
+                "Unsupported OpenHands condenser mode",
+                422,
+                {"kind": condenser.kind},
+            )
+        if provider is None:
+            raise DomainError(
+                "RUNTIME_CONFIGURATION_INVALID",
+                "LLM summarizing condenser is missing its frozen model provider",
+                422,
+            )
+        llm = self._llm_payload(provider)
+        # OpenHands accounts usage by usage_id. Keep summarization separate from
+        # the main agent ledger while reusing the frozen provider/model/secret.
+        llm["usage_id"] = "condenser"
+        payload: dict[str, Any] = {
+            "kind": "LLMSummarizingCondenser",
+            "llm": llm,
+            "max_size": condenser.max_size,
+            "keep_first": condenser.keep_first,
+            "minimum_progress": condenser.minimum_progress,
+            "hard_context_reset_max_retries": (condenser.hard_context_reset_max_retries),
+            "hard_context_reset_context_scaling": (condenser.hard_context_reset_context_scaling),
+        }
+        if condenser.max_tokens is not None:
+            payload["max_tokens"] = condenser.max_tokens
+        return payload
 
     def _workspace_path(self, value: str) -> str:
         path = Path(value)
@@ -214,27 +646,14 @@ class OpenHandsRuntime:
         if context:
             heading = "节点背景上下文（仅作协作参考）" if collaboration else "任务上下文"
             sections.append(f"{heading}：\n{context}")
-        if collaboration and request.conversation_history:
+        if collaboration and request.semantic_history:
             sections.append(
-                "这是从既有会话分叉出的独立会话。下列记录是分叉点及其之前的真实对话历史，"
-                "按给定顺序视为本会话已经发生的上下文；不要声称看不到这些消息，也不要重复回答"
-                "最后一条历史消息。等待用户的新消息后，从该上下文继续。\n"
-                + json.dumps(request.conversation_history, ensure_ascii=False)
-            )
-        if collaboration and request.delegation_enabled:
-            sections.append(
-                "当任务可拆成互相独立的工作时，你可以让平台自动创建子智能体并行处理。"
-                "需要委派时，本轮不要输出普通答复，只调用 finish 并把 message 严格写成以下 JSON，"
-                "tasks 最多 4 项；title 是短标题，instruction 必须包含完整、独立、可执行的要求：\n"
-                '{"flowweave":{"action":"delegate","tasks":['
-                '{"title":"检查后端","instruction":"独立检查后端实现并给出结论"}'
-                "]}}\n"
-                "平台会在所有子智能体结束后把结构化结果送回本会话，届时你必须综合结果继续回答。"
-                "不要为简单任务委派，也不要输出上述控制 JSON 的解释或 Markdown 代码块。"
-            )
-        elif collaboration:
-            sections.append(
-                "你是由父智能体创建的子智能体。请只完成收到的独立任务；不得继续委派其他智能体。"
+                "这是显式创建的语义分支。下列内容只是源会话截至分叉点的可见文本副本，"
+                "仅供理解用户语境；它不是本 Runtime 的既有历史，也不继承 Tool/Observation、"
+                "Agent state、已激活 Skill、Condensation、usage stats 或 Runtime HEAD。"
+                "不要把这些副本描述为已在本会话执行过的事件，也不要重复回答最后一条文本。"
+                "等待用户的新消息后再继续。\n"
+                + json.dumps(request.semantic_history, ensure_ascii=False)
             )
         if request.node_workspace_ref:
             resource_lines = [
@@ -242,33 +661,19 @@ class OpenHandsRuntime:
                 f"文本与附件目录：{request.node_workspace_ref}/files",
                 f"代码仓库目录：{request.node_workspace_ref}/repositories",
             ]
-            if request.skills:
-                resource_lines.append("可用 Skills：")
-                for skill in request.skills:
-                    detail = f"- {skill.name}: {skill.source}（脚本目录 {skill.workspace_path}）"
-                    if skill.dependency_runtime_path:
-                        detail += (
-                            f"；依赖运行器 {skill.dependency_runtime_path}/python 与 "
-                            f"{skill.dependency_runtime_path}/node"
-                        )
-                    resource_lines.append(detail)
-                resource_lines.append(
-                    "只有上面明确列出的 Skill 已绑定到本 Runtime。若某个 Skill 文档引用了"
-                    "未列出的兄弟 Skill（例如 ../other-skill/SKILL.md），该依赖当前不可用；"
-                    "不要猜测或反复探测不存在的路径，应使用当前 Skill 已提供的说明、references、"
-                    "脚本或 CLI --help 继续，确实无法执行时再明确报告缺失依赖。"
-                )
-            if request.mcp_servers:
+            if request.agent_spec.mcp_servers:
                 resource_lines.append("可用 MCP Servers：")
                 resource_lines.extend(
-                    f"- {server.name}: {server.workspace_path}" for server in request.mcp_servers
+                    f"- {server.name}: {server.workspace_path}"
+                    for server in request.agent_spec.mcp_servers
                 )
             resource_lines.append(
-                "这些 Skill 与 MCP 是可选能力；根据用户当前消息动态选择。"
-                "用户显式选择时必须优先调用；Skill 附带脚本可直接从上述目录执行。"
+                "Skill 与 MCP 是可选能力；根据用户当前消息动态选择。"
+                "Skill 的目录、内容和附带资源只通过 OpenHands 原生 Skill 触发或 "
+                "invoke_skill 结果披露。"
                 if collaboration
-                else "用户在消息中显式选择 Skill 或 MCP 时，必须优先调用所选能力；"
-                "Skill 附带脚本可直接从上述目录执行。"
+                else "Skill 的目录、内容和附带资源只通过 OpenHands 原生 Skill 触发或 "
+                "invoke_skill 结果披露。"
             )
             sections.append("运行资源：\n" + "\n".join(resource_lines))
         input_heading = "当前 Attempt 输入（协作参考）" if collaboration else "流程输入"
@@ -292,50 +697,126 @@ class OpenHandsRuntime:
         return "\n\n".join(sections)
 
     def _create(self, request: StartAttemptRequest, *, run: bool) -> RuntimeHandle:
-        provider = request.provider
+        spec = request.agent_spec
+        provider = spec.provider
         if provider is None:
             raise DomainError(
                 "MODEL_PROVIDER_REQUIRED",
                 "The node executor must select a model provider before it can run",
                 422,
             )
-        asset = cast(dict[str, Any], request.node.get("asset") or {})
-        executor = cast(dict[str, Any], asset.get("executor") or {})
         skills = [
             {
                 "name": skill.name,
                 "content": skill.content,
                 "description": skill.description or None,
                 "source": skill.source or None,
-                "is_agentskills_format": False,
+                "trigger": (
+                    {"type": "keyword", "keywords": list(skill.activation_keywords)}
+                    if skill.activation_keywords
+                    else None
+                ),
+                "is_agentskills_format": True,
             }
-            for skill in request.skills
+            for skill in spec.skills
         ]
+        if not spec.tools:
+            raise DomainError(
+                "RUNTIME_AGENT_SPEC_INVALID",
+                "Runtime Agent Spec must allow at least one Tool",
+                409,
+            )
         agent: dict[str, Any] = {
             "kind": "Agent",
             "llm": self._llm_payload(provider),
-            "tools": [
-                {"name": "terminal", "params": {}},
-                {"name": "file_editor", "params": {}},
-                {"name": "task_tracker", "params": {}},
-            ],
+            "condenser": self._condenser_payload(spec.condenser, spec.condenser_provider),
+            "tools": [{"name": tool.name, "params": dict(tool.params)} for tool in spec.tools],
+            "tool_concurrency_limit": spec.tool_concurrency_limit,
         }
+        if spec.critic is not None:
+            critic: dict[str, Any] = {
+                "kind": spec.critic.kind,
+                "mode": spec.critic.mode,
+            }
+            if spec.critic.max_iterations > 0:
+                critic["iterative_refinement"] = {
+                    "success_threshold": spec.critic.success_threshold,
+                    "max_iterations": spec.critic.max_iterations,
+                }
+            agent["critic"] = critic
+        frozen_suffix = spec.agent_context.system_message_suffix
+        runtime_suffix = self._context_text(request)
+        system_suffix = (
+            f"{frozen_suffix}\n\n{runtime_suffix}"
+            if frozen_suffix and runtime_suffix
+            else frozen_suffix or runtime_suffix
+        )
         agent["agent_context"] = {
             "skills": skills,
-            "system_message_suffix": self._context_text(request),
+            "system_message_suffix": system_suffix or None,
+            "user_message_suffix": spec.agent_context.user_message_suffix or None,
+            "load_user_skills": spec.agent_context.load_user_skills,
+            "load_public_skills": spec.agent_context.load_public_skills,
+            "marketplace_path": spec.agent_context.marketplace_path,
+            "registered_marketplaces": [
+                dict(item) for item in spec.agent_context.registered_marketplaces
+            ],
+            "load_project_skills": spec.agent_context.load_project_skills,
+            "load_memory": spec.agent_context.load_memory,
+            "disabled_skills": list(spec.agent_context.disabled_skills),
         }
-        if request.mcp_servers:
-            agent["mcp_config"] = {server.name: server.config for server in request.mcp_servers}
+        if spec.mcp_servers:
+            agent["mcp_config"] = {server.name: server.config for server in spec.mcp_servers}
         payload: dict[str, Any] = {
             "workspace": {
                 "kind": "LocalWorkspace",
                 "working_dir": self._workspace_path(request.workspace_ref),
             },
-            "max_iterations": int(executor.get("max_iterations") or 100),
+            "max_iterations": spec.budgets.max_iterations,
             "agent": agent,
+            "confirmation_policy": {
+                "kind": (
+                    "AlwaysConfirm" if spec.confirmation_policy == "ALWAYS" else "NeverConfirm"
+                )
+            },
+            # Production runs must never discover mutable user/project or
+            # Marketplace-installed Plugins outside the frozen Snapshot.
+            "load_ambient_plugins": False,
         }
-        if request.hook_config:
-            payload["hook_config"] = request.hook_config
+        if spec.agent_profile is not None:
+            # The immutable FlowWeave Profile has already been materialized in
+            # the explicit Agent payload above.  Never send agent_profile_id:
+            # OpenHands would resolve it from its mutable server-side stores.
+            payload["observability_metadata"] = {
+                "flowweave.agent_profile_version_id": spec.agent_profile.capability_version_id,
+                "flowweave.agent_profile_key": spec.agent_profile.capability_key,
+                "flowweave.agent_profile_digest": spec.agent_profile.digest,
+                "flowweave.agent_profile_schema_version": spec.agent_profile.schema_version,
+                "flowweave.agent_profile_source_id": spec.agent_profile.source_profile_id,
+                "flowweave.agent_profile_source_revision": spec.agent_profile.source_revision,
+            }
+        if spec.agent_definitions:
+            payload["agent_definitions"] = [
+                {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "model": "inherit",
+                    "tools": list(definition.tools),
+                    "skills": [],
+                    "system_prompt": definition.system_prompt,
+                    "when_to_use_examples": list(definition.when_to_use_examples),
+                    "permission_mode": definition.permission_mode,
+                    "max_iteration_per_run": definition.max_iteration_per_run,
+                    "max_budget_per_run": definition.max_budget_per_run,
+                    "condenser": {"kind": "NoOpCondenser"},
+                    "metadata": {},
+                }
+                for definition in spec.agent_definitions
+            ]
+        if spec.plugins:
+            payload["plugins"] = [{"source": plugin.source} for plugin in spec.plugins]
+        if spec.hook_config:
+            payload["hook_config"] = spec.hook_config
         if run:
             payload["initial_message"] = {
                 "role": "user",
@@ -426,6 +907,10 @@ class OpenHandsRuntime:
     @classmethod
     def _event_type(cls, item: dict[str, Any]) -> RuntimeEventType:
         kind = str(item.get("kind") or "")
+        if kind == "CondensationRequest":
+            return "CONDENSATION_REQUESTED"
+        if kind == "Condensation":
+            return "CONDENSATION_COMPLETED"
         if kind == "MessageEvent":
             return "MESSAGE"
         if kind == "ActionEvent":
@@ -483,6 +968,20 @@ class OpenHandsRuntime:
             "source": item.get("source"),
             "content": cls._event_text(item),
         }
+        if kind == "CondensationRequest":
+            payload["event_name"] = kind
+        elif kind == "Condensation":
+            payload.update(
+                {
+                    "event_name": kind,
+                    "forgotten_event_ids": sorted(
+                        str(value) for value in item.get("forgotten_event_ids", [])
+                    ),
+                    "summary": cls._safe_event_detail(item.get("summary")),
+                    "summary_offset": item.get("summary_offset"),
+                    "llm_response_id": item.get("llm_response_id"),
+                }
+            )
         raw_detail = (
             item.get("action")
             if kind == "ActionEvent"
@@ -492,14 +991,64 @@ class OpenHandsRuntime:
         )
         if isinstance(raw_detail, dict):
             detail = cast(dict[str, Any], raw_detail)
-            payload["event_name"] = str(detail.get("kind") or kind)
+            event_name = str(detail.get("kind") or kind)
+            private_detail_fields = {"kind", "message", "thought"}
+            if kind == "ActionEvent" and event_name == "TaskAction":
+                # A native Task prompt may contain credentials or private input.
+                # OpenHands owns that execution payload; FlowWeave persists only
+                # the governed lifecycle projection and stable event identities.
+                private_detail_fields.add("prompt")
+            payload["event_name"] = event_name
             payload["details"] = cls._safe_event_detail(
-                {
-                    key: value
-                    for key, value in detail.items()
-                    if key not in {"kind", "message", "thought"}
-                }
+                {key: value for key, value in detail.items() if key not in private_detail_fields}
             )
+            if kind == "ActionEvent" and event_name == "TaskAction":
+                payload["runtime_task"] = {
+                    "phase": "REQUESTED",
+                    "action_event_id": str(item.get("id") or ""),
+                    "tool_call_id": str(item.get("tool_call_id") or ""),
+                    "llm_response_id": str(item.get("llm_response_id") or ""),
+                    "subagent_type": str(detail.get("subagent_type") or "general-purpose"),
+                    "description": cls._safe_event_detail(detail.get("description")),
+                    "resume_task_id": cls._safe_event_detail(detail.get("resume")),
+                }
+            elif kind == "ObservationEvent" and event_name == "TaskObservation":
+                status = str(detail.get("status") or "error").lower()
+                payload["runtime_task"] = {
+                    "phase": (
+                        "COMPLETED"
+                        if status == "completed" and not bool(detail.get("is_error"))
+                        else "ERROR"
+                    ),
+                    "action_event_id": str(item.get("action_id") or ""),
+                    "observation_event_id": str(item.get("id") or ""),
+                    "tool_call_id": str(item.get("tool_call_id") or ""),
+                    "task_id": str(detail.get("task_id") or "unknown"),
+                    "subagent_type": str(detail.get("subagent") or "unknown"),
+                    "status": status,
+                }
+            elif kind == "ActionEvent" and event_name == "InvokeSkillAction":
+                payload["runtime_skill"] = {
+                    "phase": "INVOKED",
+                    "skill_name": str(detail.get("name") or ""),
+                    "action_event_id": str(item.get("id") or ""),
+                    "tool_call_id": str(item.get("tool_call_id") or ""),
+                    "llm_response_id": str(item.get("llm_response_id") or ""),
+                }
+            elif kind == "ObservationEvent" and event_name == "InvokeSkillObservation":
+                payload["runtime_skill"] = {
+                    "phase": "LOADED" if not bool(detail.get("is_error")) else "ERROR",
+                    "skill_name": str(detail.get("skill_name") or ""),
+                    "action_event_id": str(item.get("action_id") or ""),
+                    "observation_event_id": str(item.get("id") or ""),
+                    "tool_call_id": str(item.get("tool_call_id") or ""),
+                }
+        if kind == "MessageEvent":
+            activated = item.get("activated_skills")
+            if isinstance(activated, list):
+                activated_values = cast(list[object], activated)
+                activated_names = [name for name in activated_values[:100] if isinstance(name, str)]
+                payload["activated_skills"] = [name[:200] for name in activated_names]
         return payload
 
     def _events(
@@ -562,6 +1111,178 @@ class OpenHandsRuntime:
         # arbitrary history into the current turn.
         next_cursor = str(items[-1].get("id")) if items and items[-1].get("id") else cursor
         return items, next_cursor
+
+    @staticmethod
+    def _canonical_digest(value: object) -> str:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _active_branch(
+        events: list[dict[str, Any]], leaf_event_id: str | None
+    ) -> list[dict[str, Any]]:
+        """Reproduce ConversationState.active_branch from the public event tree."""
+
+        if not events or not leaf_event_id:
+            return events
+        by_id = {str(item.get("id")): item for item in events if item.get("id")}
+        leaf = by_id.get(leaf_event_id)
+        if leaf is None:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands active branch leaf is missing from the event log",
+                502,
+                {"leaf_event_id": leaf_event_id},
+            )
+        # Pre-tree conversations have no parent ids. OpenHands treats their
+        # persisted linear log as the active branch.
+        if not any(item.get("parent_id") is not None for item in events):
+            return events[: events.index(leaf) + 1]
+        branch: list[dict[str, Any]] = []
+        current = leaf
+        visited: set[str] = set()
+        while True:
+            event_id = str(current.get("id") or "")
+            if not event_id or event_id in visited:
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands event tree contains an invalid active branch",
+                    502,
+                )
+            visited.add(event_id)
+            branch.append(current)
+            parent_id = current.get("parent_id")
+            if parent_id in {None, "__root__"}:
+                break
+            current = by_id.get(str(parent_id))
+            if current is None:
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands active branch parent is missing from the event log",
+                    502,
+                    {"parent_id": str(parent_id)},
+                )
+        branch.reverse()
+        return branch
+
+    @classmethod
+    def _pending_actions(
+        cls, events: list[dict[str, Any]], leaf_event_id: str | None
+    ) -> tuple[RuntimePendingAction, ...]:
+        """Match OpenHands 1.40.0 ConversationState.get_unmatched_actions."""
+
+        branch = cls._active_branch(events, leaf_event_id)
+        observed_action_ids: set[str] = set()
+        observed_tool_call_ids: set[str] = set()
+        pending: list[RuntimePendingAction] = []
+        for event in reversed(branch):
+            kind = str(event.get("kind") or "")
+            if kind in {"ObservationEvent", "UserRejectObservation"}:
+                action_id = str(event.get("action_id") or "")
+                if action_id:
+                    observed_action_ids.add(action_id)
+                continue
+            if kind == "AgentErrorEvent":
+                tool_call_id = str(event.get("tool_call_id") or "")
+                if tool_call_id:
+                    observed_tool_call_ids.add(tool_call_id)
+                continue
+            if kind != "ActionEvent" or not isinstance(event.get("action"), dict):
+                continue
+            action_id = str(event.get("id") or "")
+            tool_call_id = str(event.get("tool_call_id") or "")
+            if action_id in observed_action_ids or tool_call_id in observed_tool_call_ids:
+                continue
+            raw_action = cast(dict[str, Any], event["action"])
+            tool_name = str(event.get("tool_name") or raw_action.get("kind") or "")
+            canonical = {
+                "action_id": action_id,
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "action": raw_action,
+            }
+            safe_arguments = cls._safe_event_detail(
+                {key: value for key, value in raw_action.items() if key != "kind"}
+            )
+            pending.insert(
+                0,
+                RuntimePendingAction(
+                    action_id=action_id,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    arguments=(
+                        cast(dict[str, Any], safe_arguments)
+                        if isinstance(safe_arguments, dict)
+                        else {}
+                    ),
+                    security_risk=str(event.get("security_risk") or "UNKNOWN"),
+                    summary=str(event.get("summary") or ""),
+                    digest=cls._canonical_digest(canonical),
+                ),
+            )
+        return tuple(pending)
+
+    def get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        state = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        if str(state.get("execution_status") or "").lower() != "waiting_for_confirmation":
+            return None
+        leaf = str(state.get("leaf_event_id") or "") or None
+        events, cursor = self._events(
+            handle.conversation_id,
+            None,
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        actions = self._pending_actions(events, leaf)
+        if not actions:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands is waiting for confirmation without pending actions",
+                502,
+            )
+        digest = self._canonical_digest([action.digest for action in actions])
+        return RuntimePendingConfirmation(digest, actions, cursor or leaf)
+
+    def respond_to_confirmation(
+        self,
+        handle: RuntimeHandle,
+        expected_pending_digest: str,
+        accept: bool,
+        reason: str,
+    ) -> RuntimeResult:
+        pending = self.get_pending_confirmation(handle)
+        if pending is None or pending.pending_actions_digest != expected_pending_digest:
+            raise DomainError(
+                "RUNTIME_CONFIRMATION_DRIFTED",
+                "The OpenHands pending action batch changed; refresh before deciding",
+                409,
+                {
+                    "expected_pending_digest": expected_pending_digest,
+                    "actual_pending_digest": (
+                        pending.pending_actions_digest if pending is not None else None
+                    ),
+                },
+            )
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/events/respond_to_confirmation",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={"accept": accept, "reason": reason},
+        )
+        return RuntimeResult(status="RUNNING", cursor=pending.cursor)
 
     def _outputs(self, conversation_id: str, text: str) -> dict[str, tuple[str, str]]:
         expected = {item["field_key"] for item in self._contracts.get(conversation_id, [])}
@@ -648,11 +1369,13 @@ class OpenHandsRuntime:
         return None
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
         items, cursor = self._events(
             handle.conversation_id,
             handle.cursor,
-            base_url=self._base_url_for_handle(handle),
-            session_api_key=self._session_key_for_handle(handle),
+            base_url=base_url,
+            session_api_key=session_api_key,
         )
         events = tuple(
             RuntimeEvent(
@@ -662,11 +1385,137 @@ class OpenHandsRuntime:
             )
             for index, item in enumerate(items, start=1)
         )
+        state = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        state_cursor = str(state.get("leaf_event_id") or cursor or handle.cursor or "") or None
         return RuntimeEventBatch(
             events=events,
             cursor=cursor,
             result=self._result_from_events(handle.conversation_id, items, cursor),
+            task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
         )
+
+    @classmethod
+    def _task_usage_snapshots(
+        cls, state: dict[str, Any], *, source_cursor: str | None
+    ) -> tuple[RuntimeTaskUsageSnapshot, ...]:
+        """Normalize only the formal cumulative Task metrics exposed by 1.40.0."""
+
+        stats = state.get("stats")
+        if stats is None:
+            return ()
+        if not isinstance(stats, dict):
+            raise DomainError(
+                "RUNTIME_TASK_USAGE_PROTOCOL_DRIFT",
+                "OpenHands Conversation stats have an invalid Task usage envelope",
+                502,
+            )
+        stats_map = cast(dict[str, object], stats)
+        raw_usage_map = stats_map.get("usage_to_metrics", {})
+        if not isinstance(raw_usage_map, dict):
+            raise DomainError(
+                "RUNTIME_TASK_USAGE_PROTOCOL_DRIFT",
+                "OpenHands Conversation stats have an invalid Task usage envelope",
+                502,
+            )
+        snapshots: list[RuntimeTaskUsageSnapshot] = []
+        for usage_id, raw_metrics in sorted(
+            cast(dict[object, object], raw_usage_map).items(),
+            key=lambda item: str(item[0]),
+        ):
+            key = str(usage_id)
+            if not key.startswith("task:"):
+                continue
+            task_id = key.removeprefix("task:")
+            if not task_id or len(task_id) > 100 or not isinstance(raw_metrics, dict):
+                raise DomainError(
+                    "RUNTIME_TASK_USAGE_PROTOCOL_DRIFT",
+                    "OpenHands Task usage has an invalid identity or metrics snapshot",
+                    502,
+                    {"usage_id": key[:120]},
+                )
+            metrics = cast(dict[str, object], raw_metrics)
+            raw_tokens = metrics.get("accumulated_token_usage")
+            if raw_tokens is not None and not isinstance(raw_tokens, dict):
+                raise DomainError(
+                    "RUNTIME_TASK_USAGE_PROTOCOL_DRIFT",
+                    "OpenHands Task token usage snapshot is invalid",
+                    502,
+                    {"task_id": task_id},
+                )
+            tokens = cast(dict[str, object], raw_tokens) if isinstance(raw_tokens, dict) else {}
+
+            def nonnegative_int(
+                field: str,
+                *,
+                token_snapshot: dict[str, object] = tokens,
+                runtime_task_id: str = task_id,
+            ) -> int:
+                value = token_snapshot.get(field, 0)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise DomainError(
+                        "RUNTIME_TASK_USAGE_PROTOCOL_DRIFT",
+                        "OpenHands Task token usage contains an invalid counter",
+                        502,
+                        {"task_id": runtime_task_id, "field": field},
+                    )
+                return value
+
+            raw_cost = metrics.get("accumulated_cost", 0.0)
+            if (
+                isinstance(raw_cost, bool)
+                or not isinstance(raw_cost, int | float)
+                or not math.isfinite(float(raw_cost))
+                or float(raw_cost) < 0
+            ):
+                raise DomainError(
+                    "RUNTIME_TASK_USAGE_PROTOCOL_DRIFT",
+                    "OpenHands Task usage contains an invalid accumulated cost",
+                    502,
+                    {"task_id": task_id},
+                )
+            model_name = str(metrics.get("model_name") or "default")[:200]
+            accumulated_cost = float(raw_cost)
+            prompt_tokens = nonnegative_int("prompt_tokens")
+            completion_tokens = nonnegative_int("completion_tokens")
+            cache_read_tokens = nonnegative_int("cache_read_tokens")
+            cache_write_tokens = nonnegative_int("cache_write_tokens")
+            reasoning_tokens = nonnegative_int("reasoning_tokens")
+            context_window = nonnegative_int("context_window")
+            per_turn_tokens = nonnegative_int("per_turn_token")
+            normalized: dict[str, str | float | int] = {
+                "task_id": task_id,
+                "model_name": model_name,
+                "accumulated_cost": accumulated_cost,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "context_window": context_window,
+                "per_turn_tokens": per_turn_tokens,
+            }
+            snapshots.append(
+                RuntimeTaskUsageSnapshot(
+                    task_id=task_id,
+                    source_cursor=source_cursor,
+                    digest=cls._canonical_digest(normalized),
+                    model_name=model_name,
+                    accumulated_cost=accumulated_cost,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    context_window=context_window,
+                    per_turn_tokens=per_turn_tokens,
+                )
+            )
+        return tuple(snapshots)
 
     async def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]:
         """Relay transient visible-text deltas without persisting model reasoning."""
@@ -694,15 +1543,21 @@ class OpenHandsRuntime:
             f"{base_url.replace('https://', 'wss://').replace('http://', 'ws://')}"
             f"/sockets/events/{handle.conversation_id}"
         )
-        headers = {"X-Session-API-Key": self._session_key_for_handle(handle)}
         async with connect(
             websocket_url,
-            additional_headers=headers,
             open_timeout=10,
             ping_interval=20,
             ping_timeout=20,
             max_size=2 * 1024 * 1024,
         ) as upstream:
+            await upstream.send(
+                json.dumps(
+                    {
+                        "type": "auth",
+                        "session_api_key": self._session_key_for_handle(handle),
+                    }
+                )
+            )
             async for raw in upstream:
                 if not isinstance(raw, str):
                     continue
@@ -716,6 +1571,169 @@ class OpenHandsRuntime:
                 visible = self._visible_stream_event(event)
                 if visible is not None:
                     yield visible
+
+    def _wait_for_wakeup_frame(
+        self,
+        handle: RuntimeHandle,
+        *,
+        channel: Literal["CONVERSATION", "BASH"],
+        timeout_seconds: float,
+    ) -> bool:
+        route = self._environment_route(handle.job_id)
+        if route is not None and controller_is_remote(self.settings):
+            if not handle.runtime_resource_id or not handle.runtime_resource_name:
+                raise DomainError(
+                    "RUNTIME_WAKEUP_UNAVAILABLE",
+                    "The isolated Runtime wake-up has no verified sandbox binding",
+                    409,
+                )
+            return DockerControllerClient(self.settings).wait_runtime_event(
+                resource_name=handle.runtime_resource_name,
+                resource_id=handle.runtime_resource_id,
+                conversation_id=handle.conversation_id if channel == "CONVERSATION" else "",
+                channel=channel,
+                timeout_seconds=timeout_seconds,
+            )
+
+        base_url = self._base_url_for_handle(handle)
+        path = (
+            f"/sockets/events/{handle.conversation_id}"
+            if channel == "CONVERSATION"
+            else "/sockets/bash-events"
+        )
+        websocket_url = (
+            f"{base_url.replace('https://', 'wss://').replace('http://', 'ws://')}{path}"
+        )
+        with sync_connect(
+            websocket_url,
+            open_timeout=10,
+            ping_interval=20,
+            ping_timeout=20,
+            max_size=2 * 1024 * 1024,
+        ) as upstream:
+            upstream.send(
+                json.dumps(
+                    {
+                        "type": "auth",
+                        "session_api_key": self._session_key_for_handle(handle),
+                    }
+                )
+            )
+            try:
+                upstream.recv(timeout=timeout_seconds)
+            except TimeoutError:
+                return False
+            return True
+
+    @staticmethod
+    def _bash_event_identity(raw: object) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        event = cast(dict[str, object], raw)
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            return None
+        return {
+            "event_id": event_id,
+            "kind": str(event.get("kind") or "UNKNOWN")[:80],
+            "timestamp": str(event.get("timestamp") or "")[:80],
+            "command_id": str(event.get("command_id") or "")[:200] or None,
+            "order": event.get("order") if isinstance(event.get("order"), int) else None,
+            "exit_code": (
+                event.get("exit_code") if isinstance(event.get("exit_code"), int) else None
+            ),
+            "actor": "HUMAN_OR_SYSTEM",
+            "source": "DIRECT_BASH",
+        }
+
+    def _read_bash_event_identities(
+        self, handle: RuntimeHandle, cursor: str | None
+    ) -> tuple[tuple[dict[str, Any], ...], str | None]:
+        """Read a bounded Bash page after the last stable timestamp/event identity."""
+        cursor_timestamp = ""
+        cursor_event_id = ""
+        if cursor:
+            try:
+                cursor_value = cast(object, json.loads(cursor))
+            except ValueError:
+                cursor_value = None
+            if isinstance(cursor_value, dict):
+                cursor_item = cast(dict[str, object], cursor_value)
+                cursor_timestamp = str(cursor_item.get("timestamp") or "")
+                cursor_event_id = str(cursor_item.get("event_id") or "")
+        data = self._request(
+            "GET",
+            "/api/bash/bash_events/search",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            params=(
+                {"timestamp__gte": cursor_timestamp, "limit": 100}
+                if cursor_timestamp
+                else {"limit": 100}
+            ),
+        )
+        identities = tuple(
+            item
+            for raw in cast(list[object], data.get("items") or [])
+            for item in [self._bash_event_identity(raw)]
+            if item is not None
+            and (str(item["timestamp"]), str(item["event_id"]))
+            > (cursor_timestamp, cursor_event_id)
+        )
+        if len(identities) >= 100:
+            raise DomainError(
+                "RUNTIME_BASH_COMPENSATION_BACKLOG",
+                "Bash REST compensation exceeded one bounded page; retry after review",
+                409,
+            )
+        next_cursor = (
+            json.dumps(
+                {
+                    "timestamp": identities[-1]["timestamp"],
+                    "event_id": identities[-1]["event_id"],
+                },
+                separators=(",", ":"),
+            )
+            if identities
+            else cursor
+        )
+        return identities, next_cursor
+
+    def wait_for_wakeup(
+        self,
+        handle: RuntimeHandle,
+        *,
+        channel: Literal["CONVERSATION", "BASH"],
+        timeout_seconds: float,
+        cursor: str | None = None,
+    ) -> RuntimeWakeup:
+        try:
+            notified = self._wait_for_wakeup_frame(
+                handle,
+                channel=channel,
+                timeout_seconds=timeout_seconds,
+            )
+        except (
+            OSError,
+            TimeoutError,
+            ConnectionClosed,
+            InvalidHandshake,
+            DockerControllerError,
+        ) as exc:
+            raise DomainError(
+                "RUNTIME_WAKEUP_UNAVAILABLE",
+                "OpenHands Runtime wake-up channel is unavailable; REST polling remains active",
+                503,
+            ) from exc
+        if channel == "CONVERSATION":
+            return RuntimeWakeup(channel=channel, notified=notified, cursor=cursor)
+        events, next_cursor = self._read_bash_event_identities(handle, cursor)
+        return RuntimeWakeup(
+            channel=channel,
+            notified=notified or bool(events),
+            cursor=next_cursor,
+            events=events,
+        )
 
     @staticmethod
     def _visible_stream_event(event: dict[str, object]) -> dict[str, Any] | None:
@@ -774,8 +1792,7 @@ class OpenHandsRuntime:
             )
         if status == "waiting_for_confirmation":
             return RuntimeResult(
-                status="HUMAN_INPUT_REQUIRED",
-                human_question="Agent 请求人工确认后继续执行",
+                status="CONFIRMATION_REQUIRED",
                 cursor=cursor,
             )
         return RuntimeResult(status="RUNNING", cursor=cursor)
@@ -832,6 +1849,136 @@ class OpenHandsRuntime:
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
             json={},
+        )
+
+    def run(self, handle: RuntimeHandle) -> RuntimeResult:
+        """Start the native OpenHands loop without fabricating a user message."""
+
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        state = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        status = str(state.get("execution_status") or "").lower()
+        # Only IDLE/PAUSED are resumable. A worker may crash after a rejected
+        # batch has already resumed and completed but before FlowWeave commits
+        # its CAS; re-triggering FINISHED here would execute the turn twice.
+        # RUNNING and terminal states are reconciled by the normal poll path.
+        if status in {"idle", "paused"}:
+            self._request(
+                "POST",
+                f"/api/conversations/{handle.conversation_id}/run",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                json={},
+            )
+        cursor = str(state.get("leaf_event_id") or handle.cursor or "") or None
+        return RuntimeResult(status="RUNNING", cursor=cursor)
+
+    def condense(self, handle: RuntimeHandle) -> RuntimeResult:
+        """Request native condensation; completion is observed via event cursor."""
+
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/condense",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+        # HTTP success only means CondensationRequest was accepted. The durable
+        # Condensation event is projected by read_events after the agent step.
+        return RuntimeResult(status="RUNNING", cursor=handle.cursor)
+
+    def fork_conversation(
+        self,
+        handle: RuntimeHandle,
+        *,
+        target_conversation_id: str,
+        title: str,
+        from_event_id: str | None,
+        expected_source_leaf_event_id: str,
+        reset_metrics: bool,
+    ) -> RuntimeForkResult:
+        """Create or recover one native fork with a caller-owned identity."""
+
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        source_state = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        source_leaf = str(source_state.get("leaf_event_id") or "") or None
+        source_status = str(source_state.get("execution_status") or "").lower()
+        if source_leaf != expected_source_leaf_event_id:
+            raise DomainError(
+                "RUNTIME_FORK_HEAD_DRIFT",
+                "OpenHands source HEAD changed before the native fork",
+                409,
+            )
+        if source_status in {"starting", "running", "executing", "stopping"}:
+            raise DomainError(
+                "RUNTIME_FORK_SOURCE_BUSY",
+                "OpenHands source conversation is still executing",
+                409,
+            )
+        payload: dict[str, object] = {
+            "id": target_conversation_id,
+            "title": title,
+            "reset_metrics": reset_metrics,
+        }
+        if from_event_id is not None:
+            payload["from_event_id"] = from_event_id
+        try:
+            created = self._request(
+                "POST",
+                f"/api/conversations/{handle.conversation_id}/fork",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                json=payload,
+            )
+        except DomainError as exc:
+            if not (exc.code == "EXECUTOR_UNAVAILABLE" and exc.details.get("status_code") == 409):
+                raise
+            created = self._request(
+                "GET",
+                f"/api/conversations/{target_conversation_id}",
+                base_url=base_url,
+                session_api_key=session_api_key,
+            )
+
+        created_id = str(created.get("id") or "")
+        source_id = str(created.get("forked_from_conversation_id") or "")
+        raw_source_event = created.get("forked_from_event_id")
+        source_event = str(raw_source_event) if raw_source_event is not None else None
+        leaf = str(created.get("leaf_event_id") or "") or None
+        if (
+            created_id != target_conversation_id
+            or source_id != handle.conversation_id
+            or source_event != from_event_id
+            or leaf != (from_event_id or expected_source_leaf_event_id)
+        ):
+            raise DomainError(
+                "RUNTIME_FORK_IDENTITY_DRIFT",
+                "OpenHands returned a fork with mismatched source or event identity",
+                409,
+            )
+        fork_handle = RuntimeHandle(
+            job_id=handle.job_id,
+            conversation_id=created_id,
+            cursor=leaf,
+            runtime_resource_id=handle.runtime_resource_id,
+            runtime_resource_name=handle.runtime_resource_name,
+        )
+        return RuntimeForkResult(
+            handle=fork_handle,
+            source_conversation_id=source_id,
+            source_event_id=source_event,
+            leaf_event_id=leaf,
+            reset_metrics=reset_metrics,
         )
 
     def resume(

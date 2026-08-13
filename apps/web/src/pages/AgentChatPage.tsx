@@ -6,8 +6,9 @@ import '../agent-chat.css';
 import { api, messageAttachmentUrl, randomId, subscribeToConversationStream, subscribeToRun, workspaceImageUrl } from '../api/client';
 import { AgentRuntimeSidebar } from '../components/AgentRuntimeSidebar';
 import { useProductDialog } from '../components/ProductDialogContext';
+import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentConversation, AgentMessage, AgentMessageAttachmentPart, MessageAttachmentInput, NodeAttempt, ProviderModel } from '../types';
+import type { AgentConversation, AgentMessage, AgentMessageAttachmentPart, MessageAttachmentInput, NodeAttempt, ProviderModel, RuntimeSubagentTask } from '../types';
 
 const MAX_ATTACHMENT_COUNT = 4;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -17,9 +18,9 @@ interface AttachmentPreview { messageId: string; item: AgentMessageAttachmentPar
 const STATE_LABELS: Record<string, string> = {
   CREATING: '创建中', IDLE: '在线', GENERATING: 'Agent 生成中',
   STOPPING: '正在停止',
-  WAITING_HUMAN: '等待你的回复', WAITING_SUBAGENTS: '等待子智能体', FAILED: '连接失败', READ_ONLY: '历史会话',
+  WAITING_HUMAN: '等待你的回复', WAITING_CONFIRMATION: '等待工具批次确认', FAILED: '连接失败', READ_ONLY: '历史会话',
 };
-const STARTED_STATES = new Set(['WAITING_START_CONFIRMATION', 'EXECUTING', 'WAITING_HUMAN', 'END_GATES', 'END_BLOCKED', 'WAITING_ACCEPTANCE']);
+const STARTED_STATES = new Set(['WAITING_START_CONFIRMATION', 'EXECUTING', 'WAITING_HUMAN', 'WAITING_CONFIRMATION', 'END_GATES', 'END_BLOCKED', 'WAITING_ACCEPTANCE']);
 const conversationTitle = (title: string) => title.replace(/Attempt\s*(\d+)/gi, '第 $1 轮');
 const capabilityMarker = (_type: string, key: string) => `$${key}`;
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -199,11 +200,22 @@ function toolActivityKind(tool: Record<string, unknown>): ToolActivityKind {
 }
 
 function toolActivityStatus(tool: Record<string, unknown>, completed: boolean): ToolActivityStatus {
+  const runtimeTask = eventDetails(tool.runtime_task);
+  if (runtimeTask.phase === 'ERROR') return 'failed';
+  if (runtimeTask.phase === 'COMPLETED') return 'completed';
   if (!completed) return 'running';
   return eventDetails(tool.details).is_error === true ? 'failed' : 'completed';
 }
 
 function toolActivityLabel(tool: Record<string, unknown>, status: ToolActivityStatus) {
+  if (toolActivityKind(tool) === 'delegate' && Object.keys(eventDetails(tool.runtime_task)).length) {
+    return {
+      running: '子 Agent 执行中',
+      completed: '子 Agent 已完成',
+      failed: '子 Agent 执行失败',
+      ended: '子 Agent 执行已结束（无返回记录）',
+    }[status];
+  }
   const labels: Record<ToolActivityKind, Record<ToolActivityStatus, string>> = {
     read: { running: '正在读取文件', completed: '已读取文件', failed: '读取文件失败', ended: '读取已结束（无返回记录）' },
     create: { running: '正在创建文件', completed: '已创建文件', failed: '创建文件失败', ended: '创建已结束（无返回记录）' },
@@ -227,10 +239,15 @@ function toolActivityLabel(tool: Record<string, unknown>, status: ToolActivitySt
 function toolMatchIdentity(message: AgentMessage) {
   const tool = eventDetails(message.content.tool);
   const details = eventDetails(tool.details);
+  const runtimeTask = eventDetails(tool.runtime_task);
   const family = toolActivityKind(tool);
   const command = typeof details.command === 'string' ? details.command.trim() : '';
   const targetKeys = ['path', 'file_path', 'pattern', 'query', 'url', 'prompt', 'instruction', 'task_id'];
-  const target = targetKeys.map(key => details[key]).find(value => typeof value === 'string' && value.trim());
+  const target = [
+    runtimeTask.resume_task_id,
+    runtimeTask.subagent_type,
+    ...targetKeys.map(key => details[key]),
+  ].find(value => typeof value === 'string' && value.trim());
   return {
     family,
     command,
@@ -316,6 +333,13 @@ function shouldShowThinkingIndicator(conversation: AgentConversation | undefined
 
 function activityPreview(tool: Record<string, unknown>, content: string, details: Record<string, unknown>) {
   const kind = toolActivityKind(tool);
+  const runtimeTask = eventDetails(tool.runtime_task);
+  if (kind === 'delegate' && Object.keys(runtimeTask).length) {
+    const description = typeof runtimeTask.description === 'string' ? runtimeTask.description.trim() : '';
+    const subagent = typeof runtimeTask.subagent_type === 'string' ? runtimeTask.subagent_type.trim() : '';
+    const taskId = typeof runtimeTask.task_id === 'string' ? runtimeTask.task_id.trim() : '';
+    return [description || subagent, taskId].filter(Boolean).join(' · ');
+  }
   const preferred: Partial<Record<ToolActivityKind, string[]>> = {
     read: ['path', 'file_path'],
     create: ['path', 'file_path'],
@@ -338,15 +362,29 @@ function activityPreview(tool: Record<string, unknown>, content: string, details
   return content.split('\n')[0] || (Object.keys(details).length ? `${Object.keys(details).length} 项详情` : '');
 }
 
-function SubagentSummary({ subagents }: { subagents: AgentConversation[] }) {
+function SubagentSummary({ subagents }: { subagents: RuntimeSubagentTask[] }) {
   if (!subagents.length) return null;
-  const running = subagents.filter(item => !['READ_ONLY', 'FAILED'].includes(item.state)).length;
-  const failed = subagents.filter(item => item.state === 'FAILED').length;
+  const running = subagents.filter(item => item.state === 'REQUESTED').length;
+  const failed = subagents.filter(item => item.state === 'ERROR').length;
   const status = running ? `${subagents.length} · ${running} 运行中` : failed ? `${subagents.length} · ${failed} 失败` : `${subagents.length} 完成`;
+  const cost = subagents.reduce((total, item) => total + (item.usage?.accumulated_cost_usd ?? 0), 0);
   return <section className="subagent-summary"><h3>子智能体</h3><div><span className="subagent-avatars">{subagents.slice(0, 5).map((item, index) => {
-    const state = item.state === 'FAILED' ? 'failed' : item.state === 'READ_ONLY' ? 'completed' : 'running';
-    return <i key={item.id} className={state} title={`${item.title} · ${STATE_LABELS[item.state] ?? item.state}`} style={{ '--subagent-index': index } as React.CSSProperties}><Bot size={12}/></i>;
-  })}</span><b>{status}</b></div></section>;
+    const state = item.state === 'ERROR' ? 'failed' : item.state === 'COMPLETED' ? 'completed' : 'running';
+    return <i key={item.id} className={state} title={`${item.subagent_type} · ${item.native_status ?? item.state}`} style={{ '--subagent-index': index } as React.CSSProperties}><Bot size={12}/></i>;
+  })}</span><b>{status}{cost > 0 ? ` · $${cost.toFixed(4)}` : ''}</b></div></section>;
+}
+
+function CondensationAudit({ conversation }: { conversation: AgentConversation }) {
+  const condensations = conversation.runtime_condensations ?? [];
+  if (!condensations.length) return null;
+  return <section className="condensation-audit" aria-label="上下文压缩记录">
+    {condensations.map(item => item.event_type === 'REQUESTED'
+      ? <div className="condensation-audit-requested" key={item.id}><Sparkles size={14}/><span>OpenHands 已请求压缩会话上下文</span><time>{new Date(item.created_at).toLocaleTimeString()}</time></div>
+      : <details className="condensation-audit-completed" key={item.id}>
+          <summary><span><CheckCircle2 size={14}/><b>上下文压缩完成</b><small>摘要覆盖 {item.forgotten_event_ids.length} 个 Runtime 事件</small></span><time>{new Date(item.created_at).toLocaleTimeString()}</time><ChevronRight size={14}/></summary>
+          <div><p>这是 OpenHands 原生 Condensation 事实，不是普通聊天消息；原始消息仍保留在 FlowWeave。</p>{item.summary && <MarkdownMessage text={item.summary} messageId={`condensation-${item.id}`}/>}<dl><dt>摘要偏移</dt><dd>{item.summary_offset ?? '—'}</dd><dt>LLM 响应</dt><dd>{item.llm_response_id ?? '—'}</dd></dl></div>
+        </details>)}
+  </section>;
 }
 
 function ActivityMessage({ message, resultMessage, statusOverride }: { message: AgentMessage; resultMessage?: AgentMessage; statusOverride?: ToolActivityStatus }) {
@@ -408,14 +446,14 @@ function ActivityGroup({ messages, running, startedAt, completedAt }: { messages
   </details>;
 }
 
-function SubagentActivity({ subagents }: { subagents: AgentConversation[] }) {
+function SubagentActivity({ subagents }: { subagents: RuntimeSubagentTask[] }) {
   if (!subagents.length) return null;
-  const running = subagents.filter(item => !['READ_ONLY', 'FAILED'].includes(item.state)).length;
-  const failed = subagents.filter(item => item.state === 'FAILED').length;
+  const running = subagents.filter(item => item.state === 'REQUESTED').length;
+  const failed = subagents.filter(item => item.state === 'ERROR').length;
   const label = running ? '子 Agent 已开始工作' : failed ? '子 Agent 工作遇到问题' : '子 Agent 已完成工作';
   return <details className={`subagent-activity ${running ? 'running' : failed ? 'failed' : 'completed'}`}>
     <summary><span className="subagent-capsule"><Bot size={13}/><b>{label}</b><small>{running ? `${running} 个运行中` : `${subagents.length} 个`}</small></span><ChevronRight size={14}/></summary>
-    <div className="subagent-activity-list">{subagents.map(item => <article key={item.id}><span><Bot size={12}/></span><div><b>{conversationTitle(item.title)}</b>{item.delegation_instruction && <small>{item.delegation_instruction}</small>}</div><em>{STATE_LABELS[item.state] ?? item.state}</em></article>)}</div>
+    <div className="subagent-activity-list">{subagents.map(item => <article key={item.id}><span><Bot size={12}/></span><div><b>{item.description || item.subagent_type}</b><small>{item.runtime_task_id ? `${item.subagent_type} · ${item.runtime_task_id}` : item.subagent_type}</small>{item.usage && <small className={item.usage.budget_state === 'EXCEEDED' ? 'subagent-budget-exceeded' : undefined}>累计 ${item.usage.accumulated_cost_usd.toFixed(4)} · 输入 {item.usage.prompt_tokens.toLocaleString()} / 输出 {item.usage.completion_tokens.toLocaleString()} tokens{item.usage.budget_limit_usd != null ? ` · 预算 $${item.usage.budget_limit_usd.toFixed(4)}${item.usage.budget_state === 'EXCEEDED' ? '（已触达）' : ''}` : ''}</small>}{item.state === 'ERROR' && item.error_detail && <small>{item.error_detail}</small>}{item.state === 'COMPLETED' && item.result && <small>{item.result}</small>}</div><em>{item.state === 'REQUESTED' ? '运行中' : item.state === 'ERROR' ? '失败' : '完成'}</em></article>)}</div>
   </details>;
 }
 
@@ -454,7 +492,7 @@ function deliveryLabel(message: AgentMessage, conversationState?: AgentConversat
 function MessageBubble({ message, onRetry, onFork, onRevise, onPreview, final, conversationState, latestHuman, editable, forking, revising }: {
   message: AgentMessage;
   onRetry: (id: string) => void;
-  onFork: (message: AgentMessage) => void;
+  onFork: (message: AgentMessage, forkKind: 'RUNTIME' | 'SEMANTIC') => void;
   onRevise: (message: AgentMessage, text: string) => void;
   onPreview: (preview: AttachmentPreview) => void;
   final: boolean;
@@ -487,7 +525,7 @@ function MessageBubble({ message, onRetry, onFork, onRevise, onPreview, final, c
   >
     {message.source === 'PROGRAM' && <div className="message-avatar" aria-label={meta.label} title={meta.label}><SourceIcon source={message.source}/></div>}
     <div className="message-body"><header>{message.source !== 'HUMAN' && <b>{final ? '最终答复' : meta.label}</b>}<span>{new Date(message.created_at).toLocaleTimeString()}</span></header>{!!message.content.capability_refs?.length && <div className="message-capability-refs">{message.content.capability_refs.map(item => <span key={`${item.capability_type}-${item.capability_key}`}>{item.capability_type === 'SKILL' ? 'Skill' : 'MCP'} · {item.capability_key}</span>)}</div>}{editing ? <div className="message-revision-editor"><textarea autoFocus aria-label="编辑最近发送的消息" value={editedText} maxLength={20000} onChange={event => setEditedText(event.target.value)}/><small>重新发送会在当前会话中替换这一轮上下文；原附件和能力引用保持不变。</small><div><button type="button" className="ghost" disabled={revising} onClick={() => { setEditedText(text); setEditing(false); }}>取消</button><button type="button" className="primary" disabled={revising || !editedText.trim() || editedText.trim() === text} onClick={() => onRevise(message, editedText.trim())}>{revising ? '正在重建…' : '重新发送'}</button></div></div> : <>{text && (message.source === 'AGENT' ? <MarkdownMessage text={text} messageId={message.id}/> : <p>{text}</p>)}<MessageAttachmentList message={message} onPreview={onPreview}/></>}
-      {!editing && message.message_type === 'TEXT' && text && ((message.source === 'AGENT') || editable) && <div className="message-branch-actions">{editable && <button type="button" disabled={revising} onClick={() => { setEditedText(text); setEditing(true); }} title="编辑这条消息并在当前会话重新生成"><Pencil size={12}/>编辑重发</button>}{message.source === 'AGENT' && <button type="button" className="fork-action" disabled={forking} onClick={() => onFork(message)} title={forking ? '正在创建分支' : '从此分叉'} aria-label={forking ? '正在创建分支' : '从此分叉'}><GitFork size={14}/></button>}</div>}
+      {!editing && message.message_type === 'TEXT' && text && ((message.source === 'AGENT') || editable) && <div className="message-branch-actions">{editable && <button type="button" disabled={revising} onClick={() => { setEditedText(text); setEditing(true); }} title="编辑这条消息并在当前会话重新生成"><Pencil size={12}/>编辑重发</button>}{message.source === 'AGENT' && <><button type="button" className="fork-action" disabled={forking} onClick={() => onFork(message, 'RUNTIME')} title={forking ? '正在创建分支' : '创建原生 Runtime 分支'} aria-label={forking ? '正在创建分支' : '创建原生 Runtime 分支'}><GitFork size={14}/></button><button type="button" className="semantic-fork-action" disabled={forking} onClick={() => onFork(message, 'SEMANTIC')} title="仅复制可见文本；不继承 Runtime 状态">语义分支</button></>}</div>}
       {message.source !== 'AGENT' && <footer className={`delivery ${message.delivery_state.toLowerCase()}`}>{deliveryLabel(message, conversationState, latestHuman)}{message.delivery_state === 'FAILED' && <>{message.error_detail && <span>{message.error_code === 'RUNTIME_CONVERSATION_MISSING' || message.error_code === 'EXECUTOR_UNAVAILABLE' ? 'Agent 连接已失效，重试会自动重建' : message.error_detail}</span>}<button onClick={() => onRetry(message.id)}><RefreshCw size={12}/>重试并重连</button></>}</footer>}
     </div>
   </article>;
@@ -497,9 +535,9 @@ function MessageTimeline({ conversation, messages, streamingText, subagents, onR
   conversation?: AgentConversation;
   messages: AgentMessage[];
   streamingText?: string;
-  subagents: AgentConversation[];
+  subagents: RuntimeSubagentTask[];
   onRetry: (id: string) => void;
-  onFork: (message: AgentMessage) => void;
+  onFork: (message: AgentMessage, forkKind: 'RUNTIME' | 'SEMANTIC') => void;
   onRevise: (message: AgentMessage, text: string) => void;
   onPreview: (preview: AttachmentPreview) => void;
   forkingId?: string;
@@ -520,7 +558,7 @@ function MessageTimeline({ conversation, messages, streamingText, subagents, onR
   const [hoveredMarkerId, setHoveredMarkerId] = useState<string>();
   const [markerWavePosition, setMarkerWavePosition] = useState<number>();
   const [scrubbing, setScrubbing] = useState(false);
-  const answering = conversation?.state === 'GENERATING' || conversation?.state === 'WAITING_SUBAGENTS';
+  const answering = conversation?.state === 'GENERATING';
   const showThinking = !streamingText && shouldShowThinkingIndicator(conversation, messages);
   const timelineItems = groupTimelineMessages(messages);
   const userMessages = useMemo(() => messages.filter(message => message.source === 'HUMAN'), [messages]);
@@ -662,11 +700,12 @@ function MessageTimeline({ conversation, messages, streamingText, subagents, onR
       const message = item.message;
       return <MessageBubble key={item.id} message={message} onRetry={onRetry} onFork={onFork} onRevise={onRevise} onPreview={onPreview} editable={conversation?.editable_message_id === message.id} forking={message.id === forkingId} revising={message.id === revisingId} final={message.content.presentation === 'final'} conversationState={conversation?.state} latestHuman={message.id === latestInputId}/>;
     })}
+    {conversation && <CondensationAudit conversation={conversation}/>}
     {streamingText && <article className="agent-progress-message streaming" aria-live="polite"><MarkdownMessage text={streamingText} messageId={`stream-${conversation?.id ?? 'agent'}`}/><span className="streaming-caret" aria-hidden="true"/></article>}
     <SubagentActivity subagents={subagents}/>
     {showThinking && <div className="agent-thinking-indicator" role="status" aria-label="Agent 正在思考"><span>正在思考</span></div>}
     {conversation && <AgentActivityStatus conversation={conversation} messages={messages} retrying={retrying} onRetry={onRetry}/>}
-    {conversation && !messages.length && <div className="conversation-empty"><Bot size={26}/><b>当前轮次上下文已挂载</b><span>发送第一条消息开始协作。</span></div>}
+    {conversation && !messages.length && !conversation.runtime_condensations?.length && <div className="conversation-empty"><Bot size={26}/><b>当前轮次上下文已挂载</b><span>发送第一条消息开始协作。</span></div>}
     {!conversation && <div className="conversation-empty"><Workflow size={26}/><b>尚无可用会话</b><span>本轮开始执行后将自动创建默认会话。</span></div>}
     </div></div>{messageMarkers.length > 0 && <nav
       ref={navigatorRef}
@@ -786,9 +825,6 @@ function AgentActivityStatus({ conversation, messages, retrying, onRetry }: { co
     title = 'Agent 正在等待你的回复';
     detail = '补充信息后，本轮执行会从当前上下文继续。';
     icon = <Clock3 size={15}/>;
-  } else if (conversation.state === 'WAITING_SUBAGENTS') {
-    title = '正在等待子 Agent 完成';
-    detail = '子 Agent 正在并行处理已分配的任务，结果会自动回到当前对话。';
   } else {
     return null;
   }
@@ -852,7 +888,7 @@ function RuntimeSelectionMenu({ models, modelName, reasoningEffort, disabled, on
   </div>;
 }
 
-function ContextPanel({ attempt, nodeName, node, runName, messages, subagents, conversation, onPreview }: { attempt: NodeAttempt; nodeName: string; node?: { asset: { executor: { model_name?: string | null } | null; workspace_ref?: string; capabilities: Array<{ capability_type: string; capability_key: string }> } }; runName: string; messages: AgentMessage[]; subagents: AgentConversation[]; conversation?: AgentConversation; onPreview: (preview: AttachmentPreview) => void }) {
+function ContextPanel({ attempt, nodeName, node, runName, messages, subagents, conversation, onPreview }: { attempt: NodeAttempt; nodeName: string; node?: { asset: { executor: { model_name?: string | null } | null; workspace_ref?: string; capabilities: Array<{ capability_type: string; capability_key: string }> } }; runName: string; messages: AgentMessage[]; subagents: RuntimeSubagentTask[]; conversation?: AgentConversation; onPreview: (preview: AttachmentPreview) => void }) {
   const attachments = messages.flatMap(message => messageAttachments(message).map(item => ({ message, item })));
   const urls = [...new Set(messages.filter(message => message.source === 'HUMAN').flatMap(message => messageText(message).match(/https?:\/\/[^\s<>"']+/g) ?? []).map(value => value.replace(/[()[\]{},.;:!?，。；：！？]+$/, '')))];
   const collaboration = conversation?.kind === 'HUMAN_CREATED';
@@ -879,7 +915,7 @@ export function AgentChatPage() {
   const conversations = conversationsQuery.data ?? [];
   const selected = conversations.find(item => item.id === selectedConversationId) ?? conversations[0];
   const messagesQuery = useQuery({ queryKey: ['conversation-messages', selected?.id], queryFn: () => api.conversationMessages(selected!.id), enabled: Boolean(selected), refetchInterval: selected?.state === 'GENERATING' || selected?.state === 'CREATING' || selected?.state === 'STOPPING' ? 1500 : 4000 });
-  const subagentsQuery = useQuery({ queryKey: ['conversation-subagents', selected?.id], queryFn: () => api.conversationSubagents(selected!.id), enabled: Boolean(selected), refetchInterval: selected?.state === 'WAITING_SUBAGENTS' ? 1500 : 4000 });
+  const subagentsQuery = useQuery({ queryKey: ['conversation-subagents', selected?.id], queryFn: () => api.conversationSubagents(selected!.id), enabled: Boolean(selected), refetchInterval: query => query.state.data?.some(item => item.state === 'REQUESTED') ? 1500 : 4000 });
   const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['attempt-conversations', selectedAttemptId] });
     if (selected?.id) {
@@ -956,9 +992,9 @@ export function AgentChatPage() {
     },
   });
   const forkMutation = useMutation({
-    mutationFn: ({ message }: { message: AgentMessage }) => {
+    mutationFn: ({ message, forkKind }: { message: AgentMessage; forkKind: 'RUNTIME' | 'SEMANTIC' }) => {
       if (!selected) throw new Error('当前没有可分叉的会话。');
-      return api.forkConversationMessage(message.id, selected.state_version);
+      return api.forkConversationMessage(message.id, selected.state_version, forkKind);
     },
     onSuccess: conversation => {
       qc.setQueryData<AgentConversation[]>(['attempt-conversations', selectedAttemptId], current => current?.some(item => item.id === conversation.id) ? current : [...(current ?? []), conversation]);
@@ -1027,12 +1063,16 @@ export function AgentChatPage() {
     if (!selected || selected.state !== 'GENERATING') return;
     stopMutation.mutate(selected);
   };
-  const forkFrom = (message: AgentMessage) => {
+  const forkFrom = (message: AgentMessage, forkKind: 'RUNTIME' | 'SEMANTIC') => {
+    const semantic = forkKind === 'SEMANTIC';
     void dialog.confirm({
-      title: '从此消息创建新会话？',
-      message: '该消息及之前的历史会被复制到独立会话；原会话不会改变。',
-      confirmLabel: '创建分支',
-    }).then(confirmed => { if (confirmed) forkMutation.mutate({ message }); });
+      title: semantic ? '创建语义分支？' : '创建原生 Runtime 分支？',
+      message: semantic
+        ? '语义分支只复制截至此消息的可见文本，不继承 Tool/Observation、Agent state、已激活 Skill、Condensation、usage stats 或 Runtime HEAD。它不是高保真历史分支；原会话不会改变。'
+        : '原生分支从所选 Runtime event 继承完整上下文与状态；如果 Runtime 身份不可用，系统会报错，不会静默降级为语义分支。',
+      confirmLabel: semantic ? '确认状态损失并创建' : '创建原生分支',
+      tone: semantic ? 'danger' : undefined,
+    }).then(confirmed => { if (confirmed) forkMutation.mutate({ message, forkKind }); });
   };
   const selectCapability = (type: string, key: string) => { if (!selected) return; const marker = capabilityMarker(type, key); let next = draft; if (commandMatch) { const markerStart = (commandMatch.index ?? 0) + commandMatch[1].length; next = `${draft.slice(0, markerStart)}${marker} `; } else if (!new RegExp(`(^|\\s)${escapeRegExp(marker)}(?=\\s|$)`).test(draft)) { next = `${draft}${draft && !draft.endsWith(' ') ? ' ' : ''}${marker} `; } setDrafts(old => ({ ...old, [selected.id]: next })); setSuggestionIndex(0); };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (commandSuggestions.length) { if (event.key === 'ArrowDown') { event.preventDefault(); setSuggestionIndex(index => (index + 1) % commandSuggestions.length); return; } if (event.key === 'ArrowUp') { event.preventDefault(); setSuggestionIndex(index => (index - 1 + commandSuggestions.length) % commandSuggestions.length); return; } if (event.key === 'Escape') { event.preventDefault(); setSuggestionIndex(0); return; } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); const item = commandSuggestions[Math.min(suggestionIndex, commandSuggestions.length - 1)]; selectCapability(item.capability_type, item.capability_key); return; } } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } };
@@ -1040,19 +1080,20 @@ export function AgentChatPage() {
     <div className={`agent-chat-layout ${runtimeSidebarCollapsed ? 'runtime-sidebar-collapsed' : ''}`}><ConversationRail conversations={conversations} selectedId={selected?.id} attempt={attempt} onSelect={selectConversation} onCreate={() => createMutation.mutate()} onDelete={item => { void dialog.confirm({ title: `删除“${conversationTitle(item.title)}”？`, message: '该会话的消息和临时附件都会被永久删除。', confirmLabel: '确认删除', tone: 'danger' }).then(confirmed => { if (confirmed) deleteMutation.mutate(item.id); }); }} creating={createMutation.isPending} deleting={deleteMutation.isPending ? deleteMutation.variables : undefined}/><main className="conversation-workspace"><header><div><span className="eyebrow">AGENT COLLABORATION</span><h1>{selected ? conversationTitle(selected.title) : 'Agent 协作空间'}</h1></div>{selected && <span>{selected.kind === 'AUTO' ? 'AUTO 默认会话' : `人工会话 #${selected.conversation_no}`}</span>}</header>
       <MessageTimeline conversation={selected} messages={timelineMessages} streamingText={selected ? streamingReplies[selected.id]?.text : undefined} subagents={subagentsQuery.data ?? []} onRetry={id => retryMutation.mutate(id)} onFork={forkFrom} onRevise={(message, text) => reviseMutation.mutate({ message, text })} onPreview={setAttachmentPreview} forkingId={forkMutation.isPending ? forkMutation.variables?.message.id : undefined} revisingId={reviseMutation.isPending ? reviseMutation.variables?.message.id : undefined} retrying={retryMutation.isPending}/>
       {!!queuedMessages.length && <section className="queued-message-stack" aria-label={`排队消息 ${queuedMessages.length} 条`}><header><b>等待当前回合结束</b><span>引导会立即把消息加入正在运行的 Agent 上下文</span></header>{queuedMessages.map((message, index) => <article key={message.id}><span className="queue-position"><CornerDownRight size={15}/><small>{index + 1}</small></span><p title={messageSummary(message)}>{messageSummary(message)}</p><div className="queue-actions"><button type="button" title="立即作为引导发送" disabled={steerMutation.isPending || cancelQueuedMutation.isPending} onClick={() => steerMutation.mutate(message.id)}><CornerDownRight size={14}/>{steerMutation.isPending && steerMutation.variables === message.id ? '引导中…' : '引导'}</button><button type="button" className="queue-remove" aria-label={`移出队列 ${messageSummary(message)}`} title="仅移出队列，不影响当前回合" disabled={steerMutation.isPending || cancelQueuedMutation.isPending} onClick={() => cancelQueuedMutation.mutate(message.id)}><Trash2 size={14}/></button></div></article>)}</section>}
+      {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {selected && (readOnly ? (
         <div className="read-only-composer"><b>历史会话，只读</b><span>验收、退回和重跑请返回运行详情操作。</span><button className="secondary" onClick={returnToWorkbench}>返回运行详情</button></div>
       ) : (
         <div className="message-composer">
           {!!commandSuggestions.length && <div className="capability-command-menu" role="listbox" aria-label="能力引用候选">{commandSuggestions.map((item, index) => <button type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? 'active' : ''} key={`${item.capability_type}-${item.capability_key}`} onMouseDown={event => event.preventDefault()} onClick={() => selectCapability(item.capability_type, item.capability_key)}><b>{capabilityMarker(item.capability_type, item.capability_key)}</b><span>{item.capability_type === 'SKILL' ? 'Skill · 调用并遵循能力说明' : 'MCP · 使用 Server 暴露的工具'}</span></button>)}</div>}
           {!!attachments.length && <div className="pending-attachments">{attachments.map(item => <article key={item.id}>{item.preview_url ? <img src={item.preview_url} alt=""/> : <span><FileIcon size={16}/></span>}<div><b>{item.filename}</b><small>{formatBytes(item.byte_size)}</small></div><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => removeAttachment(item.id)}><X size={13}/></button></article>)}</div>}
-          <textarea aria-label="发送给 Agent 的消息" value={draft} maxLength={20000} placeholder={selected.state === 'CREATING' ? '会话创建中…' : selected.state === 'STOPPING' ? '正在停止 Agent…' : selected.state === 'FAILED' ? '输入新消息并发送，系统会自动重建 Agent 会话。' : replyingToAttempt ? '回复 Agent 并继续执行。输入 $ 引用运行能力。' : '补充要求；输入 $ 引用能力，也可粘贴文件或图片。Enter 发送。'} disabled={selected.state === 'CREATING' || selected.state === 'STOPPING'} onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void addFiles(files); } }} onChange={event => { setDrafts(old => ({ ...old, [selected.id]: event.target.value })); setSuggestionIndex(0); }} onKeyDown={keyDown}/>
+          <textarea aria-label="发送给 Agent 的消息" value={draft} maxLength={20000} placeholder={attempt.state === 'WAITING_CONFIRMATION' ? '请先处理上方完整工具批次；普通消息不能代替原生确认。' : selected.state === 'CREATING' ? '会话创建中…' : selected.state === 'STOPPING' ? '正在停止 Agent…' : selected.state === 'FAILED' ? '输入新消息并发送，系统会自动重建 Agent 会话。' : replyingToAttempt ? '回复 Agent 并继续执行。输入 $ 引用运行能力。' : '补充要求；输入 $ 引用能力，也可粘贴文件或图片。Enter 发送。'} disabled={attempt.state === 'WAITING_CONFIRMATION' || selected.state === 'CREATING' || selected.state === 'STOPPING'} onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void addFiles(files); } }} onChange={event => { setDrafts(old => ({ ...old, [selected.id]: event.target.value })); setSuggestionIndex(0); }} onKeyDown={keyDown}/>
           <input ref={attachmentInputRef} className="attachment-input" type="file" multiple onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = ''; }}/>
           <div className="composer-actions">
             <div><button type="button" className="attach-button" aria-label="添加附件" title={replyingToAttempt ? '流程人工回复暂不支持附件，可在人工会话中发送' : '添加图片或文件'} disabled={replyingToAttempt || selected.state === 'STOPPING' || attachments.length >= MAX_ATTACHMENT_COUNT} onClick={() => attachmentInputRef.current?.click()}><Paperclip size={15}/></button><span>{selected.state === 'GENERATING' ? '可停止当前 Agent；本轮草稿会保留' : selected.state === 'STOPPING' ? '正在等待 Runtime 确认停止' : `${draft.length} / 20,000`}</span></div>
             <div className="composer-runtime-actions">
               <RuntimeSelectionMenu models={enabledModels} modelName={runtimeSelection.modelName} reasoningEffort={runtimeSelection.reasoningEffort} disabled={selected.state === 'CREATING' || selected.state === 'STOPPING'} onChange={setRuntimeSelection}/>
-              {selected.state === 'GENERATING' ? <button type="button" className="agent-stop-button" aria-label="停止当前 Agent" title="停止当前 Agent" disabled={stopMutation.isPending} onClick={stop}><Square size={11} fill="currentColor"/></button> : <button className="primary" disabled={(!draft.trim() && !attachments.length) || selected.state === 'CREATING' || selected.state === 'STOPPING' || sendMutation.isPending} onClick={send}><Send size={15}/>{replyingToAttempt ? '提交并继续' : selected.state === 'FAILED' ? '重新连接并发送' : '发送'}</button>}
+              {selected.state === 'GENERATING' ? <button type="button" className="agent-stop-button" aria-label="停止当前 Agent" title="停止当前 Agent" disabled={stopMutation.isPending} onClick={stop}><Square size={11} fill="currentColor"/></button> : <button className="primary" disabled={attempt.state === 'WAITING_CONFIRMATION' || (!draft.trim() && !attachments.length) || selected.state === 'CREATING' || selected.state === 'STOPPING' || sendMutation.isPending} onClick={send}><Send size={15}/>{replyingToAttempt ? '提交并继续' : selected.state === 'FAILED' ? '重新连接并发送' : '发送'}</button>}
             </div>
           </div>
         </div>

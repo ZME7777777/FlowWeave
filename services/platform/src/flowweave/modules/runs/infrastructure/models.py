@@ -58,6 +58,8 @@ class RunSnapshot(Base):
     schema_version: Mapped[int] = mapped_column(Integer, default=1)
     definition_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     definition_hash: Mapped[str] = mapped_column(String(64))
+    runtime_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    runtime_manifest_hash: Mapped[str] = mapped_column(String(64))
     created_by_action_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -80,7 +82,13 @@ class NodeRun(Base):
 
 class NodeAttempt(Base):
     __tablename__ = "node_attempts"
-    __table_args__ = (UniqueConstraint("node_run_id", "attempt_no", name="uq_node_attempt_number"),)
+    __table_args__ = (
+        UniqueConstraint("node_run_id", "attempt_no", name="uq_node_attempt_number"),
+        CheckConstraint(
+            "confirmation_policy IN ('ALWAYS', 'NEVER')",
+            name="ck_attempt_confirmation_policy",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     node_run_id: Mapped[str] = mapped_column(
@@ -104,6 +112,10 @@ class NodeAttempt(Base):
     startup_prompt: Mapped[str | None] = mapped_column(Text)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
+    confirmation_policy: Mapped[str] = mapped_column(String(20), default="ALWAYS")
+    condenser_config_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=lambda: {"kind": "NO_OP"}
+    )
     output_targets_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_detail: Mapped[str | None] = mapped_column(Text)

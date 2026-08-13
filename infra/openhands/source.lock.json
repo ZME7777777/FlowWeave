@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source_kind": "upstream_source",
+  "repository": "https://github.com/OpenHands/software-agent-sdk.git",
+  "archive_url": "https://codeload.github.com/OpenHands/software-agent-sdk/tar.gz/f09e03eac772290feeb51b7d7390ffaefeca1a09",
+  "archive_sha256": "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832",
+  "upstream_base_commit": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+  "source_commit": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+  "fork_commit": null,
+  "package_version": "1.42.0",
+  "packages": [
+    "openhands-agent-server",
+    "openhands-sdk",
+    "openhands-tools",
+    "openhands-workspace"
+  ]
+}

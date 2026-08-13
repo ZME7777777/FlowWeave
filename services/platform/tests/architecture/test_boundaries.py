@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import subprocess
 import sys
@@ -91,6 +92,120 @@ def test_external_container_images_are_immutable() -> None:
             violations.append(f"{relative} -> postgres test image")
 
     assert not violations, "Mutable external container images:\n" + "\n".join(violations)
+
+
+def test_openhands_runtime_uses_digest_locked_source_build() -> None:
+    """The runtime must use verified source, never a floating local checkout."""
+
+    dockerfile = (REPOSITORY / "infra" / "openhands" / "Dockerfile").read_text()
+    compose = (REPOSITORY / "infra" / "compose.yaml").read_text()
+    makefile = (REPOSITORY / "Makefile").read_text()
+    project = (REPOSITORY / "infra" / "openhands" / "pyproject.toml").read_text()
+    lockfile = (REPOSITORY / "infra" / "openhands" / "uv.lock").read_text()
+    source_lock = json.loads((REPOSITORY / "infra" / "openhands" / "source.lock.json").read_text())
+
+    assert "OPENHANDS_SDK_SOURCE" not in compose
+    assert "OPENHANDS_SDK_SOURCE" not in makefile
+    assert "--build-context openhands_sdk" not in makefile
+    assert "COPY --from=openhands_sdk" not in dockerfile
+    assert source_lock["source_kind"] == "upstream_source"
+    assert source_lock["upstream_base_commit"] == ("f09e03eac772290feeb51b7d7390ffaefeca1a09")
+    assert source_lock["source_commit"] == source_lock["upstream_base_commit"]
+    assert source_lock["fork_commit"] is None
+    assert len(source_lock["source_commit"]) == 40
+    assert len(source_lock["archive_sha256"]) == 64
+    assert "fetch_openhands_source.py" in dockerfile
+    assert "--lock /runtime/openhands-source.lock.json" in dockerfile
+    assert "--destination /opt/openhands-source" in dockerfile
+    assert "/opt/openhands-source/openhands-sdk" in dockerfile
+    assert "/opt/openhands-source/openhands-agent-server" in dockerfile
+    assert "expected='1.42.0'" in dockerfile
+    for package in (
+        "openhands-agent-server",
+        "openhands-sdk",
+        "openhands-tools",
+        "openhands-workspace",
+    ):
+        assert f'"{package}==1.42.0"' in project
+        assert f'name = "{package}"' in lockfile
+
+
+def test_openhands_image_runs_installed_contract_probe() -> None:
+    dockerfile = (REPOSITORY / "infra" / "openhands" / "Dockerfile").read_text()
+    makefile = (REPOSITORY / "Makefile").read_text()
+    probe = REPOSITORY / "infra" / "openhands" / "contract_check.py"
+
+    assert probe.is_file()
+    assert "COPY infra/openhands/contract_check.py /runtime/contract_check.py" in dockerfile
+    assert "RUN /runtime/.venv/bin/python /runtime/contract_check.py" in dockerfile
+    assert "openhands-contract-check:" in makefile
+    assert "openhands-image-provenance:" in makefile
+    assert "docker image inspect" in makefile
+    assert "/runtime/contract_check.py" in makefile
+
+
+def test_runtime_request_has_one_structured_agent_spec_boundary() -> None:
+    tree = ast.parse((SOURCE / "runtime" / "base.py").read_text())
+    request = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "StartAttemptRequest"
+    )
+    fields = {
+        node.target.id
+        for node in request.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert "agent_spec" in fields
+    assert not fields.intersection(
+        {
+            "provider",
+            "tools",
+            "skills",
+            "mcp_servers",
+            "hook_config",
+            "confirmation_policy",
+            "condenser",
+            "condenser_provider",
+            "budgets",
+        }
+    )
+
+
+def test_openhands_adapter_does_not_define_default_tools() -> None:
+    tree = ast.parse((SOURCE / "runtime" / "openhands.py").read_text())
+    create = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_create"
+    )
+    string_constants = {
+        node.value
+        for node in ast.walk(create)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert not string_constants.intersection({"terminal", "file_editor", "task_tracker"})
+
+
+def test_openhands_adapter_never_resolves_mutable_agent_profile_store() -> None:
+    """Production starts must materialize the frozen Profile as explicit Agent JSON."""
+
+    source = (SOURCE / "runtime" / "openhands.py").read_text()
+    assert 'payload["agent_profile_id"]' not in source
+    assert 'payload["agent_settings"]' not in source
+    assert '"agent": agent' in source
+
+
+def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
+    orchestration = (
+        SOURCE / "modules" / "orchestration" / "application" / "service.py"
+    ).read_text()
+    conversations = (
+        SOURCE / "modules" / "conversations" / "application" / "service.py"
+    ).read_text()
+    assert "from flowweave.runtime.manifest import" in orchestration
+    assert "from flowweave.runtime.manifest import runtime_node" in conversations
+    assert "node = runtime_node(" in conversations
 
 
 def test_bootstrap_entrypoints_import_in_clean_processes() -> None:

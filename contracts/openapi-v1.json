@@ -71,50 +71,30 @@
         }
       }
     },
-    "/api/v1/skill-collections": {
+    "/api/v1/agent-profiles/{version_id}": {
       "get": {
-        "summary": "Collections",
-        "operationId": "collections_api_v1_skill_collections_get",
+        "summary": "Agent Profile",
+        "operationId": "agent_profile_api_v1_agent_profiles__version_id__get",
+        "parameters": [
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "type": "array",
-                  "title": "Response Collections Api V1 Skill Collections Get"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "summary": "Create Collection",
-        "operationId": "create_collection_api_v1_skill_collections_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SkillCollectionWrite"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
                   "type": "object",
-                  "title": "Response Create Collection Api V1 Skill Collections Post"
+                  "additionalProperties": true,
+                  "title": "Response Agent Profile Api V1 Agent Profiles  Version Id  Get"
                 }
               }
             }
@@ -132,10 +112,836 @@
         }
       }
     },
-    "/api/v1/skill-collections/{collection_id}": {
+    "/api/v1/agent-profile-packages/{package_id}/versions": {
+      "get": {
+        "summary": "Agent Profile Versions",
+        "operationId": "agent_profile_versions_api_v1_agent_profile_packages__package_id__versions_get",
+        "parameters": [
+          {
+            "name": "package_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Package Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Agent Profile Versions Api V1 Agent Profile Packages  Package Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-profiles/{version_id}/bindings": {
+      "get": {
+        "summary": "Agent Profile Bindings",
+        "operationId": "agent_profile_bindings_api_v1_agent_profiles__version_id__bindings_get",
+        "parameters": [
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Agent Profile Bindings Api V1 Agent Profiles  Version Id  Bindings Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-profiles/{version_id}/versions": {
+      "post": {
+        "summary": "Revise Agent Profile",
+        "operationId": "revise_agent_profile_api_v1_agent_profiles__version_id__versions_post",
+        "parameters": [
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentProfileRevisionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Revise Agent Profile Api V1 Agent Profiles  Version Id  Versions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-profiles/{version_id}/copy": {
+      "post": {
+        "summary": "Copy Agent Profile",
+        "operationId": "copy_agent_profile_api_v1_agent_profiles__version_id__copy_post",
+        "parameters": [
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentProfileCopyWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Copy Agent Profile Api V1 Agent Profiles  Version Id  Copy Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-profiles/{version_id}/retire": {
+      "post": {
+        "summary": "Retire Agent Profile",
+        "operationId": "retire_agent_profile_api_v1_agent_profiles__version_id__retire_post",
+        "parameters": [
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentProfileRetireWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Retire Agent Profile Api V1 Agent Profiles  Version Id  Retire Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources": {
+      "get": {
+        "summary": "Governed Memory Sources",
+        "operationId": "governed_memory_sources_api_v1_memory_sources_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response Governed Memory Sources Api V1 Memory Sources Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Governed Memory Source",
+        "operationId": "create_governed_memory_source_api_v1_memory_sources_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceCreateWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Governed Memory Source Api V1 Memory Sources Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}": {
+      "get": {
+        "summary": "Governed Memory Source",
+        "operationId": "governed_memory_source_api_v1_memory_sources__source_id__get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Governed Memory Source Api V1 Memory Sources  Source Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}/versions": {
+      "post": {
+        "summary": "Create Governed Memory Source Revision",
+        "operationId": "create_governed_memory_source_revision_api_v1_memory_sources__source_id__versions_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceRevisionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Governed Memory Source Revision Api V1 Memory Sources  Source Id  Versions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}/versions/{version_id}/review": {
+      "post": {
+        "summary": "Review Governed Memory Source Version",
+        "operationId": "review_governed_memory_source_version_api_v1_memory_sources__source_id__versions__version_id__review_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          },
+          {
+            "name": "X-Actor-ID",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "title": "X-Actor-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceReviewWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Review Governed Memory Source Version Api V1 Memory Sources  Source Id  Versions  Version Id  Review Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}/versions/{version_id}/scan": {
+      "post": {
+        "summary": "Scan Governed Memory Source Version",
+        "operationId": "scan_governed_memory_source_version_api_v1_memory_sources__source_id__versions__version_id__scan_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceScanWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Scan Governed Memory Source Version Api V1 Memory Sources  Source Id  Versions  Version Id  Scan Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}/versions/{version_id}/activate": {
+      "post": {
+        "summary": "Activate Governed Memory Source Version",
+        "operationId": "activate_governed_memory_source_version_api_v1_memory_sources__source_id__versions__version_id__activate_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceActivateWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Activate Governed Memory Source Version Api V1 Memory Sources  Source Id  Versions  Version Id  Activate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}/versions/{version_id}/retire": {
+      "post": {
+        "summary": "Retire Governed Memory Source Version",
+        "operationId": "retire_governed_memory_source_version_api_v1_memory_sources__source_id__versions__version_id__retire_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceLifecycleWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Retire Governed Memory Source Version Api V1 Memory Sources  Source Id  Versions  Version Id  Retire Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}/versions/{version_id}/expire": {
+      "post": {
+        "summary": "Expire Governed Memory Source Version",
+        "operationId": "expire_governed_memory_source_version_api_v1_memory_sources__source_id__versions__version_id__expire_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceLifecycleWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Expire Governed Memory Source Version Api V1 Memory Sources  Source Id  Versions  Version Id  Expire Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory-sources/{source_id}/versions/{version_id}/delete": {
+      "post": {
+        "summary": "Delete Governed Memory Source Version Content",
+        "operationId": "delete_governed_memory_source_version_content_api_v1_memory_sources__source_id__versions__version_id__delete_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySourceLifecycleWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Governed Memory Source Version Content Api V1 Memory Sources  Source Id  Versions  Version Id  Delete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capability-collections": {
+      "get": {
+        "summary": "Collections",
+        "operationId": "collections_api_v1_capability_collections_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response Collections Api V1 Capability Collections Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Collection",
+        "operationId": "create_collection_api_v1_capability_collections_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityCollectionWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Collection Api V1 Capability Collections Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capability-collections/{collection_id}": {
       "put": {
         "summary": "Update Collection",
-        "operationId": "update_collection_api_v1_skill_collections__collection_id__put",
+        "operationId": "update_collection_api_v1_capability_collections__collection_id__put",
         "parameters": [
           {
             "name": "collection_id",
@@ -152,7 +958,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SkillCollectionWrite"
+                "$ref": "#/components/schemas/CapabilityCollectionWrite"
               }
             }
           }
@@ -165,7 +971,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Update Collection Api V1 Skill Collections  Collection Id  Put"
+                  "title": "Response Update Collection Api V1 Capability Collections  Collection Id  Put"
                 }
               }
             }
@@ -184,7 +990,7 @@
       },
       "delete": {
         "summary": "Delete Collection",
-        "operationId": "delete_collection_api_v1_skill_collections__collection_id__delete",
+        "operationId": "delete_collection_api_v1_capability_collections__collection_id__delete",
         "parameters": [
           {
             "name": "collection_id",
@@ -618,6 +1424,178 @@
         }
       }
     },
+    "/api/v1/plugin-source-resolutions": {
+      "post": {
+        "summary": "Resolve Plugin Source",
+        "operationId": "resolve_plugin_source_api_v1_plugin_source_resolutions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginSourceResolveWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Resolve Plugin Source Api V1 Plugin Source Resolutions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plugin-source-resolutions/marketplace": {
+      "post": {
+        "summary": "Resolve Marketplace Plugin Source",
+        "operationId": "resolve_marketplace_plugin_source_api_v1_plugin_source_resolutions_marketplace_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketplacePluginSourceResolveWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Resolve Marketplace Plugin Source Api V1 Plugin Source Resolutions Marketplace Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plugin-source-resolutions/{resolution_id}": {
+      "get": {
+        "summary": "Plugin Source Resolution",
+        "operationId": "plugin_source_resolution_api_v1_plugin_source_resolutions__resolution_id__get",
+        "parameters": [
+          {
+            "name": "resolution_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Resolution Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plugin Source Resolution Api V1 Plugin Source Resolutions  Resolution Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plugin-source-resolutions/{resolution_id}/publish": {
+      "post": {
+        "summary": "Publish Plugin Source",
+        "operationId": "publish_plugin_source_api_v1_plugin_source_resolutions__resolution_id__publish_post",
+        "parameters": [
+          {
+            "name": "resolution_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Resolution Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginSourcePublishWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Publish Plugin Source Api V1 Plugin Source Resolutions  Resolution Id  Publish Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/capabilities": {
       "get": {
         "summary": "Capabilities",
@@ -662,6 +1640,394 @@
                   "additionalProperties": true,
                   "type": "object",
                   "title": "Response Delete Capability Batch Api V1 Capabilities Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{capability_id}/mcp-oauth-secret-references": {
+      "post": {
+        "summary": "Create Mcp Oauth Secret Reference",
+        "operationId": "create_mcp_oauth_secret_reference_api_v1_capabilities__capability_id__mcp_oauth_secret_references_post",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPOAuthSecretReferenceWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Mcp Oauth Secret Reference Api V1 Capabilities  Capability Id  Mcp Oauth Secret References Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mcp-oauth-secret-references/{secret_reference_id}": {
+      "get": {
+        "summary": "Mcp Oauth Secret Reference",
+        "operationId": "mcp_oauth_secret_reference_api_v1_mcp_oauth_secret_references__secret_reference_id__get",
+        "parameters": [
+          {
+            "name": "secret_reference_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Secret Reference Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Mcp Oauth Secret Reference Api V1 Mcp Oauth Secret References  Secret Reference Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mcp-oauth-secret-references/{secret_reference_id}/revoke": {
+      "post": {
+        "summary": "Revoke Mcp Oauth Secret Reference",
+        "operationId": "revoke_mcp_oauth_secret_reference_api_v1_mcp_oauth_secret_references__secret_reference_id__revoke_post",
+        "parameters": [
+          {
+            "name": "secret_reference_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Secret Reference Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPOAuthSecretReferenceRevokeWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Revoke Mcp Oauth Secret Reference Api V1 Mcp Oauth Secret References  Secret Reference Id  Revoke Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mcp-oauth-secret-references/{secret_reference_id}/authorizations": {
+      "post": {
+        "summary": "Start Mcp Oauth Authorization",
+        "operationId": "start_mcp_oauth_authorization_api_v1_mcp_oauth_secret_references__secret_reference_id__authorizations_post",
+        "parameters": [
+          {
+            "name": "secret_reference_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Secret Reference Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPOAuthAuthorizationStartWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Start Mcp Oauth Authorization Api V1 Mcp Oauth Secret References  Secret Reference Id  Authorizations Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mcp-oauth-authorizations/{authorization_id}": {
+      "get": {
+        "summary": "Mcp Oauth Authorization",
+        "operationId": "mcp_oauth_authorization_api_v1_mcp_oauth_authorizations__authorization_id__get",
+        "parameters": [
+          {
+            "name": "authorization_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Authorization Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Mcp Oauth Authorization Api V1 Mcp Oauth Authorizations  Authorization Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mcp-oauth-authorizations/{authorization_id}/callback": {
+      "post": {
+        "summary": "Submit Mcp Oauth Authorization Callback",
+        "operationId": "submit_mcp_oauth_authorization_callback_api_v1_mcp_oauth_authorizations__authorization_id__callback_post",
+        "parameters": [
+          {
+            "name": "authorization_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Authorization Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPOAuthAuthorizationCallbackWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Submit Mcp Oauth Authorization Callback Api V1 Mcp Oauth Authorizations  Authorization Id  Callback Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{capability_id}/mcp-probes": {
+      "post": {
+        "summary": "Probe Mcp Capability",
+        "operationId": "probe_mcp_capability_api_v1_capabilities__capability_id__mcp_probes_post",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPProbeWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Probe Mcp Capability Api V1 Capabilities  Capability Id  Mcp Probes Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{capability_id}/plugin-probes": {
+      "post": {
+        "summary": "Probe Plugin Capability",
+        "operationId": "probe_plugin_capability_api_v1_capabilities__capability_id__plugin_probes_post",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginProbeWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Probe Plugin Capability Api V1 Capabilities  Capability Id  Plugin Probes Post"
                 }
               }
             }
@@ -2441,6 +3807,73 @@
         }
       }
     },
+    "/api/v1/runtime-confirmation-batches/{batch_id}/decision": {
+      "post": {
+        "summary": "Decide Runtime Confirmation",
+        "operationId": "decide_runtime_confirmation_api_v1_runtime_confirmation_batches__batch_id__decision_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeConfirmationDecisionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Decide Runtime Confirmation Api V1 Runtime Confirmation Batches  Batch Id  Decision Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/node-attempts/{attempt_id}/reject": {
       "post": {
         "summary": "Reject",
@@ -2595,7 +4028,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AttemptVersionWrite"
+                "$ref": "#/components/schemas/RuntimeCancelRecoveryWrite"
               }
             }
           }
@@ -2743,6 +4176,132 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Sync Snapshot Api V1 Flow Runs  Run Id  Sync Snapshot Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/agent-profile-switch-preview": {
+      "get": {
+        "summary": "Agent Profile Switch Preview",
+        "operationId": "agent_profile_switch_preview_api_v1_flow_runs__run_id__agent_profile_switch_preview_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "flow_node_key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Node Key"
+            }
+          },
+          {
+            "name": "profile_version_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Agent Profile Switch Preview Api V1 Flow Runs  Run Id  Agent Profile Switch Preview Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/agent-profile-switch": {
+      "post": {
+        "summary": "Agent Profile Switch",
+        "operationId": "agent_profile_switch_api_v1_flow_runs__run_id__agent_profile_switch_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentProfileSwitchWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Agent Profile Switch Api V1 Flow Runs  Run Id  Agent Profile Switch Post"
                 }
               }
             }
@@ -3245,8 +4804,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "type": "object",
-                    "additionalProperties": true
+                    "$ref": "#/components/schemas/RuntimeSubagentTaskRead"
                   },
                   "title": "Response Subagents Api V1 Agent Conversations  Conversation Id  Subagents Get"
                 }
@@ -3316,6 +4874,89 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Stop Conversation Api V1 Agent Conversations  Conversation Id  Stop Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-conversations/{conversation_id}/condense": {
+      "post": {
+        "summary": "Condense Conversation",
+        "operationId": "condense_conversation_api_v1_agent_conversations__conversation_id__condense_post",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "name": "X-Actor-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Actor-Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationCondenseWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Condense Conversation Api V1 Agent Conversations  Conversation Id  Condense Post"
                 }
               }
             }
@@ -3897,6 +5538,121 @@
   },
   "components": {
     "schemas": {
+      "AgentProfileCopyWrite": {
+        "properties": {
+          "capability_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Capability Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capability_key"
+        ],
+        "title": "AgentProfileCopyWrite"
+      },
+      "AgentProfileRetireWrite": {
+        "properties": {
+          "expected_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Digest"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_digest"
+        ],
+        "title": "AgentProfileRetireWrite"
+      },
+      "AgentProfileRevisionWrite": {
+        "properties": {
+          "expected_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Digest"
+          },
+          "document": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Document"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_digest",
+          "document"
+        ],
+        "title": "AgentProfileRevisionWrite"
+      },
+      "AgentProfileSwitchWrite": {
+        "properties": {
+          "expected_active_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Active Version"
+          },
+          "flow_node_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Flow Node Key"
+          },
+          "profile_version_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Profile Version Id"
+          },
+          "source_profile_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Profile Version Id"
+          },
+          "expected_profile_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Profile Digest"
+          },
+          "copy_input_bindings_from_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Copy Input Bindings From Attempt Id"
+          },
+          "model_cost_comparison": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Model Cost Comparison"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_active_version",
+          "flow_node_key",
+          "profile_version_id",
+          "expected_profile_digest"
+        ],
+        "title": "AgentProfileSwitchWrite"
+      },
       "ArtifactWrite": {
         "properties": {
           "field_key": {
@@ -4090,6 +5846,56 @@
         ],
         "title": "CapabilityBulkDeleteWrite"
       },
+      "CapabilityCollectionWrite": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Category",
+            "default": ""
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Description",
+            "default": ""
+          },
+          "capability_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Capability Ids"
+          },
+          "row_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "capability_ids"
+        ],
+        "title": "CapabilityCollectionWrite"
+      },
       "CapabilityCommitWrite": {
         "properties": {
           "import_token": {
@@ -4151,8 +5957,15 @@
             "type": "string",
             "enum": [
               "SKILL",
+              "PLUGIN",
               "MCP",
-              "HOOK"
+              "HOOK",
+              "TOOL_POLICY",
+              "AGENT_DEFINITION",
+              "CONTEXT_POLICY",
+              "MEMORY_POLICY",
+              "CRITIC_POLICY",
+              "AGENT_PROFILE"
             ],
             "title": "Capability Type"
           },
@@ -4196,8 +6009,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 48,
-                "minLength": 38
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
               {
                 "type": "null"
@@ -4211,8 +6023,15 @@
                 "type": "string",
                 "enum": [
                   "SKILL",
+                  "PLUGIN",
                   "MCP",
-                  "HOOK"
+                  "HOOK",
+                  "TOOL_POLICY",
+                  "AGENT_DEFINITION",
+                  "CONTEXT_POLICY",
+                  "MEMORY_POLICY",
+                  "CRITIC_POLICY",
+                  "AGENT_PROFILE"
                 ]
               },
               {
@@ -4249,6 +6068,106 @@
         "additionalProperties": false,
         "type": "object",
         "title": "CapabilityWrite"
+      },
+      "CondenserWrite": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "NO_OP",
+              "LLM_SUMMARIZING"
+            ],
+            "title": "Kind",
+            "default": "NO_OP"
+          },
+          "model_provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Provider Id"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "max_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 20.0,
+            "title": "Max Size",
+            "default": 240
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
+          },
+          "keep_first": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Keep First",
+            "default": 2
+          },
+          "minimum_progress": {
+            "type": "number",
+            "exclusiveMaximum": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Minimum Progress",
+            "default": 0.1
+          },
+          "hard_context_reset_max_retries": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Hard Context Reset Max Retries",
+            "default": 5
+          },
+          "hard_context_reset_context_scaling": {
+            "type": "number",
+            "exclusiveMaximum": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Hard Context Reset Context Scaling",
+            "default": 0.8
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CondenserWrite"
+      },
+      "ConversationCondenseWrite": {
+        "properties": {
+          "expected_conversation_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Conversation Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_conversation_version"
+        ],
+        "title": "ConversationCondenseWrite"
       },
       "ConversationCreateWrite": {
         "properties": {
@@ -4324,6 +6243,34 @@
               }
             ],
             "title": "Title"
+          },
+          "fork_kind": {
+            "type": "string",
+            "enum": [
+              "RUNTIME",
+              "SEMANTIC"
+            ],
+            "title": "Fork Kind",
+            "default": "RUNTIME"
+          },
+          "fork_scope": {
+            "type": "string",
+            "enum": [
+              "MESSAGE",
+              "FULL"
+            ],
+            "title": "Fork Scope",
+            "default": "MESSAGE"
+          },
+          "reset_metrics": {
+            "type": "boolean",
+            "title": "Reset Metrics",
+            "default": true
+          },
+          "acknowledge_semantic_state_loss": {
+            "type": "boolean",
+            "title": "Acknowledge Semantic State Loss",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -4490,6 +6437,18 @@
             "minimum": 1.0,
             "title": "Max Iterations",
             "default": 100
+          },
+          "confirmation_policy": {
+            "type": "string",
+            "enum": [
+              "ALWAYS",
+              "NEVER"
+            ],
+            "title": "Confirmation Policy",
+            "default": "ALWAYS"
+          },
+          "condenser": {
+            "$ref": "#/components/schemas/CondenserWrite"
           }
         },
         "additionalProperties": false,
@@ -4837,6 +6796,154 @@
         ],
         "title": "InputBindingsWrite"
       },
+      "MCPOAuthAuthorizationCallbackWrite": {
+        "properties": {
+          "expected_authorization_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Authorization Version"
+          },
+          "callback_url": {
+            "type": "string",
+            "format": "password",
+            "title": "Callback Url",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_authorization_version",
+          "callback_url"
+        ],
+        "title": "MCPOAuthAuthorizationCallbackWrite"
+      },
+      "MCPOAuthAuthorizationStartWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          },
+          "timeout": {
+            "type": "number",
+            "maximum": 120.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Timeout",
+            "default": 15.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version"
+        ],
+        "title": "MCPOAuthAuthorizationStartWrite"
+      },
+      "MCPOAuthSecretReferenceRevokeWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version"
+        ],
+        "title": "MCPOAuthSecretReferenceRevokeWrite"
+      },
+      "MCPOAuthSecretReferenceWrite": {
+        "properties": {
+          "environment_version_id": {
+            "type": "string",
+            "title": "Environment Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "environment_version_id"
+        ],
+        "title": "MCPOAuthSecretReferenceWrite"
+      },
+      "MCPProbeWrite": {
+        "properties": {
+          "environment_version_id": {
+            "type": "string",
+            "title": "Environment Version Id"
+          },
+          "timeout": {
+            "type": "number",
+            "maximum": 120.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Timeout",
+            "default": 15.0
+          },
+          "read_only_tool_call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MCPReadOnlyToolCallWrite"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "oauth_secret_reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oauth Secret Reference Id"
+          },
+          "expected_oauth_secret_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Oauth Secret Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "environment_version_id"
+        ],
+        "title": "MCPProbeWrite"
+      },
+      "MCPReadOnlyToolCallWrite": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Arguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "MCPReadOnlyToolCallWrite"
+      },
       "MCPScriptWrite": {
         "properties": {
           "server": {
@@ -4865,6 +6972,201 @@
           "content_base64"
         ],
         "title": "MCPScriptWrite"
+      },
+      "MarketplacePluginSourceResolveWrite": {
+        "properties": {
+          "marketplace_source_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Marketplace Source Url"
+          },
+          "marketplace_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{40}$",
+            "title": "Marketplace Commit"
+          },
+          "marketplace_repo_path": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Repo Path"
+          },
+          "plugin_name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+            "title": "Plugin Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "marketplace_source_url",
+          "marketplace_commit",
+          "plugin_name"
+        ],
+        "title": "MarketplacePluginSourceResolveWrite"
+      },
+      "MemorySourceActivateWrite": {
+        "properties": {
+          "expected_governance_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Governance Version"
+          },
+          "retention_days": {
+            "type": "integer",
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Retention Days",
+            "default": 30
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_governance_version"
+        ],
+        "title": "MemorySourceActivateWrite"
+      },
+      "MemorySourceCreateWrite": {
+        "properties": {
+          "source_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+            "title": "Source Key"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "owner_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Owner Id"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "USER",
+              "PROJECT"
+            ],
+            "title": "Scope"
+          },
+          "scope_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Scope Key"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 262144,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_key",
+          "display_name",
+          "owner_id",
+          "scope",
+          "scope_key",
+          "content"
+        ],
+        "title": "MemorySourceCreateWrite"
+      },
+      "MemorySourceLifecycleWrite": {
+        "properties": {
+          "expected_governance_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Governance Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_governance_version"
+        ],
+        "title": "MemorySourceLifecycleWrite"
+      },
+      "MemorySourceReviewWrite": {
+        "properties": {
+          "expected_governance_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Governance Version"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REJECT"
+            ],
+            "title": "Decision"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Note",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_governance_version",
+          "decision"
+        ],
+        "title": "MemorySourceReviewWrite"
+      },
+      "MemorySourceRevisionWrite": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 262144,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "MemorySourceRevisionWrite"
+      },
+      "MemorySourceScanWrite": {
+        "properties": {
+          "expected_governance_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Governance Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_governance_version"
+        ],
+        "title": "MemorySourceScanWrite"
       },
       "MessageSendWrite": {
         "properties": {
@@ -5152,6 +7454,70 @@
         "type": "object",
         "title": "NodeRunStart"
       },
+      "PluginProbeWrite": {
+        "properties": {
+          "environment_version_id": {
+            "type": "string",
+            "title": "Environment Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "environment_version_id"
+        ],
+        "title": "PluginProbeWrite"
+      },
+      "PluginSourcePublishWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version"
+        ],
+        "title": "PluginSourcePublishWrite"
+      },
+      "PluginSourceResolveWrite": {
+        "properties": {
+          "source_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Source Url"
+          },
+          "commit": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{40}$",
+            "title": "Commit"
+          },
+          "repo_path": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_url",
+          "commit"
+        ],
+        "title": "PluginSourceResolveWrite"
+      },
       "PortMappingWrite": {
         "properties": {
           "source_instance_key": {
@@ -5287,55 +7653,363 @@
         "type": "object",
         "title": "RunStart"
       },
-      "SkillCollectionWrite": {
+      "RuntimeCancelRecoveryWrite": {
         "properties": {
-          "name": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          },
+          "mode": {
             "type": "string",
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name"
-          },
-          "category": {
-            "type": "string",
-            "maxLength": 120,
-            "title": "Category",
-            "default": ""
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 2000,
-            "title": "Description",
-            "default": ""
-          },
-          "capability_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 100,
-            "minItems": 1,
-            "title": "Capability Ids"
-          },
-          "row_version": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "RECONCILE_PARENT",
+              "DELETE_MANAGED_RUNTIME"
             ],
-            "title": "Row Version"
+            "title": "Mode",
+            "default": "RECONCILE_PARENT"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "name",
-          "capability_ids"
+          "expected_state_version"
         ],
-        "title": "SkillCollectionWrite"
+        "title": "RuntimeCancelRecoveryWrite"
+      },
+      "RuntimeConfirmationDecisionWrite": {
+        "properties": {
+          "accept": {
+            "type": "boolean",
+            "title": "Accept"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "accept",
+          "reason"
+        ],
+        "title": "RuntimeConfirmationDecisionWrite"
+      },
+      "RuntimeSubagentTaskRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "attempt_id": {
+            "type": "string",
+            "title": "Attempt Id"
+          },
+          "conversation_id": {
+            "type": "string",
+            "title": "Conversation Id"
+          },
+          "action_event_id": {
+            "type": "string",
+            "title": "Action Event Id"
+          },
+          "action_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Cursor"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Call Id"
+          },
+          "llm_response_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Response Id"
+          },
+          "observation_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Event Id"
+          },
+          "observation_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Cursor"
+          },
+          "runtime_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Task Id"
+          },
+          "subagent_type": {
+            "type": "string",
+            "title": "Subagent Type"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "resume_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Task Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "REQUESTED",
+              "COMPLETED",
+              "ERROR"
+            ],
+            "title": "State"
+          },
+          "native_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Native Status"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Detail"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeSubagentTaskUsageRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "attempt_id",
+          "conversation_id",
+          "action_event_id",
+          "subagent_type",
+          "state",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RuntimeSubagentTaskRead"
+      },
+      "RuntimeSubagentTaskUsageRead": {
+        "properties": {
+          "runtime_task_id": {
+            "type": "string",
+            "title": "Runtime Task Id"
+          },
+          "source_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Cursor"
+          },
+          "snapshot_digest": {
+            "type": "string",
+            "title": "Snapshot Digest"
+          },
+          "usage_version": {
+            "type": "integer",
+            "title": "Usage Version"
+          },
+          "model_name": {
+            "type": "string",
+            "title": "Model Name"
+          },
+          "accumulated_cost_usd": {
+            "type": "number",
+            "title": "Accumulated Cost Usd"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "cache_read_tokens": {
+            "type": "integer",
+            "title": "Cache Read Tokens"
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "title": "Cache Write Tokens"
+          },
+          "reasoning_tokens": {
+            "type": "integer",
+            "title": "Reasoning Tokens"
+          },
+          "context_window": {
+            "type": "integer",
+            "title": "Context Window"
+          },
+          "per_turn_tokens": {
+            "type": "integer",
+            "title": "Per Turn Tokens"
+          },
+          "budget_limit_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Limit Usd"
+          },
+          "budget_state": {
+            "type": "string",
+            "enum": [
+              "UNBOUNDED",
+              "WITHIN",
+              "EXCEEDED"
+            ],
+            "title": "Budget State"
+          },
+          "budget_exceeded_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Exceeded At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "runtime_task_id",
+          "snapshot_digest",
+          "usage_version",
+          "model_name",
+          "accumulated_cost_usd",
+          "prompt_tokens",
+          "completion_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "reasoning_tokens",
+          "context_window",
+          "per_turn_tokens",
+          "budget_state",
+          "updated_at"
+        ],
+        "title": "RuntimeSubagentTaskUsageRead"
       },
       "SyncSnapshotWrite": {
         "properties": {

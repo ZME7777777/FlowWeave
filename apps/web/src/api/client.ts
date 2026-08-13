@@ -1,7 +1,7 @@
 import type {
   AgentConversation, AgentMessage, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  NodeDirectory, NodeRun, RunEvent, SkillCollection, SkillCollectionWrite, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
+  CapabilityCollection, CapabilityCollectionWrite, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, RuntimeSubagentTask, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -123,14 +123,20 @@ export const api = {
       content_hash: string;
     }>('/capability-imports/validate', json('POST', body)),
   commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
+  createPluginSourceResolution: (body: { source_url: string; commit: string; repo_path?: string | null }) =>
+    request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
+  pluginSourceResolution: (id: string) =>
+    request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}`),
+  publishPluginSourceResolution: (id: string, expectedStateVersion: number) =>
+    request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}/publish`, json('POST', { expected_state_version: expectedStateVersion })),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
-  skillCollections: () => request<SkillCollection[]>('/skill-collections'),
-  createSkillCollection: (body: SkillCollectionWrite) =>
-    request<SkillCollection>('/skill-collections', json('POST', body)),
-  updateSkillCollection: (id: string, body: SkillCollectionWrite) =>
-    request<SkillCollection>(`/skill-collections/${id}`, json('PUT', body)),
-  deleteSkillCollection: (id: string) =>
-    request<void>(`/skill-collections/${id}`, json('DELETE')),
+  capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
+  createCapabilityCollection: (body: CapabilityCollectionWrite) =>
+    request<CapabilityCollection>('/capability-collections', json('POST', body)),
+  updateCapabilityCollection: (id: string, body: CapabilityCollectionWrite) =>
+    request<CapabilityCollection>(`/capability-collections/${id}`, json('PUT', body)),
+  deleteCapabilityCollection: (id: string) =>
+    request<void>(`/capability-collections/${id}`, json('DELETE')),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
   updateCapabilitySource: (id: string, content: string) =>
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
@@ -183,11 +189,13 @@ export const api = {
     request<NodeAttempt>(`/node-attempts/${attemptId}/input-bindings`, json('PUT', { bindings, expected_state_version: version })),
   confirmStart: (attemptId: string, version: number, startup: { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string }) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version, ...startup }, true)),
   humanInput: (attemptId: string, content: string, version: number, runtime?: { model_name?: string; reasoning_effort?: string | null }) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version, ...runtime }, true)),
+  decideRuntimeConfirmation: (batchId: string, accept: boolean, reason: string) =>
+    request<RuntimeConfirmationBatch>(`/runtime-confirmation-batches/${batchId}/decision`, json('POST', { accept, reason }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   rejectAttempt: (attemptId: string, reason: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reject`, json('POST', { reason, copy_input_bindings: true, expected_state_version: version }, true)),
   retryGates: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-gates`, json('POST', { expected_state_version: version })),
   cancelAttempt: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/cancel`, json('POST', { expected_state_version: version }, true)),
-  retryRuntimeCancel: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-runtime-cancel`, json('POST', { expected_state_version: version }, true)),
+  retryRuntimeCancel: (attemptId: string, version: number, mode: 'RECONCILE_PARENT' | 'DELETE_MANAGED_RUNTIME') => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-runtime-cancel`, json('POST', { expected_state_version: version, mode }, true)),
   syncSnapshot: (runId: string, version: number) => request<FlowRun>(`/flow-runs/${runId}/sync-snapshot`, json('POST', { expected_active_version: version }, true)),
   completeRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/complete`, json('POST', undefined, true)),
   cancelRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/cancel`, json('POST', undefined, true)),
@@ -198,7 +206,7 @@ export const api = {
     }, true)),
   conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
   conversationSubagents: (conversationId: string) =>
-    request<AgentConversation[]>(`/agent-conversations/${conversationId}/subagents`),
+    request<RuntimeSubagentTask[]>(`/agent-conversations/${conversationId}/subagents`),
   stopConversation: (conversationId: string, version: number) =>
     request<AgentConversation>(`/agent-conversations/${conversationId}/stop`, json('POST', { expected_conversation_version: version }, true)),
   deleteConversation: (conversationId: string) => request<void>(`/agent-conversations/${conversationId}`, json('DELETE')),
@@ -216,9 +224,12 @@ export const api = {
       expected_conversation_version: version,
       ...runtime,
     }, true)),
-  forkConversationMessage: (messageId: string, version: number) =>
+  forkConversationMessage: (messageId: string, version: number, forkKind: 'RUNTIME' | 'SEMANTIC') =>
     request<AgentConversation>(`/agent-messages/${messageId}/fork`, json('POST', {
       expected_conversation_version: version,
+      fork_kind: forkKind,
+      fork_scope: 'MESSAGE',
+      acknowledge_semantic_state_loss: forkKind === 'SEMANTIC',
     }, true)),
   reviseConversationMessage: (messageId: string, version: number, text: string) =>
     request<AgentConversation>(`/agent-messages/${messageId}/revise`, json('POST', {

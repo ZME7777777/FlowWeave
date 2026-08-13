@@ -65,7 +65,13 @@ def create_asset(client, skill, name="方案生成"):
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
-    assert response.json()["capabilities"] == []
+    capabilities = response.json()["capabilities"]
+    assert {item["capability_type"]: item["capability_key"] for item in capabilities} == {
+        "TOOL_POLICY": "flowweave-default-tools",
+        "CONTEXT_POLICY": "flowweave-default-context",
+        "MEMORY_POLICY": "flowweave-memory-disabled",
+        "CRITIC_POLICY": "flowweave-critic-disabled",
+    }
 
 
 def test_confirm_start_persists_explicit_model_selection(client):

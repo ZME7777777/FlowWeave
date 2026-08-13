@@ -276,7 +276,7 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
     )
     assert flow_response.status_code == 201, flow_response.text
     flow = flow_response.json()
-    run = client.post(
+    run_response = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
             "flow_node_key": "design",
@@ -288,7 +288,8 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
                 }
             ],
         },
-    ).json()
+    )
+    run = run_response.json()
     attempt = run["node_runs"][0]["attempts"][0]
     assert attempt["state"] == "WAITING_START_CONFIRMATION"
     attempt_id = attempt["id"]

@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.environments.infrastructure import docker as environments_docker
@@ -26,6 +26,10 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     backend_name,
 )
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
+from flowweave.shared.application.plugin_resolver import (
+    MarketplacePluginResolveRequest,
+    PluginResolveRequest,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.dependency_builder import DockerDependencyBuilder
 from flowweave.shared.infrastructure.docker_control import (
@@ -33,7 +37,14 @@ from flowweave.shared.infrastructure.docker_control import (
     DockerOwnershipError,
     inspect_owned_container,
 )
-from flowweave.shared.infrastructure.docker_controller import authorize_controller_request
+from flowweave.shared.infrastructure.docker_controller import (
+    authorize_controller_request,
+    validate_owned_runtime_plugin,
+)
+from flowweave.shared.infrastructure.plugin_resolver import (
+    DockerPluginResolver,
+    configured_plugin_hosts,
+)
 from flowweave.shared.infrastructure.sandbox import DockerSandbox
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -65,6 +76,12 @@ class RuntimeSandboxSpec(_StrictModel):
     environment_id: UUID
     environment_version_id: UUID
     environment_version_no: int = Field(ge=1)
+    memory_enabled: bool = False
+    memory_working_dir_relative: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+    )
 
     @field_validator("workspace_relative")
     @classmethod
@@ -72,6 +89,18 @@ class RuntimeSandboxSpec(_StrictModel):
         if any(part in {"", ".", ".."} for part in value.split("/")):
             raise ValueError("workspace_relative must not contain dot path segments")
         return value
+
+    @model_validator(mode="after")
+    def validate_memory_contract(self):
+        if self.memory_enabled != (self.memory_working_dir_relative is not None):
+            raise ValueError(
+                "memory_working_dir_relative must be set exactly when Memory is enabled"
+            )
+        if self.memory_working_dir_relative and any(
+            part in {"", ".", ".."} for part in self.memory_working_dir_relative.split("/")
+        ):
+            raise ValueError("memory_working_dir_relative contains invalid path segments")
+        return self
 
 
 class _SandboxResourceBase(ScopedRequest):
@@ -90,7 +119,12 @@ class SetupSandboxResourceWrite(_SandboxResourceBase):
 
 class RuntimeSandboxResourceWrite(_SandboxResourceBase):
     kind: Literal["AGENT_RUNTIME"]
-    owner_type: Literal["ATTEMPT", "CONVERSATION"]
+    owner_type: Literal[
+        "ATTEMPT",
+        "CONVERSATION",
+        "CAPABILITY_VALIDATION",
+        "MCP_OAUTH_AUTHORIZATION",
+    ]
     image_reference: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     spec: RuntimeSandboxSpec
 
@@ -175,6 +209,24 @@ class DependencyBuildWrite(ScopedRequest):
         return value
 
 
+class PluginResolveWrite(ScopedRequest):
+    source: str = Field(min_length=1, max_length=2048)
+    commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    repo_path: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+    )
+
+
+class MarketplacePluginResolveWrite(PluginResolveWrite):
+    plugin_name: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+
+
 class TerminalStartWrite(ResolveContainerWrite):
     session_name: str | None = Field(default=None, max_length=64)
     rows: int = Field(default=24, ge=2, le=200)
@@ -195,10 +247,28 @@ class TerminalResizeWrite(TerminalIdWrite):
 
 
 class RuntimeEventsWrite(SandboxDeleteWrite):
+    channel: Literal["CONVERSATION", "BASH"] = "CONVERSATION"
     conversation_id: str = Field(
-        min_length=1,
+        default="",
+        min_length=0,
         max_length=200,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$",
+        pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})?$",
+    )
+    timeout_seconds: float = Field(default=10.0, gt=0, le=25)
+
+    @model_validator(mode="after")
+    def validate_channel_target(self) -> RuntimeEventsWrite:
+        if self.channel == "CONVERSATION" and not self.conversation_id:
+            raise ValueError("conversation_id is required for Conversation events")
+        return self
+
+
+class RuntimePluginValidationWrite(SandboxDeleteWrite):
+    validation_id: UUID
+    plugin_path: str = Field(
+        min_length=1,
+        max_length=1000,
+        pattern=r"^/runtime/capabilities/nodes/plugin-probe-[A-Za-z0-9_.-]+/plugins/[A-Za-z0-9_.-]+$",
     )
 
 
@@ -270,6 +340,7 @@ class _TerminalManager:
 
 _RUNTIME_EVENT_RELAY = r"""
 import asyncio
+import json
 import os
 import sys
 
@@ -277,19 +348,31 @@ from websockets.asyncio.client import connect
 
 
 async def main():
-    conversation_id = sys.argv[1]
-    headers = {"X-Session-API-Key": os.environ["SESSION_API_KEY"]}
+    channel = sys.argv[1]
+    conversation_id = sys.argv[2]
+    timeout_seconds = float(sys.argv[3])
+    path = (
+        f"/sockets/events/{conversation_id}"
+        if channel == "CONVERSATION"
+        else "/sockets/bash-events"
+    )
     async with connect(
-        f"ws://127.0.0.1:8000/sockets/events/{conversation_id}",
-        additional_headers=headers,
+        f"ws://127.0.0.1:8000{path}",
         open_timeout=10,
         ping_interval=20,
         ping_timeout=20,
         max_size=2 * 1024 * 1024,
     ) as upstream:
-        async for frame in upstream:
-            if isinstance(frame, str):
-                print(frame, flush=True)
+        await upstream.send(json.dumps({
+            "type": "auth",
+            "session_api_key": os.environ["SESSION_API_KEY"],
+        }))
+        try:
+            frame = await asyncio.wait_for(upstream.recv(), timeout=timeout_seconds)
+        except TimeoutError:
+            return
+        if isinstance(frame, str):
+            print(frame, flush=True)
 
 
 asyncio.run(main())
@@ -297,7 +380,11 @@ asyncio.run(main())
 
 
 async def _runtime_event_stream(
-    configured: Settings, container_id: str, conversation_id: str
+    configured: Settings,
+    container_id: str,
+    channel: str,
+    conversation_id: str,
+    timeout_seconds: float,
 ) -> AsyncIterator[bytes]:
     """Run the fixed relay inside one ownership-verified Runtime container."""
 
@@ -309,7 +396,9 @@ async def _runtime_event_stream(
         "-u",
         "-c",
         _RUNTIME_EVENT_RELAY,
+        channel,
         conversation_id,
+        str(timeout_seconds),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env={"PATH": os.defpath},
@@ -440,7 +529,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/environments/publish": frozenset({"api"}),
                 "/v1/gates/execute": frozenset({"worker"}),
                 "/v1/dependencies/build": frozenset({"worker"}),
+                "/v1/plugins/resolve": frozenset({"worker"}),
+                "/v1/plugins/resolve-marketplace": frozenset({"worker"}),
                 "/v1/runtimes/events": frozenset({"api"}),
+                "/v1/runtimes/validate-plugin": frozenset({"api"}),
                 "/v1/terminals/start": frozenset({"api"}),
                 "/v1/terminals/read": frozenset({"api"}),
                 "/v1/terminals/write": frozenset({"api"}),
@@ -639,6 +731,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "manifest": bundle.manifest,
         }
 
+    async def resolve_plugin(payload: PluginResolveWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        resolver = DockerPluginResolver(
+            configured.plugin_resolver_image,
+            allowed_hosts=configured_plugin_hosts(configured),
+            docker_binary=configured.docker_binary,
+            manager_scope=configured.sandbox_manager_scope,
+            timeout_seconds=configured.plugin_resolver_timeout_seconds,
+            cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
+            storage_size=configured.sandbox_storage_size,
+        )
+        bundle = resolver.resolve(
+            PluginResolveRequest(payload.source, payload.commit, payload.repo_path)
+        )
+        return {
+            "content_base64": base64.b64encode(bundle.content).decode(),
+            "resolved_commit": bundle.resolved_commit,
+            "report": bundle.report,
+        }
+
+    app.add_api_route(
+        "/v1/plugins/resolve",
+        resolve_plugin,
+        methods=["POST"],
+    )
+
+    async def resolve_marketplace_plugin(
+        payload: MarketplacePluginResolveWrite,
+    ) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        resolver = DockerPluginResolver(
+            configured.plugin_resolver_image,
+            allowed_hosts=configured_plugin_hosts(configured),
+            docker_binary=configured.docker_binary,
+            manager_scope=configured.sandbox_manager_scope,
+            timeout_seconds=configured.plugin_resolver_timeout_seconds,
+            cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
+            storage_size=configured.sandbox_storage_size,
+        )
+        bundle = resolver.resolve_marketplace_plugin(
+            MarketplacePluginResolveRequest(
+                payload.source, payload.commit, payload.repo_path, payload.plugin_name
+            )
+        )
+        return {
+            "content_base64": base64.b64encode(bundle.content).decode(),
+            "resolved_source": bundle.resolved_source,
+            "resolved_commit": bundle.resolved_commit,
+            "resolved_repo_path": bundle.resolved_repo_path,
+            "report": bundle.report,
+        }
+
+    app.add_api_route(
+        "/v1/plugins/resolve-marketplace",
+        resolve_marketplace_plugin,
+        methods=["POST"],
+    )
+
     @app.post("/v1/runtimes/events")
     async def runtime_events(payload: RuntimeEventsWrite) -> StreamingResponse:
         check_scope(payload.manager_scope)
@@ -670,12 +820,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 409,
             )
         return StreamingResponse(
-            _runtime_event_stream(configured, container_id, payload.conversation_id),
+            _runtime_event_stream(
+                configured,
+                container_id,
+                payload.channel,
+                payload.conversation_id,
+                payload.timeout_seconds,
+            ),
             media_type="application/x-ndjson",
             headers={
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
             },
+        )
+
+    @app.post("/v1/runtimes/validate-plugin")
+    async def validate_runtime_plugin(payload: RuntimePluginValidationWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        expected_prefix = (
+            f"/runtime/capabilities/nodes/plugin-probe-{payload.validation_id}/plugins/"
+        )
+        if not payload.plugin_path.startswith(expected_prefix):
+            raise DomainError(
+                "PLUGIN_TARGET_PATH_INVALID",
+                "The Plugin path does not belong to this validation",
+                422,
+            )
+        return validate_owned_runtime_plugin(
+            configured,
+            resource_name=payload.resource_name,
+            resource_id=str(payload.resource_id),
+            validation_id=str(payload.validation_id),
+            plugin_path=payload.plugin_path,
         )
 
     @app.post("/v1/terminals/start")
@@ -739,6 +915,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         gate,
         dependencies,
         runtime_events,
+        validate_runtime_plugin,
         terminal_start,
         terminal_read,
         terminal_write,

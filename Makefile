@@ -1,4 +1,4 @@
-.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image sandbox-smoke web-dev api-dev worker-dev e2e infra-up infra-up-openhands rebuild-deploy infra-down
+.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image openhands-image-provenance openhands-contract-check openhands-smoke sandbox-smoke web-dev api-dev worker-dev e2e infra-up infra-up-openhands rebuild-deploy infra-down
 
 COMPOSE = docker compose --env-file .env -f infra/compose.yaml
 
@@ -46,7 +46,17 @@ dependency-builder-image:
 	docker build -f infra/dependency-builder/Dockerfile -t flowweave-dependency-builder:1 .
 
 openhands-image:
-	docker build --build-context openhands_sdk=$${OPENHANDS_SDK_SOURCE:-../openhands/software-agent-sdk} -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
+	docker build -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
+
+openhands-image-provenance: openhands-image
+	docker image inspect --format='{{.Id}}' flowweave-openhands-runtime:1
+	docker run --rm --entrypoint /bin/sh flowweave-openhands-runtime:1 -c 'cat /runtime/openhands-source-provenance.json'
+
+openhands-contract-check: openhands-image-provenance
+	docker run --rm --entrypoint /runtime/.venv/bin/python flowweave-openhands-runtime:1 /runtime/contract_check.py
+
+openhands-smoke: openhands-image
+	python3 services/platform/scripts/openhands_smoke_check.py
 
 sandbox-smoke: sandbox-images
 	$(COMPOSE) exec -T worker python - < services/platform/scripts/sandbox_smoke_check.py
@@ -68,7 +78,7 @@ rebuild-deploy:
 	docker build --no-cache -f infra/sandbox/python/Dockerfile -t flowweave-sandbox-python:1 .
 	docker build --no-cache -f infra/sandbox/javascript/Dockerfile -t flowweave-sandbox-javascript:1 .
 	docker build --no-cache -f infra/dependency-builder/Dockerfile -t flowweave-dependency-builder:1 .
-	docker build --no-cache --build-context openhands_sdk=$${OPENHANDS_SDK_SOURCE:-../openhands/software-agent-sdk} -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
+	docker build --no-cache -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
 	$(COMPOSE) build --no-cache migration sandbox-controller api worker web
 	$(COMPOSE) up -d --force-recreate --remove-orphans postgres workspace-init migration openhands-agent-server sandbox-controller api worker web
 
