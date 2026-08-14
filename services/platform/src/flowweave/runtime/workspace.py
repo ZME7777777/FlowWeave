@@ -34,6 +34,28 @@ _HOOK_EVENTS = (
     "session_end",
     "stop",
 )
+_HOOK_METADATA_KEYS = {
+    "description",
+    "hook_set_schema_version",
+    "openhands_version",
+    "source_commit",
+    "allowed_events",
+    "runtime_mutation",
+    "script_files",
+    "script_hashes",
+    "script_archive_prefix",
+    "package_format",
+    "storage_key",
+    "capability_id",
+    "capability_version_id",
+    "package_id",
+    "version_no",
+    "digest",
+    "filename",
+    "content_hash",
+}
+_HOOK_OPENHANDS_VERSION = "1.42.0"
+_HOOK_SOURCE_COMMIT = "f09e03eac772290feeb51b7d7390ffaefeca1a09"
 _MCP_KEYS = {
     "url",
     "transport",
@@ -831,6 +853,15 @@ def materialize_hook_config(asset: dict[str, Any]) -> dict[str, list[dict[str, A
         try:
             commands = _extract_hook_scripts(capability, host_directory, runtime_directory)
             normalized = cast(dict[str, Any], capability.get("normalized_config") or {})
+            if (
+                normalized.get("hook_set_schema_version") != 1
+                or normalized.get("openhands_version") != _HOOK_OPENHANDS_VERSION
+                or normalized.get("source_commit") != _HOOK_SOURCE_COMMIT
+                or normalized.get("runtime_mutation") != "FORBIDDEN"
+                or normalized.get("allowed_events") != sorted(_HOOK_EVENTS)
+                or set(normalized) - set(_HOOK_EVENTS) - _HOOK_METADATA_KEYS
+            ):
+                raise ValueError("Hook Set must be republished against OpenHands 1.42.0")
             for event in _HOOK_EVENTS:
                 raw_matchers = normalized.get(event)
                 if not isinstance(raw_matchers, list):

@@ -39,6 +39,18 @@ def _asset(storage_key: str, filename: str, digest: str) -> dict[str, object]:
                 "capability_type": "HOOK",
                 "capability_key": "guardrails",
                 "normalized_config": {
+                    "hook_set_schema_version": 1,
+                    "openhands_version": "1.42.0",
+                    "source_commit": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+                    "allowed_events": [
+                        "post_tool_use",
+                        "pre_tool_use",
+                        "session_end",
+                        "session_start",
+                        "stop",
+                        "user_prompt_submit",
+                    ],
+                    "runtime_mutation": "FORBIDDEN",
                     "pre_tool_use": [
                         {
                             "matcher": "terminal",
@@ -156,6 +168,28 @@ def test_hook_script_materialization_rejects_digest_mismatch(tmp_path: Path):
     store = LocalArtifactStore(tmp_path / "artifacts")
     storage_key = store.put("capability-imports/hook.zip", _bundle("check.py", content))
     asset = _asset(storage_key, "check.py", hashlib.sha256(b"expected").hexdigest())
+
+    with (
+        settings_context(settings),
+        artifact_store_context(store),
+        pytest.raises(DomainError) as raised,
+    ):
+        materialize_hook_config(asset)
+
+    assert raised.value.code == "RUNTIME_CAPABILITY_UNAVAILABLE"
+
+
+def test_hook_materialization_rejects_unversioned_hook_set(tmp_path: Path):
+    content = b"print('allow')\n"
+    settings = Settings(
+        workspace_root=tmp_path / "workspaces",
+        openhands_workspace_root=Path("/workspaces"),
+    )
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    storage_key = store.put("capability-imports/hook.zip", _bundle("check.py", content))
+    asset = _asset(storage_key, "check.py", hashlib.sha256(content).hexdigest())
+    normalized = asset["capabilities"][0]["normalized_config"]  # type: ignore[index]
+    normalized.pop("hook_set_schema_version")  # type: ignore[union-attr]
 
     with (
         settings_context(settings),

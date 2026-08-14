@@ -16,19 +16,23 @@ from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
 from flowweave.shared.schemas import (
+    ConversationAskAgentWrite,
     ConversationCondenseWrite,
     ConversationCreateWrite,
     ConversationForkWrite,
+    ConversationGoalWrite,
     ConversationPatchWrite,
     ConversationReviseWrite,
     ConversationStopWrite,
     MessageSendWrite,
+    RuntimeDiagnosticQueryRead,
     RuntimeSubagentTaskRead,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
 Actor = Annotated[str | None, Header(alias="X-Actor-ID")]
+RequiredActor = Annotated[str, Header(alias="X-Actor-ID", min_length=1, max_length=160)]
 ContainerDep = Annotated[Container, Depends(get_container)]
 
 
@@ -231,6 +235,60 @@ async def condense_conversation(
             _key(idempotency_key, "condense-conversation", conversation_id),
             actor,
         ),
+    )
+
+
+@router.post("/agent-conversations/{conversation_id}/goal", status_code=202)
+async def control_goal(
+    conversation_id: str,
+    payload: ConversationGoalWrite,
+    db: Db,
+    actor: RequiredActor,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.request_goal_command(
+            session,
+            conversation_id,
+            payload,
+            _key(idempotency_key, "control-goal", conversation_id),
+            actor,
+        ),
+    )
+
+
+@router.post(
+    "/agent-conversations/{conversation_id}/ask-agent",
+    status_code=202,
+    response_model=RuntimeDiagnosticQueryRead,
+)
+async def ask_agent(
+    conversation_id: str,
+    payload: ConversationAskAgentWrite,
+    db: Db,
+    actor: RequiredActor,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.request_ask_agent(
+            session,
+            conversation_id,
+            payload,
+            _key(idempotency_key, "ask-agent", conversation_id),
+            actor,
+        ),
+    )
+
+
+@router.get(
+    "/runtime-diagnostic-queries/{query_id}",
+    response_model=RuntimeDiagnosticQueryRead,
+)
+async def diagnostic_query(query_id: str, db: Db, actor: RequiredActor) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.get_diagnostic_query(session, query_id, actor)
     )
 
 

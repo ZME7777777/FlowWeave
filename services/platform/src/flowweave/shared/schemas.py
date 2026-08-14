@@ -626,6 +626,48 @@ class ConversationCondenseWrite(ApiModel):
     expected_conversation_version: int = Field(ge=1)
 
 
+class ConversationGoalWrite(ApiModel):
+    expected_conversation_version: int = Field(ge=1)
+    action: Literal["START", "STOP", "RESUME"]
+    objective: str | None = Field(default=None, max_length=20_000)
+    max_iterations: int = Field(default=10, ge=1, le=20)
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_cost_usd: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_goal_action(self) -> ConversationGoalWrite:
+        if self.action == "START" and not (self.objective or "").strip():
+            raise ValueError("Goal START requires an objective")
+        if self.action != "START" and self.objective is not None:
+            raise ValueError("Goal STOP/RESUME cannot replace the frozen objective")
+        if self.action != "START" and self.model_fields_set.intersection(
+            {"max_iterations", "max_tokens", "max_cost_usd"}
+        ):
+            raise ValueError("Goal STOP/RESUME cannot replace frozen governance limits")
+        return self
+
+
+class ConversationAskAgentWrite(ApiModel):
+    question: str = Field(min_length=1, max_length=20_000)
+    timeout_seconds: int = Field(default=30, ge=1, le=120)
+    output_classification: Literal["INTERNAL", "CONFIDENTIAL", "RESTRICTED"] = "INTERNAL"
+
+
+class RuntimeDiagnosticQueryRead(ApiModel):
+    id: str
+    conversation_id: str
+    output_classification: str
+    timeout_seconds: int
+    state: Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED"]
+    response_text: str | None = None
+    cost_usd: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    error_code: str | None = None
+    created_at: str
+    completed_at: str | None = None
+
+
 class RuntimeSubagentTaskUsageRead(ApiModel):
     runtime_task_id: str
     source_cursor: str | None = None

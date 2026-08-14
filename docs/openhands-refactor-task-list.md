@@ -5,10 +5,10 @@
 ## 状态
 
 - 唯一总目标：按照 OpenHands-first 和产物驱动运行原则重构 FlowWeave，快速修正错误、冗余和重复执行实现；FlowWeave 只作为不可变能力治理、流程/资源/审批/审计和 Artifact 投影控制面，由 OpenHands 原生执行 Agent 能力。
-- 当前主任务：T7 高级产品能力。
-- 当前执行批次：`T7.16 Hook Set 统一版本与验证`
-- 最近验证结果：T7.01–T7.02 已把固定 OpenHands 1.42.0 Profile schema v2 的 16 字段形成显式兼容矩阵；Profile 保持无 Secret、不可变 Version 和显式 Agent 物化，支持追加式修订、复制、退役、版本历史和绑定查询。可变 Server Profile/LLM Store、`agent_profile_id` 与内嵌 Secret 均 fail closed。激活/切换仅选择固定 `version_id + digest`，预览字段差异后生成新 Snapshot 与新 Attempt，记录来源/目标、回滚指针和调用方提供的模型成本对比，不热改既有 Snapshot/Attempt。改动文件 Ruff、Python compile、窄范围 Pyright、OpenAPI 94 paths 生成、四条最小拒绝路径和 `git diff --check` 通过；行为、恢复、成本对比正确性与真实 Runtime 验收留到 T9。T7.03–T7.15 为 `SKIP`，下一批次为 T7.16。
-- 工作区基线：2026-08-12 本会话恢复时为 `master`，已有连续重构改动；当前 Alembic head 为 `0046_tool_policy_catalog`。
+- 当前主任务：T8 产品 API、UI 与文档收口。
+- 当前执行批次：`T8.01–T8.09 产品 API、UI 与文档收口`
+- 最近验证结果：T7.16–T7.19 已冻结 Hook Set、Critic、Goal 与 `ask_agent` 正式契约并完成耐久治理；T7.20–T7.32 已逐项 `DECIDED_NO`。T7.33 已把固定四包 1.42.0、source commit/ref、正式 HTTP operation、`StartConversationRequest` 字段、Server capability 结构和 Snapshot 实际 Tool 集编入不可变 Runtime contract；每次 Conversation 创建前经 `/ready`、`/server_info`、`/openapi.json` 重新协商，不兼容时在任何创建副作用前 fail closed。改动文件 Ruff/compile、窄范围 Pyright、OpenAPI 97 paths 基线、0047 唯一迁移 head、固定 1.42.0 镜像契约（镜像 `sha256:059cbae5eeec46be007f5b477cc8c8af018e684ac719a16678adda1b800c3bef`）、六项最小拒绝路径与 `git diff --check` 通过；行为、恢复竞态、预算精度和真实 Runtime 验收留到 T9。
+- 工作区基线：2026-08-14 当前为 `master`，已有连续重构改动；当前 Alembic head 为 `0047_runtime_agent_governance`。
 
 ## 顶层任务
 
@@ -42,9 +42,9 @@
 | 11.12 Skills / Plugins / Marketplace | 必做 | T3/T4 固定版本、原生 Loader/激活/invoke | T8.01 | PARTIAL |
 | 11.13 Agent/LLM Profile | 必做 | T3 不可变模板和显式物化；T7.01–T7.02 治理/字段矩阵/不可变切换 | T8.03、T9 功能验收 | DONE（实现） |
 | 11.14 ACP Agent | 必做 | 无 | T7.03–T7.08（SKIP） | SKIP |
-| 11.15 Critic / Goal | 已纳入产品 | Critic Policy 冻结基础 | T7.16–T7.18 | PARTIAL |
+| 11.15 Critic / Goal | 已纳入产品 | Critic Policy 与 Hook Set 冻结；T7.16–T7.18 正式事件、控制、预算、恢复和审计 | T9 功能/恢复/真实 Runtime 验收 | DONE（实现） |
 | 11.16 File/Git/Workspace/Trajectory | 必做 | 受管 Workspace/Artifact 基础 | T7.10–T7.13（SKIP） | SKIP |
-| 11.17 运行控制、诊断与预热 | 逐项决定 | 见 T7.19–T7.28 | T7.19–T7.22 | PENDING |
+| 11.17 运行控制、诊断与预热 | 逐项决定 | T7.19 `ask_agent`；T7.20–T7.32 逐项 `DECIDED_NO`；T7.33 Runtime 能力协商 | T9 | DONE（实现） |
 
 ### T1 基线审计与目标 Schema 设计 — IMPLEMENTED
 
@@ -240,7 +240,7 @@ T5 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED
 
 退出条件：T6.01–T6.19 全部为 `DONE` 或 `SKIP`，覆盖账本同步，基本代码门禁通过后将 T6 标为 `IMPLEMENTED` 并把 T7.01 提升为唯一 `CURRENT`；所有功能、集成、恢复与真实 Runtime 验收继续留到 T9。
 
-### T7 高级产品能力 — IN_PROGRESS
+### T7 高级产品能力 — IMPLEMENTED
 
 T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成本与安全代码；普通切片只跑基本代码门禁，完整闭环的行为验证统一在 T9。
 
@@ -270,10 +270,10 @@ T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成�
 
 #### Hook、Critic 与 Goal
 
-- **T7.16 Hook Set 统一版本与验证 — CURRENT**：消除审计矩阵中的 Hook 缺口；Hook 作为不可变 Version 进入 Manifest，冻结兼容性、脚本摘要、事件类型、权限和安全验证，禁止运行时全局修改。
-- **T7.17 Critic 自修复闭环 — READY**：冻结评分对象、阈值、最大精炼次数和预算；投影正式 Critic 事件/得分/费用，崩溃恢复幂等，END Gate 继续作为独立业务判断。
-- **T7.18 Goal loop 治理 — READY**：接入正式 start/stop/resume，限制总轮次、Token、金额、并发和后台重试乘积；Goal 状态、终止原因和人工操作可审计。
-- **T7.19 ask_agent 只读诊断 — READY**：接入不修改 Conversation state 的正式查询，冻结权限、费用、超时、输出分类和审计，不作为绕过 Goal/Gate/cursor 的执行入口。
+- **T7.16 Hook Set 统一版本与验证 — DONE**：消除审计矩阵中的 Hook 缺口；Hook 作为不可变 Version 进入 Manifest，冻结兼容性、脚本摘要、事件类型、权限和安全验证，禁止运行时全局修改。
+- **T7.17 Critic 自修复闭环 — DONE**：冻结评分对象、阈值、最大精炼次数和预算；投影正式 Critic 事件/得分/费用，崩溃恢复幂等，END Gate 继续作为独立业务判断。
+- **T7.18 Goal loop 治理 — DONE**：接入正式 start/stop/resume，限制总轮次、Token、金额、并发和后台重试乘积；Goal 状态、终止原因和人工操作可审计。
+- **T7.19 ask_agent 只读诊断 — DONE**：接入不修改 Conversation state 的正式查询，冻结权限、费用、超时、输出分类和审计，不作为绕过 Goal/Gate/cursor 的执行入口。
 
 #### 第 11.17 节逐项处置
 
@@ -290,21 +290,21 @@ T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成�
 - **T7.30 Hooks API — DECIDED_NO**：运行时全局 Hook 修改会破坏 Snapshot；只允许 T7.16 冻结 Hook Set 随创建请求注入。
 - **T7.31 Warm pool `/api/init` — DECIDED_NO**：当前没有冷启动容量指标证明产品需要共享预热池；本次保持每个受管 Runtime 完整隔离启动，禁止复用含上一租户状态的实例。达到明确规模阈值后另立产品任务。
 - **T7.32 Workspace session Cookie — DECIDED_NO**：Worker 继续使用 Header API Key；VSCode/Desktop 使用 T7.14/T7.15 独立一次性凭据，禁止暴露 OpenHands UI Cookie。
-- **T7.33 Server health/details 与能力协商 — READY**：启动时校验版本、source provenance、正式路由/字段/capability，与 Snapshot 要求不兼容时拒绝调度，替代仅依赖 Compose healthcheck。
+- **T7.33 Server health/details 与能力协商 — DONE**：启动时校验版本、source provenance、正式路由/字段/capability，与 Snapshot 要求不兼容时拒绝调度，替代仅依赖 Compose healthcheck。
 
 退出条件：除有明确回归约束的 `DECIDED_NO` 和正式证据支撑的 `UPSTREAM_BLOCKED` 外，T7.01–T7.33 全部为 `DONE`；随后将 T7 标为 `IMPLEMENTED`，把 T8.01 提升为唯一 `CURRENT`。
 
-### T8 产品 API、UI 与文档收口 — PENDING
+### T8 产品 API、UI 与文档收口 — IN_PROGRESS
 
-- **T8.01 Marketplace 目录浏览与导入 UI — READY**：浏览固定目录 commit、选择条目、展示双层 provenance/验证结果并发布 Version，不展示或加载浮动安装态。
-- **T8.02 Tool Policy 与 Browser UI — READY**：编辑 Tool allowlist、读写/确认/并发/网络/Artifact 策略，展示实际有效 Snapshot 与拒绝原因。
-- **T8.03 Profile 与 ACP UI — READY**：Profile Version 差异/激活、ACP Provider/兼容矩阵/Session 状态和成本可见，不暴露 Secret 或任意 command。
-- **T8.04 原生分支与 Navigate UI — READY**：明确 Native Fork、Semantic Fork 和 Navigate 风险，展示 source event/head、继承范围和审计。
-- **T8.05 Usage、预算与 Trace UI — READY**：Run/Node/Attempt/Conversation/Task 对账视图、费用拆分、预算状态和 trace 跳转，避免父子双计。
-- **T8.06 实时连接与恢复 UI — READY**：展示 WebSocket 仅为唤醒、REST cursor 同步状态、断线退化和恢复，不把连接状态当执行事实。
-- **T8.07 Runtime 诊断与 Artifact UI — READY**：Browser、Bash、File/Git/Workspace/Trajectory 的授权操作、来源标识、导出审批和生命周期状态。
-- **T8.08 Critic/Goal/IDE/Desktop UI — READY**：展示自修复/Goal 预算与事件，以及 VSCode/Desktop 一次性访问、撤销和回收状态。
-- **T8.09 契约与文档一致性 — READY**：逐项生成/比对 OpenAPI 和前端类型，删除旧 UI/文本分叉/固定 Tool/旧协议入口，更新系统设计、运维和安全文档及第 11 章覆盖账本。
+- **T8.01 Marketplace 目录浏览与导入 UI — CURRENT**：浏览固定目录 commit、选择条目、展示双层 provenance/验证结果并发布 Version，不展示或加载浮动安装态。
+- **T8.02 Tool Policy 与 Browser UI — CURRENT**：编辑 Tool allowlist、读写/确认/并发/网络/Artifact 策略，展示实际有效 Snapshot 与拒绝原因。
+- **T8.03 Profile 与 ACP UI — CURRENT**：Profile Version 差异/激活、ACP Provider/兼容矩阵/Session 状态和成本可见，不暴露 Secret 或任意 command。
+- **T8.04 原生分支与 Navigate UI — CURRENT**：明确 Native Fork、Semantic Fork 和 Navigate 风险，展示 source event/head、继承范围和审计。
+- **T8.05 Usage、预算与 Trace UI — CURRENT**：Run/Node/Attempt/Conversation/Task 对账视图、费用拆分、预算状态和 trace 跳转，避免父子双计。
+- **T8.06 实时连接与恢复 UI — CURRENT**：展示 WebSocket 仅为唤醒、REST cursor 同步状态、断线退化和恢复，不把连接状态当执行事实。
+- **T8.07 Runtime 诊断与 Artifact UI — CURRENT**：Browser、Bash、File/Git/Workspace/Trajectory 的授权操作、来源标识、导出审批和生命周期状态。
+- **T8.08 Critic/Goal/IDE/Desktop UI — CURRENT**：展示自修复/Goal 预算与事件，以及 VSCode/Desktop 一次性访问、撤销和回收状态。
+- **T8.09 契约与文档一致性 — CURRENT**：逐项生成/比对 OpenAPI 和前端类型，删除旧 UI/文本分叉/固定 Tool/旧协议入口，更新系统设计、运维和安全文档及第 11 章覆盖账本。
 
 退出条件：T8.01–T8.09 全部为 `DONE`，受影响文件的基本 lint/typecheck 和 API schema 可生成后标为 `IMPLEMENTED`；完整 Web build、API 行为和 E2E 留到 T9。
 
@@ -414,3 +414,4 @@ T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成�
 | 2026-08-13 | T6.06 原生 Conversation Fork | 固定 1.42.0 镜像 Fork 请求/服务契约探针；改动文件 Ruff format/check；生产文件窄范围 Pyright；应用 OpenAPI schema 生成/基线比对；`uv run python scripts/migration_check.py`；`alembic heads`；`git diff --check` | PASS：正式 `/fork` 的 `id`、`reset_metrics`、`from_event_id` 和来源/HEAD identity 契约通过；平台预分配目标 UUID，冻结源 HEAD/Event 并以 409 后正式身份核对恢复，漂移 fail closed；共享 Runtime Sandbox 引用保护通过静态门禁；0 类型错误；OpenAPI 86 paths；空库、往返和历史路径升级至唯一 `0045_runtime_conversation_forks` head。行为、恢复竞态与真实 fork E2E 留到 T9 |
 | 2026-08-13 | T6.15–T6.16 Tool Catalog / 并发治理 | 改动文件 Ruff format/check、Python compile、窄范围 Pyright、Tool Policy 最小拒绝 pytest、`uv run python scripts/migration_check.py`、`alembic heads`、`make openhands-contract-check`、`git diff --check` | PASS：未知/禁用 Tool、串行 Tool 并发和写 Tool 关闭确认均拒绝；只读 Tool 并发策略可冻结；0 类型错误；空库、0005 往返与 0028 历史路径均升级至唯一 `0046_tool_policy_catalog` head；固定四包 1.42.0、15 项 catalog、并发字段、资源锁与空动态模块映射契约通过，镜像 ID `sha256:9c3ddab2...d7dce`。Workspace 竞争和真实 Runtime 功能验收留到 T9 |
 | 2026-08-13 | T7.01–T7.02 Profile 治理与不可变切换 | 改动文件 Ruff format/check、Python compile、窄范围 Pyright、OpenAPI 生成、可变 Store/Secret 最小拒绝探针、`alembic heads`、`git diff --check` | PASS：固定 Profile schema v2 的 16 字段形成兼容矩阵；可变 LLM/Profile Store、顶层及嵌套 Secret 均拒绝；Profile 支持追加式修订/复制/退役/历史/绑定查询；固定 Version/digest 的切换生成新 Snapshot 与 Attempt并保存差异、成本对比和回滚指针；0 类型错误，OpenAPI 94 paths，迁移仍为唯一 `0046_tool_policy_catalog` head。行为、恢复和真实 Runtime 验收留到 T9 |
+| 2026-08-13 | T7.33 Server health/details 与能力协商 | 改动文件 Ruff format/check、Python compile、窄范围 Pyright、6 项最小拒绝 pytest、OpenAPI 生成/基线比对、`alembic heads`、`make openhands-contract-check`、状态唯一性检查、`git diff --check` | PASS：固定四包 1.42.0、source commit/ref、正式 HTTP operation、创建字段、Server capability 结构与 Snapshot 实际 Tool 集进入不可变 Runtime contract；每次 Conversation 创建前重新协商，缺失/漂移在零创建副作用时 fail closed；OpenAPI 97 paths，0047 为唯一 head；固定镜像 ID `sha256:059cbae5eeec46be007f5b477cc8c8af018e684ac719a16678adda1b800c3bef`。真实 Runtime 与完整恢复验收留到 T9 |

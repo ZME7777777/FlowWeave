@@ -96,7 +96,7 @@ services:
       - ../agent-packages:/agent-packages:ro
     expose: ["8000"]
     healthcheck:
-      test: ["CMD", "/runtime/.venv/bin/python", "-c", "import os,urllib.request;r=urllib.request.Request('http://localhost:8000/openapi.json',headers={'X-Session-API-Key':os.environ['SESSION_API_KEY']});assert urllib.request.urlopen(r,timeout=3).status==200"]
+      test: ["CMD", "/runtime/.venv/bin/python", "-c", "import json,os,urllib.request;h={'X-Session-API-Key':os.environ['SESSION_API_KEY']};ready=json.load(urllib.request.urlopen(urllib.request.Request('http://localhost:8000/ready',headers=h),timeout=3));info=json.load(urllib.request.urlopen(urllib.request.Request('http://localhost:8000/server_info',headers=h),timeout=3));assert ready.get('status')=='ready';assert info.get('build_git_sha')==os.environ['OPENHANDS_BUILD_GIT_SHA']"]
       interval: 5s
       timeout: 5s
       retries: 20

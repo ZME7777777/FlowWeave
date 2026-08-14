@@ -28,6 +28,7 @@ from flowweave.modules.conversations.domain.enums import (
     MessageSource,
     MessageType,
 )
+from flowweave.modules.conversations.infrastructure.models import RuntimeGoalCommand
 from flowweave.modules.tasks.application.service import Lease
 from flowweave.runtime.base import (
     RuntimeEvent,
@@ -55,6 +56,7 @@ from flowweave.shared.models import (
     TaskState,
     TerminalEnvironment,
 )
+from flowweave.shared.schemas import ConversationAskAgentWrite, ConversationGoalWrite
 from flowweave.shared.settings import settings_context
 
 
@@ -277,6 +279,105 @@ def _prepare_manual_condensation(client, db_session_factory):
         lease = Lease(task.id, task.lease_owner, task.lease_generation)
         db.commit()
     return conversation_id, command_id, lease
+
+
+def _ready_human_conversation(client, db_session_factory) -> tuple[str, int]:
+    run_id, attempt_id = _create_run(client, None)
+    attempt = client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
+    created = client.post(
+        f"/api/v1/node-attempts/{attempt_id}/conversations",
+        json={"expected_attempt_state_version": attempt["state_version"]},
+        headers={"Idempotency-Key": f"governance-conversation-{uuid4()}"},
+    )
+    assert created.status_code == 202, created.text
+    conversation_id = created.json()["id"]
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None
+        conversation.state = ConversationState.IDLE
+        conversation.state_version += 1
+        conversation.runtime_adapter = "mock"
+        conversation.runtime_job_id = f"mock-job-{conversation_id}"
+        conversation.runtime_conversation_id = f"mock-runtime-{conversation_id}"
+        conversation.runtime_cursor = "event-0"
+        db.execute(
+            delete(BackgroundTask).where(
+                BackgroundTask.aggregate_id == conversation_id,
+                BackgroundTask.task_type == "CREATE_CONVERSATION",
+            )
+        )
+        version = conversation.state_version
+        db.commit()
+    return conversation_id, version
+
+
+def test_goal_and_ask_agent_require_authenticated_actor(client, db_session_factory):
+    conversation_id, version = _ready_human_conversation(client, db_session_factory)
+    with db_session_factory() as db:
+        from flowweave.modules.conversations.application.service import (
+            request_ask_agent,
+            request_goal_command,
+        )
+
+        with pytest.raises(DomainError) as goal_error:
+            request_goal_command(
+                db,
+                conversation_id,
+                ConversationGoalWrite(
+                    expected_conversation_version=version,
+                    action="START",
+                    objective="Review the current result",
+                ),
+                f"goal-no-actor-{uuid4()}",
+                None,
+            )
+        assert goal_error.value.code == "GOAL_ACTOR_REQUIRED"
+        with pytest.raises(DomainError) as diagnostic_error:
+            request_ask_agent(
+                db,
+                conversation_id,
+                ConversationAskAgentWrite(question="What remains?"),
+                f"ask-no-actor-{uuid4()}",
+                None,
+            )
+        assert diagnostic_error.value.code == "DIAGNOSTIC_ACTOR_REQUIRED"
+
+
+def test_message_send_rejects_active_goal(client, db_session_factory):
+    from flowweave.modules.conversations.application.service import send_message
+    from flowweave.shared.schemas import MessageSendWrite, TextPartWrite
+
+    conversation_id, version = _ready_human_conversation(client, db_session_factory)
+    with db_session_factory() as db:
+        conversation = db.get(AgentConversation, conversation_id)
+        assert conversation is not None and conversation.runtime_conversation_id is not None
+        db.add(
+            RuntimeGoalCommand(
+                attempt_id=conversation.attempt_id,
+                conversation_id=conversation.id,
+                runtime_conversation_id=conversation.runtime_conversation_id,
+                action="START",
+                objective="Review the current result",
+                max_iterations=2,
+                state="RUNNING",
+                idempotency_key=f"active-goal-{uuid4()}",
+                requested_by="actor-1",
+            )
+        )
+        db.flush()
+        with pytest.raises(DomainError) as raised:
+            send_message(
+                db,
+                conversation_id,
+                MessageSendWrite(
+                    expected_conversation_version=version,
+                    client_message_id=str(uuid4()),
+                    content=[TextPartWrite(type="text", text="continue")],
+                ),
+                f"message-during-goal-{uuid4()}",
+                "actor-1",
+            )
+        assert raised.value.code == "CONVERSATION_GOAL_ACTIVE"
 
 
 class _ControlledCondensationRuntime(MockRuntime):

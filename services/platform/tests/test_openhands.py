@@ -42,6 +42,15 @@ def database():
     yield
 
 
+@pytest.fixture(autouse=True)
+def runtime_contract_negotiation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy payload tests focused on their original protocol slice."""
+
+    monkeypatch.setattr(
+        OpenHandsRuntime, "_negotiate_runtime_contract", lambda *args, **kwargs: None
+    )
+
+
 @pytest.fixture
 def openhands_settings(tmp_path) -> Settings:
     """OpenHands adapter tests do not require PostgreSQL or Docker."""

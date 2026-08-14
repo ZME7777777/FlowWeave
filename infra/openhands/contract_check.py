@@ -38,6 +38,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StartGoalRequest,
 )
+from openhands.agent_server.server_details_router import ServerInfo
 from openhands.agent_server.sockets import bash_events_socket, events_socket
 from openhands.sdk import AgentContext
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
@@ -90,6 +91,7 @@ from openhands.sdk.tool.builtins.invoke_skill import (
 from openhands.sdk.tool.registry import (
     get_tool_module_qualnames,
     list_registered_tools,
+    list_usable_tools,
     resolve_tool,
 )
 from openhands.sdk.tool.spec import Tool
@@ -101,9 +103,7 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 EXPECTED_VERSION = "1.42.0"
 EXPECTED_UPSTREAM_BASE = "f09e03eac772290feeb51b7d7390ffaefeca1a09"
-EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
-)
+EXPECTED_SOURCE_ARCHIVE_SHA256 = "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
 PACKAGES = (
     "openhands-agent-server",
     "openhands-sdk",
@@ -111,6 +111,8 @@ PACKAGES = (
     "openhands-workspace",
 )
 REQUIRED_PATHS = {
+    "/ready",
+    "/server_info",
     "/api/conversations",
     "/api/conversations/{conversation_id}/condense",
     "/api/conversations/{conversation_id}/events/respond_to_confirmation",
@@ -120,6 +122,7 @@ REQUIRED_PATHS = {
     "/api/conversations/{conversation_id}/goal",
     "/api/conversations/{conversation_id}/goal/resume",
     "/api/conversations/{conversation_id}/goal/stop",
+    "/api/conversations/{conversation_id}/ask_agent",
     "/api/mcp/test",
     "/api/mcp/oauth/start",
     "/api/mcp/oauth/status/{job_id}",
@@ -180,22 +183,31 @@ def _field_default(model: type[object], name: str) -> object:
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
+    assert os.environ.get("OPENHANDS_BUILD_GIT_SHA") == EXPECTED_UPSTREAM_BASE
+    assert os.environ.get("OPENHANDS_BUILD_GIT_REF") == EXPECTED_UPSTREAM_BASE
     event_socket_parameters = signature(events_socket).parameters
     bash_socket_parameters = signature(bash_events_socket).parameters
     assert {"resend_mode", "after_timestamp"} <= set(event_socket_parameters)
     assert "resend_mode" in bash_socket_parameters
     assert "after_timestamp" not in bash_socket_parameters
     assert set(BashEventPage.model_fields) == {"items", "next_page_id"}
+    server_info = ServerInfo(uptime=0, idle_time=0)
+    assert server_info.version == EXPECTED_VERSION
+    assert server_info.sdk_version == EXPECTED_VERSION
+    assert server_info.tools_version == EXPECTED_VERSION
+    assert server_info.workspace_version == EXPECTED_VERSION
+    assert server_info.build_git_sha == EXPECTED_UPSTREAM_BASE
+    assert server_info.build_git_ref == EXPECTED_UPSTREAM_BASE
+    assert server_info.usable_tools == list_usable_tools()
+    assert len(server_info.usable_tools) == len(set(server_info.usable_tools))
+    assert {"file_editor", "task_tracker", "terminal"} <= set(server_info.usable_tools)
+    assert len(server_info.capabilities) == len(set(server_info.capabilities))
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)
     socket_source = event_socket_source + bash_socket_source
-    assert (
-        '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
-    )
+    assert '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
     assert '@sockets_router.websocket("/bash-events")' in bash_socket_source
-    assert (
-        "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
-    )
+    assert "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
     provenance = json.loads(
         Path("/runtime/openhands-source-provenance.json").read_text(encoding="utf-8")
     )
@@ -208,9 +220,7 @@ def main() -> None:
     assert set(provenance["overlays"]) == {"patch_ambient_plugins.py"}
     direct_urls = {}
     for package in PACKAGES:
-        direct_url = json.loads(
-            distribution(package).read_text("direct_url.json") or "{}"
-        )
+        direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
         expected_url = f"file:///opt/openhands-source/{package}"
         assert direct_url.get("url") == expected_url, (package, direct_url)
         direct_urls[package] = direct_url["url"]
@@ -219,12 +229,26 @@ def main() -> None:
 
     schema = create_app().openapi()
     paths = set(schema["paths"])
+    assert {"/ready", "/server_info"} <= paths
     missing_paths = sorted(REQUIRED_PATHS - paths)
     assert not missing_paths, {"missing_paths": missing_paths}
+    assert set(schema["paths"]["/ready"]) == {"get"}
+    assert set(schema["paths"]["/server_info"]) == {"get"}
+    server_info_schema = schema["components"]["schemas"]["ServerInfo"]
+    assert {
+        "version",
+        "sdk_version",
+        "tools_version",
+        "workspace_version",
+        "build_git_sha",
+        "build_git_ref",
+        "usable_tools",
+        "capabilities",
+    } <= set(server_info_schema["properties"])
     mcp_test_operation = schema["paths"]["/api/mcp/test"]["post"]
-    assert mcp_test_operation["requestBody"]["content"]["application/json"][
-        "schema"
-    ] == {"$ref": "#/components/schemas/MCPTestRequest"}
+    assert mcp_test_operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/MCPTestRequest"
+    }
     mcp_schemas = schema["components"]["schemas"]
     mcp_request = mcp_schemas["MCPTestRequest"]
     assert set(mcp_request["properties"]) == {
@@ -235,9 +259,7 @@ def main() -> None:
     }
     assert mcp_request["required"] == ["server"]
     assert mcp_request["properties"]["timeout"]["default"] == 15.0
-    mcp_response = mcp_test_operation["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]
+    mcp_response = mcp_test_operation["responses"]["200"]["content"]["application/json"]["schema"]
     assert mcp_response["discriminator"]["propertyName"] == "ok"
     assert mcp_response["oneOf"] == [
         {"$ref": "#/components/schemas/MCPTestSuccess"},
@@ -321,9 +343,7 @@ def main() -> None:
     }
     assert set(MCPOAuthCallbackRequest.model_fields) == {"callback_url"}
     task_http_paths = sorted(
-        path
-        for path in paths
-        if "sub-agent" in path or "subagent" in path or "/tasks" in path
+        path for path in paths if "sub-agent" in path or "subagent" in path or "/tasks" in path
     )
     # The pinned OpenHands source exposes only the Agent Definition catalog.
     # Running TaskToolSet children remain internal blocking LocalConversations;
@@ -338,6 +358,12 @@ def main() -> None:
     ]
     for path in goal_http_paths:
         assert set(schema["paths"][path]) == {"post"}
+    ask_agent_path = "/api/conversations/{conversation_id}/ask_agent"
+    assert set(schema["paths"][ask_agent_path]) == {"post"}
+    ask_request_schema = schema["components"]["schemas"]["AskAgentRequest"]
+    ask_response_schema = schema["components"]["schemas"]["AskAgentResponse"]
+    assert ask_request_schema["required"] == ["question"]
+    assert ask_response_schema["required"] == ["response"]
 
     confirmation_fields = ConfirmationResponseRequest.model_fields
     assert set(confirmation_fields) == {"accept", "reason"}
@@ -348,9 +374,7 @@ def main() -> None:
     missing_start_fields = sorted(REQUIRED_START_FIELDS - start_fields)
     assert not missing_start_fields, {"missing_start_fields": missing_start_fields}
     assert _field_default(StartConversationRequest, "load_ambient_plugins") is True
-    assert isinstance(
-        _field_default(StartConversationRequest, "confirmation_policy"), NeverConfirm
-    )
+    assert isinstance(_field_default(StartConversationRequest, "confirmation_policy"), NeverConfirm)
     profile_http_methods = {
         path: sorted(schema["paths"][path])
         for path in REQUIRED_PATHS
@@ -445,17 +469,13 @@ def main() -> None:
     except ValueError:
         pass
     else:
-        raise AssertionError(
-            "OpenHands unexpectedly accepts agent and agent_profile_id together"
-        )
+        raise AssertionError("OpenHands unexpectedly accepts agent and agent_profile_id together")
     plugin_source_fields = PluginSource.model_fields
     assert set(plugin_source_fields) == {"source", "ref", "repo_path"}
     assert plugin_source_fields["source"].is_required()
     assert plugin_source_fields["ref"].default is None
     assert plugin_source_fields["repo_path"].default is None
-    local_plugin = PluginSource(
-        source="/runtime/capabilities/nodes/node-1/plugins/review"
-    )
+    local_plugin = PluginSource(source="/runtime/capabilities/nodes/node-1/plugins/review")
     assert local_plugin.model_dump(mode="json", exclude_none=True) == {
         "source": "/runtime/capabilities/nodes/node-1/plugins/review"
     }
@@ -489,9 +509,7 @@ def main() -> None:
         assert fetched_marketplace.resolved_ref == marketplace_commit
         marketplace_plugin = fetched_marketplace.marketplace.get_plugin("review")
         assert marketplace_plugin is not None
-        assert fetched_marketplace.marketplace.resolve_plugin_source(
-            marketplace_plugin
-        ) == (
+        assert fetched_marketplace.marketplace.resolve_plugin_source(marketplace_plugin) == (
             str(marketplace_root / "plugins/review"),
             None,
             None,
@@ -519,10 +537,13 @@ def main() -> None:
         DeclaredResources(keys=(), declared=False),
         SimpleNamespace(name="undeclared"),  # type: ignore[arg-type]
     ) == ["tool:undeclared"]
-    assert ParallelToolExecutor._resolve_lock_keys(  # noqa: SLF001
-        DeclaredResources(keys=(), declared=True),
-        SimpleNamespace(name="read-only"),  # type: ignore[arg-type]
-    ) == []
+    assert (
+        ParallelToolExecutor._resolve_lock_keys(  # noqa: SLF001
+            DeclaredResources(keys=(), declared=True),
+            SimpleNamespace(name="read-only"),  # type: ignore[arg-type]
+        )
+        == []
+    )
     assert ParallelToolExecutor._resolve_lock_keys(  # noqa: SLF001
         DeclaredResources(keys=("file:/tmp/a",), declared=True),
         SimpleNamespace(name="file-editor"),  # type: ignore[arg-type]
@@ -557,10 +578,7 @@ def main() -> None:
             objective="Verify the governed result",
         ).model_dump(),
     )
-    assert (
-        goal_event.model_dump(mode="json", exclude_none=True)["value"]["status"]
-        == "running"
-    )
+    assert goal_event.model_dump(mode="json", exclude_none=True)["value"]["status"] == "running"
 
     agent_context_fields = AgentContext.model_fields
     assert {"load_memory", "memory_context"} <= set(agent_context_fields)
@@ -614,13 +632,9 @@ def main() -> None:
     except ValueError:
         pass
     else:
-        raise AssertionError(
-            "OpenHands iterative refinement unexpectedly accepts zero iterations"
-        )
+        raise AssertionError("OpenHands iterative refinement unexpectedly accepts zero iterations")
     critic = AgentFinishedCritic(
-        iterative_refinement=IterativeRefinementConfig(
-            success_threshold=0.7, max_iterations=2
-        )
+        iterative_refinement=IterativeRefinementConfig(success_threshold=0.7, max_iterations=2)
     )
     assert critic.model_dump(mode="json", exclude_none=True) == {
         "kind": "AgentFinishedCritic",
@@ -673,8 +687,7 @@ def main() -> None:
         "conversation",
     }
     assert not any(
-        hasattr(TaskManager, name)
-        for name in ("cancel_task", "interrupt_task", "pause_task")
+        hasattr(TaskManager, name) for name in ("cancel_task", "interrupt_task", "pause_task")
     )
     assert list(signature(TaskExecutor.__call__).parameters) == [
         "self",
@@ -743,18 +756,14 @@ def main() -> None:
     # index from that directory.  Existing durable child data therefore does
     # not constitute a service-restart resume contract.
     with TemporaryDirectory() as parent_persistence_dir:
-        persisted_subagent_dir = (
-            Path(parent_persistence_dir) / "subagents" / "persisted-child"
-        )
+        persisted_subagent_dir = Path(parent_persistence_dir) / "subagents" / "persisted-child"
         persisted_subagent_dir.mkdir(parents=True)
         (persisted_subagent_dir / "events.jsonl").write_text(
             "persisted child state\n", encoding="utf-8"
         )
         restarted_manager = TaskManager()
         restarted_manager.attach_parent(
-            SimpleNamespace(
-                state=SimpleNamespace(persistence_dir=Path(parent_persistence_dir))
-            )  # type: ignore[arg-type]
+            SimpleNamespace(state=SimpleNamespace(persistence_dir=Path(parent_persistence_dir)))  # type: ignore[arg-type]
         )
         assert restarted_manager._persistence_dir == (  # noqa: SLF001
             Path(parent_persistence_dir) / "subagents"
@@ -768,9 +777,7 @@ def main() -> None:
         except ValueError as exc:
             assert "Task 'task_00000001' not found" in str(exc)
         else:
-            raise AssertionError(
-                "a restarted TaskManager unexpectedly restored a Task identity"
-            )
+            raise AssertionError("a restarted TaskManager unexpectedly restored a Task identity")
 
     class CompletedTaskManager:
         def start_task(self, **kwargs: object) -> SimpleNamespace:
@@ -968,9 +975,7 @@ def main() -> None:
             "metadata": {},
         }
     )
-    assert governed_definition.model_dump(mode="json")["condenser"] == {
-        "kind": "NoOpCondenser"
-    }
+    assert governed_definition.model_dump(mode="json")["condenser"] == {"kind": "NoOpCondenser"}
 
     expected_condenser_defaults = {
         "max_size": 240,
@@ -981,8 +986,7 @@ def main() -> None:
         "hard_context_reset_context_scaling": 0.8,
     }
     actual_condenser_defaults = {
-        name: _field_default(LLMSummarizingCondenser, name)
-        for name in expected_condenser_defaults
+        name: _field_default(LLMSummarizingCondenser, name) for name in expected_condenser_defaults
     }
     assert actual_condenser_defaults == expected_condenser_defaults
 
@@ -1029,6 +1033,8 @@ def main() -> None:
                 "source_commit": build_input["source_commit"],
                 "source_archive_sha256": provenance["source_archive_sha256"],
                 "source_direct_urls": direct_urls,
+                "server_info_source_commit": server_info.build_git_sha,
+                "server_info_capabilities": sorted(server_info.capabilities),
                 "required_path_count": len(REQUIRED_PATHS),
                 "required_websocket_paths": sorted(REQUIRED_WEBSOCKET_PATHS),
                 "conversation_websocket_since_replay": True,

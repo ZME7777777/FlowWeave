@@ -5,6 +5,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from flowweave.runtime.base import (
+    RuntimeAskAgentResult,
     RuntimeEventBatch,
     RuntimeForkResult,
     RuntimeHandle,
@@ -173,6 +174,21 @@ class MockRuntime:
         result = RuntimeResult(status="RUNNING", cursor=handle.cursor)
         self._results[handle.job_id] = result
         return result
+
+    def start_goal(self, handle: RuntimeHandle, objective: str, max_iterations: int) -> None:
+        del handle, objective, max_iterations
+
+    def stop_goal(self, handle: RuntimeHandle) -> None:
+        del handle
+
+    def resume_goal(self, handle: RuntimeHandle) -> None:
+        del handle
+
+    def ask_agent(
+        self, handle: RuntimeHandle, question: str, *, timeout_seconds: float
+    ) -> RuntimeAskAgentResult:
+        del handle, timeout_seconds
+        return RuntimeAskAgentResult(response=f"Mock diagnostic: {question}")
 
     def fork_conversation(
         self,

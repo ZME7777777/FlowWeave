@@ -5,6 +5,7 @@ import hashlib
 import json
 from typing import Any, cast
 
+from flowweave.runtime.contract import normalize_runtime_contract
 from flowweave.shared.domain.capability_digest import (
     capability_version_digest,
     normalized_capability_config,
@@ -510,6 +511,19 @@ def runtime_node(
             409,
             {"capability_version_id": policy_version_id},
         )
+    policy_tools = cast(list[dict[str, Any]], normalized_policy["tools"])
+    required_tools = tuple(str(item["name"]) for item in policy_tools)
+    try:
+        normalize_runtime_contract(
+            agent_spec.get("runtime_contract"), required_tools=required_tools
+        )
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Snapshot Runtime contract is invalid",
+            409,
+            {"reason": str(exc)},
+        ) from exc
 
     node = _definition_node(definition, instance_key, snapshot_id)
     raw_asset = node.get("asset")

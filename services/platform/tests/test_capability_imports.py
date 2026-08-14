@@ -486,6 +486,18 @@ def test_hook_config_normalizes_form_json_and_binds_to_node(client):
         {
             "capability_key": "security-guardrails",
             "normalized_config": {
+                "hook_set_schema_version": 1,
+                "openhands_version": "1.42.0",
+                "source_commit": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+                "allowed_events": [
+                    "post_tool_use",
+                    "pre_tool_use",
+                    "session_end",
+                    "session_start",
+                    "stop",
+                    "user_prompt_submit",
+                ],
+                "runtime_mutation": "FORBIDDEN",
                 "pre_tool_use": [
                     {
                         "matcher": "terminal",

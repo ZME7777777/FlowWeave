@@ -36,6 +36,10 @@ from flowweave.modules.conversations.infrastructure.models import (
     RuntimeCondensation,
     RuntimeCondensationCommand,
     RuntimeConversationFork,
+    RuntimeCriticEvaluation,
+    RuntimeDiagnosticQuery,
+    RuntimeGoalCommand,
+    RuntimeGoalStatus,
     RuntimeSubagentTask,
     RuntimeSubagentTaskUsage,
 )
@@ -43,9 +47,11 @@ from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import (
     RuntimeEvent,
+    RuntimeEventBatch,
     RuntimeHandle,
     RuntimeResult,
     RuntimeTaskUsageSnapshot,
+    RuntimeUsageSnapshot,
 )
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import runtime_node
@@ -74,9 +80,11 @@ from flowweave.shared.models import (
     now,
 )
 from flowweave.shared.schemas import (
+    ConversationAskAgentWrite,
     ConversationCondenseWrite,
     ConversationCreateWrite,
     ConversationForkWrite,
+    ConversationGoalWrite,
     ConversationPatchWrite,
     ConversationReviseWrite,
     ConversationStopWrite,
@@ -95,6 +103,17 @@ _WORKSPACE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
 _MESSAGE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
 _MESSAGE_ATTACHMENTS_MAX_BYTES = 20 * 1024 * 1024
 _SAFE_ATTACHMENT_NAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
+_GOAL_USAGE_IDS = frozenset({"ask-agent-llm"})
+
+
+def _usage_totals(
+    usage: tuple[RuntimeUsageSnapshot, ...],
+) -> tuple[float, int]:
+    governed = tuple(item for item in usage if item.usage_id not in _GOAL_USAGE_IDS)
+    return (
+        sum(item.accumulated_cost for item in governed),
+        sum(item.prompt_tokens + item.completion_tokens for item in governed),
+    )
 
 
 @dataclass(frozen=True)
@@ -259,6 +278,26 @@ def _event(
             event_type=event_type,
             payload_json={"conversation_id": conversation.id, **payload},
         )
+    )
+
+
+def _runtime_handle(item: AgentConversation) -> RuntimeHandle:
+    if not item.runtime_conversation_id or not item.runtime_adapter:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_UNAVAILABLE",
+            "Conversation has no available Runtime",
+            409,
+        )
+    return RuntimeHandle(
+        item.runtime_job_id or item.runtime_conversation_id,
+        item.runtime_conversation_id,
+        item.runtime_cursor,
+        runtime_resource_id=item.runtime_sandbox_id or "",
+        runtime_resource_name=(
+            (item.runtime_job_id or "").split(":", 1)[1]
+            if ":" in (item.runtime_job_id or "")
+            else ""
+        ),
     )
 
 
@@ -656,6 +695,19 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
     runtime_selection = cast(
         dict[str, Any], item.context_baseline_json.get("runtime_selection") or {}
     )
+    latest_goal = db.scalar(
+        select(RuntimeGoalStatus)
+        .where(RuntimeGoalStatus.conversation_id == item.id)
+        .order_by(RuntimeGoalStatus.created_at.desc(), RuntimeGoalStatus.id.desc())
+        .limit(1)
+    )
+    critic_evaluations = list(
+        db.scalars(
+            select(RuntimeCriticEvaluation)
+            .where(RuntimeCriticEvaluation.conversation_id == item.id)
+            .order_by(RuntimeCriticEvaluation.created_at, RuntimeCriticEvaluation.id)
+        )
+    )
     return {
         "id": item.id,
         "attempt_id": item.attempt_id,
@@ -701,6 +753,29 @@ def _conversation_dict(db: Session, item: AgentConversation) -> dict[str, Any]:
                     RuntimeCondensationCommand.id,
                 )
             )
+        ],
+        "latest_goal_status": (
+            {
+                "runtime_event_id": latest_goal.runtime_event_id,
+                "active": latest_goal.active,
+                "status": latest_goal.status,
+                "iteration": latest_goal.iteration,
+                "max_iterations": latest_goal.max_iterations,
+                "objective": latest_goal.objective,
+                "verdict": latest_goal.verdict_json,
+            }
+            if latest_goal is not None
+            else None
+        ),
+        "critic_evaluations": [
+            {
+                "runtime_event_id": evaluation.runtime_event_id,
+                "source_type": evaluation.source_type,
+                "score": float(evaluation.score),
+                "message": evaluation.message,
+                "created_at": evaluation.created_at.isoformat(),
+            }
+            for evaluation in critic_evaluations
         ],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -2551,6 +2626,598 @@ def create_conversation(
     return _conversation_dict(db, item)
 
 
+def request_goal_command(
+    db: Session,
+    conversation_id: str,
+    payload: ConversationGoalWrite,
+    idempotency_key: str,
+    actor: str | None,
+) -> dict[str, Any]:
+    if not actor:
+        raise DomainError(
+            "GOAL_ACTOR_REQUIRED",
+            "Goal control requires an authenticated actor",
+            403,
+        )
+    existing = db.scalar(
+        select(RuntimeGoalCommand).where(RuntimeGoalCommand.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        if existing.requested_by != actor:
+            raise DomainError(
+                "GOAL_COMMAND_FORBIDDEN", "Goal command belongs to another actor", 403
+            )
+        return {"id": existing.id, "state": existing.state, "action": existing.action}
+    item = _conversation(db, conversation_id, lock=True)
+    if item.kind == ConversationKind.AUTO or item.state != ConversationState.IDLE:
+        raise DomainError(
+            "GOAL_CONVERSATION_NOT_IDLE", "Goal commands require an idle human conversation", 409
+        )
+    if item.state_version != payload.expected_conversation_version:
+        raise conflict(
+            "conversation was modified",
+            expected=payload.expected_conversation_version,
+            actual=item.state_version,
+        )
+    handle = _runtime_handle(item)
+    active = db.scalar(
+        select(RuntimeGoalCommand).where(
+            RuntimeGoalCommand.conversation_id == item.id,
+            RuntimeGoalCommand.state.in_(("PENDING", "RUNNING")),
+        )
+    )
+    if active is not None and active.action == "STOP":
+        raise DomainError("GOAL_COMMAND_ACTIVE", "A Goal stop command is already active", 409)
+    if active is not None and not (payload.action == "STOP" and active.state == "RUNNING"):
+        raise DomainError("GOAL_COMMAND_ACTIVE", "A Goal command is already active", 409)
+    latest_status = db.scalar(
+        select(RuntimeGoalStatus)
+        .where(RuntimeGoalStatus.conversation_id == item.id)
+        .order_by(RuntimeGoalStatus.created_at.desc(), RuntimeGoalStatus.id.desc())
+        .limit(1)
+    )
+    if payload.action == "START" and latest_status is not None and latest_status.active:
+        raise DomainError("GOAL_STATE_INVALID", "A native Goal is already active", 409)
+    if payload.action in {"STOP", "RESUME"}:
+        prior = latest_status
+        if (
+            prior is None
+            or (payload.action == "STOP" and not prior.active)
+            or (payload.action == "RESUME" and prior.status != "interrupted")
+        ):
+            raise DomainError(
+                "GOAL_STATE_INVALID", "Goal action does not match the native Goal state", 409
+            )
+        objective = prior.objective
+        max_iterations = prior.max_iterations
+        origin = db.scalar(
+            select(RuntimeGoalCommand)
+            .where(
+                RuntimeGoalCommand.conversation_id == item.id,
+                RuntimeGoalCommand.action == "START",
+            )
+            .order_by(RuntimeGoalCommand.created_at.desc(), RuntimeGoalCommand.id.desc())
+            .limit(1)
+        )
+        if origin is None:
+            raise DomainError(
+                "GOAL_GOVERNANCE_UNAVAILABLE",
+                "Goal governance baseline is unavailable",
+                409,
+            )
+        max_tokens = origin.max_tokens
+        max_cost_usd = origin.max_cost_usd
+        baseline_cost_usd = origin.baseline_cost_usd
+        baseline_tokens = origin.baseline_tokens
+        if payload.action == "STOP" and active is not None:
+            active.state = "SUCCEEDED"
+            active.state_version += 1
+            active.terminal_status = "stop_requested"
+            active.completed_at = now()
+            db.flush()
+    else:
+        objective = (payload.objective or "").strip()
+        max_iterations = payload.max_iterations
+        max_tokens = payload.max_tokens
+        max_cost_usd = payload.max_cost_usd
+        baseline_cost_usd = 0
+        baseline_tokens = 0
+    command = RuntimeGoalCommand(
+        attempt_id=item.attempt_id,
+        conversation_id=item.id,
+        runtime_conversation_id=handle.conversation_id,
+        action=payload.action,
+        objective=objective,
+        max_iterations=max_iterations,
+        max_tokens=max_tokens,
+        max_cost_usd=max_cost_usd,
+        baseline_cost_usd=baseline_cost_usd,
+        baseline_tokens=baseline_tokens,
+        state="PENDING",
+        idempotency_key=idempotency_key,
+        requested_by=actor,
+    )
+    db.add(command)
+    db.flush()
+    enqueue(
+        db,
+        task_type="CONTROL_CONVERSATION_GOAL",
+        aggregate_type="GOAL_COMMAND",
+        aggregate_id=command.id,
+        idempotency_key=f"control-goal:{command.id}:v1",
+    )
+    node_run, run_id = _context(db, _attempt(db, item.attempt_id))
+    db.add(
+        HumanAction(
+            flow_run_id=run_id,
+            node_run_id=node_run.id,
+            attempt_id=item.attempt_id,
+            action_type=f"{payload.action}_AGENT_GOAL",
+            idempotency_key=idempotency_key,
+            payload_json={
+                "conversation_id": item.id,
+                "goal_command_id": command.id,
+                "max_iterations": max_iterations,
+                "max_tokens": max_tokens,
+                "max_cost_usd": max_cost_usd,
+            },
+        )
+    )
+    _event(
+        db,
+        item,
+        "CONVERSATION_GOAL_COMMAND_REQUESTED",
+        {"goal_command_id": command.id, "action": command.action},
+    )
+    finish(db)
+    return {"id": command.id, "state": command.state, "action": command.action}
+
+
+def process_goal_command(
+    db: Session, command_id: str, lease: Lease, *, commit: bool = True
+) -> None:
+    command = db.scalar(
+        select(RuntimeGoalCommand)
+        .where(
+            RuntimeGoalCommand.id == command_id,
+            RuntimeGoalCommand.state.in_(("PENDING", "RUNNING")),
+        )
+        .with_for_update()
+    )
+    if command is None:
+        db.rollback()
+        return
+    item = _conversation(db, command.conversation_id)
+    handle = _runtime_handle(item)
+    adapter = item.runtime_adapter
+    command_version = command.state_version
+    command_state = command.state
+    dispatch_pending = command.error_code == "GOAL_COMMAND_DISPATCHING"
+    action = command.action
+    objective = command.objective or ""
+    max_iterations = command.max_iterations
+    db.rollback()
+    runtime = runtime_for(adapter, handle)
+    baseline = runtime.read_events(handle)
+    baseline_cost, baseline_tokens = _usage_totals(baseline.usage)
+    baseline_goal = next(
+        (
+            cast(dict[str, Any], event.payload["goal_status"])
+            for event in reversed(baseline.events)
+            if isinstance(event.payload.get("goal_status"), dict)
+        ),
+        None,
+    )
+    already_applied = bool(
+        baseline_goal is not None
+        and (
+            (
+                action == "START"
+                and baseline_goal.get("objective") == objective
+                and baseline_goal.get("max_iterations") == max_iterations
+            )
+            or (action == "STOP" and baseline_goal.get("status") == "interrupted")
+            or (
+                action == "RESUME"
+                and baseline_goal.get("status") in {"running", "complete", "capped"}
+                and baseline_goal.get("objective") == objective
+                and baseline_goal.get("max_iterations") == max_iterations
+            )
+        )
+    )
+    action_handle = RuntimeHandle(
+        handle.job_id,
+        handle.conversation_id,
+        baseline.cursor or handle.cursor,
+        runtime_resource_id=handle.runtime_resource_id,
+        runtime_resource_name=handle.runtime_resource_name,
+    )
+    if command_state == "RUNNING" and dispatch_pending and not already_applied:
+        if not lease_is_current(db, lease):
+            raise RuntimeError("task lease was lost during Goal command reconciliation")
+        current = db.scalar(
+            select(RuntimeGoalCommand)
+            .where(
+                RuntimeGoalCommand.id == command_id,
+                RuntimeGoalCommand.state_version == command_version,
+            )
+            .with_for_update()
+        )
+        if current is None:
+            db.rollback()
+            return
+        current.state = "FAILED"
+        current.state_version += 1
+        current.error_code = "RUNTIME_GOAL_COMMAND_OUTCOME_UNKNOWN"
+        current.error_detail = (
+            "A prior Goal control call lost its durable completion fence and was not repeated"
+        )
+        current.completed_at = now()
+        conversation = _conversation(db, current.conversation_id)
+        _event(
+            db,
+            conversation,
+            "CONVERSATION_GOAL_COMMAND_FAILED",
+            {"goal_command_id": current.id, "error": current.error_code},
+        )
+        db.commit() if commit else db.flush()
+        return
+    if command_state == "RUNNING" or already_applied:
+        observed = RuntimeEventBatch(cursor=baseline.cursor, usage=baseline.usage)
+    else:
+        if baseline_goal is not None:
+            raise DomainError(
+                "RUNTIME_GOAL_COMMAND_DRIFT",
+                "Observed Goal state does not match the pending governed command",
+                409,
+            )
+        if not lease_is_current(db, lease):
+            raise RuntimeError("task lease was lost before Goal command dispatch")
+        dispatching = db.scalar(
+            select(RuntimeGoalCommand)
+            .where(
+                RuntimeGoalCommand.id == command_id,
+                RuntimeGoalCommand.state == "PENDING",
+                RuntimeGoalCommand.state_version == command_version,
+            )
+            .with_for_update()
+        )
+        if dispatching is None:
+            db.rollback()
+            return
+        dispatching.state = "RUNNING"
+        dispatching.state_version += 1
+        dispatching.error_code = "GOAL_COMMAND_DISPATCHING"
+        if action == "START":
+            dispatching.baseline_cost_usd = baseline_cost
+            dispatching.baseline_tokens = baseline_tokens
+        command_version = dispatching.state_version
+        db.commit()
+        if action == "START":
+            runtime.start_goal(action_handle, objective, max_iterations)
+        elif action == "STOP":
+            runtime.stop_goal(action_handle)
+        else:
+            runtime.resume_goal(action_handle)
+        observed = runtime.read_events(action_handle)
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost during Goal command")
+    current = db.scalar(
+        select(RuntimeGoalCommand)
+        .where(
+            RuntimeGoalCommand.id == command_id, RuntimeGoalCommand.state_version == command_version
+        )
+        .with_for_update()
+    )
+    if current is None:
+        db.rollback()
+        return
+    conversation = _conversation(db, current.conversation_id, lock=True)
+    if action == "START" and current.baseline_cost_usd == 0 and current.baseline_tokens == 0:
+        current.baseline_cost_usd = baseline_cost
+        current.baseline_tokens = baseline_tokens
+    if current.error_code == "GOAL_COMMAND_DISPATCHING":
+        current.error_code = None
+    if current.state == "PENDING" and not already_applied:
+        current.state = "RUNNING"
+        current.state_version += 1
+    for event in baseline.events:
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor=event.cursor,
+            event_type=event.event_type,
+            payload=event.payload,
+        )
+    for event in observed.events:
+        _append_runtime_payload(
+            db,
+            conversation,
+            cursor=event.cursor,
+            event_type=event.event_type,
+            payload=event.payload,
+        )
+    if current.state == "PENDING":
+        current.state = "RUNNING"
+        current.state_version += 1
+    conversation.runtime_cursor = observed.cursor or baseline.cursor or conversation.runtime_cursor
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_GOAL_COMMAND_APPLIED",
+        {"goal_command_id": current.id, "action": action},
+    )
+    if current.state == "RUNNING":
+        enqueue(
+            db,
+            task_type="POLL_CONVERSATION",
+            aggregate_type="CONVERSATION",
+            aggregate_id=conversation.id,
+            idempotency_key=f"poll-goal:{conversation.id}:{current.id}:1",
+            payload={"poll_no": 1},
+            available_at=datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds),
+        )
+    db.commit() if commit else db.flush()
+
+
+def request_ask_agent(
+    db: Session,
+    conversation_id: str,
+    payload: ConversationAskAgentWrite,
+    idempotency_key: str,
+    actor: str | None,
+) -> dict[str, Any]:
+    if not actor:
+        raise DomainError(
+            "DIAGNOSTIC_ACTOR_REQUIRED",
+            "ask_agent requires an authenticated actor",
+            403,
+        )
+    existing = db.scalar(
+        select(RuntimeDiagnosticQuery).where(
+            RuntimeDiagnosticQuery.idempotency_key == idempotency_key
+        )
+    )
+    if existing is not None:
+        if existing.requested_by != actor:
+            raise DomainError(
+                "DIAGNOSTIC_QUERY_FORBIDDEN",
+                "Diagnostic query belongs to another actor",
+                403,
+            )
+        return diagnostic_query_dict(existing)
+    item = _conversation(db, conversation_id, lock=True)
+    if item.kind == ConversationKind.AUTO or item.state in {
+        ConversationState.CREATING,
+        ConversationState.FAILED,
+        ConversationState.READ_ONLY,
+    }:
+        raise DomainError(
+            "DIAGNOSTIC_CONVERSATION_UNAVAILABLE",
+            "ask_agent requires an active human conversation",
+            409,
+        )
+    handle = _runtime_handle(item)
+    question = payload.question.strip()
+    query = RuntimeDiagnosticQuery(
+        attempt_id=item.attempt_id,
+        conversation_id=item.id,
+        runtime_conversation_id=handle.conversation_id,
+        question_text=question,
+        question_digest=hashlib.sha256(question.encode()).hexdigest(),
+        question_length=len(question),
+        output_classification=payload.output_classification,
+        timeout_seconds=payload.timeout_seconds,
+        state="PENDING",
+        idempotency_key=idempotency_key,
+        requested_by=actor,
+    )
+    db.add(query)
+    db.flush()
+    enqueue(
+        db,
+        task_type="ASK_CONVERSATION_AGENT",
+        aggregate_type="DIAGNOSTIC_QUERY",
+        aggregate_id=query.id,
+        idempotency_key=f"ask-agent:{query.id}",
+    )
+    node_run, run_id = _context(db, _attempt(db, item.attempt_id))
+    db.add(
+        HumanAction(
+            flow_run_id=run_id,
+            node_run_id=node_run.id,
+            attempt_id=item.attempt_id,
+            action_type="ASK_AGENT_DIAGNOSTIC",
+            idempotency_key=idempotency_key,
+            payload_json={
+                "conversation_id": item.id,
+                "diagnostic_query_id": query.id,
+                "question_digest": query.question_digest,
+                "question_length": query.question_length,
+                "output_classification": query.output_classification,
+                "timeout_seconds": query.timeout_seconds,
+            },
+        )
+    )
+    _event(
+        db,
+        item,
+        "CONVERSATION_DIAGNOSTIC_REQUESTED",
+        {
+            "diagnostic_query_id": query.id,
+            "question_digest": query.question_digest,
+            "output_classification": query.output_classification,
+        },
+    )
+    finish(db)
+    return diagnostic_query_dict(query)
+
+
+def diagnostic_query_dict(query: RuntimeDiagnosticQuery) -> dict[str, Any]:
+    return {
+        "id": query.id,
+        "conversation_id": query.conversation_id,
+        "output_classification": query.output_classification,
+        "timeout_seconds": query.timeout_seconds,
+        "state": query.state,
+        "response_text": query.response_text,
+        "cost_usd": float(query.cost_usd) if query.cost_usd is not None else None,
+        "prompt_tokens": query.prompt_tokens,
+        "completion_tokens": query.completion_tokens,
+        "error_code": query.error_code,
+        "created_at": query.created_at.isoformat(),
+        "completed_at": query.completed_at.isoformat() if query.completed_at else None,
+    }
+
+
+def get_diagnostic_query(db: Session, query_id: str, actor: str) -> dict[str, Any]:
+    query = db.get(RuntimeDiagnosticQuery, query_id)
+    if query is None:
+        raise not_found("runtime_diagnostic_query", query_id)
+    if query.requested_by != actor:
+        raise DomainError(
+            "DIAGNOSTIC_QUERY_FORBIDDEN",
+            "Diagnostic query belongs to another actor",
+            403,
+        )
+    return diagnostic_query_dict(query)
+
+
+def process_ask_agent(db: Session, query_id: str, lease: Lease, *, commit: bool = True) -> None:
+    query = db.scalar(
+        select(RuntimeDiagnosticQuery)
+        .where(
+            RuntimeDiagnosticQuery.id == query_id,
+            RuntimeDiagnosticQuery.state.in_(("PENDING", "RUNNING")),
+        )
+        .with_for_update()
+    )
+    if query is None:
+        db.rollback()
+        return
+    if query.state == "RUNNING":
+        query.state = "FAILED"
+        query.question_text = ""
+        query.error_code = "RUNTIME_ASK_AGENT_OUTCOME_UNKNOWN"
+        query.error_detail = (
+            "A prior ask_agent call lost its durable completion fence and was not repeated"
+        )
+        query.completed_at = now()
+        conversation = _conversation(db, query.conversation_id)
+        _event(
+            db,
+            conversation,
+            "CONVERSATION_DIAGNOSTIC_FAILED",
+            {"diagnostic_query_id": query.id, "error": query.error_code},
+        )
+        db.commit() if commit else db.flush()
+        return
+    item = _conversation(db, query.conversation_id)
+    handle = _runtime_handle(item)
+    adapter = item.runtime_adapter
+    timeout_seconds = query.timeout_seconds
+    question_digest = query.question_digest
+    question = query.question_text
+    if not question or hashlib.sha256(question.encode()).hexdigest() != question_digest:
+        raise DomainError("DIAGNOSTIC_QUESTION_DRIFTED", "Diagnostic question digest drifted", 409)
+    query.state = "RUNNING"
+    db.commit()
+    result = runtime_for(adapter, handle).ask_agent(
+        handle, question, timeout_seconds=timeout_seconds
+    )
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost during ask_agent")
+    current = db.scalar(
+        select(RuntimeDiagnosticQuery)
+        .where(RuntimeDiagnosticQuery.id == query_id, RuntimeDiagnosticQuery.state == "RUNNING")
+        .with_for_update()
+    )
+    if current is None:
+        db.rollback()
+        return
+    current.response_text = result.response
+    current.question_text = ""
+    current.state = "SUCCEEDED"
+    current.completed_at = now()
+    if result.after_usage is not None:
+        before_cost = result.before_usage.accumulated_cost if result.before_usage else 0.0
+        before_prompt = result.before_usage.prompt_tokens if result.before_usage else 0
+        before_completion = result.before_usage.completion_tokens if result.before_usage else 0
+        current.cost_usd = max(0.0, result.after_usage.accumulated_cost - before_cost)
+        current.prompt_tokens = max(0, result.after_usage.prompt_tokens - before_prompt)
+        current.completion_tokens = max(0, result.after_usage.completion_tokens - before_completion)
+    conversation = _conversation(db, current.conversation_id, lock=True)
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_DIAGNOSTIC_SUCCEEDED",
+        {
+            "diagnostic_query_id": current.id,
+            "output_classification": current.output_classification,
+            "cost_usd": float(current.cost_usd or 0),
+        },
+    )
+    db.commit() if commit else db.flush()
+
+
+def record_goal_command_failure(
+    db: Session, command_id: str, error: str, *, terminal: bool
+) -> None:
+    if not terminal:
+        return
+    command = db.scalar(
+        select(RuntimeGoalCommand)
+        .where(
+            RuntimeGoalCommand.id == command_id,
+            RuntimeGoalCommand.state.in_(("PENDING", "RUNNING")),
+        )
+        .with_for_update()
+    )
+    if command is None:
+        return
+    command.state = "FAILED"
+    command.state_version += 1
+    command.error_code = "RUNTIME_GOAL_COMMAND_FAILED"
+    command.error_detail = error[:2000]
+    command.completed_at = now()
+    conversation = _conversation(db, command.conversation_id)
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_GOAL_COMMAND_FAILED",
+        {"goal_command_id": command.id, "error": error[:2000]},
+    )
+    db.flush()
+
+
+def record_ask_agent_failure(db: Session, query_id: str, error: str, *, terminal: bool) -> None:
+    if not terminal:
+        return
+    query = db.scalar(
+        select(RuntimeDiagnosticQuery)
+        .where(
+            RuntimeDiagnosticQuery.id == query_id,
+            RuntimeDiagnosticQuery.state.in_(("PENDING", "RUNNING")),
+        )
+        .with_for_update()
+    )
+    if query is None:
+        return
+    query.state = "FAILED"
+    query.question_text = ""
+    query.error_code = "RUNTIME_ASK_AGENT_FAILED"
+    query.error_detail = error[:2000]
+    query.completed_at = now()
+    conversation = _conversation(db, query.conversation_id)
+    _event(
+        db,
+        conversation,
+        "CONVERSATION_DIAGNOSTIC_FAILED",
+        {"diagnostic_query_id": query.id, "error": error[:2000]},
+    )
+    db.flush()
+
+
 def patch_conversation(
     db: Session, conversation_id: str, payload: ConversationPatchWrite
 ) -> dict[str, Any]:
@@ -2857,6 +3524,24 @@ def send_message(
     )
     if existing:
         return _message_dict(existing)
+    active_goal = db.scalar(
+        select(RuntimeGoalCommand.id).where(
+            RuntimeGoalCommand.conversation_id == item.id,
+            RuntimeGoalCommand.state.in_(("PENDING", "RUNNING")),
+        )
+    )
+    latest_goal_active = db.scalar(
+        select(RuntimeGoalStatus.active)
+        .where(RuntimeGoalStatus.conversation_id == item.id)
+        .order_by(RuntimeGoalStatus.created_at.desc(), RuntimeGoalStatus.id.desc())
+        .limit(1)
+    )
+    if active_goal is not None or latest_goal_active is True:
+        raise DomainError(
+            "CONVERSATION_GOAL_ACTIVE",
+            "Stop the active Goal before sending a conversation message",
+            409,
+        )
     allow_stale_queue = (
         item.state == ConversationState.GENERATING
         and payload.delivery_mode == DeliveryMode.QUEUE_AFTER_TURN
@@ -3300,6 +3985,54 @@ def recover_conversation_tasks(db: Session) -> int:
             ):
                 recovered += 1
             continue
+
+        pending_goal = db.scalar(
+            select(RuntimeGoalCommand)
+            .where(
+                RuntimeGoalCommand.conversation_id == conversation.id,
+                RuntimeGoalCommand.state == "PENDING",
+            )
+            .order_by(RuntimeGoalCommand.created_at.desc(), RuntimeGoalCommand.id.desc())
+            .limit(1)
+        )
+        if pending_goal is not None and _recover_delivery(
+            db,
+            task_type="CONTROL_CONVERSATION_GOAL",
+            aggregate_type="GOAL_COMMAND",
+            aggregate_id=pending_goal.id,
+            recovery_key=f"control-goal:{pending_goal.id}:v1",
+        ):
+            recovered += 1
+        running_goal = db.scalar(
+            select(RuntimeGoalCommand.id).where(
+                RuntimeGoalCommand.conversation_id == conversation.id,
+                RuntimeGoalCommand.state == "RUNNING",
+            )
+        )
+        if running_goal is not None and conversation.runtime_conversation_id:
+            if _recover_delivery(
+                db,
+                task_type="POLL_CONVERSATION",
+                aggregate_type="CONVERSATION",
+                aggregate_id=conversation.id,
+                recovery_key=f"recovery:poll-goal:{conversation.id}:{running_goal}",
+                payload={"poll_no": 1},
+            ):
+                recovered += 1
+        for diagnostic_id in db.scalars(
+            select(RuntimeDiagnosticQuery.id).where(
+                RuntimeDiagnosticQuery.conversation_id == conversation.id,
+                RuntimeDiagnosticQuery.state.in_(("PENDING", "RUNNING")),
+            )
+        ):
+            if _recover_delivery(
+                db,
+                task_type="ASK_CONVERSATION_AGENT",
+                aggregate_type="RUNTIME_DIAGNOSTIC_QUERY",
+                aggregate_id=diagnostic_id,
+                recovery_key=f"ask-agent:{diagnostic_id}:v1",
+            ):
+                recovered += 1
 
         queued = db.scalar(
             select(AgentMessage)
@@ -4230,6 +4963,88 @@ def _append_runtime_payload(
     event_type: str,
     payload: dict[str, Any],
 ) -> None:
+    raw_critic = payload.get("critic_result")
+    if isinstance(raw_critic, dict):
+        existing_critic = db.scalar(
+            select(RuntimeCriticEvaluation.id).where(
+                RuntimeCriticEvaluation.conversation_id == conversation.id,
+                RuntimeCriticEvaluation.runtime_event_id == cursor,
+            )
+        )
+        if existing_critic is None:
+            critic = cast(dict[str, Any], raw_critic)
+            db.add(
+                RuntimeCriticEvaluation(
+                    attempt_id=conversation.attempt_id,
+                    conversation_id=conversation.id,
+                    runtime_event_id=cursor,
+                    source_type=str(payload.get("source_type") or "UNKNOWN")[:40],
+                    score=float(critic["score"]),
+                    message=(str(critic["message"])[:2000] if critic.get("message") else None),
+                )
+            )
+            _event(
+                db,
+                conversation,
+                "RUNTIME_CRITIC_EVALUATED",
+                {"runtime_event_id": cursor, "score": float(critic["score"])},
+            )
+    raw_goal = payload.get("goal_status")
+    if isinstance(raw_goal, dict):
+        existing_goal = db.scalar(
+            select(RuntimeGoalStatus.id).where(
+                RuntimeGoalStatus.conversation_id == conversation.id,
+                RuntimeGoalStatus.runtime_event_id == cursor,
+            )
+        )
+        if existing_goal is None:
+            goal = cast(dict[str, Any], raw_goal)
+            db.add(
+                RuntimeGoalStatus(
+                    attempt_id=conversation.attempt_id,
+                    conversation_id=conversation.id,
+                    runtime_event_id=cursor,
+                    active=bool(goal["active"]),
+                    status=str(goal["status"]),
+                    iteration=int(goal["iteration"]),
+                    max_iterations=int(goal["max_iterations"]),
+                    objective=str(goal["objective"]),
+                    verdict_json=(
+                        cast(dict[str, Any], goal["verdict"])
+                        if isinstance(goal.get("verdict"), dict)
+                        else None
+                    ),
+                )
+            )
+            active_command = db.scalar(
+                select(RuntimeGoalCommand)
+                .where(
+                    RuntimeGoalCommand.conversation_id == conversation.id,
+                    RuntimeGoalCommand.state == "RUNNING",
+                )
+                .order_by(RuntimeGoalCommand.created_at.desc())
+                .limit(1)
+            )
+            if active_command is not None:
+                terminal = str(goal["status"]) in {"complete", "capped", "interrupted"}
+                if active_command.action == "STOP" and goal["status"] == "interrupted":
+                    terminal = True
+                active_command.state = "SUCCEEDED" if terminal else "RUNNING"
+                active_command.terminal_status = str(goal["status"]) if terminal else None
+                active_command.state_version += 1
+                active_command.completed_at = now() if terminal else None
+            _event(
+                db,
+                conversation,
+                "RUNTIME_GOAL_STATUS_CHANGED",
+                {
+                    "runtime_event_id": cursor,
+                    "status": goal["status"],
+                    "iteration": goal["iteration"],
+                    "max_iterations": goal["max_iterations"],
+                    "verdict": goal.get("verdict"),
+                },
+            )
     if event_type in {"CONDENSATION_REQUESTED", "CONDENSATION_COMPLETED"}:
         project_runtime_condensation(
             db, conversation, cursor=cursor, event_type=event_type, payload=payload
@@ -4601,7 +5416,13 @@ def process_poll_conversation(
     commit: bool = True,
 ) -> None:
     conversation = _conversation(db, conversation_id)
-    if conversation.state != ConversationState.GENERATING:
+    active_goal = db.scalar(
+        select(RuntimeGoalCommand).where(
+            RuntimeGoalCommand.conversation_id == conversation.id,
+            RuntimeGoalCommand.state == "RUNNING",
+        )
+    )
+    if conversation.state != ConversationState.GENERATING and active_goal is None:
         return
     attempt = _attempt(db, conversation.attempt_id)
     if attempt.state in TERMINAL_ATTEMPT_STATES:
@@ -4613,26 +5434,98 @@ def process_poll_conversation(
         conversation.state_version += 1
         db.commit() if commit else db.flush()
         return
-    handle = RuntimeHandle(
-        conversation.runtime_job_id or conversation.runtime_conversation_id,
-        conversation.runtime_conversation_id,
-        conversation.runtime_cursor,
+    handle = _runtime_handle(conversation)
+    adapter = conversation.runtime_adapter
+    runtime_sandbox_id = conversation.runtime_sandbox_id
+    active_goal_id = active_goal.id if active_goal is not None else None
+    active_goal_error = active_goal.error_code if active_goal is not None else None
+    active_goal_cost_limit = (
+        float(active_goal.max_cost_usd) if active_goal and active_goal.max_cost_usd else None
     )
+    active_goal_token_limit = active_goal.max_tokens if active_goal else None
+    active_goal_baseline_tokens = active_goal.baseline_tokens if active_goal else 0
+    active_goal_baseline_cost = float(active_goal.baseline_cost_usd or 0) if active_goal else 0.0
     db.rollback()
-    runtime = get_runtime()
+    runtime = runtime_for(adapter, handle)
     batch = runtime.read_events(handle)
-    result = batch.result or runtime.inspect(
-        RuntimeHandle(handle.job_id, handle.conversation_id, batch.cursor or handle.cursor)
+    observed_cost, observed_tokens = _usage_totals(batch.usage)
+    goal_tokens = (
+        max(0, observed_tokens - active_goal_baseline_tokens) if active_goal_id is not None else 0
     )
-    sandboxes.touch_runtime(db, conversation.runtime_sandbox_id)
+    goal_cost = (
+        max(0.0, observed_cost - active_goal_baseline_cost) if active_goal_id is not None else 0.0
+    )
+    goal_budget_exceeded = bool(
+        active_goal_id is not None
+        and (
+            (active_goal_cost_limit is not None and goal_cost >= active_goal_cost_limit)
+            or (active_goal_token_limit is not None and goal_tokens >= active_goal_token_limit)
+        )
+    )
+    goal_budget_stop_required = bool(
+        goal_budget_exceeded
+        and active_goal_id is not None
+        and active_goal_error != "GOAL_BUDGET_EXCEEDED"
+    )
+    budget_stop_batch: RuntimeEventBatch | None = None
+    if goal_budget_stop_required:
+        runtime.stop_goal(handle)
+        budget_stop_batch = runtime.read_events(
+            RuntimeHandle(
+                handle.job_id,
+                handle.conversation_id,
+                batch.cursor or handle.cursor,
+                runtime_resource_id=handle.runtime_resource_id,
+                runtime_resource_name=handle.runtime_resource_name,
+            )
+        )
+        if budget_stop_batch.events:
+            batch = RuntimeEventBatch(
+                events=(*batch.events, *budget_stop_batch.events),
+                cursor=budget_stop_batch.cursor or batch.cursor,
+                result=budget_stop_batch.result or batch.result,
+                task_usage=budget_stop_batch.task_usage or batch.task_usage,
+                usage=budget_stop_batch.usage or batch.usage,
+            )
+    result = batch.result or runtime.inspect(
+        RuntimeHandle(
+            handle.job_id,
+            handle.conversation_id,
+            batch.cursor or handle.cursor,
+            runtime_resource_id=handle.runtime_resource_id,
+            runtime_resource_name=handle.runtime_resource_name,
+        )
+    )
+    sandboxes.touch_runtime(db, runtime_sandbox_id)
     if not lease_is_current(db, lease):
         raise RuntimeError("task lease was lost during conversation polling")
     current = _conversation(db, conversation_id, lock=True)
     current_attempt = _attempt(db, current.attempt_id)
+    current_goal = db.scalar(
+        select(RuntimeGoalCommand).where(
+            RuntimeGoalCommand.id == active_goal_id,
+            RuntimeGoalCommand.conversation_id == current.id,
+            RuntimeGoalCommand.state == "RUNNING",
+        )
+    )
+    if current_goal is not None and goal_budget_stop_required:
+        current_goal.error_code = "GOAL_BUDGET_EXCEEDED"
+        current_goal.error_detail = "The governed Goal token or cost budget was reached"
+        _event(
+            db,
+            current,
+            "RUNTIME_GOAL_BUDGET_EXCEEDED",
+            {
+                "goal_command_id": current_goal.id,
+                "observed_cost_usd": goal_cost,
+                "observed_tokens": goal_tokens,
+                "max_cost_usd": active_goal_cost_limit,
+                "max_tokens": active_goal_token_limit,
+            },
+        )
     if (
-        current.state != ConversationState.GENERATING
-        or current_attempt.state in TERMINAL_ATTEMPT_STATES
-    ):
+        current.state != ConversationState.GENERATING and current_goal is None
+    ) or current_attempt.state in TERMINAL_ATTEMPT_STATES:
         db.rollback()
         return
     for event in batch.events:
@@ -4678,10 +5571,19 @@ def process_poll_conversation(
             cursor=batch.cursor,
             error=result.error,
         )
-    _apply_conversation_result(
-        db, current, result, message_id=f"poll:{batch.cursor or current.runtime_cursor or '0'}"
+    current_goal = db.scalar(
+        select(RuntimeGoalCommand).where(
+            RuntimeGoalCommand.conversation_id == current.id,
+            RuntimeGoalCommand.state == "RUNNING",
+        )
     )
-    if result.status == "RUNNING":
+    if current_goal is None:
+        _apply_conversation_result(
+            db, current, result, message_id=f"poll:{batch.cursor or current.runtime_cursor or '0'}"
+        )
+    else:
+        current.runtime_cursor = batch.cursor or current.runtime_cursor
+    if result.status == "RUNNING" or current_goal is not None:
         poll_task = enqueue(
             db,
             task_type="POLL_CONVERSATION",

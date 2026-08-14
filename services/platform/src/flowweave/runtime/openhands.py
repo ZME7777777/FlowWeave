@@ -17,7 +17,9 @@ from websockets.sync.client import connect as sync_connect
 from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import (
+    RuntimeAskAgentResult,
     RuntimeCondenser,
+    RuntimeContract,
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeEventType,
@@ -37,6 +39,7 @@ from flowweave.runtime.base import (
     RuntimeProvider,
     RuntimeResult,
     RuntimeTaskUsageSnapshot,
+    RuntimeUsageSnapshot,
     RuntimeWakeup,
     StartAttemptRequest,
 )
@@ -130,6 +133,151 @@ class OpenHandsRuntime:
                 "OpenHands Agent Server is unavailable or rejected the request",
                 503,
             ) from exc
+
+    @staticmethod
+    def _incompatible(reason: str, **details: object) -> DomainError:
+        return DomainError(
+            "RUNTIME_CONTRACT_INCOMPATIBLE",
+            "OpenHands Agent Server does not satisfy the frozen Runtime contract",
+            409,
+            {"reason": reason, **details},
+        )
+
+    @classmethod
+    def _validate_runtime_contract(
+        cls,
+        contract: RuntimeContract,
+        *,
+        ready: dict[str, Any],
+        server_info: dict[str, Any],
+        openapi: dict[str, Any],
+    ) -> None:
+        if ready.get("status") != "ready":
+            raise cls._incompatible("server_not_ready")
+
+        package_fields = {
+            "openhands-agent-server": "version",
+            "openhands-sdk": "sdk_version",
+            "openhands-tools": "tools_version",
+            "openhands-workspace": "workspace_version",
+        }
+        expected_packages = dict(contract.package_versions)
+        actual_packages = {
+            package: server_info.get(field) for package, field in package_fields.items()
+        }
+        if actual_packages != expected_packages:
+            raise cls._incompatible(
+                "package_version_mismatch",
+                expected=expected_packages,
+                actual=actual_packages,
+            )
+        if server_info.get("build_git_sha") != contract.source_commit:
+            raise cls._incompatible(
+                "source_commit_mismatch",
+                expected=contract.source_commit,
+                actual=server_info.get("build_git_sha"),
+            )
+        if server_info.get("build_git_ref") != contract.source_ref:
+            raise cls._incompatible(
+                "source_ref_mismatch",
+                expected=contract.source_ref,
+                actual=server_info.get("build_git_ref"),
+            )
+
+        raw_capabilities: object = server_info.get("capabilities")
+        raw_tools: object = server_info.get("usable_tools")
+        if not isinstance(raw_capabilities, list):
+            raise cls._incompatible("invalid_server_capabilities")
+        capability_values = cast(list[object], raw_capabilities)
+        if any(not isinstance(item, str) or not item for item in capability_values):
+            raise cls._incompatible("invalid_server_capabilities")
+        capabilities = cast(list[str], capability_values)
+        if len(set(capabilities)) != len(capabilities):
+            raise cls._incompatible("invalid_server_capabilities")
+        if not isinstance(raw_tools, list):
+            raise cls._incompatible("invalid_usable_tools")
+        tool_values = cast(list[object], raw_tools)
+        if any(not isinstance(item, str) or not item for item in tool_values):
+            raise cls._incompatible("invalid_usable_tools")
+        usable_tools = cast(list[str], tool_values)
+        if len(set(usable_tools)) != len(usable_tools):
+            raise cls._incompatible("invalid_usable_tools")
+        missing_capabilities = sorted(
+            set(contract.required_server_capabilities) - set(capabilities)
+        )
+        missing_tools = sorted(set(contract.required_tools) - set(usable_tools))
+        if missing_capabilities or missing_tools:
+            raise cls._incompatible(
+                "missing_capabilities",
+                missing_server_capabilities=missing_capabilities,
+                missing_tools=missing_tools,
+            )
+
+        raw_paths = openapi.get("paths")
+        if not isinstance(raw_paths, dict):
+            raise cls._incompatible("invalid_openapi_paths")
+        paths = cast(dict[object, object], raw_paths)
+        missing_operations: list[dict[str, str]] = []
+        for method, path in contract.required_http_operations:
+            raw_operation = paths.get(path)
+            if not isinstance(raw_operation, dict) or method.lower() not in raw_operation:
+                missing_operations.append({"method": method, "path": path})
+        if missing_operations:
+            raise cls._incompatible(
+                "missing_http_operations", missing_operations=missing_operations
+            )
+
+        try:
+            create_operation = cast(
+                dict[str, Any], cast(dict[str, Any], paths["/api/conversations"])["post"]
+            )
+            request_schema = create_operation["requestBody"]["content"]["application/json"][
+                "schema"
+            ]
+            schemas = openapi["components"]["schemas"]
+            start_schema = schemas["StartConversationRequest"]
+            start_fields: object = start_schema["properties"]
+        except (KeyError, TypeError):
+            raise cls._incompatible("invalid_start_conversation_schema") from None
+        if request_schema != {"$ref": "#/components/schemas/StartConversationRequest"}:
+            raise cls._incompatible("invalid_start_conversation_schema")
+        if not isinstance(start_fields, dict):
+            raise cls._incompatible("invalid_start_conversation_schema")
+        start_properties = cast(dict[object, object], start_fields)
+        missing_fields = sorted(
+            set(contract.required_start_fields) - {str(field) for field in start_properties}
+        )
+        if missing_fields:
+            raise cls._incompatible(
+                "missing_start_conversation_fields", missing_fields=missing_fields
+            )
+
+    def _negotiate_runtime_contract(
+        self,
+        contract: RuntimeContract | None,
+        *,
+        required_tools: tuple[str, ...],
+        base_url: str,
+        session_api_key: str,
+    ) -> None:
+        if contract is None:
+            raise self._incompatible("snapshot_contract_missing")
+        if tuple(sorted(set(required_tools))) != contract.required_tools:
+            raise self._incompatible(
+                "snapshot_tool_contract_mismatch",
+                expected=list(contract.required_tools),
+                actual=sorted(set(required_tools)),
+            )
+        ready = self._request("GET", "/ready", base_url=base_url, session_api_key=session_api_key)
+        server_info = self._request(
+            "GET", "/server_info", base_url=base_url, session_api_key=session_api_key
+        )
+        openapi = self._request(
+            "GET", "/openapi.json", base_url=base_url, session_api_key=session_api_key
+        )
+        self._validate_runtime_contract(
+            contract, ready=ready, server_info=server_info, openapi=openapi
+        )
 
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
         """Probe one MCP server through the target environment's Agent Server."""
@@ -834,11 +982,18 @@ class OpenHandsRuntime:
                 500,
             )
         target_base_url = request.runtime_base_url or self.base_url
+        target_session_key = self._session_key_for_resource(request.runtime_resource_name or None)
+        self._negotiate_runtime_contract(
+            spec.runtime_contract,
+            required_tools=tuple(tool.name for tool in spec.tools),
+            base_url=target_base_url,
+            session_api_key=target_session_key,
+        )
         created = self._request(
             "POST",
             "/api/conversations",
             base_url=target_base_url,
-            session_api_key=self._session_key_for_resource(request.runtime_resource_name or None),
+            session_api_key=target_session_key,
             json=payload,
         )
         conversation_id = str(created.get("id") or "")
@@ -938,6 +1093,112 @@ class OpenHandsRuntime:
         return "STATE"
 
     @classmethod
+    def _critic_result(cls, item: dict[str, Any]) -> dict[str, Any] | None:
+        raw = item.get("critic_result")
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise DomainError(
+                "RUNTIME_CRITIC_PROTOCOL_DRIFT",
+                "OpenHands Critic result is not an object",
+                502,
+            )
+        value = cast(dict[str, Any], raw)
+        score = value.get("score")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, int | float)
+            or not math.isfinite(float(score))
+            or not 0.0 <= float(score) <= 1.0
+        ):
+            raise DomainError(
+                "RUNTIME_CRITIC_PROTOCOL_DRIFT",
+                "OpenHands Critic score is invalid",
+                502,
+            )
+        raw_message = value.get("message")
+        if raw_message is not None and not isinstance(raw_message, str):
+            raise DomainError(
+                "RUNTIME_CRITIC_PROTOCOL_DRIFT",
+                "OpenHands Critic message is invalid",
+                502,
+            )
+        return {
+            "score": float(score),
+            "message": raw_message[:2000] if isinstance(raw_message, str) else None,
+        }
+
+    @classmethod
+    def _goal_status(cls, item: dict[str, Any]) -> dict[str, Any] | None:
+        if item.get("kind") != "ConversationStateUpdateEvent" or item.get("key") != "goal":
+            return None
+        raw = item.get("value")
+        if not isinstance(raw, dict):
+            raise DomainError(
+                "RUNTIME_GOAL_PROTOCOL_DRIFT",
+                "OpenHands Goal status is not an object",
+                502,
+            )
+        value = cast(dict[str, Any], raw)
+        status = str(value.get("status") or "")
+        iteration = value.get("iteration")
+        max_iterations = value.get("max_iterations")
+        objective = value.get("objective")
+        if (
+            status not in {"running", "complete", "capped", "interrupted"}
+            or not isinstance(value.get("active"), bool)
+            or isinstance(iteration, bool)
+            or not isinstance(iteration, int)
+            or iteration < 0
+            or isinstance(max_iterations, bool)
+            or not isinstance(max_iterations, int)
+            or max_iterations < 1
+            or not isinstance(objective, str)
+            or not objective.strip()
+        ):
+            raise DomainError(
+                "RUNTIME_GOAL_PROTOCOL_DRIFT",
+                "OpenHands Goal status contains invalid fields",
+                502,
+            )
+        verdict = value.get("verdict")
+        safe_verdict: dict[str, Any] | None = None
+        if verdict is not None:
+            if not isinstance(verdict, dict):
+                raise DomainError(
+                    "RUNTIME_GOAL_PROTOCOL_DRIFT",
+                    "OpenHands Goal verdict is invalid",
+                    502,
+                )
+            verdict_value = cast(dict[str, Any], verdict)
+            score = verdict_value.get("score")
+            if (
+                isinstance(score, bool)
+                or not isinstance(score, int | float)
+                or not math.isfinite(float(score))
+                or not 0.0 <= float(score) <= 1.0
+                or not isinstance(verdict_value.get("complete"), bool)
+            ):
+                raise DomainError(
+                    "RUNTIME_GOAL_PROTOCOL_DRIFT",
+                    "OpenHands Goal verdict contains invalid fields",
+                    502,
+                )
+            safe_verdict = {
+                "score": float(score),
+                "complete": verdict_value["complete"],
+                "missing": str(verdict_value.get("missing") or "")[:2000],
+            }
+        return {
+            "active": value["active"],
+            "status": status,
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "objective": objective[:20_000],
+            "verdict": safe_verdict,
+        }
+
+    @classmethod
     def _safe_event_detail(cls, value: object, *, depth: int = 0) -> object:
         if depth >= 6:
             return "[truncated]"
@@ -968,6 +1229,12 @@ class OpenHandsRuntime:
             "source": item.get("source"),
             "content": cls._event_text(item),
         }
+        critic_result = cls._critic_result(item)
+        if critic_result is not None:
+            payload["critic_result"] = critic_result
+        goal_status = cls._goal_status(item)
+        if goal_status is not None:
+            payload["goal_status"] = goal_status
         if kind == "CondensationRequest":
             payload["event_name"] = kind
         elif kind == "Condensation":
@@ -1397,7 +1664,93 @@ class OpenHandsRuntime:
             cursor=cursor,
             result=self._result_from_events(handle.conversation_id, items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
+            usage=self._usage_snapshots(state),
         )
+
+    @classmethod
+    def _usage_snapshots(cls, state: dict[str, Any]) -> tuple[RuntimeUsageSnapshot, ...]:
+        stats = state.get("stats")
+        if stats is None:
+            return ()
+        if not isinstance(stats, dict):
+            raise DomainError(
+                "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                "OpenHands Conversation stats have an invalid usage envelope",
+                502,
+            )
+        stats_value = cast(dict[str, Any], stats)
+        usage_to_metrics = stats_value.get("usage_to_metrics", {})
+        if not isinstance(usage_to_metrics, dict):
+            raise DomainError(
+                "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                "OpenHands Conversation stats have an invalid usage envelope",
+                502,
+            )
+        snapshots: list[RuntimeUsageSnapshot] = []
+        for raw_usage_id, raw_metrics in sorted(
+            cast(dict[object, object], usage_to_metrics).items(),
+            key=lambda item: str(item[0]),
+        ):
+            usage_id = str(raw_usage_id)
+            if not usage_id or len(usage_id) > 200 or not isinstance(raw_metrics, dict):
+                raise DomainError(
+                    "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                    "OpenHands usage identity or metrics are invalid",
+                    502,
+                )
+            metrics = cast(dict[str, Any], raw_metrics)
+            raw_tokens = metrics.get("accumulated_token_usage")
+            if raw_tokens is not None and not isinstance(raw_tokens, dict):
+                raise DomainError(
+                    "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                    "OpenHands token usage is invalid",
+                    502,
+                    {"usage_id": usage_id},
+                )
+            tokens = cast(dict[str, Any], raw_tokens) if isinstance(raw_tokens, dict) else {}
+
+            def counter(
+                name: str,
+                *,
+                token_snapshot: dict[str, Any] = tokens,
+                current_usage_id: str = usage_id,
+            ) -> int:
+                value = token_snapshot.get(name, 0)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise DomainError(
+                        "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                        "OpenHands token usage contains an invalid counter",
+                        502,
+                        {"usage_id": current_usage_id, "field": name},
+                    )
+                return value
+
+            raw_cost = metrics.get("accumulated_cost", 0.0)
+            if (
+                isinstance(raw_cost, bool)
+                or not isinstance(raw_cost, int | float)
+                or not math.isfinite(float(raw_cost))
+                or float(raw_cost) < 0
+            ):
+                raise DomainError(
+                    "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                    "OpenHands usage contains an invalid accumulated cost",
+                    502,
+                    {"usage_id": usage_id},
+                )
+            snapshots.append(
+                RuntimeUsageSnapshot(
+                    usage_id=usage_id,
+                    model_name=str(metrics.get("model_name") or "default")[:200],
+                    accumulated_cost=float(raw_cost),
+                    prompt_tokens=counter("prompt_tokens"),
+                    completion_tokens=counter("completion_tokens"),
+                    cache_read_tokens=counter("cache_read_tokens"),
+                    cache_write_tokens=counter("cache_write_tokens"),
+                    reasoning_tokens=counter("reasoning_tokens"),
+                )
+            )
+        return tuple(snapshots)
 
     @classmethod
     def _task_usage_snapshots(
@@ -1890,6 +2243,120 @@ class OpenHandsRuntime:
         # HTTP success only means CondensationRequest was accepted. The durable
         # Condensation event is projected by read_events after the agent step.
         return RuntimeResult(status="RUNNING", cursor=handle.cursor)
+
+    def start_goal(self, handle: RuntimeHandle, objective: str, max_iterations: int) -> None:
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/goal",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={"objective": objective, "max_iterations": max_iterations},
+        )
+
+    def stop_goal(self, handle: RuntimeHandle) -> None:
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/goal/stop",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+
+    def resume_goal(self, handle: RuntimeHandle) -> None:
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/goal/resume",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+
+    def ask_agent(
+        self, handle: RuntimeHandle, question: str, *, timeout_seconds: float
+    ) -> RuntimeAskAgentResult:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        before_state = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        before = next(
+            (
+                item
+                for item in self._usage_snapshots(before_state)
+                if item.usage_id == "ask-agent-llm"
+            ),
+            None,
+        )
+        try:
+            with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
+                response = client.post(
+                    f"{base_url}/api/conversations/{handle.conversation_id}/ask_agent",
+                    headers={"X-Session-API-Key": session_api_key},
+                    json={"question": question},
+                )
+                response.raise_for_status()
+                value = cast(object, response.json())
+        except httpx.TimeoutException as exc:
+            raise DomainError(
+                "RUNTIME_ASK_AGENT_TIMEOUT",
+                "OpenHands ask_agent exceeded the governed timeout",
+                504,
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise DomainError(
+                    "RUNTIME_CONVERSATION_MISSING",
+                    "Agent Runtime conversation no longer exists",
+                    409,
+                ) from exc
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "OpenHands ask_agent was rejected",
+                503,
+                {"status_code": exc.response.status_code},
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "OpenHands ask_agent is unavailable",
+                503,
+            ) from exc
+        if not isinstance(value, dict):
+            raise DomainError(
+                "RUNTIME_ASK_AGENT_PROTOCOL_DRIFT",
+                "OpenHands ask_agent returned an invalid response",
+                502,
+            )
+        response_value = cast(dict[str, object], value).get("response")
+        if not isinstance(response_value, str):
+            raise DomainError(
+                "RUNTIME_ASK_AGENT_PROTOCOL_DRIFT",
+                "OpenHands ask_agent returned an invalid response",
+                502,
+            )
+        answer = response_value
+        if len(answer.encode("utf-8")) > 256 * 1024:
+            raise DomainError(
+                "RUNTIME_ASK_AGENT_RESPONSE_TOO_LARGE",
+                "OpenHands ask_agent response exceeds the governed size limit",
+                502,
+            )
+        after_state = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        after = next(
+            (
+                item
+                for item in self._usage_snapshots(after_state)
+                if item.usage_id == "ask-agent-llm"
+            ),
+            None,
+        )
+        return RuntimeAskAgentResult(response=answer, before_usage=before, after_usage=after)
 
     def fork_conversation(
         self,

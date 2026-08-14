@@ -162,6 +162,9 @@ HOOK_EVENTS = {
     "Stop": "stop",
 }
 HOOK_EVENT_KEYS = frozenset(HOOK_EVENTS.values())
+HOOK_SET_SCHEMA_VERSION = 1
+HOOK_OPENHANDS_VERSION = "1.42.0"
+HOOK_SOURCE_COMMIT = "f09e03eac772290feeb51b7d7390ffaefeca1a09"
 HOOK_TYPES = {"command", "script", "prompt", "agent"}
 HOOK_DEFINITION_KEYS = {
     "type",
@@ -861,7 +864,13 @@ def _normalize_hook_config(parsed: dict[str, Any]) -> tuple[str, str, dict[str, 
     if not isinstance(raw_config, dict) or not raw_config:
         raise _reject("Hook config must contain at least one lifecycle event")
 
-    normalized: dict[str, Any] = {}
+    normalized: dict[str, Any] = {
+        "hook_set_schema_version": HOOK_SET_SCHEMA_VERSION,
+        "openhands_version": HOOK_OPENHANDS_VERSION,
+        "source_commit": HOOK_SOURCE_COMMIT,
+        "allowed_events": sorted(HOOK_EVENT_KEYS),
+        "runtime_mutation": "FORBIDDEN",
+    }
     for raw_event, raw_matchers in cast(dict[object, object], raw_config).items():
         event_name = str(raw_event)
         event = HOOK_EVENTS.get(event_name, event_name)

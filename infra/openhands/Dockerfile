@@ -40,8 +40,10 @@ RUN /runtime/.venv/bin/python -c \
 RUN /runtime/.venv/bin/python /runtime/patch_ambient_plugins.py
 COPY infra/openhands/contract_check.py /runtime/contract_check.py
 COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
-RUN /runtime/.venv/bin/python /runtime/contract_check.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
+ENV OPENHANDS_BUILD_GIT_SHA="f09e03eac772290feeb51b7d7390ffaefeca1a09" \
+    OPENHANDS_BUILD_GIT_REF="f09e03eac772290feeb51b7d7390ffaefeca1a09"
+RUN /runtime/.venv/bin/python /runtime/contract_check.py
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip3

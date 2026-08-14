@@ -45,6 +45,10 @@ def _empty_wakeup_events() -> tuple[dict[str, Any], ...]:
     return ()
 
 
+def _empty_usage() -> tuple[RuntimeUsageSnapshot, ...]:
+    return ()
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeCondenser:
     """Frozen, replayable subset of the OpenHands 1.40.0 condenser contract.
@@ -273,6 +277,27 @@ class RuntimeAgentProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeContract:
+    """Frozen Agent Server compatibility requirements for one Snapshot node.
+
+    The contract is compiled by FlowWeave, not inferred by the adapter.  It is
+    intentionally limited to public Agent Server details, OpenAPI operations,
+    request fields, declared capabilities, and the tools actually enabled by
+    the node's immutable Tool Policy.
+    """
+
+    schema_version: int
+    openhands_version: str
+    source_commit: str
+    source_ref: str
+    package_versions: tuple[tuple[str, str], ...]
+    required_http_operations: tuple[tuple[str, str], ...]
+    required_start_fields: tuple[str, ...]
+    required_server_capabilities: tuple[str, ...]
+    required_tools: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeAgentSpec:
     """Complete, replayable execution-plane configuration for one Agent.
 
@@ -282,6 +307,7 @@ class RuntimeAgentSpec:
 
     schema_version: int = 1
     agent_kind: Literal["OPENHANDS", "ACP"] = "OPENHANDS"
+    runtime_contract: RuntimeContract | None = None
     agent_profile: RuntimeAgentProfile | None = None
     provider: RuntimeProvider | None = None
     tools: tuple[RuntimeTool, ...] = ()
@@ -425,12 +451,36 @@ class RuntimeTaskUsageSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeUsageSnapshot:
+    """One cumulative, formally named OpenHands LLM usage bucket."""
+
+    usage_id: str
+    model_name: str
+    accumulated_cost: float
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    reasoning_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAskAgentResult:
+    """Stateless diagnostic response and its cumulative usage snapshots."""
+
+    response: str
+    before_usage: RuntimeUsageSnapshot | None = None
+    after_usage: RuntimeUsageSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeEventBatch:
     events: tuple[RuntimeEvent, ...] = ()
     cursor: str | None = None
     result: RuntimeResult | None = None
     cursor_anchor_found: bool = True
     task_usage: tuple[RuntimeTaskUsageSnapshot, ...] = field(default_factory=_empty_task_usage)
+    usage: tuple[RuntimeUsageSnapshot, ...] = field(default_factory=_empty_usage)
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,6 +558,16 @@ class RuntimePort(Protocol):
     ) -> RuntimeResult: ...
 
     def condense(self, handle: RuntimeHandle) -> RuntimeResult: ...
+
+    def start_goal(self, handle: RuntimeHandle, objective: str, max_iterations: int) -> None: ...
+
+    def stop_goal(self, handle: RuntimeHandle) -> None: ...
+
+    def resume_goal(self, handle: RuntimeHandle) -> None: ...
+
+    def ask_agent(
+        self, handle: RuntimeHandle, question: str, *, timeout_seconds: float
+    ) -> RuntimeAskAgentResult: ...
 
     def fork_conversation(
         self,

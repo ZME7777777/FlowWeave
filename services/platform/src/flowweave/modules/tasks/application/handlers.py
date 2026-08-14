@@ -104,6 +104,18 @@ def _condense_conversation(
     conversations.process_conversation_condensation(db, aggregate_id, lease, commit=False)
 
 
+def _control_conversation_goal(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    conversations.process_goal_command(db, aggregate_id, lease, commit=False)
+
+
+def _ask_conversation_agent(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    conversations.process_ask_agent(db, aggregate_id, lease, commit=False)
+
+
 def _cleanup_setup_container(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
@@ -199,6 +211,8 @@ HANDLERS: dict[str, Handler] = {
     "FORK_CONVERSATION": _fork_conversation,
     "CLEANUP_CONVERSATION_RUNTIME": _cleanup_conversation_runtime,
     "CONDENSE_CONVERSATION": _condense_conversation,
+    "CONTROL_CONVERSATION_GOAL": _control_conversation_goal,
+    "ASK_CONVERSATION_AGENT": _ask_conversation_agent,
     "CLEANUP_SETUP_CONTAINER": _cleanup_setup_container,
     "CLEANUP_ENVIRONMENT_IMAGE": _cleanup_environment_image,
     "CLEANUP_ENVIRONMENT_CREDENTIALS": _cleanup_environment_credentials,
@@ -240,6 +254,10 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
         conversations.record_conversation_condensation_failure(
             db, task.aggregate_id, error, terminal=True
         )
+    elif task.task_type == "CONTROL_CONVERSATION_GOAL":
+        conversations.record_goal_command_failure(db, task.aggregate_id, error, terminal=True)
+    elif task.task_type == "ASK_CONVERSATION_AGENT":
+        conversations.record_ask_agent_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "STOP_CONVERSATION_RUNTIME":
         conversations.record_stop_conversation_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "RESOLVE_PLUGIN_SOURCE":

@@ -43,6 +43,7 @@ from flowweave.runtime.base import (
     RuntimeResult,
     StartAttemptRequest,
 )
+from flowweave.runtime.contract import compile_runtime_contract
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import (
     runtime_manifest_hash as _runtime_manifest_hash,
@@ -271,6 +272,20 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(executor, dict):
             raise DomainError("SNAPSHOT_INVALID", "Snapshot executor is invalid", 409)
         executor_config = cast(dict[str, Any], executor)
+        raw_tool_config = cast(dict[str, Any], tool_policies[0]["runtime_config"])
+        raw_tools = raw_tool_config.get("tools")
+        if not isinstance(raw_tools, list):
+            raise DomainError(
+                "SNAPSHOT_INVALID",
+                "Snapshot Tool Policy tools are invalid",
+                409,
+                {"instance_key": instance_key},
+            )
+        required_tools = tuple(
+            str(cast(dict[str, Any], item).get("name") or "")
+            for item in cast(list[object], raw_tools)
+            if isinstance(item, dict)
+        )
         nodes[instance_key] = {
             "node_asset_id": str(node.get("node_asset_id") or asset.get("id") or ""),
             "capabilities": capabilities,
@@ -278,6 +293,7 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
                 "schema_version": 1,
                 "agent_kind": "OPENHANDS",
                 "openhands_version": OPENHANDS_VERSION,
+                "runtime_contract": compile_runtime_contract(required_tools),
                 "tool_policy": tool_policies[0],
                 "context_policy": context_policies[0],
                 "memory_policy": memory_policies[0],

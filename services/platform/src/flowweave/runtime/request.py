@@ -18,11 +18,13 @@ from flowweave.runtime.base import (
     RuntimeAgentSpec,
     RuntimeBudgets,
     RuntimeCondenser,
+    RuntimeContract,
     RuntimeCritic,
     RuntimeProvider,
     RuntimeTool,
     StartAttemptRequest,
 )
+from flowweave.runtime.contract import normalize_runtime_contract
 from flowweave.runtime.workspace import (
     isolated_runtime_workspace_paths,
     materialize_hook_config,
@@ -399,6 +401,18 @@ def build_runtime_request(
             409,
         )
     policy_tool_names = {str(item["name"]) for item in tool_entries}
+    try:
+        runtime_contract: RuntimeContract = normalize_runtime_contract(
+            frozen_spec.get("runtime_contract"),
+            required_tools=tuple(str(item["name"]) for item in tool_entries),
+        )
+    except ValueError as exc:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Agent Spec contract is invalid",
+            409,
+            {"reason": str(exc)},
+        ) from exc
     raw_context_policy = frozen_spec.get("context_policy")
     if not isinstance(raw_context_policy, dict):
         raise DomainError(
@@ -664,6 +678,7 @@ def build_runtime_request(
     agent_spec = RuntimeAgentSpec(
         schema_version=int(frozen_spec.get("schema_version") or 0),
         agent_kind=cast(Literal["OPENHANDS", "ACP"], frozen_spec.get("agent_kind")),
+        runtime_contract=runtime_contract,
         agent_profile=agent_profile,
         provider=provider,
         tools=tuple(

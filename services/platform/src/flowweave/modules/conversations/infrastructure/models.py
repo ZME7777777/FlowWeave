@@ -207,6 +207,145 @@ class RuntimeConversationFork(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class RuntimeCriticEvaluation(Base):
+    """Idempotent projection of one native Critic result."""
+
+    __tablename__ = "runtime_critic_evaluations"
+    __table_args__ = (
+        Index("uq_runtime_critic_event", "conversation_id", "runtime_event_id", unique=True),
+        CheckConstraint("score >= 0 AND score <= 1", name="ck_runtime_critic_score"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True
+    )
+    runtime_event_id: Mapped[str] = mapped_column(String(200))
+    source_type: Mapped[str] = mapped_column(String(40))
+    score: Mapped[float] = mapped_column(Numeric(8, 7))
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class RuntimeGoalCommand(Base):
+    """Governed start/stop/resume command with native status reconciliation."""
+
+    __tablename__ = "runtime_goal_commands"
+    __table_args__ = (
+        Index(
+            "uq_runtime_goal_command_active",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("state IN ('PENDING', 'RUNNING')"),
+        ),
+        CheckConstraint(
+            "action IN ('START', 'STOP', 'RESUME') AND "
+            "state IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')",
+            name="ck_runtime_goal_command_state",
+        ),
+        CheckConstraint(
+            "max_iterations >= 1 AND max_iterations <= 20 AND state_version > 0",
+            name="ck_runtime_goal_command_limits",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True
+    )
+    runtime_conversation_id: Mapped[str] = mapped_column(String(100))
+    action: Mapped[str] = mapped_column(String(20))
+    objective: Mapped[str | None] = mapped_column(Text)
+    max_iterations: Mapped[int] = mapped_column(Integer)
+    max_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    max_cost_usd: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    baseline_cost_usd: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
+    baseline_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    state: Mapped[str] = mapped_column(String(20), default="PENDING")
+    state_version: Mapped[int] = mapped_column(Integer, default=1)
+    idempotency_key: Mapped[str] = mapped_column(String(180), unique=True)
+    requested_by: Mapped[str | None] = mapped_column(String(160))
+    terminal_status: Mapped[str | None] = mapped_column(String(20))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class RuntimeGoalStatus(Base):
+    """Latest native Goal state per event, retaining its formal event identity."""
+
+    __tablename__ = "runtime_goal_statuses"
+    __table_args__ = (
+        Index("uq_runtime_goal_status_event", "conversation_id", "runtime_event_id", unique=True),
+        CheckConstraint(
+            "status IN ('running', 'complete', 'capped', 'interrupted')",
+            name="ck_runtime_goal_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True
+    )
+    runtime_event_id: Mapped[str] = mapped_column(String(200))
+    active: Mapped[bool] = mapped_column(Boolean)
+    status: Mapped[str] = mapped_column(String(20))
+    iteration: Mapped[int] = mapped_column(Integer)
+    max_iterations: Mapped[int] = mapped_column(Integer)
+    objective: Mapped[str] = mapped_column(Text)
+    verdict_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class RuntimeDiagnosticQuery(Base):
+    """Audited stateless ask_agent query; it is never a Conversation message."""
+
+    __tablename__ = "runtime_diagnostic_queries"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED') "
+            "AND timeout_seconds BETWEEN 1 AND 120",
+            name="ck_runtime_diagnostic_query_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True
+    )
+    runtime_conversation_id: Mapped[str] = mapped_column(String(100))
+    question_text: Mapped[str] = mapped_column(Text)
+    question_digest: Mapped[str] = mapped_column(String(64))
+    question_length: Mapped[int] = mapped_column(Integer)
+    output_classification: Mapped[str] = mapped_column(String(40))
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(20), default="PENDING")
+    idempotency_key: Mapped[str] = mapped_column(String(180), unique=True)
+    requested_by: Mapped[str | None] = mapped_column(String(160))
+    response_text: Mapped[str | None] = mapped_column(Text)
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    prompt_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    completion_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class RuntimeCondensationCommand(Base):
     """Durable control-plane command for one native manual condensation."""
 
@@ -420,6 +559,10 @@ __all__ = (
     "RuntimeCondensation",
     "RuntimeCondensationCommand",
     "RuntimeConversationFork",
+    "RuntimeCriticEvaluation",
+    "RuntimeDiagnosticQuery",
+    "RuntimeGoalCommand",
+    "RuntimeGoalStatus",
     "RuntimeConfirmationBatch",
     "RuntimeSubagentTask",
     "RuntimeSubagentTaskUsage",
