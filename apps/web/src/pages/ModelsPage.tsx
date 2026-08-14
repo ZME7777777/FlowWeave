@@ -29,9 +29,8 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
       return;
     }
     setForm(old => {
-      const configured = new Set(old.models.map(item => item.model_name));
-      const additions = result.models.filter(name => !configured.has(name)).map(name => ({ model_name: name, enabled: true, is_default: old.models.length === 0 }));
-      return { ...old, models: [...old.models, ...additions] };
+      const models = old.models.filter(item => item.model_name.trim());
+      return { ...old, models };
     });
   }, [qc]);
   useEffect(() => {
@@ -66,10 +65,11 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
     finally { setBusy(false); }
   };
   const discover = async () => {
-    if (!provider) { setError('请先保存服务，再执行模型发现'); return; }
     setBusy(true); setError('');
     try {
-      const result = await api.discoverProviderModels(provider.id);
+      const result = form.auth_type === 'API_KEY'
+        ? await api.previewProviderModels({ base_url: form.base_url, api_key: form.api_key, provider_id: provider?.id })
+        : await api.discoverProviderModels(provider!.id);
       applyDiscovery(result);
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : '发现模型失败'); }
@@ -77,7 +77,16 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   };
   const toggle = (name: string) => setForm(old => {
     const exists = old.models.find(item => item.model_name === name);
-    return { ...old, models: exists ? old.models.filter(item => item.model_name !== name) : [...old.models, { model_name: name, enabled: true, is_default: old.models.length === 0 }] };
+    if (!exists) {
+      const hasDefault = old.models.some(item => item.enabled && item.is_default);
+      return { ...old, models: [...old.models, { model_name: name, enabled: true, is_default: !hasDefault }] };
+    }
+    const models = old.models.filter(item => item.model_name !== name);
+    if (exists.is_default && !models.some(item => item.enabled && item.is_default)) {
+      const firstEnabled = models.findIndex(item => item.enabled);
+      if (firstEnabled >= 0) models[firstEnabled] = { ...models[firstEnabled], is_default: true };
+    }
+    return { ...old, models };
   });
   const updateModel = (index: number, patch: Partial<ProviderModel>) => setForm(old => ({
     ...old,
@@ -108,8 +117,8 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   }));
   return <div className="modal-backdrop"><form className="modal model-editor" onSubmit={save}><header><div><span className="eyebrow">MODEL PROVIDER</span><h2>{provider ? '编辑模型服务' : '新增模型服务'}</h2><p>API Key 与 Codex OAuth 凭据均加密保存且永不返回浏览器。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
     <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<select value={form.auth_type} onChange={e => changeAuthType(e.target.value as ModelProviderWrite['auth_type'])}><option value="API_KEY">Codex / OpenAI 兼容</option><option value="CODEX_OAUTH">Codex OAuth（ChatGPT 订阅）</option></select></label>{form.auth_type === 'API_KEY' ? <><label>Base URL<input required value={form.base_url} placeholder="https://api.example.com/v1" onChange={e => setForm({ ...form, base_url: e.target.value })}/></label><label>API Key<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label></> : <p className="startpoint wide">保存后在服务卡片点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p>}</div>
-    <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'API_KEY' ? '发现模型后选择启用项和默认模型' : provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型'}</small></div>{provider && (form.auth_type === 'API_KEY' || provider.oauth_connected) && <button type="button" className="secondary" disabled={busy} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '发现模型'}</button>}</div>
-    {form.auth_type === 'API_KEY' && discovered.length > 0 && <div className="model-tags discovery-tags">{discovered.map(name => <button type="button" key={name} className={form.models.some(item => item.model_name === name) ? 'selected' : ''} onClick={() => toggle(name)}>{name}</button>)}</div>}
+    <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'API_KEY' ? '填写连接信息后拉取模型，再选择启用项和默认模型' : provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型'}</small></div>{(form.auth_type === 'API_KEY' || (provider && provider.oauth_connected)) && <button type="button" className="secondary" disabled={busy || (form.auth_type === 'API_KEY' && !form.base_url.trim())} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '拉取模型'}</button>}</div>
+    {form.auth_type === 'API_KEY' && discovered.length > 0 && <div className="model-tags discovery-tags">{discovered.map(name => { const selected = form.models.some(item => item.model_name === name); return <button type="button" key={name} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggle(name)}>{name}</button>; })}</div>}
     <div className={`provider-model-list ${form.auth_type === 'CODEX_OAUTH' ? 'oauth-model-list' : ''}`}>{form.models.map((model, index) => <div className="provider-model-row" key={model.model_name || index}>{form.auth_type === 'CODEX_OAUTH' ? <span className="synced-model-name"><b>{model.model_name}</b><small>由当前 Codex 账号同步{model.supported_reasoning_efforts?.length ? ` · 支持 ${model.supported_reasoning_efforts.join(' / ')}` : ''}</small></span> : <input aria-label={`模型 ${index + 1}`} required value={model.model_name} placeholder="模型标识" onChange={e => updateModel(index, { model_name: e.target.value })}/>}<label><input type="checkbox" checked={model.enabled} onChange={e => updateModel(index, { enabled: e.target.checked })}/>启用</label><label><input type="radio" name="default-model" checked={model.is_default} onChange={() => updateModel(index, { is_default: true, enabled: true })}/>默认</label>{form.auth_type === 'API_KEY' && <button type="button" className="danger model-remove-button" aria-label={`移除模型 ${model.model_name}`} onClick={() => removeModel(index)}><Trash2 size={16}/>删除</button>}</div>)}</div>
     {form.auth_type === 'API_KEY' && <button type="button" className="ghost" onClick={() => setForm(old => ({ ...old, models: [...old.models, { model_name: '', enabled: true, is_default: old.models.length === 0 }] }))}><Plus size={13}/>手动添加模型</button>}
     {form.auth_type === 'CODEX_OAUTH' && provider?.oauth_connected && !busy && !form.models.length && <p className="model-discovery-empty">当前账号没有返回可用模型，请点击“刷新模型”重试。</p>}

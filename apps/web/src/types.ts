@@ -33,6 +33,7 @@ export interface CapabilityAsset {
   capability_type: CapabilityAssetType; capability_key: string;
   description: string; version: string; filename: string; content_hash: string;
   byte_size: number; import_id: string; created_at: string; reference_count: number;
+  is_builtin: boolean; document: Record<string, unknown>;
   dependencies: Record<string, Record<string, string>>;
   dependency_build_state: 'NOT_REQUIRED' | 'PENDING' | 'READY' | 'FAILED';
   dependency_build_error?: string | null;
@@ -51,6 +52,19 @@ export interface SkillSource {
 export interface CapabilityImportResult {
   id: string; capability_type: CapabilityAssetType; filename: string;
   content_hash: string; storage_key: string; capabilities: CapabilityAsset[];
+}
+export interface ToolPolicyParameter {
+  type: 'string' | 'integer'; max_length?: number; minimum?: number; maximum?: number; enum?: string[];
+}
+export interface ToolPolicyCatalogItem {
+  name: string; module: string; params: Record<string, ToolPolicyParameter>;
+  access: 'READ_ONLY' | 'READ_WRITE' | 'CONTROL' | 'OPEN_WORLD';
+  confirmation: 'NONE' | 'REQUIRED'; concurrency: 'READ_ONLY' | 'RESOURCE_LOCKED' | 'SERIAL_ONLY';
+  policy_enabled: boolean; disabled_reason?: string | null;
+}
+export interface ToolPolicyCatalog {
+  schema_version: number; openhands_version: string; source_commit: string; catalog_digest: string;
+  max_tool_concurrency: number; tools: ToolPolicyCatalogItem[];
 }
 export interface PluginSourceResolution {
   id: string; source_kind: 'GIT' | 'MARKETPLACE'; source_url: string; requested_commit: string; repo_path?: string | null;
@@ -104,7 +118,8 @@ export interface EnvironmentVersion {
   id: string; environment_id: string; version_no: number; parent_version_id?: string | null;
   state: 'PUBLISHING' | 'READY' | 'FAILED'; image_reference: string; image_digest: string;
   manifest: { commands?: Record<string, string>; [key: string]: unknown };
-  error_detail?: string | null; node_reference_count: number; run_reference_count: number;
+  error_detail?: string | null; runtime_compatible: boolean;
+  runtime_incompatibility_reason?: string | null; run_reference_count: number;
   reference_count: number; created_at: string;
 }
 export interface EnvironmentSetupSession {
@@ -123,7 +138,6 @@ export interface TerminalEnvironmentWrite {
 export interface NodeAsset {
   id: string; directory_id?: string | null; name: string; description: string;
   icon_kind: string; icon_value: string; row_version: number;
-  environment_version_id?: string | null; environment_version?: EnvironmentVersion | null;
   workspace_ref?: string;
   inputs: IOField[]; outputs: IOField[]; executor: ExecutorConfig | null;
   capabilities: CapabilityRef[]; created_at: string; updated_at: string;
@@ -131,7 +145,6 @@ export interface NodeAsset {
 export interface NodeAssetWrite {
   directory_id?: string | null; name: string; description: string;
   icon_kind: string; icon_value: string;
-  environment_version_id?: string | null;
   row_version?: number | null; inputs: IOField[]; outputs: IOField[];
   executor: ExecutorConfig; capabilities: CapabilityRef[];
 }
@@ -153,6 +166,9 @@ export interface ModelProviderWrite {
   name: string; auth_type: 'API_KEY' | 'CODEX_OAUTH'; base_url: string;
   api_key?: string | null; row_version?: number | null;
   models: ProviderModel[];
+}
+export interface ModelProviderDiscoveryWrite {
+  base_url: string; api_key?: string | null; provider_id?: string | null;
 }
 export interface CodexDeviceAuthorization {
   verification_url: string; user_code: string; expires_at: string; interval: number;

@@ -28,11 +28,7 @@ from flowweave.shared.schemas import FlowWrite
 def _ports(
     db: Session, asset_ids: set[str], *, lock_assets: bool = False
 ) -> dict[str, dict[str, dict[str, str]]]:
-    asset_query = (
-        select(NodeAsset)
-        .where(NodeAsset.id.in_(asset_ids), NodeAsset.deleted_at.is_(None))
-        .order_by(NodeAsset.id)
-    )
+    asset_query = select(NodeAsset).where(NodeAsset.id.in_(asset_ids)).order_by(NodeAsset.id)
     if lock_assets:
         asset_query = asset_query.with_for_update()
     assets = {x.id for x in db.scalars(asset_query)}
@@ -48,7 +44,7 @@ def _ports(
 
 def get_flow(db: Session, flow_id: str) -> FlowDefinition:
     item = db.get(FlowDefinition, flow_id)
-    if not item or item.deleted_at:
+    if not item:
         raise not_found("flow", flow_id)
     return item
 
@@ -137,11 +133,7 @@ def flow_dict(db: Session, item: FlowDefinition) -> dict[str, Any]:
 def list_flows(db: Session) -> list[dict[str, Any]]:
     return [
         flow_dict(db, x)
-        for x in db.scalars(
-            select(FlowDefinition)
-            .where(FlowDefinition.deleted_at.is_(None))
-            .order_by(FlowDefinition.updated_at.desc())
-        )
+        for x in db.scalars(select(FlowDefinition).order_by(FlowDefinition.updated_at.desc()))
     ]
 
 

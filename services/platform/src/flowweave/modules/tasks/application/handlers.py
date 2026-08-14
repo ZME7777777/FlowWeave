@@ -71,11 +71,18 @@ def _respond_runtime_confirmation(
 
 def _cancel_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
     raw_mode = payload.get("recovery_mode")
+    raw_sandbox_ids = payload.get("sandbox_ids")
+    sandbox_ids = (
+        tuple(str(item) for item in raw_sandbox_ids if isinstance(item, str) and item)
+        if isinstance(raw_sandbox_ids, list)
+        else ()
+    )
     orchestration.process_cancel_runtime(
         db,
         aggregate_id,
         lease,
         recovery_mode=str(raw_mode) if raw_mode is not None else None,
+        sandbox_ids=sandbox_ids,
         commit=False,
     )
 

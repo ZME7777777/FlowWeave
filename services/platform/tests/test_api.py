@@ -1,3 +1,5 @@
+import hashlib
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -72,6 +74,27 @@ def test_node_asset_can_be_saved_without_skill(client):
         "MEMORY_POLICY": "flowweave-memory-disabled",
         "CRITIC_POLICY": "flowweave-critic-disabled",
     }
+    context = next(item for item in capabilities if item["capability_type"] == "CONTEXT_POLICY")
+    runtime_config = context["normalized_config"]
+    document = {
+        key: value
+        for key, value in runtime_config.items()
+        if key
+        not in {
+            "capability_id",
+            "capability_version_id",
+            "package_id",
+            "version_no",
+            "digest",
+            "filename",
+            "content_hash",
+            "storage_key",
+        }
+    }
+    encoded = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    assert hashlib.sha256(encoded).hexdigest() == runtime_config["content_hash"]
 
 
 def test_confirm_start_persists_explicit_model_selection(client):
@@ -349,9 +372,7 @@ def test_flow_run_rejects_ready_version_of_deleted_environment(
         db.add(version)
         db.flush()
         version_id = version.id
-        parent = db.get(TerminalEnvironment, environment["id"])
-        assert parent is not None
-        parent.deleted_at = datetime.now(UTC)
+        db.delete(db.get(TerminalEnvironment, environment["id"]))
         db.commit()
 
     response = client.post(
@@ -361,6 +382,45 @@ def test_flow_run_rejects_ready_version_of_deleted_environment(
 
     assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
+
+
+def test_flow_run_rejects_ready_environment_without_runtime_provenance(
+    client, db_session_factory, skill_capability
+):
+    asset = create_asset(client, skill_capability, name="不兼容环境运行节点")
+    flow = create_flow(client, asset["id"])
+    environment = client.post(
+        "/api/v1/terminal-environments",
+        json={
+            "name": "旧环境不可创建运行",
+            "description": "",
+            "base_image": "flowweave-openhands-runtime:1",
+        },
+    ).json()
+    with db_session_factory() as db:
+        version = EnvironmentVersion(
+            environment_id=environment["id"],
+            version_no=1,
+            state="READY",
+            image_reference="flowweave/environment-legacy-run:v1",
+            image_digest="sha256:" + "7" * 64,
+            manifest_json={"schema_version": 1},
+        )
+        db.add(version)
+        db.commit()
+        version_id = version.id
+
+    listed = client.get(f"/api/v1/terminal-environments/{environment['id']}").json()["versions"][0]
+    assert listed["runtime_compatible"] is False
+    assert listed["runtime_incompatibility_reason"]
+
+    response = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": version_id},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "ENVIRONMENT_RUNTIME_INCOMPATIBLE"
 
 
 def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
@@ -601,6 +661,34 @@ def test_node_asset_delete_is_blocked_by_active_flow(client, skill_capability):
     assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
 
 
+def test_deleted_node_asset_name_can_be_reused_in_the_same_directory(
+    client, skill_capability, db_session_factory
+):
+    directory = client.post(
+        "/api/v1/node-directories",
+        json={"name": "技术方案设计", "position": 0},
+    ).json()
+    payload = asset_payload("需求拆分", skill_capability)
+    payload["directory_id"] = directory["id"]
+
+    original = client.post("/api/v1/node-assets", json=payload)
+    assert original.status_code == 201, original.text
+
+    duplicate = client.post("/api/v1/node-assets", json=payload)
+    assert duplicate.status_code == 409, duplicate.text
+    assert duplicate.json()["error"]["code"] == "NODE_ASSET_NAME_CONFLICT"
+    assert duplicate.json()["error"]["message"] == ("当前目录已存在同名节点资产，请使用其他名称。")
+
+    original_id = original.json()["id"]
+    assert client.delete(f"/api/v1/node-assets/{original_id}").status_code == 204
+
+    recreated = client.post("/api/v1/node-assets", json=payload)
+    assert recreated.status_code == 201, recreated.text
+    assert recreated.json()["id"] != original_id
+    with db_session_factory() as db:
+        assert db.get(NodeAsset, original_id) is None
+
+
 def test_node_asset_bulk_delete_deletes_unreferenced_and_reports_blocked(client, skill_capability):
     referenced = create_asset(client, skill_capability, "批删被引用节点")
     unreferenced = create_asset(client, skill_capability, "批删未引用节点")
@@ -723,6 +811,7 @@ def _create_model_provider(client, name: str) -> dict:
         json={
             "name": name,
             "base_url": "https://models.example.test/v1",
+            "api_key": "secret-key",
             "models": [{"model_name": "gpt-delete", "enabled": True, "is_default": True}],
         },
     )
@@ -853,6 +942,60 @@ def test_model_provider_connection_test_reports_result_and_persists_failure(monk
     assert failed.status_code == 503, failed.text
     assert failed.json()["error"]["code"] == "EXECUTOR_UNAVAILABLE"
     assert client.get("/api/v1/model-providers").json()[0]["connection_state"] == "FAILED"
+
+
+def test_model_provider_preview_discovery_uses_unsaved_connection_without_persisting(
+    monkeypatch, client
+):
+    from flowweave.modules.model_providers.presentation import router as provider_router
+
+    captured = {}
+
+    async def discover(_client, snapshot):
+        captured["snapshot"] = snapshot
+        return ["gpt-alpha", "gpt-beta"]
+
+    monkeypatch.setattr(provider_router, "discover_provider_models", discover)
+    response = client.post(
+        "/api/v1/model-providers/discover-models",
+        json={
+            "base_url": "https://preview.example.test/v1/",
+            "api_key": "preview-secret",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"models": ["gpt-alpha", "gpt-beta"]}
+    snapshot = captured["snapshot"]
+    assert snapshot.base_url == "https://preview.example.test/v1"
+    assert snapshot.headers["Authorization"] == "Bearer preview-secret"
+    assert client.get("/api/v1/model-providers").json() == []
+    assert "preview-secret" not in response.text
+
+
+def test_model_provider_preview_discovery_can_reuse_saved_api_key(monkeypatch, client):
+    from flowweave.modules.model_providers.presentation import router as provider_router
+
+    provider = _create_model_provider(client, "复用凭据模型服务")
+    captured = {}
+
+    async def discover(_client, snapshot):
+        captured["snapshot"] = snapshot
+        return ["gpt-reused"]
+
+    monkeypatch.setattr(provider_router, "discover_provider_models", discover)
+    response = client.post(
+        "/api/v1/model-providers/discover-models",
+        json={
+            "base_url": "https://changed.example.test/v1",
+            "provider_id": provider["id"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    snapshot = captured["snapshot"]
+    assert snapshot.base_url == "https://changed.example.test/v1"
+    assert snapshot.headers["Authorization"] == "Bearer secret-key"
 
 
 def test_codex_oauth_device_flow_encrypts_tokens_and_never_returns_them(
@@ -1294,7 +1437,7 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
 
     with db_session_factory() as db:
         assert db.get(FlowDefinition, flow["id"]) is None
-        assert db.get(NodeAsset, asset["id"]).deleted_at is not None
+        assert db.get(NodeAsset, asset["id"]) is None
         assert db.get(FlowRun, run["id"]) is None
         assert db.get(BackgroundTask, task_id) is None
         assert (

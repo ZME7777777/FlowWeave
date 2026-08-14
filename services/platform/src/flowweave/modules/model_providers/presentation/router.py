@@ -13,7 +13,11 @@ from flowweave.modules.model_providers.infrastructure.codex_oauth import (
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
-from flowweave.shared.schemas import ModelProviderBulkDeleteWrite, ModelProviderWrite
+from flowweave.shared.schemas import (
+    ModelProviderBulkDeleteWrite,
+    ModelProviderDiscoveryWrite,
+    ModelProviderWrite,
+)
 
 router = APIRouter()
 
@@ -59,6 +63,16 @@ async def _discover(provider_id: str, db: Db, container: Container) -> list[str]
         db, lambda session: service.provider_connection_snapshot(session, provider_id)
     )
     return await discover_provider_models(container.http, snapshot)
+
+
+@router.post("/model-providers/discover-models")
+async def preview_discover_models(
+    payload: ModelProviderDiscoveryWrite, db: Db, container: ContainerDep
+) -> dict[str, list[str]]:
+    snapshot = await run_sync(
+        db, lambda session: service.preview_provider_connection_snapshot(session, payload)
+    )
+    return {"models": await discover_provider_models(container.http, snapshot)}
 
 
 async def _discover_codex(

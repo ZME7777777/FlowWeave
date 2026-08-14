@@ -44,6 +44,8 @@ RUNTIME_ADAPTER=openhands make infra-up-openhands
 make rebuild-deploy
 ```
 
+全量重建、单服务部署、运行时镜像更新、迁移顺序和部署后检查详见 [本地编译、打包与部署](docs/local-build-and-deploy.md)。
+
 节点可写资源保存在宿主机 `var/workspaces/nodes/<node-asset-id>/`：`skills/` 存放完整 Skill 包，`files/` 可放文本或附件，`repositories/` 可放代码仓库，`sessions/` 保存各次运行的会话工作区。上传的 MCP/Hook 配置与脚本由平台物化到 `var/workspaces/.managed-assets/nodes/<node-asset-id>/`，并以只读方式挂载到 Runtime 的 `/runtime/capabilities/nodes/<node-asset-id>/`，不会暴露在节点可写挂载中。可通过 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 改为其他宿主机目录。
 
 OpenHands 镜像内置 `sh`、`bash`、Python、Node.js、npm/npx、`js`、uv/uvx、Git、SSH、curl、jq、unzip 与 `lark-cli`。默认会把宿主机 `~/.lark-cli` 及 `~/Library/Application Support/lark-cli` 映射到 Session 容器，并自动为 Linux 创建兼容的 `master.key` 链接，因此在宿主机完成的配置和授权可被所有 Agent 会话直接复用。macOS 首次共享前需在宿主机终端执行一次：

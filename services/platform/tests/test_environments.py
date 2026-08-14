@@ -15,6 +15,8 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
+from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
+from flowweave.shared.domain.tool_policy import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     BackgroundTask,
@@ -23,15 +25,13 @@ from flowweave.shared.models import (
     FlowDefinition,
     FlowRun,
     TaskState,
-    TerminalEnvironment,
 )
 
 
-def _node_payload(environment_version_id: str | None = None) -> dict[str, object]:
+def _node_payload() -> dict[str, object]:
     return {
         "name": "环境节点",
-        "description": "验证节点绑定不可变终端环境",
-        "environment_version_id": environment_version_id,
+        "description": "验证终端环境只在运行级选择",
         "inputs": [],
         "outputs": [],
         "executor": {
@@ -42,6 +42,18 @@ def _node_payload(environment_version_id: str | None = None) -> dict[str, object
         },
         "capabilities": [],
     }
+
+
+def _runtime_provenance() -> dict[str, object]:
+    return {
+        "package_versions": dict(OPENHANDS_PACKAGE_VERSIONS),
+        "source_commit": OPENHANDS_SOURCE_COMMIT,
+        "source_ref": OPENHANDS_SOURCE_COMMIT,
+    }
+
+
+def _runtime_manifest(**values: object) -> dict[str, object]:
+    return {**values, "runtime_provenance": _runtime_provenance()}
 
 
 def _mock_setup_provider(monkeypatch):
@@ -237,6 +249,11 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
     )
     monkeypatch.setattr(
         environment_docker,
+        "_inspect_runtime_provenance",
+        lambda _container_id: _runtime_provenance(),
+    )
+    monkeypatch.setattr(
+        environment_docker,
         "container_diff",
         lambda container_id: calls.append("scan")
         or ["A /root/.ssh/id_ed25519", "A /root/.lark-cli/token.json"],
@@ -336,6 +353,11 @@ def test_publish_fails_if_docker_drops_image_ownership_labels(monkeypatch):
         ),
     )
     monkeypatch.setattr(environment_docker, "_inspect_commands", lambda _container_id: {})
+    monkeypatch.setattr(
+        environment_docker,
+        "_inspect_runtime_provenance",
+        lambda _container_id: _runtime_provenance(),
+    )
     monkeypatch.setattr(environment_docker, "container_diff", lambda _container_id: [])
     committed = False
 
@@ -379,6 +401,11 @@ def test_publish_allows_authentication_files(monkeypatch):
         ),
     )
     monkeypatch.setattr(environment_docker, "_inspect_commands", lambda _container_id: {})
+    monkeypatch.setattr(
+        environment_docker,
+        "_inspect_runtime_provenance",
+        lambda _container_id: _runtime_provenance(),
+    )
     monkeypatch.setattr(
         environment_docker,
         "container_diff",
@@ -426,7 +453,7 @@ def test_publish_allows_authentication_files(monkeypatch):
     assert published.manifest["filesystem_change_count"] == 3
 
 
-def test_terminal_environment_publish_and_node_binding(client, worker_container, monkeypatch):
+def test_terminal_environment_publish_does_not_bind_nodes(client, worker_container, monkeypatch):
     created_sandboxes, removed, _fail_delete = _mock_setup_provider(monkeypatch)
     published_container_ids: list[str] = []
 
@@ -436,10 +463,10 @@ def test_terminal_environment_publish_and_node_binding(client, worker_container,
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest="sha256:" + "a" * 64,
-            manifest={
-                "schema_version": 1,
-                "commands": {"python": "Python 3.13", "lark-cli": "1.0.84"},
-            },
+            manifest=_runtime_manifest(
+                schema_version=1,
+                commands={"python": "Python 3.13", "lark-cli": "1.0.84"},
+            ),
         )
 
     monkeypatch.setattr(
@@ -484,37 +511,25 @@ def test_terminal_environment_publish_and_node_binding(client, worker_container,
     assert retried.json()["id"] == version["id"]
     assert removed == created_sandboxes
 
-    node = client.post("/api/v1/node-assets", json=_node_payload(version["id"]))
+    node = client.post("/api/v1/node-assets", json=_node_payload())
     assert node.status_code == 201, node.text
     asset = node.json()
-    assert asset["environment_version_id"] == version["id"]
-    assert asset["environment_version"]["image_digest"] == version["image_digest"]
+    assert "environment_version_id" not in asset
+    assert "environment_version" not in asset
 
     listed_version = client.get(f"/api/v1/terminal-environments/{environment['id']}").json()[
         "versions"
     ][0]
-    assert listed_version["node_reference_count"] == 1
     assert listed_version["run_reference_count"] == 0
-    assert listed_version["reference_count"] == 1
+    assert listed_version["reference_count"] == 0
+    assert "node_reference_count" not in listed_version
 
-    blocked_version = client.delete(
+    deleted_version = client.delete(
         f"/api/v1/terminal-environments/{environment['id']}/versions/{version['id']}"
     )
-    assert blocked_version.status_code == 409, blocked_version.text
-    error = blocked_version.json()["error"]
-    assert error["code"] == "ENVIRONMENT_VERSION_IN_USE"
-    assert error["message"] == "The terminal environment version is still referenced"
-    assert error["details"] == {
-        "environment_id": environment["id"],
-        "version_id": version["id"],
-        "node_reference_count": 1,
-        "run_reference_count": 0,
-    }
-    assert error["request_id"]
-
-    blocked = client.delete(f"/api/v1/terminal-environments/{environment['id']}")
-    assert blocked.status_code == 409, blocked.text
-    assert blocked.json()["error"]["code"] == "ENVIRONMENT_IN_USE"
+    assert deleted_version.status_code == 204, deleted_version.text
+    deleted_environment = client.delete(f"/api/v1/terminal-environments/{environment['id']}")
+    assert deleted_environment.status_code == 204, deleted_environment.text
 
 
 def test_setup_allocation_starts_after_caller_transaction_is_released(client, monkeypatch):
@@ -628,7 +643,7 @@ def test_publish_docker_io_holds_no_database_transaction(client, db_session_fact
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest="sha256:" + "e" * 64,
-            manifest={"schema_version": 1},
+            manifest=_runtime_manifest(schema_version=1),
         )
 
     monkeypatch.setattr(
@@ -670,7 +685,7 @@ def test_late_publish_result_after_cancel_is_cleaned_without_becoming_ready(
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest=digest,
-            manifest={"schema_version": 1},
+            manifest=_runtime_manifest(schema_version=1),
         )
 
     monkeypatch.setattr(
@@ -756,9 +771,9 @@ def test_environment_version_run_reference_is_reported_and_blocks_deletion(
     listed_version = client.get(f"/api/v1/terminal-environments/{environment['id']}").json()[
         "versions"
     ][0]
-    assert listed_version["node_reference_count"] == 0
     assert listed_version["run_reference_count"] == 1
     assert listed_version["reference_count"] == 1
+    assert "node_reference_count" not in listed_version
 
     blocked = client.delete(
         f"/api/v1/terminal-environments/{environment['id']}/versions/{version_id}"
@@ -778,11 +793,11 @@ def test_delete_unused_versions_clears_provenance_and_preserves_version_high_wat
         lambda container_id, *, environment_id, version_id, version_no: PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest="sha256:" + str(version_no) * 64,
-            manifest={
-                "schema_version": 1,
-                "container_id": container_id,
-                "version_id": version_id,
-            },
+            manifest=_runtime_manifest(
+                schema_version=1,
+                container_id=container_id,
+                version_id=version_id,
+            ),
         ),
     )
     monkeypatch.setattr(
@@ -840,46 +855,6 @@ def test_delete_unused_versions_clears_provenance_and_preserves_version_high_wat
     ).json()
     third = client.post(f"/api/v1/environment-setup-sessions/{third_session['id']}/publish").json()
     assert third["version_no"] == 3
-
-
-def test_node_rejects_unknown_or_unready_environment_version(client):
-    response = client.post(
-        "/api/v1/node-assets",
-        json=_node_payload("00000000-0000-0000-0000-000000000000"),
-    )
-    assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "ENVIRONMENT_VERSION_INVALID"
-
-
-def test_node_rejects_ready_version_of_deleted_environment(client, db_session_factory):
-    environment = client.post(
-        "/api/v1/terminal-environments",
-        json={
-            "name": "已删除环境不可绑定节点",
-            "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
-        },
-    ).json()
-    with db_session_factory() as db:
-        version = EnvironmentVersion(
-            environment_id=environment["id"],
-            version_no=1,
-            state="READY",
-            image_reference="flowweave/environment-deleted:v1",
-            image_digest="sha256:" + "9" * 64,
-        )
-        db.add(version)
-        db.flush()
-        version_id = version.id
-        parent = db.get(TerminalEnvironment, environment["id"])
-        assert parent is not None
-        parent.deleted_at = datetime.now(UTC)
-        db.commit()
-
-    response = client.post("/api/v1/node-assets", json=_node_payload(version_id))
-
-    assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "ENVIRONMENT_VERSION_INVALID"
 
 
 def test_environment_delete_removes_versions_and_enqueues_image_cleanup(client, db_session_factory):
@@ -1181,7 +1156,10 @@ def test_terminal_can_attach_to_persistent_tmux_session(monkeypatch):
     monkeypatch.setattr(docker.subprocess, "Popen", popen)
 
     master, opened = docker.open_terminal(
-        "runtime-container-1", session_name="FlowWeave/conversation:123"
+        "runtime-container-1",
+        session_name="FlowWeave/conversation:123",
+        rows=31,
+        columns=121,
     )
 
     assert master == 10
@@ -1194,17 +1172,27 @@ def test_terminal_can_attach_to_persistent_tmux_session(monkeypatch):
             "-e",
             "TERM=xterm-256color",
             "runtime-container-1",
-            "tmux",
-            "new-session",
-            "-A",
-            "-s",
-            "flowweave-conversation-123",
             "bash",
             "-c",
+            (
+                'session="$1"; shell_script="$2"; columns="$3"; rows="$4"; '
+                'if ! tmux has-session -t "$session" 2>/dev/null; then '
+                'tmux new-session -d -x "$columns" -y "$rows" -s "$session" '
+                'bash -c "$shell_script" '
+                '|| tmux has-session -t "$session"; fi; '
+                'tmux set-option -t "$session" mouse on; '
+                'tmux set-option -t "$session" status off; '
+                'tmux resize-window -t "$session": -x "$columns" -y "$rows"; '
+                'exec tmux attach-session -t "$session"'
+            ),
+            "--",
+            "flowweave-conversation-123",
             (
                 r"exec 3<<<'PS1=flowweave@\h:\w\$ '; "
                 r"exec bash --noprofile --rcfile /dev/fd/3 -i"
             ),
+            "121",
+            "31",
         ]
     ]
 
@@ -1293,11 +1281,11 @@ def test_setup_cleanup_failure_retries_without_losing_container_ownership(
         lambda container_id, *, environment_id, version_id, version_no: PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest="sha256:" + "d" * 64,
-            manifest={
-                "schema_version": 1,
-                "container_id": container_id,
-                "version_id": version_id,
-            },
+            manifest=_runtime_manifest(
+                schema_version=1,
+                container_id=container_id,
+                version_id=version_id,
+            ),
         ),
     )
     environment = client.post(

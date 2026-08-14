@@ -21,7 +21,10 @@ from flowweave.modules.catalog.public import (
     resolve_snapshot_memory,
 )
 from flowweave.modules.conversations import public as conversations
-from flowweave.modules.environments.public import lock_referenceable_version
+from flowweave.modules.environments.public import (
+    lock_referenceable_version,
+    validate_runtime_manifest,
+)
 from flowweave.modules.flows.public import describe_flow, load_flow
 from flowweave.modules.gates.public import (
     GateExecutionPlan,
@@ -367,7 +370,7 @@ def _snapshot_definition(db: Session, flow_id: str) -> dict[str, Any]:
     definition = describe_flow(db, load_flow(db, flow_id))
     for node in definition["nodes"]:
         asset = db.get(NodeAsset, node["node_asset_id"])
-        if not asset or asset.deleted_at:
+        if not asset:
             raise not_found("node_asset", node["node_asset_id"])
         node["asset"] = describe_asset(db, asset)
     return definition
@@ -1444,6 +1447,7 @@ def start_flow(
         environment = lock_referenceable_version(db, payload.environment_version_id)
         if environment is None:
             raise not_found("environment_version", payload.environment_version_id)
+        validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     run_name = payload.name or f"{flow.name} · Run #{run_no}"
     run = FlowRun(
         flow_definition_id=flow_id,
@@ -1769,6 +1773,29 @@ def recover_runtime_tasks(db: Session) -> int:
             payload = {"poll_no": 1}
         elif attempt.runtime_phase == "CANCELLING":
             task_type = "CANCEL_RUNTIME"
+            latest_cancel_task = db.scalar(
+                select(BackgroundTask)
+                .where(
+                    BackgroundTask.aggregate_id == attempt.id,
+                    BackgroundTask.task_type == "CANCEL_RUNTIME",
+                )
+                .order_by(BackgroundTask.created_at.desc(), BackgroundTask.id.desc())
+                .limit(1)
+            )
+            previous_payload = (
+                latest_cancel_task.payload_json
+                if latest_cancel_task is not None
+                and isinstance(latest_cancel_task.payload_json, dict)
+                else {}
+            )
+            frozen_sandbox_ids = previous_payload.get("sandbox_ids")
+            sandbox_ids = (
+                {str(item) for item in frozen_sandbox_ids if isinstance(item, str) and item}
+                if isinstance(frozen_sandbox_ids, list)
+                else set()
+            )
+            sandbox_ids.update(_managed_runtime_sandbox_ids(db, attempt))
+            payload = {"sandbox_ids": sorted(sandbox_ids)}
             recovery_action = db.scalar(
                 select(HumanAction)
                 .where(
@@ -1784,7 +1811,7 @@ def recover_runtime_tasks(db: Session) -> int:
                 else ""
             )
             if recovery_mode in {"RECONCILE_PARENT", "DELETE_MANAGED_RUNTIME"}:
-                payload = {"recovery_mode": recovery_mode}
+                payload["recovery_mode"] = recovery_mode
         elif attempt.runtime_phase == "CONFIRMING":
             confirmation = db.scalar(
                 select(RuntimeConfirmationBatch)
@@ -2826,8 +2853,7 @@ def _runtime_cancel_recovery_modes(db: Session, attempt: NodeAttempt) -> list[st
         return []
     modes = ["RECONCILE_PARENT"]
     if any(
-        (snapshot := sandboxes.sandbox_snapshot(db, sandbox_id)) is not None
-        and snapshot["observed_state"] != "DELETED"
+        sandboxes.sandbox_snapshot(db, sandbox_id) is not None
         for sandbox_id in _managed_runtime_sandbox_ids(db, attempt)
     ):
         modes.append("DELETE_MANAGED_RUNTIME")
@@ -2840,6 +2866,7 @@ def process_cancel_runtime(
     lease: Lease | None = None,
     *,
     recovery_mode: str | None = None,
+    sandbox_ids: tuple[str, ...] = (),
     commit: bool = True,
 ) -> None:
     attempt = _attempt(db, attempt_id)
@@ -2849,7 +2876,9 @@ def process_cancel_runtime(
     current_attempt_id = attempt.id
     targets = _runtime_cancel_targets(db, attempt)
     pending_task_facts = conversations.pending_runtime_task_control_facts(db, attempt.id)
-    managed_sandbox_ids = _managed_runtime_sandbox_ids(db, attempt)
+    managed_sandbox_ids = _managed_runtime_sandbox_ids(db, attempt) | {
+        sandbox_id for sandbox_id in sandbox_ids if sandbox_id
+    }
     observed_task_usage_ids: dict[str, tuple[str, ...]] = {}
     if targets:
         _release_worker_read_transaction(db, lease)
@@ -2960,7 +2989,10 @@ def process_cancel_runtime(
             idempotency_key=(
                 f"cancel-task-usage-recovery:{attempt.id}:v{attempt.state_version}:p{recovery_poll}"
             ),
-            payload={"recovery_mode": recovery_mode or "RECONCILE_PARENT"},
+            payload={
+                "recovery_mode": recovery_mode or "RECONCILE_PARENT",
+                "sandbox_ids": sorted(managed_sandbox_ids),
+            },
             available_at=datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds),
         ).max_attempts = 20
         _finish_transaction(db, commit)
@@ -2982,8 +3014,7 @@ def process_cancel_runtime(
         pending_deletions = [
             sandbox_id
             for sandbox_id in sorted(managed_sandbox_ids)
-            if (snapshot := sandboxes.sandbox_snapshot(db, sandbox_id)) is not None
-            and snapshot["observed_state"] != "DELETED"
+            if sandboxes.sandbox_snapshot(db, sandbox_id) is not None
         ]
         if pending_deletions:
             raise DomainError(
@@ -3138,16 +3169,20 @@ def retry_runtime_cancel(
         )
     db.expire_all()
     claimed = _attempt(db, attempt_id)
+    managed_sandbox_ids = _managed_runtime_sandbox_ids(db, claimed)
     enqueue(
         db,
         task_type="CANCEL_RUNTIME",
         aggregate_type="ATTEMPT",
         aggregate_id=claimed.id,
         idempotency_key=f"retry-cancel-runtime:{claimed.id}:v{claimed.state_version}",
-        payload={"recovery_mode": payload.mode},
+        payload={
+            "recovery_mode": payload.mode,
+            "sandbox_ids": sorted(managed_sandbox_ids),
+        },
     ).max_attempts = 20
     if payload.mode == "DELETE_MANAGED_RUNTIME":
-        for sandbox_id in _managed_runtime_sandbox_ids(db, claimed):
+        for sandbox_id in managed_sandbox_ids:
             sandboxes.request_delete_durable(db, sandbox_id)
     _event(
         db,
@@ -3209,12 +3244,14 @@ def cancel_attempt(
     )
     if targets:
         attempt.runtime_phase = "CANCELLING"
+        sandbox_ids = _managed_runtime_sandbox_ids(db, attempt)
         enqueue(
             db,
             task_type="CANCEL_RUNTIME",
             aggregate_type="ATTEMPT",
             aggregate_id=attempt.id,
             idempotency_key=f"cancel-runtime:{attempt.id}:v{attempt.state_version}",
+            payload={"sandbox_ids": sorted(sandbox_ids)},
         ).max_attempts = 20
     else:
         attempt.runtime_phase = "CANCELLED"
@@ -3786,12 +3823,14 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
         attempt.state_version += 1
         if _runtime_cancel_targets(db, attempt):
             attempt.runtime_phase = "CANCELLING"
+            sandbox_ids = _managed_runtime_sandbox_ids(db, attempt)
             enqueue(
                 db,
                 task_type="CANCEL_RUNTIME",
                 aggregate_type="ATTEMPT",
                 aggregate_id=attempt.id,
                 idempotency_key=f"cancel-runtime:{attempt.id}:{attempt.runtime_job_id}",
+                payload={"sandbox_ids": sorted(sandbox_ids)},
             ).max_attempts = 20
         else:
             attempt.runtime_phase = "CANCELLED"

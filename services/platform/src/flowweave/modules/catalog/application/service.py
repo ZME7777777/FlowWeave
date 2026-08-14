@@ -13,9 +13,12 @@ from flowweave.modules.catalog.application.capability_repository import (
     ensure_default_tool_policy,
     resolve_version,
 )
-from flowweave.modules.environments.public import lock_referenceable_version
-from flowweave.runtime.workspace import materialize_node_workspace, node_workspace_relative
-from flowweave.shared.application.transactions import finish
+from flowweave.runtime.workspace import (
+    cleanup_node_workspace,
+    materialize_node_workspace,
+    node_workspace_relative,
+)
+from flowweave.shared.application.transactions import finish, register_commit_action
 from flowweave.shared.domain.agent_definition import (
     normalize_agent_definition_document,
 )
@@ -32,7 +35,6 @@ from flowweave.shared.domain.tool_policy import (
 )
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
-    EnvironmentVersion,
     FlowDefinition,
     FlowNode,
     ModelProvider,
@@ -102,11 +104,6 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
         )
         .order_by(NodeCapabilityRef.position)
     ).all()
-    environment = (
-        db.get(EnvironmentVersion, item.environment_version_id)
-        if item.environment_version_id
-        else None
-    )
 
     def field_dict(x: NodeIOField) -> dict[str, Any]:
         return {
@@ -127,20 +124,6 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
         "icon_kind": item.icon_kind,
         "icon_value": item.icon_value,
         "workspace_ref": str(node_workspace_relative(item.id)),
-        "environment_version_id": item.environment_version_id,
-        "environment_version": (
-            {
-                "id": environment.id,
-                "environment_id": environment.environment_id,
-                "version_no": environment.version_no,
-                "state": environment.state,
-                "image_reference": environment.image_reference,
-                "image_digest": environment.image_digest,
-                "manifest": environment.manifest_json or {},
-            }
-            if environment
-            else None
-        ),
         "row_version": item.row_version,
         "inputs": [field_dict(x) for x in fields if x.direction == "INPUT"],
         "outputs": [field_dict(x) for x in fields if x.direction == "OUTPUT"],
@@ -198,7 +181,7 @@ def create_directory(db: Session, payload: DirectoryWrite) -> dict[str, Any]:
 def list_assets(
     db: Session, directory_id: str | None = None, query: str | None = None
 ) -> list[dict[str, Any]]:
-    stmt = select(NodeAsset).where(NodeAsset.deleted_at.is_(None))
+    stmt = select(NodeAsset)
     if directory_id:
         stmt = stmt.where(NodeAsset.directory_id == directory_id)
     if query:
@@ -217,7 +200,7 @@ def read_asset(db: Session, asset_id: str) -> dict[str, Any]:
 
 def get_asset(db: Session, asset_id: str) -> NodeAsset:
     item = db.get(NodeAsset, asset_id)
-    if not item or item.deleted_at:
+    if not item:
         raise not_found("node_asset", asset_id)
     return item
 
@@ -720,15 +703,6 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
 def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None) -> dict[str, Any]:
     if payload.directory_id and not db.get(NodeDirectory, payload.directory_id):
         raise not_found("node_directory", payload.directory_id)
-    if payload.environment_version_id:
-        environment = lock_referenceable_version(db, payload.environment_version_id)
-        if environment is None:
-            raise DomainError(
-                "ENVIRONMENT_VERSION_INVALID",
-                "Node runtime environment must reference a READY immutable version",
-                422,
-                {"environment_version_id": payload.environment_version_id},
-            )
     if asset_id:
         item = get_asset(db, asset_id)
         if payload.row_version != item.row_version:
@@ -738,6 +712,26 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
         item.row_version += 1
         item.updated_at = datetime.now(UTC)
     else:
+        item = None
+
+    duplicate_id = db.scalar(
+        select(NodeAsset.id)
+        .where(
+            NodeAsset.directory_id == payload.directory_id,
+            NodeAsset.name == payload.name,
+            *((NodeAsset.id != asset_id,) if asset_id is not None else ()),
+        )
+        .limit(1)
+    )
+    if duplicate_id is not None:
+        raise DomainError(
+            "NODE_ASSET_NAME_CONFLICT",
+            "当前目录已存在同名节点资产，请使用其他名称。",
+            409,
+            {"directory_id": payload.directory_id, "name": payload.name},
+        )
+
+    if item is None:
         item = NodeAsset(
             directory_id=payload.directory_id,
             name=payload.name,
@@ -755,7 +749,6 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
         "description",
         "icon_kind",
         "icon_value",
-        "environment_version_id",
     ):
         setattr(item, key, getattr(payload, key))
     _replace_children(db, item, payload)
@@ -769,10 +762,7 @@ def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None
 def delete_assets(db: Session, asset_ids: list[str]) -> dict[str, Any]:
     ids = sorted(set(asset_ids))
     items = db.scalars(
-        select(NodeAsset)
-        .where(NodeAsset.id.in_(ids), NodeAsset.deleted_at.is_(None))
-        .order_by(NodeAsset.id)
-        .with_for_update()
+        select(NodeAsset).where(NodeAsset.id.in_(ids)).order_by(NodeAsset.id).with_for_update()
     ).all()
     items_by_id = {item.id: item for item in items}
     missing = next((asset_id for asset_id in ids if asset_id not in items_by_id), None)
@@ -788,10 +778,7 @@ def delete_assets(db: Session, asset_ids: list[str]) -> dict[str, Any]:
             func.count(FlowNode.id),
         )
         .join(FlowDefinition, FlowDefinition.id == FlowNode.flow_id)
-        .where(
-            FlowNode.node_asset_id.in_(ids),
-            FlowDefinition.deleted_at.is_(None),
-        )
+        .where(FlowNode.node_asset_id.in_(ids))
         .group_by(FlowNode.node_asset_id, FlowDefinition.id, FlowDefinition.name)
         .order_by(FlowDefinition.name, FlowDefinition.id)
     ).tuples()
@@ -813,14 +800,13 @@ def delete_assets(db: Session, asset_ids: list[str]) -> dict[str, Any]:
         for item in items
         if references[item.id]
     ]
-    deleted_at = datetime.now(UTC)
     blocked_ids = {item["id"] for item in blocked}
     deleted_ids: list[str] = []
     for item in items:
         if item.id in blocked_ids:
             continue
-        item.deleted_at = deleted_at
-        item.row_version += 1
+        db.delete(item)
+        register_commit_action(db, lambda asset_id=item.id: cleanup_node_workspace(asset_id))
         deleted_ids.append(item.id)
     finish(db)
     return {

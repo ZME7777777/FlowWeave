@@ -201,7 +201,6 @@ def create_runtime_sandbox(
                         ManagedSandbox.owner_type == owner_type,
                         ManagedSandbox.owner_id == owner_id,
                         ManagedSandbox.desired_state == "RUNNING",
-                        ManagedSandbox.observed_state != "DELETED",
                     )
                     .with_for_update()
                 )
@@ -309,7 +308,7 @@ def mark_runtime_bound(db: Session, sandbox_id: str | None) -> None:
         resource = control_db.get(ManagedSandbox, sandbox_id)
         if resource is None or resource.kind != "AGENT_RUNTIME":
             raise not_found("managed_sandbox", sandbox_id)
-        if resource.desired_state != "RUNNING" or resource.observed_state == "DELETED":
+        if resource.desired_state != "RUNNING":
             raise DomainError(
                 "SANDBOX_NOT_ACTIVE",
                 "The Runtime sandbox is no longer active",
@@ -330,7 +329,7 @@ def touch_runtime(db: Session, sandbox_id: str | None) -> None:
         resource = control_db.get(ManagedSandbox, sandbox_id)
         if resource is None or resource.kind != "AGENT_RUNTIME":
             raise not_found("managed_sandbox", sandbox_id)
-        if resource.desired_state != "RUNNING" or resource.observed_state == "DELETED":
+        if resource.desired_state != "RUNNING":
             raise DomainError(
                 "SANDBOX_NOT_ACTIVE",
                 "The Runtime sandbox is no longer active",
@@ -348,7 +347,7 @@ def request_delete_durable(db: Session, sandbox_id: str | None) -> None:
         return
     with Session(bind=_control_engine(db), expire_on_commit=False) as control_db:
         resource = control_db.get(ManagedSandbox, sandbox_id)
-        if resource is None or resource.observed_state == "DELETED":
+        if resource is None:
             return
         resource.desired_state = "DELETED"
         resource.next_reconcile_at = datetime.now(UTC)
@@ -375,11 +374,9 @@ def delete_sandbox_now(db: Session, sandbox_id: str) -> None:
     except DomainError as exc:
         _error(resource, exc)
         raise
-    resource.observed_state = "DELETED"
-    resource.backend_resource_id = ""
-    resource.deleted_at = datetime.now(UTC)
-    resource.last_error_code = None
-    resource.last_error_detail = None
+    # The deletion intent remains durable until the external resource is gone.
+    # Once Docker confirms cleanup, absence of the ledger row is authoritative.
+    db.delete(resource)
 
 
 def request_delete(db: Session, sandbox_id: str) -> None:
@@ -398,7 +395,6 @@ def owner_has_live_sandbox(db: Session, *, owner_type: str, owner_id: str) -> bo
             select(ManagedSandbox.id).where(
                 ManagedSandbox.owner_type == owner_type,
                 ManagedSandbox.owner_id == owner_id,
-                ManagedSandbox.observed_state != "DELETED",
             )
         )
         is not None
@@ -422,7 +418,6 @@ def runtime_memory_cleanup_pending(db: Session, *, owner_type: str, owner_id: st
                 ManagedSandbox.owner_type == owner_type,
                 ManagedSandbox.owner_id == owner_id,
                 ManagedSandbox.desired_state == "DELETED",
-                ManagedSandbox.observed_state != "DELETED",
             )
         )
         return any(bool((item.spec_json or {}).get("memory_enabled")) for item in resources)
@@ -444,7 +439,6 @@ def image_has_live_sandbox(db: Session, *, reference: str, digest: str) -> bool:
         db.scalar(
             select(ManagedSandbox.id).where(
                 ManagedSandbox.image_reference.in_([reference, digest]),
-                ManagedSandbox.observed_state != "DELETED",
             )
         )
         is not None
@@ -458,7 +452,6 @@ def environment_has_live_sandbox(db: Session, *, environment_id: str) -> bool:
         db.scalar(
             select(ManagedSandbox.id).where(
                 ManagedSandbox.spec_json["environment_id"].as_string() == environment_id,
-                ManagedSandbox.observed_state != "DELETED",
             )
         )
         is not None
@@ -559,7 +552,6 @@ def _claim_reconcile_batch(
             control_db.scalars(
                 select(ManagedSandbox)
                 .where(
-                    ManagedSandbox.observed_state != "DELETED",
                     ManagedSandbox.next_reconcile_at <= now,
                 )
                 .order_by(ManagedSandbox.next_reconcile_at, ManagedSandbox.created_at)
@@ -652,7 +644,7 @@ def _apply_reconcile_outcome(
         current = control_db.scalar(
             select(ManagedSandbox).where(ManagedSandbox.id == snapshot.id).with_for_update()
         )
-        if current is None or current.observed_state == "DELETED":
+        if current is None:
             control_db.commit()
             return deleted, errors
 
@@ -665,12 +657,7 @@ def _apply_reconcile_outcome(
 
         if outcome.kind == "DELETED":
             if current.desired_state == "DELETED":
-                current.observed_state = "DELETED"
-                current.backend_resource_id = ""
-                current.deleted_at = now
-                current.cleanup_attempts = 0
-                current.last_error_code = None
-                current.last_error_detail = None
+                control_db.delete(current)
                 deleted = 1
             else:
                 # Resurrection is not a supported transition, but fail safely

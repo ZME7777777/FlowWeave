@@ -14,7 +14,7 @@ from secrets import token_urlsafe
 from typing import Any, cast
 
 import yaml
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.application.capability_repository import (
@@ -46,12 +46,17 @@ from flowweave.shared.domain.tool_policy import (
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
+    CapabilityBlob,
     CapabilityCollection,
     CapabilityCollectionItem,
     CapabilityImport,
+    CapabilityPackage,
     CapabilityVersion,
+    MCPOAuthAuthorization,
+    MCPOAuthSecretReference,
     NodeAsset,
     NodeCapabilityRef,
+    PluginSourceResolution,
 )
 from flowweave.shared.schemas import CapabilityValidateWrite
 from flowweave.shared.settings import get_settings
@@ -153,6 +158,15 @@ MCP_SERVER_KEYS = {
     "enabled",
 }
 MCP_TRANSPORTS = {"stdio", "http", "streamable-http", "sse"}
+MCP_COMMON_FIELDS = {"transport", "description", "icon", "timeout", "enabled"}
+MCP_LOCAL_FIELDS = MCP_COMMON_FIELDS | {"command", "args", "env", "cwd"}
+MCP_REMOTE_FIELDS = MCP_COMMON_FIELDS | {
+    "url",
+    "sse_read_timeout",
+    "keep_alive",
+    "headers",
+    "auth",
+}
 HOOK_EVENTS = {
     "PreToolUse": "pre_tool_use",
     "PostToolUse": "post_tool_use",
@@ -178,6 +192,16 @@ HOOK_DEFINITION_KEYS = {
     "max_iterations",
     "async",
 }
+CODEX_OPENAI_YAML = PurePosixPath("agents/openai.yaml")
+CODEX_INTERFACE_FIELDS = {
+    "display_name",
+    "short_description",
+    "default_prompt",
+    "icon_small",
+    "icon_large",
+    "brand_color",
+}
+CODEX_POLICY_FIELDS = {"allow_implicit_invocation"}
 
 
 def _ignored_archive_entry(path: PurePosixPath) -> bool:
@@ -258,6 +282,78 @@ def _frontmatter(text: str) -> dict[str, Any]:
     except DomainError as exc:
         raise _reject("SKILL.md frontmatter is invalid") from exc
     return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def _codex_skill_metadata(
+    archive: zipfile.ZipFile, skill_file: str, names: set[str]
+) -> dict[str, Any]:
+    skill_root = PurePosixPath(skill_file).parent
+    metadata_path = (skill_root / CODEX_OPENAI_YAML).as_posix()
+    if metadata_path not in names:
+        return {}
+    try:
+        raw = archive.read(metadata_path)
+        if len(raw) > CONFIG_MAX_BYTES:
+            raise _reject("Codex Skill metadata exceeds size limit", filename=metadata_path)
+        parsed = _safe_yaml_load(raw.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise _reject("Codex Skill metadata must be UTF-8", filename=metadata_path) from exc
+    if not isinstance(parsed, dict):
+        raise _reject("Codex Skill metadata must be an object", filename=metadata_path)
+    document = cast(dict[object, object], parsed)
+    unknown = sorted(str(key) for key in document if str(key) not in {"interface", "policy"})
+    if unknown:
+        raise _reject(
+            "Codex Skill metadata contains unsupported fields",
+            filename=metadata_path,
+            fields=unknown,
+        )
+    raw_interface = document.get("interface", {})
+    raw_policy = document.get("policy", {})
+    if not isinstance(raw_interface, dict) or not isinstance(raw_policy, dict):
+        raise _reject("Codex Skill interface and policy must be objects", filename=metadata_path)
+    interface = cast(dict[object, object], raw_interface)
+    policy = cast(dict[object, object], raw_policy)
+    unknown_interface = sorted(
+        str(key) for key in interface if str(key) not in CODEX_INTERFACE_FIELDS
+    )
+    unknown_policy = sorted(str(key) for key in policy if str(key) not in CODEX_POLICY_FIELDS)
+    if unknown_interface or unknown_policy:
+        raise _reject(
+            "Codex Skill metadata contains unsupported fields",
+            filename=metadata_path,
+            interface_fields=unknown_interface,
+            policy_fields=unknown_policy,
+        )
+    normalized_interface: dict[str, str] = {}
+    limits = {
+        "display_name": 200,
+        "short_description": 1024,
+        "default_prompt": 20_000,
+        "icon_small": 500,
+        "icon_large": 500,
+        "brand_color": 32,
+    }
+    for field, limit in limits.items():
+        value = interface.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or len(value.strip()) > limit:
+            raise _reject(
+                "Codex Skill interface field is invalid", filename=metadata_path, field=field
+            )
+        normalized_interface[field] = value.strip()
+    normalized_policy: dict[str, bool] = {}
+    if "allow_implicit_invocation" in policy:
+        value = policy["allow_implicit_invocation"]
+        if not isinstance(value, bool):
+            raise _reject("Codex Skill invocation policy must be boolean", filename=metadata_path)
+        normalized_policy["allow_implicit_invocation"] = value
+    return {
+        "source": metadata_path,
+        "interface": normalized_interface,
+        "policy": normalized_policy,
+    }
 
 
 def _ensure_unique_capability_keys(capabilities: list[dict[str, Any]]) -> None:
@@ -381,12 +477,16 @@ def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
             if not skill_files:
                 raise _reject("SKILL.md is required")
             capabilities: list[dict[str, Any]] = []
+            archive_names = set(names)
             for skill_file in skill_files:
                 try:
                     text = archive.read(skill_file).decode("utf-8")
                 except (KeyError, UnicodeDecodeError) as exc:
                     raise _reject("SKILL.md must be UTF-8") from exc
                 metadata = _frontmatter(text)
+                codex_metadata = _codex_skill_metadata(archive, skill_file, archive_names)
+                codex_interface = cast(dict[str, str], codex_metadata.get("interface", {}))
+                codex_policy = cast(dict[str, bool], codex_metadata.get("policy", {}))
                 parent = PurePosixPath(skill_file).parent.name
                 key = str(metadata.get("name") or parent or fallback_name or "skill").strip()
                 if not key or len(key) > 200:
@@ -396,8 +496,22 @@ def _validate_skill(content: bytes, fallback_name: str) -> dict[str, Any]:
                         "capability_key": key,
                         "normalized_config": {
                             "entry": skill_file,
-                            "description": str(metadata.get("description") or "")[:2000],
+                            "description": str(
+                                metadata.get("description")
+                                or codex_interface.get("short_description")
+                                or ""
+                            ).strip()[:1024],
                             "version": str(metadata.get("version") or ""),
+                            **({"codex_metadata": codex_metadata} if codex_metadata else {}),
+                            **(
+                                {
+                                    "disable_model_invocation": not codex_policy[
+                                        "allow_implicit_invocation"
+                                    ]
+                                }
+                                if "allow_implicit_invocation" in codex_policy
+                                else {}
+                            ),
                             "dependencies": _dependencies(metadata.get("dependencies")),
                             "dependency_build_state": (
                                 "PENDING" if metadata.get("dependencies") else "NOT_REQUIRED"
@@ -669,6 +783,15 @@ def _normalize_mcp_server(name: str, value: object) -> dict[str, Any]:
             supported_transports=sorted(MCP_TRANSPORTS),
         )
     server["transport"] = transport_value
+    allowed_fields = MCP_LOCAL_FIELDS if transport_value == "stdio" else MCP_REMOTE_FIELDS
+    incompatible = sorted(set(server) - allowed_fields)
+    if incompatible:
+        raise _reject(
+            "MCP server fields do not match its transport",
+            server=name,
+            transport=transport_value,
+            fields=incompatible,
+        )
 
     command = server.get("command")
     url = server.get("url")
@@ -1679,7 +1802,6 @@ def _references(db: Session, capability_version_id: str) -> list[dict[str, str]]
         select(NodeCapabilityRef.node_asset_id, NodeAsset.name)
         .join(NodeAsset, NodeAsset.id == NodeCapabilityRef.node_asset_id)
         .where(
-            NodeAsset.deleted_at.is_(None),
             NodeCapabilityRef.capability_version_id == capability_version_id,
         )
         .order_by(NodeAsset.name, NodeAsset.id)
@@ -1698,6 +1820,22 @@ def _collection_references(db: Session, capability_version_id: str) -> list[dict
         .order_by(CapabilityCollection.name, CapabilityCollection.id)
     ).all()
     return [{"id": collection_id, "name": name} for collection_id, name in rows]
+
+
+def _governance_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
+    """Return durable governance records that must outlive their capability target."""
+
+    references: list[dict[str, str]] = []
+    for model, relation in (
+        (MCPOAuthSecretReference, "MCP_OAUTH_SECRET"),
+        (MCPOAuthAuthorization, "MCP_OAUTH_AUTHORIZATION"),
+        (PluginSourceResolution, "PLUGIN_SOURCE"),
+    ):
+        ids = db.scalars(
+            select(model.id).where(model.capability_version_id == capability_version_id)
+        ).all()
+        references.extend({"id": item_id, "relation": relation} for item_id in ids)
+    return references
 
 
 def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any]:
@@ -1721,25 +1859,67 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
             continue
         nodes = _references(db, capability_id)
         collections = _collection_references(db, capability_id)
-        if nodes or collections:
+        governance = _governance_references(db, capability_id)
+        if nodes or collections or governance:
             reference: dict[str, Any] = {
                 "id": capability_id,
                 "name": published.package.capability_key,
-                "relation": "NODE_CAPABILITY" if nodes else "CAPABILITY_COLLECTION",
+                "relation": (
+                    "NODE_CAPABILITY"
+                    if nodes
+                    else "CAPABILITY_COLLECTION"
+                    if collections
+                    else "CAPABILITY_GOVERNANCE"
+                ),
                 "nodes": nodes,
             }
             # Preserve the existing node-only response shape while exposing
             # collection references when they actually block deletion.
             if collections:
                 reference["collections"] = collections
+            if governance:
+                reference["governance"] = governance
             blocked.append(reference)
         else:
             deletable.append(published.version)
 
+    deleted_ids: list[str] = []
     for version in deletable:
-        version.state = "RETIRED"
+        version_id = version.id
+        package_id = version.package_id
+        blob_id = version.blob_id
+        db.delete(version)
+        db.flush()
+        deleted_ids.append(version_id)
+
+        if not db.scalar(
+            select(func.count(CapabilityVersion.id)).where(
+                CapabilityVersion.package_id == package_id
+            )
+        ):
+            package = db.get(CapabilityPackage, package_id)
+            if package is not None:
+                db.delete(package)
+
+        if not db.scalar(
+            select(func.count(CapabilityVersion.id)).where(CapabilityVersion.blob_id == blob_id)
+        ):
+            blob = db.get(CapabilityBlob, blob_id)
+            if blob is not None:
+                import_uses_blob = db.scalar(
+                    select(CapabilityImport.id)
+                    .where(CapabilityImport.storage_key == blob.storage_key)
+                    .limit(1)
+                )
+                if import_uses_blob is None:
+                    storage_key = blob.storage_key
+                    db.delete(blob)
+                    if not storage_key.startswith("builtin://"):
+                        register_commit_action(
+                            db, lambda key=storage_key: get_artifact_store().delete(key)
+                        )
     finish(db)
     return {
-        "deleted_ids": [version.id for version in deletable],
+        "deleted_ids": deleted_ids,
         "blocked": blocked,
     }

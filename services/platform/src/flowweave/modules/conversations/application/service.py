@@ -793,9 +793,7 @@ def _runtime_resource(db: Session, item: AgentConversation) -> dict[str, Any] | 
     sandbox = sandboxes.sandbox_snapshot(db, sandbox_id)
     if sandbox is None:
         return None
-    if sandbox["observed_state"] == "DELETED":
-        lifecycle = "DELETED"
-    elif sandbox["desired_state"] == "DELETED":
+    if sandbox["desired_state"] == "DELETED":
         lifecycle = "DELETING"
     elif sandbox["observed_state"] == "ERROR":
         lifecycle = "ERROR"

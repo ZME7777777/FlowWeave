@@ -139,6 +139,7 @@ def _request() -> StartAttemptRequest:
                     source="requirements/SKILL.md",
                     workspace_path="/workspaces/nodes/node-1/skills/requirements",
                     activation_keywords=("$requirements",),
+                    disable_model_invocation=True,
                 ),
             ),
             mcp_servers=(
@@ -282,6 +283,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "source": "requirements/SKILL.md",
         "trigger": {"type": "keyword", "keywords": ["$requirements"]},
         "is_agentskills_format": True,
+        "disable_model_invocation": True,
     }
     assert payload["agent"]["mcp_config"] == {
         "docs": {"url": "https://mcp.example.test", "transport": "http"}

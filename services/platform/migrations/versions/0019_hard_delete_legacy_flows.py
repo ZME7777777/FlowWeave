@@ -4,6 +4,7 @@ Revision ID: 0019_hard_delete_legacy_flows
 Revises: 0018_remove_platform_credentials
 """
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "0019_hard_delete_legacy_flows"
@@ -13,6 +14,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    columns = {
+        column["name"] for column in sa.inspect(op.get_bind()).get_columns("flow_definitions")
+    }
+    if "deleted_at" not in columns:
+        return
     # Old releases only hid flows. Rows without run history can now be removed
     # safely, which also releases their globally unique names.
     op.execute(

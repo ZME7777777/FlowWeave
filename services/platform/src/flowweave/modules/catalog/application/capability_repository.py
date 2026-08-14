@@ -631,7 +631,6 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
     reference_rows = db.execute(
         select(NodeCapabilityRef.capability_version_id, func.count())
         .join(NodeAsset, NodeAsset.id == NodeCapabilityRef.node_asset_id)
-        .where(NodeAsset.deleted_at.is_(None))
         .group_by(NodeCapabilityRef.capability_version_id)
     ).all()
     references: dict[str, int] = {version_id: int(count) for version_id, count in reference_rows}
@@ -655,6 +654,10 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for version, package, blob in rows:
         normalized = cast(dict[str, Any], version.normalized_config_json or {})
+        is_builtin = (
+            package.capability_type == "TOOL_POLICY"
+            and package.capability_key == DEFAULT_TOOL_POLICY_KEY
+        )
         result.append(
             {
                 "id": version.id,
@@ -675,6 +678,8 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
                 "dependencies": normalized.get("dependencies", {}),
                 "dependency_build_state": normalized.get("dependency_build_state", "NOT_REQUIRED"),
                 "dependency_build_error": normalized.get("dependency_build_error"),
+                "is_builtin": is_builtin,
+                "document": normalized,
             }
         )
     return result

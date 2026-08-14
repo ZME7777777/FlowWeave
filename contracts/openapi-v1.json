@@ -1695,6 +1695,26 @@
         }
       }
     },
+    "/api/v1/tool-policy-catalog": {
+      "get": {
+        "summary": "Governed Tool Policy Catalog",
+        "operationId": "governed_tool_policy_catalog_api_v1_tool_policy_catalog_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Governed Tool Policy Catalog Api V1 Tool Policy Catalog Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/capabilities/{capability_id}/mcp-oauth-secret-references": {
       "post": {
         "summary": "Create Mcp Oauth Secret Reference",
@@ -2717,6 +2737,51 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/model-providers/discover-models": {
+      "post": {
+        "summary": "Preview Discover Models",
+        "operationId": "preview_discover_models_api_v1_model_providers_discover_models_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelProviderDiscoveryWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object",
+                  "title": "Response Preview Discover Models Api V1 Model Providers Discover Models Post"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -7780,6 +7845,46 @@
         ],
         "title": "ModelProviderBulkDeleteWrite"
       },
+      "ModelProviderDiscoveryWrite": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Base Url"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "base_url"
+        ],
+        "title": "ModelProviderDiscoveryWrite"
+      },
       "ModelProviderWrite": {
         "properties": {
           "name": {
@@ -7891,17 +7996,6 @@
             "type": "string",
             "title": "Icon Value",
             "default": "bot"
-          },
-          "environment_version_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Environment Version Id"
           },
           "row_version": {
             "anyOf": [

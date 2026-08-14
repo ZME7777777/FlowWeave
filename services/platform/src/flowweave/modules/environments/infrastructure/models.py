@@ -20,7 +20,6 @@ class TerminalEnvironment(Base):
     # High-water mark retained when historical versions are deleted so a
     # published version number is never reused.
     last_version_no: Mapped[int] = mapped_column(Integer, default=0)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 

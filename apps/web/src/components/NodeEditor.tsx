@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Layers3, Plus, Trash2 } from 'lucide-react';
+import { CheckSquare, Layers3, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { useEscapeClose } from './useEscapeClose';
@@ -35,7 +35,6 @@ const emptyNode = (): NodeAssetWrite => ({
     },
   },
   capabilities: [],
-  environment_version_id: null,
 });
 interface Props {
   node?: NodeAsset;
@@ -56,7 +55,6 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
   const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: api.providers });
   const { data: capabilityPool = [], isLoading: capabilitiesLoading } = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
   const { data: capabilityCollections = [], isLoading: collectionsLoading } = useQuery({ queryKey: ['capability-collections'], queryFn: api.capabilityCollections });
-  const { data: environments = [] } = useQuery({ queryKey: ['terminal-environments'], queryFn: api.terminalEnvironments });
 
   useEffect(() => {
     if (!node) { setForm(emptyNode()); return; }
@@ -66,7 +64,6 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       description: node.description,
       icon_kind: node.icon_kind,
       icon_value: node.icon_value,
-      environment_version_id: node.environment_version_id ?? null,
       row_version: node.row_version,
       inputs: node.inputs.map(({ field_key, display_name, data_type, description, template_url }) => ({ field_key, display_name, data_type, description, template_url })),
       outputs: node.outputs.map(({ field_key, display_name, data_type, description, template_url }) => ({ field_key, display_name, data_type, description, template_url })),
@@ -87,6 +84,9 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
   const selectedCapabilityIds = new Set(form.capabilities.map(item => item.capability_id).filter((id): id is string => Boolean(id)));
   const selectableCapabilities = capabilityPool.filter(item => item.is_latest || selectedCapabilityIds.has(item.id));
   const selectableToolPolicies = selectableCapabilities.filter(item => item.capability_type === 'TOOL_POLICY');
+  const selectableSkills = selectableCapabilities.filter(item => item.capability_type === 'SKILL' && item.is_latest);
+  const readySkills = selectableSkills.filter(item => item.dependency_build_state === 'NOT_REQUIRED' || item.dependency_build_state === 'READY');
+  const allSkillsSelected = readySkills.length > 0 && readySkills.every(item => selectedCapabilityIds.has(item.id));
   const selectedToolPolicy = form.capabilities.find(item => item.capability_type === 'TOOL_POLICY');
   const selectToolPolicy = (capabilityId: string) => setForm(old => {
     const policy = selectableToolPolicies.find(item => item.id === capabilityId);
@@ -124,6 +124,18 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       };
     });
   };
+  const toggleAllSkills = () => setForm(old => ({
+    ...old,
+    capabilities: [
+      ...old.capabilities.filter(item => item.capability_type !== 'SKILL'),
+      ...(allSkillsSelected ? [] : readySkills.map(item => ({
+        capability_id: item.id,
+        capability_type: 'SKILL' as const,
+        capability_key: item.capability_key,
+        normalized_config: {},
+      }))),
+    ],
+  }));
   const addCapabilityCollection = (collection: CapabilityCollection) => {
     const unavailable = collection.members.filter(item => item.dependency_build_state !== 'NOT_REQUIRED' && item.dependency_build_state !== 'READY');
     if (unavailable.length) {
@@ -178,7 +190,6 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       <label>所属目录<select aria-label="所属目录" value={form.directory_id ?? ''} onChange={e => setForm({ ...form, directory_id: e.target.value || null })}><option value="">未分类</option>{directories.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label className="wide">节点说明<textarea aria-label="节点说明" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })}/></label>
       <label>图标<input aria-label="图标" value={form.icon_value} onChange={e => setForm({ ...form, icon_value: e.target.value })}/></label>
-      <label className="wide">运行环境<select aria-label="运行环境" value={form.environment_version_id ?? ''} onChange={e => setForm({ ...form, environment_version_id: e.target.value || null })}><option value="">平台默认环境</option>{environments.flatMap(environment => environment.versions.filter(version => version.state === 'READY').map(version => <option key={version.id} value={version.id}>{environment.name} · v{version.version_no}</option>))}</select><small>节点保存具体的不可变环境版本；后续发布新版本不会改变已开始的运行。</small></label>
     </section>}
     {tab === 1 && <section className="form-grid form-pane">
       <label>模型服务<select aria-label="模型服务" value={form.executor.model_provider_id ?? ''} onChange={e => setForm({ ...form, executor: { ...form.executor, model_provider_id: e.target.value || null, model_name: null } })}><option value="">未配置</option>{providers.filter(item => item.available_for_nodes).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
@@ -203,8 +214,8 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
     {tab === 2 && <section className="form-pane">
       <div className="capability-help"><b>从公共能力仓库选择当前节点可用的能力</b><span>Tool Policy 独立单选；Skill、Plugin、MCP、Hook 与 Agent Definition 可多选。节点只保存不可变能力版本引用。</span><span>绑定 Agent Definition 时，Tool Policy 必须显式允许 task_tool_set，并覆盖定义内声明的全部 Tool。</span></div>
       <section className="node-tool-policy"><header><div><b>Tool Policy</b><small>固定 OpenHands 1.42.0 Tool 名、参数与治理分类；未知或未治理 Tool 默认拒绝。</small></div><em>单选不可变版本</em></header><label><span>运行工具策略</span><select aria-label="运行工具策略" value={selectedToolPolicy?.capability_id ?? ''} onChange={event => selectToolPolicy(event.target.value)}><option value="">平台默认策略（保存时冻结）</option>{selectableToolPolicies.map(item => <option key={item.id} value={item.id}>{item.capability_key} · rev {item.revision_number} · {item.content_hash.slice(0, 10)}</option>)}</select><small>{selectedToolPolicy ? `已绑定 ${selectedToolPolicy.capability_key} 的固定版本 ${selectedToolPolicy.capability_id}` : '未显式选择时，后端将在保存节点时绑定内置默认 Tool Policy 的固定版本。'}</small></label></section>
-      <section className="node-capability-collections"><header><div><Layers3 size={16}/><span><b>按能力组合批量添加</b><small>组合仅用于选择；点击后立即展开为固定版本的真实能力。</small></span></div><em>{capabilityCollections.length} 个组合</em></header>{collectionsLoading ? <div className="empty compact">加载能力组合…</div> : capabilityCollections.length ? <div>{capabilityCollections.map(collection => { const unavailable = collection.members.some(item => item.dependency_build_state !== 'NOT_REQUIRED' && item.dependency_build_state !== 'READY'); return <article key={collection.id}><div><span>{collection.category || '未分类'}</span><b>{collection.name}</b><small>{collection.description || collection.members.map(item => `${item.capability_type}:${item.capability_key}`).join('、')}</small><p>{collection.members.map(item => <code key={item.id}>{item.capability_type} · {item.capability_key} · rev {item.revision_number}</code>)}</p></div><button type="button" className="secondary" disabled={unavailable} title={unavailable ? '组合中有依赖未就绪的能力' : `添加 ${collection.members.length} 个真实能力版本`} onClick={() => addCapabilityCollection(collection)}>添加 {collection.members.length} 项</button></article>; })}</div> : <p className="node-capability-collections-empty">尚未创建能力组合；仍可在下方逐项选择。</p>}{collectionNotice && <div className="node-collection-notice" role="status">{collectionNotice}</div>}</section>
-      {capabilitiesLoading ? <div className="empty compact">加载能力仓库…</div> : selectableCapabilities.some(item => item.capability_type !== 'TOOL_POLICY') ? <div className="capability-picker">{(['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'AGENT_DEFINITION'] as const).map(type => { const items = selectableCapabilities.filter(item => item.capability_type === type); return <section key={type}><header><b>{type === 'SKILL' ? 'Skills' : type === 'AGENT_DEFINITION' ? 'Agent Definitions' : type}</b><span>{items.filter(item => item.is_latest).length} 项能力</span></header>{items.length ? items.map(item => { const ready = item.dependency_build_state === 'NOT_REQUIRED' || item.dependency_build_state === 'READY'; const selected = selectedCapabilityIds.has(item.id); return <label key={item.id} className={`${selected ? 'selected' : ''} ${ready ? '' : 'unavailable'}`} title={ready ? '' : item.dependency_build_state === 'FAILED' ? item.dependency_build_error || '依赖构建失败' : '依赖正在隔离构建中'}><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={!ready && !selected} onChange={() => toggleCapability(item)}/><span><b data-testid="capability-key">{item.capability_key}</b><small>{item.description || item.filename}</small></span><em>{!ready ? item.dependency_build_state === 'FAILED' ? '依赖失败' : '依赖构建中' : `${item.reference_count} 个节点引用`}</em></label>; }) : <p>能力仓库中暂无 {type === 'AGENT_DEFINITION' ? 'Agent Definition' : type}</p>}</section>; })}</div> : <div className="capability-pool-empty"><b>运行能力仓库尚为空</b><span>请关闭编辑器，前往顶部“能力仓库”发布运行能力。</span></div>}
+      <section className="node-capability-collections"><header><div><Layers3 size={16}/><span><b>按 Skill 组合批量添加</b><small>组合仅用于选择；点击后立即展开为固定版本的真实 Skill。</small></span></div><em>{capabilityCollections.length} 个组合</em></header>{collectionsLoading ? <div className="empty compact">加载 Skill 组合…</div> : capabilityCollections.length ? <div>{capabilityCollections.map(collection => { const unavailable = collection.members.some(item => item.dependency_build_state !== 'NOT_REQUIRED' && item.dependency_build_state !== 'READY'); return <article key={collection.id}><div><span>{collection.category || '未分类'}</span><b>{collection.name}</b><small>{collection.description || collection.members.map(item => item.capability_key).join('、')}</small><p>{collection.members.map(item => <code key={item.id}>{item.capability_key} · rev {item.revision_number}</code>)}</p></div><button type="button" className="secondary" disabled={unavailable} title={unavailable ? '组合中有依赖未就绪的 Skill' : `添加 ${collection.members.length} 个真实 Skill 版本`} onClick={() => addCapabilityCollection(collection)}>添加 {collection.members.length} 项</button></article>; })}</div> : <p className="node-capability-collections-empty">尚未创建 Skill 组合；仍可在下方逐项选择。</p>}{collectionNotice && <div className="node-collection-notice" role="status">{collectionNotice}</div>}</section>
+      {capabilitiesLoading ? <div className="empty compact">加载能力仓库…</div> : selectableCapabilities.some(item => item.capability_type !== 'TOOL_POLICY') ? <div className="capability-picker">{(['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'AGENT_DEFINITION'] as const).map(type => { const items = selectableCapabilities.filter(item => item.capability_type === type); return <section key={type}><header><b>{type === 'SKILL' ? 'Skills' : type === 'AGENT_DEFINITION' ? 'Agent Definitions' : type}</b><div className="capability-picker-header-actions"><span>{items.filter(item => item.is_latest).length} 项能力</span>{type === 'SKILL' && <button type="button" className="secondary capability-picker-select-all" disabled={!readySkills.length} onClick={toggleAllSkills}><CheckSquare size={13}/>{allSkillsSelected ? '取消全选' : '全选'}</button>}</div></header>{items.length ? items.map(item => { const ready = item.dependency_build_state === 'NOT_REQUIRED' || item.dependency_build_state === 'READY'; const selected = selectedCapabilityIds.has(item.id); return <label key={item.id} className={`${selected ? 'selected' : ''} ${ready ? '' : 'unavailable'}`} title={ready ? '' : item.dependency_build_state === 'FAILED' ? item.dependency_build_error || '依赖构建失败' : '依赖正在隔离构建中'}><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={!ready && !selected} onChange={() => toggleCapability(item)}/><span><b data-testid="capability-key">{item.capability_key}</b><small>{item.description || item.filename}</small></span><em>{!ready ? item.dependency_build_state === 'FAILED' ? '依赖失败' : '依赖构建中' : `${item.reference_count} 个节点引用`}</em></label>; }) : <p>能力仓库中暂无 {type === 'AGENT_DEFINITION' ? 'Agent Definition' : type}</p>}</section>; })}</div> : <div className="capability-pool-empty"><b>运行能力仓库尚为空</b><span>请关闭编辑器，前往顶部“能力仓库”发布运行能力。</span></div>}
     </section>}
     {tab === 3 && <section className="form-pane io-editor"><div className="io-intro"><b>定义输入输出</b><span>这里只定义数据槽位，不填写运行时的具体飞书文档。模板为可选项：有模板时仅参考其格式和结构；留空时不参考模板，按说明和任务要求处理。</span></div>{(['inputs', 'outputs'] as const).map(direction => { const input = direction === 'inputs'; return <section className={`io-section ${input ? 'input' : 'output'}`} key={direction}><header><div><span>{input ? 'INPUT' : 'OUTPUT'}</span><h3>{input ? '输入定义' : '输出定义'}</h3><p>{input ? '运行时由人工指定实际输入，或自动接收上游输出。' : '运行时在本次运行目录创建文档；有模板则复制模板，无模板则创建空白文档。'}</p></div><button type="button" className="secondary" onClick={() => setForm(old => ({ ...old, [direction]: [...old[direction], emptyField(input ? 'input' : 'output', old[direction].length)] }))}><Plus size={13}/>添加{input ? '输入' : '输出'}</button></header>{form[direction].length > 0 && <div className="io-column-head lark-doc-head" aria-hidden="true"><span>字段标识</span><span>展示名称</span><span>模板（可选）</span><span>说明</span><span>操作</span></div>}{form[direction].map((field, index) => <div className="io-row lark-doc-row" key={index}><input required pattern="[A-Za-z][A-Za-z0-9_]{0,99}" aria-label={`${direction} key ${index}`} value={field.field_key} placeholder={input ? 'requirement' : 'result'} title="以字母开头，只能包含字母、数字和下划线" onChange={e => updateField(direction, index, { field_key: e.target.value })}/><input aria-label={`${direction} name ${index}`} value={field.display_name} placeholder="" onChange={e => updateField(direction, index, { display_name: e.target.value })}/><input type="url" pattern="https://.*/docx/[^/]+.*" aria-label={`${direction} template ${index}`} value={field.template_url} placeholder="可选：飞书 Docx 模板 URL" onChange={e => updateField(direction, index, { template_url: e.target.value })}/><input aria-label={`${direction} description ${index}`} value={field.description} placeholder={input ? '说明 Agent 如何使用输入' : '说明输出内容与验收要求'} onChange={e => updateField(direction, index, { description: e.target.value })}/><button type="button" className="ghost" aria-label={`移除 ${direction} 字段 ${field.field_key}`} onClick={() => removeField(direction, index)}><Trash2 size={14}/></button></div>)}{form[direction].length === 0 && <div className="io-empty">暂未定义{input ? '输入' : '输出'}。</div>}</section>; })}</section>}
     {error && <p className="error">{error}</p>}

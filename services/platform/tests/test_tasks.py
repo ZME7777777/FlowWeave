@@ -479,8 +479,12 @@ def _prepare_starting_attempt(
     from flowweave.bootstrap.worker import TaskWorker
 
     asset_payload = _asset_payload(skill)
+    if extra_capabilities:
+        asset_payload["name"] = "异步执行节点（Profile）"
     asset_payload["capabilities"].extend(extra_capabilities or [])
-    asset = worker_client.post("/api/v1/node-assets", json=asset_payload).json()
+    asset_response = worker_client.post("/api/v1/node-assets", json=asset_payload)
+    assert asset_response.status_code == 201, asset_response.text
+    asset = asset_response.json()
     flow = worker_client.post(
         "/api/v1/flows",
         json={
@@ -1806,7 +1810,10 @@ def test_shared_runtime_cancel_recovery_waits_for_late_formal_task_usage(
             )
             assert usage_recovery is not None
             assert usage_recovery.state == TaskState.PENDING
-            assert usage_recovery.payload_json == {"recovery_mode": "RECONCILE_PARENT"}
+            assert usage_recovery.payload_json == {
+                "recovery_mode": "RECONCILE_PARENT",
+                "sandbox_ids": [],
+            }
             usage_recovery.available_at = datetime.now(UTC)
             db.commit()
         assert worker._run_once_sync() is True
@@ -1968,12 +1975,14 @@ def test_managed_runtime_cancel_cleanup_mode_survives_worker_restart(
             )
         )
         assert recovered is not None
-        assert recovered.payload_json == {"recovery_mode": "DELETE_MANAGED_RUNTIME"}
+        assert recovered.payload_json == {
+            "recovery_mode": "DELETE_MANAGED_RUNTIME",
+            "sandbox_ids": [sandbox_id],
+        }
         assert recovered.max_attempts == 20
         sandbox = db.get(ManagedSandbox, sandbox_id)
         assert sandbox is not None
-        sandbox.observed_state = "DELETED"
-        sandbox.deleted_at = datetime.now(UTC)
+        db.delete(sandbox)
         recovered.available_at = datetime.now(UTC)
         db.commit()
 
@@ -2091,8 +2100,7 @@ def test_managed_runtime_inflight_task_waits_for_physical_sandbox_deletion(
         assert attempt_row.runtime_phase == "CANCELLING"
         assert sandbox.desired_state == "DELETED"
         assert cancel_task.state == TaskState.RETRY
-        sandbox.observed_state = "DELETED"
-        sandbox.deleted_at = datetime.now(UTC)
+        db.delete(sandbox)
         cancel_task.available_at = datetime.now(UTC)
         db.commit()
 

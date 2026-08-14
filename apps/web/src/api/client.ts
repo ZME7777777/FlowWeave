@@ -1,7 +1,7 @@
 import type {
   AgentConversation, AgentMessage, AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
-  BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, RuntimeDiagnosticQuery, RuntimeGoalCommand, RuntimeSubagentTask, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
+  BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
+  CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, RuntimeDiagnosticQuery, RuntimeGoalCommand, RuntimeSubagentTask, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -28,10 +28,12 @@ async function responseError(response: Response): Promise<ApiError> {
   const backendMessage = typeof body?.error?.message === 'string' ? body.error.message : '';
   const chineseMessages: Record<string, string> = {
     FLOW_NAME_CONFLICT: '流程名称已存在，请使用其他名称。',
+    NODE_ASSET_NAME_CONFLICT: '当前目录已存在同名节点资产，请使用其他名称。',
     FLOW_IN_USE: '该流程仍有关联运行，请先删除关联运行后再永久删除流程。',
     NODE_ASSET_IN_USE: '该节点仍被流程引用，请先从相关流程中移除节点。',
     CAPABILITY_IN_USE: '该能力仍被节点引用，请先解除引用后再删除。',
     ENVIRONMENT_VERSION_IN_USE: '该环境版本仍被运行引用，暂时不能删除。',
+    ENVIRONMENT_RUNTIME_INCOMPATIBLE: '该终端镜像版本缺少当前运行契约信息，请在“终端环境”中基于此版本重新发布后再创建运行。',
     RESOURCE_NOT_FOUND: '请求的资源不存在或已被删除，请刷新页面后重试。',
     VERSION_CONFLICT: '数据已被其他操作修改，请刷新页面后重试。',
     DATA_CONFLICT: '提交的数据与现有记录冲突，请检查是否存在重名或重复关联。',
@@ -134,6 +136,7 @@ export const api = {
   publishPluginSourceResolution: (id: string, expectedStateVersion: number) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}/publish`, json('POST', { expected_state_version: expectedStateVersion })),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
+  toolPolicyCatalog: () => request<ToolPolicyCatalog>('/tool-policy-catalog'),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
   createCapabilityCollection: (body: CapabilityCollectionWrite) =>
     request<CapabilityCollection>('/capability-collections', json('POST', body)),
@@ -172,6 +175,7 @@ export const api = {
   deleteProviders: (ids: string[]) => request<BulkDeleteResult<BlockedProviderDelete>>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
   discoverProviderModels: (id: string) => request<{ models: string[]; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
+  previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[] }>('/model-providers/discover-models', json('POST', body)),
   startCodexOAuth: (id: string) => request<CodexDeviceAuthorization>(`/model-providers/${id}/oauth/device/start`, json('POST')),
   pollCodexOAuth: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/device/poll`, json('POST')),
   codexOAuthStatus: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/status`),

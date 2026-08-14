@@ -155,7 +155,6 @@ def profile_bindings(db: Session, version_id: str) -> list[dict[str, Any]]:
         select(NodeAsset.id, NodeAsset.name, NodeCapabilityRef.position)
         .join(NodeCapabilityRef, NodeCapabilityRef.node_asset_id == NodeAsset.id)
         .where(
-            NodeAsset.deleted_at.is_(None),
             NodeCapabilityRef.capability_type == "AGENT_PROFILE",
             NodeCapabilityRef.capability_version_id == version_id,
         )

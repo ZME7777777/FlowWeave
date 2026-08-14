@@ -15,6 +15,7 @@ from flowweave.modules.environments.application.service import (
     save_environment,
     setup_sandbox_owner_is_active,
     stop_setup_session,
+    validate_runtime_manifest,
 )
 from flowweave.modules.environments.infrastructure.docker import (
     ManagedTerminal,
@@ -42,4 +43,5 @@ __all__ = (
     "save_environment",
     "setup_sandbox_owner_is_active",
     "stop_setup_session",
+    "validate_runtime_manifest",
 )

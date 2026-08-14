@@ -37,7 +37,14 @@ class NodeDirectory(Base):
 
 class NodeAsset(Base):
     __tablename__ = "node_assets"
-    __table_args__ = (UniqueConstraint("directory_id", "name", name="uq_asset_directory_name"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "directory_id",
+            "name",
+            name="uq_asset_directory_name",
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     directory_id: Mapped[str | None] = mapped_column(
@@ -47,13 +54,7 @@ class NodeAsset(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     icon_kind: Mapped[str] = mapped_column(String(30), default="LUCIDE")
     icon_value: Mapped[str] = mapped_column(String(80), default="bot")
-    # The database foreign key is added by the 0014 forward migration. Keep
-    # this mapping free of the cross-module FK so historical baseline
-    # migrations that create catalog tables from current metadata do not try
-    # to reference environment_versions before that table exists.
-    environment_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -462,7 +463,7 @@ class MemorySourceVersion(Base):
             name="ck_memory_source_version_sensitive_data",
         ),
         CheckConstraint(
-            "lifecycle_state IN ('DRAFT', 'ACTIVE', 'RETIRED', 'EXPIRED', 'DELETED')",
+            "lifecycle_state IN ('DRAFT', 'ACTIVE', 'RETIRED', 'EXPIRED')",
             name="ck_memory_source_version_lifecycle",
         ),
         CheckConstraint(
@@ -508,7 +509,6 @@ class MemorySourceVersion(Base):
     retention_days: Mapped[int | None] = mapped_column(Integer)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

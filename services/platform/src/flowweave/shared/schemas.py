@@ -156,7 +156,6 @@ class NodeAssetWrite(ApiModel):
     description: str = ""
     icon_kind: str = "LUCIDE"
     icon_value: str = "bot"
-    environment_version_id: str | None = None
     row_version: int | None = None
     inputs: list[IOFieldWrite] = Field(default_factory=_empty_io_fields)
     outputs: list[IOFieldWrite] = Field(default_factory=_empty_io_fields)
@@ -266,6 +265,19 @@ def _empty_provider_models() -> list[ProviderModelWrite]:
 
 class ModelProviderBulkDeleteWrite(ApiModel):
     ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class ModelProviderDiscoveryWrite(ApiModel):
+    base_url: str = Field(min_length=1, max_length=2000)
+    api_key: SecretStr | None = None
+    provider_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_connection(self) -> ModelProviderDiscoveryWrite:
+        self.base_url = self.base_url.strip().rstrip("/")
+        if not self.base_url:
+            raise ValueError("base_url cannot be blank")
+        return self
 
 
 class ModelProviderWrite(ApiModel):

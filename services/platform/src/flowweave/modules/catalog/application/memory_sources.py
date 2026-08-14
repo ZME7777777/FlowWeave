@@ -284,7 +284,6 @@ def _version_dict(item: MemorySourceVersion) -> dict[str, Any]:
         "retention_days": item.retention_days,
         "expires_at": item.expires_at.isoformat() if item.expires_at else None,
         "expired_at": item.expired_at.isoformat() if item.expired_at else None,
-        "deleted_at": item.deleted_at.isoformat() if item.deleted_at else None,
         "created_at": item.created_at.isoformat(),
     }
 
@@ -616,7 +615,7 @@ def expire_version(
 def delete_version_content(
     db: Session, source_id: str, version_id: str, payload: MemorySourceLifecycleWrite
 ) -> dict[str, Any]:
-    _, version = _locked_version(db, source_id, version_id)
+    source, version = _locked_version(db, source_id, version_id)
     _check_governance_version(version, payload.expected_governance_version)
     if version.lifecycle_state != "EXPIRED":
         raise DomainError(
@@ -635,11 +634,25 @@ def delete_version_content(
             "Memory Source content is retained by an immutable policy or Run Snapshot",
             409,
         )
-    version.lifecycle_state = "DELETED"
-    version.content = ""
-    version.deleted_at = now()
-    version.governance_version += 1
+    successor = db.scalar(
+        select(MemorySourceVersion.id)
+        .where(MemorySourceVersion.previous_version_id == version.id)
+        .limit(1)
+    )
+    if successor is not None:
+        raise DomainError(
+            "MEMORY_SOURCE_HAS_SUCCESSOR",
+            "Memory Source version is retained by a later immutable version",
+            409,
+            {"successor_version_id": successor},
+        )
+    result = {"id": version.id, "source_id": source.id, "deleted": True}
+    db.delete(version)
     db.flush()
-    result = _version_dict(version)
+    remaining = db.scalar(
+        select(MemorySourceVersion.id).where(MemorySourceVersion.source_id == source.id).limit(1)
+    )
+    if remaining is None:
+        db.delete(source)
     finish(db)
     return result

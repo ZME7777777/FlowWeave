@@ -18,7 +18,11 @@ from flowweave.modules.model_providers.infrastructure.codex_oauth import (
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import conflict, not_found
 from flowweave.shared.models import ModelProvider, NodeAsset, NodeExecutorConfig, ProviderModel
-from flowweave.shared.schemas import ModelProviderWrite, ProviderModelWrite
+from flowweave.shared.schemas import (
+    ModelProviderDiscoveryWrite,
+    ModelProviderWrite,
+    ProviderModelWrite,
+)
 from flowweave.shared.settings import get_settings
 
 _DEVELOPMENT_CREDENTIALS_KEY = b"I84eBL_TIqLl5IVk_DTjGPtUDyVz3pl6pVCHyT8woaE="
@@ -41,7 +45,6 @@ def _referencing_nodes(db: Session, provider_id: str) -> list[dict[str, str]]:
     rows = db.execute(
         select(NodeExecutorConfig, NodeAsset)
         .join(NodeAsset, NodeAsset.id == NodeExecutorConfig.node_asset_id)
-        .where(NodeAsset.deleted_at.is_(None))
         .order_by(NodeAsset.name, NodeAsset.id)
     ).all()
     return [
@@ -170,15 +173,6 @@ def delete_providers(db: Session, provider_ids: list[str]) -> dict[str, Any]:
     blocked_ids = {str(item["id"]) for item in blocked}
     deleted_ids = [item.id for item in items if item.id not in blocked_ids]
 
-    deleted_asset_ids = select(NodeAsset.id).where(NodeAsset.deleted_at.is_not(None))
-    db.execute(
-        update(NodeExecutorConfig)
-        .where(
-            NodeExecutorConfig.model_provider_id.in_(deleted_ids),
-            NodeExecutorConfig.node_asset_id.in_(deleted_asset_ids),
-        )
-        .values(model_provider_id=None, model_name=None)
-    )
     db.execute(delete(ProviderModel).where(ProviderModel.provider_id.in_(deleted_ids)))
     db.execute(delete(ModelProvider).where(ModelProvider.id.in_(deleted_ids)))
     finish(db)
@@ -314,6 +308,27 @@ def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConne
         provider_id=item.id,
         base_url=item.base_url.rstrip("/"),
         headers=provider_auth_headers(item),
+    )
+
+
+def preview_provider_connection_snapshot(
+    db: Session, payload: ModelProviderDiscoveryWrite
+) -> ProviderConnectionSnapshot:
+    """Build a non-persistent connection snapshot for model discovery."""
+
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    api_key = payload.api_key.get_secret_value() if payload.api_key is not None else ""
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    elif payload.provider_id:
+        item = get_provider(db, payload.provider_id)
+        if item.auth_type != "API_KEY":
+            raise conflict("model discovery preview requires an API key provider")
+        headers = provider_auth_headers(item)
+    return ProviderConnectionSnapshot(
+        provider_id=payload.provider_id or "preview",
+        base_url=payload.base_url,
+        headers=headers,
     )
 
 

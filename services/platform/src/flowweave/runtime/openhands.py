@@ -239,7 +239,10 @@ class OpenHandsRuntime:
             start_fields: object = start_schema["properties"]
         except (KeyError, TypeError):
             raise cls._incompatible("invalid_start_conversation_schema") from None
-        if request_schema != {"$ref": "#/components/schemas/StartConversationRequest"}:
+        if (
+            not isinstance(request_schema, dict)
+            or request_schema.get("$ref") != "#/components/schemas/StartConversationRequest"
+        ):
             raise cls._incompatible("invalid_start_conversation_schema")
         if not isinstance(start_fields, dict):
             raise cls._incompatible("invalid_start_conversation_schema")
@@ -865,6 +868,7 @@ class OpenHandsRuntime:
                     else None
                 ),
                 "is_agentskills_format": True,
+                "disable_model_invocation": skill.disable_model_invocation,
             }
             for skill in spec.skills
         ]

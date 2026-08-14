@@ -132,7 +132,24 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   const providerEditor = page.locator('form.model-editor');
   await providerEditor.getByLabel('服务名称').fill(providerName);
   await providerEditor.getByLabel('Base URL').fill('https://models.example.test/v1');
-  await providerEditor.getByLabel('模型 1').fill('gpt-e2e');
+  await providerEditor.getByLabel('API Key').fill('e2e-placeholder-key');
+  await page.route('**/api/v1/model-providers/discover-models', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ models: ['gpt-e2e', 'gpt-other'] }),
+  }));
+  await providerEditor.getByRole('button', { name: '拉取模型' }).click();
+  const discoveredModel = providerEditor.getByRole('button', { name: 'gpt-e2e', exact: true });
+  const unselectedModel = providerEditor.getByRole('button', { name: 'gpt-other', exact: true });
+  await expect(discoveredModel).toHaveAttribute('aria-pressed', 'false');
+  await expect(unselectedModel).toHaveAttribute('aria-pressed', 'false');
+  await expect(providerEditor.locator('.provider-model-row')).toHaveCount(0);
+  await discoveredModel.click();
+  await expect(discoveredModel).toHaveAttribute('aria-pressed', 'true');
+  await expect(unselectedModel).toHaveAttribute('aria-pressed', 'false');
+  await expect(providerEditor.getByLabel('模型 1')).toHaveValue('gpt-e2e');
+  await expect(providerEditor.getByRole('checkbox', { name: '启用' })).toBeChecked();
+  await page.unroute('**/api/v1/model-providers/discover-models');
   await providerEditor.getByRole('button', { name: '保存模型服务' }).click();
   const providerCard = page.locator('.model-config-card').filter({ hasText: providerName });
   await expect(providerCard).toContainText('可用于节点');

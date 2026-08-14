@@ -17,6 +17,7 @@ from flowweave.modules.catalog.application import (
     service,
 )
 from flowweave.runtime.base import RuntimeMCPOAuthCallbackRequest
+from flowweave.shared.domain.tool_policy import tool_policy_catalog
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
 from flowweave.shared.schemas import (
@@ -339,6 +340,11 @@ async def publish_plugin_source(
 @router.get("/capabilities")
 async def capabilities(db: Db) -> list[dict[str, Any]]:
     return await run_sync(db, capability_imports.list_capabilities)
+
+
+@router.get("/tool-policy-catalog")
+async def governed_tool_policy_catalog() -> dict[str, Any]:
+    return tool_policy_catalog()
 
 
 @router.post("/capabilities/{capability_id}/mcp-oauth-secret-references", status_code=201)

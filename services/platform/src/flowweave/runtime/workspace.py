@@ -87,6 +87,23 @@ def node_workspace_path(asset_id: str) -> Path:
     return Path(get_settings().workspace_root).resolve() / node_workspace_relative(asset_id)
 
 
+def cleanup_node_workspace(asset_id: str) -> None:
+    """Remove one physically deleted node's managed workspace trees safely."""
+
+    workspace_root = Path(get_settings().workspace_root).resolve()
+    candidates = (node_workspace_path(asset_id), managed_node_assets_path(asset_id))
+    for candidate in candidates:
+        if candidate.is_symlink() or candidate.is_file():
+            candidate.unlink(missing_ok=True)
+            continue
+        if not candidate.exists():
+            continue
+        resolved = candidate.resolve()
+        if resolved == workspace_root or not resolved.is_relative_to(workspace_root):
+            raise OSError("Node workspace escaped the managed workspace root")
+        shutil.rmtree(resolved)
+
+
 def openhands_node_workspace_path(asset_id: str) -> Path:
     return Path(get_settings().openhands_workspace_root) / node_workspace_relative(asset_id)
 
@@ -571,6 +588,7 @@ def _extract_skill(capability: dict[str, Any], host_root: Path, runtime_root: Pa
         workspace_path=str(runtime_target_root),
         dependency_runtime_path=dependency_runtime_path,
         activation_keywords=(f"${str(capability.get('capability_key') or key)}",),
+        disable_model_invocation=normalized.get("disable_model_invocation") is True,
     )
 
 

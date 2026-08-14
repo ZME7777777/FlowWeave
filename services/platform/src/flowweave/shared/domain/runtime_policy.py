@@ -37,7 +37,10 @@ OPENHANDS_AGENT_PROFILE_FIELD_MATRIX: dict[str, str] = {
 
 DEFAULT_CONTEXT_POLICY_KEY = "flowweave-default-context"
 DEFAULT_CONTEXT_POLICY_CONFIG: dict[str, Any] = {
-    "description": "FlowWeave default pinned OpenHands context policy",
+    # This text is part of the immutable v1 capability identity installed by
+    # migration 0032. Changing it without publishing a new Version makes the
+    # repository return a Blob whose content hash does not match v1's digest.
+    "description": "FlowWeave default OpenHands 1.40.0 context policy",
     "system_message_suffix": "",
     "user_message_suffix": "",
     "load_user_skills": False,

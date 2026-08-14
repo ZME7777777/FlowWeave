@@ -12,6 +12,7 @@ from flowweave.modules.catalog.application.capability_repository import (
     publish_dependency_build,
     resolve_version,
 )
+from flowweave.shared.domain.tool_policy import OPENHANDS_TOOL_CATALOG_DIGEST
 from flowweave.shared.models import (
     CapabilityBlob,
     CapabilityImport,
@@ -95,7 +96,7 @@ def test_identical_import_reuses_immutable_blob_and_version(client, db_session_f
         assert imports[0].storage_key == imports[1].storage_key
 
 
-def test_identical_import_republishes_retired_immutable_version(client, db_session_factory):
+def test_identical_import_after_physical_delete_publishes_new_version(client, db_session_factory):
     payload = {
         "capability_type": "SKILL",
         "filename": "sample.zip",
@@ -113,9 +114,7 @@ def test_identical_import_republishes_retired_immutable_version(client, db_sessi
     deleted = client.delete(f"/api/v1/capabilities/{version_id}")
     assert deleted.status_code == 204, deleted.text
     with db_session_factory() as db:
-        retired = db.get(CapabilityVersion, version_id)
-        assert retired is not None
-        assert retired.state == "RETIRED"
+        assert db.get(CapabilityVersion, version_id) is None
     assert all(item["id"] != version_id for item in client.get("/api/v1/capabilities").json())
 
     second_validation = client.post("/api/v1/capability-imports/validate", json=payload)
@@ -125,14 +124,12 @@ def test_identical_import_republishes_retired_immutable_version(client, db_sessi
         json={"import_token": second_validation.json()["import_token"]},
     )
     assert second.status_code == 201, second.text
-    assert second.json()["capabilities"][0]["capability_id"] == version_id
+    assert second.json()["capabilities"][0]["capability_id"] != version_id
 
     listed = client.get("/api/v1/capabilities").json()
-    assert [item["id"] for item in listed].count(version_id) == 1
+    assert version_id not in {item["id"] for item in listed}
     with db_session_factory() as db:
-        version = db.get(CapabilityVersion, version_id)
-        assert version is not None
-        assert version.state == "PUBLISHED"
+        assert db.get(CapabilityVersion, version_id) is None
         assert len(list(db.scalars(select(CapabilityVersion)))) == 1
 
 
@@ -166,6 +163,87 @@ def test_single_skill_zip_accepts_skill_files_at_archive_root(client):
             },
         }
     ]
+
+
+def test_skill_import_normalizes_adjacent_codex_metadata_for_openhands(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "codex-skills.zip",
+            "content_base64": _zip_content(
+                {
+                    "review/SKILL.md": "---\nname: review\n---\n# Review\n",
+                    "review/agents/openai.yaml": (
+                        "interface:\n"
+                        '  display_name: "Code Review"\n'
+                        '  short_description: "Find actionable defects"\n'
+                        '  default_prompt: "Use $review to review this change."\n'
+                        '  icon_small: "./assets/review-small.svg"\n'
+                        '  icon_large: "./assets/review.png"\n'
+                        '  brand_color: "#107C41"\n'
+                        "policy:\n"
+                        "  allow_implicit_invocation: false\n"
+                    ),
+                    "document/SKILL.md": (
+                        "---\nname: document\ndescription: Canonical AgentSkills description\n"
+                        "---\n# Document\n"
+                    ),
+                    "document/agents/openai.yaml": (
+                        "interface:\n  short_description: Codex fallback must not override\n"
+                    ),
+                }
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    capabilities = {
+        item["capability_key"]: item["normalized_config"]
+        for item in response.json()["preview"]["capabilities"]
+    }
+    assert capabilities["review"] == {
+        "entry": "review/SKILL.md",
+        "description": "Find actionable defects",
+        "version": "",
+        "codex_metadata": {
+            "source": "review/agents/openai.yaml",
+            "interface": {
+                "display_name": "Code Review",
+                "short_description": "Find actionable defects",
+                "default_prompt": "Use $review to review this change.",
+                "icon_small": "./assets/review-small.svg",
+                "icon_large": "./assets/review.png",
+                "brand_color": "#107C41",
+            },
+            "policy": {"allow_implicit_invocation": False},
+        },
+        "disable_model_invocation": True,
+        "dependencies": {},
+        "dependency_build_state": "NOT_REQUIRED",
+    }
+    assert capabilities["document"]["description"] == ("Canonical AgentSkills description")
+    assert capabilities["document"]["codex_metadata"]["source"] == ("document/agents/openai.yaml")
+    assert "disable_model_invocation" not in capabilities["document"]
+
+
+def test_skill_import_rejects_invalid_codex_metadata(client):
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "invalid-codex-skill.zip",
+            "content_base64": _zip_content(
+                {
+                    "review/SKILL.md": "# Review\n",
+                    "review/agents/openai.yaml": (
+                        "policy:\n  allow_implicit_invocation: sometimes\n"
+                    ),
+                }
+            ),
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "IMPORT_REJECTED"
 
 
 def test_dependency_build_publishes_derived_version_without_rebinding_node(
@@ -408,6 +486,22 @@ def test_mcp_config_rejects_invalid_transport_contracts(client):
     cases = (
         ("remote-without-url", {"transport": "streamable-http"}),
         ("stdio-without-command", {"transport": "stdio"}),
+        (
+            "remote-with-local-args",
+            {"transport": "http", "url": "https://mcp.test/mcp", "args": ["--readonly"]},
+        ),
+        (
+            "remote-with-local-env",
+            {"transport": "sse", "url": "https://mcp.test/sse", "env": {"MODE": "readonly"}},
+        ),
+        (
+            "stdio-with-remote-headers",
+            {"transport": "stdio", "command": "python", "headers": {"X-Test": "value"}},
+        ),
+        (
+            "stdio-with-remote-auth",
+            {"transport": "stdio", "command": "python", "auth": {"strategy": "none"}},
+        ),
         ("unknown-field", {"url": "https://mcp.test/mcp", "custom": True}),
         ("invalid-args", {"command": "python", "args": [1]}),
     )
@@ -1682,3 +1776,44 @@ def test_capability_bulk_delete_skips_active_references_and_ignores_deleted_node
             }
         ],
     }
+
+
+def test_tool_policy_catalog_exposes_governed_and_disabled_tools(client):
+    response = client.get("/api/v1/tool-policy-catalog")
+    assert response.status_code == 200
+    catalog = response.json()
+    assert catalog["openhands_version"] == "1.42.0"
+    assert catalog["catalog_digest"] == OPENHANDS_TOOL_CATALOG_DIGEST
+    assert catalog["max_tool_concurrency"] == 16
+    tools = {item["name"]: item for item in catalog["tools"]}
+    assert len(tools) == 15
+    assert tools["terminal"]["policy_enabled"] is True
+    assert tools["terminal"]["params"]["terminal_type"]["enum"] == [
+        "tmux",
+        "subprocess",
+        "powershell",
+    ]
+    assert tools["browser_tool_set"]["policy_enabled"] is False
+    assert "SSRF" in tools["browser_tool_set"]["disabled_reason"]
+
+
+def test_tool_policy_accepts_enum_string_parameter_without_length_limit(client):
+    payload = {
+        "name": "terminal-subprocess-policy",
+        "description": "Use the governed subprocess terminal implementation",
+        "tool_concurrency_limit": 1,
+        "tools": [
+            {"name": "terminal", "params": {"terminal_type": "subprocess"}},
+        ],
+    }
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "TOOL_POLICY",
+            "filename": "tool-policy.json",
+            "content_base64": base64.b64encode(json.dumps(payload).encode()).decode(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    preview = response.json()["preview"]["capabilities"]
+    assert preview[0]["normalized_config"]["tools"][0]["params"] == {"terminal_type": "subprocess"}

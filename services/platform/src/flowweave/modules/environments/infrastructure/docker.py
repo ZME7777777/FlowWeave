@@ -33,6 +33,17 @@ _TERMINAL_PROMPT = r"flowweave@\h:\w\$ "
 _TERMINAL_SHELL_SCRIPT = (
     "exec 3<<<'PS1=" + _TERMINAL_PROMPT + "'; exec bash --noprofile --rcfile /dev/fd/3 -i"
 )
+_TERMINAL_TMUX_SCRIPT = (
+    'session="$1"; shell_script="$2"; columns="$3"; rows="$4"; '
+    'if ! tmux has-session -t "$session" 2>/dev/null; then '
+    'tmux new-session -d -x "$columns" -y "$rows" -s "$session" '
+    'bash -c "$shell_script" '
+    '|| tmux has-session -t "$session"; fi; '
+    'tmux set-option -t "$session" mouse on; '
+    'tmux set-option -t "$session" status off; '
+    'tmux resize-window -t "$session": -x "$columns" -y "$rows"; '
+    'exec tmux attach-session -t "$session"'
+)
 
 
 def validate_image(value: str) -> str:
@@ -372,14 +383,14 @@ def open_terminal(
                 422,
             )
         shell_command = [
-            "tmux",
-            "new-session",
-            "-A",
-            "-s",
-            safe_session,
             "bash",
             "-c",
+            _TERMINAL_TMUX_SCRIPT,
+            "--",
+            safe_session,
             _TERMINAL_SHELL_SCRIPT,
+            str(columns),
+            str(rows),
         ]
     master, slave = pty.openpty()
     try:
@@ -554,6 +565,70 @@ def _inspect_commands(container_id: str) -> dict[str, str]:
     return commands
 
 
+def _inspect_runtime_provenance(container_id: str) -> dict[str, Any]:
+    script = r"""
+import json
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+
+packages = {}
+for name in (
+    "openhands-agent-server",
+    "openhands-sdk",
+    "openhands-tools",
+    "openhands-workspace",
+):
+    try:
+        packages[name] = version(name)
+    except PackageNotFoundError:
+        packages[name] = None
+
+source_commit = None
+source_ref = None
+try:
+    provenance = json.loads(
+        Path("/runtime/openhands-source-provenance.json").read_text(encoding="utf-8")
+    )
+    build = provenance.get("build_input", {})
+    source_commit = build.get("source_commit")
+    source_ref = build.get("upstream_base_commit") or source_commit
+except (OSError, TypeError, ValueError):
+    pass
+
+print(json.dumps({
+    "package_versions": packages,
+    "source_commit": source_commit,
+    "source_ref": source_ref,
+}))
+"""
+    raw = _run(
+        [
+            get_settings().docker_binary,
+            "exec",
+            container_id,
+            "/runtime/.venv/bin/python",
+            "-c",
+            script,
+        ],
+        timeout=30,
+    )
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DomainError(
+            "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+            "The environment Runtime provenance is invalid",
+            409,
+        ) from exc
+    if not isinstance(value, dict):
+        raise DomainError(
+            "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+            "The environment Runtime provenance is invalid",
+            409,
+        )
+    return cast(dict[str, Any], value)
+
+
 def publish_container(
     container_id: str,
     *,
@@ -628,6 +703,7 @@ def publish_container(
             "architecture": existing.get("Architecture"),
             "os": existing.get("Os"),
             "commands": {},
+            "runtime_provenance": _inspect_runtime_provenance(container_id),
             "recovered": True,
         }
         return PublishedImage(reference=reference, digest=digest, manifest=manifest)
@@ -636,6 +712,7 @@ def publish_container(
     # including authentication files, caches, shell history, and other local
     # state created during setup.
     commands = _inspect_commands(container_id)
+    runtime_provenance = _inspect_runtime_provenance(container_id)
     diff = container_diff(container_id)
     if not _run(
         [
@@ -707,6 +784,7 @@ def publish_container(
         "architecture": inspection.get("Architecture"),
         "os": inspection.get("Os"),
         "commands": commands,
+        "runtime_provenance": runtime_provenance,
         "filesystem_change_count": len(diff),
         "filesystem_change_digest": hashlib.sha256("\n".join(diff).encode()).hexdigest(),
     }

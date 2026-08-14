@@ -38,8 +38,10 @@ from flowweave.runtime.base import (
     RuntimeTaskUsageSnapshot,
     StartAttemptRequest,
 )
+from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
+from flowweave.shared.domain.tool_policy import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversation,
@@ -1707,7 +1709,13 @@ def test_run_environment_is_used_by_execution_and_collaboration_runtime(
             state="READY",
             image_reference="flowweave/test-environment:v1",
             image_digest=digest,
-            manifest_json={},
+            manifest_json={
+                "runtime_provenance": {
+                    "package_versions": dict(OPENHANDS_PACKAGE_VERSIONS),
+                    "source_commit": OPENHANDS_SOURCE_COMMIT,
+                    "source_ref": OPENHANDS_SOURCE_COMMIT,
+                }
+            },
         )
         db.add(version)
         db.commit()

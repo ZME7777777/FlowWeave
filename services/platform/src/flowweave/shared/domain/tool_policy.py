@@ -171,6 +171,31 @@ def _catalog_digest() -> str:
 OPENHANDS_TOOL_CATALOG_DIGEST = _catalog_digest()
 
 
+def tool_policy_catalog() -> dict[str, Any]:
+    """Expose the pinned, governed Tool.create() catalog for configuration UIs."""
+
+    return {
+        "schema_version": TOOL_POLICY_SCHEMA_VERSION,
+        "openhands_version": OPENHANDS_VERSION,
+        "source_commit": OPENHANDS_SOURCE_COMMIT,
+        "catalog_digest": OPENHANDS_TOOL_CATALOG_DIGEST,
+        "max_tool_concurrency": MAX_TOOL_CONCURRENCY,
+        "tools": [
+            {
+                "name": name,
+                "module": str(item["module"]),
+                "params": copy.deepcopy(item["params"]),
+                "access": str(item["access"]),
+                "confirmation": str(item["confirmation"]),
+                "concurrency": str(item["concurrency"]),
+                "policy_enabled": bool(item["policy_enabled"]),
+                "disabled_reason": item.get("disabled_reason"),
+            }
+            for name, item in OPENHANDS_TOOL_CATALOG.items()
+        ],
+    }
+
+
 def normalize_tool_entries(value: object) -> list[dict[str, Any]]:
     """Validate the OpenHands 1.42.0 Tool subset governed by FlowWeave.
 
@@ -262,7 +287,8 @@ def _normalize_tool_params(name: str, value: dict[object, object]) -> dict[str, 
         if expected == "string":
             if not isinstance(raw_value, str) or not raw_value:
                 raise ValueError(f"tool {name} param {key} must be a non-empty string")
-            if len(raw_value) > int(field["max_length"]):
+            max_length = field.get("max_length")
+            if max_length is not None and len(raw_value) > int(max_length):
                 raise ValueError(f"tool {name} param {key} is too long")
             allowed = field.get("enum")
             if isinstance(allowed, list) and raw_value not in allowed:

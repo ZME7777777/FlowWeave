@@ -87,6 +87,7 @@ class RuntimeSkill:
     workspace_path: str = ""
     dependency_runtime_path: str = ""
     activation_keywords: tuple[str, ...] = ()
+    disable_model_invocation: bool = False
 
 
 @dataclass(frozen=True, slots=True)

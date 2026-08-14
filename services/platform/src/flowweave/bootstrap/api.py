@@ -100,6 +100,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if constraint == "flow_definitions_name_key":
             code = "FLOW_NAME_CONFLICT"
             message = "流程名称已存在，请使用其他名称。"
+        elif constraint == "uq_asset_active_directory_name":
+            code = "NODE_ASSET_NAME_CONFLICT"
+            message = "当前目录已存在同名节点资产，请使用其他名称。"
         else:
             code = "DATA_CONFLICT"
             message = "提交的数据与现有记录冲突，请检查是否存在重名或重复关联。"

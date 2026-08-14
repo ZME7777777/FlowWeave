@@ -70,7 +70,7 @@ def test_capability_collection_expands_to_real_node_capability_refs(
     assert persisted_skills[0]["capability_id"] == skill_capability["capability_id"]
 
 
-def test_capability_collection_accepts_mixed_types_and_protects_members(client, skill_capability):
+def test_skill_collection_rejects_non_skill_members(client, skill_capability):
     remote = client.post(
         "/api/v1/capability-imports/validate",
         json={
@@ -86,44 +86,18 @@ def test_capability_collection_accepts_mixed_types_and_protects_members(client, 
         "/api/v1/capability-imports",
         json={"import_token": remote.json()["import_token"]},
     ).json()
-    collection = client.post(
+    rejected = client.post(
         "/api/v1/capability-collections",
         json=_collection_payload(
             skill_capability["capability_id"],
             committed["capabilities"][0]["capability_id"],
         ),
     )
-    assert collection.status_code == 201, collection.text
-    collection = collection.json()
-    assert [item["capability_type"] for item in collection["members"]] == [
-        "SKILL",
-        "MCP",
-    ]
-    blocked = client.request(
-        "DELETE",
-        "/api/v1/capabilities",
-        json={"ids": [skill_capability["capability_id"]]},
-    )
-    assert blocked.status_code == 200, blocked.text
-    assert blocked.json()["deleted_ids"] == []
-    assert blocked.json()["blocked"] == [
-        {
-            "id": skill_capability["capability_id"],
-            "name": skill_capability["capability_key"],
-            "relation": "CAPABILITY_COLLECTION",
-            "nodes": [],
-            "collections": [{"id": collection["id"], "name": collection["name"]}],
-        }
-    ]
-
-    assert client.delete(f"/api/v1/capability-collections/{collection['id']}").status_code == 204
-    deleted = client.request(
-        "DELETE",
-        "/api/v1/capabilities",
-        json={"ids": [skill_capability["capability_id"]]},
-    )
-    assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["deleted_ids"] == [skill_capability["capability_id"]]
+    assert rejected.status_code == 422, rejected.text
+    error = rejected.json()["error"]
+    assert error["code"] == "SKILL_COLLECTION_TYPE_REQUIRED"
+    assert error["details"] == {"capability_ids": [committed["capabilities"][0]["capability_id"]]}
+    assert client.get("/api/v1/capability-collections").json() == []
 
 
 def test_legacy_skill_collection_routes_are_removed(client):

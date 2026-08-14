@@ -1100,9 +1100,7 @@ def test_reconciler_deletes_auxiliary_resources_when_container_is_already_missin
         report = reconcile_managed_sandboxes(db)
 
     with db_session_factory() as db:
-        persisted = db.get(ManagedSandbox, resource_id)
-        assert persisted is not None
-        assert persisted.observed_state == "DELETED"
+        assert db.get(ManagedSandbox, resource_id) is None
     assert report.deleted == 1
     assert deleted == [resource_id]
 
@@ -1145,9 +1143,7 @@ def test_reconciler_cleans_memory_only_after_runtime_deletion(
         report = reconcile_managed_sandboxes(db)
 
     with db_session_factory() as db:
-        persisted = db.get(ManagedSandbox, resource_id)
-        assert persisted is not None
-        assert persisted.observed_state == "DELETED"
+        assert db.get(ManagedSandbox, resource_id) is None
     assert report.deleted == 1
     assert actions == ["docker", "memory"]
 
@@ -1195,7 +1191,7 @@ def test_failed_runtime_ledger_retains_memory_until_durable_deletion(
             select(ManagedSandbox).where(ManagedSandbox.owner_id == resource.owner_id)
         )
         assert resource is not None
-        resource.observed_state = "DELETED"
+        db.delete(resource)
         db.commit()
         assert not runtime_memory_cleanup_pending(
             db,
@@ -1247,9 +1243,7 @@ def test_immediate_runtime_deletion_cleans_memory_after_docker(
         db.commit()
 
     with db_session_factory() as db:
-        persisted = db.get(ManagedSandbox, resource_id)
-        assert persisted is not None
-        assert persisted.observed_state == "DELETED"
+        assert db.get(ManagedSandbox, resource_id) is None
     assert actions == ["docker", "memory"]
 
 
@@ -1395,10 +1389,7 @@ def test_reconciler_deletes_idle_runtime_before_hard_limit(
         db.commit()
 
     with db_session_factory() as db:
-        persisted = db.get(ManagedSandbox, resource_id)
-        assert persisted is not None
-        assert persisted.desired_state == "DELETED"
-        assert persisted.observed_state == "DELETED"
+        assert db.get(ManagedSandbox, resource_id) is None
     assert report.expired == 1
     assert deleted == [resource_id]
 
@@ -1441,11 +1432,7 @@ def test_reconciler_hard_expiry_overrides_bound_active_runtime_owner(
         report = reconcile_managed_sandboxes(db)
 
     with db_session_factory() as db:
-        persisted = db.get(ManagedSandbox, resource_id)
-        assert persisted is not None
-        assert persisted.desired_state == "DELETED"
-        assert persisted.observed_state == "DELETED"
-        assert persisted.deleted_at is not None
+        assert db.get(ManagedSandbox, resource_id) is None
     assert report.expired == 1
     assert report.deleted == 1
     assert deleted == [resource_id]
@@ -1516,10 +1503,7 @@ def test_reconciler_deletes_bound_sandbox_when_owner_is_terminal(
         report = reconcile_managed_sandboxes(db)
 
     with db_session_factory() as db:
-        persisted = db.get(ManagedSandbox, resource_id)
-        assert persisted is not None
-        assert persisted.desired_state == "DELETED"
-        assert persisted.observed_state == "DELETED"
+        assert db.get(ManagedSandbox, resource_id) is None
     assert report.expired == 1
     assert deleted == [resource_id]
 
@@ -1544,11 +1528,7 @@ def test_reconciler_deletes_hard_expired_resource(settings, db_session_factory, 
         db.commit()
 
     with db_session_factory() as db:
-        persisted = db.get(ManagedSandbox, resource_id)
-        assert persisted is not None
-        assert persisted.desired_state == "DELETED"
-        assert persisted.observed_state == "DELETED"
-        assert persisted.deleted_at is not None
+        assert db.get(ManagedSandbox, resource_id) is None
     assert report.expired == 1
     assert report.deleted == 1
     assert deleted == [resource_id]

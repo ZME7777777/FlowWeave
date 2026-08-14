@@ -168,3 +168,25 @@ def test_runtime_contract_rejects_incompatible_server(mutation: str, expected_re
         )
     assert error.value.code == "RUNTIME_CONTRACT_INCOMPATIBLE"
     assert _reason(error) == expected_reason
+
+
+def test_runtime_contract_accepts_openapi_schema_annotations() -> None:
+    """FastAPI may annotate a valid request $ref with examples or metadata."""
+
+    tools = ("file_editor", "terminal")
+    contract = governed_runtime_contract(tools)
+    openapi = _openapi(contract)
+    paths = cast(dict[str, Any], openapi["paths"])
+    operation = cast(dict[str, Any], paths["/api/conversations"]["post"])
+    request_schema = cast(
+        dict[str, Any],
+        operation["requestBody"]["content"]["application/json"]["schema"],
+    )
+    request_schema["examples"] = [{"initial_message": {"content": [{"text": "Hello"}]}}]
+
+    OpenHandsRuntime._validate_runtime_contract(  # pyright: ignore[reportPrivateUsage]
+        contract,
+        ready={"status": "ready"},
+        server_info=_server_info(tools=tools),
+        openapi=openapi,
+    )

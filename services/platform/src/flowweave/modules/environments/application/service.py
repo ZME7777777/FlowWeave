@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from flowweave.modules.environments.infrastructure import docker
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
+from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared.application.transactions import finish
+from flowweave.shared.domain.tool_policy import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     BackgroundTask,
@@ -19,7 +21,6 @@ from flowweave.shared.models import (
     EnvironmentVersion,
     FlowRun,
     MCPOAuthSecretReference,
-    NodeAsset,
     TaskState,
     TerminalEnvironment,
 )
@@ -31,9 +32,10 @@ def _time(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _version_dict(
-    item: EnvironmentVersion, *, node_reference_count: int = 0, run_reference_count: int = 0
-) -> dict[str, Any]:
+def _version_dict(item: EnvironmentVersion, *, run_reference_count: int = 0) -> dict[str, Any]:
+    runtime_compatible, runtime_incompatibility_reason = runtime_manifest_compatibility(
+        item.manifest_json
+    )
     return {
         "id": item.id,
         "environment_id": item.environment_id,
@@ -44,9 +46,10 @@ def _version_dict(
         "image_digest": item.image_digest,
         "manifest": item.manifest_json or {},
         "error_detail": item.error_detail,
-        "node_reference_count": node_reference_count,
+        "runtime_compatible": runtime_compatible,
+        "runtime_incompatibility_reason": runtime_incompatibility_reason,
         "run_reference_count": run_reference_count,
-        "reference_count": node_reference_count + run_reference_count,
+        "reference_count": run_reference_count,
         "created_at": _time(item.created_at),
     }
 
@@ -66,6 +69,54 @@ def _session_dict(item: EnvironmentSetupSession) -> dict[str, Any]:
 
 
 _CLEANUP_MAX_ATTEMPTS = 20
+
+
+def runtime_manifest_compatibility(manifest: object) -> tuple[bool, str | None]:
+    """Describe whether an environment can be selected for a new Runtime."""
+
+    try:
+        validate_runtime_manifest(manifest)
+    except DomainError as exc:
+        if exc.code != "ENVIRONMENT_RUNTIME_INCOMPATIBLE":
+            raise
+        return False, exc.message
+    return True, None
+
+
+def validate_runtime_manifest(
+    manifest: object, *, environment_version_id: str | None = None
+) -> None:
+    """Reject environment images that cannot satisfy the frozen Runtime contract."""
+
+    document = manifest if isinstance(manifest, dict) else {}
+    provenance = document.get("runtime_provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    packages = provenance.get("package_versions")
+    actual_packages = packages if isinstance(packages, dict) else {}
+    expected_packages = dict(OPENHANDS_PACKAGE_VERSIONS)
+    actual_commit = provenance.get("source_commit")
+    actual_ref = provenance.get("source_ref")
+    if (
+        actual_packages != expected_packages
+        or actual_commit != OPENHANDS_SOURCE_COMMIT
+        or actual_ref != OPENHANDS_SOURCE_COMMIT
+    ):
+        raise DomainError(
+            "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+            (
+                "The terminal environment does not satisfy the frozen OpenHands "
+                "Runtime contract; publish a new environment version"
+            ),
+            409,
+            {
+                "environment_version_id": environment_version_id,
+                "expected_package_versions": expected_packages,
+                "actual_package_versions": actual_packages,
+                "expected_source_commit": OPENHANDS_SOURCE_COMMIT,
+                "actual_source_commit": actual_commit,
+                "actual_source_ref": actual_ref,
+            },
+        )
 
 
 def _control_engine(db: Session) -> Engine:
@@ -89,7 +140,9 @@ def _session_unlock(connection: Connection, lock_id: int) -> None:
     connection.commit()
 
 
-def _enqueue_setup_cleanup(db: Session, item: EnvironmentSetupSession) -> None:
+def _enqueue_setup_cleanup(
+    db: Session, item: EnvironmentSetupSession, *, delete_session: bool = False
+) -> None:
     if not item.container_id:
         return
     if item.sandbox_id:
@@ -100,8 +153,14 @@ def _enqueue_setup_cleanup(db: Session, item: EnvironmentSetupSession) -> None:
         aggregate_type="SETUP_SESSION",
         aggregate_id=item.id,
         idempotency_key=f"cleanup-setup-container:{item.id}:{item.container_id}",
-        payload={"container_id": item.container_id, "sandbox_id": item.sandbox_id},
+        payload={
+            "container_id": item.container_id,
+            "sandbox_id": item.sandbox_id,
+            "delete_session": delete_session,
+        },
     )
+    if delete_session:
+        task.payload_json = {**(task.payload_json or {}), "delete_session": True}
     task.max_attempts = max(task.max_attempts, _CLEANUP_MAX_ATTEMPTS)
 
 
@@ -221,18 +280,16 @@ def recover_environment_cleanup_tasks(db: Session, *, commit: bool = True) -> in
         task.last_error = "RESOURCE_CLEANUP_RECOVERY"
         task.max_attempts = max(task.max_attempts, _CLEANUP_MAX_ATTEMPTS)
         recovered += 1
-    deleted_environments = list(
-        db.scalars(select(TerminalEnvironment).where(TerminalEnvironment.deleted_at.is_not(None)))
+    dead_credential_tasks = list(
+        db.scalars(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS",
+                BackgroundTask.state == TaskState.DEAD,
+            )
+        )
     )
-    for environment in deleted_environments:
-        key = f"cleanup-environment-credentials:{environment.id}"
-        task = db.scalar(select(BackgroundTask).where(BackgroundTask.idempotency_key == key))
-        if task is None:
-            _enqueue_credential_cleanup(db, environment.id)
-            recovered += 1
-        elif task.state == TaskState.DEAD and "SANDBOX_RESOURCE_CONFLICT" not in (
-            task.last_error or ""
-        ):
+    for task in dead_credential_tasks:
+        if "SANDBOX_RESOURCE_CONFLICT" not in (task.last_error or ""):
             task.state = TaskState.RETRY
             task.available_at = datetime.now(UTC)
             task.lease_owner = None
@@ -273,8 +330,11 @@ def process_cleanup_setup_container(
         .with_for_update()
     )
     if current is not None and current.container_id == expected_container_id:
-        current.container_id = ""
-        current.error_detail = None
+        if bool(payload.get("delete_session")) and current.state == "CANCELLED":
+            db.delete(current)
+        else:
+            current.container_id = ""
+            current.error_detail = None
     db.commit() if commit else db.flush()
 
 
@@ -299,9 +359,6 @@ def process_cleanup_environment_image(
             .with_for_update()
         )
         current_version = db.get(EnvironmentVersion, version_id)
-        node_reference = db.scalar(
-            select(NodeAsset.id).where(NodeAsset.environment_version_id == version_id).limit(1)
-        )
         run_reference = db.scalar(
             select(FlowRun.id).where(FlowRun.environment_version_id == version_id).limit(1)
         )
@@ -321,7 +378,6 @@ def process_cleanup_environment_image(
                 current_version is not None
                 and (current_version.state == "READY" or bool(current_version.image_reference))
             )
-            or node_reference is not None
             or run_reference is not None
             or setup_reference is not None
             or sandbox_reference
@@ -356,10 +412,10 @@ def process_cleanup_environment_credentials(
         .where(TerminalEnvironment.id == environment_id)
         .with_for_update()
     )
-    if item is None or item.deleted_at is None:
+    if item is not None:
         raise DomainError(
             "ENVIRONMENT_CREDENTIAL_CLEANUP_STALE",
-            "Credential cleanup requires a deleted environment",
+            "Credential cleanup requires the environment row to be physically deleted",
             409,
             {"environment_id": environment_id},
         )
@@ -396,21 +452,8 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
         )
     )
     version_ids = [version.id for version in versions]
-    node_references: dict[str, int] = {}
     run_references: dict[str, int] = {}
     if version_ids:
-        node_references = {
-            version_id: int(count)
-            for version_id, count in db.execute(
-                select(NodeAsset.environment_version_id, func.count(NodeAsset.id))
-                .where(
-                    NodeAsset.environment_version_id.in_(version_ids),
-                    NodeAsset.deleted_at.is_(None),
-                )
-                .group_by(NodeAsset.environment_version_id)
-            )
-            if version_id is not None
-        }
         run_references = {
             version_id: int(count)
             for version_id, count in db.execute(
@@ -429,7 +472,6 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
         "versions": [
             _version_dict(
                 version,
-                node_reference_count=node_references.get(version.id, 0),
                 run_reference_count=run_references.get(version.id, 0),
             )
             for version in versions
@@ -446,16 +488,14 @@ def list_environments(db: Session) -> list[dict[str, Any]]:
     return [
         environment_dict(db, item)
         for item in db.scalars(
-            select(TerminalEnvironment)
-            .where(TerminalEnvironment.deleted_at.is_(None))
-            .order_by(TerminalEnvironment.updated_at.desc())
+            select(TerminalEnvironment).order_by(TerminalEnvironment.updated_at.desc())
         )
     ]
 
 
 def _environment(db: Session, environment_id: str) -> TerminalEnvironment:
     item = db.get(TerminalEnvironment, environment_id)
-    if item is None or item.deleted_at is not None:
+    if item is None:
         raise not_found("terminal_environment", environment_id)
     return item
 
@@ -479,7 +519,7 @@ def lock_referenceable_version(db: Session, version_id: str) -> EnvironmentVersi
         .where(TerminalEnvironment.id == environment_id)
         .with_for_update()
     )
-    if parent is None or parent.deleted_at is not None:
+    if parent is None:
         return None
     version = db.scalar(
         select(EnvironmentVersion).where(EnvironmentVersion.id == version_id).with_for_update()
@@ -549,7 +589,7 @@ def create_setup_session(
                         .where(TerminalEnvironment.id == environment_id)
                         .with_for_update()
                     )
-                    if environment is None or environment.deleted_at is not None:
+                    if environment is None:
                         raise not_found("terminal_environment", environment_id)
                     if _expire_setup_sessions(control_db):
                         control_db.flush()
@@ -761,7 +801,7 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                     .where(TerminalEnvironment.id == item.environment_id)
                     .with_for_update()
                 )
-                if environment is None or environment.deleted_at is not None:
+                if environment is None:
                     raise not_found("terminal_environment", item.environment_id)
                 version = (
                     control_db.get(EnvironmentVersion, item.published_version_id)
@@ -798,6 +838,7 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                 version_no = version.version_no
                 control_db.commit()
 
+            published: docker.PublishedImage | None = None
             try:
                 # The advisory-lock connection is idle while the controller or
                 # local Docker performs scans and image commit.
@@ -808,12 +849,22 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                     version_id=version_id,
                     version_no=version_no,
                 )
+                validate_runtime_manifest(published.manifest, environment_version_id=version_id)
             except DomainError as exc:
                 with Session(bind=connection) as control_db:
                     failed = control_db.get(EnvironmentVersion, version_id)
                     if failed is not None and failed.state == "PUBLISHING":
                         failed.state = "FAILED"
                         failed.error_detail = exc.message
+                    if published is not None:
+                        _enqueue_image_cleanup(
+                            control_db,
+                            environment_id=environment_id,
+                            version_id=version_id,
+                            version_no=version_no,
+                            image_reference=published.reference,
+                            image_digest=published.digest,
+                        )
                     control_db.commit()
                 raise
 
@@ -865,7 +916,10 @@ def stop_setup_session(db: Session, session_id: str) -> None:
     item = get_setup_session(db, session_id)
     if item.state in {"STARTING", "RUNNING"}:
         item.state = "CANCELLED"
-    _enqueue_setup_cleanup(db, item)
+    if not item.container_id:
+        db.delete(item)
+    else:
+        _enqueue_setup_cleanup(db, item, delete_session=True)
     finish(db)
 
 
@@ -875,7 +929,7 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
         .where(TerminalEnvironment.id == environment_id)
         .with_for_update()
     )
-    if parent is None or parent.deleted_at is not None:
+    if parent is None:
         raise not_found("terminal_environment", environment_id)
     version = db.scalar(
         select(EnvironmentVersion)
@@ -888,15 +942,6 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
     if version is None:
         raise not_found("environment_version", version_id)
 
-    node_reference_count = int(
-        db.scalar(
-            select(func.count(NodeAsset.id)).where(
-                NodeAsset.environment_version_id == version.id,
-                NodeAsset.deleted_at.is_(None),
-            )
-        )
-        or 0
-    )
     run_reference_count = int(
         db.scalar(
             select(func.count(FlowRun.id)).where(FlowRun.environment_version_id == version.id)
@@ -927,8 +972,7 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
         or 0
     )
     if (
-        node_reference_count
-        or run_reference_count
+        run_reference_count
         or setup_reference is not None
         or validation_reference_count
         or oauth_reference_count
@@ -936,7 +980,6 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
         details: dict[str, Any] = {
             "environment_id": environment_id,
             "version_id": version.id,
-            "node_reference_count": node_reference_count,
             "run_reference_count": run_reference_count,
         }
         if setup_reference is not None:
@@ -964,16 +1007,6 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
         .where(EnvironmentSetupSession.base_version_id == version.id)
         .values(base_version_id=None)
     )
-    # Soft-deleted nodes are not user-visible consumers, but their nullable
-    # metadata link must be cleared before the RESTRICT foreign key is checked.
-    db.execute(
-        update(NodeAsset)
-        .where(
-            NodeAsset.environment_version_id == version.id,
-            NodeAsset.deleted_at.is_not(None),
-        )
-        .values(environment_version_id=None)
-    )
     image_reference = version.image_reference
     image_digest = version.image_digest
     environment_id = version.environment_id
@@ -998,7 +1031,7 @@ def delete_environment(db: Session, environment_id: str) -> None:
         .where(TerminalEnvironment.id == environment_id)
         .with_for_update()
     )
-    if item is None or item.deleted_at is not None:
+    if item is None:
         raise not_found("terminal_environment", environment_id)
     versions = list(
         db.scalars(
@@ -1024,18 +1057,6 @@ def delete_environment(db: Session, environment_id: str) -> None:
             409,
             {"mcp_oauth_secret_reference_count": oauth_reference_count},
         )
-    referenced = db.scalar(
-        select(NodeAsset.id).where(
-            NodeAsset.environment_version_id.in_(version_ids),
-            NodeAsset.deleted_at.is_(None),
-        )
-    )
-    if referenced:
-        raise DomainError(
-            "ENVIRONMENT_IN_USE",
-            "The terminal environment is referenced by an active node",
-            409,
-        )
     run_reference = db.scalar(
         select(FlowRun.id).where(FlowRun.environment_version_id.in_(version_ids))
     )
@@ -1049,7 +1070,8 @@ def delete_environment(db: Session, environment_id: str) -> None:
         db.scalars(
             select(EnvironmentSetupSession).where(
                 EnvironmentSetupSession.environment_id == environment_id,
-                EnvironmentSetupSession.state.in_(["STARTING", "RUNNING"]),
+                (EnvironmentSetupSession.state.in_(["STARTING", "RUNNING"]))
+                | (EnvironmentSetupSession.container_id != ""),
             )
         )
     )
@@ -1070,14 +1092,6 @@ def delete_environment(db: Session, environment_id: str) -> None:
         .where(EnvironmentVersion.environment_id == environment_id)
         .values(parent_version_id=None)
     )
-    db.execute(
-        update(NodeAsset)
-        .where(
-            NodeAsset.environment_version_id.in_(version_ids),
-            NodeAsset.deleted_at.is_not(None),
-        )
-        .values(environment_version_id=None)
-    )
     for version in versions:
         if version.image_reference and version.image_digest:
             _enqueue_image_cleanup(
@@ -1089,7 +1103,6 @@ def delete_environment(db: Session, environment_id: str) -> None:
                 image_digest=version.image_digest,
             )
         db.delete(version)
-    item.deleted_at = datetime.now(UTC)
-    item.row_version += 1
     _enqueue_credential_cleanup(db, environment_id)
+    db.delete(item)
     finish(db)

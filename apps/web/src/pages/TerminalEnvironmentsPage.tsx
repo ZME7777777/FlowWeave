@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { Box, Play, Plus, Save, Square, Terminal, Trash2, X } from 'lucide-react';
+import { Box, LoaderCircle, Play, Plus, Save, Square, Terminal, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, environmentTerminalUrl } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
@@ -58,6 +58,7 @@ function TerminalPanel({ session, onClose }: { session: EnvironmentSetupSession;
     let reconnectTimer: number | undefined;
     let resizeFrame: number | undefined;
     let attempts = 0;
+    let connectionStarted = false;
 
     const sendResize = () => {
       if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
@@ -72,6 +73,11 @@ function TerminalPanel({ session, onClose }: { session: EnvironmentSetupSession;
         if (!dimensions || dimensions.cols < 20 || dimensions.rows < 2) return;
         if (term.cols !== dimensions.cols || term.rows !== dimensions.rows) {
           term.resize(dimensions.cols, dimensions.rows);
+        }
+        if (!connectionStarted) {
+          connectionStarted = true;
+          connect();
+          return;
         }
         const ws = socket.current;
         if (ws?.readyState === WebSocket.OPEN) {
@@ -122,7 +128,9 @@ function TerminalPanel({ session, onClose }: { session: EnvironmentSetupSession;
     });
     const observer = new ResizeObserver(() => sendResize());
     observer.observe(host);
-    connect();
+    // Do not create the persistent tmux client with xterm's 80x24 defaults.
+    // The first valid fit above establishes both the browser and remote PTY
+    // dimensions before tmux paints its initial screen.
     sendResize();
     void document.fonts?.ready.then(sendResize);
     return () => {
@@ -166,6 +174,7 @@ export function TerminalEnvironmentsPage() {
   const [description, setDescription] = useState('');
   const [baseImage, setBaseImage] = useState('flowweave-openhands-runtime:1');
   const [terminal, setTerminal] = useState<EnvironmentSetupSession | null>(null);
+  const [openingEnvironmentId, setOpeningEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const closeTerminal = useCallback(() => setTerminal(null), []);
   useEffect(() => {
@@ -177,17 +186,23 @@ export function TerminalEnvironmentsPage() {
   }, [environments, isLoading, terminal]);
   const create = useMutation({ mutationFn: () => api.createTerminalEnvironment({ name: name.trim(), description: description.trim(), base_image: baseImage.trim() }), onSuccess: async () => { setCreating(false); setName(''); setDescription(''); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }, onError: reason => setError(reason instanceof Error ? reason.message : '创建失败') });
   const open = async (environment: TerminalEnvironment, baseVersionId?: string) => {
+    if (openingEnvironmentId) return;
+    setOpeningEnvironmentId(environment.id);
     setError('');
     try {
       const current = environment.active_sessions[0];
       setTerminal(current ?? await api.createEnvironmentSetup(environment.id, baseVersionId));
       await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '启动环境失败'); }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '启动环境失败');
+    } finally {
+      setOpeningEnvironmentId(null);
+    }
   };
   const remove = async (environment: TerminalEnvironment) => {
     const confirmed = await dialog.confirm({
       title: '删除终端环境',
-      message: `确定删除“${environment.name}”吗？仍被节点或运行引用时，系统会阻止删除。`,
+      message: `确定删除“${environment.name}”吗？仍被运行引用时，系统会阻止删除。`,
       confirmLabel: '删除环境',
       tone: 'danger',
     });
@@ -211,31 +226,30 @@ export function TerminalEnvironmentsPage() {
       await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
     } catch (reason) {
       if (reason instanceof ApiError && reason.code === 'ENVIRONMENT_VERSION_IN_USE') {
-        const nodes = Number(reason.details.node_reference_count ?? 0);
         const runs = Number(reason.details.run_reference_count ?? 0);
-        setError(`该版本已被占用：${nodes} 个节点、${runs} 个运行。解除引用后才能删除。`);
+        setError(`该版本已被 ${runs} 个运行占用。解除引用后才能删除。`);
       } else setError(reason instanceof Error ? reason.message : '删除版本失败');
     }
   };
 
-  return <main className="page environments-page"><header className="page-head"><div><span className="eyebrow">RUNTIME ENVIRONMENTS</span><h1>终端环境管理</h1><p>在隔离容器中交互安装 CLI、系统包与运行库，发布包含完整配置状态的不可变环境版本，再由节点选择使用。</p></div><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建环境</button></header>
+  return <main className="page environments-page"><header className="page-head"><div><span className="eyebrow">RUNTIME ENVIRONMENTS</span><h1>终端环境管理</h1><p>在隔离容器中交互安装 CLI、系统包与运行库，发布不可变环境版本，并在创建流程运行时选择使用。</p></div><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建环境</button></header>
     <div className="environment-warning"><b>凭据风险</b><span>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</span></div>
     {error && <p className="error">{error}</p>}
-    {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <div className="environment-grid">{environments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
+    {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <div className="environment-grid">{environments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const latestCompatible = environment.versions.find(item => item.state === 'READY' && item.runtime_compatible); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
       <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3><small>{environment.base_image}</small></div><button className="ghost" aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}><Trash2 size={15}/></button></header>
       <p>{environment.description || '未填写说明'}</p>
-      <dl><div><dt>已发布版本</dt><dd>{environment.versions.filter(item => item.state === 'READY').length}</dd></div><div><dt>最新版本</dt><dd>{latest ? `v${latest.version_no} · ${latest.image_digest.slice(0, 19)}…` : '尚未发布'}</dd></div><div><dt>配置会话</dt><dd>{active ? active.state : '无'}</dd></div></dl>
+      <dl><div><dt>可运行版本</dt><dd>{environment.versions.filter(item => item.state === 'READY' && item.runtime_compatible).length}</dd></div><div><dt>最新可运行版本</dt><dd>{latestCompatible ? `v${latestCompatible.version_no} · ${latestCompatible.image_digest.slice(0, 19)}…` : '需要重新发布'}</dd></div><div><dt>配置会话</dt><dd>{active ? active.state : '无'}</dd></div></dl>
       {latest?.manifest.commands && <div className="environment-tools">{Object.entries(latest.manifest.commands).slice(0, 8).map(([command, version]) => <span key={command} title={version}>{command}</span>)}</div>}
       {environment.versions.length > 0 && <details className="environment-history"><summary>版本历史（{environment.versions.length}）</summary><div>{environment.versions.map(version => {
         const occupied = version.reference_count > 0;
         return <section key={version.id}>
           <div><b>v{version.version_no}</b><span className={`environment-version-state ${version.state.toLowerCase()}`}>{version.state}</span></div>
           <small>{new Date(version.created_at).toLocaleString()} · {version.image_digest ? `${version.image_digest.slice(0, 19)}…` : '无镜像摘要'}</small>
-          <span className={occupied ? 'environment-version-usage occupied' : 'environment-version-usage'}>{occupied ? `${version.node_reference_count} 个节点 · ${version.run_reference_count} 个运行` : '未被占用'}</span>
-          <button className="ghost" disabled={occupied} title={occupied ? '解除节点与运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button>
+          <span className={occupied ? 'environment-version-usage occupied' : 'environment-version-usage'}>{version.state === 'READY' && !version.runtime_compatible ? '缺少运行契约，需重新发布' : occupied ? `${version.run_reference_count} 个运行` : '未被占用'}</span>
+          <button className="ghost" disabled={occupied} title={occupied ? '解除运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button>
         </section>;
       })}</div></details>}
-      <footer>{active ? <button className="primary" onClick={() => setTerminal(active)}><Terminal size={14}/>继续配置</button> : <><button className="secondary" onClick={() => void open(environment, latest?.id)}><Play size={14}/>{latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</button></>}</footer>
+      <footer>{active ? <button className="primary" onClick={() => setTerminal(active)}><Terminal size={14}/>继续配置</button> : <button className="secondary" disabled={openingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
     </article>; })}</div> : <div className="empty">暂无终端环境。新建后可在隔离终端中安装节点需要的命令。</div>}
     {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label>名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label>基础镜像<input required value={baseImage} onChange={event => setBaseImage(event.target.value)}/></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
     {terminal && <TerminalPanel session={terminal} onClose={closeTerminal}/>}

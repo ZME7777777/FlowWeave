@@ -15,20 +15,29 @@ FlowWeave 由独立的 migration、API、Worker、Web 和 PostgreSQL 进程组�
 - `repositories`：节点长期使用的代码仓库。
 - `sessions/<run-id>/<node-run-id>/<attempt-no>`：各执行轮次的隔离工作目录。
 
-上传的 MCP/Hook 配置与脚本由平台物化到 `.managed-assets/nodes/<node-asset-id>/`，Runtime 只在 `/runtime/capabilities/nodes/<node-asset-id>/` 看到独立只读挂载。脚本不位于节点可写挂载中，物化时校验路径、文件类型、数量、大小和 SHA-256 摘要。Agent 启动时会收到这些容器内绝对路径，MCP 配置通过 OpenHands `mcp_config` 注册为真实工具。能力仓库提供“表单配置”和“JSON 配置”两种视图，但底层始终是同一份 `mcpServers` JSON：表单修改会立即更新 JSON，合法的 JSON 修改会回填表单；表单未展示的高级字段会原样保留。表单支持管理多个 Server，JSON 视图适合批量粘贴或编辑高级字段。命令型 MCP 只保存配置，对应 CLI 必须先在节点绑定的终端环境中安装并发布。聊天输入框用统一的 `$能力名` 引用 Skill 或 MCP，消息会保存结构化 `capability_refs`，不依赖模型自行猜测文本。
+上传的 MCP/Hook 配置与脚本由平台物化到 `.managed-assets/nodes/<node-asset-id>/`，Runtime 只在 `/runtime/capabilities/nodes/<node-asset-id>/` 看到独立只读挂载。脚本不位于节点可写挂载中，物化时校验路径、文件类型、数量、大小和 SHA-256 摘要。Agent 启动时会收到这些容器内绝对路径，MCP 配置通过 OpenHands `mcp_config` 注册为真实工具。能力仓库提供“表单配置”和“JSON 配置”两种视图，但底层始终是同一份 `mcpServers` JSON。新建弹窗一次发布一个 MCP 能力；左侧只区分“远程”和“本地”两种连接形态，Server 名称在右侧作为 OpenHands 唯一键单独填写。远程连接只能使用 URL、远程协议和远程认证字段，本地连接固定使用 stdio，只能使用 command、args、env、cwd 等命令字段；两类字段不可混用。命令型 MCP 只保存配置，对应 CLI 必须先在节点绑定的终端环境中安装并发布。聊天输入框用统一的 `$能力名` 引用 Skill 或 MCP，消息会保存结构化 `capability_refs`，不依赖模型自行猜测文本。
 
-FlowWeave 的 MCP JSON 使用以下结构。远程 Server 的 `transport` 支持 `streamable-http`（推荐）、`http` 或 `sse`；命令型 Server 使用 `stdio`。输入中的兼容别名 `type` 会被规范化为 `transport`，`shttp` 会被规范化为 `http`。配置禁止保存 token、secret、password、Authorization 等敏感字段。
+FlowWeave 的 MCP JSON 使用以下结构。新建弹窗一次只配置一个具名 Server。远程 Server 的 `transport` 支持 `streamable-http`（推荐）、`http` 或 `sse`；本地 Server 使用 `stdio`。输入中的兼容别名 `type` 会被规范化为 `transport`，`shttp` 会被规范化为 `http`。配置禁止保存 token、secret、password、Authorization 等敏感字段。
 
 ```json
 {
   "mcpServers": {
-    "docs": {
+    "remote": {
       "url": "https://mcp.example.com/mcp",
       "transport": "streamable-http",
       "description": "查询团队文档",
       "timeout": 30
-    },
-    "localTools": {
+    }
+  }
+}
+```
+
+本地连接对应的单 Server 配置为：
+
+```json
+{
+  "mcpServers": {
+    "local": {
       "command": "mcp-tool-server",
       "args": ["--stdio"],
       "transport": "stdio",

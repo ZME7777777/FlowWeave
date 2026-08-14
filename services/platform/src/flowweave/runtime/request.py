@@ -349,7 +349,6 @@ def build_runtime_request(
     runtime_workspace_relative, runtime_working_dir_relative = isolated_runtime_workspace_paths(
         workspace_ref, node_workspace_ref
     )
-    asset_environment = cast(dict[str, Any], asset.get("environment_version") or {})
     raw_agent_spec = node.get("runtime_agent_spec")
     if not isinstance(raw_agent_spec, dict):
         raise DomainError(
@@ -485,9 +484,7 @@ def build_runtime_request(
         memory_config["enabled"] and runtime_memory_scope in memory_config["scopes"]
     )
     if memory_enabled:
-        if not memory_materialized or not (
-            environment_image or asset_environment.get("image_digest")
-        ):
+        if not memory_materialized or not environment_image:
             raise DomainError(
                 "MEMORY_SOURCE_UNAVAILABLE",
                 "Enabled Memory requires an isolated managed Runtime",
@@ -721,24 +718,10 @@ def build_runtime_request(
         startup_capability_key=startup_capability_key,
         semantic_history=semantic_history,
         output_targets=output_targets or {},
-        environment_image=environment_image
-        if environment_image is not None
-        else str(asset_environment.get("image_digest") or ""),
-        environment_id=(
-            environment_id
-            if environment_id is not None
-            else str(asset_environment.get("environment_id") or "")
-        ),
-        environment_version_id=(
-            environment_version_id
-            if environment_version_id is not None
-            else str(asset_environment.get("id") or "")
-        ),
-        environment_version_no=(
-            environment_version_no
-            if environment_version_no is not None
-            else int(asset_environment.get("version_no") or 0)
-        ),
+        environment_image=environment_image or "",
+        environment_id=environment_id or "",
+        environment_version_id=environment_version_id or "",
+        environment_version_no=environment_version_no or 0,
         runtime_workspace_relative=runtime_workspace_relative,
         runtime_working_dir_relative=runtime_working_dir_relative,
         memory_enabled=memory_enabled,

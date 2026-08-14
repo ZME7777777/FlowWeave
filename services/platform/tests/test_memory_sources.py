@@ -461,23 +461,12 @@ def test_expired_memory_content_is_irreversibly_deleted_to_a_tombstone(
     )
     assert deleted.status_code == 200, deleted.text
     body = deleted.json()
-    assert body["lifecycle_state"] == "DELETED"
-    assert body["digest"] == active["digest"]
-    assert body["deleted_at"] is not None
+    assert body == {"id": active["id"], "source_id": source["id"], "deleted": True}
     assert "Stable fact" not in deleted.text
 
     with db_session_factory() as db:
-        stored = db.get(MemorySourceVersion, active["id"])
-        assert stored is not None
-        assert stored.content == ""
-        assert stored.digest == active["digest"]
-        with pytest.raises(DBAPIError):
-            db.execute(
-                update(MemorySourceVersion)
-                .where(MemorySourceVersion.id == active["id"])
-                .values(content="restored\n")
-            )
-            db.commit()
+        assert db.get(MemorySourceVersion, active["id"]) is None
+        assert db.get(MemorySource, source["id"]) is None
 
 
 def test_memory_source_reference_blocks_deletion_and_is_database_immutable(
@@ -537,7 +526,6 @@ def test_memory_source_reference_blocks_deletion_and_is_database_immutable(
                 .values(
                     lifecycle_state="DELETED",
                     content="",
-                    deleted_at=datetime.now(UTC),
                     governance_version=expired.json()["governance_version"] + 1,
                 )
             )

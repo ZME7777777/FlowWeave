@@ -74,6 +74,16 @@ def save_collection(
     db: Session, payload: CapabilityCollectionWrite, collection_id: str | None = None
 ) -> dict[str, Any]:
     resolved = [_resolve_capability(db, capability_id) for capability_id in payload.capability_ids]
+    non_skill_ids = [
+        item.version.id for item in resolved if item.package.capability_type != "SKILL"
+    ]
+    if non_skill_ids:
+        raise DomainError(
+            "SKILL_COLLECTION_TYPE_REQUIRED",
+            "A Skill Collection can contain only Skill versions",
+            422,
+            {"capability_ids": non_skill_ids},
+        )
     identities = [(item.package.capability_type, item.package.capability_key) for item in resolved]
     if len(identities) != len(set(identities)):
         raise DomainError(

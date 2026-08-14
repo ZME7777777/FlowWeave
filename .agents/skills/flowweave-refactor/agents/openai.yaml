@@ -1,4 +1,0 @@
-interface:
-  display_name: "FlowWeave Refactor"
-  short_description: "按持久化任务批次续跑 FlowWeave OpenHands 重构"
-  default_prompt: "使用 $flowweave-refactor 从持久化状态恢复，连续完成当前 CURRENT 任务批次并用中文交接。"
