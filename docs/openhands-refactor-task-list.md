@@ -5,9 +5,9 @@
 ## 状态
 
 - 唯一总目标：按照 OpenHands-first 和产物驱动运行原则重构 FlowWeave，快速修正错误、冗余和重复执行实现；FlowWeave 只作为不可变能力治理、流程/资源/审批/审计和 Artifact 投影控制面，由 OpenHands 原生执行 Agent 能力。
-- 当前主任务：T8 产品 API、UI 与文档收口。
-- 当前执行批次：`T8.01–T8.09 产品 API、UI 与文档收口`
-- 最近验证结果：T7.16–T7.19 已冻结 Hook Set、Critic、Goal 与 `ask_agent` 正式契约并完成耐久治理；T7.20–T7.32 已逐项 `DECIDED_NO`。T7.33 已把固定四包 1.42.0、source commit/ref、正式 HTTP operation、`StartConversationRequest` 字段、Server capability 结构和 Snapshot 实际 Tool 集编入不可变 Runtime contract；每次 Conversation 创建前经 `/ready`、`/server_info`、`/openapi.json` 重新协商，不兼容时在任何创建副作用前 fail closed。改动文件 Ruff/compile、窄范围 Pyright、OpenAPI 97 paths 基线、0047 唯一迁移 head、固定 1.42.0 镜像契约（镜像 `sha256:059cbae5eeec46be007f5b477cc8c8af018e684ac719a16678adda1b800c3bef`）、六项最小拒绝路径与 `git diff --check` 通过；行为、恢复竞态、预算精度和真实 Runtime 验收留到 T9。
+- 当前主任务：无；T8 已完成实现门禁，T9 保持 `PENDING`，尚未启动全量验收。
+- 当前执行批次：无。
+- 最近验证结果：T8.01–T8.09 已完成固定 Marketplace 目录浏览/双层 provenance、Tool Policy 拒绝原因、Profile 版本差异/绑定/新 Snapshot 激活、分支与 Runtime HEAD、Task usage、WebSocket/REST 恢复、Goal/Critic/`ask_agent` 和能力兼容矩阵 UI；Browser、ACP、IDE/Desktop、直接 Runtime API 与父级 Trace 仍按既有决定显示为 `SKIP`，子 Agent 单 Task 控制与 MCP Tool schema 仍为 `UPSTREAM_BLOCKED`。Web TypeScript/ESLint、改动 Python Ruff format/check 与 compile、98-path OpenAPI 生成/基线比对和 `git diff --check` 通过；生产 build、行为、恢复、真实 Runtime 与 E2E 只在 T9 执行。
 - 工作区基线：2026-08-14 当前为 `master`，已有连续重构改动；当前 Alembic head 为 `0047_runtime_agent_governance`。
 
 ## 顶层任务
@@ -37,10 +37,10 @@
 | 11.7 实时事件 | 必做 | REST cursor 补偿；T6.13–T6.14 WS 唤醒与 Bash 补偿 | T9 真实断线/恢复验收 | DONE |
 | 11.8 Conversation 分支 | 必做 | T6.06–T6.07 | T6.08（SKIP） | PARTIAL |
 | 11.9 Browser / 直接 Bash / IDE / Desktop | 必做 | Tool 可用性契约基础 | T6.17–T6.19、T7.09、T7.14–T7.15（SKIP） | SKIP |
-| 11.10 Tool 集与 Tool Policy | 必做 | T3 不可变 Policy；T6.15–T6.16 catalog/分类/确认/并发与正式工具集 | T8.02、T9 真实竞争验收 | DONE（实现） |
+| 11.10 Tool 集与 Tool Policy | 必做 | T3 不可变 Policy；T6.15–T6.16 catalog/分类/确认/并发与正式工具集；T8.02 UI | T9 真实竞争验收 | DONE（实现） |
 | 11.11 原生子 Agent | 必做 | T5 原生 Task 全部已实现切片 | T5-B01–T5-B03 | PARTIAL / UPSTREAM_BLOCKED |
-| 11.12 Skills / Plugins / Marketplace | 必做 | T3/T4 固定版本、原生 Loader/激活/invoke | T8.01 | PARTIAL |
-| 11.13 Agent/LLM Profile | 必做 | T3 不可变模板和显式物化；T7.01–T7.02 治理/字段矩阵/不可变切换 | T8.03、T9 功能验收 | DONE（实现） |
+| 11.12 Skills / Plugins / Marketplace | 必做 | T3/T4 固定版本、原生 Loader/激活/invoke；T8.01 固定目录浏览与发布 UI | T9 功能验收 | DONE（实现） |
+| 11.13 Agent/LLM Profile | 必做 | T3 不可变模板和显式物化；T7.01–T7.02 治理/字段矩阵/不可变切换；T8.03 UI | T9 功能验收 | DONE（实现） |
 | 11.14 ACP Agent | 必做 | 无 | T7.03–T7.08（SKIP） | SKIP |
 | 11.15 Critic / Goal | 已纳入产品 | Critic Policy 与 Hook Set 冻结；T7.16–T7.18 正式事件、控制、预算、恢复和审计 | T9 功能/恢复/真实 Runtime 验收 | DONE（实现） |
 | 11.16 File/Git/Workspace/Trajectory | 必做 | 受管 Workspace/Artifact 基础 | T7.10–T7.13（SKIP） | SKIP |
@@ -294,17 +294,17 @@ T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成�
 
 退出条件：除有明确回归约束的 `DECIDED_NO` 和正式证据支撑的 `UPSTREAM_BLOCKED` 外，T7.01–T7.33 全部为 `DONE`；随后将 T7 标为 `IMPLEMENTED`，把 T8.01 提升为唯一 `CURRENT`。
 
-### T8 产品 API、UI 与文档收口 — IN_PROGRESS
+### T8 产品 API、UI 与文档收口 — IMPLEMENTED
 
-- **T8.01 Marketplace 目录浏览与导入 UI — CURRENT**：浏览固定目录 commit、选择条目、展示双层 provenance/验证结果并发布 Version，不展示或加载浮动安装态。
-- **T8.02 Tool Policy 与 Browser UI — CURRENT**：编辑 Tool allowlist、读写/确认/并发/网络/Artifact 策略，展示实际有效 Snapshot 与拒绝原因。
-- **T8.03 Profile 与 ACP UI — CURRENT**：Profile Version 差异/激活、ACP Provider/兼容矩阵/Session 状态和成本可见，不暴露 Secret 或任意 command。
-- **T8.04 原生分支与 Navigate UI — CURRENT**：明确 Native Fork、Semantic Fork 和 Navigate 风险，展示 source event/head、继承范围和审计。
-- **T8.05 Usage、预算与 Trace UI — CURRENT**：Run/Node/Attempt/Conversation/Task 对账视图、费用拆分、预算状态和 trace 跳转，避免父子双计。
-- **T8.06 实时连接与恢复 UI — CURRENT**：展示 WebSocket 仅为唤醒、REST cursor 同步状态、断线退化和恢复，不把连接状态当执行事实。
-- **T8.07 Runtime 诊断与 Artifact UI — CURRENT**：Browser、Bash、File/Git/Workspace/Trajectory 的授权操作、来源标识、导出审批和生命周期状态。
-- **T8.08 Critic/Goal/IDE/Desktop UI — CURRENT**：展示自修复/Goal 预算与事件，以及 VSCode/Desktop 一次性访问、撤销和回收状态。
-- **T8.09 契约与文档一致性 — CURRENT**：逐项生成/比对 OpenAPI 和前端类型，删除旧 UI/文本分叉/固定 Tool/旧协议入口，更新系统设计、运维和安全文档及第 11 章覆盖账本。
+- **T8.01 Marketplace 目录浏览与导入 UI — DONE**：浏览固定目录 commit、选择条目、展示目录与实际 Plugin 双层 provenance/content digest，并显式发布 Version；不存在浮动安装态。
+- **T8.02 Tool Policy 与 Browser UI — DONE**：Tool Policy 编辑器展示固定 1.42.0 catalog、allowlist/确认/并发治理与 Browser policy-disabled 原因；Browser 产品入口继续按 T6.17–T6.19 `SKIP`，未伪造开关。
+- **T8.03 Profile 与 ACP UI — DONE**：Profile Version 差异、绑定与固定 digest 激活通过正式 API 创建新 Snapshot/Attempt；ACP 继续按 T7.03–T7.08 `SKIP`，兼容矩阵明确无 Secret/任意 command 入口。
+- **T8.04 原生分支与 Navigate UI — DONE**：Native/Semantic Fork 风险、source event/head、metrics 处置与状态损失可见；Navigate 继续按 T6.08 `SKIP`，不把文本历史伪装成 Runtime HEAD。
+- **T8.05 Usage、预算与 Trace UI — DONE**：展示已有 Task usage/cost/token/预算并避免汇入不存在的父级总计；父 Conversation/Run/Attempt 账本与 Trace 继续按 T6.09–T6.12 `SKIP`。
+- **T8.06 实时连接与恢复 UI — DONE**：独立展示 WebSocket 连接状态、REST cursor/PostgreSQL 耐久事实与断线恢复，不把连接灯当成执行结果。
+- **T8.07 Runtime 诊断与 Artifact UI — DONE**：`ask_agent` 以独立查询轮询且不写消息树；现有 Artifact/Workspace 生命周期继续可见。Browser、直接 Bash/File/Git/Workspace/Trajectory 操作继续按既有 `SKIP` 无入口。
+- **T8.08 Critic/Goal/IDE/Desktop UI — DONE**：Critic 评分、Goal start/stop/resume 与迭代/Token/金额预算可见；IDE/Desktop 继续按 T7.14–T7.15 `SKIP` 无凭据入口。
+- **T8.09 契约与文档一致性 — DONE**：Marketplace response model、前端 DTO/API、98-path OpenAPI 基线、1.42.0 文案、系统设计/审计/路线图和第 11 章账本已同步。
 
 退出条件：T8.01–T8.09 全部为 `DONE`，受影响文件的基本 lint/typecheck 和 API schema 可生成后标为 `IMPLEMENTED`；完整 Web build、API 行为和 E2E 留到 T9。
 

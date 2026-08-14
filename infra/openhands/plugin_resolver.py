@@ -69,12 +69,12 @@ def _validate_remote_source(
 
 def validate_input(
     payload: object,
-) -> tuple[str, str, str | None, str | None, set[str]]:
+) -> tuple[str, str, str | None, str, str | None, set[str]]:
     if not isinstance(payload, dict):
         raise ValueError("request must be an object")
     value = cast(dict[str, object], payload)
     schema_version = value.get("schema_version")
-    if schema_version not in {1, 2}:
+    if schema_version not in {1, 2, 3}:
         raise ValueError("unsupported resolver request schema")
     source, commit = (
         str(value.get("source") or ""),
@@ -89,18 +89,22 @@ def validate_input(
     raw_repo_path = value.get("repo_path")
     repo_path = str(raw_repo_path) if raw_repo_path is not None else None
     source, commit, repo_path = _validate_remote_source(source, commit, repo_path, allowed_hosts)
-    if kind not in {"GIT", "MARKETPLACE"}:
+    if kind not in {"GIT", "MARKETPLACE", "MARKETPLACE_CATALOG"}:
         raise ValueError("unsupported Plugin source kind")
-    if (schema_version == 1 and kind != "GIT") or (schema_version == 2 and kind != "MARKETPLACE"):
+    if (
+        (schema_version == 1 and kind != "GIT")
+        or (schema_version == 2 and kind != "MARKETPLACE")
+        or (schema_version == 3 and kind != "MARKETPLACE_CATALOG")
+    ):
         raise ValueError("resolver schema does not match Plugin source kind")
     if kind == "MARKETPLACE" and (
         plugin_name is None
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", plugin_name) is None
     ):
         raise ValueError("invalid Marketplace Plugin name")
-    if kind == "GIT" and plugin_name is not None:
-        raise ValueError("Git Plugin request cannot select a Marketplace entry")
-    return source, commit, repo_path, plugin_name, allowed_hosts
+    if kind != "MARKETPLACE" and plugin_name is not None:
+        raise ValueError("Only a Marketplace Plugin request can select an entry")
+    return source, commit, repo_path, kind, plugin_name, allowed_hosts
 
 
 def canonical_zip(root: Path) -> tuple[bytes, dict[str, str], int]:
@@ -142,7 +146,9 @@ def canonical_zip(root: Path) -> tuple[bytes, dict[str, str], int]:
 
 
 def main() -> None:
-    source, commit, repo_path, plugin_name, allowed_hosts = validate_input(json.load(sys.stdin))
+    source, commit, repo_path, kind, plugin_name, allowed_hosts = validate_input(
+        json.load(sys.stdin)
+    )
     # The source was allowlisted by the control plane. Prevent Git from
     # following an HTTPS redirect to another host, consulting credential
     # helpers, prompting, or invoking any local/ext/SSH transport.
@@ -161,7 +167,41 @@ def main() -> None:
         os.environ[f"GIT_CONFIG_KEY_{index}"] = key
         os.environ[f"GIT_CONFIG_VALUE_{index}"] = value
     marketplace_report: dict[str, object] | None = None
-    if plugin_name is None:
+    if kind == "MARKETPLACE_CATALOG":
+        registration = MarketplaceRegistration(
+            name="governed", source=source, ref=commit, repo_path=repo_path
+        )
+        fetched = MarketplaceRegistry([registration]).get_marketplace_with_resolution("governed")
+        if (fetched.resolved_ref or "").lower() != commit:
+            raise ValueError("Marketplace did not resolve to the requested commit")
+        marketplace = fetched.marketplace
+        json.dump(
+            {
+                "schema_version": 1,
+                "source": source,
+                "commit": commit,
+                "repo_path": repo_path,
+                "marketplace_name": marketplace.name,
+                "description": marketplace.description
+                or (marketplace.metadata.description if marketplace.metadata else None),
+                "version": marketplace.metadata.version if marketplace.metadata else None,
+                "owner": marketplace.owner.name,
+                "plugins": [
+                    {
+                        "name": entry.name,
+                        "description": entry.description,
+                        "version": entry.version,
+                        "category": entry.category,
+                        "author": entry.author.name if entry.author else None,
+                    }
+                    for entry in marketplace.plugins
+                ],
+            },
+            sys.stdout,
+            separators=(",", ":"),
+        )
+        return
+    if kind == "GIT":
         path, resolved_commit = fetch_plugin_with_resolution(
             source=source,
             cache_dir=Path("/work/cache"),

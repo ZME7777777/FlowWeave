@@ -27,6 +27,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
 )
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.shared.application.plugin_resolver import (
+    MarketplaceCatalogRequest,
     MarketplacePluginResolveRequest,
     PluginResolveRequest,
 )
@@ -225,6 +226,10 @@ class MarketplacePluginResolveWrite(PluginResolveWrite):
         max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
     )
+
+
+class MarketplaceCatalogWrite(PluginResolveWrite):
+    pass
 
 
 class TerminalStartWrite(ResolveContainerWrite):
@@ -531,6 +536,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/dependencies/build": frozenset({"worker"}),
                 "/v1/plugins/resolve": frozenset({"worker"}),
                 "/v1/plugins/resolve-marketplace": frozenset({"worker"}),
+                "/v1/plugins/list-marketplace": frozenset({"api"}),
                 "/v1/runtimes/events": frozenset({"api"}),
                 "/v1/runtimes/validate-plugin": frozenset({"api"}),
                 "/v1/terminals/start": frozenset({"api"}),
@@ -786,6 +792,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route(
         "/v1/plugins/resolve-marketplace",
         resolve_marketplace_plugin,
+        methods=["POST"],
+    )
+
+    async def list_marketplace(payload: MarketplaceCatalogWrite) -> dict[str, object]:
+        check_scope(payload.manager_scope)
+        resolver = DockerPluginResolver(
+            configured.plugin_resolver_image,
+            allowed_hosts=configured_plugin_hosts(configured),
+            docker_binary=configured.docker_binary,
+            manager_scope=configured.sandbox_manager_scope,
+            timeout_seconds=configured.plugin_resolver_timeout_seconds,
+            cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
+            storage_size=configured.sandbox_storage_size,
+        )
+        return resolver.list_marketplace(
+            MarketplaceCatalogRequest(payload.source, payload.commit, payload.repo_path)
+        )
+
+    app.add_api_route(
+        "/v1/plugins/list-marketplace",
+        list_marketplace,
         methods=["POST"],
     )
 

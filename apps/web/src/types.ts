@@ -53,7 +53,9 @@ export interface CapabilityImportResult {
   content_hash: string; storage_key: string; capabilities: CapabilityAsset[];
 }
 export interface PluginSourceResolution {
-  id: string; source_url: string; requested_commit: string; repo_path?: string | null;
+  id: string; source_kind: 'GIT' | 'MARKETPLACE'; source_url: string; requested_commit: string; repo_path?: string | null;
+  marketplace_plugin_name?: string | null; resolved_source_url?: string | null;
+  resolved_commit?: string | null; resolved_repo_path?: string | null;
   state: 'PENDING' | 'READY' | 'PUBLISHED' | 'FAILED' | 'EXPIRED'; state_version: number;
   content_hash?: string | null; byte_size?: number | null; error_detail?: string | null;
   preview: {
@@ -62,6 +64,28 @@ export interface PluginSourceResolution {
   };
   capability?: { capability_id: string; capability_type: 'PLUGIN'; capability_key?: string } | null;
   expires_at: string; resolved_at?: string | null; published_at?: string | null;
+}
+export interface MarketplaceCatalog {
+  schema_version: 1; source: string; commit: string; repo_path?: string | null;
+  marketplace_name: string; description?: string | null; version?: string | null; owner: string;
+  plugins: Array<{ name: string; description?: string | null; version?: string | null; category?: string | null; author?: string | null }>;
+}
+export interface AgentProfileVersion {
+  id: string; package_id: string; capability_key: string; version_no: number;
+  digest: string; content_hash: string; state: 'PUBLISHED' | 'RETIRED';
+  document: Record<string, unknown>; compatibility: {
+    openhands_version: string; source_commit: string; schema_version: number;
+    fields: Record<string, string>; server_profile_store: string; activation_semantics: string;
+  }; created_at: string;
+}
+export interface AgentProfileBinding { node_asset_id: string; node_name: string; position: number }
+export interface AgentProfileSwitchPreview {
+  flow_run_id: string; flow_node_key: string; active_snapshot_id: string; active_snapshot_version: number;
+  source_profile_version_id?: string | null; target_profile_version_id: string; target_profile_digest: string;
+  changes: Record<string, { from?: unknown; to?: unknown }>; requires_new_snapshot: boolean; existing_attempts_unchanged: boolean;
+}
+export interface AgentProfileSwitchResult {
+  snapshot_id: string; snapshot_version: number; attempt: NodeAttempt; rollback_profile_version_id?: string | null;
 }
 export interface NamedDeleteReference { id: string; name: string }
 export interface BlockedCapabilityDelete {
@@ -315,10 +339,30 @@ export interface RuntimeSubagentTaskUsage {
   budget_state: 'UNBOUNDED' | 'WITHIN' | 'EXCEEDED';
   budget_exceeded_at?: string | null; updated_at: string;
 }
+export interface RuntimeDiagnosticQuery {
+  id: string; conversation_id: string; output_classification: 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED';
+  timeout_seconds: number; state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  response_text?: string | null; cost_usd?: number | null; prompt_tokens?: number | null;
+  completion_tokens?: number | null; error_code?: string | null; created_at: string; completed_at?: string | null;
+}
+export interface RuntimeGoalCommand {
+  id: string; state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  action: 'START' | 'STOP' | 'RESUME';
+}
+export interface RuntimeGoalStatus {
+  runtime_event_id: string; active: boolean; status: string; iteration: number; max_iterations: number;
+  objective?: string | null; verdict: Record<string, unknown>;
+}
+export interface RuntimeCriticEvaluation {
+  runtime_event_id: string; source_type: string; score: number; message?: string | null; created_at: string;
+}
 export interface AgentConversation {
   id: string; attempt_id: string; conversation_no: number;
   kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
   editable_message_id?: string | null;
+  fork_kind?: 'RUNTIME' | 'SEMANTIC' | null; source_conversation_id?: string | null;
+  source_runtime_conversation_id?: string | null; source_runtime_event_id?: string | null;
+  runtime_branch_metadata: Record<string, unknown>; metrics_reset?: boolean | null;
   state_version: number; model_name?: string | null; reasoning_effort?: string | null; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
   runtime_resource?: {
     sandbox_id: string; container_name: string; owner_type: 'ATTEMPT' | 'CONVERSATION'; owner_id: string;
@@ -328,5 +372,7 @@ export interface AgentConversation {
   connection_status?: { phase: 'WAITING_WORKER' | 'PREPARING_CONTEXT' | 'STARTING_RUNTIME' | 'CONNECTING_AGENT' | 'READY' | 'FAILED'; started_at: string; elapsed_seconds?: number; detail?: string | null };
   context_baseline: Record<string, unknown>; message_count: number;
   last_message?: AgentMessage | null; runtime_condensations: RuntimeCondensation[];
+  runtime_condensation_commands?: Array<Record<string, unknown>>;
+  latest_goal_status?: RuntimeGoalStatus | null; critic_evaluations?: RuntimeCriticEvaluation[];
   created_at: string; updated_at: string;
 }

@@ -119,6 +119,7 @@ sequenceDiagram
 8. Runtime 完成后执行 END Gates，通过后等待验收。Accept 结束 Node Run；Reject 追加新 Attempt 并保留上一轮会话与产物。
 9. 用户可激活其他节点并选择其输入产物版本。系统不会因为上游节点完成而隐式启动下游节点。
 10. 用户显式完成或取消 Flow Run；取消先把业务运行置为终态，再由持久化 `CANCEL_RUNTIME` 任务确认活动 Runtime 已停止。
+11. Agent Profile 切换必须先预览固定 Version/digest 的字段差异，再创建新的 Run Snapshot、NodeRun 与 Attempt；历史 Attempt 始终保留原 Profile。
 
 ### 3.3 Agent 对话链路
 
@@ -128,6 +129,8 @@ sequenceDiagram
 - 发送、重试、取消排队、停止会话均先持久化意图，再交给 Worker 执行，避免 HTTP 连接中断导致命令丢失。
 - Agent 输出中的工作区图片通过消息级接口读取；服务端把路径限制在该消息所属 Attempt 工作区，并校验图片类型，阻止路径穿越和跨 Attempt 读取。
 - Conversation 终端通过 WebSocket 转发到受管 Runtime；Attempt 进入 `ACCEPTED/REJECTED/CANCELLED` 后，会话变为只读并异步清理 Runtime。
+- 右侧治理面板区分瞬时 WebSocket 状态与 REST cursor/PostgreSQL 耐久事实，并展示 Fork provenance、Task usage、Critic/Goal 预算和只读 `ask_agent` 诊断。
+- Browser、ACP、IDE/Desktop 和直接 Bash/File/Git/Workspace/Trajectory 操作没有授权产品入口；兼容矩阵只说明 `SKIP`/`UPSTREAM_BLOCKED`，不生成客户端假状态。
 
 ### 3.4 终端环境链路
 
@@ -207,6 +210,8 @@ flowchart TB
 - 错误格式统一为 `error.code/message/details/request_id`。
 - Run Event 同时提供历史查询和 SSE；客户端携带 cursor/`Last-Event-ID` 可断点恢复。
 - Setup Terminal、Conversation Terminal 使用 WebSocket；普通 Agent 对话消息仍通过持久化 HTTP 命令提交。
+- Marketplace 目录预览只接受允许域名的无凭据 HTTPS URL 与完整 commit，在隔离 resolver 中读取 manifest；选择条目后另行解析实际 Plugin 来源并显式发布不可变 Version。
+- Agent Profile 的版本历史、绑定、切换预览和切换命令均使用固定 Version ID/digest；切换只影响新 Snapshot/Attempt。
 - OpenAPI v1、Run Event、Runtime Result、Gate Input/Result 和 Review Package 均有冻结契约或 JSON Schema。
 
 ### 4.4 Worker 与任务模型

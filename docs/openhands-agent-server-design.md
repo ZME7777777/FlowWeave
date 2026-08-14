@@ -760,7 +760,7 @@ FlowWeave 当前让父 Agent 输出受控 JSON，由平台创建最多四个独�
 
 代价是没有使用 OpenHands Task Tool 的原生调用体验、共享缓存/上下文压缩和 Agent Definition 生态。短期建议保留平台编排作为事实来源；如需接原生 Task Tool，应先让其创建/回调映射到 FlowWeave Conversation，而不是形成平台不可见的嵌套执行。必须统一最大深度、并发、预算、取消传播和 Workspace 写冲突。
 
-### 11.12 P2：Skills、Plugins 与 Marketplace 的原生生命周期未使用
+### 11.12 P2：Skills、Plugins 与 Marketplace 的受治理接入
 
 Agent Server 自带：
 
@@ -780,13 +780,13 @@ FlowWeave 不使用这套状态，而是把 Skill/MCP/Hook 作为平台 Node Cap
 - 运行中 `load_plugin` 会改变 Tool 与上下文，但 FlowWeave Snapshot 不知情；
 - 动态下载需要 egress 和供应链校验。
 
-如果未来复用 Marketplace，建议只将它作为“导入来源”：解析固定 commit/digest，经过 FlowWeave 校验后生成平台 Capability Version，再进入 Snapshot；不要让生产 Conversation 自动加载浮动的公共内容。
+FlowWeave 现已按该边界接入 Marketplace：目录预览必须固定完整 commit，选择条目后分别冻结目录来源、实际 Plugin 来源 commit 与规范内容 digest，经显式发布生成 Capability Version。浏览不安装内容，生产 Conversation 不注册浮动 Marketplace，也不调用运行中 `load_plugin`。
 
-### 11.13 Agent Profile、LLM Profile 与 Settings API 未使用
+### 11.13 Agent Profile、LLM Profile 与 Settings API 的治理边界
 
 OpenHands 支持 Profile/Agent Profile 的 CRUD、激活、重命名、物化和运行时切换，也提供 Settings Schema、MCP Settings 和 Secret Store。FlowWeave 已有 Model Provider、Node executor、Environment Version、Capability 和加密凭据边界，所以没有调用这些 API。
 
-短期不建议建立两套配置真相。若接入 Agent Profile，应将其视为可导入的 Agent 模板并冻结成 Node Asset 版本，而不是让 Runtime 上的可变 Profile 决定生产执行。OpenHands Settings Secret Store 同样不能与 FlowWeave 数据库密钥和环境凭据卷并存而没有清晰所有权。
+FlowWeave 已将 Agent Profile 收敛为无 Secret 的不可变 Capability Version，并提供版本差异、Node 绑定、固定 digest 切换预览，以及显式创建新 Snapshot/Attempt 的激活链路。既有 Attempt 不热改，OpenHands Server 可变 Profile/LLM Store 与 Settings Secret Store 不成为生产真相。
 
 ### 11.14 ACP Agent 未接入
 
@@ -804,7 +804,7 @@ OpenHands 除原生 Agent 外还支持 ACP Agent，通过子进程运行支持 A
 
 它适合作为明确的第二种 Agent Runtime 产品能力，不宜隐藏在现有 OpenHands Provider 开关后。
 
-### 11.15 Critic、Goal loop 与自动精炼未接入
+### 11.15 Critic、Goal loop 与自动精炼的受治理接入
 
 OpenHands 支持 Critic 对 Finish/Message 或每个 Action 评分，并在低于阈值时自动追加反馈、继续精炼；还提供 `/goal`、`/goal/stop`、`/goal/resume` 在同一 Conversation 中执行多轮目标审计。`ask_agent` 可在不修改 Conversation state 的情况下询问 Agent。
 
@@ -818,7 +818,7 @@ FlowWeave 已有 Prompt Gate、Script Gate、END Gate、Reject 新 Attempt 和�
 - 总迭代、Token 和金额同时受 FlowWeave 预算控制；
 - 禁止无限 Goal loop 与后台任务重试相乘。
 
-在成本和终态语义明确前，应保持实验性。
+当前实现保持该职责分离：Critic 结果耐久投影，Goal 的 start/stop/resume 受迭代、Token 与金额预算约束，`ask_agent` 作为不写入消息树的只读诊断。END Gate 与人工验收仍独立；真实 Runtime、恢复和预算精度统一留到 T9 验收。
 
 ### 11.16 直接 File/Git/Workspace 与轨迹导出 API 未使用
 

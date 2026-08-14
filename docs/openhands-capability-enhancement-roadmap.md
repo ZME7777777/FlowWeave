@@ -813,3 +813,12 @@ GET            /api/v1/runtime-tools
 完成本路线图后，FlowWeave 应成为 OpenHands 的企业级控制面，而不是另一个 Agent Runtime：用户在 FlowWeave 中选择并治理能力，FlowWeave 把冻结的 Agent/Profile/Plugin/Skill/MCP/Hook/Tool/Policy 交给 OpenHands 原生运行；OpenHands 产生 Tool、子 Agent、确认、压缩、成本和结果事件，FlowWeave 将其可靠投影到流程、Artifact、审批、审计和 UI。
 
 任何为了短期接通而新增的提示词协议，都必须有对应的正式协议迁移计划和删除条件。
+
+### T8 产品收口状态
+
+T8 已完成实现门禁：固定 Marketplace 目录浏览与双层 provenance、Tool Policy 拒绝原因、Profile
+版本差异/绑定/新 Snapshot 激活、Fork/Runtime HEAD、Task usage、WebSocket/REST 恢复、Critic/Goal
+预算与只读 `ask_agent` 已进入产品 UI 和 98-path OpenAPI/前端契约。Browser、ACP、IDE/Desktop、
+直接 Runtime API、Navigate 与父级 Trace 继续保持既有 `SKIP`；MCP Tool schema 和子 Agent 单 Task
+控制继续为 `UPSTREAM_BLOCKED`。T9 尚未启动，生产 build、真实 Runtime、恢复、安全和 E2E 证据
+完成前不将这些实现标为 `COMPLETE`。

@@ -1,7 +1,7 @@
 import type {
-  AgentConversation, AgentMessage, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
+  AgentConversation, AgentMessage, AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  CapabilityCollection, CapabilityCollectionWrite, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, RuntimeSubagentTask, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
+  CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, RuntimeDiagnosticQuery, RuntimeGoalCommand, RuntimeSubagentTask, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -125,6 +125,10 @@ export const api = {
   commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
   createPluginSourceResolution: (body: { source_url: string; commit: string; repo_path?: string | null }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
+  previewMarketplaceCatalog: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null }) =>
+    request<MarketplaceCatalog>('/plugin-marketplace-catalogs/preview', json('POST', body)),
+  createMarketplacePluginResolution: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null; plugin_name: string }) =>
+    request<PluginSourceResolution>('/plugin-source-resolutions/marketplace', json('POST', body)),
   pluginSourceResolution: (id: string) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}`),
   publishPluginSourceResolution: (id: string, expectedStateVersion: number) =>
@@ -142,6 +146,10 @@ export const api = {
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
   deleteCapability: (id: string) => request<void>(`/capabilities/${encodeURIComponent(id)}`, json('DELETE')),
   deleteCapabilities: (ids: string[]) => request<BulkDeleteResult<BlockedCapabilityDelete>>('/capabilities', json('DELETE', { ids })),
+  agentProfileVersions: (packageId: string) =>
+    request<AgentProfileVersion[]>(`/agent-profile-packages/${encodeURIComponent(packageId)}/versions`),
+  agentProfileBindings: (versionId: string) =>
+    request<AgentProfileBinding[]>(`/agent-profiles/${encodeURIComponent(versionId)}/bindings`),
 
   terminalEnvironments: () => request<TerminalEnvironment[]>('/terminal-environments'),
   createTerminalEnvironment: (body: TerminalEnvironmentWrite) =>
@@ -179,6 +187,10 @@ export const api = {
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
+  previewAgentProfileSwitch: (runId: string, flowNodeKey: string, profileVersionId: string) =>
+    request<AgentProfileSwitchPreview>(`/flow-runs/${runId}/agent-profile-switch-preview?flow_node_key=${encodeURIComponent(flowNodeKey)}&profile_version_id=${encodeURIComponent(profileVersionId)}`),
+  switchAgentProfile: (runId: string, body: { expected_active_version: number; flow_node_key: string; profile_version_id: string; source_profile_version_id?: string | null; expected_profile_digest: string; copy_input_bindings_from_attempt_id?: string | null; model_cost_comparison?: Record<string, unknown> }) =>
+    request<AgentProfileSwitchResult>(`/flow-runs/${runId}/agent-profile-switch`, json('POST', body, true)),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
@@ -207,6 +219,11 @@ export const api = {
   conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
   conversationSubagents: (conversationId: string) =>
     request<RuntimeSubagentTask[]>(`/agent-conversations/${conversationId}/subagents`),
+  controlConversationGoal: (conversationId: string, version: number, body: { action: 'START' | 'STOP' | 'RESUME'; objective?: string; max_iterations?: number; max_tokens?: number | null; max_cost_usd?: number | null }) =>
+    request<RuntimeGoalCommand>(`/agent-conversations/${conversationId}/goal`, { ...json('POST', { expected_conversation_version: version, ...body }, true), headers: { ...json('POST', undefined, true).headers, 'X-Actor-ID': 'web-console' } }),
+  askAgent: (conversationId: string, question: string) =>
+    request<RuntimeDiagnosticQuery>(`/agent-conversations/${conversationId}/ask-agent`, { ...json('POST', { question, timeout_seconds: 30, output_classification: 'INTERNAL' }, true), headers: { ...json('POST', undefined, true).headers, 'X-Actor-ID': 'web-console' } }),
+  diagnosticQuery: (id: string) => request<RuntimeDiagnosticQuery>(`/runtime-diagnostic-queries/${id}`, { headers: { 'X-Actor-ID': 'web-console' } }),
   stopConversation: (conversationId: string, version: number) =>
     request<AgentConversation>(`/agent-conversations/${conversationId}/stop`, json('POST', { expected_conversation_version: version }, true)),
   deleteConversation: (conversationId: string) => request<void>(`/agent-conversations/${conversationId}`, json('DELETE')),
@@ -277,6 +294,7 @@ export function agentStreamUrl(conversationId: string): string {
 export function subscribeToConversationStream(
   conversationId: string,
   onEvent: (event: AgentStreamEvent) => void,
+  onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
 ): () => void {
   let disposed = false;
   let socket: WebSocket | undefined;
@@ -285,8 +303,9 @@ export function subscribeToConversationStream(
 
   const connect = () => {
     if (disposed) return;
+    onStatus?.(reconnectAttempt ? 'recovering' : 'connecting');
     socket = new WebSocket(agentStreamUrl(conversationId));
-    socket.onopen = () => { reconnectAttempt = 0; };
+    socket.onopen = () => { reconnectAttempt = 0; onStatus?.('live'); };
     socket.onmessage = message => {
       try {
         const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
@@ -301,7 +320,8 @@ export function subscribeToConversationStream(
     };
     socket.onclose = event => {
       socket = undefined;
-      if (disposed || event.code === 4409) return;
+      if (disposed || event.code === 4409) { onStatus?.('disabled'); return; }
+      onStatus?.('recovering');
       const delay = Math.min(500 * (2 ** reconnectAttempt), 5000);
       reconnectAttempt += 1;
       reconnectTimer = window.setTimeout(connect, delay);
@@ -313,6 +333,7 @@ export function subscribeToConversationStream(
     disposed = true;
     if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
     socket?.close(1000, 'Conversation changed');
+    onStatus?.('disabled');
   };
 }
 

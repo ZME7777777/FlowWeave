@@ -5,6 +5,7 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import '../agent-chat.css';
 import { api, messageAttachmentUrl, randomId, subscribeToConversationStream, subscribeToRun, workspaceImageUrl } from '../api/client';
 import { AgentRuntimeSidebar } from '../components/AgentRuntimeSidebar';
+import { RuntimeGovernancePanel } from '../components/RuntimeGovernancePanel';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useWorkbenchStore } from '../store/workbench';
@@ -907,6 +908,7 @@ export function AgentChatPage() {
   const [runtimeSidebarCollapsed, setRuntimeSidebarCollapsed] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview>();
   const [streamingReplies, setStreamingReplies] = useState<Record<string, { text: string; complete: boolean }>>({});
+  const [streamStatus, setStreamStatus] = useState<'connecting' | 'live' | 'recovering' | 'disabled'>('disabled');
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const runQuery = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId) });
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: api.providers });
@@ -945,7 +947,7 @@ export function AgentChatPage() {
           : current);
         refresh();
       }
-    });
+    }, setStreamStatus);
   }, [refresh, selected?.id, selected?.runtime_conversation_id]);
   const durableMessageVersion = (messagesQuery.data ?? []).map(message => `${message.id}:${message.delivery_state}`).join('|');
   useEffect(() => {
@@ -1099,5 +1101,5 @@ export function AgentChatPage() {
         </div>
       ))}
       {(attachmentError || createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || reviseMutation.error || stopMutation.error) && <p className="conversation-error"><AlertTriangle size={14}/>{attachmentError || (createMutation.error || deleteMutation.error || sendMutation.error || retryMutation.error || steerMutation.error || cancelQueuedMutation.error || forkMutation.error || reviseMutation.error || stopMutation.error)?.message}</p>}
-    </main><AgentRuntimeSidebar conversation={selected} collapsed={runtimeSidebarCollapsed} onCollapsedChange={setRuntimeSidebarCollapsed}><ContextPanel attempt={attempt} nodeName={nodeName} node={node} runName={runQuery.data.name} messages={messagesQuery.data ?? []} subagents={subagentsQuery.data ?? []} conversation={selected} onPreview={setAttachmentPreview}/></AgentRuntimeSidebar></div>{attachmentPreview && <AttachmentPreviewDialog preview={attachmentPreview} onClose={() => setAttachmentPreview(undefined)}/>}</section>;
+    </main><AgentRuntimeSidebar conversation={selected} collapsed={runtimeSidebarCollapsed} onCollapsedChange={setRuntimeSidebarCollapsed} governance={selected ? <RuntimeGovernancePanel conversation={selected} subagents={subagentsQuery.data ?? []} streamStatus={streamStatus} onRefresh={refresh}/> : undefined}><ContextPanel attempt={attempt} nodeName={nodeName} node={node} runName={runQuery.data.name} messages={messagesQuery.data ?? []} subagents={subagentsQuery.data ?? []} conversation={selected} onPreview={setAttachmentPreview}/></AgentRuntimeSidebar></div>{attachmentPreview && <AttachmentPreviewDialog preview={attachmentPreview} onClose={() => setAttachmentPreview(undefined)}/>}</section>;
 }

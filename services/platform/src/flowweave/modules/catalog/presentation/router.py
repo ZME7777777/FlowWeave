@@ -29,6 +29,8 @@ from flowweave.shared.schemas import (
     CapabilitySkillRevisionWrite,
     CapabilityValidateWrite,
     DirectoryWrite,
+    MarketplaceCatalogRead,
+    MarketplaceCatalogWrite,
     MarketplacePluginSourceResolveWrite,
     MCPOAuthAuthorizationCallbackWrite,
     MCPOAuthAuthorizationStartWrite,
@@ -296,6 +298,16 @@ async def resolve_marketplace_plugin_source(
     return await run_sync(
         db, lambda session: plugin_sources.create_marketplace_resolution(session, payload)
     )
+
+
+@router.post(
+    "/plugin-marketplace-catalogs/preview",
+    response_model=MarketplaceCatalogRead,
+)
+async def preview_plugin_marketplace_catalog(
+    payload: MarketplaceCatalogWrite,
+) -> dict[str, object]:
+    return await asyncio.to_thread(plugin_sources.list_marketplace_catalog, payload)
 
 
 @router.get("/plugin-source-resolutions/{resolution_id}")

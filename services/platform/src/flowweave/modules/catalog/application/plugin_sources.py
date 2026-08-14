@@ -19,6 +19,7 @@ from flowweave.modules.catalog.application.capability_repository import (
 )
 from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.application.plugin_resolver import (
+    MarketplaceCatalogRequest,
     MarketplacePluginResolveRequest,
     PluginResolveRequest,
 )
@@ -42,6 +43,7 @@ from flowweave.shared.models import (
 )
 from flowweave.shared.plugin_resolver import get_plugin_resolver
 from flowweave.shared.schemas import (
+    MarketplaceCatalogWrite,
     MarketplacePluginSourceResolveWrite,
     PluginSourceResolveWrite,
 )
@@ -56,6 +58,20 @@ class PluginSourcePublishPlan:
     content_hash: str
     byte_size: int
     preview: dict[str, Any]
+
+
+def list_marketplace_catalog(payload: MarketplaceCatalogWrite) -> dict[str, object]:
+    marketplace = validate_plugin_git_source(
+        PluginResolveRequest(
+            payload.marketplace_source_url,
+            payload.marketplace_commit,
+            payload.marketplace_repo_path,
+        ),
+        configured_plugin_hosts(get_settings()),
+    )
+    return get_plugin_resolver().list_marketplace(
+        MarketplaceCatalogRequest(marketplace.source, marketplace.commit, marketplace.repo_path)
+    )
 
 
 def _read_model(item: PluginSourceResolution) -> dict[str, Any]:

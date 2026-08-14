@@ -1504,6 +1504,44 @@
         }
       }
     },
+    "/api/v1/plugin-marketplace-catalogs/preview": {
+      "post": {
+        "summary": "Preview Plugin Marketplace Catalog",
+        "operationId": "preview_plugin_marketplace_catalog_api_v1_plugin_marketplace_catalogs_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketplaceCatalogWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketplaceCatalogRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/plugin-source-resolutions/{resolution_id}": {
       "get": {
         "summary": "Plugin Source Resolution",
@@ -7277,6 +7315,176 @@
           "content_base64"
         ],
         "title": "MCPScriptWrite"
+      },
+      "MarketplaceCatalogPluginRead": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "MarketplaceCatalogPluginRead"
+      },
+      "MarketplaceCatalogRead": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Schema Version"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Commit"
+          },
+          "repo_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Path"
+          },
+          "marketplace_name": {
+            "type": "string",
+            "title": "Marketplace Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "owner": {
+            "type": "string",
+            "title": "Owner"
+          },
+          "plugins": {
+            "items": {
+              "$ref": "#/components/schemas/MarketplaceCatalogPluginRead"
+            },
+            "type": "array",
+            "title": "Plugins"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "schema_version",
+          "source",
+          "commit",
+          "marketplace_name",
+          "owner",
+          "plugins"
+        ],
+        "title": "MarketplaceCatalogRead"
+      },
+      "MarketplaceCatalogWrite": {
+        "properties": {
+          "marketplace_source_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Marketplace Source Url"
+          },
+          "marketplace_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{40}$",
+            "title": "Marketplace Commit"
+          },
+          "marketplace_repo_path": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Repo Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "marketplace_source_url",
+          "marketplace_commit"
+        ],
+        "title": "MarketplaceCatalogWrite"
       },
       "MarketplacePluginSourceResolveWrite": {
         "properties": {

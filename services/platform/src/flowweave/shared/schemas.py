@@ -561,6 +561,36 @@ class MarketplacePluginSourceResolveWrite(ApiModel):
     )
 
 
+class MarketplaceCatalogWrite(ApiModel):
+    marketplace_source_url: str = Field(min_length=1, max_length=2048)
+    marketplace_commit: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
+    marketplace_repo_path: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+    )
+
+
+class MarketplaceCatalogPluginRead(ApiModel):
+    name: str
+    description: str | None = None
+    version: str | None = None
+    category: str | None = None
+    author: str | None = None
+
+
+class MarketplaceCatalogRead(ApiModel):
+    schema_version: Literal[1]
+    source: str
+    commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    repo_path: str | None = None
+    marketplace_name: str
+    description: str | None = None
+    version: str | None = None
+    owner: str
+    plugins: list[MarketplaceCatalogPluginRead]
+
+
 class PluginSourcePublishWrite(ApiModel):
     expected_state_version: int = Field(ge=1)
 

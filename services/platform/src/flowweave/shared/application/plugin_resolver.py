@@ -24,6 +24,15 @@ class MarketplacePluginResolveRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class MarketplaceCatalogRequest:
+    """One credential-free, immutable Marketplace snapshot to browse."""
+
+    marketplace_source: str
+    marketplace_commit: str
+    marketplace_repo_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class PluginResolveBundle:
     """Canonical Plugin ZIP returned by the isolated OpenHands resolver."""
 
@@ -40,3 +49,5 @@ class PluginResolverPort(Protocol):
     def resolve_marketplace_plugin(
         self, request: MarketplacePluginResolveRequest
     ) -> PluginResolveBundle: ...
+
+    def list_marketplace(self, request: MarketplaceCatalogRequest) -> dict[str, object]: ...

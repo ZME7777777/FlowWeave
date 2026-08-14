@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.shared.application.plugin_resolver import (
+    MarketplaceCatalogRequest,
     MarketplacePluginResolveRequest,
     PluginResolveBundle,
     PluginResolveRequest,
@@ -126,6 +127,10 @@ class DisabledPluginResolver:
     def resolve_marketplace_plugin(
         self, request: MarketplacePluginResolveRequest
     ) -> PluginResolveBundle:
+        del request
+        raise RuntimeError("Plugin resolver is disabled")
+
+    def list_marketplace(self, request: MarketplaceCatalogRequest) -> dict[str, object]:
         del request
         raise RuntimeError("Plugin resolver is disabled")
 
@@ -353,6 +358,61 @@ class DockerPluginResolver:
             raise RuntimeError("Plugin resolver returned invalid JSON") from exc
         return _decode_bundle(cast(dict[str, Any], raw), None, allowed_hosts=self.allowed_hosts)
 
+    def list_marketplace(self, request: MarketplaceCatalogRequest) -> dict[str, object]:
+        marketplace = validate_plugin_git_source(
+            PluginResolveRequest(
+                request.marketplace_source,
+                request.marketplace_commit,
+                request.marketplace_repo_path,
+            ),
+            self.allowed_hosts,
+        )
+        payload = {
+            "schema_version": 3,
+            "source_kind": "MARKETPLACE_CATALOG",
+            "source": marketplace.source,
+            "commit": marketplace.commit,
+            "repo_path": marketplace.repo_path,
+            "allowed_hosts": sorted(self.allowed_hosts),
+        }
+        lease = EphemeralDockerLease.create(
+            kind="plugin-resolve",
+            owner_type="PLUGIN_RESOLUTION",
+            manager_scope=self.manager_scope,
+            ttl_seconds=self.timeout_seconds + self.cleanup_grace_seconds,
+        )
+        try:
+            self._create_network(lease)
+            completed = subprocess.run(
+                self.command(lease),
+                input=json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+                env={"PATH": os.defpath},
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Marketplace catalog resolution timed out") from exc
+        except OSError as exc:
+            raise RuntimeError("Plugin resolver is unavailable") from exc
+        finally:
+            self._cleanup(lease)
+        if completed.returncode:
+            raise RuntimeError(
+                "Marketplace catalog resolution failed: "
+                f"{(completed.stderr or completed.stdout)[-2000:]}"
+            )
+        try:
+            raw = cast(object, json.loads(completed.stdout))
+            if not isinstance(raw, dict):
+                raise ValueError("response must be an object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Plugin resolver returned invalid JSON") from exc
+        if raw.get("commit") != marketplace.commit or not isinstance(raw.get("plugins"), list):
+            raise RuntimeError("Plugin resolver returned an invalid Marketplace catalog")
+        return cast(dict[str, object], raw)
+
 
 class RemotePluginResolver:
     def __init__(self, settings: Settings, allowed_hosts: frozenset[str]) -> None:
@@ -400,6 +460,33 @@ class RemotePluginResolver:
         except DockerControllerError as exc:
             raise RuntimeError("Plugin resolver controller is unavailable") from exc
         return _decode_bundle(response, None, allowed_hosts=self.allowed_hosts)
+
+    def list_marketplace(self, request: MarketplaceCatalogRequest) -> dict[str, object]:
+        marketplace = validate_plugin_git_source(
+            PluginResolveRequest(
+                request.marketplace_source,
+                request.marketplace_commit,
+                request.marketplace_repo_path,
+            ),
+            self.allowed_hosts,
+        )
+        try:
+            response = DockerControllerClient(self.settings).post(
+                "/v1/plugins/list-marketplace",
+                {
+                    "source": marketplace.source,
+                    "commit": marketplace.commit,
+                    "repo_path": marketplace.repo_path,
+                },
+                timeout=self.settings.plugin_resolver_timeout_seconds + 10,
+            )
+        except DockerControllerError as exc:
+            raise RuntimeError("Plugin resolver controller is unavailable") from exc
+        if response.get("commit") != marketplace.commit or not isinstance(
+            response.get("plugins"), list
+        ):
+            raise RuntimeError("Plugin resolver returned an invalid Marketplace catalog")
+        return cast(dict[str, object], response)
 
 
 def configured_plugin_hosts(settings: Settings) -> frozenset[str]:
