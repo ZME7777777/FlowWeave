@@ -1,7 +1,12 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 
 const apiBase = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
 const suffix = Date.now().toString(36);
+const skillArchive = Buffer.concat([
+  readFileSync('e2e/fixtures/ui-product-skill.zip'),
+  Buffer.from(`\nflowweave-e2e-run:${suffix}\n`),
+]);
 
 async function post(request: APIRequestContext, path: string, data: unknown) {
   const response = await request.post(`${apiBase}/api/v1${path}`, { data });
@@ -14,7 +19,7 @@ async function importSkill(request: APIRequestContext) {
   const validated = await post(request, '/capability-imports/validate', {
     capability_type: 'SKILL',
     filename: 'ui-product-skill.zip',
-    content_base64: Buffer.from(await import('node:fs').then(fs => fs.readFileSync('e2e/fixtures/ui-product-skill.zip'))).toString('base64'),
+    content_base64: skillArchive.toString('base64'),
   });
   const committed = await post(request, '/capability-imports', { import_token: validated.import_token });
   return committed.capabilities[0];
@@ -144,7 +149,11 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await page.getByRole('button', { name: '能力仓库' }).click();
   await expect(page.getByRole('heading', { name: '能力仓库', exact: true })).toBeVisible();
   const skillInput = page.locator('label.file-button').filter({ hasText: '上传 Skill ZIP' }).locator('input');
-  await skillInput.setInputFiles('e2e/fixtures/ui-product-skill.zip');
+  await skillInput.setInputFiles({
+    name: 'ui-product-skill.zip',
+    mimeType: 'application/zip',
+    buffer: skillArchive,
+  });
   const importDialog = page.getByRole('alertdialog', { name: '确认导入 ui-product-skill.zip' });
   await expect(importDialog).toContainText('识别到 1 个 Skill');
   const committedImport = page.waitForResponse(response => response.url().endsWith('/api/v1/capability-imports') && response.request().method() === 'POST');

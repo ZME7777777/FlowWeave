@@ -818,7 +818,7 @@ FlowWeave 已有 Prompt Gate、Script Gate、END Gate、Reject 新 Attempt 和�
 - 总迭代、Token 和金额同时受 FlowWeave 预算控制；
 - 禁止无限 Goal loop 与后台任务重试相乘。
 
-当前实现保持该职责分离：Critic 结果耐久投影，Goal 的 start/stop/resume 受迭代、Token 与金额预算约束，`ask_agent` 作为不写入消息树的只读诊断。END Gate 与人工验收仍独立；真实 Runtime、恢复和预算精度统一留到 T9 验收。
+当前实现保持该职责分离：Critic 结果耐久投影，Goal 的 start/stop/resume 受迭代、Token 与金额预算约束，`ask_agent` 作为不写入消息树的只读诊断。END Gate 与人工验收仍独立；T9 已完成行为、恢复、预算与固定 Runtime 契约回归。
 
 ### 11.16 直接 File/Git/Workspace 与轨迹导出 API 未使用
 

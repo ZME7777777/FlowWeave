@@ -13,6 +13,7 @@ from flowweave.modules.catalog.application.capability_repository import (
     resolve_version,
 )
 from flowweave.shared.models import (
+    CapabilityBlob,
     CapabilityImport,
     CapabilityVersion,
     NodeAsset,
@@ -57,6 +58,82 @@ def test_import_is_persistent_hashed_one_time_and_stores_source(client, db_sessi
     assert listed["import_id"] == committed_body["id"]
     replay = client.post("/api/v1/capability-imports", json={"import_token": body["import_token"]})
     assert replay.status_code == 422
+
+
+def test_identical_import_reuses_immutable_blob_and_version(client, db_session_factory):
+    payload = {
+        "capability_type": "SKILL",
+        "filename": "sample.zip",
+        "content_base64": skill_zip(),
+    }
+    first_validation = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert first_validation.status_code == 200, first_validation.text
+    first = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": first_validation.json()["import_token"]},
+    )
+    assert first.status_code == 201, first.text
+
+    second_validation = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert second_validation.status_code == 200, second_validation.text
+    second = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": second_validation.json()["import_token"]},
+    )
+    assert second.status_code == 201, second.text
+    assert (
+        second.json()["capabilities"][0]["capability_id"]
+        == first.json()["capabilities"][0]["capability_id"]
+    )
+    assert second.json()["storage_key"] == first.json()["storage_key"]
+
+    with db_session_factory() as db:
+        assert len(list(db.scalars(select(CapabilityBlob)))) == 1
+        assert len(list(db.scalars(select(CapabilityVersion)))) == 1
+        imports = list(db.scalars(select(CapabilityImport).order_by(CapabilityImport.created_at)))
+        assert len(imports) == 2
+        assert imports[0].storage_key == imports[1].storage_key
+
+
+def test_identical_import_republishes_retired_immutable_version(client, db_session_factory):
+    payload = {
+        "capability_type": "SKILL",
+        "filename": "sample.zip",
+        "content_base64": skill_zip(),
+    }
+    first_validation = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert first_validation.status_code == 200, first_validation.text
+    first = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": first_validation.json()["import_token"]},
+    )
+    assert first.status_code == 201, first.text
+    version_id = first.json()["capabilities"][0]["capability_id"]
+
+    deleted = client.delete(f"/api/v1/capabilities/{version_id}")
+    assert deleted.status_code == 204, deleted.text
+    with db_session_factory() as db:
+        retired = db.get(CapabilityVersion, version_id)
+        assert retired is not None
+        assert retired.state == "RETIRED"
+    assert all(item["id"] != version_id for item in client.get("/api/v1/capabilities").json())
+
+    second_validation = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert second_validation.status_code == 200, second_validation.text
+    second = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": second_validation.json()["import_token"]},
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["capabilities"][0]["capability_id"] == version_id
+
+    listed = client.get("/api/v1/capabilities").json()
+    assert [item["id"] for item in listed].count(version_id) == 1
+    with db_session_factory() as db:
+        version = db.get(CapabilityVersion, version_id)
+        assert version is not None
+        assert version.state == "PUBLISHED"
+        assert len(list(db.scalars(select(CapabilityVersion)))) == 1
 
 
 def test_single_skill_zip_accepts_skill_files_at_archive_root(client):

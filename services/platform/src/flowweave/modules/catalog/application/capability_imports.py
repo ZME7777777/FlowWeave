@@ -596,7 +596,7 @@ def _validate_plugin(content: bytes, fallback_name: str) -> dict[str, Any]:
                 _validate_config_structure(hook_document)
                 _reject_sensitive(hook_document, "$.hooks")
                 _hook_name, _hook_description, hook_config = _normalize_hook_config(hook_document)
-                hook_events = sorted(hook_config)
+                hook_events = sorted(event for event in hook_config if event in HOOK_EVENT_KEYS)
 
             if not any((skill_names, command_names, mcp_names, hook_events)):
                 raise _reject("Plugin must contribute at least one Skill, Command, MCP, or Hook")
@@ -1387,6 +1387,11 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     if item is None:
         raise _reject("Import token is invalid, expired, or already consumed")
     published = publish_import(db, item)
+    if published:
+        canonical_storage_key = published[0].blob.storage_key
+        if canonical_storage_key != final_key:
+            item.storage_key = canonical_storage_key
+            register_commit_action(db, lambda: get_artifact_store().delete(final_key))
     for position, entry in enumerate(item.preview_json.get("capabilities", [])):
         normalized = cast(dict[str, Any], entry.get("normalized_config", {}))
         dependencies = normalized.get("dependencies")
@@ -1414,7 +1419,7 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
         "capability_type": item.capability_type,
         "filename": item.filename,
         "content_hash": item.content_hash,
-        "storage_key": final_key,
+        "storage_key": item.storage_key,
         "byte_size": item.byte_size,
         "preview": item.preview_json,
         "capabilities": capabilities,

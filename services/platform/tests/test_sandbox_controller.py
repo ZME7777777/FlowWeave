@@ -459,9 +459,11 @@ def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, 
         )
         return "immutable-runtime-container-id"
 
-    async def stream(_settings, container_id, conversation_id):
+    async def stream(_settings, container_id, channel, conversation_id, timeout_seconds):
         assert container_id == "immutable-runtime-container-id"
+        assert channel == "CONVERSATION"
         assert conversation_id == "conversation-1"
+        assert timeout_seconds == 10.0
         yield b'{"kind":"StreamingDeltaEvent","content":"hello"}\n'
 
     monkeypatch.setattr(controller_module, "inspect_owned_container", inspect_owned)

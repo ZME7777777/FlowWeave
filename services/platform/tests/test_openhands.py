@@ -549,6 +549,9 @@ def test_openhands_materializes_governed_profile_without_server_store_lookup(
         "flowweave.agent_profile_version_id": profile.capability_version_id,
         "flowweave.agent_profile_key": profile.capability_key,
         "flowweave.agent_profile_digest": profile.digest,
+        "flowweave.agent_profile_schema_version": 2,
+        "flowweave.agent_profile_source_id": None,
+        "flowweave.agent_profile_source_revision": 0,
     }
 
 
@@ -833,8 +836,8 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(
     assert "节点预置说明（仅作协作背景" in system_context
     assert "生成技术方案" in system_context
     assert "完成任务后，请调用 finish" not in system_context
-    assert "这些 Skill 与 MCP 是可选能力" in system_context
-    assert "根据用户当前消息动态选择" in system_context
+    assert "可用 Skill 与 MCP 均为候选能力" in system_context
+    assert "先理解用户意图，再自行选择真正相关的能力" in system_context
     assert "https://example.feishu.cn/docx/prd-input" in system_context
     assert requests[1]["path"] == "/api/conversations/collaboration-1/events"
     assert requests[1]["json"] == {

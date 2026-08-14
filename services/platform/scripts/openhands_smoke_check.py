@@ -17,7 +17,7 @@ from uuid import uuid4
 
 IMAGE = "flowweave-openhands-runtime:1"
 SESSION_KEY = "flowweave-smoke-key"
-EXPECTED_VERSION = "1.40.0"
+EXPECTED_VERSION = "1.42.0"
 REPOSITORY = Path(__file__).resolve().parents[3]
 FAKE_MODEL = REPOSITORY / "services/platform/scripts/openhands_fake_llm.py"
 
@@ -320,7 +320,7 @@ def _native_task_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
     task_metrics_key = f"task:{detail['task_id']}"
     assert task_metrics_key in usage_to_metrics, usage_to_metrics
     # The server publishes the child aggregate inside the parent Conversation;
-    # there is no separate child Task stats endpoint in 1.40.0.
+    # There is no separate child Task stats endpoint in 1.42.0.
     task_metrics = usage_to_metrics[task_metrics_key]
     assert isinstance(task_metrics, dict), task_metrics
     token_usage = task_metrics.get("accumulated_token_usage")

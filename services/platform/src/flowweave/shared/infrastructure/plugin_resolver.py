@@ -293,9 +293,10 @@ class DockerPluginResolver:
                 f"Plugin resolution failed: {(completed.stderr or completed.stdout)[-2000:]}"
             )
         try:
-            raw = cast(object, json.loads(completed.stdout))
-            if not isinstance(raw, dict):
+            raw_object = cast(object, json.loads(completed.stdout))
+            if not isinstance(raw_object, dict):
                 raise ValueError("response must be an object")
+            raw = cast(dict[object, object], raw_object)
         except (ValueError, json.JSONDecodeError) as exc:
             raise RuntimeError("Plugin resolver returned invalid JSON") from exc
         return _decode_bundle(cast(dict[str, Any], raw), request.commit)
@@ -351,9 +352,10 @@ class DockerPluginResolver:
                 f"{(completed.stderr or completed.stdout)[-2000:]}"
             )
         try:
-            raw = cast(object, json.loads(completed.stdout))
-            if not isinstance(raw, dict):
+            raw_object = cast(object, json.loads(completed.stdout))
+            if not isinstance(raw_object, dict):
                 raise ValueError("response must be an object")
+            raw = cast(dict[object, object], raw_object)
         except (ValueError, json.JSONDecodeError) as exc:
             raise RuntimeError("Plugin resolver returned invalid JSON") from exc
         return _decode_bundle(cast(dict[str, Any], raw), None, allowed_hosts=self.allowed_hosts)
@@ -404,9 +406,10 @@ class DockerPluginResolver:
                 f"{(completed.stderr or completed.stdout)[-2000:]}"
             )
         try:
-            raw = cast(object, json.loads(completed.stdout))
-            if not isinstance(raw, dict):
+            raw_object = cast(object, json.loads(completed.stdout))
+            if not isinstance(raw_object, dict):
                 raise ValueError("response must be an object")
+            raw = cast(dict[object, object], raw_object)
         except (ValueError, json.JSONDecodeError) as exc:
             raise RuntimeError("Plugin resolver returned invalid JSON") from exc
         if raw.get("commit") != marketplace.commit or not isinstance(raw.get("plugins"), list):

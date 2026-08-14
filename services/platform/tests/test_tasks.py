@@ -19,6 +19,22 @@ from flowweave.modules.tasks.application.service import (
 from flowweave.shared.models import BackgroundTask, FlowDefinition, TaskState
 
 
+def _run_worker_until(worker, predicate, *, max_steps: int = 12) -> None:
+    for _ in range(max_steps):
+        if predicate():
+            return
+        assert worker._run_once_sync() is True
+    assert predicate()
+
+
+def _sandbox_desired_state(db_session_factory, sandbox_id: str) -> str | None:
+    from flowweave.shared.models import ManagedSandbox
+
+    with db_session_factory() as db:
+        sandbox = db.get(ManagedSandbox, sandbox_id)
+        return sandbox.desired_state if sandbox is not None else None
+
+
 def test_task_lease_generation_fences_late_worker(db_session_factory):
     with db_session_factory() as db:
         task = enqueue(
@@ -427,8 +443,13 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
     assert queued["runtime_job_id"] is None
 
     assert worker._run_once_sync() is True  # runtime start
-    assert worker._run_once_sync() is True  # runtime poll/result
-    assert worker._run_once_sync() is True  # END gates
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()["node_runs"][0][
+            "attempts"
+        ][0]["state"]
+        == "WAITING_ACCEPTANCE",
+    )
     finished = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
     attempt = finished["node_runs"][0]["attempts"][0]
     assert attempt["state"] == "WAITING_ACCEPTANCE"
@@ -441,15 +462,14 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
             db.scalars(select(BackgroundTask.task_type).order_by(BackgroundTask.created_at))
         )
         states = list(db.scalars(select(BackgroundTask.state)))
-    assert types == [
+    assert types[:4] == [
         "CLEANUP_CAPABILITY_IMPORT",
         "EVALUATE_READINESS",
         "RUN_GATE_POLICY",
         "START_RUNTIME",
-        "POLL_RUNTIME",
-        "RUN_GATE_POLICY",
     ]
-    assert states.count(TaskState.SUCCEEDED) == 5
+    assert {"POLL_RUNTIME", "WAIT_RUNTIME_WAKEUP", "RUN_GATE_POLICY"}.issubset(types)
+    assert states.count(TaskState.SUCCEEDED) >= 5
     assert states.count(TaskState.PENDING) == 1
 
 
@@ -1448,8 +1468,13 @@ def test_cancelled_run_stops_started_runtime_through_worker(
     assert cancelled["state"] == "CANCELLED"
     assert cancelled["node_runs"][0]["attempts"][0]["runtime_phase"] == "CANCELLING"
 
-    assert worker._run_once_sync() is True  # stale poll becomes a no-op
-    assert worker._run_once_sync() is True  # CANCEL_RUNTIME
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()["node_runs"][0][
+            "attempts"
+        ][0]["runtime_phase"]
+        == "CANCELLED",
+    )
     final = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
     assert final["node_runs"][0]["attempts"][0]["runtime_phase"] == "CANCELLED"
     assert worker_container.runtime.inspect(handle).status == "CANCELLED"
@@ -1516,8 +1541,13 @@ def test_cancel_attempt_stops_only_current_node_runtime(
     assert after_command["state"] != "CANCELLED"
     assert after_command["node_runs"][0]["state"] == "CANCELLED"
 
-    assert worker._run_once_sync() is True  # stale POLL_RUNTIME
-    assert worker._run_once_sync() is True  # CANCEL_RUNTIME
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()["node_runs"][0][
+            "attempts"
+        ][0]["runtime_phase"]
+        == "CANCELLED",
+    )
     final_attempt = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()["node_runs"][0][
         "attempts"
     ][0]
@@ -1571,8 +1601,13 @@ def test_shared_runtime_parent_interrupt_does_not_claim_inflight_task_cancelled(
         headers={"Idempotency-Key": "cancel-shared-inflight-task"},
     )
     assert cancelled.status_code == 200, cancelled.text
-    assert worker._run_once_sync() is True  # stale POLL_RUNTIME
-    assert worker._run_once_sync() is True  # CANCEL_RUNTIME
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
+            0
+        ]["runtime_phase"]
+        == "CANCEL_FAILED",
+    )
 
     final = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
     final_attempt = final["node_runs"][0]["attempts"][0]
@@ -1658,8 +1693,13 @@ def test_shared_runtime_cancel_recovery_waits_for_late_formal_task_usage(
         headers={"Idempotency-Key": "cancel-before-late-task-observation"},
     )
     assert cancelled.status_code == 200, cancelled.text
-    assert worker._run_once_sync() is True  # stale POLL_RUNTIME
-    assert worker._run_once_sync() is True  # initial CANCEL_RUNTIME
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
+            0
+        ]["runtime_phase"]
+        == "CANCEL_FAILED",
+    )
 
     failed = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
     assert failed["runtime_phase"] == "CANCEL_FAILED"
@@ -1937,7 +1977,13 @@ def test_managed_runtime_cancel_cleanup_mode_survives_worker_restart(
         recovered.available_at = datetime.now(UTC)
         db.commit()
 
-    assert worker._run_once_sync() is True
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
+            0
+        ]["runtime_phase"]
+        == "CANCELLED",
+    )
     final = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
     assert final["runtime_phase"] == "CANCELLED"
     assert final["error_code"] is None
@@ -2019,8 +2065,16 @@ def test_managed_runtime_inflight_task_waits_for_physical_sandbox_deletion(
         headers={"Idempotency-Key": "cancel-managed-inflight-task"},
     )
     assert cancelled.status_code == 200, cancelled.text
-    assert worker._run_once_sync() is True  # stale POLL_RUNTIME
-    assert worker._run_once_sync() is True  # CANCEL_RUNTIME -> retry until deletion
+    _run_worker_until(
+        worker,
+        lambda: (
+            worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0][
+                "runtime_phase"
+            ]
+            == "CANCELLING"
+            and _sandbox_desired_state(db_session_factory, sandbox_id) == "DELETED"
+        ),
+    )
 
     with db_session_factory() as db:
         attempt_row = db.get(NodeAttempt, attempt_id)

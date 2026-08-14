@@ -7,7 +7,6 @@ import re
 import sys
 from pathlib import Path
 
-
 TOP_LEVEL_RE = re.compile(
     r"^### (?P<title>T\d+ .+?) — (?P<status>PENDING|IN_PROGRESS|PAUSED|IMPLEMENTED|COMPLETE|SKIP)$",
     re.MULTILINE,
@@ -85,8 +84,17 @@ def main() -> int:
 
     top_levels = list(TOP_LEVEL_RE.finditer(task_text))
     in_progress = [match for match in top_levels if match["status"] == "IN_PROGRESS"]
-    if len(in_progress) != 1:
-        fail(errors, f"顶层 IN_PROGRESS 必须恰好一个，当前为 {len(in_progress)} 个")
+    terminal_state = (
+        bool(top_levels)
+        and not in_progress
+        and all(match["status"] in {"COMPLETE", "SKIP"} for match in top_levels)
+    )
+    if len(in_progress) != 1 and not terminal_state:
+        fail(
+            errors,
+            f"执行中必须恰好一个顶层 IN_PROGRESS；终态必须全部 COMPLETE/SKIP，"
+            f"当前 IN_PROGRESS 为 {len(in_progress)} 个",
+        )
 
     atomic_matches = list(ATOMIC_RE.finditer(task_text))
     atomic_ids = [match["id"] for match in atomic_matches]
@@ -95,8 +103,10 @@ def main() -> int:
         fail(errors, f"原子任务编号重复：{', '.join(duplicates)}")
 
     current = [match for match in atomic_matches if match["status"] == "CURRENT"]
-    if not current:
+    if not current and not terminal_state:
         fail(errors, "当前执行批次必须至少包含一个 CURRENT 任务")
+    if current and terminal_state:
+        fail(errors, "全部顶层任务完成后不得保留 CURRENT 任务")
 
     batch_line = CURRENT_BATCH_LINE_RE.search(task_text)
     batch_ids = (
@@ -107,11 +117,13 @@ def main() -> int:
     current_ids = [match["id"] for match in current]
     if batch_line is None:
         fail(errors, "文件顶部缺少“当前执行批次”指针")
-    elif not batch_ids:
+    elif terminal_state and batch_line["items"].strip() != "无。":
+        fail(errors, "全部顶层任务完成后当前执行批次必须为“无。”")
+    elif not terminal_state and not batch_ids:
         fail(errors, "当前执行批次至少需要一个任务编号")
-    elif len(batch_ids) != len(set(batch_ids)):
+    elif not terminal_state and len(batch_ids) != len(set(batch_ids)):
         fail(errors, "当前执行批次包含重复任务编号")
-    elif set(batch_ids) != set(current_ids):
+    elif not terminal_state and set(batch_ids) != set(current_ids):
         fail(
             errors,
             f"顶部执行批次 {batch_ids} 与 CURRENT {current_ids} 不一致",
@@ -156,10 +168,11 @@ def main() -> int:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
+    top_level = in_progress[0]["title"] if in_progress else "COMPLETE"
     print(
         "PASS: "
-        f"top_level={in_progress[0]['title']}; "
-        f"current_batch={','.join(current_ids)}; "
+        f"top_level={top_level}; "
+        f"current_batch={','.join(current_ids) or 'none'}; "
         f"atomic_tasks={len(atomic_matches)}"
     )
     return 0

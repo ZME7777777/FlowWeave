@@ -814,11 +814,13 @@ GET            /api/v1/runtime-tools
 
 任何为了短期接通而新增的提示词协议，都必须有对应的正式协议迁移计划和删除条件。
 
-### T8 产品收口状态
+### T9 最终验证状态
 
-T8 已完成实现门禁：固定 Marketplace 目录浏览与双层 provenance、Tool Policy 拒绝原因、Profile
+T8 已完成实现与 T9 验收：固定 Marketplace 目录浏览与双层 provenance、Tool Policy 拒绝原因、Profile
 版本差异/绑定/新 Snapshot 激活、Fork/Runtime HEAD、Task usage、WebSocket/REST 恢复、Critic/Goal
 预算与只读 `ask_agent` 已进入产品 UI 和 98-path OpenAPI/前端契约。Browser、ACP、IDE/Desktop、
 直接 Runtime API、Navigate 与父级 Trace 继续保持既有 `SKIP`；MCP Tool schema 和子 Agent 单 Task
-控制继续为 `UPSTREAM_BLOCKED`。T9 尚未启动，生产 build、真实 Runtime、恢复、安全和 E2E 证据
-完成前不将这些实现标为 `COMPLETE`。
+控制继续为 `UPSTREAM_BLOCKED`。T9 已通过生产 build、平台 449 项全量测试、迁移矩阵、Compose/
+平台镜像安全检查、Sandbox Controller Python/JavaScript smoke、固定 OpenHands 1.42.0 契约与真实
+smoke、恢复/安全矩阵以及 5 项隔离产品 E2E；T1–T9 已统一为
+`COMPLETE`，当前无执行批次。

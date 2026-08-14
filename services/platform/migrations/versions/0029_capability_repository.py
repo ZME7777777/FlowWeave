@@ -197,6 +197,7 @@ def upgrade() -> None:
         )
     ).mappings()
     version_by_source: dict[tuple[str, int], str] = {}
+    version_by_legacy_identity: dict[tuple[str, str, str], str] = {}
     version_numbers: defaultdict[tuple[str, str], int] = defaultdict(int)
     seen_blobs: set[str] = set()
     seen_packages: set[tuple[str, str]] = set()
@@ -287,9 +288,25 @@ def upgrade() -> None:
                         {"type": capability_type, "key": capability_key},
                     ).scalar_one()
                 )
+            digest = _digest(capability_type, capability_key, content_hash, normalized)
+            existing_version_id = bind.execute(
+                sa.text("SELECT id FROM capability_versions WHERE digest = :digest"),
+                {"digest": digest},
+            ).scalar_one_or_none()
+            if existing_version_id is not None:
+                # A digest is the immutable identity of a Capability Version.
+                # Historical imports could commit the same content more than
+                # once, so retain the first Version as canonical provenance and
+                # map every legacy source tuple to it for reference backfill.
+                version_id = str(existing_version_id)
+                version_by_source[(str(imported["id"]), position)] = version_id
+                version_by_legacy_identity[
+                    (str(imported["id"]), capability_type, capability_key)
+                ] = version_id
+                continue
+
             version_numbers[identity] += 1
             version_id = _id("version", f"{imported['id']}:{position}")
-            digest = _digest(capability_type, capability_key, content_hash, normalized)
             state = "RETIRED" if raw_entry.get("deleted_at") else "PUBLISHED"
             bind.execute(
                 sa.text(
@@ -325,6 +342,9 @@ def upgrade() -> None:
                 ).scalar_one()
             )
             version_by_source[(str(imported["id"]), position)] = version_id
+            version_by_legacy_identity[(str(imported["id"]), capability_type, capability_key)] = (
+                version_id
+            )
             dependencies = (
                 normalized.get("dependencies", {}) if isinstance(normalized, dict) else {}
             )
@@ -382,27 +402,18 @@ def upgrade() -> None:
             legacy_import, raw_position = legacy_id.rsplit(":", 1)
             import_id = import_id or legacy_import
             position = int(raw_position)
-        if isinstance(import_id, str) and position is None:
-            row = bind.execute(
-                sa.text(
-                    "SELECT source_position FROM capability_versions v "
-                    "JOIN capability_packages p ON p.id = v.package_id "
-                    "WHERE v.source_import_id = :import_id "
-                    "AND p.capability_type = :type AND p.capability_key = :key "
-                    "ORDER BY v.version_no DESC LIMIT 1"
-                ),
-                {
-                    "import_id": import_id,
-                    "type": ref["capability_type"],
-                    "key": ref["capability_key"],
-                },
-            ).first()
-            position = int(row[0]) if row and row[0] is not None else None
-        version_id = (
-            version_by_source.get((str(import_id), position))
-            if isinstance(import_id, str) and position is not None
-            else None
-        )
+        version_id: str | None = None
+        if isinstance(import_id, str):
+            if position is not None:
+                version_id = version_by_source.get((import_id, position))
+            else:
+                # Some pre-0029 node refs retained only import_id plus the
+                # Capability identity. Resolve those through the migration's
+                # complete source map rather than canonical Version provenance:
+                # duplicate imports intentionally share one immutable Version.
+                version_id = version_by_legacy_identity.get(
+                    (import_id, str(ref["capability_type"]), str(ref["capability_key"]))
+                )
         if version_id is None:
             raise RuntimeError(f"Cannot migrate node capability reference {ref['id']}")
         version = (

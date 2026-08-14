@@ -60,6 +60,14 @@ from flowweave.shared.schemas import ConversationAskAgentWrite, ConversationGoal
 from flowweave.shared.settings import settings_context
 
 
+def _run_worker_until(worker: TaskWorker, predicate, *, max_steps: int = 12) -> None:
+    for _ in range(max_steps):
+        if predicate():
+            return
+        assert worker._run_once_sync() is True
+    assert predicate()
+
+
 def test_runtime_message_payload_uses_native_skill_trigger_without_prompt_directive():
     content = {
         "parts": [{"type": "text", "text": "$test-skill review this"}],
@@ -1266,22 +1274,20 @@ def test_conversation_fork_only_accepts_agent_reply_and_copies_history(client, d
 
     forked = client.post(
         f"/api/v1/agent-messages/{first_agent.id}/fork",
-        json={"expected_conversation_version": version},
+        json={
+            "expected_conversation_version": version,
+            "fork_kind": "SEMANTIC",
+            "acknowledge_semantic_state_loss": True,
+        },
         headers={"Idempotency-Key": "fork-at-first-answer"},
     )
     assert forked.status_code == 202, forked.text
     fork_messages = client.get(f"/api/v1/agent-conversations/{forked.json()['id']}/messages").json()
-    assert [message["source"] for message in fork_messages] == [
-        "PROGRAM",
-        "HUMAN",
-        "AGENT",
-    ]
+    assert [message["source"] for message in fork_messages] == ["PROGRAM"]
     assert [message["content"]["parts"][0]["text"] for message in fork_messages] == [
-        "已从既有会话创建上下文分支。",
-        "第一问",
-        "第一答",
+        "已创建显式语义分支；仅复制可见文本，不继承 Runtime 状态。",
     ]
-    assert forked.json()["context_baseline"]["fork"]["history"] == [
+    assert forked.json()["context_baseline"]["semantic_fork"]["history"] == [
         {"role": "user", "content": "第一问"},
         {"role": "assistant", "content": "第一答"},
     ]
@@ -1550,7 +1556,7 @@ def test_conversation_recovery_requeues_missing_poll_with_extended_retries(
         conversation.runtime_job_id = "env-chat:test-runtime"
         conversation.runtime_conversation_id = "runtime-conversation-recover-poll"
         db.flush()
-        assert recover_conversation_tasks(db) == 1
+        assert recover_conversation_tasks(db) == 3
         recovered = db.scalar(
             select(BackgroundTask).where(
                 BackgroundTask.aggregate_id == conversation.id,
@@ -1560,6 +1566,17 @@ def test_conversation_recovery_requeues_missing_poll_with_extended_retries(
         )
         assert recovered is not None
         assert recovered.max_attempts == 10
+        wakeup_channels = {
+            str((task.payload_json or {}).get("channel"))
+            for task in db.scalars(
+                select(BackgroundTask).where(
+                    BackgroundTask.aggregate_id == conversation.id,
+                    BackgroundTask.task_type == "WAIT_CONVERSATION_WAKEUP",
+                    BackgroundTask.state == "PENDING",
+                )
+            )
+        }
+        assert wakeup_channels == {"CONVERSATION", "BASH"}
         db.rollback()
 
 
@@ -1757,8 +1774,13 @@ def test_run_environment_is_used_by_execution_and_collaboration_runtime(
         assert automatic["connection_status"]["phase"] == "WAITING_WORKER"
         assert worker._run_once_sync() is True  # START_RUNTIME
         assert runtime.execution_requests[0].environment_image == digest
-        assert worker._run_once_sync() is True  # POLL_RUNTIME
-        assert worker._run_once_sync() is True  # empty END gates
+        _run_worker_until(
+            worker,
+            lambda: worker_client.get(f"/api/v1/flow-runs/{run['id']}").json()["node_runs"][0][
+                "attempts"
+            ][0]["state"]
+            == "WAITING_ACCEPTANCE",
+        )
 
         current = worker_client.get(f"/api/v1/flow-runs/{run['id']}").json()
         attempt = current["node_runs"][0]["attempts"][0]
@@ -1771,7 +1793,7 @@ def test_run_environment_is_used_by_execution_and_collaboration_runtime(
             headers={"Idempotency-Key": "environment-collaboration-start"},
         )
         assert conversation.status_code == 202, conversation.text
-        assert worker._run_once_sync() is True  # CREATE_CONVERSATION
+        _run_worker_until(worker, lambda: bool(runtime.collaboration_requests))
         assert runtime.collaboration_requests[0].environment_image == digest
         binding = runtime.collaboration_requests[0].bindings[0]
         assert binding["display_name"] == "需求"
@@ -2001,8 +2023,13 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     )
     assert confirmed.status_code == 200, confirmed.text
     assert worker._run_once_sync() is True  # START_RUNTIME
-    assert worker._run_once_sync() is True  # POLL_RUNTIME
-    assert worker._run_once_sync() is True  # empty END gates
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
+            0
+        ]["state"]
+        == "WAITING_ACCEPTANCE",
+    )
     run = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
     attempt = run["node_runs"][0]["attempts"][0]
     assert attempt["state"] == "WAITING_ACCEPTANCE"
@@ -2038,7 +2065,13 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
         )
         assert recovered is not None
         assert recovered.idempotency_key.startswith("recovery:create-conversation:")
-    assert worker._run_once_sync() is True
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()[
+            "state"
+        ]
+        == "IDLE",
+    )
 
     conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert conversation["state"] == "IDLE"
@@ -2078,7 +2111,13 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert duplicate.status_code == 202, duplicate.text
     assert duplicate.json()["id"] == first.json()["id"]
 
-    assert worker._run_once_sync() is True  # DELIVER_CONVERSATION_MESSAGE
+    _run_worker_until(
+        worker,
+        lambda: len(
+            worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}/messages").json()
+        )
+        == 3,
+    )
     messages = worker_client.get(
         f"/api/v1/agent-conversations/{conversation['id']}/messages"
     ).json()
@@ -2117,7 +2156,13 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
             )
         )
         assert stop_task is not None
-    assert worker._run_once_sync() is True
+    _run_worker_until(
+        worker,
+        lambda: worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()[
+            "state"
+        ]
+        == "IDLE",
+    )
     stopped = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert stopped["state"] == "IDLE"
     assert worker_container.runtime.inspect(runtime_handle).status == "CANCELLED"
@@ -2207,7 +2252,15 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     assert steered.json()["delivery_state"] == "DELIVERING"
     assert steered.json()["delivery_mode"] == "INTERRUPT_AND_RESUME"
     assert steered.json()["content"]["presentation"] == "chat"
-    assert worker._run_once_sync() is True
+    _run_worker_until(
+        worker,
+        lambda: any(
+            message["id"] == queued_message["id"] and message["delivery_state"] == "DELIVERED"
+            for message in worker_client.get(
+                f"/api/v1/agent-conversations/{conversation['id']}/messages"
+            ).json()
+        ),
+    )
 
     messages = worker_client.get(
         f"/api/v1/agent-conversations/{conversation['id']}/messages"
@@ -2217,11 +2270,13 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     )
     assert cancelled_message["delivery_state"] == "CANCELLED"
     assert cancelled_message["content"]["presentation"] == "cancelled-queue"
-    assert messages[-2]["source"] == "HUMAN"
-    assert messages[-2]["delivery_state"] == "DELIVERED"
-    assert messages[-2]["content"]["presentation"] == "chat"
-    assert messages[-1]["source"] == "AGENT"
-    assert "优先检查并发安全" in messages[-1]["content"]["parts"][0]["text"]
+    steered_message = next(message for message in messages if message["id"] == queued_message["id"])
+    assert steered_message["source"] == "HUMAN"
+    assert steered_message["delivery_state"] == "DELIVERED"
+    assert steered_message["content"]["presentation"] == "chat"
+    steered_index = messages.index(steered_message)
+    assert messages[steered_index + 1]["source"] == "AGENT"
+    assert "优先检查并发安全" in messages[steered_index + 1]["content"]["parts"][0]["text"]
 
     conversation = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     attachment_bytes = b"\x89PNG\r\n\x1a\nflowweave-chat-image"
@@ -2255,7 +2310,15 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
     )
     assert downloaded.status_code == 200
     assert downloaded.content == attachment_bytes
-    assert worker._run_once_sync() is True
+    _run_worker_until(
+        worker,
+        lambda: any(
+            message["id"] == attachment_message["id"] and message["delivery_state"] == "DELIVERED"
+            for message in worker_client.get(
+                f"/api/v1/agent-conversations/{conversation['id']}/messages"
+            ).json()
+        ),
+    )
     messages = worker_client.get(
         f"/api/v1/agent-conversations/{conversation['id']}/messages"
     ).json()
@@ -2291,7 +2354,19 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
             )
         )
         db.commit()
-    assert worker._run_once_sync() is True  # recreate missing Runtime conversation
+    scheduled = None
+    for _ in range(12):
+        with db_session_factory() as db:
+            scheduled = db.scalar(
+                select(BackgroundTask).where(
+                    BackgroundTask.aggregate_id == recovery.json()["id"],
+                    BackgroundTask.task_type == "DELIVER_CONVERSATION_MESSAGE",
+                    BackgroundTask.state == "PENDING",
+                )
+            )
+        if scheduled is not None:
+            break
+        assert worker._run_once_sync() is True
     with db_session_factory() as db:
         scheduled = db.scalar(
             select(BackgroundTask).where(
@@ -2304,7 +2379,15 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
         assert scheduled.idempotency_key.startswith(
             f"deliver-conversation-message:{recovery.json()['id']}:v"
         )
-    assert worker._run_once_sync() is True  # deliver queued message
+    _run_worker_until(
+        worker,
+        lambda: any(
+            message["id"] == recovery.json()["id"] and message["delivery_state"] == "DELIVERED"
+            for message in worker_client.get(
+                f"/api/v1/agent-conversations/{conversation['id']}/messages"
+            ).json()
+        ),
+    )
     recovered = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert recovered["state"] == "IDLE"
     runtime_handle = RuntimeHandle(
@@ -2327,7 +2410,19 @@ def test_human_conversation_recovers_creation_and_sends_idempotently(
             )
         )
         assert cleanup is not None
-    assert worker._run_once_sync() is True
+    _run_worker_until(
+        worker,
+        lambda: (
+            (
+                snapshot := worker_client.get(
+                    f"/api/v1/agent-conversations/{conversation['id']}"
+                ).json()
+            )["state"]
+            == "READ_ONLY"
+            and snapshot["runtime_job_id"] is None
+            and snapshot["runtime_conversation_id"] is None
+        ),
+    )
     cleaned = worker_client.get(f"/api/v1/agent-conversations/{conversation['id']}").json()
     assert cleaned["state"] == "READ_ONLY"
     assert cleaned["runtime_job_id"] is None

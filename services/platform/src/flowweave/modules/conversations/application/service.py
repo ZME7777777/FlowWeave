@@ -338,7 +338,9 @@ def _message_text(content: dict[str, Any]) -> str:
     return "\n".join(str(part.get("text", "")) for part in parts if part.get("type") == "text")
 
 
-def _runtime_message_payload(content: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+def _runtime_message_payload(
+    content: dict[str, Any], *, workspace_root: Path | None = None
+) -> tuple[str, tuple[str, ...]]:
     text = _message_text(content)
     raw_refs = content.get("capability_refs")
     refs = (
@@ -382,8 +384,6 @@ def _runtime_message_payload(content: dict[str, Any]) -> tuple[str, tuple[str, .
 
     attachment_lines: list[str] = []
     image_urls: list[str] = []
-    settings = get_settings()
-    workspace_root = settings.workspace_root.resolve()
     for raw in cast(list[object], content.get("parts") or []):
         if not isinstance(raw, dict):
             continue
@@ -395,9 +395,11 @@ def _runtime_message_payload(content: dict[str, Any]) -> tuple[str, tuple[str, .
         runtime_path = str(part.get("runtime_path") or "")
         attachment_lines.append(f"- {name}（{media_type}）：{runtime_path}")
         storage_path = Path(str(part.get("storage_path") or ""))
-        host_path = (workspace_root / storage_path).resolve()
+        host_path = (workspace_root / storage_path).resolve() if workspace_root else None
         if (
-            media_type in _WORKSPACE_IMAGE_TYPES
+            host_path is not None
+            and workspace_root is not None
+            and media_type in _WORKSPACE_IMAGE_TYPES
             and host_path.is_relative_to(workspace_root)
             and host_path.is_file()
             and host_path.stat().st_size <= _MESSAGE_ATTACHMENT_MAX_BYTES
@@ -5663,7 +5665,9 @@ def process_deliver_message(
     steering = message.delivery_mode == DeliveryMode.INTERRUPT_AND_RESUME
     db.flush()
     db.rollback()
-    content, image_urls = _runtime_message_payload(content_json)
+    content, image_urls = _runtime_message_payload(
+        content_json, workspace_root=get_settings().workspace_root.resolve()
+    )
     try:
         runtime = get_runtime()
         if steering:

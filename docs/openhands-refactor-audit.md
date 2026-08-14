@@ -13,7 +13,7 @@
 | 证据 | 复现方式 | 证明范围 |
 |---|---|---|
 | OpenHands 镜像契约 | `make openhands-contract-check` | 固定目标归档和源码 provenance；四个 OpenHands 包均从校验后的源码构建且为 1.42.0；关键 REST 路由、请求字段、默认值、Task/Fork/Condenser 事件类型存在 |
-| 平台适配器测试 | `cd services/platform && uv run pytest -q tests/test_openhands.py` | FlowWeave 对 OpenHands 请求、事件、确认、压缩和游标的翻译；目标源码适配的完整回归留到 T9 |
+| 平台适配器测试 | `cd services/platform && uv run pytest -q tests/test_openhands.py` | FlowWeave 对 OpenHands 请求、事件、确认、压缩和游标的翻译；T9 平台全量 449 项已通过 |
 | PostgreSQL 投影测试 | `cd services/platform && uv run pytest -q tests/test_conversations.py tests/integration/test_postgres_baseline.py` | 控制面投影、幂等、CAS、迁移和恢复 |
 | 静态边界 | `cd services/platform && uv run pytest -q tests/architecture/test_boundaries.py` | 模块依赖、固定镜像和锁文件约束 |
 
@@ -100,21 +100,21 @@ Marketplace/最新版本决定生产能力；Secret 不得进入 Snapshot、普�
 | Condenser | 配置冻结、1.40.0 映射、事件投影、手动命令、崩溃重放与真实 smoke | 已接入 | 保持重放测试与固定镜像 E2E |
 | 耐久事件 | REST page cursor、投影幂等、通知丢失和 anchor 消失补偿；T6.13–T6.14 新增 Worker lease 独占的 Conversation/Bash WS 首帧认证唤醒，Conversation 只加速 REST poll，Bash 由正式 REST `timestamp__gte` 和稳定 `(timestamp,event_id)` 补偿；直接 Bash 仅投影脱敏 identity 并标记 `HUMAN_OR_SYSTEM`，不保存 stdout/stderr | 已接入 | T9 保持断线、丢帧、重复、多 Worker 与 Sandbox 回收无缺失无重复 |
 | Runtime Agent Spec | Snapshot 冻结 Version/digest 并编译单一 `RuntimeAgentSpec`；Adapter 不补隐式能力 | 已接入 | 保持重放、漂移拒绝与固定镜像契约 |
-| Tool Policy/Catalog | schema v2 不可变 Policy 冻结固定 1.42.0/source commit/catalog digest、15 项正式 Tool、create 参数边界、读写/控制分类、确认和并发契约；未知/禁用 Tool、动态 module、过时策略均 fail closed；Web 编辑器展示有效治理与 Browser policy-disabled 原因，不提供无效开关 | 已接入 | T9 执行 Workspace 竞争与真实 Runtime 回归；MCP schema 仍等待正式接口 |
+| Tool Policy/Catalog | schema v2 不可变 Policy 冻结固定 1.42.0/source commit/catalog digest、15 项正式 Tool、create 参数边界、读写/控制分类、确认和并发契约；未知/禁用 Tool、动态 module、过时策略均 fail closed；Web 编辑器展示有效治理与 Browser policy-disabled 原因，不提供无效开关 | 已接入 | T9 安全、恢复与真实 Runtime 回归通过；MCP schema 仍等待正式接口 |
 | Capability Version | Package/Version/Blob/Dependency/Validation 已上线；Import 仅作来源审计 | 已接入 | 完成剩余能力类型和 Secret Reference 治理 |
 | Skill | 不可变内容以 AgentSkills 进入 `AgentContext`；结构化选择映射为正式 `KeywordTrigger`，原生 `activated_skills` 与 `InvokeSkillAction` / `InvokeSkillObservation` 已投影；系统提示不再披露正文、目录或脚本旁路 | 已接入 | 保持固定镜像 activation/invoke 契约与 T9 真服务回归 |
 | Plugin | 不可变 Version/file digest、只读物化、原生 `plugins`；ambient 与动态加载旁路已关闭；固定 Marketplace 目录可浏览并选择条目，目录 commit、实际 Plugin commit 与内容 digest 分层展示和冻结；发布前不安装，生产仍只加载本地不可变对象 | 已接入 | T9 保持正式 Registry/Loader、来源冻结与供应链回归 |
 | MCP | 原生执行已接；指定 Environment Version 的受管 Runtime 通过正式 `/api/mcp/test` 投影连接结果、Tool 名称和脱敏只读试调用；0038 保存验证审计；0039 以加密 Secret Reference 闭环正式 OAuth state 往返、刷新 CAS、撤销、脱敏审计、完整性/泄漏拒绝与环境引用保护；0040 以耐久 job、双版本 fencing 和 post-commit 清理接入正式异步首次浏览器授权；正式接口不提供 Tool schema，平台不伪造 | 部分 | 未来仅在 OpenHands 正式接口提供 schema 后补投影 |
 | Hook | 固定 OpenHands 1.42.0/source commit 的 Hook Set schema v1、六类正式事件、脚本清单/hash、只读物化和 `runtime_mutation=FORBIDDEN` 随不可变 Version/Manifest 冻结；旧版本和治理元数据漂移 fail closed，不接运行时全局 Hooks API | 已接入 | T9 保持真实 Hook 加载、脚本漂移和权限回归 |
 | 子 Agent | Agent Definition/Task Tool 原生请求与 `TaskAction`/`TaskObservation` 耐久投影；旧控制 JSON 执行器已删除；usage/cost、预算、UI、可见性恢复、取消 fail-closed、正式事件重新对账和受管 Runtime 耐久清理已闭环；目标 1.42.0 镜像已确认单 Task 取消、异步确认和重启 resume 三项正式契约仍缺失 | 部分 | 保持共享 Runtime 重新对账、受管 Runtime 整体清理和 `never_confirm` 限制；未来能力需独立授权 OpenHands 二开，不在 FlowWeave 伪造协议 |
-| Fork | 同 Runtime/Snapshot 使用正式 `/fork`，冻结源 HEAD/Event、目标 identity、metrics 处置并耐久恢复；Semantic Fork 是必须显式选择并确认六类 Runtime 状态损失的可见文本副本，不会由原生 Fork 静默降级，审计保存来源身份与损失清单 | 部分 | 行为、恢复竞态与真实 Runtime 验收留到 T9 |
-| Memory | Policy Version、Snapshot 固定 source_refs、0042–0044 内容/治理/保留状态机及隔离物化已闭环。启动时只解析当前 Snapshot hold 覆盖且 `ACTIVE + APPROVED + PASSED`、`version_id + digest` 完全匹配的 Version；ATTEMPT/CONVERSATION scope 独立授权，USER/PROJECT tier 进入 owner 隔离只读索引，并由受管 Docker bind/named-volume 子路径挂载到 OpenHands 正式用户/项目 Memory 路径。正文不进入普通 DTO/Manifest/事件/审计，mock、非 Docker、缺 Environment、路径/digest/UTF-8 漂移均 fail closed；Sandbox 物理删除后才清理源目录。目标 1.42.0 原生单开关仍不可分离 tier 且读取失败静默降级 | 已接入 | T9 保持真实受管 Runtime 加载、删除恢复与泄漏回归 |
+| Fork | 同 Runtime/Snapshot 使用正式 `/fork`，冻结源 HEAD/Event、目标 identity、metrics 处置并耐久恢复；Semantic Fork 是必须显式选择并确认六类 Runtime 状态损失的可见文本副本，不会由原生 Fork 静默降级，审计保存来源身份与损失清单 | 部分 | T9 行为、恢复竞态与固定 Runtime 契约回归通过；Navigate 仍为 `SKIP` |
+| Memory | Policy Version、Snapshot 固定 source_refs、0042–0044 内容/治理/保留状态机及隔离物化已闭环。启动时只解析当前 Snapshot hold 覆盖且 `ACTIVE + APPROVED + PASSED`、`version_id + digest` 完全匹配的 Version；ATTEMPT/CONVERSATION scope 独立授权，USER/PROJECT tier 进入 owner 隔离只读索引，并由受管 Docker bind/named-volume 子路径挂载到 OpenHands 正式用户/项目 Memory 路径。正文不进入普通 DTO/Manifest/事件/审计，mock、非 Docker、缺 Environment、路径/digest/UTF-8 漂移均 fail closed；Sandbox 物理删除后才清理源目录。目标 1.42.0 原生单开关仍不可分离 tier 且读取失败静默降级 | 已接入 | T9 加载、删除恢复与泄漏回归通过；上游双 tier 单开关限制继续 fail closed |
 | 成本/Trace | Task 子 Agent 已有 `(conversation_id, task_id)` 累计账本、预算审计与 UI；父 Conversation/Run/Attempt 全量账本和 Trace 未实现，T6.09–T6.12 已由用户选择跳过 | 部分 | 当前主链不再实现；仅保留现有 Task 子 Agent usage 能力 |
 | Browser / 直接 Bash | 原生 Tool 与 Bash 事件身份基础存在；T6.17–T6.19、T7.09 已标记为 `SKIP` | 缺失 / SKIP | 当前主链不实现 Browser 或直接 Bash 操作者通道 |
-| Critic/Goal | Critic Policy Version 冻结评分阈值/最多 2 次精炼并映射 `AgentFinishedCritic`；正式 Action/Message `critic_result` 以事件 ID 幂等投影得分。Goal 正式 start/stop/resume、`ConversationStateUpdateEvent(key="goal")`、轮次/Token/金额预算、人工操作和 dispatch/recovery fence 已耐久化；活跃 Goal 期间普通消息 fail closed，END Gate 仍独立。内置 Critic 无独立 LLM 调用，固定契约没有 critic 专用 usage bucket，未伪造费用 | 已接入 | T9 验收精炼/Goal 行为、恢复竞态、预算和真实 Runtime；若未来启用 APIBasedCritic，须先获得正式 usage 归属契约 |
-| ask_agent | 正式无状态 `POST .../ask_agent` 由后台调用；诊断实体冻结 actor、问题 digest/长度、超时、输出分类和 `ask-agent-llm` usage 增量，结果按 actor 读取且不写 Conversation 消息/事件树；完成/失败清除原问题，无上游幂等键时用 RUNNING fence 避免未知结果重复收费 | 已接入 | T9 验收权限隔离、崩溃恢复、费用增量及 Conversation state/event tree 不变 |
+| Critic/Goal | Critic Policy Version 冻结评分阈值/最多 2 次精炼并映射 `AgentFinishedCritic`；正式 Action/Message `critic_result` 以事件 ID 幂等投影得分。Goal 正式 start/stop/resume、`ConversationStateUpdateEvent(key="goal")`、轮次/Token/金额预算、人工操作和 dispatch/recovery fence 已耐久化；活跃 Goal 期间普通消息 fail closed，END Gate 仍独立。内置 Critic 无独立 LLM 调用，固定契约没有 critic 专用 usage bucket，未伪造费用 | 已接入 | T9 行为、恢复、预算与固定契约回归通过；若未来启用 APIBasedCritic，须先获得正式 usage 归属契约 |
+| ask_agent | 正式无状态 `POST .../ask_agent` 由后台调用；诊断实体冻结 actor、问题 digest/长度、超时、输出分类和 `ask-agent-llm` usage 增量，结果按 actor 读取且不写 Conversation 消息/事件树；完成/失败清除原问题，无上游幂等键时用 RUNNING fence 避免未知结果重复收费 | 已接入 | T9 权限、恢复、费用增量和消息/事件树不变回归通过 |
 | ACP | 当前固定 `Agent`；Codex OAuth 只是 LLM；T7.03–T7.08 已标记为 `SKIP` | 缺失 / SKIP | 当前主链不实现 ACP Agent |
-| Agent Profile | Profile schema v2 的 16 字段兼容矩阵、无 Secret 不可变 Version、追加式修订/复制/退役、固定 Policy UUID、显式 Agent 物化、运行 provenance，以及固定 Version/digest → 新 Snapshot/Attempt 的预览/切换/回滚审计已闭环；Web 可查看版本差异/绑定并显式创建新 Snapshot/Attempt，既有执行不热改 | 已接入 | T9 验收行为、恢复与真实 Runtime provenance |
+| Agent Profile | Profile schema v2 的 16 字段兼容矩阵、无 Secret 不可变 Version、追加式修订/复制/退役、固定 Policy UUID、显式 Agent 物化、运行 provenance，以及固定 Version/digest → 新 Snapshot/Attempt 的预览/切换/回滚审计已闭环；Web 可查看版本差异/绑定并显式创建新 Snapshot/Attempt，既有执行不热改 | 已接入 | T9 行为、恢复与固定 Runtime provenance 回归通过 |
 | IDE/File/Git/Workspace/Trajectory | 未形成受治理产品链；T7.10–T7.15 已标记为 `SKIP` | 缺失 / SKIP | 当前主链不实现这些直接 Runtime API 与 IDE/Desktop 访问链 |
 
 ## 4. 目标模块与端口
@@ -221,14 +221,15 @@ Browser、Agent 工具集与 Tool Policy、原生子 Agent、Skills/Plugins/Mark
 Profile、ACP Agent，以及直接 Bash/File/Git/Workspace/Trajectory Runtime API。正式 OpenHands
 能力缺失时只能在任务清单中登记 `UPSTREAM_BLOCKED`、保持 fail closed 并写明解锁条件。
 
-## 8. 下一条主链
+## 8. 最终状态
 
-T8.01–T8.09 已完成实现门禁并转为 `IMPLEMENTED`：Marketplace 只浏览固定目录并冻结双层
+T8.01–T8.09 已完成实现和 T9 验收并转为 `COMPLETE`：Marketplace 只浏览固定目录并冻结双层
 provenance；Tool Policy、Profile、Fork、Task usage、WebSocket/REST 恢复、Critic/Goal 与
 `ask_agent` 均有与正式 API 对齐的可理解 UI。Browser、ACP、IDE/Desktop、直接 Runtime API、
 Navigate 和父级 Trace 不因状态卡片而视为实现，继续保持既有 `SKIP`；MCP Tool schema 与子 Agent
 单 Task 控制继续保持 `UPSTREAM_BLOCKED` 和 fail closed。
 
-当前没有执行批次。T9 仍为 `PENDING`，只在显式启动后集中运行生产 Web build、平台全量测试、
-迁移矩阵、真实 Runtime/容器 smoke、恢复与安全矩阵以及关键 UI E2E；在这些证据完成前，T1–T8
-保持 `IMPLEMENTED` 而不是 `COMPLETE`。
+T9.01 已完成生产 Web build、平台 449 项全量测试、迁移矩阵、Compose/平台镜像安全检查、
+Sandbox Controller Python/JavaScript smoke、固定 1.42.0 Runtime 契约与真实
+Confirmation/Condenser/Task smoke、恢复与安全矩阵以及 5 项隔离产品 E2E。T1–T9 均为
+`COMPLETE`，当前无执行批次；既有 `SKIP` 和四项 `UPSTREAM_BLOCKED` 继续按原决定保留。

@@ -16,8 +16,11 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 LEGACY_IMPORT_ID = "10000000-0000-4000-8000-000000000001"
+LEGACY_DUPLICATE_IMPORT_ID = "10000000-0000-4000-8000-000000000007"
 LEGACY_ASSET_ID = "10000000-0000-4000-8000-000000000002"
+LEGACY_DUPLICATE_ASSET_ID = "10000000-0000-4000-8000-000000000008"
 LEGACY_REF_ID = "10000000-0000-4000-8000-000000000003"
+LEGACY_DUPLICATE_REF_ID = "10000000-0000-4000-8000-000000000009"
 LEGACY_FLOW_ID = "10000000-0000-4000-8000-000000000004"
 LEGACY_RUN_ID = "10000000-0000-4000-8000-000000000005"
 LEGACY_SNAPSHOT_ID = "10000000-0000-4000-8000-000000000006"
@@ -105,11 +108,15 @@ def insert_legacy_capability_snapshot(connection_url: str) -> None:
         "content_hash": LEGACY_CONTENT_HASH,
         "storage_key": "capability-imports/legacy-skill.zip",
     }
+    snapshot_normalized = {
+        key: value for key, value in normalized.items() if key != "capability_id"
+    }
+    snapshot_normalized["import_id"] = LEGACY_DUPLICATE_IMPORT_ID
     capability = {
-        "capability_id": f"{LEGACY_IMPORT_ID}:0",
+        "capability_id": f"{LEGACY_DUPLICATE_IMPORT_ID}:0",
         "capability_type": "SKILL",
         "capability_key": "legacy-skill",
-        "normalized_config": normalized,
+        "normalized_config": snapshot_normalized,
         "position": 0,
     }
     definition = {
@@ -185,6 +192,15 @@ def insert_legacy_capability_snapshot(connection_url: str) -> None:
             ),
         )
         connection.execute(
+            "INSERT INTO capability_imports "
+            "(id, token_digest, capability_type, filename, content_hash, storage_key, "
+            "byte_size, preview_json, state, expires_at, consumed_at, created_at) "
+            "SELECT %s, %s, capability_type, filename, content_hash, storage_key, "
+            "byte_size, preview_json, state, expires_at, consumed_at + interval '1 second', "
+            "created_at + interval '1 second' FROM capability_imports WHERE id = %s",
+            (LEGACY_DUPLICATE_IMPORT_ID, "d" * 64, LEGACY_IMPORT_ID),
+        )
+        connection.execute(
             "INSERT INTO node_assets "
             "(id, directory_id, name, description, icon_kind, icon_value, "
             "environment_version_id, row_version, deleted_at, created_at, updated_at) "
@@ -192,10 +208,32 @@ def insert_legacy_capability_snapshot(connection_url: str) -> None:
             (LEGACY_ASSET_ID, now, now),
         )
         connection.execute(
+            "INSERT INTO node_assets "
+            "(id, directory_id, name, description, icon_kind, icon_value, "
+            "environment_version_id, row_version, deleted_at, created_at, updated_at) "
+            "VALUES (%s, NULL, 'duplicate legacy node', '', 'LUCIDE', 'bot', NULL, 1, "
+            "NULL, %s, %s)",
+            (LEGACY_DUPLICATE_ASSET_ID, now, now),
+        )
+        connection.execute(
             "INSERT INTO node_capability_refs "
             "(id, node_asset_id, capability_type, capability_key, normalized_config, position) "
             "VALUES (%s, %s, 'SKILL', 'legacy-skill', %s, 0)",
             (LEGACY_REF_ID, LEGACY_ASSET_ID, Jsonb(normalized)),
+        )
+        duplicate_normalized = {
+            key: value for key, value in normalized.items() if key != "capability_id"
+        }
+        duplicate_normalized["import_id"] = LEGACY_DUPLICATE_IMPORT_ID
+        connection.execute(
+            "INSERT INTO node_capability_refs "
+            "(id, node_asset_id, capability_type, capability_key, normalized_config, position) "
+            "VALUES (%s, %s, 'SKILL', 'legacy-skill', %s, 0)",
+            (
+                LEGACY_DUPLICATE_REF_ID,
+                LEGACY_DUPLICATE_ASSET_ID,
+                Jsonb(duplicate_normalized),
+            ),
         )
         connection.execute(
             "INSERT INTO flow_definitions "
@@ -238,6 +276,15 @@ def assert_legacy_capability_snapshot_upgraded(connection_url: str) -> None:
         assert len(version_id) == 36
         assert len(digest) == 64
         assert content_hash == LEGACY_CONTENT_HASH
+        duplicate_ref = connection.execute(
+            "SELECT capability_version_id FROM node_capability_refs WHERE id = %s",
+            (LEGACY_DUPLICATE_REF_ID,),
+        ).fetchone()
+        assert duplicate_ref is not None and str(duplicate_ref[0]) == version_id
+        version_count = connection.execute(
+            "SELECT count(*) FROM capability_versions WHERE digest = %s", (digest,)
+        ).fetchone()
+        assert version_count is not None and int(version_count[0]) == 1
 
         ref = connection.execute(
             "SELECT capability_version_id, normalized_config FROM node_capability_refs "

@@ -23,6 +23,22 @@ def _hash(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _version_digest(
+    capability_type: str,
+    capability_key: str,
+    content_hash: str,
+    config: object,
+) -> str:
+    return _hash(
+        {
+            "capability_type": capability_type,
+            "capability_key": capability_key,
+            "content_hash": content_hash,
+            "normalized_config": config,
+        }
+    )
+
+
 def _version_config(
     bind: sa.Connection,
     raw_capability: dict[object, object],
@@ -62,6 +78,59 @@ def _version_config(
         .mappings()
         .one_or_none()
     )
+    if row is None and len(raw_id) != 36:
+        # Migration 0029 intentionally folds historical imports with the same
+        # immutable digest into one canonical Version. The canonical row keeps
+        # the first import as provenance, so a Snapshot that names a later
+        # duplicate source tuple must resolve through that import's frozen
+        # preview rather than through source_import_id.
+        imported = (
+            bind.execute(
+                sa.text(
+                    "SELECT capability_type, content_hash, preview_json "
+                    "FROM capability_imports WHERE id = :import_id"
+                ),
+                {"import_id": import_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        preview = imported["preview_json"] if imported is not None else None
+        entries = preview.get("capabilities") if isinstance(preview, dict) else None
+        entry = (
+            entries[position]
+            if isinstance(entries, list) and position is not None and position < len(entries)
+            else None
+        )
+        capability_type = str(raw_capability.get("capability_type") or "")
+        capability_key = str(raw_capability.get("capability_key") or "")
+        if (
+            imported is not None
+            and isinstance(entry, dict)
+            and str(imported["capability_type"]) == capability_type
+            and str(entry.get("capability_key") or "") == capability_key
+        ):
+            digest = _version_digest(
+                capability_type,
+                capability_key,
+                str(imported["content_hash"]),
+                entry.get("normalized_config") or {},
+            )
+            row = (
+                bind.execute(
+                    sa.text(
+                        "SELECT v.id, v.package_id, v.version_no, v.digest, "
+                        "v.normalized_config_json, v.source_filename, "
+                        "b.content_hash, b.storage_key "
+                        "FROM capability_versions v "
+                        "JOIN capability_blobs b ON b.id = v.blob_id "
+                        "WHERE v.digest = :digest"
+                    ),
+                    {"digest": digest},
+                )
+                .mappings()
+                .one_or_none()
+            )
     if row is None or not isinstance(row["normalized_config_json"], dict):
         raise RuntimeError(f"Snapshot {snapshot_id} lacks an immutable capability version")
     runtime_config: dict[str, object] = {

@@ -303,7 +303,7 @@ def _blob(db: Session, imported: CapabilityImport) -> CapabilityBlob:
         select(CapabilityBlob).where(CapabilityBlob.content_hash == imported.content_hash)
     )
     if blob is not None:
-        if blob.storage_key != imported.storage_key or blob.byte_size != imported.byte_size:
+        if blob.byte_size != imported.byte_size:
             raise DomainError(
                 "CAPABILITY_BLOB_CONFLICT",
                 "Capability content hash resolves to different immutable bytes",
@@ -396,12 +396,12 @@ def publish_import(db: Session, imported: CapabilityImport) -> list[PublishedCap
         )
         duplicate = db.scalar(select(CapabilityVersion).where(CapabilityVersion.digest == digest))
         if duplicate is not None:
-            raise DomainError(
-                "CAPABILITY_VERSION_DUPLICATE",
-                "An identical immutable capability version already exists",
-                409,
-                {"capability_version_id": duplicate.id},
-            )
+            # RETIRED is a repository availability state, not a content
+            # tombstone. Re-importing the exact immutable identity republishes
+            # the canonical Version without changing its provenance or digest.
+            duplicate.state = "PUBLISHED"
+            published.append(PublishedCapability(package, duplicate, blob))
+            continue
         version = CapabilityVersion(
             package_id=package.id,
             blob_id=blob.id,

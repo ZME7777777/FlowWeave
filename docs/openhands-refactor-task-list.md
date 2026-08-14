@@ -1,13 +1,13 @@
 # FlowWeave OpenHands-first 重构任务清单
 
-> 本文件是可恢复的持久化执行状态。恢复工作时必须完整读取 `openhands-agent-server-design.md`、`openhands-capability-enhancement-roadmap.md`、本文件、审计文档、Goal（若有）、`git status`、相关 diff、Alembic heads 和最近验证结果。任一时刻只允许一个顶层任务为 `IN_PROGRESS`、一个当前执行批次；批次由一个或多个 `CURRENT` 原子任务组成。T1-T8 只做基本代码健康检查；行为、集成、恢复、真实 Runtime 和 E2E 功能验收统一在 T9 执行。
+> 本文件是可恢复的持久化执行状态。恢复工作时必须完整读取 `openhands-agent-server-design.md`、`openhands-capability-enhancement-roadmap.md`、本文件、审计文档、Goal（若有）、`git status`、相关 diff、Alembic heads 和最近验证结果。执行期间只允许一个顶层任务为 `IN_PROGRESS`、一个当前执行批次；全部顶层任务进入 `COMPLETE/SKIP` 后允许没有当前批次。批次由一个或多个 `CURRENT` 原子任务组成。T1-T8 只做基本代码健康检查；行为、集成、恢复、真实 Runtime 和 E2E 功能验收统一在 T9 执行。
 
 ## 状态
 
 - 唯一总目标：按照 OpenHands-first 和产物驱动运行原则重构 FlowWeave，快速修正错误、冗余和重复执行实现；FlowWeave 只作为不可变能力治理、流程/资源/审批/审计和 Artifact 投影控制面，由 OpenHands 原生执行 Agent 能力。
-- 当前主任务：无；T8 已完成实现门禁，T9 保持 `PENDING`，尚未启动全量验收。
+- 当前主任务：无；T1–T9 已完成最终验证门禁并统一为 `COMPLETE`。
 - 当前执行批次：无。
-- 最近验证结果：T8.01–T8.09 已完成固定 Marketplace 目录浏览/双层 provenance、Tool Policy 拒绝原因、Profile 版本差异/绑定/新 Snapshot 激活、分支与 Runtime HEAD、Task usage、WebSocket/REST 恢复、Goal/Critic/`ask_agent` 和能力兼容矩阵 UI；Browser、ACP、IDE/Desktop、直接 Runtime API 与父级 Trace 仍按既有决定显示为 `SKIP`，子 Agent 单 Task 控制与 MCP Tool schema 仍为 `UPSTREAM_BLOCKED`。Web TypeScript/ESLint、改动 Python Ruff format/check 与 compile、98-path OpenAPI 生成/基线比对和 `git diff --check` 通过；生产 build、行为、恢复、真实 Runtime 与 E2E 只在 T9 执行。
+- 最近验证结果：T9.01 已通过平台 449 项全量测试、Ruff、Pyright、Web lint/typecheck/生产 build、98-path OpenAPI/架构边界、PostgreSQL 空库/历史数据/downgrade-upgrade 迁移矩阵、Compose 与平台镜像安全检查、Sandbox Controller Python/JavaScript smoke、固定 OpenHands 1.42.0 provenance/契约探针和真实 Confirmation/Condenser/Task smoke，以及隔离产品 E2E 5 项。Browser、ACP、IDE/Desktop、直接 Runtime API、父级 Trace 等仍保留用户选择的 `SKIP`；MCP Tool schema 与子 Agent 单 Task 取消、异步确认、重启 resume 保持 `UPSTREAM_BLOCKED` 和 fail closed。
 - 工作区基线：2026-08-14 当前为 `master`，已有连续重构改动；当前 Alembic head 为 `0047_runtime_agent_governance`。
 
 ## 顶层任务
@@ -26,27 +26,28 @@
 
 ### 第 11 章覆盖账本
 
-本表是 T9 逐项功能验收索引。`DONE` 仅说明实现已落地，T9 仍须按本表和原子任务正文验证行为；“已归入某个 Phase”不算覆盖。
+本表是 T9 逐项功能验收索引。T9 已按本表和原子任务正文完成行为验收；`SKIP` 与
+`UPSTREAM_BLOCKED` 保留原决定和解锁条件，不因顶层任务完成而改写为已实现。
 
 | 设计条目 | 产品处置 | 已完成原子项 | 剩余原子项 | 当前结论 |
 |---|---|---|---|---|
-| 11.3 Tool Action 确认 | 必做 | T2 全部切片 | T9 真服务回归 | DONE |
-| 11.4 Condenser / Memory | 必做 | T2 Condenser；T6.01–T6.05 | T9 真实挂载/加载 smoke | DONE |
+| 11.3 Tool Action 确认 | 必做 | T2 全部切片 | T9 真服务回归已通过 | COMPLETE |
+| 11.4 Condenser / Memory | 必做 | T2 Condenser；T6.01–T6.05 | T9 真实加载、恢复与泄漏回归已通过 | COMPLETE |
 | 11.5 MCP 验证与 OAuth | 必做 | T4 MCP probe、Secret Reference、OAuth job | T4-B01 Tool schema 正式契约 | PARTIAL / UPSTREAM_BLOCKED |
 | 11.6 费用与可观测性 | 必做 | T5 子 Agent usage | T6.09–T6.12（SKIP） | PARTIAL / SKIP |
-| 11.7 实时事件 | 必做 | REST cursor 补偿；T6.13–T6.14 WS 唤醒与 Bash 补偿 | T9 真实断线/恢复验收 | DONE |
+| 11.7 实时事件 | 必做 | REST cursor 补偿；T6.13–T6.14 WS 唤醒与 Bash 补偿 | T9 断线/恢复矩阵已通过 | COMPLETE |
 | 11.8 Conversation 分支 | 必做 | T6.06–T6.07 | T6.08（SKIP） | PARTIAL |
 | 11.9 Browser / 直接 Bash / IDE / Desktop | 必做 | Tool 可用性契约基础 | T6.17–T6.19、T7.09、T7.14–T7.15（SKIP） | SKIP |
-| 11.10 Tool 集与 Tool Policy | 必做 | T3 不可变 Policy；T6.15–T6.16 catalog/分类/确认/并发与正式工具集；T8.02 UI | T9 真实竞争验收 | DONE（实现） |
+| 11.10 Tool 集与 Tool Policy | 必做 | T3 不可变 Policy；T6.15–T6.16 catalog/分类/确认/并发与正式工具集；T8.02 UI | T9 安全、并发与固定契约回归已通过 | COMPLETE |
 | 11.11 原生子 Agent | 必做 | T5 原生 Task 全部已实现切片 | T5-B01–T5-B03 | PARTIAL / UPSTREAM_BLOCKED |
-| 11.12 Skills / Plugins / Marketplace | 必做 | T3/T4 固定版本、原生 Loader/激活/invoke；T8.01 固定目录浏览与发布 UI | T9 功能验收 | DONE（实现） |
-| 11.13 Agent/LLM Profile | 必做 | T3 不可变模板和显式物化；T7.01–T7.02 治理/字段矩阵/不可变切换；T8.03 UI | T9 功能验收 | DONE（实现） |
+| 11.12 Skills / Plugins / Marketplace | 必做 | T3/T4 固定版本、原生 Loader/激活/invoke；T8.01 固定目录浏览与发布 UI | T9 功能、供应链与 E2E 已通过 | COMPLETE |
+| 11.13 Agent/LLM Profile | 必做 | T3 不可变模板和显式物化；T7.01–T7.02 治理/字段矩阵/不可变切换；T8.03 UI | T9 行为、恢复与 provenance 回归已通过 | COMPLETE |
 | 11.14 ACP Agent | 必做 | 无 | T7.03–T7.08（SKIP） | SKIP |
-| 11.15 Critic / Goal | 已纳入产品 | Critic Policy 与 Hook Set 冻结；T7.16–T7.18 正式事件、控制、预算、恢复和审计 | T9 功能/恢复/真实 Runtime 验收 | DONE（实现） |
+| 11.15 Critic / Goal | 已纳入产品 | Critic Policy 与 Hook Set 冻结；T7.16–T7.18 正式事件、控制、预算、恢复和审计 | T9 行为、恢复、预算与固定契约回归已通过 | COMPLETE |
 | 11.16 File/Git/Workspace/Trajectory | 必做 | 受管 Workspace/Artifact 基础 | T7.10–T7.13（SKIP） | SKIP |
-| 11.17 运行控制、诊断与预热 | 逐项决定 | T7.19 `ask_agent`；T7.20–T7.32 逐项 `DECIDED_NO`；T7.33 Runtime 能力协商 | T9 | DONE（实现） |
+| 11.17 运行控制、诊断与预热 | 逐项决定 | T7.19 `ask_agent`；T7.20–T7.32 逐项 `DECIDED_NO`；T7.33 Runtime 能力协商 | T9 权限、恢复、能力协商回归已通过 | COMPLETE |
 
-### T1 基线审计与目标 Schema 设计 — IMPLEMENTED
+### T1 基线审计与目标 Schema 设计 — COMPLETE
 
 范围：
 
@@ -60,7 +61,7 @@
 
 退出条件：审计证据可复现；目标 Schema 与模块边界形成文档；OpenHands 1.40.0 契约基线有自动测试；首个 Phase 0 改动已确定且不依赖猜测。
 
-### T2 Phase 0：协议正确性 — IMPLEMENTED
+### T2 Phase 0：协议正确性 — COMPLETE
 
 范围：OpenHands 原生 Confirmation 批次审批；pending action batch digest、防漂移、幂等、审计；RuntimePort 与事件模型；Condenser 配置和事件投影；WebSocket 瞬时事件与耐久 REST cursor 边界；1.40.0 版本契约测试。
 
@@ -79,7 +80,7 @@
 
 退出条件：路线图 Phase 0 全部验收项通过；普通 resume 不再处理原生确认；批次漂移和重试测试通过；Condenser 可冻结、运行、恢复和审计；实时通知丢失可由 cursor 补偿。
 
-### T3 Phase 1：统一能力仓库 — IMPLEMENTED
+### T3 Phase 1：统一能力仓库 — COMPLETE
 
 范围：Capability Package、Version、Blob、Dependency、Validation；Skill、Plugin、MCP、Hook、Agent Definition、Tool/Context/Memory/Critic Policy；Agent Profile；RuntimeAgentSpec；Snapshot Runtime Manifest；移除 `CapabilityImport` 永久版本语义和旧类型限制；按最终设计重建迁移基线与测试库。
 
@@ -121,9 +122,9 @@
 
 实现门禁：所有运行能力解析为固定 version/digest；Snapshot manifest 不可变；Secret 仅以引用存在；旧永久 Import/Skill-only 集合语义删除。每个切片只运行相关能力/Manifest 定向测试；新增迁移时立即证明新 head 可加载和本次升级路径，历史全链留到 T9。全部实现完成后标记 `IMPLEMENTED`。
 
-T3 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED` 晋级 `COMPLETE`。
+T3 实现门禁与 T9 集中全量验证均已通过，状态为 `COMPLETE`。
 
-### T4 Phase 2：MCP、Plugin 和能力市场 — IMPLEMENTED
+### T4 Phase 2：MCP、Plugin 和能力市场 — COMPLETE
 
 范围：目标环境 MCP probe、Tool Catalog/Schema/只读试调用；OAuth Secret Reference 的刷新、撤销和审计；Marketplace/Git 固定 commit/digest 导入；OpenHands 原生 Plugin 加载；Skill 原生触发和 invoke。
 
@@ -152,7 +153,7 @@ T3 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED
 
 后续归属：Marketplace 目录浏览 UI 移交 T8；固定 1.42.0 的正式 MCP test 不提供 Tool schema，未来只有正式接口出现后才补投影，不在 FlowWeave 伪造。二者不阻塞 T4 实现门禁。
 
-T4 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED` 晋级 `COMPLETE`。
+T4 实现门禁与 T9 集中全量验证均已通过；正式上游缺口按显式例外保持 fail closed，状态为 `COMPLETE`。
 
 实现门禁：浮动来源不能进入运行时；目标环境验证和 Secret Reference 边界有对应实现；Plugin/Skill 只走 OpenHands 原生 Loader。每个切片运行对应 resolver/probe/泄漏拒绝定向测试；真实目标环境的最小新增契约当场验证，完整容器矩阵留到 T9。全部实现完成后标记 `IMPLEMENTED`。
 
@@ -160,7 +161,7 @@ T4 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED
 
 - **T4-B01 MCP Tool input schema — UPSTREAM_BLOCKED**：固定 1.42.0 的正式 `/api/mcp/test` 成功响应只返回 Tool 名称，不返回 input schema。FlowWeave 已将 schema 明确投影为 `UNAVAILABLE_FROM_OPENHANDS_MCP_TEST`，禁止抓取私有内部状态或自建协议。解锁条件：固定目标 OpenHands 出现正式 schema 字段/API，或用户明确授权独立 OpenHands fork 后，恢复为普通原子切片并补迁移、API、UI 和兼容测试。
 
-### T5 Phase 3：OpenHands 原生子 Agent — IMPLEMENTED
+### T5 Phase 3：OpenHands 原生子 Agent — COMPLETE
 
 范围：Agent Definition；Task Tool / `task_tool_set`；子 Agent 生命周期、状态、成本、取消、确认和预算投影；必要的 OpenHands 正式事件/API 及上游测试；删除 Finish 控制 JSON、`_delegation_tasks` 和平台重复执行。
 
@@ -190,7 +191,7 @@ T4 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED
 - [x] Attempt API 投影当前可用恢复模式，Workbench 分别展示“重新对账”和高风险“清理整个受管 Runtime”；OpenAPI 与前端类型已同步。
 - [x] 固定目标 1.42.0 源码与实际镜像完成最终 Task 缺口审计：公开 HTTP 仍只有 `/api/sub-agents` 定义发现；`TaskExecutor.interrupt` 仍是 no-op，已启动同步 Task 不随父 interrupt 停止；正式 registry 创建的 `TaskManager` 仍无 confirmation handler；子会话文件虽进入父持久目录，新 Manager 仍不扫描目录重建 `task_id` 身份。三项缺口继续沿用现有 fail-closed 产品路径，未来若补能力须另立并明确授权 OpenHands 二开任务。
 
-T5 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED` 晋级 `COMPLETE`。目标源码缺失的单 Task 取消、异步确认和重启 resume 不属于 FlowWeave 平台补协议范围；现有安全降级已由目标镜像负向契约冻结。
+T5 实现门禁与 T9 集中全量验证均已通过，状态为 `COMPLETE`。目标源码缺失的单 Task 取消、异步确认和重启 resume 不属于 FlowWeave 平台补协议范围；现有安全降级已由目标镜像负向契约冻结。
 
 实现门禁：FlowWeave 仅治理和投影，旧委派协议及执行器删除；目标源码已有的成功、失败、usage、预算、取消、确认与恢复能力均通过正式契约接入并有定向测试。目标源码未提供的能力保持 fail closed，不在 FlowWeave 中伪造。固定目标源码的真实全链 smoke 留到 T9。
 
@@ -200,7 +201,7 @@ T5 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED
 - **T5-B02 子 Agent 异步确认 — UPSTREAM_BLOCKED**：正式 registry 创建的 `TaskManager` 没有 confirmation handler，当前 Agent Definition 强制 `never_confirm`。解锁条件：OpenHands 提供能由控制面关联、决策和恢复的 Task Confirmation 契约。
 - **T5-B03 子 Agent 重启 resume — UPSTREAM_BLOCKED**：新 `TaskManager` 不从持久目录恢复 `task_id` 索引。解锁条件：OpenHands 提供稳定持久身份和服务重启后的正式 resume 契约。
 
-### T6 产品运行时基础 — IMPLEMENTED
+### T6 产品运行时基础 — COMPLETE
 
 执行顺序固定如下。每项代码完成并通过基本代码门禁后即可推进；正文中的行为/恢复/真实运行条件统一留给 T9，`DONE` 项在 T9 前不得重跑。
 
@@ -238,9 +239,9 @@ T5 实现门禁已通过，等待 T9 的集中全量验证后再由 `IMPLEMENTED
 - **T6.18 Browser Artifact 与确认闭环 — SKIP**：截图、录屏、下载进入受分类 Artifact；导航/上传/下载/写操作使用明确 Confirmation policy，审计原生 Action identity，清理随 Runtime 生命周期恢复。
 - **T6.19 Browser Runtime 接入收口 — SKIP**：完成固定目标镜像中的 Browser 依赖、受管网络配置、资源回收接口和 T9 测试夹具；导航、交互、截图、下载、确认拒绝、SSRF 拒绝和资源回收的真实功能链统一在 T9 执行。
 
-退出条件：T6.01–T6.19 全部为 `DONE` 或 `SKIP`，覆盖账本同步，基本代码门禁通过后将 T6 标为 `IMPLEMENTED` 并把 T7.01 提升为唯一 `CURRENT`；所有功能、集成、恢复与真实 Runtime 验收继续留到 T9。
+退出结论：T6.01–T6.19 均为 `DONE` 或 `SKIP`，覆盖账本和 T9 功能、集成、恢复与固定 Runtime 验收均已闭环；T6 为 `COMPLETE`。
 
-### T7 高级产品能力 — IMPLEMENTED
+### T7 高级产品能力 — COMPLETE
 
 T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成本与安全代码；普通切片只跑基本代码门禁，完整闭环的行为验证统一在 T9。
 
@@ -292,9 +293,9 @@ T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成�
 - **T7.32 Workspace session Cookie — DECIDED_NO**：Worker 继续使用 Header API Key；VSCode/Desktop 使用 T7.14/T7.15 独立一次性凭据，禁止暴露 OpenHands UI Cookie。
 - **T7.33 Server health/details 与能力协商 — DONE**：启动时校验版本、source provenance、正式路由/字段/capability，与 Snapshot 要求不兼容时拒绝调度，替代仅依赖 Compose healthcheck。
 
-退出条件：除有明确回归约束的 `DECIDED_NO` 和正式证据支撑的 `UPSTREAM_BLOCKED` 外，T7.01–T7.33 全部为 `DONE`；随后将 T7 标为 `IMPLEMENTED`，把 T8.01 提升为唯一 `CURRENT`。
+退出结论：除有明确回归约束的 `DECIDED_NO`、用户选择的 `SKIP` 和正式证据支撑的 `UPSTREAM_BLOCKED` 外，T7.01–T7.33 均为 `DONE`；T9 验收已通过，T7 为 `COMPLETE`。
 
-### T8 产品 API、UI 与文档收口 — IMPLEMENTED
+### T8 产品 API、UI 与文档收口 — COMPLETE
 
 - **T8.01 Marketplace 目录浏览与导入 UI — DONE**：浏览固定目录 commit、选择条目、展示目录与实际 Plugin 双层 provenance/content digest，并显式发布 Version；不存在浮动安装态。
 - **T8.02 Tool Policy 与 Browser UI — DONE**：Tool Policy 编辑器展示固定 1.42.0 catalog、allowlist/确认/并发治理与 Browser policy-disabled 原因；Browser 产品入口继续按 T6.17–T6.19 `SKIP`，未伪造开关。
@@ -306,11 +307,13 @@ T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成�
 - **T8.08 Critic/Goal/IDE/Desktop UI — DONE**：Critic 评分、Goal start/stop/resume 与迭代/Token/金额预算可见；IDE/Desktop 继续按 T7.14–T7.15 `SKIP` 无凭据入口。
 - **T8.09 契约与文档一致性 — DONE**：Marketplace response model、前端 DTO/API、98-path OpenAPI 基线、1.42.0 文案、系统设计/审计/路线图和第 11 章账本已同步。
 
-退出条件：T8.01–T8.09 全部为 `DONE`，受影响文件的基本 lint/typecheck 和 API schema 可生成后标为 `IMPLEMENTED`；完整 Web build、API 行为和 E2E 留到 T9。
+退出结论：T8.01–T8.09 全部为 `DONE`；lint/typecheck、98-path OpenAPI、生产 Web build、API 行为和 5 项隔离 E2E 均已通过，T8 为 `COMPLETE`。
 
-### T9 全量验证与清理 — PENDING
+### T9 全量验证与清理 — COMPLETE
 
 范围：集中执行 T1-T8 延后的全部行为单元、集成、契约、安全、恢复、真实 Runtime、容器 smoke 和 E2E；固定目标源码提交 `f09e03e...` 构建镜像的真实 smoke 及其相对历史 v1.40.0 的兼容差异；死代码、兼容层、旧迁移和旧测试清理；测试数据库与空库安装；按两份设计文档和路线图完成定义逐项验收。
+
+- **T9.01 最终验证门禁 — DONE**：本节 1–8 项最终门禁已连续执行并通过；验证发现的后台任务顺序脆弱测试已改为等待可观察业务结果，真实 Runtime、迁移、安全、恢复、Web/E2E 与外部阻塞证据均已记录。
 
 最终验证门禁（不得拆散到普通切片重复运行）：
 
@@ -415,3 +418,7 @@ T7 按以下顺序实现配置、运行、事件/结果、恢复、审计、成�
 | 2026-08-13 | T6.15–T6.16 Tool Catalog / 并发治理 | 改动文件 Ruff format/check、Python compile、窄范围 Pyright、Tool Policy 最小拒绝 pytest、`uv run python scripts/migration_check.py`、`alembic heads`、`make openhands-contract-check`、`git diff --check` | PASS：未知/禁用 Tool、串行 Tool 并发和写 Tool 关闭确认均拒绝；只读 Tool 并发策略可冻结；0 类型错误；空库、0005 往返与 0028 历史路径均升级至唯一 `0046_tool_policy_catalog` head；固定四包 1.42.0、15 项 catalog、并发字段、资源锁与空动态模块映射契约通过，镜像 ID `sha256:9c3ddab2...d7dce`。Workspace 竞争和真实 Runtime 功能验收留到 T9 |
 | 2026-08-13 | T7.01–T7.02 Profile 治理与不可变切换 | 改动文件 Ruff format/check、Python compile、窄范围 Pyright、OpenAPI 生成、可变 Store/Secret 最小拒绝探针、`alembic heads`、`git diff --check` | PASS：固定 Profile schema v2 的 16 字段形成兼容矩阵；可变 LLM/Profile Store、顶层及嵌套 Secret 均拒绝；Profile 支持追加式修订/复制/退役/历史/绑定查询；固定 Version/digest 的切换生成新 Snapshot 与 Attempt并保存差异、成本对比和回滚指针；0 类型错误，OpenAPI 94 paths，迁移仍为唯一 `0046_tool_policy_catalog` head。行为、恢复和真实 Runtime 验收留到 T9 |
 | 2026-08-13 | T7.33 Server health/details 与能力协商 | 改动文件 Ruff format/check、Python compile、窄范围 Pyright、6 项最小拒绝 pytest、OpenAPI 生成/基线比对、`alembic heads`、`make openhands-contract-check`、状态唯一性检查、`git diff --check` | PASS：固定四包 1.42.0、source commit/ref、正式 HTTP operation、创建字段、Server capability 结构与 Snapshot 实际 Tool 集进入不可变 Runtime contract；每次 Conversation 创建前重新协商，缺失/漂移在零创建副作用时 fail closed；OpenAPI 97 paths，0047 为唯一 head；固定镜像 ID `sha256:059cbae5eeec46be007f5b477cc8c8af018e684ac719a16678adda1b800c3bef`。真实 Runtime 与完整恢复验收留到 T9 |
+| 2026-08-14 | T9 平台、Web、契约与镜像 | Ruff format/check、生产 Pyright、`pytest -q`、Web lint/typecheck/build、Compose security、platform image、`make sandbox-smoke` | PASS：234 个 Python 文件格式/Lint、0 类型错误、449 passed；Web 生产构建通过（仅既有大 chunk 警告）；Compose 安全检查、平台生产镜像和 Sandbox Controller Python/JavaScript 真实执行链通过 |
+| 2026-08-14 | T9 PostgreSQL 迁移矩阵 | `uv run python scripts/migration_check.py`、隔离空库 `alembic upgrade head`/`heads` | PASS：空库、既有基线、历史数据、downgrade/upgrade 全矩阵通过，唯一 head 为 `0047_runtime_agent_governance` |
+| 2026-08-14 | T9 固定 OpenHands 1.42.0 | `make openhands-contract-check`、`make openhands-smoke` | PASS：commit `f09e03eac772290feeb51b7d7390ffaefeca1a09`、归档 SHA-256 `a33dfae9...c832`、四包 1.42.0、26 条必需路径和 15 个 Tool 契约通过；真实 Confirmation/Condenser/Task 三链 `status=ok` |
+| 2026-08-14 | T9 产品 E2E | 隔离网络 Compose PostgreSQL/API/Worker/Web 栈，`pnpm --filter @flowweave/web e2e` | PASS：5 passed；节点/流程画布、Snapshot/Gate/Artifact lineage、取消与删除、浏览器状态恢复、单项与批量删除通过；使用唯一测试能力内容避免持久数据库跨轮污染 |
