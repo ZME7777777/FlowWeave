@@ -219,7 +219,7 @@ def test_bootstrap_entrypoints_import_in_clean_processes() -> None:
     for module in (
         "flowweave.bootstrap.api",
         "flowweave.bootstrap.worker",
-        "flowweave.bootstrap.sandbox_controller",
+        "flowweave.bootstrap.runtime_provider",
     ):
         completed = subprocess.run(
             [sys.executable, "-c", f"import {module}"],

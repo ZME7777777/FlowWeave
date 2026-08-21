@@ -36,7 +36,7 @@ make rebuild-deploy
 1. 无缓存重建 Python/JavaScript Sandbox 镜像；
 2. 无缓存重建 Dependency Builder；
 3. 无缓存重建固定 OpenHands Runtime；
-4. 无缓存重建 Migration、Sandbox Controller、API、Worker 和 Web；
+4. 无缓存重建 Migration、Runtime Provider、API、Worker 和 Web；
 5. 重新创建完整 Compose 服务栈并等待依赖健康。
 
 它会保留以下持久数据：
@@ -99,43 +99,43 @@ docker compose --env-file .env -f infra/compose.yaml logs --tail=100 worker
 
 重启 Worker 可能打断当前租约，平台会按持久化任务和 fencing 机制恢复；仍应避免在关键任务执行时部署。
 
-### 3.4 Sandbox Controller
+### 3.4 Runtime Provider
 
 ```bash
-docker compose --env-file .env -f infra/compose.yaml build --no-cache sandbox-controller
-docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate sandbox-controller
-docker compose --env-file .env -f infra/compose.yaml ps sandbox-controller
+docker compose --env-file .env -f infra/compose.yaml build --no-cache runtime-provider
+docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate runtime-provider
+docker compose --env-file .env -f infra/compose.yaml ps runtime-provider
 ```
 
-Controller 管理配置终端和动态 Runtime，重启可能使当前终端附件断开；持久 tmux 内的任务仍由对应容器保持，但浏览器需要重新连接。
+Runtime Provider 管理配置终端和动态 Runtime，重启可能使当前终端附件断开；持久 tmux 内的任务仍由对应容器保持，但浏览器需要重新连接。
 
 ### 3.5 Migration
 
 新增或修改 Alembic 迁移时，先构建并运行一次 Migration，再更新平台进程：
 
 ```bash
-docker compose --env-file .env -f infra/compose.yaml build --no-cache migration api worker sandbox-controller
+docker compose --env-file .env -f infra/compose.yaml build --no-cache migration api worker runtime-provider
 docker compose --env-file .env -f infra/compose.yaml up --no-deps --force-recreate migration
-docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate sandbox-controller api worker
+docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate runtime-provider api worker
 ```
 
 Migration 必须以退出码 `0` 结束。失败时不要继续部署依赖新 Schema 的 API/Worker。
 
 ## 4. 平台共享代码改动应一起部署
 
-`api`、`worker`、`sandbox-controller` 和 `migration` 都使用 `services/platform/Dockerfile`，并复制同一份 `services/platform/src`。如果改动位于共享模块，不能只更新其中一个进程，否则会出现代码版本不一致。推荐：
+`api`、`worker`、`runtime-provider` 和 `migration` 都使用 `services/platform/Dockerfile`，并复制同一份 `services/platform/src`。如果改动位于共享模块，不能只更新其中一个进程，否则会出现代码版本不一致。推荐：
 
 ```bash
-docker compose --env-file .env -f infra/compose.yaml build --no-cache migration sandbox-controller api worker
+docker compose --env-file .env -f infra/compose.yaml build --no-cache migration runtime-provider api worker
 docker compose --env-file .env -f infra/compose.yaml up --no-deps --force-recreate migration
-docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate sandbox-controller api worker
+docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate runtime-provider api worker
 ```
 
 若没有迁移变更，Migration 仍可安全执行 `alembic upgrade head`；它应快速以 `0` 退出。
 
 ## 5. 独立运行时镜像
 
-这些镜像不是长期运行的普通 Compose 服务，而是由 Sandbox Controller 按需创建容器。
+这些镜像不是长期运行的普通 Compose 服务，而是由 Runtime Provider 按需创建容器。
 
 ### 5.1 OpenHands Runtime
 
@@ -178,7 +178,7 @@ docker compose --env-file .env -f infra/compose.yaml ps -a
 
 期望结果：
 
-- `postgres`、`openhands-agent-server`、`sandbox-controller`、`api` 为 `healthy`；
+- `postgres`、`openhands-agent-server`、`runtime-provider`、`api` 为 `healthy`；
 - `worker`、`web` 为 `Up`；
 - `workspace-init`、`migration` 为 `Exited (0)`。
 
@@ -193,13 +193,13 @@ curl -I http://127.0.0.1:5173/
 检查日志：
 
 ```bash
-docker compose --env-file .env -f infra/compose.yaml logs --tail=100 api worker web sandbox-controller openhands-agent-server
+docker compose --env-file .env -f infra/compose.yaml logs --tail=100 api worker web runtime-provider openhands-agent-server
 ```
 
 确认运行容器使用当前镜像：
 
 ```bash
-for service in api worker sandbox-controller web; do
+for service in api worker runtime-provider web; do
   container=$(docker compose --env-file .env -f infra/compose.yaml ps -q "$service")
   running=$(docker inspect --format '{{.Image}}' "$container")
   declared=$(docker image inspect --format '{{.Id}}' "flowweave-$service:latest")
@@ -213,7 +213,7 @@ done
 |---|---|
 | 只改 `apps/web/**` | 只重建、重启 `web` |
 | 只改 API 路由且没有共享行为变化 | 只重建、重启 `api` |
-| 改 `services/platform/src` 共享模块 | 一起重建 `migration sandbox-controller api worker` |
+| 改 `services/platform/src` 共享模块 | 一起重建 `migration runtime-provider api worker` |
 | 新增 Alembic 迁移 | 先运行 `migration` 成功，再重启平台服务 |
 | 改 `infra/openhands/**` | 重建 OpenHands Runtime，并重建常驻 `openhands-agent-server` |
 | 改 `infra/sandbox/**` | 重建对应 Sandbox 镜像；后续新 Sandbox 生效 |

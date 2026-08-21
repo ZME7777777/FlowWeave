@@ -68,23 +68,16 @@ class SetupSandboxSpec(_StrictModel):
     base_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
-class RuntimeSandboxSpec(_StrictModel):
-    workspace_relative: str = Field(
-        min_length=1,
-        max_length=500,
-        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
-    )
-    port: Literal[8000]
-    bound: bool
-    environment_id: UUID
-    environment_version_id: UUID
-    environment_version_no: int = Field(ge=1)
-    memory_enabled: bool = False
-    memory_working_dir_relative: str | None = Field(
+class RuntimeProviderSpec(_StrictModel):
+    workspace_relative: str | None = Field(
         default=None,
         max_length=500,
         pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
     )
+    port: Literal[8000]
+    environment_id: UUID
+    environment_version_id: UUID
+    environment_version_no: int = Field(ge=1)
     flow_run_id: UUID | None = None
     runtime_allocation_id: UUID | None = None
     runtime_allocation_relative: str | None = Field(
@@ -96,21 +89,15 @@ class RuntimeSandboxSpec(_StrictModel):
 
     @field_validator("workspace_relative")
     @classmethod
-    def validate_workspace_relative(cls, value: str) -> str:
+    def validate_workspace_relative(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if any(part in {"", ".", ".."} for part in value.split("/")):
             raise ValueError("workspace_relative must not contain dot path segments")
         return value
 
     @model_validator(mode="after")
-    def validate_memory_contract(self):
-        if self.memory_enabled != (self.memory_working_dir_relative is not None):
-            raise ValueError(
-                "memory_working_dir_relative must be set exactly when Memory is enabled"
-            )
-        if self.memory_working_dir_relative and any(
-            part in {"", ".", ".."} for part in self.memory_working_dir_relative.split("/")
-        ):
-            raise ValueError("memory_working_dir_relative contains invalid path segments")
+    def validate_workspace_contract(self):
         allocation_fields = (
             self.flow_run_id,
             self.runtime_allocation_id,
@@ -121,6 +108,10 @@ class RuntimeSandboxSpec(_StrictModel):
             value is not None for value in allocation_fields
         ):
             raise ValueError("FlowRun Runtime allocation fields must be provided together")
+        if (self.flow_run_id is not None) == (self.workspace_relative is not None):
+            raise ValueError(
+                "FlowRun and temporary Runtime workspace contracts are mutually exclusive"
+            )
         return self
 
 
@@ -138,16 +129,15 @@ class SetupSandboxResourceWrite(_SandboxResourceBase):
     spec: SetupSandboxSpec
 
 
-class RuntimeSandboxResourceWrite(_SandboxResourceBase):
+class RuntimeProviderResourceWrite(_SandboxResourceBase):
     kind: Literal["AGENT_RUNTIME"]
     owner_type: Literal[
-        "ATTEMPT",
-        "CONVERSATION",
+        "FLOW_RUN",
         "CAPABILITY_VALIDATION",
         "MCP_OAUTH_AUTHORIZATION",
     ]
     image_reference: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    spec: RuntimeSandboxSpec
+    spec: RuntimeProviderSpec
     runtime_secret_key: SecretStr | None = None
 
     @model_validator(mode="after")
@@ -157,7 +147,7 @@ class RuntimeSandboxResourceWrite(_SandboxResourceBase):
             raise ValueError(
                 "runtime_secret_key must be injected exactly for FlowRun Runtime allocations"
             )
-        if has_allocation and self.owner_type not in {"ATTEMPT", "CONVERSATION"}:
+        if has_allocation != (self.owner_type == "FLOW_RUN"):
             raise ValueError("FlowRun Runtime allocation owner is invalid")
         if self.runtime_secret_key is not None and len(
             self.runtime_secret_key.get_secret_value()
@@ -167,7 +157,7 @@ class RuntimeSandboxResourceWrite(_SandboxResourceBase):
 
 
 SandboxResourceWrite = Annotated[
-    SetupSandboxResourceWrite | RuntimeSandboxResourceWrite, Field(discriminator="kind")
+    SetupSandboxResourceWrite | RuntimeProviderResourceWrite, Field(discriminator="kind")
 ]
 
 
@@ -513,7 +503,7 @@ def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
         image_reference=payload.image_reference,
         runtime_allocation_id=(
             str(payload.spec.runtime_allocation_id)
-            if isinstance(payload, RuntimeSandboxResourceWrite)
+            if isinstance(payload, RuntimeProviderResourceWrite)
             and payload.spec.runtime_allocation_id is not None
             else None
         ),
@@ -548,7 +538,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.gather(task, return_exceptions=True)
             terminals.close_all()
 
-    app = FastAPI(title="FlowWeave Sandbox Controller", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="FlowWeave Runtime Provider", version="1.0.0", lifespan=lifespan)
 
     @app.middleware("http")
     async def context(
@@ -679,7 +669,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         runtime_secret_key = (
             payload.runtime_secret_key.get_secret_value()
-            if isinstance(payload, RuntimeSandboxResourceWrite)
+            if isinstance(payload, RuntimeProviderResourceWrite)
             and payload.runtime_secret_key is not None
             else None
         )

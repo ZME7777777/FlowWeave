@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from flowweave.bootstrap import sandbox_controller as controller_module
-from flowweave.bootstrap.sandbox_controller import create_app
+from flowweave.bootstrap import runtime_provider as controller_module
+from flowweave.bootstrap.runtime_provider import create_app
 from flowweave.modules.environments.infrastructure import docker as environments_docker
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
@@ -49,14 +49,13 @@ def _ensure_payload(**updates: object) -> dict[str, object]:
         "manager_scope": _SCOPE,
         "id": _RESOURCE_ID,
         "kind": "AGENT_RUNTIME",
-        "owner_type": "ATTEMPT",
+        "owner_type": "CAPABILITY_VALIDATION",
         "owner_id": _OWNER_ID,
         "backend_resource_name": "fw-sbx-12345678123442349234123456789abc",
         "image_reference": "sha256:" + "a" * 64,
         "spec": {
             "workspace_relative": "nodes/node-1",
             "port": 8000,
-            "bound": False,
             "environment_id": _ENVIRONMENT_ID,
             "environment_version_id": _ENVIRONMENT_VERSION_ID,
             "environment_version_no": 1,
@@ -158,7 +157,6 @@ def test_controller_rejects_invalid_sandbox_contract_before_docker(settings, mon
             spec={
                 "workspace_relative": "../host",
                 "port": 8000,
-                "bound": False,
                 "environment_id": _ENVIRONMENT_ID,
                 "environment_version_id": _ENVIRONMENT_VERSION_ID,
                 "environment_version_no": 1,
@@ -168,7 +166,6 @@ def test_controller_rejects_invalid_sandbox_contract_before_docker(settings, mon
             spec={
                 "workspace_relative": "nodes/node-1",
                 "port": 8000,
-                "bound": False,
                 "environment_id": _ENVIRONMENT_ID,
                 "environment_version_id": _ENVIRONMENT_VERSION_ID,
                 "environment_version_no": 1,

@@ -11,10 +11,9 @@ from flowweave.modules.sandboxes.application.service import (
     ReconcileReport,
     _owner_is_active,
     cleanup_unclaimed_runtime_memory,
-    create_runtime_sandbox,
+    create_temporary_runtime,
     create_setup_sandbox,
     delete_sandbox_now,
-    mark_runtime_bound,
     reconcile_managed_sandboxes,
     request_delete_durable,
     runtime_memory_cleanup_pending,
@@ -1256,9 +1255,9 @@ def test_runtime_reallocation_increments_generation(settings, db_session_factory
 
     monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
     with settings_context(configured), db_session_factory() as db:
-        first = create_runtime_sandbox(
+        first = create_temporary_runtime(
             db,
-            owner_type="ATTEMPT",
+            owner_type="CAPABILITY_VALIDATION",
             owner_id="attempt-generation",
             image="runtime:locked",
             environment_id="environment-1",
@@ -1267,9 +1266,9 @@ def test_runtime_reallocation_increments_generation(settings, db_session_factory
             workspace_relative="nodes/node-1",
         )
         request_delete_durable(db, first.id)
-        second = create_runtime_sandbox(
+        second = create_temporary_runtime(
             db,
-            owner_type="ATTEMPT",
+            owner_type="CAPABILITY_VALIDATION",
             owner_id="attempt-generation",
             image="runtime:locked",
             environment_id="environment-1",
@@ -1303,13 +1302,13 @@ async def test_durable_runtime_control_writes_survive_async_caller_rollback(
     with db_session_factory() as db:
         resource = ManagedSandbox(
             kind="AGENT_RUNTIME",
-            owner_type="ATTEMPT",
+            owner_type="FLOW_RUN",
             owner_id="attempt-durable-control",
             backend="docker",
             backend_resource_name="fw-sbx-durable-control",
             observed_state="RUNNING",
             image_reference="runtime:locked",
-            spec_json={"port": 8000, "bound": False},
+            spec_json={"port": 8000},
             last_activity_at=now - timedelta(minutes=30),
             idle_expires_at=now - timedelta(minutes=1),
             hard_expires_at=now + timedelta(hours=1),
@@ -1321,16 +1320,15 @@ async def test_durable_runtime_control_writes_survive_async_caller_rollback(
 
     with settings_context(configured):
         async with container.database.session() as outer:
-            await outer.run_sync(lambda db: mark_runtime_bound(db, resource_id))
+            await outer.run_sync(lambda db: touch_runtime(db, resource_id))
             await outer.rollback()
 
         with db_session_factory() as db:
-            bound = db.get(ManagedSandbox, resource_id)
-            assert bound is not None
-            assert bound.spec_json["bound"] is True
-            assert bound.idle_expires_at is None
-            first_activity = bound.last_activity_at
-            bound.last_activity_at = now - timedelta(minutes=5)
+            touched = db.get(ManagedSandbox, resource_id)
+            assert touched is not None
+            assert touched.idle_expires_at is None
+            first_activity = touched.last_activity_at
+            touched.last_activity_at = now - timedelta(minutes=5)
             db.commit()
 
         async with container.database.session() as outer:
@@ -1394,7 +1392,7 @@ def test_reconciler_deletes_idle_runtime_before_hard_limit(
     assert deleted == [resource_id]
 
 
-def test_reconciler_hard_expiry_overrides_bound_active_runtime_owner(
+def test_reconciler_drains_legacy_attempt_runtime_owner(
     settings, db_session_factory, monkeypatch
 ):
     configured = _docker_settings(settings)
@@ -1417,10 +1415,6 @@ def test_reconciler_hard_expiry_overrides_bound_active_runtime_owner(
         db.commit()
         resource_id = resource.id
 
-    monkeypatch.setattr(
-        "flowweave.modules.orchestration.public.attempt_sandbox_owner_is_active",
-        lambda *_args, **_kwargs: True,
-    )
     deleted: list[str] = []
     monkeypatch.setattr(
         DockerSandboxProvider, "inspect", lambda self, _name: _observation(resource)

@@ -58,11 +58,11 @@ def published_ports(service: dict[str, Any]) -> list[dict[str, Any]]:
 
 def check_document(document: dict[str, Any]) -> None:
     services = mapping(document.get("services"), "services")
-    required = {"sandbox-controller", "api", "worker"}
+    required = {"runtime-provider", "api", "worker"}
     if missing := required - services.keys():
         fail(f"missing services: {', '.join(sorted(missing))}")
 
-    controller = mapping(services["sandbox-controller"], "sandbox-controller")
+    controller = mapping(services["runtime-provider"], "runtime-provider")
     api = mapping(services["api"], "api")
     worker = mapping(services["worker"], "worker")
     worker_labels = mapping(worker.get("labels", {}), "worker labels")
@@ -78,9 +78,9 @@ def check_document(document: dict[str, Any]) -> None:
         for name, service in services.items()
         if socket_mounts(mapping(service, name))
     }
-    if set(holders) != {"sandbox-controller"} or len(holders["sandbox-controller"]) != 1:
-        fail("only sandbox-controller may mount Docker Socket exactly once")
-    socket_mount = holders["sandbox-controller"][0]
+    if set(holders) != {"runtime-provider"} or len(holders["runtime-provider"]) != 1:
+        fail("only runtime-provider may mount Docker Socket exactly once")
+    socket_mount = holders["runtime-provider"][0]
     if socket_mount.get("type") != "bind":
         fail("Docker Socket must be an explicit bind mount")
 
@@ -89,9 +89,9 @@ def check_document(document: dict[str, Any]) -> None:
     if docker_control.get("internal") is not True:
         fail("docker-control network must be internal")
     if network_names(controller) != {"docker-control"}:
-        fail("sandbox-controller must attach only to docker-control")
+        fail("runtime-provider must attach only to docker-control")
     if controller.get("ports") or controller.get("expose"):
-        fail("sandbox-controller must not publish or expose ports")
+        fail("runtime-provider must not publish or expose ports")
     if "docker-control" not in network_names(api) or "docker-control" not in network_names(worker):
         fail("api and worker must reach the controller only through docker-control")
     forbidden_static_sandbox_networks = {
@@ -99,14 +99,14 @@ def check_document(document: dict[str, Any]) -> None:
     }
     if forbidden_static_sandbox_networks:
         fail("disposable sandboxes must not use static shared Compose networks")
-    allowed_control_clients = {"sandbox-controller", "api", "worker"}
+    allowed_control_clients = {"runtime-provider", "api", "worker"}
     attached_to_control = {
         str(name)
         for name, service in services.items()
         if "docker-control" in network_names(mapping(service, str(name)))
     }
     if attached_to_control != allowed_control_clients:
-        fail("only sandbox-controller, api, and worker may attach to docker-control")
+        fail("only runtime-provider, api, and worker may attach to docker-control")
     for name, client in (("api", api), ("worker", worker)):
         if str(client.get("user")) != "10001:10001":
             fail(f"{name} must run explicitly as uid/gid 10001")
@@ -123,43 +123,43 @@ def check_document(document: dict[str, Any]) -> None:
             fail("only worker may carry Runtime client labels")
 
     if str(controller.get("user")) != "10001:10001":
-        fail("sandbox-controller must run explicitly as uid/gid 10001")
+        fail("runtime-provider must run explicitly as uid/gid 10001")
     if controller.get("privileged") is True:
-        fail("sandbox-controller must not run privileged")
+        fail("runtime-provider must not run privileged")
     if controller.get("pid") == "host" or controller.get("ipc") == "host":
-        fail("sandbox-controller must not join host namespaces")
+        fail("runtime-provider must not join host namespaces")
     if controller.get("devices"):
-        fail("sandbox-controller must not receive host devices")
+        fail("runtime-provider must not receive host devices")
     group_add = {str(item) for item in sequence(controller.get("group_add"))}
     if len(group_add) != 1 or not next(iter(group_add), "").isdigit():
-        fail("sandbox-controller must receive exactly one numeric Docker Socket GID")
+        fail("runtime-provider must receive exactly one numeric Docker Socket GID")
     if controller.get("read_only") is not True:
-        fail("sandbox-controller root filesystem must be read-only")
+        fail("runtime-provider root filesystem must be read-only")
     if "ALL" not in {str(item) for item in sequence(controller.get("cap_drop"))}:
-        fail("sandbox-controller must drop all Linux capabilities")
+        fail("runtime-provider must drop all Linux capabilities")
     security_opt = {str(item) for item in sequence(controller.get("security_opt"))}
     if "no-new-privileges:true" not in security_opt:
-        fail("sandbox-controller must enable no-new-privileges")
+        fail("runtime-provider must enable no-new-privileges")
     if not isinstance(controller.get("pids_limit"), int) or controller["pids_limit"] > 256:
-        fail("sandbox-controller must have a PID limit of at most 256")
+        fail("runtime-provider must have a PID limit of at most 256")
     if not any(str(item).startswith("/tmp") for item in sequence(controller.get("tmpfs"))):
-        fail("sandbox-controller must use a bounded writable /tmp tmpfs")
+        fail("runtime-provider must use a bounded writable /tmp tmpfs")
 
     controller_env = environment(controller)
     api_env = environment(api)
     worker_env = environment(worker)
     if controller_env.get("DOCKER_CONTROLLER_MODE") != "local":
-        fail("sandbox-controller must use local Docker control mode")
+        fail("runtime-provider must use local Docker control mode")
     runtime_network_mode = controller_env.get("SANDBOX_RUNTIME_NETWORK_MODE", "")
     if runtime_network_mode not in {"isolated", "egress"}:
-        fail("sandbox-controller Runtime network mode must be isolated or egress")
+        fail("runtime-provider Runtime network mode must be isolated or egress")
     for name, client_env in (("api", api_env), ("worker", worker_env)):
         if client_env.get("DOCKER_CONTROLLER_MODE") != "remote":
             fail(f"{name} must use remote Docker control mode")
-        if client_env.get("DOCKER_CONTROLLER_URL") != "http://sandbox-controller:8090":
-            fail(f"{name} must use the internal sandbox-controller URL")
+        if client_env.get("DOCKER_CONTROLLER_URL") != "http://runtime-provider:8090":
+            fail(f"{name} must use the internal runtime-provider URL")
         if client_env.get("SANDBOX_RUNTIME_NETWORK_MODE") != runtime_network_mode:
-            fail(f"{name} Runtime network mode must match sandbox-controller")
+            fail(f"{name} Runtime network mode must match runtime-provider")
     api_key = api_env.get("DOCKER_CONTROLLER_API_KEY", "")
     worker_key = worker_env.get("DOCKER_CONTROLLER_API_KEY", "")
     if len(api_key) < 32 or len(worker_key) < 32 or api_key == worker_key:

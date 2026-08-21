@@ -12,7 +12,7 @@ FlowWeave 是面向内部研发流程的 Agent 工作台。系统把可复用的
 2. **产物驱动**：节点输入绑定到明确的 Artifact Version；边只提供映射候选，不隐式触发节点。
 3. **人工最终决策**：START Gate 通过后仍需人工确认，END Gate 通过后仍需人工验收。
 4. **执行可恢复**：Runtime、Gate、对话投递和资源回收均由持久化任务驱动，Worker 重启后可以恢复。
-5. **危险能力隔离**：API/Worker 不接触 Docker Socket，统一通过受认证的 Sandbox Controller 使用固定高层操作。
+5. **危险能力隔离**：API/Worker 不接触 Docker Socket，统一通过受认证的 Runtime Provider 使用固定高层操作。
 6. **过程可追溯**：Attempt、Artifact、Binding、Gate Evaluation、Human Action 和 Run Event 形成追加式历史。
 
 ## 2. 业务边界与核心概念
@@ -74,7 +74,7 @@ sequenceDiagram
   participant API as FastAPI API
   participant DB as PostgreSQL
   participant W as Worker
-  participant C as Sandbox Controller
+  participant C as Runtime Provider
   participant R as Agent Runtime
 
   U->>Web: 创建 Flow Run
@@ -166,7 +166,7 @@ flowchart TB
   Worker --> Artifacts
   API --> Workspace[("Node Workspaces")]
   Worker --> Workspace
-  API -->|API principal| Controller["Sandbox Controller"]
+  API -->|API principal| Controller["Runtime Provider"]
   Worker -->|Worker principal| Controller
   Controller -->|唯一 Docker Socket 持有者| Docker["Docker Engine"]
   Docker --> Setup["Setup Sandbox"]
@@ -376,7 +376,7 @@ Schema 只由独立 migration job 变更，API/Worker 启动时不自动迁移�
 | `postgres` | 常驻 | 默认控制网；宿主默认 `127.0.0.1:55432` | `postgres-data` volume |
 | `migration` | 一次性作业 | 默认控制网 | 等待 PostgreSQL 后执行 `alembic upgrade head` |
 | `openhands-agent-server` | 常驻基础 Agent Server/Workspace source | 仅容器内 8000 | Workspace bind、OpenHands state、只读 agent packages |
-| `sandbox-controller` | 常驻特权边界 | 仅 internal `docker-control` 网，容器内 8090 | 唯一挂载 Docker Socket；只读根、drop all caps、no-new-privileges |
+| `runtime-provider` | 常驻特权边界 | 仅 internal `docker-control` 网，容器内 8090 | 唯一挂载 Docker Socket；只读根、drop all caps、no-new-privileges |
 | `api` | 常驻 | 默认网 + internal 控制网；宿主默认 `127.0.0.1:8080` | 非 root 10001；Artifact/Workspace；API Controller key |
 | `worker` | 常驻 | 默认网 + internal 控制网 | 非 root 10001；Artifact/Workspace；独立 Worker Controller key |
 | `web` | 常驻 | 宿主默认 `127.0.0.1:5173` | Nginx 静态站点/反向代理 |
@@ -425,7 +425,7 @@ var/workspaces/
 flowchart LR
   I["workspace-init"] --> O["OpenHands base server"]
   P["PostgreSQL healthy"] --> M["migration complete"]
-  I --> C["Sandbox Controller healthy"]
+  I --> C["Runtime Provider healthy"]
   O --> C
   M --> A["API / Worker"]
   C --> A
@@ -582,7 +582,7 @@ flowchart LR
 | 状态机/编排 | `modules/runs/domain`、`modules/orchestration/application/service.py` |
 | 数据模型 | 各模块 `infrastructure/models.py` |
 | Runtime | `runtime/base.py`、`runtime/openhands.py`、`runtime/workspace.py` |
-| Sandbox/Controller | `bootstrap/sandbox_controller.py`、`modules/sandboxes`、`shared/infrastructure/docker_*` |
+| Runtime Provider | `bootstrap/runtime_provider.py`、`modules/sandboxes`、`shared/infrastructure/docker_*` |
 | 终端环境 | `modules/environments` |
 | 事件/SSE | `modules/runs/infrastructure/event_listener.py`、Run Router |
 | 数据迁移 | `services/platform/migrations/versions` |

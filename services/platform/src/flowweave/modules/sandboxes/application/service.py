@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.engine import Connection, Engine
@@ -36,7 +36,7 @@ class ReconcileReport:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeSandboxAllocation:
+class RuntimeProviderAllocation:
     id: str
     resource_name: str
     base_url: str
@@ -67,6 +67,10 @@ def _control_engine(db: Session) -> Engine:
 
 
 def _renew_runtime_lease(resource: ManagedSandbox, *, now: datetime) -> None:
+    if resource.owner_type == "FLOW_RUN":
+        resource.last_activity_at = now
+        resource.idle_expires_at = None
+        return
     if resource.hard_expires_at <= now:
         raise DomainError(
             "SANDBOX_HARD_EXPIRED",
@@ -74,14 +78,6 @@ def _renew_runtime_lease(resource: ManagedSandbox, *, now: datetime) -> None:
             409,
             {"sandbox_id": resource.id},
         )
-    if bool((resource.spec_json or {}).get("bound")):
-        # Once an Agent has durable state, its owner lifecycle is authoritative.
-        # A human may legitimately leave the Runtime waiting longer than the
-        # idle lease. The absolute hard limit still guarantees eventual cleanup
-        # if every owner-driven deletion path fails.
-        resource.last_activity_at = now
-        resource.idle_expires_at = None
-        return
     settings = get_settings()
     resource.last_activity_at = now
     resource.idle_expires_at = min(
@@ -174,7 +170,7 @@ def create_setup_sandbox(
     return resource
 
 
-def create_runtime_sandbox(
+def _create_managed_runtime(
     db: Session,
     *,
     flow_run_id: str | None = None,
@@ -184,22 +180,45 @@ def create_runtime_sandbox(
     environment_id: str,
     environment_version_id: str,
     environment_version_no: int,
-    workspace_relative: str,
-    memory_enabled: bool = False,
-    memory_working_dir_relative: str = "",
-) -> RuntimeSandboxAllocation:
+    workspace_relative: str = "",
+) -> RuntimeProviderAllocation:
     provider = DockerSandboxProvider(get_settings())
     provider.require_enabled()
+    flow_run_runtime = owner_type == "FLOW_RUN"
+    if flow_run_runtime != (flow_run_id is not None):
+        raise DomainError(
+            "RUNTIME_PROVIDER_OWNER_INVALID",
+            "FlowRun Runtime ownership must include exactly one FlowRun allocation",
+            422,
+            {"owner_type": owner_type, "owner_id": owner_id},
+        )
+    if flow_run_runtime and owner_id != flow_run_id:
+        raise DomainError(
+            "RUNTIME_PROVIDER_OWNER_INVALID",
+            "The Runtime Provider owner must be the allocated FlowRun",
+            422,
+            {"owner_type": owner_type, "owner_id": owner_id},
+        )
+    if not flow_run_runtime and owner_type not in {
+        "CAPABILITY_VALIDATION",
+        "MCP_OAUTH_AUTHORIZATION",
+    }:
+        raise DomainError(
+            "RUNTIME_PROVIDER_OWNER_INVALID",
+            "Temporary Runtime ownership must identify a validation or OAuth lifecycle",
+            422,
+            {"owner_type": owner_type, "owner_id": owner_id},
+        )
+    if flow_run_runtime == bool(workspace_relative):
+        raise DomainError(
+            "RUNTIME_PROVIDER_WORKSPACE_INVALID",
+            "Only temporary Runtimes may select an isolated workspace subdirectory",
+            422,
+            {"owner_type": owner_type, "owner_id": owner_id},
+        )
     flow_run_allocation = (
         runtime_allocation_for_flow_run(db, flow_run_id) if flow_run_id else None
     )
-    if owner_type in {"ATTEMPT", "CONVERSATION"} and flow_run_allocation is None:
-        raise DomainError(
-            "FLOW_RUN_RUNTIME_ALLOCATION_REQUIRED",
-            "FlowRun Agent Runtime creation requires external storage allocation",
-            409,
-            {"owner_type": owner_type, "owner_id": owner_id},
-        )
     runtime_secret_key = (
         resolve_runtime_secret(db, flow_run_allocation.id)
         if flow_run_allocation is not None
@@ -260,15 +279,10 @@ def create_runtime_sandbox(
                         ),
                         spec_json={
                             "port": 8000,
-                            "bound": False,
-                            "workspace_relative": workspace_relative,
                             "environment_id": environment_id,
                             "environment_version_id": environment_version_id,
                             "environment_version_no": environment_version_no,
-                            "memory_enabled": memory_enabled,
-                            "memory_working_dir_relative": (
-                                memory_working_dir_relative if memory_enabled else None
-                            ),
+                            "workspace_relative": workspace_relative or None,
                             "flow_run_id": flow_run_id,
                             "runtime_allocation_id": (
                                 flow_run_allocation.id
@@ -287,7 +301,9 @@ def create_runtime_sandbox(
                             ),
                         },
                         idle_expires_at=created_at
-                        + timedelta(seconds=get_settings().sandbox_runtime_idle_ttl_seconds),
+                        + timedelta(seconds=get_settings().sandbox_runtime_idle_ttl_seconds)
+                        if not flow_run_runtime
+                        else None,
                         hard_expires_at=created_at
                         + timedelta(seconds=get_settings().sandbox_runtime_hard_ttl_seconds),
                         observed_state="CREATING",
@@ -304,9 +320,6 @@ def create_runtime_sandbox(
                     != environment_version_id
                     or int((resource.spec_json or {}).get("environment_version_no") or 0)
                     != environment_version_no
-                    or bool((resource.spec_json or {}).get("memory_enabled")) != memory_enabled
-                    or str((resource.spec_json or {}).get("memory_working_dir_relative") or "")
-                    != (memory_working_dir_relative if memory_enabled else "")
                 ):
                     raise DomainError(
                         "SANDBOX_SPEC_CONFLICT",
@@ -333,7 +346,7 @@ def create_runtime_sandbox(
                 resource.last_error_code = None
                 resource.last_error_detail = None
                 control_db.commit()
-                allocation = RuntimeSandboxAllocation(
+                allocation = RuntimeProviderAllocation(
                     id=resource.id,
                     resource_name=resource.backend_resource_name,
                     base_url=f"http://{resource.backend_resource_name}:8000",
@@ -346,25 +359,52 @@ def create_runtime_sandbox(
     return allocation
 
 
-def mark_runtime_bound(db: Session, sandbox_id: str | None) -> None:
-    """Durably mark a Runtime as carrying Agent state before business CAS."""
+def ensure_flow_run_runtime(
+    db: Session,
+    *,
+    flow_run_id: str,
+    image: str,
+    environment_id: str,
+    environment_version_id: str,
+    environment_version_no: int,
+) -> RuntimeProviderAllocation:
+    """Return the single physical Runtime Provider allocation for one FlowRun."""
 
-    if not sandbox_id:
-        return
-    with Session(bind=_control_engine(db), expire_on_commit=False) as control_db:
-        resource = control_db.get(ManagedSandbox, sandbox_id)
-        if resource is None or resource.kind != "AGENT_RUNTIME":
-            raise not_found("managed_sandbox", sandbox_id)
-        if resource.desired_state != "RUNNING":
-            raise DomainError(
-                "SANDBOX_NOT_ACTIVE",
-                "The Runtime sandbox is no longer active",
-                409,
-                {"sandbox_id": sandbox_id},
-            )
-        resource.spec_json = {**(resource.spec_json or {}), "bound": True}
-        _renew_runtime_lease(resource, now=datetime.now(UTC))
-        control_db.commit()
+    return _create_managed_runtime(
+        db,
+        flow_run_id=flow_run_id,
+        owner_type="FLOW_RUN",
+        owner_id=flow_run_id,
+        image=image,
+        environment_id=environment_id,
+        environment_version_id=environment_version_id,
+        environment_version_no=environment_version_no,
+    )
+
+
+def create_temporary_runtime(
+    db: Session,
+    *,
+    owner_type: Literal["CAPABILITY_VALIDATION", "MCP_OAUTH_AUTHORIZATION"],
+    owner_id: str,
+    image: str,
+    environment_id: str,
+    environment_version_id: str,
+    environment_version_no: int,
+    workspace_relative: str,
+) -> RuntimeProviderAllocation:
+    """Create compute for an explicit non-conversation temporary lifecycle."""
+
+    return _create_managed_runtime(
+        db,
+        owner_type=owner_type,
+        owner_id=owner_id,
+        image=image,
+        environment_id=environment_id,
+        environment_version_id=environment_version_id,
+        environment_version_no=environment_version_no,
+        workspace_relative=workspace_relative,
+    )
 
 
 def touch_runtime(db: Session, sandbox_id: str | None) -> None:
@@ -424,6 +464,23 @@ def delete_sandbox_now(db: Session, sandbox_id: str) -> None:
     # The deletion intent remains durable until the external resource is gone.
     # Once Docker confirms cleanup, absence of the ledger row is authoritative.
     db.delete(resource)
+
+
+def delete_flow_run_runtimes_now(db: Session, flow_run_id: str) -> None:
+    """Delete every physical generation owned by one explicitly deleted FlowRun."""
+
+    sandbox_ids = list(
+        db.scalars(
+            select(ManagedSandbox.id).where(
+                ManagedSandbox.kind == "AGENT_RUNTIME",
+                ManagedSandbox.owner_type == "FLOW_RUN",
+                ManagedSandbox.owner_id == flow_run_id,
+            )
+        )
+    )
+    for sandbox_id in sandbox_ids:
+        delete_sandbox_now(db, sandbox_id)
+    db.flush()
 
 
 def request_delete(db: Session, sandbox_id: str) -> None:
@@ -531,12 +588,10 @@ def _owner_is_active(
 ) -> bool:
     """Return whether the durable owner still authorizes this resource to run.
 
-    The owner reference is checked as well as its state. This closes the crash
-    window between durably binding a newly-created Runtime sandbox and writing
-    that sandbox ID back through the business aggregate's compare-and-swap.
-    A short grace period covers the intentional two-phase Runtime allocation:
-    the ledger and container are durable before the aggregate CAS stores the
-    sandbox ID. Unknown owner types fail closed after the same grace period.
+    A FlowRun Runtime is deleted only by the explicit FlowRun deletion path;
+    missing allocation/Secret metadata must leave it diagnosable rather than
+    infer destructive cleanup. Temporary owners use their explicit lifecycle.
+    Unknown owner types fail closed after a short creation grace.
     """
 
     if resource.owner_type == "SETUP_SESSION":
@@ -550,28 +605,12 @@ def _owner_is_active(
             now=now,
             binding_grace_seconds=binding_grace_seconds,
         )
-    if resource.owner_type == "ATTEMPT":
-        from flowweave.modules.orchestration.public import attempt_sandbox_owner_is_active
-
-        return attempt_sandbox_owner_is_active(
-            db,
-            resource.owner_id,
-            resource.id,
-            created_at=resource.created_at,
-            now_at=now,
-            binding_grace_seconds=binding_grace_seconds,
-        )
-    if resource.owner_type == "CONVERSATION":
-        from flowweave.modules.conversations.public import conversation_sandbox_owner_is_active
-
-        return conversation_sandbox_owner_is_active(
-            db,
-            resource.owner_id,
-            resource.id,
-            created_at=resource.created_at,
-            now_at=now,
-            binding_grace_seconds=binding_grace_seconds,
-        )
+    if resource.owner_type == "FLOW_RUN":
+        return True
+    if resource.owner_type in {"ATTEMPT", "CONVERSATION"}:
+        # These are legacy pre-FR-03 ownership modes. New code cannot create
+        # them; reconciliation only drains and deletes any remaining resource.
+        return False
     if resource.owner_type == "CAPABILITY_VALIDATION":
         from flowweave.modules.catalog.public import capability_validation_owner_is_active
 
@@ -616,19 +655,17 @@ def _claim_reconcile_batch(
                 binding_grace_seconds=binding_grace_seconds,
             )
             owner_inactive = not owner_active
-            bound_runtime = resource.kind == "AGENT_RUNTIME" and bool(
-                (resource.spec_json or {}).get("bound")
-            )
             idle_expired = (
                 resource.kind == "AGENT_RUNTIME"
-                and not bound_runtime
+                and resource.owner_type != "FLOW_RUN"
                 and resource.idle_expires_at is not None
                 and resource.idle_expires_at <= now
             )
-            # The hard expiry is an absolute safety boundary. Owner activity may
-            # suppress the renewable idle lease, but must never turn a managed
-            # container into an unbounded host resource.
-            hard_expired = resource.hard_expires_at <= now
+            # Temporary compute retains an absolute safety boundary. FlowRun
+            # compute follows the explicit Run lifecycle instead of a wall clock.
+            hard_expired = (
+                resource.owner_type != "FLOW_RUN" and resource.hard_expires_at <= now
+            )
             if (hard_expired or idle_expired or owner_inactive) and (
                 resource.desired_state != "DELETED"
             ):
@@ -672,7 +709,7 @@ def _perform_reconcile(
         if (
             observation is None
             and resource.kind == "AGENT_RUNTIME"
-            and bool((resource.spec_json or {}).get("bound"))
+            and resource.owner_type == "FLOW_RUN"
         ):
             return _ReconcileOutcome("RUNTIME_LOST")
         observation = provider.ensure_running(

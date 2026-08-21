@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.catalog.application import mcp_oauth_secrets
 from flowweave.modules.catalog.application.capability_repository import resolve_version
 from flowweave.modules.environments.public import lock_referenceable_version
-from flowweave.modules.sandboxes.public import create_runtime_sandbox, request_delete_durable
+from flowweave.modules.sandboxes.public import create_temporary_runtime, request_delete_durable
 from flowweave.runtime.base import (
     RuntimeMCPProbeRequest,
     RuntimeMCPProbeResult,
@@ -127,7 +127,7 @@ def allocate_probe_runtime(db: Session, plan: MCPProbePlan) -> RuntimeMCPProbeRe
         },
         plan.validation_id,
     )
-    allocation = create_runtime_sandbox(
+    allocation = create_temporary_runtime(
         db,
         owner_type="CAPABILITY_VALIDATION",
         owner_id=plan.validation_id,

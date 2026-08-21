@@ -116,39 +116,6 @@ from flowweave.shared.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
-def attempt_sandbox_owner_is_active(
-    db: Session,
-    owner_id: str,
-    sandbox_id: str,
-    *,
-    created_at: datetime,
-    now_at: datetime,
-    binding_grace_seconds: int,
-) -> bool:
-    """Report whether an Attempt still authorizes its Runtime sandbox."""
-
-    item = db.get(NodeAttempt, owner_id)
-    provisioning = bool(
-        item is not None
-        and item.runtime_sandbox_id is None
-        and item.runtime_phase == "STARTING"
-        and created_at + timedelta(seconds=binding_grace_seconds) > now_at
-    )
-    return bool(
-        provisioning
-        or (
-            item is not None
-            and item.runtime_sandbox_id == sandbox_id
-            and item.state
-            not in {
-                AttemptState.ACCEPTED,
-                AttemptState.REJECTED,
-                AttemptState.CANCELLED,
-            }
-        )
-    )
-
-
 def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -2098,18 +2065,13 @@ def process_start_runtime(
     allocation = None
     if request.environment_image and get_settings().runtime_adapter != "mock":
         try:
-            allocation = sandboxes.create_runtime_sandbox(
+            allocation = sandboxes.ensure_flow_run_runtime(
                 db,
                 flow_run_id=flow_run_id,
-                owner_type="ATTEMPT",
-                owner_id=attempt.id,
                 image=request.environment_image,
                 environment_id=request.environment_id,
                 environment_version_id=request.environment_version_id,
                 environment_version_no=request.environment_version_no,
-                workspace_relative=request.runtime_workspace_relative,
-                memory_enabled=request.memory_enabled,
-                memory_working_dir_relative=request.runtime_working_dir_relative,
             )
         except BaseException:
             if request.memory_enabled:
@@ -2127,8 +2089,6 @@ def process_start_runtime(
     handle: RuntimeHandle | None = None
     try:
         handle = get_runtime().start(request)
-        if allocation is not None:
-            sandboxes.mark_runtime_bound(db, allocation.id)
         _require_current_lease(db, lease)
     except BaseException:
         if handle is not None:
@@ -2136,8 +2096,8 @@ def process_start_runtime(
                 get_runtime().cancel(handle)
             except Exception:
                 pass
-        if allocation is not None:
-            sandboxes.request_delete_durable(db, allocation.id)
+        if request.memory_enabled:
+            cleanup_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id)
         raise
     claimed = _claim_runtime_phase(
         db,
@@ -2155,8 +2115,8 @@ def process_start_runtime(
     if claimed is None:
         _release_worker_read_transaction(db, lease)
         get_runtime().cancel(handle)
-        if allocation is not None:
-            sandboxes.request_delete_durable(db, allocation.id)
+        if request.memory_enabled:
+            cleanup_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id)
         _require_current_lease(db, lease)
         return
     conversations.bind_auto_runtime(
@@ -2873,7 +2833,7 @@ def _runtime_cancel_targets(
 
 
 def _managed_runtime_sandbox_ids(db: Session, attempt: NodeAttempt) -> set[str]:
-    return {
+    candidates = {
         sandbox_id
         for sandbox_id in (
             attempt.runtime_sandbox_id,
@@ -2885,6 +2845,16 @@ def _managed_runtime_sandbox_ids(db: Session, attempt: NodeAttempt) -> set[str]:
             ),
         )
         if sandbox_id
+    }
+    # Attempt cancellation may stop its OpenHands Conversation, but a FlowRun
+    # Runtime Provider allocation belongs to the Run and can host other work.
+    # Only legacy per-Attempt/per-Conversation containers remain eligible for
+    # the old whole-container recovery path until reconciliation drains them.
+    return {
+        sandbox_id
+        for sandbox_id in candidates
+        if (sandboxes.sandbox_snapshot(db, sandbox_id) or {}).get("owner_type")
+        != "FLOW_RUN"
     }
 
 
@@ -4013,6 +3983,21 @@ def delete_run(db: Session, run_id: str) -> None:
                 adapter, handle, run_id
             ),
         )
+    for attempt_id in attempt_ids:
+        register_commit_action(
+            db,
+            lambda attempt_id=attempt_id: cleanup_runtime_memory(
+                owner_type="ATTEMPT", owner_id=attempt_id
+            ),
+        )
+    for conversation_id in conversation_ids:
+        register_commit_action(
+            db,
+            lambda conversation_id=conversation_id: cleanup_runtime_memory(
+                owner_type="CONVERSATION", owner_id=conversation_id
+            ),
+        )
+    sandboxes.delete_flow_run_runtimes_now(db, run.id)
     sandboxes.delete_flow_run_runtime_allocation(db, run.id)
     db.delete(run)
     store = get_artifact_store()

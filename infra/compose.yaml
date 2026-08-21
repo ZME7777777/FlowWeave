@@ -41,7 +41,7 @@ x-docker-client-env: &docker-client-env
   SANDBOX_STORAGE_SIZE: ${SANDBOX_STORAGE_SIZE:-4g}
   TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS: ${TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS:-4}
   DOCKER_CONTROLLER_MODE: remote
-  DOCKER_CONTROLLER_URL: http://sandbox-controller:8090
+  DOCKER_CONTROLLER_URL: http://runtime-provider:8090
 
 services:
   workspace-init:
@@ -104,9 +104,9 @@ services:
     depends_on:
       workspace-init: { condition: service_completed_successfully }
 
-  sandbox-controller:
+  runtime-provider:
     build: { context: .., dockerfile: services/platform/Dockerfile }
-    command: ["uvicorn", "flowweave.bootstrap.sandbox_controller:create_app", "--host", "0.0.0.0", "--port", "8090", "--factory"]
+    command: ["uvicorn", "flowweave.bootstrap.runtime_provider:create_app", "--host", "0.0.0.0", "--port", "8090", "--factory"]
     user: "10001:10001"
     read_only: true
     cap_drop: ["ALL"]
@@ -176,7 +176,7 @@ services:
     depends_on:
       migration: { condition: service_completed_successfully }
       openhands-agent-server: { condition: service_healthy }
-      sandbox-controller: { condition: service_healthy }
+      runtime-provider: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
@@ -206,7 +206,7 @@ services:
     depends_on:
       migration: { condition: service_completed_successfully }
       openhands-agent-server: { condition: service_healthy }
-      sandbox-controller: { condition: service_healthy }
+      runtime-provider: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     restart: unless-stopped
     networks:

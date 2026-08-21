@@ -11,7 +11,7 @@ def main() -> None:
     if settings.sandbox_backend != "docker":
         raise SystemExit("SANDBOX_BACKEND must be docker")
     # Exercise the same control boundary as production. In Compose this routes
-    # through the authenticated sandbox-controller; local mode still uses the
+    # through the authenticated runtime-provider; local mode still uses the
     # ownership-labelled Docker adapter.
     sandbox = build_sandbox(settings)
     python = sandbox.execute(

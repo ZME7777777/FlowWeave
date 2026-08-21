@@ -19,12 +19,12 @@ _WORKER_KEY = "compose-worker-key-with-at-least-32-characters"
 def _document() -> dict[str, Any]:
     client_environment = {
         "DOCKER_CONTROLLER_MODE": "remote",
-        "DOCKER_CONTROLLER_URL": "http://sandbox-controller:8090",
+        "DOCKER_CONTROLLER_URL": "http://runtime-provider:8090",
         "SANDBOX_RUNTIME_NETWORK_MODE": "egress",
     }
     return {
         "services": {
-            "sandbox-controller": {
+            "runtime-provider": {
                 "user": "10001:10001",
                 "read_only": True,
                 "cap_drop": ["ALL"],
@@ -99,7 +99,7 @@ def _copy_runtime_client_identity(document: dict[str, Any]) -> None:
 
 
 def _make_controller_privileged(document: dict[str, Any]) -> None:
-    document["services"]["sandbox-controller"]["privileged"] = True
+    document["services"]["runtime-provider"]["privileged"] = True
 
 
 def _run_worker_as_root(document: dict[str, Any]) -> None:
@@ -112,19 +112,19 @@ def _use_local_worker_control(document: dict[str, Any]) -> None:
 
 def _reuse_api_key_for_worker(document: dict[str, Any]) -> None:
     document["services"]["worker"]["environment"]["DOCKER_CONTROLLER_API_KEY"] = _API_KEY
-    document["services"]["sandbox-controller"]["environment"][
+    document["services"]["runtime-provider"]["environment"][
         "DOCKER_CONTROLLER_WORKER_API_KEY"
     ] = _API_KEY
 
 
 def _leak_database_credentials(document: dict[str, Any]) -> None:
-    document["services"]["sandbox-controller"]["environment"]["DATABASE_URL"] = (
+    document["services"]["runtime-provider"]["environment"]["DATABASE_URL"] = (
         "postgresql://example.invalid/flowweave"
     )
 
 
 def _use_symbolic_socket_group(document: dict[str, Any]) -> None:
-    document["services"]["sandbox-controller"]["group_add"] = ["docker"]
+    document["services"]["runtime-provider"]["group_add"] = ["docker"]
 
 
 def _drift_runtime_network_mode(document: dict[str, Any]) -> None:
@@ -143,8 +143,8 @@ def _publish_api_on_all_interfaces(document: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     ("mutate", "message"),
     (
-        (_leak_socket, "only sandbox-controller may mount Docker Socket"),
-        (_attach_untrusted_service, "only sandbox-controller, api, and worker"),
+        (_leak_socket, "only runtime-provider may mount Docker Socket"),
+        (_attach_untrusted_service, "only runtime-provider, api, and worker"),
         (_copy_runtime_client_identity, "only worker may carry Runtime client labels"),
         (_make_controller_privileged, "must not run privileged"),
         (_run_worker_as_root, "worker must run explicitly as uid/gid 10001"),

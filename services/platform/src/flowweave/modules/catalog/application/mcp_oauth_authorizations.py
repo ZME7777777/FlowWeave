@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.catalog.application import mcp_oauth_secrets
 from flowweave.modules.catalog.application.capability_repository import resolve_version
 from flowweave.modules.environments.public import lock_referenceable_version
-from flowweave.modules.sandboxes.public import create_runtime_sandbox, request_delete_durable
+from flowweave.modules.sandboxes.public import create_temporary_runtime, request_delete_durable
 from flowweave.runtime.base import (
     RuntimeMCPOAuthCallbackRequest,
     RuntimeMCPOAuthJobRequest,
@@ -267,7 +267,7 @@ def allocate_authorization_runtime(
         },
         plan.authorization_id,
     )
-    allocation = create_runtime_sandbox(
+    allocation = create_temporary_runtime(
         db,
         owner_type="MCP_OAUTH_AUTHORIZATION",
         owner_id=plan.authorization_id,

@@ -66,7 +66,7 @@ from flowweave.runtime.request import (
     resolve_runtime_selection,
 )
 from flowweave.runtime.routing import runtime_for
-from flowweave.runtime.workspace import materialize_runtime_memory
+from flowweave.runtime.workspace import cleanup_runtime_memory, materialize_runtime_memory
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
@@ -155,48 +155,6 @@ def _conversation(db: Session, conversation_id: str, *, lock: bool = False) -> A
     if item is None:
         raise not_found("agent_conversation", conversation_id)
     return item
-
-
-def conversation_sandbox_owner_is_active(
-    db: Session,
-    owner_id: str,
-    sandbox_id: str,
-    *,
-    created_at: datetime,
-    now_at: datetime,
-    binding_grace_seconds: int,
-) -> bool:
-    """Report whether a human conversation still authorizes its Runtime sandbox."""
-
-    item = db.get(AgentConversation, owner_id)
-    shared_branch_active = (
-        db.scalar(
-            select(AgentConversation.id)
-            .where(
-                AgentConversation.runtime_sandbox_id == sandbox_id,
-                AgentConversation.state.not_in(
-                    [ConversationState.FAILED, ConversationState.READ_ONLY]
-                ),
-            )
-            .limit(1)
-        )
-        is not None
-    )
-    provisioning = bool(
-        item is not None
-        and item.runtime_sandbox_id is None
-        and item.state == ConversationState.CREATING
-        and created_at + timedelta(seconds=binding_grace_seconds) > now_at
-    )
-    return bool(
-        provisioning
-        or shared_branch_active
-        or (
-            item is not None
-            and item.runtime_sandbox_id == sandbox_id
-            and item.state not in {ConversationState.FAILED, ConversationState.READ_ONLY}
-        )
-    )
 
 
 def _runtime_sandbox_id(db: Session, item: AgentConversation) -> str | None:
@@ -811,9 +769,9 @@ def _runtime_resource(db: Session, item: AgentConversation) -> dict[str, Any] | 
         "observed_state": sandbox["observed_state"],
         "lifecycle": lifecycle,
         "cleanup_policy": (
-            "DELETE_WITH_CONVERSATION"
-            if sandbox.get("owner_type") == "CONVERSATION"
-            else "DELETE_WITH_ATTEMPT"
+            "DELETE_WITH_FLOW_RUN"
+            if sandbox.get("owner_type") == "FLOW_RUN"
+            else "DELETE_LEGACY_OWNER"
         ),
     }
 
@@ -827,17 +785,17 @@ def _connection_status(db: Session, item: AgentConversation) -> dict[str, Any]:
         return {"phase": "READY", "started_at": item.updated_at.isoformat()}
 
     automatic = item.kind == ConversationKind.AUTO
-    owner_type = "ATTEMPT" if automatic else "CONVERSATION"
-    owner_id = item.attempt_id if automatic else item.id
+    _, flow_run_id = _context(db, _attempt(db, item.attempt_id))
     task_type = "START_RUNTIME" if automatic else "CREATE_CONVERSATION"
     sandbox = sandboxes.latest_runtime_sandbox_snapshot(
-        db, owner_type=owner_type, owner_id=owner_id
+        db, owner_type="FLOW_RUN", owner_id=flow_run_id
     )
+    task_owner_id = item.attempt_id if automatic else item.id
     task = db.scalar(
         select(BackgroundTask)
         .where(
             BackgroundTask.task_type == task_type,
-            BackgroundTask.aggregate_id == owner_id,
+            BackgroundTask.aggregate_id == task_owner_id,
         )
         .order_by(BackgroundTask.created_at.desc())
         .limit(1)
@@ -4270,18 +4228,13 @@ def process_create_conversation(
     allocation = None
     if request.environment_image and get_settings().runtime_adapter != "mock":
         try:
-            allocation = sandboxes.create_runtime_sandbox(
+            allocation = sandboxes.ensure_flow_run_runtime(
                 db,
                 flow_run_id=run.id,
-                owner_type="CONVERSATION",
-                owner_id=item.id,
                 image=request.environment_image,
                 environment_id=request.environment_id,
                 environment_version_id=request.environment_version_id,
                 environment_version_no=request.environment_version_no,
-                workspace_relative=request.runtime_workspace_relative,
-                memory_enabled=request.memory_enabled,
-                memory_working_dir_relative=request.runtime_working_dir_relative,
             )
         except BaseException:
             if request.memory_enabled:
@@ -4299,18 +4252,14 @@ def process_create_conversation(
     db.rollback()
     try:
         handle = get_runtime().create_conversation(request)
-        if allocation is not None:
-            sandboxes.mark_runtime_bound(db, allocation.id)
     except BaseException:
-        if allocation is not None:
-            sandboxes.request_delete_durable(db, allocation.id)
+        if request.memory_enabled:
+            cleanup_runtime_memory(owner_type="CONVERSATION", owner_id=item.id)
         raise
     if not lease_is_current(db, lease):
-        try:
-            get_runtime().cancel(handle)
-        finally:
-            if allocation is not None:
-                sandboxes.request_delete_durable(db, allocation.id)
+        get_runtime().cancel(handle)
+        if request.memory_enabled:
+            cleanup_runtime_memory(owner_type="CONVERSATION", owner_id=item.id)
         raise RuntimeError("task lease was lost during conversation creation")
     claimed = db.scalar(
         update(AgentConversation)
@@ -4334,8 +4283,8 @@ def process_create_conversation(
     if claimed is None:
         db.rollback()
         get_runtime().cancel(handle)
-        if allocation is not None:
-            sandboxes.request_delete_durable(db, allocation.id)
+        if request.memory_enabled:
+            cleanup_runtime_memory(owner_type="CONVERSATION", owner_id=item.id)
         return
     db.expire_all()
     current = _conversation(db, conversation_id)

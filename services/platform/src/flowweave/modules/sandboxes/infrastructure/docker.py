@@ -259,7 +259,7 @@ chmod 0700 "$target"
             except DockerControllerError as exc:
                 raise DomainError(
                     "SANDBOX_BACKEND_UNAVAILABLE",
-                    "The Docker sandbox controller is unavailable",
+                    "The Docker Runtime Provider is unavailable",
                     503,
                 ) from exc
         name = self.environment_credential_volume_name(environment_id)
@@ -441,7 +441,7 @@ chmod 0700 "$target"
             except DockerControllerError as exc:
                 raise DomainError(
                     "SANDBOX_BACKEND_UNAVAILABLE",
-                    "The Docker sandbox controller is unavailable",
+                    "The Docker Runtime Provider is unavailable",
                     503,
                 ) from exc
             return self._observation_from_remote(raw)
@@ -1084,7 +1084,9 @@ chmod 0700 "$target"
         runtime_allocation_id = str(spec.get("runtime_allocation_id") or "")
         relative = PurePosixPath(relative_raw)
         if (
-            relative.is_absolute()
+            resource.owner_type != "FLOW_RUN"
+            or resource.owner_id != flow_run_id
+            or relative.is_absolute()
             or len(relative.parts) != 3
             or relative.parts[0] != ".flow-run-runtimes"
             or relative.parts[-1] != flow_run_id
@@ -1227,60 +1229,6 @@ chmod 0700 "$target"
                 "dst=/runtime/capabilities,readonly"
             ),
         ]
-        if bool(spec.get("memory_enabled")):
-            workspace_relative = PurePosixPath(str(spec.get("workspace_relative") or ""))
-            working_relative = PurePosixPath(
-                str(spec.get("memory_working_dir_relative") or "")
-            )
-            if (
-                resource.owner_type not in {"ATTEMPT", "CONVERSATION"}
-                or not workspace_relative.parts
-                or workspace_relative.is_absolute()
-                or not working_relative.parts
-                or working_relative.is_absolute()
-                or any(
-                    part in {"", ".", ".."}
-                    for part in (*workspace_relative.parts, *working_relative.parts)
-                )
-            ):
-                raise DomainError(
-                    "SANDBOX_WORKSPACE_INVALID",
-                    "The governed Memory mount contract is invalid",
-                    422,
-                )
-            owner_key = re.sub(r"[^A-Za-z0-9._-]+", "-", resource.owner_id).strip(".-")
-            if not owner_key:
-                raise DomainError(
-                    "SANDBOX_WORKSPACE_INVALID",
-                    "The governed Memory owner identity is invalid",
-                    422,
-                )
-            memory_relative = (
-                PurePosixPath(".managed-memory")
-                / resource.owner_type.lower()
-                / owner_key[:160]
-                / "runtime"
-            )
-            memory_source = source_root.joinpath(*memory_relative.parts)
-            project_memory_target = (
-                PurePosixPath("/runtime/workspace/project")
-                .joinpath(*workspace_relative.parts)
-                .joinpath(*working_relative.parts)
-                / ".openhands"
-                / "memory"
-            )
-            specifications.extend(
-                [
-                    (
-                        f"type=bind,src={memory_source / 'user'},"
-                        "dst=/home/flowweave/.openhands/memory,readonly"
-                    ),
-                    (
-                        f"type=bind,src={memory_source / 'project'},"
-                        f"dst={project_memory_target},readonly"
-                    ),
-                ]
-            )
         return [item for value in specifications for item in ("--mount", value)]
 
     def _wait_for_agent_server(self, resource_name: str) -> None:
@@ -1353,7 +1301,7 @@ chmod 0700 "$target"
             except DockerControllerError as exc:
                 raise DomainError(
                     "SANDBOX_BACKEND_UNAVAILABLE",
-                    "The Docker sandbox controller is unavailable",
+                    "The Docker Runtime Provider is unavailable",
                     503,
                 ) from exc
             if raw is None:
@@ -1416,7 +1364,7 @@ chmod 0700 "$target"
             except DockerControllerError as exc:
                 raise DomainError(
                     "SANDBOX_BACKEND_UNAVAILABLE",
-                    "The Docker sandbox controller is unavailable",
+                    "The Docker Runtime Provider is unavailable",
                     503,
                 ) from exc
         try:
@@ -1500,7 +1448,7 @@ chmod 0700 "$target"
             except DockerControllerError as exc:
                 raise DomainError(
                     "SANDBOX_BACKEND_UNAVAILABLE",
-                    "The Docker sandbox controller is unavailable",
+                    "The Docker Runtime Provider is unavailable",
                     503,
                 ) from exc
             if not isinstance(raw, list):
@@ -1650,8 +1598,7 @@ def backend_name(
     if not owner_type or not owner_id:
         return f"fw-sbx-{resource_key}"
     owner_kind = {
-        "ATTEMPT": "auto",
-        "CONVERSATION": "conv",
+        "FLOW_RUN": "run",
         "SETUP_SESSION": "setup",
         "CAPABILITY_VALIDATION": "probe",
         "MCP_OAUTH_AUTHORIZATION": "oauth",

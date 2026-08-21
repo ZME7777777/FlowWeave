@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     terminal_environment_publish_timeout_seconds: int = Field(default=600, ge=30, le=3600)
     docker_binary: str = "docker"
     docker_controller_mode: str = "local"
-    docker_controller_url: str = "http://sandbox-controller:8090"
+    docker_controller_url: str = "http://runtime-provider:8090"
     docker_controller_api_key: str = ""
     docker_controller_worker_api_key: str = ""
     docker_controller_terminal_idle_seconds: int = Field(default=1800, ge=60, le=86_400)
