@@ -117,6 +117,7 @@ services:
     environment:
       OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OPENHANDS_WORKSPACE_ROOT: /workspaces
+      FLOW_RUN_RUNTIME_VALIDATION_ROOT: /runtime-storage
       DEPENDENCY_BUILDER_BACKEND: docker
       DEPENDENCY_BUILDER_IMAGE: ${DEPENDENCY_BUILDER_IMAGE:-flowweave-dependency-builder:1}
       DEPENDENCY_BUILDER_TIMEOUT_SECONDS: ${DEPENDENCY_BUILDER_TIMEOUT_SECONDS:-300}
@@ -143,6 +144,10 @@ services:
     group_add: ["${DOCKER_SOCKET_GID:-0}"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        target: /runtime-storage
+        read_only: true
     depends_on:
       openhands-agent-server: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }

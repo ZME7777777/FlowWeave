@@ -5,10 +5,11 @@ import json
 import os
 import re
 import subprocess
+import stat
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from flowweave.bootstrap.settings import Settings
@@ -414,22 +415,27 @@ chmod 0700 "$target"
             )
         return actual_digest
 
-    def ensure_running(self, resource: ManagedSandbox) -> DockerObservation:
+    def ensure_running(
+        self, resource: ManagedSandbox, *, runtime_secret_key: str | None = None
+    ) -> DockerObservation:
         self.require_enabled()
         if controller_is_remote(self.settings):
+            payload: dict[str, object] = {
+                "id": resource.id,
+                "kind": resource.kind,
+                "owner_type": resource.owner_type,
+                "owner_id": resource.owner_id,
+                "backend_resource_name": resource.backend_resource_name,
+                "image_reference": resource.image_reference,
+                "spec": resource.spec_json or {},
+                "created_at": resource.created_at.isoformat(),
+            }
+            if resource.kind == "AGENT_RUNTIME":
+                payload["runtime_secret_key"] = runtime_secret_key
             try:
                 raw = DockerControllerClient(self.settings).post(
                     "/v1/sandboxes/ensure",
-                    {
-                        "id": resource.id,
-                        "kind": resource.kind,
-                        "owner_type": resource.owner_type,
-                        "owner_id": resource.owner_id,
-                        "backend_resource_name": resource.backend_resource_name,
-                        "image_reference": resource.image_reference,
-                        "spec": resource.spec_json or {},
-                        "created_at": resource.created_at.isoformat(),
-                    },
+                    payload,
                     timeout=self.settings.terminal_environment_start_timeout_seconds + 30,
                 )
             except DockerControllerError as exc:
@@ -481,7 +487,11 @@ chmod 0700 "$target"
         self._prepare_environment_home(
             home_volume, verified_image_reference=verified_image_reference
         )
-        command = self._create_command(resource, verified_image_reference=verified_image_reference)
+        command = self._create_command(
+            resource,
+            verified_image_reference=verified_image_reference,
+            runtime_secret_key=runtime_secret_key,
+        )
         try:
             self._run(command, timeout=self.settings.terminal_environment_start_timeout_seconds)
         except DomainError as exc:
@@ -759,7 +769,11 @@ chmod 0700 "$target"
         ]
 
     def _create_command(
-        self, resource: ManagedSandbox, *, verified_image_reference: str
+        self,
+        resource: ManagedSandbox,
+        *,
+        verified_image_reference: str,
+        runtime_secret_key: str | None = None,
     ) -> list[str]:
         if not self._is_image_digest(verified_image_reference):
             raise DomainError(
@@ -810,24 +824,55 @@ chmod 0700 "$target"
             self.settings.sandbox_manager_scope,
             resource.backend_resource_name,
         )
+        persistent_flow_run = bool(
+            (resource.spec_json or {}).get("runtime_allocation_relative")
+        )
+        runtime_tmpfs = [
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
+        ]
+        persistent_environment: list[str] = []
+        if persistent_flow_run:
+            if runtime_secret_key is None or len(runtime_secret_key) < 32:
+                raise DomainError(
+                    "RUNTIME_SECRET_REFERENCE_INVALID",
+                    "The FlowRun Runtime Secret Reference is unavailable",
+                    409,
+                )
+            persistent_environment = [
+                "-e",
+                "OH_WORKSPACE_PATH=/runtime/workspace/project",
+                "-e",
+                "OH_CONVERSATIONS_PATH=/runtime/state/conversations",
+                "-e",
+                "OH_BASH_EVENTS_DIR=/runtime/state/bash-events",
+                "-e",
+                "OH_PERSISTENCE_DIR=/runtime/state/persistence",
+                "-e",
+                f"OH_SECRET_KEY={runtime_secret_key}",
+            ]
+        else:
+            runtime_tmpfs.extend(
+                [
+                    "--tmpfs",
+                    "/runtime/workspace:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
+                ]
+            )
         command.extend(
             [
                 "--network",
                 self._runtime_network_name(resource.id),
                 # Runtime images contain a full developer toolchain and execute
                 # model-generated commands. Keep that workload away from root
-                # and make the image itself immutable. Only the selected node
-                # workspace and these bounded, in-memory runtime directories
-                # remain writable. Uploaded executable capability assets are
-                # exposed through a separate read-only mount. UID 10001 matches
-                # the platform workspace owner used by the standard deployment.
+                # and make the image itself immutable. FlowRun project/state
+                # paths are external bind mounts; transient validation Runtime
+                # data remains bounded tmpfs. Executable capability assets use
+                # a separate read-only mount. UID 10001 matches the platform
+                # workspace owner used by the standard deployment.
                 "--user",
                 "10001:10001",
                 "--read-only",
-                "--tmpfs",
-                "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
-                "--tmpfs",
-                "/runtime/workspace:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
+                *runtime_tmpfs,
                 "--mount",
                 (f"type=volume,src={credential_volume},dst=/home/flowweave"),
                 *workspace_mounts,
@@ -839,6 +884,7 @@ chmod 0700 "$target"
                 f"SESSION_API_KEY={session_key}",
                 "-e",
                 f"OH_SESSION_API_KEYS_0={session_key}",
+                *persistent_environment,
                 verified_image_reference,
                 "agent-server",
                 "--host",
@@ -850,6 +896,8 @@ chmod 0700 "$target"
         return command
 
     def _runtime_workspace_mount(self, resource: ManagedSandbox) -> list[str]:
+        if (resource.spec_json or {}).get("runtime_allocation_relative"):
+            return self._flow_run_runtime_mounts(resource)
         relative_raw = str((resource.spec_json or {}).get("workspace_relative") or "")
         relative = PurePosixPath(relative_raw)
         if (
@@ -1028,6 +1076,212 @@ chmod 0700 "$target"
                 503,
             )
         return [item for specification in specifications for item in ("--mount", specification)]
+
+    def _flow_run_runtime_mounts(self, resource: ManagedSandbox) -> list[str]:
+        spec = resource.spec_json or {}
+        relative_raw = str(spec.get("runtime_allocation_relative") or "")
+        flow_run_id = str(spec.get("flow_run_id") or "")
+        runtime_allocation_id = str(spec.get("runtime_allocation_id") or "")
+        relative = PurePosixPath(relative_raw)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 3
+            or relative.parts[0] != ".flow-run-runtimes"
+            or relative.parts[-1] != flow_run_id
+            or not re.fullmatch(r"[0-9a-f-]{36}", runtime_allocation_id)
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise DomainError(
+                "SANDBOX_WORKSPACE_INVALID",
+                "The FlowRun Runtime allocation path is invalid",
+                422,
+            )
+        raw = self._run(
+            [
+                self.settings.docker_binary,
+                "inspect",
+                self.settings.terminal_environment_workspace_source_container,
+                "--format",
+                "{{json .}}",
+            ],
+            timeout=30,
+        )
+        try:
+            value = cast(object, json.loads(raw))
+            if not isinstance(value, dict):
+                raise ValueError("source inspect data must be an object")
+            source_data = cast(dict[str, object], value)
+            config_value = source_data.get("Config")
+            config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
+            labels_value = config.get("Labels")
+            labels = (
+                {
+                    str(key): str(item)
+                    for key, item in cast(dict[object, object], labels_value).items()
+                }
+                if isinstance(labels_value, dict)
+                else {}
+            )
+            if (
+                labels.get("flowweave.workspace-source") != "true"
+                or labels.get("flowweave.manager-scope")
+                != self.settings.sandbox_manager_scope
+            ):
+                raise ValueError("source container ownership labels do not match")
+            mounts_value = source_data.get("Mounts")
+            if not isinstance(mounts_value, list):
+                raise ValueError("mounts must be a list")
+            matches = [
+                cast(dict[str, object], item)
+                for item in cast(list[object], mounts_value)
+                if isinstance(item, dict)
+                and str(cast(dict[str, object], item).get("Destination") or "")
+                == str(self.settings.openhands_workspace_root)
+            ]
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise DomainError(
+                "SANDBOX_WORKSPACE_SOURCE_INVALID",
+                "Docker returned invalid FlowRun storage mount metadata",
+                503,
+            ) from exc
+        if len(matches) != 1 or str(matches[0].get("Type") or "") != "bind":
+            raise DomainError(
+                "SANDBOX_WORKSPACE_SOURCE_INVALID",
+                "FlowRun Runtime storage requires one host bind root",
+                503,
+            )
+        source_root = Path(str(matches[0].get("Source") or ""))
+        if (
+            not source_root.is_absolute()
+            or any(character in str(source_root) for character in ",=")
+        ):
+            raise DomainError(
+                "SANDBOX_WORKSPACE_SOURCE_INVALID",
+                "The FlowRun Runtime host bind root is invalid",
+                503,
+            )
+        validation_root = self.settings.flow_run_runtime_validation_root
+        allocation_root = source_root.joinpath(*relative.parts)
+        validation_allocation_root = (
+            validation_root.joinpath(*relative.parts)
+            if validation_root.is_absolute()
+            else allocation_root
+        )
+        paths = {
+            "workspace/project": 0o700,
+            "state/conversations": 0o700,
+            "state/bash-events": 0o700,
+            "state/persistence": 0o700,
+            "capabilities": 0o555,
+        }
+        try:
+            root_metadata = validation_allocation_root.lstat()
+            marker = validation_allocation_root / ".flowweave-allocation"
+            marker_metadata = marker.lstat()
+            if (
+                stat.S_ISLNK(root_metadata.st_mode)
+                or not stat.S_ISDIR(root_metadata.st_mode)
+                or stat.S_IMODE(root_metadata.st_mode) != 0o700
+                or not stat.S_ISREG(marker_metadata.st_mode)
+                or stat.S_IMODE(marker_metadata.st_mode) != 0o400
+                or marker_metadata.st_uid != root_metadata.st_uid
+                or marker_metadata.st_gid != root_metadata.st_gid
+                or marker.read_text(encoding="ascii") != runtime_allocation_id
+            ):
+                raise ValueError("invalid allocation root")
+            for path, mode in paths.items():
+                metadata = (validation_allocation_root / path).lstat()
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or not stat.S_ISDIR(metadata.st_mode)
+                    or stat.S_IMODE(metadata.st_mode) != mode
+                    or metadata.st_uid != root_metadata.st_uid
+                    or metadata.st_gid != root_metadata.st_gid
+                ):
+                    raise ValueError(f"invalid allocation path: {path}")
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise DomainError(
+                "SANDBOX_WORKSPACE_SOURCE_INVALID",
+                "The FlowRun Runtime host directories failed integrity validation",
+                409,
+            ) from exc
+        specifications = [
+            (
+                f"type=bind,src={allocation_root / 'workspace/project'},"
+                "dst=/runtime/workspace/project"
+            ),
+            (
+                f"type=bind,src={allocation_root / 'state/conversations'},"
+                "dst=/runtime/state/conversations"
+            ),
+            (
+                f"type=bind,src={allocation_root / 'state/bash-events'},"
+                "dst=/runtime/state/bash-events"
+            ),
+            (
+                f"type=bind,src={allocation_root / 'state/persistence'},"
+                "dst=/runtime/state/persistence"
+            ),
+            (
+                f"type=bind,src={allocation_root / 'capabilities'},"
+                "dst=/runtime/capabilities,readonly"
+            ),
+        ]
+        if bool(spec.get("memory_enabled")):
+            workspace_relative = PurePosixPath(str(spec.get("workspace_relative") or ""))
+            working_relative = PurePosixPath(
+                str(spec.get("memory_working_dir_relative") or "")
+            )
+            if (
+                resource.owner_type not in {"ATTEMPT", "CONVERSATION"}
+                or not workspace_relative.parts
+                or workspace_relative.is_absolute()
+                or not working_relative.parts
+                or working_relative.is_absolute()
+                or any(
+                    part in {"", ".", ".."}
+                    for part in (*workspace_relative.parts, *working_relative.parts)
+                )
+            ):
+                raise DomainError(
+                    "SANDBOX_WORKSPACE_INVALID",
+                    "The governed Memory mount contract is invalid",
+                    422,
+                )
+            owner_key = re.sub(r"[^A-Za-z0-9._-]+", "-", resource.owner_id).strip(".-")
+            if not owner_key:
+                raise DomainError(
+                    "SANDBOX_WORKSPACE_INVALID",
+                    "The governed Memory owner identity is invalid",
+                    422,
+                )
+            memory_relative = (
+                PurePosixPath(".managed-memory")
+                / resource.owner_type.lower()
+                / owner_key[:160]
+                / "runtime"
+            )
+            memory_source = source_root.joinpath(*memory_relative.parts)
+            project_memory_target = (
+                PurePosixPath("/runtime/workspace/project")
+                .joinpath(*workspace_relative.parts)
+                .joinpath(*working_relative.parts)
+                / ".openhands"
+                / "memory"
+            )
+            specifications.extend(
+                [
+                    (
+                        f"type=bind,src={memory_source / 'user'},"
+                        "dst=/home/flowweave/.openhands/memory,readonly"
+                    ),
+                    (
+                        f"type=bind,src={memory_source / 'project'},"
+                        f"dst={project_memory_target},readonly"
+                    ),
+                ]
+            )
+        return [item for value in specifications for item in ("--mount", value)]
 
     def _wait_for_agent_server(self, resource_name: str) -> None:
         deadline = time.monotonic() + self.settings.terminal_environment_start_timeout_seconds

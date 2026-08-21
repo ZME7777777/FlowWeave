@@ -14,6 +14,10 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     backend_name,
 )
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
+from flowweave.modules.sandboxes.application.runtime_allocation import (
+    resolve_runtime_secret,
+    runtime_allocation_for_flow_run,
+)
 from flowweave.runtime.workspace import cleanup_runtime_memory
 from flowweave.shared.application.transactions import register_rollback_action
 from flowweave.shared.database import uid
@@ -173,6 +177,7 @@ def create_setup_sandbox(
 def create_runtime_sandbox(
     db: Session,
     *,
+    flow_run_id: str | None = None,
     owner_type: str,
     owner_id: str,
     image: str,
@@ -185,6 +190,21 @@ def create_runtime_sandbox(
 ) -> RuntimeSandboxAllocation:
     provider = DockerSandboxProvider(get_settings())
     provider.require_enabled()
+    flow_run_allocation = (
+        runtime_allocation_for_flow_run(db, flow_run_id) if flow_run_id else None
+    )
+    if owner_type in {"ATTEMPT", "CONVERSATION"} and flow_run_allocation is None:
+        raise DomainError(
+            "FLOW_RUN_RUNTIME_ALLOCATION_REQUIRED",
+            "FlowRun Agent Runtime creation requires external storage allocation",
+            409,
+            {"owner_type": owner_type, "owner_id": owner_id},
+        )
+    runtime_secret_key = (
+        resolve_runtime_secret(db, flow_run_allocation.id)
+        if flow_run_allocation is not None
+        else None
+    )
     engine = _control_engine(db)
     # Runtime provisioning intentionally owns a short independent transaction.
     # The ledger row is committed before Docker is touched, so a process crash
@@ -235,6 +255,9 @@ def create_runtime_sandbox(
                         ),
                         generation=generation,
                         image_reference=image,
+                        runtime_allocation_id=(
+                            flow_run_allocation.id if flow_run_allocation is not None else None
+                        ),
                         spec_json={
                             "port": 8000,
                             "bound": False,
@@ -246,6 +269,22 @@ def create_runtime_sandbox(
                             "memory_working_dir_relative": (
                                 memory_working_dir_relative if memory_enabled else None
                             ),
+                            "flow_run_id": flow_run_id,
+                            "runtime_allocation_id": (
+                                flow_run_allocation.id
+                                if flow_run_allocation is not None
+                                else None
+                            ),
+                            "runtime_allocation_relative": (
+                                flow_run_allocation.relative_root
+                                if flow_run_allocation is not None
+                                else None
+                            ),
+                            "runtime_secret_reference_id": (
+                                flow_run_allocation.secret_reference_id
+                                if flow_run_allocation is not None
+                                else None
+                            ),
                         },
                         idle_expires_at=created_at
                         + timedelta(seconds=get_settings().sandbox_runtime_idle_ttl_seconds),
@@ -256,6 +295,8 @@ def create_runtime_sandbox(
                     control_db.add(resource)
                 elif (
                     resource.image_reference != image
+                    or resource.runtime_allocation_id
+                    != (flow_run_allocation.id if flow_run_allocation is not None else None)
                     or str((resource.spec_json or {}).get("workspace_relative") or "")
                     != workspace_relative
                     or str((resource.spec_json or {}).get("environment_id") or "") != environment_id
@@ -276,7 +317,9 @@ def create_runtime_sandbox(
                 control_db.commit()
 
                 try:
-                    observation = provider.ensure_running(resource)
+                    observation = provider.ensure_running(
+                        resource, runtime_secret_key=runtime_secret_key
+                    )
                 except DomainError as exc:
                     _error(resource, exc)
                     resource.desired_state = "DELETED"
@@ -477,6 +520,8 @@ def _sandbox_spec_signature(resource: ManagedSandbox) -> tuple[object, ...]:
         resource.backend_resource_name,
         resource.generation,
         resource.image_reference,
+        resource.runtime_allocation_id,
+        str((resource.spec_json or {}).get("runtime_allocation_relative") or ""),
         str((resource.spec_json or {}).get("workspace_relative") or ""),
     )
 
@@ -598,7 +643,10 @@ def _claim_reconcile_batch(
 
 
 def _perform_reconcile(
-    provider: DockerSandboxProvider, resource: ManagedSandbox
+    provider: DockerSandboxProvider,
+    resource: ManagedSandbox,
+    *,
+    runtime_secret_key: str | None,
 ) -> _ReconcileOutcome:
     """Perform Docker I/O using only a detached, immutable ledger snapshot."""
 
@@ -627,7 +675,9 @@ def _perform_reconcile(
             and bool((resource.spec_json or {}).get("bound"))
         ):
             return _ReconcileOutcome("RUNTIME_LOST")
-        observation = provider.ensure_running(resource)
+        observation = provider.ensure_running(
+            resource, runtime_secret_key=runtime_secret_key
+        )
         return _ReconcileOutcome("RUNNING", observation)
     except DomainError as exc:
         return _ReconcileOutcome("ERROR", error=exc)
@@ -794,7 +844,21 @@ def reconcile_managed_sandboxes(db: Session) -> ReconcileReport:
             )
             deleted = errors = 0
             for snapshot in resources:
-                outcome = _perform_reconcile(provider, snapshot)
+                runtime_secret_key = None
+                try:
+                    if snapshot.runtime_allocation_id is not None:
+                        with Session(bind=connection) as secret_db:
+                            runtime_secret_key = resolve_runtime_secret(
+                                secret_db, snapshot.runtime_allocation_id
+                            )
+                            secret_db.commit()
+                    outcome = _perform_reconcile(
+                        provider,
+                        snapshot,
+                        runtime_secret_key=runtime_secret_key,
+                    )
+                except DomainError as exc:
+                    outcome = _ReconcileOutcome("ERROR", error=exc)
                 item_deleted, item_errors = _apply_reconcile_outcome(
                     connection,
                     snapshot,

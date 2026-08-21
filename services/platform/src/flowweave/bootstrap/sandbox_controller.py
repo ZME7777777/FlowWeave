@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.environments.infrastructure import docker as environments_docker
@@ -85,6 +85,14 @@ class RuntimeSandboxSpec(_StrictModel):
         max_length=500,
         pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
     )
+    flow_run_id: UUID | None = None
+    runtime_allocation_id: UUID | None = None
+    runtime_allocation_relative: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^\.flow-run-runtimes/[0-9a-f]{32}/[0-9a-f-]{36}$",
+    )
+    runtime_secret_reference_id: UUID | None = None
 
     @field_validator("workspace_relative")
     @classmethod
@@ -103,6 +111,16 @@ class RuntimeSandboxSpec(_StrictModel):
             part in {"", ".", ".."} for part in self.memory_working_dir_relative.split("/")
         ):
             raise ValueError("memory_working_dir_relative contains invalid path segments")
+        allocation_fields = (
+            self.flow_run_id,
+            self.runtime_allocation_id,
+            self.runtime_allocation_relative,
+            self.runtime_secret_reference_id,
+        )
+        if any(value is not None for value in allocation_fields) and not all(
+            value is not None for value in allocation_fields
+        ):
+            raise ValueError("FlowRun Runtime allocation fields must be provided together")
         return self
 
 
@@ -130,6 +148,22 @@ class RuntimeSandboxResourceWrite(_SandboxResourceBase):
     ]
     image_reference: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     spec: RuntimeSandboxSpec
+    runtime_secret_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def validate_runtime_secret(self):
+        has_allocation = self.spec.runtime_allocation_relative is not None
+        if has_allocation != (self.runtime_secret_key is not None):
+            raise ValueError(
+                "runtime_secret_key must be injected exactly for FlowRun Runtime allocations"
+            )
+        if has_allocation and self.owner_type not in {"ATTEMPT", "CONVERSATION"}:
+            raise ValueError("FlowRun Runtime allocation owner is invalid")
+        if self.runtime_secret_key is not None and len(
+            self.runtime_secret_key.get_secret_value()
+        ) < 32:
+            raise ValueError("runtime_secret_key is too short")
+        return self
 
 
 SandboxResourceWrite = Annotated[
@@ -477,6 +511,12 @@ def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
         backend="docker",
         backend_resource_name=payload.backend_resource_name,
         image_reference=payload.image_reference,
+        runtime_allocation_id=(
+            str(payload.spec.runtime_allocation_id)
+            if isinstance(payload, RuntimeSandboxResourceWrite)
+            and payload.spec.runtime_allocation_id is not None
+            else None
+        ),
         spec_json=payload.spec.model_dump(mode="json"),
         created_at=payload.created_at,
         hard_expires_at=payload.created_at,
@@ -637,7 +677,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "The controller principal cannot create this sandbox kind",
                 403,
             )
-        observation = DockerSandboxProvider(configured).ensure_running(_resource(payload))
+        runtime_secret_key = (
+            payload.runtime_secret_key.get_secret_value()
+            if isinstance(payload, RuntimeSandboxResourceWrite)
+            and payload.runtime_secret_key is not None
+            else None
+        )
+        observation = DockerSandboxProvider(configured).ensure_running(
+            _resource(payload), runtime_secret_key=runtime_secret_key
+        )
         return cast(dict[str, Any], _observation_dict(observation))
 
     @app.post("/v1/sandboxes/inspect")

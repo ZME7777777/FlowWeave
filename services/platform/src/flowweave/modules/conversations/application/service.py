@@ -4234,6 +4234,8 @@ def process_create_conversation(
     )
     request = build_runtime_request(
         db,
+        flow_run_id=run.id,
+        runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=f"{attempt.id}:{item.id}",
         execution_key=f"conversation:{item.id}:create",
         node=node,
@@ -4270,6 +4272,7 @@ def process_create_conversation(
         try:
             allocation = sandboxes.create_runtime_sandbox(
                 db,
+                flow_run_id=run.id,
                 owner_type="CONVERSATION",
                 owner_id=item.id,
                 image=request.environment_image,

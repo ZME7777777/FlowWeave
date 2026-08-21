@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # writable node workspace. Keep this path outside openhands_workspace_root
     # so workspace-controlled symlinks cannot influence the mount target.
     openhands_managed_assets_root: Path = Path("/runtime/capabilities")
+    # The Docker controller mounts the host workspace root read-only here so it
+    # can validate FlowRun allocation ownership before asking the daemon to
+    # bind the corresponding host paths.
+    flow_run_runtime_validation_root: Path = Path("")
     conversation_limit_per_attempt: int = Field(default=20, ge=1, le=100)
     conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
 
@@ -82,7 +86,7 @@ class Settings(BaseSettings):
     terminal_environment_workspace_source_container: str = "flowweave-openhands-agent-server"
     terminal_environment_session_ttl_seconds: int = Field(default=14_400, ge=300, le=86_400)
     terminal_environment_cleanup_seconds: int = Field(default=30, ge=5, le=3600)
-    sandbox_manager_scope: str = ""
+    sandbox_manager_scope: str = "flowweave-local"
     sandbox_reconcile_seconds: int = Field(default=30, ge=5, le=3600)
     sandbox_reconcile_batch_size: int = Field(default=50, ge=1, le=500)
     sandbox_orphan_grace_seconds: int = Field(default=300, ge=30, le=86_400)

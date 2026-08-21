@@ -67,7 +67,11 @@ from flowweave.modules.runs.infrastructure.models import (
     RunEvent,
     RunSnapshot,
 )
-from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
+from flowweave.modules.sandboxes.infrastructure.models import (
+    FlowRunRuntimeAllocation,
+    FlowRunRuntimeSecretReference,
+    ManagedSandbox,
+)
 from flowweave.modules.tasks.infrastructure.models import (
     BackgroundTask,
 )
@@ -102,6 +106,8 @@ __all__ = (
     "FlowPortMapping",
     "FlowNode",
     "FlowRun",
+    "FlowRunRuntimeAllocation",
+    "FlowRunRuntimeSecretReference",
     "FlowRunState",
     "GateEvaluation",
     "GatePolicy",

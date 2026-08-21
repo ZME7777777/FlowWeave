@@ -12,6 +12,12 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import uuid4
 
+from flowweave.modules.sandboxes.application.runtime_allocation import (
+    flow_run_capability_path,
+    flow_run_workspace_project_path,
+    openhands_flow_run_capability_path,
+    openhands_flow_run_project_path,
+)
 from flowweave.runtime.base import RuntimeMCP, RuntimePlugin, RuntimeSkill
 from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.errors import DomainError
@@ -120,16 +126,130 @@ def openhands_managed_node_assets_path(asset_id: str) -> Path:
     return Path(get_settings().openhands_managed_assets_root) / node_workspace_relative(asset_id)
 
 
+def flow_run_node_workspace_path(flow_run_id: str, asset_id: str) -> Path:
+    return flow_run_workspace_project_path(flow_run_id) / node_workspace_relative(asset_id)
+
+
+def openhands_flow_run_node_workspace_path(asset_id: str) -> Path:
+    return Path(openhands_flow_run_project_path()) / node_workspace_relative(asset_id)
+
+
+def flow_run_managed_node_assets_path(
+    flow_run_id: str, manifest_digest: str, asset_id: str
+) -> Path:
+    return flow_run_capability_path(
+        flow_run_id, manifest_digest, *node_workspace_relative(asset_id).parts
+    )
+
+
+def openhands_flow_run_managed_node_assets_path(
+    manifest_digest: str, asset_id: str
+) -> Path:
+    return Path(
+        openhands_flow_run_capability_path(
+            manifest_digest, *node_workspace_relative(asset_id).parts
+        )
+    )
+
+
 def attempt_workspace_path(
     *, asset_id: str, run_id: str, node_run_id: str, attempt_no: int
 ) -> Path:
     return (
-        node_workspace_path(asset_id)
+        flow_run_node_workspace_path(run_id, asset_id)
         / "sessions"
-        / _segment(run_id, "run")
         / _segment(node_run_id, "node-run")
         / str(attempt_no)
     )
+
+
+def ensure_flow_run_attempt_workspace(
+    *, flow_run_id: str, asset_id: str, workspace_ref: str
+) -> Path:
+    """Materialize only the server-derived Attempt path without following links."""
+
+    node_root = flow_run_node_workspace_path(flow_run_id, asset_id)
+    candidate = Path(workspace_ref)
+    if not candidate.is_absolute():
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The FlowRun Attempt workspace must be an absolute server path",
+            422,
+        )
+    try:
+        relative = candidate.relative_to(node_root)
+    except ValueError as exc:
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The Attempt workspace is outside its FlowRun node directory",
+            422,
+        ) from exc
+    if (
+        len(relative.parts) != 3
+        or relative.parts[0] != "sessions"
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The Attempt workspace does not match its server-derived layout",
+            422,
+        )
+    cursor = node_root
+    for part in relative.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Attempt workspace cannot contain symbolic links",
+                422,
+            )
+        if cursor.exists() and not cursor.is_dir():
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Attempt workspace path is not a directory",
+                422,
+            )
+        cursor.mkdir(mode=0o700, exist_ok=True)
+    return candidate
+
+
+def _ensure_plain_directory_tree(base: Path, target: Path) -> None:
+    if base.is_symlink() or not base.is_dir():
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "A managed Runtime allocation root is not a plain directory",
+            422,
+        )
+    try:
+        relative = target.relative_to(base)
+    except ValueError as exc:
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "A managed Runtime directory escaped its allocation",
+            422,
+        ) from exc
+    cursor = base
+    for part in relative.parts:
+        if part in {"", ".", ".."}:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "A managed Runtime directory contains an invalid path segment",
+                422,
+            )
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "A managed Runtime directory cannot contain symbolic links",
+                422,
+            )
+        if cursor.exists() and not cursor.is_dir():
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "A managed Runtime path is not a directory",
+                422,
+            )
+        cursor.mkdir(mode=0o700, exist_ok=True)
 
 
 def materialize_runtime_memory(
@@ -259,14 +379,38 @@ def isolated_runtime_workspace_paths(
             "The Runtime workspace roots must be absolute",
             422,
         )
-    try:
-        relative = runtime_node.relative_to(runtime_root)
-    except ValueError as exc:
-        raise DomainError(
-            "RUNTIME_WORKSPACE_INVALID",
-            "The node workspace is outside the Runtime workspace root",
-            422,
-        ) from exc
+    flow_run_runtime_root = openhands_flow_run_project_path()
+    if runtime_node.is_relative_to(flow_run_runtime_root):
+        relative = runtime_node.relative_to(flow_run_runtime_root)
+        allocations_root = host_root / ".flow-run-runtimes"
+        try:
+            allocation_relative = attempt_root.relative_to(allocations_root)
+        except ValueError as exc:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Attempt workspace is outside its FlowRun allocation",
+                422,
+            ) from exc
+        if (
+            len(allocation_relative.parts) < 7
+            or allocation_relative.parts[2:4] != ("workspace", "project")
+        ):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Attempt workspace does not match the FlowRun project layout",
+                422,
+            )
+        host_project = allocations_root.joinpath(*allocation_relative.parts[:4])
+    else:
+        try:
+            relative = runtime_node.relative_to(runtime_root)
+        except ValueError as exc:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The node workspace is outside the Runtime workspace root",
+                422,
+            ) from exc
+        host_project = host_root
     if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise DomainError(
             "RUNTIME_WORKSPACE_INVALID",
@@ -274,8 +418,8 @@ def isolated_runtime_workspace_paths(
             422,
         )
 
-    host_node = host_root.joinpath(*relative.parts)
-    cursor = host_root
+    host_node = host_project.joinpath(*relative.parts)
+    cursor = host_project
     for part in relative.parts:
         cursor = cursor / part
         if cursor.is_symlink():
@@ -845,14 +989,30 @@ def _extract_hook_scripts(
     }
 
 
-def materialize_hook_config(asset: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def materialize_hook_config(
+    asset: dict[str, Any], *, flow_run_id: str = "", manifest_digest: str = ""
+) -> dict[str, list[dict[str, Any]]]:
     """Materialize Hook scripts and return an OpenHands-native Hook config."""
 
     asset_id = str(asset.get("id") or "")
     if not asset_id:
         raise DomainError("RUNTIME_NODE_INVALID", "Node asset id is missing", 422)
-    host_root = managed_node_assets_path(asset_id)
-    runtime_root = openhands_managed_node_assets_path(asset_id)
+    if bool(flow_run_id) != bool(manifest_digest):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "FlowRun capability materialization requires a manifest identity",
+            409,
+        )
+    host_root = (
+        flow_run_managed_node_assets_path(flow_run_id, manifest_digest, asset_id)
+        if flow_run_id
+        else managed_node_assets_path(asset_id)
+    )
+    runtime_root = (
+        openhands_flow_run_managed_node_assets_path(manifest_digest, asset_id)
+        if flow_run_id
+        else openhands_managed_node_assets_path(asset_id)
+    )
     hooks_root = host_root / "hooks"
     _replace_managed_directory(hooks_root, host_root)
     merged: dict[str, list[dict[str, Any]]] = {}
@@ -919,21 +1079,58 @@ def materialize_hook_config(asset: dict[str, Any]) -> dict[str, list[dict[str, A
 
 def materialize_node_workspace(
     asset: dict[str, Any],
+    *,
+    flow_run_id: str = "",
+    manifest_digest: str = "",
 ) -> tuple[tuple[RuntimeSkill, ...], tuple[RuntimePlugin, ...], tuple[RuntimeMCP, ...], str]:
     asset_id = str(asset.get("id") or "")
     if not asset_id:
         raise DomainError("RUNTIME_NODE_INVALID", "Node asset id is missing", 422)
-    host_root = node_workspace_path(asset_id)
-    runtime_root = openhands_node_workspace_path(asset_id)
-    managed_root = managed_node_assets_path(asset_id)
-    managed_runtime_root = openhands_managed_node_assets_path(asset_id)
-    managed_root.mkdir(parents=True, exist_ok=True)
+    if bool(flow_run_id) != bool(manifest_digest):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "FlowRun capability materialization requires a manifest identity",
+            409,
+        )
+    host_root = (
+        flow_run_node_workspace_path(flow_run_id, asset_id)
+        if flow_run_id
+        else node_workspace_path(asset_id)
+    )
+    runtime_root = (
+        openhands_flow_run_node_workspace_path(asset_id)
+        if flow_run_id
+        else openhands_node_workspace_path(asset_id)
+    )
+    managed_root = (
+        flow_run_managed_node_assets_path(flow_run_id, manifest_digest, asset_id)
+        if flow_run_id
+        else managed_node_assets_path(asset_id)
+    )
+    managed_runtime_root = (
+        openhands_flow_run_managed_node_assets_path(manifest_digest, asset_id)
+        if flow_run_id
+        else openhands_managed_node_assets_path(asset_id)
+    )
+    if flow_run_id:
+        project_root = flow_run_workspace_project_path(flow_run_id)
+        capability_root = flow_run_capability_path(flow_run_id, manifest_digest)
+        _ensure_plain_directory_tree(project_root, host_root)
+        _ensure_plain_directory_tree(capability_root, managed_root)
+    else:
+        managed_root.mkdir(parents=True, exist_ok=True)
     mcp_root = managed_root / "mcp"
     plugin_root = managed_root / "plugins"
     _replace_managed_directory(mcp_root, managed_root)
     _replace_managed_directory(plugin_root, managed_root)
+    if flow_run_id:
+        _replace_managed_directory(managed_root / "skills", managed_root)
+        _replace_managed_directory(managed_root / ".runtime", managed_root)
     for directory in ("skills", "files", "repositories", "sessions", ".runtime"):
-        (host_root / directory).mkdir(parents=True, exist_ok=True)
+        if flow_run_id:
+            _ensure_plain_directory_tree(host_root, host_root / directory)
+        else:
+            (host_root / directory).mkdir(parents=True, exist_ok=True)
     raw_capabilities: object = asset.get("capabilities")
     capabilities = (
         [
@@ -944,8 +1141,10 @@ def materialize_node_workspace(
         if isinstance(raw_capabilities, list)
         else []
     )
+    skill_host_root = managed_root if flow_run_id else host_root
+    skill_runtime_root = managed_runtime_root if flow_run_id else runtime_root
     skills = tuple(
-        _extract_skill(capability, host_root, runtime_root)
+        _extract_skill(capability, skill_host_root, skill_runtime_root)
         for capability in capabilities
         if capability.get("capability_type") == "SKILL"
     )

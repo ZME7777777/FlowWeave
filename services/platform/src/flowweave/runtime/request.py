@@ -11,6 +11,10 @@ from flowweave.modules.model_providers.application.service import (
     prompt_provider_snapshot,
 )
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
+from flowweave.modules.sandboxes.application.runtime_allocation import (
+    capability_materialization_lock,
+    runtime_allocation_for_flow_run,
+)
 from flowweave.runtime.base import (
     RuntimeAgentContext,
     RuntimeAgentDefinition,
@@ -26,6 +30,7 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.contract import normalize_runtime_contract
 from flowweave.runtime.workspace import (
+    ensure_flow_run_attempt_workspace,
     isolated_runtime_workspace_paths,
     materialize_hook_config,
     materialize_node_workspace,
@@ -323,6 +328,8 @@ def frozen_memory_policy(
 def build_runtime_request(
     db: Session,
     *,
+    flow_run_id: str,
+    runtime_manifest_hash: str,
     attempt_id: str,
     execution_key: str,
     node: dict[str, Any],
@@ -344,11 +351,29 @@ def build_runtime_request(
     runtime_base_url: str = "",
     memory_materialized: bool = False,
 ) -> StartAttemptRequest:
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    skills, plugins, mcp_servers, node_workspace_ref = materialize_node_workspace(asset)
-    runtime_workspace_relative, runtime_working_dir_relative = isolated_runtime_workspace_paths(
-        workspace_ref, node_workspace_ref
+    runtime_allocation = runtime_allocation_for_flow_run(
+        db, flow_run_id, manifest_digest=runtime_manifest_hash
     )
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    with capability_materialization_lock(runtime_allocation):
+        skills, plugins, mcp_servers, node_workspace_ref = materialize_node_workspace(
+            asset,
+            flow_run_id=flow_run_id,
+            manifest_digest=runtime_manifest_hash,
+        )
+        hook_config = materialize_hook_config(
+            asset,
+            flow_run_id=flow_run_id,
+            manifest_digest=runtime_manifest_hash,
+        )
+        ensure_flow_run_attempt_workspace(
+            flow_run_id=flow_run_id,
+            asset_id=str(asset.get("id") or ""),
+            workspace_ref=workspace_ref,
+        )
+        runtime_workspace_relative, runtime_working_dir_relative = (
+            isolated_runtime_workspace_paths(workspace_ref, node_workspace_ref)
+        )
     raw_agent_spec = node.get("runtime_agent_spec")
     if not isinstance(raw_agent_spec, dict):
         raise DomainError(
@@ -698,7 +723,7 @@ def build_runtime_request(
         plugins=plugins,
         skills=skills,
         mcp_servers=mcp_servers,
-        hook_config=materialize_hook_config(asset),
+        hook_config=hook_config,
         confirmation_policy=cast(Literal["ALWAYS", "NEVER"], confirmation),
         condenser=condenser,
         condenser_provider=condenser_provider,

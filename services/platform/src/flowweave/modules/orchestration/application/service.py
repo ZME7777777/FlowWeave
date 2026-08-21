@@ -1488,6 +1488,10 @@ def start_flow(
     )
     db.add(snapshot)
     db.flush()
+    sandboxes.allocate_flow_run_runtime(db, run.id)
+    sandboxes.runtime_allocation_for_flow_run(
+        db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+    )
     hold_snapshot_memory_references(
         db,
         snapshot_id=snapshot.id,
@@ -1984,6 +1988,8 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         )
     request = build_runtime_request(
         db,
+        flow_run_id=run.id,
+        runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=attempt.id,
         execution_key=f"attempt:{attempt.id}:start",
         node=node,
@@ -2083,6 +2089,7 @@ def process_start_runtime(
         return
 
     current_attempt_id = attempt.id
+    flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
     try:
         request = _runtime_request(db, attempt)
     except BaseException:
@@ -2093,6 +2100,7 @@ def process_start_runtime(
         try:
             allocation = sandboxes.create_runtime_sandbox(
                 db,
+                flow_run_id=flow_run_id,
                 owner_type="ATTEMPT",
                 owner_id=attempt.id,
                 image=request.environment_image,
@@ -3538,6 +3546,10 @@ def sync_snapshot(
     )
     db.add(snapshot)
     db.flush()
+    sandboxes.allocate_flow_run_runtime(db, run.id)
+    sandboxes.runtime_allocation_for_flow_run(
+        db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+    )
     hold_snapshot_memory_references(
         db,
         snapshot_id=snapshot.id,
@@ -3994,7 +4006,6 @@ def delete_run(db: Session, run_id: str) -> None:
     if node_run_ids:
         db.execute(delete(NodeRun).where(NodeRun.id.in_(node_run_ids)))
     db.execute(delete(RunSnapshot).where(RunSnapshot.flow_run_id == run.id))
-    db.delete(run)
     for adapter, handle in runtime_handles:
         register_commit_action(
             db,
@@ -4002,6 +4013,8 @@ def delete_run(db: Session, run_id: str) -> None:
                 adapter, handle, run_id
             ),
         )
+    sandboxes.delete_flow_run_runtime_allocation(db, run.id)
+    db.delete(run)
     store = get_artifact_store()
     for key in storage_keys:
         register_commit_action(db, lambda key=key: store.delete(key))

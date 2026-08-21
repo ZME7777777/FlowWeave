@@ -732,6 +732,24 @@ class OpenHandsRuntime:
             relative = Path(path.name)
         return str(self.openhands_workspace_root / relative)
 
+    def _request_workspace_path(self, request: StartAttemptRequest) -> str:
+        if (
+            request.runtime_sandbox_id
+            and request.node_workspace_ref.startswith("/runtime/workspace/project/")
+            and request.runtime_working_dir_relative
+        ):
+            working = Path(request.runtime_working_dir_relative)
+            if working.is_absolute() or any(
+                part in {"", ".", ".."} for part in working.parts
+            ):
+                raise DomainError(
+                    "RUNTIME_WORKSPACE_INVALID",
+                    "The FlowRun Runtime working directory is invalid",
+                    422,
+                )
+            return str(Path(request.node_workspace_ref).joinpath(*working.parts))
+        return self._workspace_path(request.workspace_ref)
+
     @staticmethod
     def _artifact_input(binding: dict[str, Any]) -> dict[str, Any]:
         artifact = cast(dict[str, Any], binding.get("artifact") or {})
@@ -922,7 +940,7 @@ class OpenHandsRuntime:
         payload: dict[str, Any] = {
             "workspace": {
                 "kind": "LocalWorkspace",
-                "working_dir": self._workspace_path(request.workspace_ref),
+                "working_dir": self._request_workspace_path(request),
             },
             "max_iterations": spec.budgets.max_iterations,
             "agent": agent,
