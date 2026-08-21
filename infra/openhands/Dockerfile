@@ -1,9 +1,12 @@
 FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e AS node_runtime
+FROM docker:29.6.1-cli@sha256:862099ada15c669000bef53aa4cb9d821262829f45b0dda2159ccb276443043b AS docker_cli
 
 FROM opensandbox/server@sha256:91717d1821ffdc698fb0885aab58173c4100ea137b98650dfb361431c1fe3373
 USER root
 WORKDIR /runtime
 COPY --from=node_runtime /usr/local/ /usr/local/
+COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker_cli /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
 RUN apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       bash bash-completion build-essential ca-certificates coreutils curl default-jdk-headless \
@@ -30,6 +33,10 @@ RUN /usr/local/bin/python /runtime/fetch_openhands_source.py \
       --destination /opt/openhands-source \
       --provenance /runtime/openhands-source-provenance.json \
       --overlay /runtime/patch_ambient_plugins.py
+RUN /usr/local/bin/python /runtime/patch_ambient_plugins.py \
+      --site-packages /opt/openhands-source \
+ && cp /runtime/openhands-source-provenance.json \
+      /opt/openhands-source/openhands-agent-server/openhands/agent_server/openhands-source-provenance.json
 RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
       /opt/openhands-source/openhands-sdk \
       /opt/openhands-source/openhands-tools \
@@ -39,6 +46,8 @@ RUN /runtime/.venv/bin/python -c \
       "from importlib.metadata import version; expected='1.42.0'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
 RUN /runtime/.venv/bin/python /runtime/patch_ambient_plugins.py
 COPY infra/openhands/contract_check.py /runtime/contract_check.py
+COPY infra/openhands/contract_check.py \
+     /opt/openhands-source/openhands-agent-server/openhands/agent_server/flowweave_contract_check.py
 COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
 ENV OPENHANDS_BUILD_GIT_SHA="f09e03eac772290feeb51b7d7390ffaefeca1a09" \

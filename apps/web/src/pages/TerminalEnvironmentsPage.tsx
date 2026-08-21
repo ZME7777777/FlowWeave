@@ -172,7 +172,7 @@ export function TerminalEnvironmentsPage() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [baseImage, setBaseImage] = useState('flowweave-openhands-runtime:1');
+  const [baseImage, setBaseImage] = useState('');
   const [terminal, setTerminal] = useState<EnvironmentSetupSession | null>(null);
   const [openingEnvironmentId, setOpeningEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -184,7 +184,7 @@ export function TerminalEnvironmentsPage() {
     );
     if (!stillRunning) setTerminal(null);
   }, [environments, isLoading, terminal]);
-  const create = useMutation({ mutationFn: () => api.createTerminalEnvironment({ name: name.trim(), description: description.trim(), base_image: baseImage.trim() }), onSuccess: async () => { setCreating(false); setName(''); setDescription(''); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }, onError: reason => setError(reason instanceof Error ? reason.message : '创建失败') });
+  const create = useMutation({ mutationFn: () => api.createTerminalEnvironment({ name: name.trim(), description: description.trim(), base_image: baseImage.trim() }), onSuccess: async () => { setCreating(false); setName(''); setDescription(''); setBaseImage(''); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }, onError: reason => setError(reason instanceof Error ? reason.message : '创建失败') });
   const open = async (environment: TerminalEnvironment, baseVersionId?: string) => {
     if (openingEnvironmentId) return;
     setOpeningEnvironmentId(environment.id);
@@ -251,7 +251,7 @@ export function TerminalEnvironmentsPage() {
       })}</div></details>}
       <footer>{active ? <button className="primary" onClick={() => setTerminal(active)}><Terminal size={14}/>继续配置</button> : <button className="secondary" disabled={openingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
     </article>; })}</div> : <div className="empty">暂无终端环境。新建后可在隔离终端中安装节点需要的命令。</div>}
-    {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label>名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label>基础镜像<input required value={baseImage} onChange={event => setBaseImage(event.target.value)}/></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
+    {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label>名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label>基础镜像<input required placeholder="repository/image@sha256:…" value={baseImage} onChange={event => setBaseImage(event.target.value)}/><small>必须提供仓库 digest；浮动 tag 不可发布。</small></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
     {terminal && <TerminalPanel session={terminal} onClose={closeTerminal}/>}
   </main>;
 }

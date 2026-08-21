@@ -60,6 +60,11 @@ class RunSnapshot(Base):
     definition_hash: Mapped[str] = mapped_column(String(64))
     runtime_manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     runtime_manifest_hash: Mapped[str] = mapped_column(String(64))
+    # Nullable only for pre-FR-01 history. New snapshots freeze the same
+    # Environment Version as their owning FlowRun.
+    environment_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("environment_versions.id", ondelete="RESTRICT"), index=True
+    )
     created_by_action_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 

@@ -28,6 +28,9 @@ from flowweave.shared.infrastructure.docker_controller import (
 from flowweave.shared.settings import get_settings
 
 _IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
+_DIGEST_LOCKED_IMAGE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,430}@sha256:[0-9a-f]{64}$"
+)
 _SAFE_NAME = re.compile(r"[^a-z0-9_.-]+")
 _TERMINAL_PROMPT = r"flowweave@\h:\w\$ "
 _TERMINAL_SHELL_SCRIPT = (
@@ -54,6 +57,82 @@ def validate_image(value: str) -> str:
     if not _IMAGE.fullmatch(image) or ".." in image:
         raise DomainError("ENVIRONMENT_IMAGE_INVALID", "Runtime image reference is invalid", 422)
     return image
+
+
+def resolve_base_image(value: str) -> tuple[str, str]:
+    """Pull and freeze one user base image by registry and local content digest."""
+
+    reference = validate_image(value)
+    if not _DIGEST_LOCKED_IMAGE.fullmatch(reference):
+        raise DomainError(
+            "ENVIRONMENT_BASE_IMAGE_NOT_IMMUTABLE",
+            "The base image must use an explicit repository@sha256 digest",
+            422,
+        )
+    settings = get_settings()
+    require_backend()
+    if controller_is_remote(settings):
+        try:
+            raw = DockerControllerClient(settings).post(
+                "/v1/environments/resolve-base-image",
+                {"reference": reference},
+                timeout=settings.terminal_environment_publish_timeout_seconds,
+            )
+        except DockerControllerError as exc:
+            raise DomainError(
+                "ENVIRONMENT_BACKEND_UNAVAILABLE",
+                "The terminal environment controller is unavailable",
+                503,
+            ) from exc
+        canonical = str(raw.get("reference") or "")
+        digest = str(raw.get("digest") or "")
+        if not _DIGEST_LOCKED_IMAGE.fullmatch(canonical) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", digest
+        ):
+            raise DomainError(
+                "ENVIRONMENT_DOCKER_PROTOCOL_ERROR",
+                "The controller returned invalid base image provenance",
+                502,
+            )
+        return canonical, digest
+
+    _run(
+        [settings.docker_binary, "pull", reference],
+        timeout=settings.terminal_environment_publish_timeout_seconds,
+    )
+    raw = _run(
+        [settings.docker_binary, "image", "inspect", reference, "--format", "{{json .}}"],
+        timeout=30,
+    )
+    try:
+        value_json = cast(object, json.loads(raw))
+        if not isinstance(value_json, dict):
+            raise ValueError("inspect response must be an object")
+        inspection = cast(dict[str, object], value_json)
+        digest = str(inspection.get("Id") or "")
+        repo_digests_value = inspection.get("RepoDigests")
+        repo_digests = (
+            [str(item) for item in cast(list[object], repo_digests_value)]
+            if isinstance(repo_digests_value, list)
+            else []
+        )
+        requested_digest = reference.rsplit("@", 1)[1]
+        canonical = next(
+            item for item in repo_digests if item.endswith(f"@{requested_digest}")
+        )
+    except (json.JSONDecodeError, StopIteration, ValueError) as exc:
+        raise DomainError(
+            "ENVIRONMENT_BASE_IMAGE_PROVENANCE_INVALID",
+            "Docker could not prove the requested base image digest",
+            409,
+        ) from exc
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise DomainError(
+            "ENVIRONMENT_BASE_IMAGE_PROVENANCE_INVALID",
+            "Docker omitted the immutable base image content digest",
+            409,
+        )
+    return canonical, digest
 
 
 def _run(command: list[str], *, timeout: int = 60, input_text: str | None = None) -> str:
@@ -98,6 +177,27 @@ class PublishedImage:
     reference: str
     digest: str
     manifest: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class OpenHandsBuild:
+    reference: str
+    log_digest: str
+    telemetry: dict[str, Any]
+    target: str
+    platform: str
+
+
+_OPENHANDS_BUILD_SCRIPT = r"""
+import json
+import sys
+
+from openhands.agent_server.docker.build import BuildOptions, build_with_telemetry
+
+options = BuildOptions.model_validate(json.loads(sys.argv[1]))
+result = build_with_telemetry(options)
+print("FLOWWEAVE_OPENHANDS_BUILD=" + result.model_dump_json())
+"""
 
 
 def _docker_resource_absent(exc: DomainError, resource: str) -> bool:
@@ -586,22 +686,29 @@ for name in (
     except PackageNotFoundError:
         packages[name] = None
 
-source_commit = None
-source_ref = None
+source = {}
 try:
-    provenance = json.loads(
-        Path("/runtime/openhands-source-provenance.json").read_text(encoding="utf-8")
-    )
+    provenance_path = Path("/runtime/openhands-source-provenance.json")
+    if not provenance_path.is_file():
+        provenance_path = Path(
+            "/agent-server/openhands-agent-server/openhands/agent_server/"
+            "openhands-source-provenance.json"
+        )
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     build = provenance.get("build_input", {})
-    source_commit = build.get("source_commit")
-    source_ref = build.get("upstream_base_commit") or source_commit
+    source = {
+        "repository": build.get("repository"),
+        "source_commit": build.get("source_commit"),
+        "source_ref": build.get("upstream_base_commit") or build.get("source_commit"),
+        "source_archive_digest": provenance.get("source_archive_sha256"),
+        "overlays": provenance.get("overlays", {}),
+    }
 except (OSError, TypeError, ValueError):
     pass
 
 print(json.dumps({
     "package_versions": packages,
-    "source_commit": source_commit,
-    "source_ref": source_ref,
+    **source,
 }))
 """
     raw = _run(
@@ -609,7 +716,7 @@ print(json.dumps({
             get_settings().docker_binary,
             "exec",
             container_id,
-            "/runtime/.venv/bin/python",
+            "/agent-server/.venv/bin/python",
             "-c",
             script,
         ],
@@ -632,21 +739,139 @@ print(json.dumps({
     return cast(dict[str, Any], value)
 
 
+def _build_openhands_runtime(
+    *, base_image: str, environment_id: str, version_id: str, version_no: int, platform: str
+) -> OpenHandsBuild:
+    """Invoke the pinned OpenHands Agent Server's formal Docker build entrypoint."""
+
+    settings = get_settings()
+    slug = _SAFE_NAME.sub("-", environment_id.lower()).strip("-.")[:32]
+    version_token = version_id.replace("-", "").lower()
+    repository = f"flowweave/environment-{slug}-runtime"
+    custom_tag = f"v{version_no}-{version_token}"
+    options = {
+        "base_image": base_image,
+        "custom_tags": custom_tag,
+        "image": repository,
+        "target": "source-minimal",
+        "platforms": [platform],
+        "push": False,
+        "include_base_tag": False,
+        "include_versioned_tag": False,
+        "git_sha": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+        "git_ref": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+    }
+    output = _run(
+        [
+            settings.docker_binary,
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "--mount",
+            "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
+            "--workdir",
+            "/opt/openhands-source",
+            "--entrypoint",
+            "/runtime/.venv/bin/python",
+            settings.openhands_runtime_builder_image,
+            "-c",
+            _OPENHANDS_BUILD_SCRIPT,
+            json.dumps(options, sort_keys=True),
+        ],
+        timeout=settings.terminal_environment_publish_timeout_seconds,
+    )
+    marker = "FLOWWEAVE_OPENHANDS_BUILD="
+    result_line = next(
+        (line.removeprefix(marker) for line in reversed(output.splitlines()) if line.startswith(marker)),
+        None,
+    )
+    try:
+        result = cast(dict[str, Any], json.loads(result_line or ""))
+        tags = cast(list[object], result["tags"])
+        reference = str(tags[0])
+        telemetry = cast(dict[str, Any], result.get("telemetry") or {})
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise DomainError(
+            "ENVIRONMENT_OPENHANDS_BUILD_PROTOCOL_ERROR",
+            "The OpenHands image builder returned invalid metadata",
+            502,
+        ) from exc
+    return OpenHandsBuild(
+        reference=reference,
+        log_digest=hashlib.sha256(output.encode()).hexdigest(),
+        telemetry=telemetry,
+        target="source-minimal",
+        platform=platform,
+    )
+
+
+def _probe_runtime_image(
+    image_digest: str, *, probe_token: str
+) -> tuple[dict[str, str], dict[str, Any], str]:
+    settings = get_settings()
+    probe_name = f"fw-env-probe-{probe_token[:24]}"
+    try:
+        _run(
+            [
+                settings.docker_binary,
+                "run",
+                "--detach",
+                "--name",
+                probe_name,
+                "--entrypoint",
+                "sh",
+                image_digest,
+                "-c",
+                "trap : TERM INT; while :; do sleep 3600; done",
+            ],
+            timeout=30,
+        )
+        commands = _inspect_commands(probe_name)
+        runtime_provenance = _inspect_runtime_provenance(probe_name)
+        contract_output = _run(
+            [
+                settings.docker_binary,
+                "exec",
+                probe_name,
+                "/agent-server/.venv/bin/python",
+                "/agent-server/openhands-agent-server/openhands/agent_server/"
+                "flowweave_contract_check.py",
+            ],
+            timeout=120,
+        )
+        return (
+            commands,
+            runtime_provenance,
+            hashlib.sha256(contract_output.encode()).hexdigest(),
+        )
+    finally:
+        try:
+            _run([settings.docker_binary, "rm", "--force", probe_name], timeout=30)
+        except DomainError as exc:
+            if not _docker_resource_absent(exc, "container"):
+                raise
+
+
 def publish_container(
     container_id: str,
     *,
     environment_id: str,
     version_id: str,
     version_no: int,
+    base_image_reference: str,
+    base_image_digest: str,
 ) -> PublishedImage:
+    """Package a customized user base through OpenHands' formal build chain."""
+
     require_backend()
     settings = get_settings()
     slug = _SAFE_NAME.sub("-", environment_id.lower()).strip("-.")[:32]
-    # Include the immutable database identity in the tag. The human version
-    # number remains visible, while two publishers can never target the same
-    # mutable Docker name between the ownership preflight and commit.
     version_token = version_id.replace("-", "").lower()
     reference = f"flowweave/environment-{slug}:v{version_no}-{version_token}"
+    customized_reference = (
+        f"flowweave/environment-{slug}-base:v{version_no}-{version_token}"
+    )
     expected_labels = {
         "flowweave.managed": "environment-image",
         "flowweave.manager-scope": settings.sandbox_manager_scope,
@@ -655,9 +880,8 @@ def publish_container(
         "flowweave.environment-version-no": str(version_no),
     }
 
-    # A retry after Docker commit but before the database CAS reuses only an
-    # image carrying the exact immutable version identity. Never retarget a
-    # predictable managed tag that another actor already owns.
+    # A retry may reuse only a final image carrying the exact immutable
+    # Environment Version identity.
     try:
         existing_raw = _run(
             [settings.docker_binary, "image", "inspect", reference, "--format", "{{json .}}"],
@@ -699,72 +923,152 @@ def publish_container(
                 409,
                 {"reference": reference, "version_id": version_id},
             )
+        commands, runtime_provenance, contract_digest = _probe_runtime_image(
+            digest, probe_token=version_token
+        )
+        platform = f"{existing.get('Os')}/{existing.get('Architecture')}"
         manifest: dict[str, Any] = {
             "schema_version": 1,
             "image_id": digest,
             "reference": reference,
             "architecture": existing.get("Architecture"),
             "os": existing.get("Os"),
-            "commands": {},
-            "runtime_provenance": _inspect_runtime_provenance(container_id),
+            "commands": commands,
+            "runtime_provenance": runtime_provenance,
+            "build": {
+                "builder": "openhands.agent_server.docker.build",
+                "target": labels.get("flowweave.openhands-build-target", "source-minimal"),
+                "platform": labels.get("flowweave.openhands-build-platform", platform),
+                "log_digest": labels.get("flowweave.openhands-build-log-digest"),
+                "user_base_image_reference": base_image_reference,
+                "user_base_image_digest": base_image_digest,
+                "runtime_image_reference": reference,
+                "runtime_image_digest": digest,
+            },
+            "validation": {
+                "contract_check": {"status": "PASSED", "output_digest": contract_digest},
+                "tool_workspace_probe": {
+                    "status": "PASSED",
+                    "command_count": len(commands),
+                },
+                "security_scan": {"status": "NOT_RUN", "reason": "Deferred to FR-12"},
+            },
             "recovered": True,
         }
         return PublishedImage(reference=reference, digest=digest, manifest=manifest)
 
-    # Publishing intentionally preserves the container filesystem as-is,
-    # including authentication files, caches, shell history, and other local
-    # state created during setup.
-    commands = _inspect_commands(container_id)
-    runtime_provenance = _inspect_runtime_provenance(container_id)
+    # Freeze the interactive setup filesystem first. This intermediate image
+    # becomes the immutable user base passed to OpenHands BuildOptions.
     diff = container_diff(container_id)
-    if not _run(
-        [
-            get_settings().docker_binary,
-            "exec",
-            container_id,
-            "sh",
-            "-c",
-            "command -v agent-server",
-        ],
-        timeout=30,
-    ):
-        raise DomainError(
-            "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
-            "The environment must retain the OpenHands agent-server executable",
-            409,
-        )
-    image_id = _run(
+    customized_digest = _run(
         [
             settings.docker_binary,
             "commit",
             "--pause=true",
             "--change",
             "ENTRYPOINT []",
-            *[
-                part
-                for key, value in expected_labels.items()
-                for part in ("--change", f"LABEL {key}={value}")
-            ],
             container_id,
-            reference,
+            customized_reference,
         ],
         timeout=settings.terminal_environment_publish_timeout_seconds,
     )
-    inspected = json.loads(
-        _run(
-            [
-                get_settings().docker_binary,
-                "image",
-                "inspect",
-                reference,
-                "--format",
-                "{{json .}}",
-            ],
-            timeout=30,
-        )
+    base_inspected = cast(
+        dict[str, object],
+        json.loads(
+            _run(
+                [
+                    settings.docker_binary,
+                    "image",
+                    "inspect",
+                    customized_reference,
+                    "--format",
+                    "{{json .}}",
+                ],
+                timeout=30,
+            )
+        ),
     )
-    inspection = cast(dict[str, object], inspected) if isinstance(inspected, dict) else {}
-    digest = str(inspection.get("Id") or image_id)
+    customized_digest = str(base_inspected.get("Id") or customized_digest)
+    architecture = str(base_inspected.get("Architecture") or "")
+    os_name = str(base_inspected.get("Os") or "linux")
+    architecture_by_docker = {"x86_64": "amd64", "aarch64": "arm64"}
+    platform_arch = architecture_by_docker.get(architecture, architecture)
+    if os_name != "linux" or platform_arch not in {"amd64", "arm64"}:
+        raise DomainError(
+            "ENVIRONMENT_PLATFORM_UNSUPPORTED",
+            "The user base image platform is not supported",
+            422,
+            {"os": os_name, "architecture": architecture},
+        )
+    platform = f"linux/{platform_arch}"
+    build = _build_openhands_runtime(
+        base_image=customized_digest,
+        environment_id=environment_id,
+        version_id=version_id,
+        version_no=version_no,
+        platform=platform,
+    )
+    official_inspected = cast(
+        dict[str, object],
+        json.loads(
+            _run(
+                [
+                    settings.docker_binary,
+                    "image",
+                    "inspect",
+                    build.reference,
+                    "--format",
+                    "{{json .}}",
+                ],
+                timeout=30,
+            )
+        ),
+    )
+    official_digest = str(official_inspected.get("Id") or "")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", official_digest):
+        raise DomainError(
+            "ENVIRONMENT_OPENHANDS_BUILD_PROTOCOL_ERROR",
+            "The OpenHands builder omitted the Runtime image digest",
+            502,
+        )
+
+    # Add only governance labels on top of the formal OpenHands output. The
+    # filesystem and entrypoint remain those produced by docker.build.
+    dockerfile = "\n".join(
+        [f"FROM {official_digest}"]
+        + [f'LABEL {key}="{value}"' for key, value in expected_labels.items()]
+        + [
+            f'LABEL flowweave.openhands-build-log-digest="{build.log_digest}"',
+            f'LABEL flowweave.openhands-build-target="{build.target}"',
+            f'LABEL flowweave.openhands-build-platform="{build.platform}"',
+            f'LABEL flowweave.user-base-image-digest="{base_image_digest}"',
+            'ENV PATH="/agent-server/.venv/bin:${PATH}"',
+            "ENTRYPOINT []",
+            "",
+        ]
+    )
+    _run(
+        [settings.docker_binary, "build", "--tag", reference, "-"],
+        timeout=settings.terminal_environment_publish_timeout_seconds,
+        input_text=dockerfile,
+    )
+    inspection = cast(
+        dict[str, object],
+        json.loads(
+            _run(
+                [
+                    settings.docker_binary,
+                    "image",
+                    "inspect",
+                    reference,
+                    "--format",
+                    "{{json .}}",
+                ],
+                timeout=30,
+            )
+        ),
+    )
+    digest = str(inspection.get("Id") or "")
     config_value = inspection.get("Config")
     config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
     labels_value = config.get("Labels")
@@ -780,6 +1084,10 @@ def publish_container(
             502,
             {"reference": reference, "version_id": version_id},
         )
+
+    commands, runtime_provenance, contract_digest = _probe_runtime_image(
+        digest, probe_token=version_token
+    )
     manifest = {
         "schema_version": 1,
         "image_id": digest,
@@ -788,6 +1096,34 @@ def publish_container(
         "os": inspection.get("Os"),
         "commands": commands,
         "runtime_provenance": runtime_provenance,
+        "build": {
+            "builder": "openhands.agent_server.docker.build",
+            "target": build.target,
+            "platform": build.platform,
+            "log_digest": build.log_digest,
+            "telemetry": build.telemetry,
+            "user_base_image_reference": base_image_reference,
+            "user_base_image_digest": base_image_digest,
+            "customized_base_image_digest": customized_digest,
+            "openhands_output_reference": build.reference,
+            "openhands_output_digest": official_digest,
+            "runtime_image_reference": reference,
+            "runtime_image_digest": digest,
+        },
+        "validation": {
+            "contract_check": {
+                "status": "PASSED",
+                "output_digest": contract_digest,
+            },
+            "tool_workspace_probe": {
+                "status": "PASSED",
+                "command_count": len(commands),
+            },
+            "security_scan": {
+                "status": "NOT_RUN",
+                "reason": "Deferred to the FR-12 security gate",
+            },
+        },
         "filesystem_change_count": len(diff),
         "filesystem_change_digest": hashlib.sha256("\n".join(diff).encode()).hexdigest(),
     }
@@ -801,6 +1137,8 @@ def publish_setup_container(
     environment_id: str,
     version_id: str,
     version_no: int,
+    base_image_reference: str,
+    base_image_digest: str,
 ) -> PublishedImage:
     """Publish only after the controller/local adapter revalidates ownership."""
 
@@ -816,6 +1154,8 @@ def publish_setup_container(
                     "environment_id": environment_id,
                     "version_id": version_id,
                     "version_no": version_no,
+                    "base_image_reference": base_image_reference,
+                    "base_image_digest": base_image_digest,
                 },
                 timeout=settings.terminal_environment_publish_timeout_seconds + 30,
             )
@@ -845,4 +1185,6 @@ def publish_setup_container(
         environment_id=environment_id,
         version_id=version_id,
         version_no=version_no,
+        base_image_reference=base_image_reference,
+        base_image_digest=base_image_digest,
     )

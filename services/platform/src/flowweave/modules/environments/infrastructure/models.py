@@ -16,6 +16,10 @@ class TerminalEnvironment(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     base_image: Mapped[str] = mapped_column(String(500))
+    # The user-facing repository@manifest-digest reference and the resolved
+    # local content digest are stored separately. Runtime creation only uses
+    # the latter, so a registry tag can never drift underneath a version.
+    base_image_digest: Mapped[str | None] = mapped_column(String(100))
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     # High-water mark retained when historical versions are deleted so a
     # published version number is never reused.
@@ -39,6 +43,8 @@ class EnvironmentVersion(Base):
         ForeignKey("environment_versions.id", ondelete="RESTRICT")
     )
     state: Mapped[str] = mapped_column(String(30), default="PUBLISHING", index=True)
+    base_image_reference: Mapped[str] = mapped_column(String(500), default="")
+    base_image_digest: Mapped[str] = mapped_column(String(100), default="")
     image_reference: Mapped[str] = mapped_column(String(500), default="")
     image_digest: Mapped[str] = mapped_column(String(100), default="")
     manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -65,6 +71,7 @@ class EnvironmentSetupSession(Base):
     state: Mapped[str] = mapped_column(String(30), default="STARTING", index=True)
     container_id: Mapped[str] = mapped_column(String(100), default="")
     base_image_reference: Mapped[str] = mapped_column(String(500))
+    base_image_digest: Mapped[str] = mapped_column(String(100), default="")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     error_detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

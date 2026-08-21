@@ -19,8 +19,10 @@ from flowweave.shared.models import (
     CapabilityValidation,
     EnvironmentSetupSession,
     EnvironmentVersion,
+    FlowDefinition,
     FlowRun,
     MCPOAuthSecretReference,
+    RunSnapshot,
     TaskState,
     TerminalEnvironment,
 )
@@ -32,7 +34,13 @@ def _time(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _version_dict(item: EnvironmentVersion, *, run_reference_count: int = 0) -> dict[str, Any]:
+def _version_dict(
+    item: EnvironmentVersion,
+    *,
+    run_reference_count: int = 0,
+    flow_reference_count: int = 0,
+    snapshot_reference_count: int = 0,
+) -> dict[str, Any]:
     runtime_compatible, runtime_incompatibility_reason = runtime_manifest_compatibility(
         item.manifest_json
     )
@@ -42,6 +50,8 @@ def _version_dict(item: EnvironmentVersion, *, run_reference_count: int = 0) -> 
         "version_no": item.version_no,
         "parent_version_id": item.parent_version_id,
         "state": item.state,
+        "base_image_reference": item.base_image_reference,
+        "base_image_digest": item.base_image_digest,
         "image_reference": item.image_reference,
         "image_digest": item.image_digest,
         "manifest": item.manifest_json or {},
@@ -49,7 +59,11 @@ def _version_dict(item: EnvironmentVersion, *, run_reference_count: int = 0) -> 
         "runtime_compatible": runtime_compatible,
         "runtime_incompatibility_reason": runtime_incompatibility_reason,
         "run_reference_count": run_reference_count,
-        "reference_count": run_reference_count,
+        "flow_reference_count": flow_reference_count,
+        "snapshot_reference_count": snapshot_reference_count,
+        "reference_count": (
+            run_reference_count + flow_reference_count + snapshot_reference_count
+        ),
         "created_at": _time(item.created_at),
     }
 
@@ -61,6 +75,7 @@ def _session_dict(item: EnvironmentSetupSession) -> dict[str, Any]:
         "base_version_id": item.base_version_id,
         "state": item.state,
         "base_image_reference": item.base_image_reference,
+        "base_image_digest": item.base_image_digest,
         "expires_at": _time(item.expires_at),
         "error_detail": item.error_detail,
         "created_at": _time(item.created_at),
@@ -69,6 +84,12 @@ def _session_dict(item: EnvironmentSetupSession) -> dict[str, Any]:
 
 
 _CLEANUP_MAX_ATTEMPTS = 20
+_OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
+    "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
+)
+_FLOWWEAVE_OVERLAY_DIGEST = (
+    "1498b33bdc725f5e288fda7b65c40213d8bfec2d2b1b4721f6713b4733239f27"
+)
 
 
 def runtime_manifest_compatibility(manifest: object) -> tuple[bool, str | None]:
@@ -96,10 +117,33 @@ def validate_runtime_manifest(
     expected_packages = dict(OPENHANDS_PACKAGE_VERSIONS)
     actual_commit = provenance.get("source_commit")
     actual_ref = provenance.get("source_ref")
+    overlays = provenance.get("overlays")
+    actual_overlays = overlays if isinstance(overlays, dict) else {}
+    build = document.get("build")
+    build = build if isinstance(build, dict) else {}
+    validation = document.get("validation")
+    validation = validation if isinstance(validation, dict) else {}
+    contract_check = validation.get("contract_check")
+    contract_check = contract_check if isinstance(contract_check, dict) else {}
+    tool_probe = validation.get("tool_workspace_probe")
+    tool_probe = tool_probe if isinstance(tool_probe, dict) else {}
+    security_scan = validation.get("security_scan")
+    security_scan = security_scan if isinstance(security_scan, dict) else {}
     if (
         actual_packages != expected_packages
         or actual_commit != OPENHANDS_SOURCE_COMMIT
         or actual_ref != OPENHANDS_SOURCE_COMMIT
+        or provenance.get("source_archive_digest") != _OPENHANDS_SOURCE_ARCHIVE_DIGEST
+        or actual_overlays.get("patch_ambient_plugins.py") != _FLOWWEAVE_OVERLAY_DIGEST
+        or build.get("builder") != "openhands.agent_server.docker.build"
+        or build.get("target") not in {"source-minimal", "source"}
+        or build.get("platform") not in {"linux/amd64", "linux/arm64"}
+        or not build.get("user_base_image_reference")
+        or not build.get("user_base_image_digest")
+        or build.get("runtime_image_digest") != document.get("image_id")
+        or contract_check.get("status") != "PASSED"
+        or tool_probe.get("status") != "PASSED"
+        or not security_scan.get("status")
     ):
         raise DomainError(
             "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
@@ -115,6 +159,10 @@ def validate_runtime_manifest(
                 "expected_source_commit": OPENHANDS_SOURCE_COMMIT,
                 "actual_source_commit": actual_commit,
                 "actual_source_ref": actual_ref,
+                "actual_source_archive_digest": provenance.get("source_archive_digest"),
+                "actual_overlays": actual_overlays,
+                "build": build,
+                "validation": validation,
             },
         )
 
@@ -453,6 +501,8 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
     )
     version_ids = [version.id for version in versions]
     run_references: dict[str, int] = {}
+    flow_references: dict[str, int] = {}
+    snapshot_references: dict[str, int] = {}
     if version_ids:
         run_references = {
             version_id: int(count)
@@ -463,16 +513,37 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
             )
             if version_id is not None
         }
+        flow_references = {
+            version_id: int(count)
+            for version_id, count in db.execute(
+                select(FlowDefinition.environment_version_id, func.count(FlowDefinition.id))
+                .where(FlowDefinition.environment_version_id.in_(version_ids))
+                .group_by(FlowDefinition.environment_version_id)
+            )
+            if version_id is not None
+        }
+        snapshot_references = {
+            version_id: int(count)
+            for version_id, count in db.execute(
+                select(RunSnapshot.environment_version_id, func.count(RunSnapshot.id))
+                .where(RunSnapshot.environment_version_id.in_(version_ids))
+                .group_by(RunSnapshot.environment_version_id)
+            )
+            if version_id is not None
+        }
     return {
         "id": item.id,
         "name": item.name,
         "description": item.description,
         "base_image": item.base_image,
+        "base_image_digest": item.base_image_digest,
         "row_version": item.row_version,
         "versions": [
             _version_dict(
                 version,
                 run_reference_count=run_references.get(version.id, 0),
+                flow_reference_count=flow_references.get(version.id, 0),
+                snapshot_reference_count=snapshot_references.get(version.id, 0),
             )
             for version in versions
         ],
@@ -539,15 +610,7 @@ def read_environment(db: Session, environment_id: str) -> dict[str, Any]:
 def save_environment(
     db: Session, payload: TerminalEnvironmentWrite, environment_id: str | None = None
 ) -> dict[str, Any]:
-    base_image = docker.validate_image(payload.base_image)
-    configured_base = get_settings().terminal_environment_base_image
-    if base_image != configured_base:
-        raise DomainError(
-            "ENVIRONMENT_BASE_IMAGE_NOT_ALLOWED",
-            "Terminal environments must use the administrator-approved base image",
-            422,
-            {"allowed_base_image": configured_base},
-        )
+    requested_base_image = docker.validate_image(payload.base_image)
     if environment_id:
         item = _environment(db, environment_id)
         if payload.row_version != item.row_version:
@@ -557,14 +620,42 @@ def save_environment(
                 actual=item.row_version,
             )
         item.row_version += 1
+        if requested_base_image == item.base_image and item.base_image_digest:
+            base_image = item.base_image
+            base_image_digest = item.base_image_digest
+        else:
+            has_history = db.scalar(
+                select(EnvironmentVersion.id).where(
+                    EnvironmentVersion.environment_id == item.id
+                )
+            ) or db.scalar(
+                select(EnvironmentSetupSession.id).where(
+                    EnvironmentSetupSession.environment_id == item.id
+                )
+            )
+            if has_history:
+                raise DomainError(
+                    "ENVIRONMENT_BASE_IMAGE_IMMUTABLE",
+                    "The user base image cannot change after setup or publication",
+                    409,
+                    {"environment_id": item.id},
+                )
+            base_image, base_image_digest = docker.resolve_base_image(
+                requested_base_image
+            )
     else:
+        base_image, base_image_digest = docker.resolve_base_image(requested_base_image)
         item = TerminalEnvironment(
-            name=payload.name, description=payload.description, base_image=base_image
+            name=payload.name,
+            description=payload.description,
+            base_image=base_image,
+            base_image_digest=base_image_digest,
         )
         db.add(item)
     item.name = payload.name
     item.description = payload.description
     item.base_image = base_image
+    item.base_image_digest = base_image_digest
     item.updated_at = datetime.now(UTC)
     finish(db)
     return environment_dict(db, item)
@@ -622,7 +713,16 @@ def create_setup_session(
                             429,
                             {"active_sessions": active_count, "max_active_sessions": max_active},
                         )
-                    image = environment.base_image
+                    if not environment.base_image_digest:
+                        raise DomainError(
+                            "ENVIRONMENT_BASE_IMAGE_UNRESOLVED",
+                            "This historical Environment has no frozen base image digest",
+                            409,
+                            {"environment_id": environment.id},
+                        )
+                    image = environment.base_image_digest
+                    base_image_reference = environment.base_image
+                    base_image_digest = environment.base_image_digest
                     base_version_no: int | None = None
                     if base_version_id:
                         version = control_db.get(EnvironmentVersion, base_version_id)
@@ -637,12 +737,15 @@ def create_setup_session(
                                 422,
                             )
                         image = version.image_digest or version.image_reference
+                        base_image_reference = version.base_image_reference
+                        base_image_digest = version.base_image_digest
                         base_version_no = version.version_no
                     item = EnvironmentSetupSession(
                         environment_id=environment.id,
                         base_version_id=base_version_id,
                         state="STARTING",
-                        base_image_reference=image,
+                        base_image_reference=base_image_reference,
+                        base_image_digest=base_image_digest,
                         expires_at=datetime.now(UTC)
                         + timedelta(
                             seconds=get_settings().terminal_environment_session_ttl_seconds
@@ -663,6 +766,8 @@ def create_setup_session(
                     owner_id=session_id,
                     environment_id=environment_id,
                     image=image,
+                    base_image_reference=base_image_reference,
+                    base_image_digest=base_image_digest,
                     base_version_id=base_version_id,
                     base_version_no=base_version_no,
                     hard_expires_at=expires_at,
@@ -796,6 +901,13 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                         "The setup session has no managed sandbox ledger entry",
                         409,
                     )
+                if not item.base_image_reference or not item.base_image_digest:
+                    raise DomainError(
+                        "ENVIRONMENT_BASE_IMAGE_UNRESOLVED",
+                        "This historical setup session has no frozen user base image",
+                        409,
+                        {"session_id": item.id},
+                    )
                 environment = control_db.scalar(
                     select(TerminalEnvironment)
                     .where(TerminalEnvironment.id == item.environment_id)
@@ -824,6 +936,8 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                         version_no=version_no,
                         parent_version_id=item.base_version_id,
                         state="PUBLISHING",
+                        base_image_reference=item.base_image_reference,
+                        base_image_digest=item.base_image_digest,
                     )
                     control_db.add(version)
                     control_db.flush()
@@ -836,6 +950,8 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                 environment_id = item.environment_id
                 version_id = version.id
                 version_no = version.version_no
+                base_image_reference = item.base_image_reference
+                base_image_digest = item.base_image_digest
                 control_db.commit()
 
             published: docker.PublishedImage | None = None
@@ -848,6 +964,8 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                     environment_id=environment_id,
                     version_id=version_id,
                     version_no=version_no,
+                    base_image_reference=base_image_reference,
+                    base_image_digest=base_image_digest,
                 )
                 validate_runtime_manifest(published.manifest, environment_version_id=version_id)
             except DomainError as exc:
@@ -948,6 +1066,22 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
         )
         or 0
     )
+    flow_reference_count = int(
+        db.scalar(
+            select(func.count(FlowDefinition.id)).where(
+                FlowDefinition.environment_version_id == version.id
+            )
+        )
+        or 0
+    )
+    snapshot_reference_count = int(
+        db.scalar(
+            select(func.count(RunSnapshot.id)).where(
+                RunSnapshot.environment_version_id == version.id
+            )
+        )
+        or 0
+    )
     setup_reference = db.scalar(
         select(EnvironmentSetupSession.id).where(
             EnvironmentSetupSession.base_version_id == version.id,
@@ -973,6 +1107,8 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
     )
     if (
         run_reference_count
+        or flow_reference_count
+        or snapshot_reference_count
         or setup_reference is not None
         or validation_reference_count
         or oauth_reference_count
@@ -981,6 +1117,8 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
             "environment_id": environment_id,
             "version_id": version.id,
             "run_reference_count": run_reference_count,
+            "flow_reference_count": flow_reference_count,
+            "snapshot_reference_count": snapshot_reference_count,
         }
         if setup_reference is not None:
             details["setup_reference_count"] = 1
@@ -1060,10 +1198,18 @@ def delete_environment(db: Session, environment_id: str) -> None:
     run_reference = db.scalar(
         select(FlowRun.id).where(FlowRun.environment_version_id.in_(version_ids))
     )
-    if run_reference:
+    flow_reference = db.scalar(
+        select(FlowDefinition.id).where(
+            FlowDefinition.environment_version_id.in_(version_ids)
+        )
+    )
+    snapshot_reference = db.scalar(
+        select(RunSnapshot.id).where(RunSnapshot.environment_version_id.in_(version_ids))
+    )
+    if run_reference or flow_reference or snapshot_reference:
         raise DomainError(
             "ENVIRONMENT_IN_USE",
-            "The terminal environment is referenced by a flow run",
+            "The terminal environment is referenced by a Flow, Snapshot, or FlowRun",
             409,
         )
     active_sessions = list(

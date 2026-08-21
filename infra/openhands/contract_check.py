@@ -208,9 +208,10 @@ def main() -> None:
     assert '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
     assert '@sockets_router.websocket("/bash-events")' in bash_socket_source
     assert "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
-    provenance = json.loads(
-        Path("/runtime/openhands-source-provenance.json").read_text(encoding="utf-8")
-    )
+    provenance_path = Path("/runtime/openhands-source-provenance.json")
+    if not provenance_path.is_file():
+        provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     build_input = provenance["build_input"]
     assert build_input["upstream_base_commit"] == EXPECTED_UPSTREAM_BASE
     assert build_input["source_commit"] == EXPECTED_UPSTREAM_BASE

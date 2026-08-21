@@ -64,6 +64,8 @@ class SetupSandboxSpec(_StrictModel):
     environment_id: UUID
     base_version_id: UUID | None
     base_version_no: int | None = Field(ge=1)
+    base_image_reference: str = Field(min_length=1, max_length=500)
+    base_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class RuntimeSandboxSpec(_StrictModel):
@@ -169,10 +171,19 @@ class RemoveImageWrite(ScopedRequest):
     version_no: int | None = Field(default=None, ge=1)
 
 
+class ResolveBaseImageWrite(ScopedRequest):
+    reference: str = Field(
+        max_length=500,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,430}@sha256:[0-9a-f]{64}$",
+    )
+
+
 class PublishImageWrite(SandboxDeleteWrite):
     environment_id: UUID
     version_id: UUID
     version_no: int = Field(ge=1)
+    base_image_reference: str = Field(min_length=1, max_length=500)
+    base_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class EnvironmentCredentialsWrite(ScopedRequest):
@@ -526,6 +537,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/sandboxes/delete": frozenset({"worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
+                "/v1/environments/resolve-base-image": frozenset({"api"}),
                 "/v1/environments/remove-credentials": frozenset({"worker"}),
                 # Both principals can encounter pre-ledger setup resources
                 # during the bounded migration compatibility period. The
@@ -664,8 +676,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             environment_id=str(payload.environment_id),
             version_id=str(payload.version_id),
             version_no=payload.version_no,
+            base_image_reference=payload.base_image_reference,
+            base_image_digest=payload.base_image_digest,
         )
         return {"deleted": True}
+
+    @app.post("/v1/environments/resolve-base-image")
+    async def resolve_base_image(payload: ResolveBaseImageWrite) -> dict[str, str]:
+        check_scope(payload.manager_scope)
+        reference, digest = environments_docker.resolve_base_image(payload.reference)
+        return {"reference": reference, "digest": digest}
 
     @app.post("/v1/environments/remove-credentials")
     async def remove_credentials(payload: EnvironmentCredentialsWrite) -> dict[str, bool]:

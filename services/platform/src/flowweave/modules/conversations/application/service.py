@@ -43,6 +43,10 @@ from flowweave.modules.conversations.infrastructure.models import (
     RuntimeSubagentTask,
     RuntimeSubagentTaskUsage,
 )
+from flowweave.modules.environments.public import (
+    lock_referenceable_version,
+    validate_runtime_manifest,
+)
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import (
@@ -69,7 +73,6 @@ from flowweave.shared.models import (
     ArtifactVersion,
     AttemptInputBinding,
     BackgroundTask,
-    EnvironmentVersion,
     FlowRun,
     HumanAction,
     NodeAttempt,
@@ -4155,13 +4158,29 @@ def process_create_conversation(
     snapshot = db.get(RunSnapshot, attempt.snapshot_id)
     node_run, run_id = _context(db, attempt)
     run = db.get(FlowRun, run_id)
-    environment = (
-        db.get(EnvironmentVersion, run.environment_version_id)
-        if run and run.environment_version_id
-        else None
-    )
     if snapshot is None:
         raise DomainError("SNAPSHOT_INVALID", "Attempt Snapshot is unavailable", 409)
+    if (
+        run is None
+        or not run.environment_version_id
+        or not snapshot.environment_version_id
+        or snapshot.environment_version_id != run.environment_version_id
+    ):
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED",
+            "The FlowRun and Snapshot must share one frozen Environment Version",
+            409,
+            {"flow_run_id": run_id, "snapshot_id": snapshot.id},
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The frozen FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     node = runtime_node(
         definition=snapshot.definition_json,
         manifest=snapshot.runtime_manifest_json or {},
@@ -4232,10 +4251,10 @@ def process_create_conversation(
                 or [],
             )
         ),
-        environment_image=environment.image_digest if environment else None,
-        environment_id=environment.environment_id if environment else None,
-        environment_version_id=environment.id if environment else None,
-        environment_version_no=environment.version_no if environment else None,
+        environment_image=environment.image_digest,
+        environment_id=environment.environment_id,
+        environment_version_id=environment.id,
+        environment_version_no=environment.version_no,
         memory_materialized=memory_enabled,
     )
     if memory_enabled:

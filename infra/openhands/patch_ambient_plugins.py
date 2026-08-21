@@ -35,6 +35,15 @@ def _replace_once(path: Path, before: str, after: str) -> None:
     path.write_text(updated, encoding="utf-8")
 
 
+def _replace_text_once(path: Path, before: str, after: str) -> None:
+    source = path.read_text(encoding="utf-8")
+    if after in source:
+        return
+    if source.count(before) != 1:
+        raise RuntimeError(f"{path}: governed text fragment is not unique")
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+
+
 def _site_packages_root() -> Path:
     spec = importlib.util.find_spec("openhands")
     if spec is None or not spec.submodule_search_locations:
@@ -43,14 +52,32 @@ def _site_packages_root() -> Path:
 
 
 def apply(root: Path) -> None:
-    request = root / "openhands/sdk/conversation/request.py"
-    event_service = root / "openhands/agent_server/event_service.py"
-    local_conversation = (
-        root / "openhands/sdk/conversation/impl/local_conversation.py"
-    )
+    if (root / "openhands-sdk").is_dir():
+        request = root / "openhands-sdk/openhands/sdk/conversation/request.py"
+        event_service = root / "openhands-agent-server/openhands/agent_server/event_service.py"
+        local_conversation = (
+            root
+            / "openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
+        )
+    else:
+        request = root / "openhands/sdk/conversation/request.py"
+        event_service = root / "openhands/agent_server/event_service.py"
+        local_conversation = (
+            root / "openhands/sdk/conversation/impl/local_conversation.py"
+        )
     for path in (request, event_service, local_conversation):
         if not path.is_file():
             raise RuntimeError(f"missing pinned OpenHands source: {path}")
+
+    if (root / "openhands-sdk").is_dir():
+        _replace_text_once(
+            root / "openhands-agent-server/pyproject.toml",
+            '''  "docker/wallpaper.svg",
+''',
+            '''  "docker/wallpaper.svg",
+  "openhands-source-provenance.json",
+''',
+        )
 
     _replace_once(
         request,

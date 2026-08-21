@@ -359,17 +359,26 @@ chmod 0700 "$target"
         spec = resource.spec_json or {}
         base_version_id = str(spec.get("base_version_id") or "")
         if resource.kind == "ENVIRONMENT_SETUP" and not base_version_id:
-            if resource.image_reference != self.settings.terminal_environment_base_image:
+            expected_digest = str(spec.get("base_image_digest") or "")
+            base_reference = str(spec.get("base_image_reference") or "")
+            if (
+                not base_reference
+                or not self._is_image_digest(expected_digest)
+                or resource.image_reference != expected_digest
+            ):
                 raise DomainError(
                     "SANDBOX_IMAGE_UNTRUSTED",
-                    "The setup sandbox image is not the administrator-approved base image",
+                    "The setup sandbox requires a digest-locked user base image",
                     422,
                 )
-            # The administrator-facing setting may be a convenient local tag.
-            # Resolve it once and launch by the immutable image ID so a tag
-            # replacement between validation and `docker run` cannot select a
-            # different image.
             actual_digest, _labels = self._inspect_image(resource.image_reference)
+            if actual_digest != expected_digest:
+                raise DomainError(
+                    "SANDBOX_IMAGE_UNTRUSTED",
+                    "The user base image content digest drifted",
+                    409,
+                    {"base_image_reference": base_reference},
+                )
             return actual_digest
 
         expected_digest = resource.image_reference

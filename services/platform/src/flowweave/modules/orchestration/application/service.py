@@ -366,8 +366,12 @@ def _action(
     return item
 
 
-def _snapshot_definition(db: Session, flow_id: str) -> dict[str, Any]:
+def _snapshot_definition(
+    db: Session, flow_id: str, *, environment_version_id: str | None = None
+) -> dict[str, Any]:
     definition = describe_flow(db, load_flow(db, flow_id))
+    if environment_version_id is not None:
+        definition["environment_version_id"] = environment_version_id
     for node in definition["nodes"]:
         asset = db.get(NodeAsset, node["node_asset_id"])
         if not asset:
@@ -1437,23 +1441,35 @@ def start_flow(
     payload: RunStart,
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
-    definition = _snapshot_definition(db, flow_id)
+    if not flow.environment_version_id:
+        raise DomainError(
+            "FLOW_ENVIRONMENT_REQUIRED",
+            "This historical Flow has no Environment Version; bind a READY version before running",
+            409,
+            {"flow_id": flow.id},
+        )
+    environment = lock_referenceable_version(db, flow.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "FLOW_ENVIRONMENT_VERSION_INVALID",
+            "The Flow Environment Version is not READY",
+            409,
+            {"environment_version_id": flow.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    definition = _snapshot_definition(
+        db, flow_id, environment_version_id=environment.id
+    )
     run_no = (
         db.scalar(select(func.max(FlowRun.run_no)).where(FlowRun.flow_definition_id == flow_id))
         or 0
     ) + 1
-    environment = None
-    if payload.environment_version_id:
-        environment = lock_referenceable_version(db, payload.environment_version_id)
-        if environment is None:
-            raise not_found("environment_version", payload.environment_version_id)
-        validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     run_name = payload.name or f"{flow.name} · Run #{run_no}"
     run = FlowRun(
         flow_definition_id=flow_id,
         run_no=run_no,
         name=run_name,
-        environment_version_id=environment.id if environment else None,
+        environment_version_id=environment.id,
         lark_folder_token=None,
         lark_folder_url=None,
     )
@@ -1468,6 +1484,7 @@ def start_flow(
         definition_hash=_hash(definition),
         runtime_manifest_json=runtime_manifest,
         runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
+        environment_version_id=environment.id,
     )
     db.add(snapshot)
     db.flush()
@@ -1483,7 +1500,7 @@ def start_flow(
         "FLOW_RUN_CREATED",
         {
             "snapshot_version": 1,
-            "environment_version_id": environment.id if environment else None,
+            "environment_version_id": environment.id,
         },
     )
     if payload.flow_node_key:
@@ -1904,12 +1921,27 @@ def recover_runtime_tasks(db: Session) -> int:
 def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    environment = (
-        db.get(EnvironmentVersion, run.environment_version_id)
-        if run.environment_version_id
-        else None
-    )
     snapshot = _snapshot(db, attempt.snapshot_id)
+    if (
+        not run.environment_version_id
+        or not snapshot.environment_version_id
+        or snapshot.environment_version_id != run.environment_version_id
+    ):
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED",
+            "The FlowRun and Snapshot must share one frozen Environment Version",
+            409,
+            {"flow_run_id": run.id, "snapshot_id": snapshot.id},
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The frozen FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     node = _runtime_node(snapshot, node_run.flow_node_snapshot_key)
     memory_enabled, source_refs = frozen_memory_policy(node, runtime_scope="ATTEMPT")
     settings = get_settings()
@@ -1962,10 +1994,10 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         model_name=attempt.model_name,
         reasoning_effort=attempt.reasoning_effort,
         output_targets=cast(dict[str, dict[str, str]], attempt.output_targets_json or {}),
-        environment_image=environment.image_digest if environment else None,
-        environment_id=environment.environment_id if environment else None,
-        environment_version_id=environment.id if environment else None,
-        environment_version_no=environment.version_no if environment else None,
+        environment_image=environment.image_digest,
+        environment_id=environment.environment_id,
+        environment_version_id=environment.id,
+        environment_version_no=environment.version_no,
         memory_materialized=memory_enabled,
     )
     if memory_enabled:
@@ -3468,7 +3500,27 @@ def sync_snapshot(
             expected=payload.expected_active_version,
             actual=current.version,
         )
-    definition = _snapshot_definition(db, run.flow_definition_id)
+    if not run.environment_version_id:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED",
+            "This historical FlowRun has no Environment Version and cannot create snapshots",
+            409,
+            {"flow_run_id": run.id},
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    definition = _snapshot_definition(
+        db,
+        run.flow_definition_id,
+        environment_version_id=run.environment_version_id,
+    )
     if _hash(definition) == current.definition_hash:
         return run_detail(db, run.id)
     action = _action(db, run.id, "SYNC_SNAPSHOT", idempotency_key)
@@ -3481,6 +3533,7 @@ def sync_snapshot(
         definition_hash=_hash(definition),
         runtime_manifest_json=runtime_manifest,
         runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
+        environment_version_id=run.environment_version_id,
         created_by_action_id=action.id,
     )
     db.add(snapshot)
@@ -3699,6 +3752,7 @@ def switch_agent_profile(
         definition_hash=_hash(definition),
         runtime_manifest_json=runtime_manifest,
         runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
+        environment_version_id=run.environment_version_id,
         created_by_action_id=action.id,
     )
     db.add(snapshot)
@@ -4140,6 +4194,7 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
                 "definition": x.definition_json,
                 "runtime_manifest_hash": x.runtime_manifest_hash,
                 "runtime_manifest": x.runtime_manifest_json,
+                "environment_version_id": x.environment_version_id,
                 "created_at": x.created_at.isoformat(),
             }
             for x in snapshots

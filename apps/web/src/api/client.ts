@@ -187,7 +187,7 @@ export const api = {
   validateFlow: (id: string) => request<{ valid: boolean; errors: unknown[] }>(`/flows/${id}/validate`, json('POST')),
   deleteFlow: (id: string) => request<void>(`/flows/${id}`, json('DELETE')),
 
-  runFlow: (flowId: string, body: { name?: string; environment_version_id: string }) =>
+  runFlow: (flowId: string, body: { name?: string }) =>
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),

@@ -117,6 +117,7 @@ export interface BulkDeleteResult<T> { deleted_ids: string[]; blocked: T[] }
 export interface EnvironmentVersion {
   id: string; environment_id: string; version_no: number; parent_version_id?: string | null;
   state: 'PUBLISHING' | 'READY' | 'FAILED'; image_reference: string; image_digest: string;
+  base_image_reference: string; base_image_digest: string;
   manifest: { commands?: Record<string, string>; [key: string]: unknown };
   error_detail?: string | null; runtime_compatible: boolean;
   runtime_incompatibility_reason?: string | null; run_reference_count: number;
@@ -128,7 +129,8 @@ export interface EnvironmentSetupSession {
   base_image_reference: string; expires_at: string; error_detail?: string | null;
 }
 export interface TerminalEnvironment {
-  id: string; name: string; description: string; base_image: string; row_version: number;
+  id: string; name: string; description: string; base_image: string;
+  base_image_digest?: string | null; row_version: number;
   versions: EnvironmentVersion[]; active_sessions: EnvironmentSetupSession[];
   created_at: string; updated_at: string;
 }
@@ -197,12 +199,14 @@ export interface FlowPortMapping {
 }
 export interface FlowDefinition {
   id: string; name: string; description: string; default_entry_key?: string | null;
+  environment_version_id?: string | null;
   lark_root_folder_url: string;
   row_version: number; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
   created_at: string; updated_at: string;
 }
 export interface FlowWrite {
   name: string; description: string; default_entry_key?: string | null;
+  environment_version_id: string;
   lark_root_folder_url: string;
   row_version?: number | null; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
 }
@@ -267,6 +271,7 @@ export interface SnapshotDefinition extends Omit<FlowDefinition, 'nodes'> {
 }
 export interface RunSnapshot {
   id: string; version: number; schema_version: number; definition_hash: string;
+  environment_version_id?: string | null;
   definition: SnapshotDefinition;
   created_at: string;
 }
