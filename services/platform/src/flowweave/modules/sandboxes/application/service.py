@@ -34,7 +34,6 @@ from flowweave.modules.sandboxes.infrastructure.models import (
     ManagedSandbox,
     RuntimeGeneration,
 )
-from flowweave.runtime.workspace import cleanup_runtime_memory
 from flowweave.shared.application.transactions import register_rollback_action
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError, not_found
@@ -533,12 +532,6 @@ def delete_sandbox_now(db: Session, sandbox_id: str) -> None:
     provider = DockerSandboxProvider(get_settings())
     try:
         provider.delete(resource)
-        if (
-            resource.kind == "AGENT_RUNTIME"
-            and bool((resource.spec_json or {}).get("memory_enabled"))
-            and resource.owner_type in {"ATTEMPT", "CONVERSATION"}
-        ):
-            cleanup_runtime_memory(owner_type=resource.owner_type, owner_id=resource.owner_id)
     except DomainError as exc:
         _error(resource, exc)
         raise
@@ -587,37 +580,6 @@ def owner_has_live_sandbox(db: Session, *, owner_type: str, owner_id: str) -> bo
         )
         is not None
     )
-
-
-def runtime_memory_cleanup_pending(db: Session, *, owner_type: str, owner_id: str) -> bool:
-    """Return whether durable Runtime deletion owns this Memory cleanup.
-
-    Runtime allocation commits its ledger before Docker I/O. If provisioning
-    then fails, that independent transaction marks the resource for deletion.
-    Callers must retain the mount source until the reconciler has proved the
-    container is gone; reading through a separate Session makes that decision
-    independent from a caller transaction that may be rolled back.
-    """
-
-    with Session(bind=_control_engine(db), expire_on_commit=False) as control_db:
-        resources = control_db.scalars(
-            select(ManagedSandbox).where(
-                ManagedSandbox.kind == "AGENT_RUNTIME",
-                ManagedSandbox.owner_type == owner_type,
-                ManagedSandbox.owner_id == owner_id,
-                ManagedSandbox.desired_state == "DELETED",
-            )
-        )
-        return any(bool((item.spec_json or {}).get("memory_enabled")) for item in resources)
-
-
-def cleanup_unclaimed_runtime_memory(db: Session, *, owner_type: str, owner_id: str) -> bool:
-    """Clean Memory only when no durable Runtime deletion owns the mount source."""
-
-    if runtime_memory_cleanup_pending(db, owner_type=owner_type, owner_id=owner_id):
-        return False
-    cleanup_runtime_memory(owner_type=owner_type, owner_id=owner_id)
-    return True
 
 
 def image_has_live_sandbox(db: Session, *, reference: str, digest: str) -> bool:
@@ -781,12 +743,6 @@ def _perform_reconcile(
             # per-sandbox network, so always execute the idempotent resource
             # deletion path even when container inspect returns None.
             provider.delete(resource)
-            if (
-                resource.kind == "AGENT_RUNTIME"
-                and bool((resource.spec_json or {}).get("memory_enabled"))
-                and resource.owner_type in {"ATTEMPT", "CONVERSATION"}
-            ):
-                cleanup_runtime_memory(owner_type=resource.owner_type, owner_id=resource.owner_id)
             return _ReconcileOutcome("DELETED")
         if observation is not None and observation.resource_id != resource.id:
             return _ReconcileOutcome("CONFLICT", observation)

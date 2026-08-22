@@ -970,9 +970,6 @@ class OpenHandsRuntime:
                     "AlwaysConfirm" if spec.confirmation_policy == "ALWAYS" else "NeverConfirm"
                 )
             },
-            # Production runs must never discover mutable user/project or
-            # Marketplace-installed Plugins outside the frozen Snapshot.
-            "load_ambient_plugins": False,
         }
         if spec.agent_profile is not None:
             # The immutable FlowWeave Profile has already been materialized in

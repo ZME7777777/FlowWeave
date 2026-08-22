@@ -155,7 +155,6 @@ REQUIRED_START_FIELDS = {
     "observability_tags",
     "parent_conversation_id",
     "plugins",
-    "load_ambient_plugins",
     "security_analyzer",
     "worktree",
     "workspace",
@@ -221,7 +220,7 @@ def main() -> None:
     assert build_input["source_kind"] == "upstream_source"
     assert build_input["fork_commit"] is None
     assert provenance["source_archive_sha256"] == EXPECTED_SOURCE_ARCHIVE_SHA256
-    assert set(provenance["overlays"]) == {"patch_ambient_plugins.py"}
+    assert provenance["overlays"] == {}
     direct_urls = {}
     for package in PACKAGES:
         direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
@@ -377,7 +376,6 @@ def main() -> None:
     start_fields = set(StartConversationRequest.model_fields)
     missing_start_fields = sorted(REQUIRED_START_FIELDS - start_fields)
     assert not missing_start_fields, {"missing_start_fields": missing_start_fields}
-    assert _field_default(StartConversationRequest, "load_ambient_plugins") is True
     assert isinstance(_field_default(StartConversationRequest, "confirmation_policy"), NeverConfirm)
     profile_http_methods = {
         path: sorted(schema["paths"][path])

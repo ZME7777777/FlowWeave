@@ -87,9 +87,6 @@ _CLEANUP_MAX_ATTEMPTS = 20
 _OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
     "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
 )
-_FLOWWEAVE_OVERLAY_DIGEST = (
-    "1498b33bdc725f5e288fda7b65c40213d8bfec2d2b1b4721f6713b4733239f27"
-)
 
 
 def runtime_manifest_compatibility(manifest: object) -> tuple[bool, str | None]:
@@ -134,7 +131,7 @@ def validate_runtime_manifest(
         or actual_commit != OPENHANDS_SOURCE_COMMIT
         or actual_ref != OPENHANDS_SOURCE_COMMIT
         or provenance.get("source_archive_digest") != _OPENHANDS_SOURCE_ARCHIVE_DIGEST
-        or actual_overlays.get("patch_ambient_plugins.py") != _FLOWWEAVE_OVERLAY_DIGEST
+        or actual_overlays
         or build.get("builder") != "openhands.agent_server.docker.build"
         or build.get("target") not in {"source-minimal", "source"}
         or build.get("platform") not in {"linux/amd64", "linux/arm64"}

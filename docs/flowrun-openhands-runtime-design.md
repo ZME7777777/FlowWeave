@@ -21,8 +21,9 @@ FlowWeave 后续采用以下唯一生产拓扑：
    persistence 均位于容器外，替换容器后必须使用原 conversation ID 重新加载。
 5. FlowWeave 不保存 Conversation 消息、HEAD、事件树、运行状态、cursor 或消息状态机，不解释谁在
    “对话”。它只保存连接定位、FlowRun 引用、授权和独立审计事实。
-6. FlowWeave 仍是能力治理控制面；Skill、MCP、Plugin、Hook、Agent Definition 等不可变版本由
-   FlowWeave 冻结，但只通过 OpenHands 正式创建字段、类型、Loader 和事件生命周期原生加载与执行。
+6. FlowWeave 仍是能力治理控制面；由 FlowWeave 显式绑定的 Skill、MCP、Plugin、Hook、
+   Agent Definition 等不可变版本由 FlowWeave 冻结，但只通过 OpenHands 正式创建字段、
+   类型、Loader 和事件生命周期原生加载与执行。OpenHands 原生 ambient Plugin 发现允许保留。
 7. Sandbox Controller 收缩并更名为 Runtime Provider。它仍负责物理容器和宿主机资源生命周期，但
    不管理 Conversation 或任何 Agent 功能。
 8. 不提供默认 Environment Version。流程发布和运行都必须绑定用户创建、验证通过且 digest 锁定的
@@ -106,9 +107,11 @@ FlowRun 启动和 replacement 只使用已发布 Runtime Image digest，遵循 `
 启动语义，不在故障恢复关键路径重新构建镜像。这样既使用 OpenHands 原生动态打包能力，又保证替换
 快速、可复现且不依赖浮动 tag。FlowWeave 不自建另一套 Agent Server Dockerfile 生成协议。
 
-“基本预置能力”只来自上述固定 OpenHands Runtime 层和用户 base image。FlowRun/Conversation 特定的
-Skill、MCP、Plugin、Hook、Agent Definition、Policy 与 Memory 不烘焙进可变镜像，而按 Snapshot
-Runtime Manifest 只读物化，并在创建 Conversation 时通过 OpenHands 正式字段加载。
+“基本预置能力”来自上述固定 OpenHands Runtime 层和用户 base image。FlowRun/Conversation 特定且由
+FlowWeave 显式绑定的 Skill、MCP、Plugin、Hook、Agent Definition、Policy 与 Memory 不烘焙进可变
+镜像，而按 Snapshot Runtime Manifest 只读物化，并在创建 Conversation 时通过 OpenHands 正式字段或
+Loader 加载。OpenHands 1.42.0 对 HOME 和项目目录的 ambient Plugin 原生扫描按上游默认保留；
+FlowWeave 不再用私有请求字段或构建时源码补丁禁用它。
 
 ## 5. 持久化与可替换性
 
@@ -121,7 +124,7 @@ Runtime Manifest 只读物化，并在创建 Conversation 时通过 OpenHands �
 | `state/conversations` | Conversation、Event、lease、HEAD | OpenHands |
 | `state/bash-events` | Bash command/event 文件 | OpenHands |
 | `state/persistence` | `OH_PERSISTENCE_DIR` 所需持久 Store | OpenHands |
-| `capabilities/<digest>` | 固定 Skill/Plugin/Memory 等物化内容 | FlowWeave 治理；OpenHands 只读加载 |
+| `capabilities/<digest>` | 固定 Skill/Plugin/Memory 等显式物化内容 | FlowWeave 治理；OpenHands 只读加载 |
 
 禁止把上述目录继续放在 `/runtime/workspace` tmpfs。容器只允许把缓存、进程临时文件、日志缓冲和
 worktree 临时目录放在可丢弃层；若启用 OpenHands worktree，必须先另行把其持久化和清理契约纳入
@@ -253,10 +256,15 @@ Conversation 创建时将固定内容物化为 OpenHands 正式输入：
 | Hook | 固定 Hook Set 和脚本 digest、只读物化 | 正式 `hook_config` 和 Hook 生命周期 |
 | Agent Definition | 固定定义、Policy 和依赖子集 | `agent_definitions`、`task_tool_set` 和 Task 生命周期 |
 | Profile/Policy | 固定无 Secret spec 和允许边界 | 正式 `agent`、confirmation/security/condenser 等字段 |
+| Memory | 固定来源内容和 digest，物化为只读 bundle | 正式 `load_memory` 生命周期从 `<working_dir>/.openhands/memory/MEMORY.md` 加载 |
 
-每次创建 Conversation 都从该 FlowRun 冻结 Snapshot 编译正式请求；不得从环境内 ambient 用户目录、
-浮动 Marketplace、可变 Server Profile Store 或旧平台消息状态恢复能力。FR-10 必须逐项复核当前实现，
-删除仍由 FlowWeave 注册、执行或按文本投影的旁路，并以固定镜像契约和真实 create smoke 证明加载成功。
+每次创建 Conversation 都从该 FlowRun 冻结 Snapshot 编译 FlowWeave 显式绑定能力的正式请求；不得
+从浮动 Marketplace、可变 Server Profile Store 或旧平台消息状态恢复这些显式绑定能力。OpenHands 对
+HOME/项目的 ambient Plugin 扫描是例外：它保持上游原生默认语义，不纳入 FlowWeave Snapshot 唯一性
+承诺。FR-10 必须删除仍由 FlowWeave 注册、执行、按文本投影或修改 OpenHands 源码的旁路；Memory
+的 USER/PROJECT 冻结内容按会话工作目录合并成只读 project Memory bundle，避免进程级 HOME 在同一
+FlowRun 多 Conversation 间串扰，再由 OpenHands 正式 `load_memory` 生命周期原生加载。固定镜像真实
+create/smoke 验证仍集中在 FR-12。
 没有对应 FlowWeave 产品需求的 OpenHands 能力不因此进入范围。
 
 ## 10. 数据模型草案

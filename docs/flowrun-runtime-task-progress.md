@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN_PROGRESS`
 > 当前执行切片：无
-> 下一可执行切片：无（`FR-10` 阻塞）
+> 下一可执行切片：`FR-11`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 
 ## 1. 跟踪边界
@@ -173,38 +173,28 @@ source-container mount、Attempt/Conversation 新启容器和持久状态 tmpfs�
 完整事件和 cursor 投影；只保留 locator、授权、流程引用和独立审计 actor。OpenHands `user/assistant` 只在
 线路适配层存在。
 
-### FR-10 OpenHands 能力原生加载复核 — BLOCKED
+### FR-10 OpenHands 能力原生加载复核 — DONE
 
 依赖：`FR-09`。
 
 目标：逐项复核 Skill、MCP、Plugin、Hook、Agent Definition、Profile、Policy 和 Memory 的创建、注册、
-加载、执行和恢复路径；只允许固定 OpenHands 正式字段、Loader、Tool、事件和生命周期。删除仍存在的
-平台注册器、Agent 执行器、提示词/文本/私有 JSON 旁路，并以固定镜像 create/smoke 证明原生加载。
+加载、执行和恢复路径；FlowWeave 显式传入的能力只允许固定 OpenHands 正式字段、Loader、Tool、
+事件和生命周期。删除平台注册器、Agent 执行器、提示词/文本/私有 JSON 旁路以及 OpenHands 源码
+补丁。真实固定镜像 create/smoke 按阶段规则集中在 FR-12。
 
-阻塞证据：
+范围决策：
 
-- 固定 commit 的正式 `StartConversationRequest` 不包含关闭 ambient Plugin 发现的字段；
-  `LocalConversation._ensure_plugins_loaded()` 会无条件以 `include_user=True`、`include_project=True` 调用
-  `load_available_plugins()`，且这些浮动 Plugin 不进入 `resolved_plugins` 持久身份。
-- 当前 Runtime Image 通过 `infra/openhands/patch_ambient_plugins.py` 构建时改写固定 OpenHands 源码，新增
-  私有 `load_ambient_plugins` 请求字段和生命周期分支；FlowWeave 的生产请求、Runtime contract 与
-  Environment provenance 又依赖该私有字段。保留它违反本切片“只允许固定 OpenHands 正式字段”和当前
-  `FR-*` 主线不得修改 OpenHands 源码的约束，删除它则会重新允许环境 HOME 或可写项目目录中的浮动
-  Plugin 绕过 Snapshot Runtime Manifest。
-- Memory 复核还发现当前 `materialize_runtime_memory()` 写入 `.managed-memory/.../runtime/{user,project}`，
-  但 FlowRun generation 未挂载该目录；固定 OpenHands 正式 loader 只读取
-  `~/.openhands/memory/MEMORY.md` 和 `<working_dir>/.openhands/memory/MEMORY.md`。因此启用的冻结 Memory
-  目前不能证明由正式 `load_memory` 生命周期加载和恢复。
+- OpenHands 1.42.0 原生 `LocalConversation._ensure_plugins_loaded()` 对 HOME/项目目录的 ambient Plugin
+  扫描允许保留，不再要求它受 Snapshot Runtime Manifest 唯一性约束。FlowWeave 不传入私有
+  `load_ambient_plugins` 字段，也不在 Runtime Image 构建时修改 OpenHands 源码。
+- FlowWeave 显式绑定的 Plugin 仍按冻结 `PluginSource` 交给 OpenHands 正式 Loader；ambient Plugin
+  是上游默认行为，不成为 FlowWeave 注册器或执行器。
+- 冻结 Memory 的 USER/PROJECT 内容合并为 digest-scoped 只读 bundle，由每个 Conversation/Attempt
+  的工作目录暴露为 `<working_dir>/.openhands/memory/MEMORY.md`，并只通过 OpenHands 正式
+  `AgentContext.load_memory`/`load_memory()` 生命周期加载。不再创建 Attempt/Conversation 私有 Memory
+  mount 或清理状态机。
 
-安全降级：不在未闭环状态删除现有 ambient Plugin fail-closed 补丁，也不把 FR-10 标为 `DONE`；FR-11
-和 FR-12 继续等待。当前代码及历史 Runtime 结论不能作为原生加载验收。
-
-解锁条件：固定 OpenHands 基线提供并验证正式的 ambient Plugin 禁用/allowlist 与持久恢复契约；或者
-用户另行授权 OpenHands fork，冻结 upstream base、fork commit、source digest 和兼容测试并更新本架构
-基线。解锁后还须把冻结 Memory 物化到固定 OpenHands 正式 loader 可见且不可漂移的隔离路径，再重新执行
-本切片；真实镜像 create/smoke 仍按阶段规则集中在 FR-12。
-
-### FR-11 API、UI、历史数据与运维收口 — PENDING
+### FR-11 API、UI、历史数据与运维收口 — READY
 
 依赖：`FR-10`。
 
@@ -258,3 +248,4 @@ source-container mount、Attempt/Conversation 新启容器和持久状态 tmpfs�
 | 2026-08-22 | FR-08 | 受影响 Python `py_compile`；Compose 配置解析；`alembic heads`；任务状态唯一性；`git diff --check` | PASS：删除 Compose 顶层共享 Agent Server、共享 state volume、依赖关系和 `OPENHANDS_BASE_URL` fallback；OpenHands 适配器对缺失 FlowRun generation 路由 fail closed，创建 Conversation 必须携带已发布 Environment Runtime allocation；Runtime Provider 以显式绝对宿主机根目录配对只读校验根目录，不再 inspect source container；旧 Attempt/Conversation owner 无法进入新建 Agent Runtime 路径，临时验证/OAuth Runtime 的短期 OpenHands state 与 FlowRun 外置持久状态明确分离；新增静态架构守卫阻止上述分支回归。静态 head 仍为 `0056_runtime_replacement`；未运行业务测试、迁移实跑、真实 Runtime/容器、安全、恢复或 E2E 验证，统一留待 FR-12 |
 | 2026-08-22 | FR-09 | 受影响 Python 与迁移 `py_compile`；受影响模块导入；ORM metadata 导入；`alembic heads`；任务状态唯一性；`git diff --check` | PASS：活跃数据模型只保留 FlowRun Conversation locator 和不含 cursor 的独立 Runtime 审批审计；旧 `AgentConversation`/`AgentMessage`、AUTO/HUMAN_CREATED、平台状态机、消息/事件/cursor 与 Goal/Critic/Task/Condensation 投影整体转为只读归档，旧 Conversation worker task 停止恢复和派发；自动执行和人工提问均直接绑定或操作同一 FlowRun Runtime 中的 OpenHands 原生 conversation ID，Attempt 只保留该 ID 引用，不再持久化物理 Runtime 或 cursor；API 兼容路径读取的是实时 OpenHands 事件且不落库，审计仅保存 actor、digest 和长度等独立事实；新增静态架构守卫。静态 head 为 `0057_flow_run_conversations`；未运行数据库迁移、业务测试、OpenAPI、服务、真实 Runtime/容器、安全、恢复或 E2E 验证，统一留待 FR-12 |
 | 2026-08-22 | FR-10 | 固定 OpenHands commit 的 `StartConversationRequest`、Plugin discovery、resolved Plugin persistence 与 Memory loader 取证；`alembic heads`；任务状态唯一性；`git diff --check` | BLOCKED：固定 `1.42.0` 没有正式 ambient Plugin 禁用/allowlist 字段，且会无条件加载不进入 resolved identity 的用户/项目 Plugin；当前 FlowWeave 依赖构建时源码补丁和私有请求字段才能 fail closed，不能在“不修改 OpenHands、只用正式字段”的约束下同时删除旁路并保持 Snapshot 隔离。另确认冻结 Memory 的现有物化目录未挂入 FlowRun generation，也不匹配正式 loader 路径。保留现有安全降级，未运行测试、镜像、Runtime 或 create/smoke；唯一静态 head 为 `0057_flow_run_conversations`，无 `CURRENT`/`READY`，FR-11/FR-12 继续等待。解锁需上游正式契约或另行授权并冻结 OpenHands fork。 |
+| 2026-08-22 | FR-10 解锁与完成 | 固定 OpenHands Plugin/Memory loader 契约取证；受影响 Python `py_compile`；`alembic heads`；任务状态唯一性；`git diff --check` | PASS：用户明确允许 OpenHands 1.42.0 原生 HOME/项目 ambient Plugin 扫描，Snapshot 唯一性只约束 FlowWeave 显式绑定能力；删除了 OpenHands 源码补丁、私有 `load_ambient_plugins` 创建字段及 Runtime contract/Environment provenance 依赖，contract schema 升为 3 且新镜像要求无 source overlay。冻结 USER/PROJECT Memory 合并为 FlowRun capability 挂载中 digest-scoped 只读 bundle，每个工作目录仅暴露 OpenHands 正式 `<working_dir>/.openhands/memory/MEMORY.md` 入口，不再维护 Attempt/Conversation 私有 Memory mount 和清理状态机。唯一静态 head 为 `0057_flow_run_conversations`；未运行业务测试、镜像构建、Runtime 或 create/smoke，统一留待 FR-12。无 `CURRENT`/`BLOCKED`，仅 FR-11 为 `READY`。 |

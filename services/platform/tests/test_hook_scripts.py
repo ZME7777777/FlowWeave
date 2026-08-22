@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from flowweave.bootstrap.settings import Settings
+from flowweave.runtime import workspace as runtime_workspace
 from flowweave.runtime.workspace import (
-    cleanup_runtime_memory,
     materialize_hook_config,
     materialize_node_workspace,
     materialize_runtime_memory,
@@ -73,10 +73,27 @@ def _asset(storage_key: str, filename: str, digest: str) -> dict[str, object]:
     }
 
 
-def test_governed_memory_is_owner_isolated_read_only_and_digest_verified(
-    tmp_path: Path,
+def test_governed_memory_uses_openhands_project_loader_and_read_only_source(
+    tmp_path: Path, monkeypatch,
 ):
     settings = Settings(workspace_root=tmp_path / "workspaces")
+    project_root = settings.workspace_root / ".flow-run-runtimes/scope/run/workspace/project"
+    working_dir = project_root / "nodes/node-1/sessions/run-1/1"
+    capability_root = (
+        settings.workspace_root / ".flow-run-runtimes/scope/run/capabilities" / ("a" * 64)
+    )
+    working_dir.mkdir(parents=True)
+    capability_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        runtime_workspace,
+        "flow_run_workspace_project_path",
+        lambda _flow_run_id: project_root,
+    )
+    monkeypatch.setattr(
+        runtime_workspace,
+        "flow_run_capability_path",
+        lambda _flow_run_id, _manifest_digest, *parts: capability_root.joinpath(*parts),
+    )
     user_content = b"# User memory\n"
     project_content = b"# Project memory\n"
     materials = (
@@ -93,30 +110,36 @@ def test_governed_memory_is_owner_isolated_read_only_and_digest_verified(
     )
 
     with settings_context(settings):
-        materialize_runtime_memory(owner_type="ATTEMPT", owner_id="attempt-1", materials=materials)
+        materialize_runtime_memory(
+            flow_run_id="run",
+            manifest_digest="a" * 64,
+            workspace_ref=str(working_dir),
+            materials=materials,
+        )
 
-        root = settings.workspace_root / ".managed-memory/attempt/attempt-1/runtime"
-        user_index = root / "user/MEMORY.md"
-        project_index = root / "project/MEMORY.md"
-        assert user_index.read_bytes() == user_content
-        assert project_index.read_bytes() == project_content
-        assert user_index.stat().st_mode & 0o777 == 0o444
-        assert project_index.stat().st_mode & 0o777 == 0o444
-        assert (root / "user").stat().st_mode & 0o777 == 0o555
-        assert (root / "project").stat().st_mode & 0o777 == 0o555
+        loader_index = working_dir / ".openhands/memory/MEMORY.md"
+        assert loader_index.is_symlink()
+        assert loader_index.readlink().as_posix().startswith(
+            "/runtime/capabilities/" + "a" * 64 + "/memory/"
+        )
+        bundle_dir = next((capability_root / "memory").iterdir())
+        source_index = bundle_dir / "MEMORY.md"
+        assert source_index.read_bytes() == (
+            b"# FlowWeave governed user memory\n# User memory\n\n"
+            b"# FlowWeave governed project memory\n# Project memory\n"
+        )
+        assert source_index.stat().st_mode & 0o777 == 0o444
+        assert bundle_dir.stat().st_mode & 0o777 == 0o555
 
         with pytest.raises(DomainError) as raised:
             materialize_runtime_memory(
-                owner_type="ATTEMPT",
-                owner_id="attempt-1",
+                flow_run_id="run",
+                manifest_digest="a" * 64,
+                workspace_ref=str(working_dir),
                 materials=(SimpleNamespace(scope="USER", content=b"tampered", digest="0" * 64),),
             )
         assert raised.value.code == "MEMORY_SOURCE_DIGEST_MISMATCH"
-        assert user_index.read_bytes() == user_content
-        assert project_index.read_bytes() == project_content
-
-        cleanup_runtime_memory(owner_type="ATTEMPT", owner_id="attempt-1")
-        assert not root.exists()
+        assert source_index.is_file()
 
 
 def test_hook_script_is_materialized_read_only_and_converted_to_openhands_command(

@@ -11,8 +11,10 @@
 - Tool、Skill、Plugin、MCP、Hook、Agent Definition、Task 子 Agent、Condenser、Memory、Critic、Fork 和 ACP
   等执行能力应由 OpenHands 正式类型、事件、API 和生命周期实现。
 - 不得用提示词、私有控制 JSON、文本约定、私有 HTTP 或平台自建执行器模拟 OpenHands 已提供的能力。
-- Runtime 输入必须可追溯到固定 version、digest、blob/hash 和 Snapshot Runtime Manifest；浮动来源、
-  隐式环境状态和明文 Secret 不得进入 Runtime。
+- FlowWeave 显式传入的 Runtime 能力必须可追溯到固定 version、digest、blob/hash 和
+  Snapshot Runtime Manifest，明文 Secret 不得持久化进入 Runtime。OpenHands 1.42.0 原生的 HOME/项目
+  ambient Plugin 发现明确允许，它不是 FlowWeave 冻结 Plugin 的替代事实源，也不得用私有
+  字段或源码补丁禁用。
 - 事件关联必须使用 OpenHands 正式的 `id`、`parent_id`、`action_id`、`tool_call_id`、cursor 等字段，
   不得按事件顺序、名称或文本猜测。
 

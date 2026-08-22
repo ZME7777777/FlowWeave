@@ -149,9 +149,10 @@ def resolve_snapshot_material(
 ) -> tuple[GovernedMemoryMaterial, ...]:
     """Resolve only governed versions held by the exact frozen Snapshot.
 
-    The returned bytes are deliberately ephemeral. Callers may materialize them
-    into an isolated Runtime mount, but must not persist them in Runtime DTOs,
-    manifests, events, or ordinary audit records.
+    The returned bytes are deliberately ephemeral. Callers may materialize a
+    digest-scoped read-only bundle for OpenHands' native project-memory loader,
+    but must not persist the bytes in Runtime DTOs, manifests, events, or
+    ordinary audit records.
     """
 
     materials: list[GovernedMemoryMaterial] = []

@@ -269,6 +269,20 @@ def test_openhands_adapter_never_resolves_mutable_agent_profile_store() -> None:
     assert '"agent": agent' in source
 
 
+def test_native_plugin_and_memory_loading_has_no_openhands_source_patch() -> None:
+    """FR-10: keep upstream ambient Plugins and use the official Memory loader."""
+
+    dockerfile = (REPOSITORY / "infra" / "openhands" / "Dockerfile").read_text()
+    contract_probe = (REPOSITORY / "infra" / "openhands" / "contract_check.py").read_text()
+    runtime = (SOURCE / "runtime" / "openhands.py").read_text()
+    workspace = (SOURCE / "runtime" / "workspace.py").read_text()
+    assert "patch_ambient_plugins" not in dockerfile
+    assert "load_ambient_plugins" not in contract_probe
+    assert '"load_ambient_plugins"' not in runtime
+    assert 'loader_root = working_dir / ".openhands" / "memory"' in workspace
+    assert "openhands_flow_run_capability_path(" in workspace
+
+
 def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
     orchestration = (
         SOURCE / "modules" / "orchestration" / "application" / "service.py"

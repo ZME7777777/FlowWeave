@@ -31,7 +31,7 @@ from flowweave.runtime.request import (
     frozen_memory_policy,
     resolve_runtime_selection,
 )
-from flowweave.runtime.workspace import cleanup_runtime_memory, materialize_runtime_memory
+from flowweave.runtime.workspace import materialize_runtime_memory
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -240,9 +240,16 @@ def create_conversation(
             source_refs=source_refs,
             allowed_scopes={"USER", "PROJECT"},
         )
-        materialize_runtime_memory(
-            owner_type="CONVERSATION", owner_id=request_owner_id, materials=materials
+        runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
+            db, run.id, manifest_digest=snapshot.runtime_manifest_hash
         )
+        with sandboxes.capability_materialization_lock(runtime_allocation):
+            materialize_runtime_memory(
+                flow_run_id=run.id,
+                manifest_digest=snapshot.runtime_manifest_hash,
+                workspace_ref=attempt.workspace_ref or "",
+                materials=materials,
+            )
     request = build_runtime_request(
         db,
         flow_run_id=run.id,
@@ -275,12 +282,7 @@ def create_conversation(
         runtime_resource_name=allocation.resource_name,
         runtime_base_url=allocation.base_url,
     )
-    try:
-        handle = get_runtime().create_conversation(request)
-    except BaseException:
-        if memory_enabled:
-            cleanup_runtime_memory(owner_type="CONVERSATION", owner_id=request_owner_id)
-        raise
+    handle = get_runtime().create_conversation(request)
     item = bind_openhands_conversation(
         db,
         flow_run_id=run.id,
@@ -288,8 +290,6 @@ def create_conversation(
         display_label=payload.title,
         binding_id=request_owner_id,
     )
-    if memory_enabled and item.id != request_owner_id:
-        cleanup_runtime_memory(owner_type="CONVERSATION", owner_id=request_owner_id)
     db.add(
         HumanAction(
             flow_run_id=run.id,

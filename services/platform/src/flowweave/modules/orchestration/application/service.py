@@ -62,7 +62,6 @@ from flowweave.runtime.request import (
 from flowweave.runtime.routing import runtime_for
 from flowweave.runtime.workspace import (
     attempt_workspace_path,
-    cleanup_runtime_memory,
     materialize_runtime_memory,
 )
 from flowweave.shared.application.transactions import (
@@ -1990,7 +1989,16 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
             source_refs=source_refs,
             allowed_scopes={"USER", "PROJECT"},
         )
-        materialize_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id, materials=materials)
+        runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
+            db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+        )
+        with sandboxes.capability_materialization_lock(runtime_allocation):
+            materialize_runtime_memory(
+                flow_run_id=run.id,
+                manifest_digest=snapshot.runtime_manifest_hash,
+                workspace_ref=attempt.workspace_ref or "",
+                materials=materials,
+            )
     return request
 
 
@@ -2067,28 +2075,17 @@ def process_start_runtime(
 
     current_attempt_id = attempt.id
     flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
-    try:
-        request = _runtime_request(db, attempt)
-    except BaseException:
-        cleanup_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id)
-        raise
+    request = _runtime_request(db, attempt)
     allocation = None
     if request.environment_image and get_settings().runtime_adapter != "mock":
-        try:
-            allocation = sandboxes.ensure_flow_run_runtime(
-                db,
-                flow_run_id=flow_run_id,
-                image=request.environment_image,
-                environment_id=request.environment_id,
-                environment_version_id=request.environment_version_id,
-                environment_version_no=request.environment_version_no,
-            )
-        except BaseException:
-            if request.memory_enabled:
-                sandboxes.cleanup_unclaimed_runtime_memory(
-                    db, owner_type="ATTEMPT", owner_id=attempt.id
-                )
-            raise
+        allocation = sandboxes.ensure_flow_run_runtime(
+            db,
+            flow_run_id=flow_run_id,
+            image=request.environment_image,
+            environment_id=request.environment_id,
+            environment_version_id=request.environment_version_id,
+            environment_version_no=request.environment_version_no,
+        )
         request = replace(
             request,
             runtime_sandbox_id=allocation.id,
@@ -2106,8 +2103,6 @@ def process_start_runtime(
                 get_runtime().cancel(handle)
             except Exception:
                 pass
-        if request.memory_enabled:
-            cleanup_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id)
         raise
     claimed = _claim_runtime_phase(
         db,
@@ -2121,8 +2116,6 @@ def process_start_runtime(
     if claimed is None:
         _release_worker_read_transaction(db, lease)
         get_runtime().cancel(handle)
-        if request.memory_enabled:
-            cleanup_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id)
         _require_current_lease(db, lease)
         return
     conversations.bind_openhands_conversation(
@@ -3565,20 +3558,6 @@ def delete_run(db: Session, run_id: str) -> None:
     if node_run_ids:
         db.execute(delete(NodeRun).where(NodeRun.id.in_(node_run_ids)))
     db.execute(delete(RunSnapshot).where(RunSnapshot.flow_run_id == run.id))
-    for attempt_id in attempt_ids:
-        register_commit_action(
-            db,
-            lambda attempt_id=attempt_id: cleanup_runtime_memory(
-                owner_type="ATTEMPT", owner_id=attempt_id
-            ),
-        )
-    for conversation_id in conversation_ids:
-        register_commit_action(
-            db,
-            lambda conversation_id=conversation_id: cleanup_runtime_memory(
-                owner_type="CONVERSATION", owner_id=conversation_id
-            ),
-        )
     sandboxes.delete_flow_run_runtimes_now(db, run.id)
     sandboxes.delete_flow_run_runtime_allocation(db, run.id)
     db.delete(run)

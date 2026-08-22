@@ -27,16 +27,10 @@ ENV UV_PROJECT_ENV=/runtime/.venv
 RUN uv sync --frozen --no-dev
 COPY infra/openhands/source.lock.json /runtime/openhands-source.lock.json
 COPY infra/openhands/fetch_source.py /runtime/fetch_openhands_source.py
-COPY infra/openhands/patch_ambient_plugins.py /runtime/patch_ambient_plugins.py
 RUN /usr/local/bin/python /runtime/fetch_openhands_source.py \
       --lock /runtime/openhands-source.lock.json \
       --destination /opt/openhands-source \
-      --provenance /runtime/openhands-source-provenance.json \
-      --overlay /runtime/patch_ambient_plugins.py
-RUN /usr/local/bin/python /runtime/patch_ambient_plugins.py \
-      --site-packages /opt/openhands-source \
- && cp /runtime/openhands-source-provenance.json \
-      /opt/openhands-source/openhands-agent-server/openhands/agent_server/openhands-source-provenance.json
+      --provenance /runtime/openhands-source-provenance.json
 RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
       /opt/openhands-source/openhands-sdk \
       /opt/openhands-source/openhands-tools \
@@ -44,7 +38,6 @@ RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
       /opt/openhands-source/openhands-agent-server
 RUN /runtime/.venv/bin/python -c \
       "from importlib.metadata import version; expected='1.42.0'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
-RUN /runtime/.venv/bin/python /runtime/patch_ambient_plugins.py
 COPY infra/openhands/contract_check.py /runtime/contract_check.py
 COPY infra/openhands/contract_check.py \
      /opt/openhands-source/openhands-agent-server/openhands/agent_server/flowweave_contract_check.py

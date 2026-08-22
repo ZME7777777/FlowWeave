@@ -8,7 +8,7 @@ from flowweave.shared.domain.tool_policy import (
     OPENHANDS_VERSION,
 )
 
-RUNTIME_CONTRACT_SCHEMA_VERSION = 2
+RUNTIME_CONTRACT_SCHEMA_VERSION = 3
 
 OPENHANDS_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("openhands-agent-server", OPENHANDS_VERSION),
@@ -55,7 +55,6 @@ REQUIRED_START_FIELDS: tuple[str, ...] = tuple(
             "confirmation_policy",
             "hook_config",
             "initial_message",
-            "load_ambient_plugins",
             "max_iterations",
             "observability_metadata",
             "plugins",

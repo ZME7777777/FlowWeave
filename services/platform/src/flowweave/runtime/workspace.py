@@ -254,18 +254,13 @@ def _ensure_plain_directory_tree(base: Path, target: Path) -> None:
 
 def materialize_runtime_memory(
     *,
-    owner_type: str,
-    owner_id: str,
+    flow_run_id: str,
+    manifest_digest: str,
+    workspace_ref: str,
     materials: tuple[object, ...],
 ) -> None:
-    """Write governed Memory into an owner-isolated, read-only mount source."""
+    """Expose governed Memory through OpenHands' native project-memory loader."""
 
-    if owner_type not in {"ATTEMPT", "CONVERSATION"} or not owner_id:
-        raise DomainError(
-            "MEMORY_SOURCE_UNAVAILABLE",
-            "Enabled Memory requires an isolated managed Runtime owner",
-            409,
-        )
     grouped: dict[str, list[bytes]] = {"USER": [], "PROJECT": []}
     for material in materials:
         scope = str(getattr(material, "scope", ""))
@@ -284,75 +279,62 @@ def materialize_runtime_memory(
                 409,
             )
         grouped[scope].append(content.rstrip(b"\n"))
-    owner_root = (
-        Path(get_settings().workspace_root).resolve()
-        / ".managed-memory"
-        / owner_type.lower()
-        / _segment(owner_id, "runtime")
-    )
-    root = owner_root / "runtime"
-    # A previous retry leaves this exact owner directory read-only. Restore
-    # only the two fixed tier directories before the normal symlink-safe
-    # replacement logic removes it.
-    for directory in (root / "user", root / "project", root):
-        if directory.is_dir() and not directory.is_symlink():
-            directory.chmod(0o700)
-    _replace_managed_directory(root, owner_root)
-    try:
-        for scope, chunks in grouped.items():
-            directory = root / scope.lower()
-            directory.mkdir(mode=0o700)
-            content = b"\n\n".join(chunks) + (b"\n" if chunks else b"")
-            target = directory / "MEMORY.md"
-            # Both fixed files must exist before Docker creates nested,
-            # read-only mounts. An unselected tier is represented by an empty
-            # file; OpenHands ignores it while retaining one deterministic
-            # mount contract for every enabled Runtime.
-            _atomic_write(target, content, mode=0o444)
-            if target.read_bytes() != content:
-                raise OSError("Memory read-back mismatch")
-            target.read_text(encoding="utf-8")
-            directory.chmod(0o555)
-        root.chmod(0o555)
-    except (OSError, UnicodeDecodeError) as exc:
-        cleanup_runtime_memory(owner_type=owner_type, owner_id=owner_id)
+    sections = [
+        b"# FlowWeave governed " + scope.lower().encode("ascii") + b" memory\n" + body
+        for scope in ("USER", "PROJECT")
+        if (body := b"\n\n".join(grouped[scope]))
+    ]
+    if not sections:
         raise DomainError(
             "MEMORY_SOURCE_UNAVAILABLE",
-            "Governed Memory could not be materialized and verified",
+            "Enabled Memory has no governed content",
             409,
-        ) from exc
-
-
-def cleanup_runtime_memory(*, owner_type: str, owner_id: str) -> None:
-    """Remove one owner-isolated Memory source without following links."""
-
-    if owner_type not in {"ATTEMPT", "CONVERSATION"} or not owner_id:
-        return
-    workspace_root = Path(get_settings().workspace_root).resolve()
-    owner_root = (
-        workspace_root / ".managed-memory" / owner_type.lower() / _segment(owner_id, "runtime")
+        )
+    content = b"\n\n".join(sections) + b"\n"
+    bundle_digest = hashlib.sha256(content).hexdigest()
+    project_root = flow_run_workspace_project_path(flow_run_id)
+    working_dir = Path(workspace_ref)
+    capability_root = flow_run_capability_path(flow_run_id, manifest_digest)
+    source_root = flow_run_capability_path(
+        flow_run_id, manifest_digest, "memory", bundle_digest
+    )
+    source_index = source_root / "MEMORY.md"
+    runtime_index = openhands_flow_run_capability_path(
+        manifest_digest, "memory", bundle_digest, "MEMORY.md"
     )
     try:
-        if owner_root.is_symlink() or owner_root.is_file():
-            owner_root.unlink(missing_ok=True)
-            return
-        if not owner_root.exists():
-            return
-        resolved = owner_root.resolve()
-        expected_parent = (workspace_root / ".managed-memory" / owner_type.lower()).resolve()
-        if resolved.parent != expected_parent:
-            raise OSError("Memory owner directory escaped its managed parent")
-        root = owner_root / "runtime"
-        for directory in (root / "user", root / "project", root):
-            if directory.is_dir() and not directory.is_symlink():
-                directory.chmod(0o700)
-        owner_root.chmod(0o700)
-        shutil.rmtree(owner_root)
-    except OSError as exc:
+        if not working_dir.is_absolute() or not working_dir.is_relative_to(project_root):
+            raise ValueError("Memory working directory escaped its FlowRun project")
+        _ensure_plain_directory_tree(project_root, working_dir)
+        _ensure_plain_directory_tree(capability_root, source_root)
+        if source_index.is_symlink() or (source_index.exists() and not source_index.is_file()):
+            raise ValueError("Memory source index is not a plain file")
+        if source_index.exists():
+            if source_index.read_bytes() != content:
+                raise ValueError("Memory source digest directory contains different content")
+        else:
+            _atomic_write(source_index, content, mode=0o444)
+        source_index.chmod(0o444)
+        source_root.chmod(0o555)
+
+        loader_root = working_dir / ".openhands" / "memory"
+        _ensure_plain_directory_tree(working_dir, loader_root)
+        loader_index = loader_root / "MEMORY.md"
+        if loader_index.is_symlink():
+            if os.readlink(loader_index) != str(runtime_index):
+                raise ValueError("Memory loader index points at a different frozen bundle")
+        elif loader_index.exists():
+            raise ValueError("Memory loader index is not a managed symbolic link")
+        else:
+            loader_index.symlink_to(runtime_index)
+        if source_index.read_bytes() != content:
+            raise ValueError("Memory source read-back mismatch")
+        content.decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise DomainError(
-            "MEMORY_SOURCE_CLEANUP_FAILED",
-            "Governed Memory cleanup failed after Runtime deletion",
-            503,
+            "MEMORY_SOURCE_UNAVAILABLE",
+            "Governed Memory could not be exposed to the OpenHands loader",
+            409,
         ) from exc
 
 

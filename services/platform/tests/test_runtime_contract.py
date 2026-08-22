@@ -155,7 +155,7 @@ def test_runtime_contract_rejects_incompatible_server(mutation: str, expected_re
         schemas = cast(dict[str, Any], components["schemas"])
         start = cast(dict[str, Any], schemas["StartConversationRequest"])
         properties = cast(dict[str, Any], start["properties"])
-        properties.pop("load_ambient_plugins")
+        properties.pop("plugins")
     else:
         server_info["usable_tools"] = ["terminal"]
 

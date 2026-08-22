@@ -609,7 +609,9 @@ def test_openhands_serializes_governed_agent_definitions(openhands_settings, mon
     ]
 
 
-def test_openhands_loads_only_frozen_local_plugins_at_creation(openhands_settings, monkeypatch):
+def test_openhands_sends_frozen_plugins_and_leaves_ambient_discovery_native(
+    openhands_settings, monkeypatch
+):
     runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
 
@@ -642,7 +644,7 @@ def test_openhands_loads_only_frozen_local_plugins_at_creation(openhands_setting
     assert payload["plugins"] == [
         {"source": ("/runtime/capabilities/nodes/node-1/plugins/governed-review-version-id")}
     ]
-    assert payload["load_ambient_plugins"] is False
+    assert "load_ambient_plugins" not in payload
     assert "ref" not in payload["plugins"][0]
     assert "repo_path" not in payload["plugins"][0]
 
