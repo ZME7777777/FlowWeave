@@ -38,6 +38,10 @@ from flowweave.modules.sandboxes.application.runtime_replacement import (
     process_flow_run_runtime_replacement,
     record_terminal_runtime_replacement_failure,
 )
+from flowweave.modules.sandboxes.application.runtime_operations import (
+    request_runtime_replacement,
+    runtime_overview,
+)
 from flowweave.modules.sandboxes.application.runtime_sessions import (
     ActiveRuntimeConnection,
     RuntimeSessionFence,
@@ -76,11 +80,13 @@ __all__ = (
     "openhands_flow_run_project_path",
     "process_flow_run_runtime_replacement",
     "record_terminal_runtime_replacement_failure",
+    "request_runtime_replacement",
     "reconcile_managed_sandboxes",
     "request_delete",
     "request_delete_durable",
     "resolve_runtime_secret",
     "runtime_allocation_for_flow_run",
+    "runtime_overview",
     "sandbox_dict",
     "sandbox_snapshot",
     "touch_runtime",

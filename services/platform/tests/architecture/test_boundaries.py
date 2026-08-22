@@ -295,6 +295,42 @@ def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
     assert "node = runtime_node(" in conversations
 
 
+def test_flowrun_api_and_web_do_not_restore_legacy_conversation_or_endpoint_truth() -> None:
+    """FR-11: clients carry FlowRun locators and see only logical Runtime health."""
+
+    router = (
+        SOURCE / "modules" / "conversations" / "presentation" / "router.py"
+    ).read_text()
+    operations = (
+        SOURCE / "modules" / "sandboxes" / "application" / "runtime_operations.py"
+    ).read_text()
+    web_root = REPOSITORY / "apps" / "web" / "src"
+    web = "\n".join(
+        (web_root / path).read_text()
+        for path in (
+            "api/client.ts",
+            "pages/AgentChatPage.tsx",
+            "components/AgentRuntimeSidebar.tsx",
+            "components/RuntimeGovernancePanel.tsx",
+        )
+    )
+    assert '"/flow-runs/{flow_run_id}/conversations"' in router
+    assert '"/agent-conversations/' not in router
+    assert '"/node-attempts/{attempt_id}/conversations"' not in router
+    for forbidden in (
+        "agent-conversations",
+        "agent-messages",
+        "HUMAN_CREATED",
+        "AUTO",
+        "runtime_cursor",
+        "container_name",
+    ):
+        assert forbidden not in web
+    for forbidden in ("backend_resource_name", "managed_runtime_id", "endpoint", "base_url"):
+        assert forbidden not in operations
+    assert '"physical_delete_operation": "DELETE_FLOW_RUN"' in operations
+
+
 def test_bootstrap_entrypoints_import_in_clean_processes() -> None:
     """Catch import-order bugs hidden by pytest's already-populated module cache."""
 

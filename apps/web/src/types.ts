@@ -302,98 +302,64 @@ export interface ArtifactInput {
 }
 
 
-export type ConversationState = 'CREATING' | 'IDLE' | 'CONDENSING' | 'GENERATING' | 'STOPPING' | 'WAITING_HUMAN' | 'WAITING_CONFIRMATION' | 'FAILED' | 'READ_ONLY';
-export type MessageDeliveryState = 'QUEUED' | 'DELIVERING' | 'DELIVERED' | 'FAILED' | 'CANCELLED';
-export interface AgentMessageTextPart { type: 'text'; text: string }
-export interface AgentMessageAttachmentPart {
-  type: 'attachment'; attachment_id: string; filename: string; mime_type: string;
-  byte_size: number; content_hash: string; runtime_path: string;
-}
-export type AgentMessagePart = AgentMessageTextPart | AgentMessageAttachmentPart;
 export interface MessageAttachmentInput {
   filename: string; mime_type: string; content_base64: string; byte_size: number;
 }
-export interface AgentMessageContent {
-  parts?: AgentMessagePart[];
-  tool?: Record<string, unknown>;
-  state?: Record<string, unknown>;
-  error?: Record<string, unknown>;
-  presentation?: 'final' | 'progress' | 'question' | 'queued' | 'cancelled-queue' | 'chat';
-  capability_refs?: Array<Pick<CapabilityRef, 'capability_type' | 'capability_key'>>;
-  runtime_selection?: { model_name?: string | null; reasoning_effort?: string | null };
-  [key: string]: unknown;
+export interface FlowRunConversation {
+  id: string;
+  flow_run_id: string;
+  runtime_session_id: string;
+  openhands_conversation_id: string;
+  display_label?: string | null;
+  created_at: string;
+  last_connected_at: string;
 }
-export interface AgentMessage {
-  id: string; conversation_id: string; sequence_no: number;
-  source: 'PROGRAM' | 'HUMAN' | 'AGENT'; transport_role: 'user' | 'assistant';
-  message_type: 'TEXT' | 'TOOL_CALL' | 'TOOL_RESULT' | 'STATE' | 'ERROR';
-  content: AgentMessageContent; delivery_state: MessageDeliveryState;
-  delivery_mode?: 'QUEUE_AFTER_TURN' | 'INTERRUPT_AND_RESUME' | null; client_message_id?: string | null;
-  runtime_cursor?: string | null; error_code?: string | null; error_detail?: string | null;
-  created_by?: string | null; created_at: string; delivered_at?: string | null;
-  conversation_state_version?: number;
+export interface OpenHandsConversationEvent {
+  id: string;
+  event_type: 'MESSAGE' | 'TOOL_CALL' | 'TOOL_RESULT' | 'THOUGHT' | 'STATE' | 'ERROR' | 'COMPLETED' | 'CONDENSATION_REQUESTED' | 'CONDENSATION_COMPLETED';
+  payload: {
+    source_type?: string;
+    source?: string | null;
+    content?: string;
+    event_name?: string;
+    details?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
 }
-export interface RuntimeCondensation {
-  id: string; attempt_id: string; conversation_id: string;
-  runtime_event_id: string; runtime_cursor: string; event_type: 'REQUESTED' | 'COMPLETED';
-  forgotten_event_ids: string[]; summary?: string | null; summary_offset?: number | null;
-  llm_response_id?: string | null; created_at: string;
+export interface OpenHandsConversationEventBatch {
+  events: OpenHandsConversationEvent[];
+  next_cursor?: string | null;
+  result?: { status?: string; final_message?: string | null; error?: string | null } | null;
 }
-export interface RuntimeSubagentTask {
-  id: string; attempt_id: string; conversation_id: string;
-  action_event_id: string; action_cursor?: string | null;
-  tool_call_id?: string | null; llm_response_id?: string | null;
-  observation_event_id?: string | null; observation_cursor?: string | null;
-  runtime_task_id?: string | null; subagent_type: string;
-  description?: string | null; resume_task_id?: string | null;
-  state: 'REQUESTED' | 'COMPLETED' | 'ERROR'; native_status?: string | null;
-  result?: string | null; error_detail?: string | null;
-  usage?: RuntimeSubagentTaskUsage | null;
-  created_at: string; completed_at?: string | null; updated_at: string;
+export interface FlowRunRuntimeGeneration {
+  generation: number;
+  state: 'PROVISIONING' | 'READY' | 'DRAINING' | 'STOPPED' | 'DELETED' | 'FAILED';
+  row_version: number;
+  failure_code?: string | null;
+  failure_summary?: string | null;
+  started_at?: string | null;
+  ready_at?: string | null;
+  draining_at?: string | null;
+  stopped_at?: string | null;
+  deleted_at?: string | null;
 }
-export interface RuntimeSubagentTaskUsage {
-  runtime_task_id: string; source_cursor?: string | null; snapshot_digest: string;
-  usage_version: number; model_name: string; accumulated_cost_usd: number;
-  prompt_tokens: number; completion_tokens: number; cache_read_tokens: number;
-  cache_write_tokens: number; reasoning_tokens: number; context_window: number;
-  per_turn_tokens: number; budget_limit_usd?: number | null;
-  budget_state: 'UNBOUNDED' | 'WITHIN' | 'EXCEEDED';
-  budget_exceeded_at?: string | null; updated_at: string;
-}
-export interface RuntimeDiagnosticQuery {
-  id: string; conversation_id: string; output_classification: 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED';
-  timeout_seconds: number; state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
-  response_text?: string | null; cost_usd?: number | null; prompt_tokens?: number | null;
-  completion_tokens?: number | null; error_code?: string | null; created_at: string; completed_at?: string | null;
-}
-export interface RuntimeGoalCommand {
-  id: string; state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
-  action: 'START' | 'STOP' | 'RESUME';
-}
-export interface RuntimeGoalStatus {
-  runtime_event_id: string; active: boolean; status: string; iteration: number; max_iterations: number;
-  objective?: string | null; verdict: Record<string, unknown>;
-}
-export interface RuntimeCriticEvaluation {
-  runtime_event_id: string; source_type: string; score: number; message?: string | null; created_at: string;
-}
-export interface AgentConversation {
-  id: string; attempt_id: string; conversation_no: number;
-  kind: 'AUTO' | 'HUMAN_CREATED'; title: string; state: ConversationState;
-  editable_message_id?: string | null;
-  fork_kind?: 'RUNTIME' | 'SEMANTIC' | null; source_conversation_id?: string | null;
-  source_runtime_conversation_id?: string | null; source_runtime_event_id?: string | null;
-  runtime_branch_metadata: Record<string, unknown>; metrics_reset?: boolean | null;
-  state_version: number; model_name?: string | null; reasoning_effort?: string | null; runtime_job_id?: string | null; runtime_conversation_id?: string | null; runtime_adapter?: string | null;
-  runtime_resource?: {
-    sandbox_id: string; container_name: string; owner_type: 'ATTEMPT' | 'CONVERSATION'; owner_id: string;
-    desired_state: string; observed_state: string; lifecycle: 'RUNNING' | 'DELETING' | 'DELETED' | 'ERROR';
-    cleanup_policy: 'DELETE_WITH_CONVERSATION' | 'DELETE_WITH_ATTEMPT';
-  } | null;
-  connection_status?: { phase: 'WAITING_WORKER' | 'PREPARING_CONTEXT' | 'STARTING_RUNTIME' | 'CONNECTING_AGENT' | 'READY' | 'FAILED'; started_at: string; elapsed_seconds?: number; detail?: string | null };
-  context_baseline: Record<string, unknown>; message_count: number;
-  last_message?: AgentMessage | null; runtime_condensations: RuntimeCondensation[];
-  runtime_condensation_commands?: Array<Record<string, unknown>>;
-  latest_goal_status?: RuntimeGoalStatus | null; critic_evaluations?: RuntimeCriticEvaluation[];
-  created_at: string; updated_at: string;
+export interface FlowRunRuntimeOverview {
+  flow_run_id: string;
+  runtime_session_id?: string | null;
+  status: 'NOT_STARTED' | 'ARCHIVED' | 'STARTING' | 'ACTIVE' | 'REPLACING' | 'RECONNECTING' | 'DEGRADED' | 'STOPPED' | 'DELETING';
+  connection_state: 'NOT_STARTED' | 'READY' | 'ARCHIVED' | 'STARTING' | 'REPLACING' | 'RECONNECTING' | 'DEGRADED' | 'STOPPED' | 'DELETING';
+  active_generation?: number | null;
+  replacement_generation?: number | null;
+  session_row_version?: number | null;
+  write_available: boolean;
+  read_only: boolean;
+  rerun_required: boolean;
+  diagnostic_code?: string | null;
+  diagnostic_summary?: string | null;
+  generations: FlowRunRuntimeGeneration[];
+  retention: {
+    mode: 'FLOW_RUN_LIFETIME';
+    workspace_preserved_during_replacement: boolean;
+    physical_delete_operation: 'DELETE_FLOW_RUN';
+  };
 }

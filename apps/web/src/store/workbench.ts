@@ -17,7 +17,7 @@ interface WorkbenchState {
   selectNodeRun: (id: string) => void;
   selectAttempt: (id: string) => void;
   selectExecution: (nodeRunId: string, attemptId?: string) => void;
-  openAgentChat: (runId: string, nodeRunId: string, attemptId: string, conversationId?: string) => void;
+  openAgentChat: (runId: string, conversationId?: string) => void;
   selectConversation: (id: string) => void;
   returnToWorkbench: () => void;
 }
@@ -76,8 +76,8 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       selectExecution: (selectedNodeRunId, selectedAttemptId) => set({
         selectedNodeRunId, selectedAttemptId,
       }),
-      openAgentChat: (selectedRunId, selectedNodeRunId, selectedAttemptId, selectedConversationId) => set({
-        view: 'agent-chat', selectedRunId, selectedNodeRunId, selectedAttemptId, selectedConversationId,
+      openAgentChat: (selectedRunId, selectedConversationId) => set({
+        view: 'agent-chat', selectedRunId, selectedConversationId,
       }),
       selectConversation: selectedConversationId => set({ selectedConversationId }),
       returnToWorkbench: () => set({ view: 'workbench' }),

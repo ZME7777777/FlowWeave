@@ -44,7 +44,11 @@ from flowweave.shared.models import (
     NodeRun,
     RunSnapshot,
 )
-from flowweave.shared.schemas import ConversationCreateWrite, ConversationQuestionWrite
+from flowweave.shared.schemas import (
+    ConversationCreateWrite,
+    ConversationQuestionWrite,
+    FlowRunConversationCreateWrite,
+)
 from flowweave.shared.settings import get_settings
 
 
@@ -84,6 +88,15 @@ def _binding(
     return item
 
 
+def _binding_for_run(
+    db: Session, flow_run_id: str, binding_id: str, *, lock: bool = False
+) -> FlowRunConversationBinding:
+    item = _binding(db, binding_id, lock=lock)
+    if item.flow_run_id != flow_run_id:
+        raise not_found("flow_run_conversation_binding", binding_id)
+    return item
+
+
 def _binding_dict(item: FlowRunConversationBinding) -> dict[str, Any]:
     return {
         "id": item.id,
@@ -109,8 +122,28 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
     return [_binding_dict(item) for item in items]
 
 
+def list_flow_run_conversations(db: Session, flow_run_id: str) -> list[dict[str, Any]]:
+    if db.get(FlowRun, flow_run_id) is None:
+        raise not_found("flow_run", flow_run_id)
+    items = db.scalars(
+        select(FlowRunConversationBinding)
+        .where(FlowRunConversationBinding.flow_run_id == flow_run_id)
+        .order_by(FlowRunConversationBinding.created_at)
+    )
+    return [_binding_dict(item) for item in items]
+
+
 def get_conversation(db: Session, binding_id: str) -> dict[str, Any]:
     item = _binding(db, binding_id)
+    item.last_connected_at = now()
+    db.flush()
+    return _binding_dict(item)
+
+
+def get_flow_run_conversation(
+    db: Session, flow_run_id: str, binding_id: str
+) -> dict[str, Any]:
+    item = _binding_for_run(db, flow_run_id, binding_id)
     item.last_connected_at = now()
     db.flush()
     return _binding_dict(item)
@@ -122,6 +155,13 @@ def patch_conversation(db: Session, binding_id: str, title: str) -> dict[str, An
     item.last_connected_at = now()
     finish(db)
     return _binding_dict(item)
+
+
+def patch_flow_run_conversation(
+    db: Session, flow_run_id: str, binding_id: str, title: str
+) -> dict[str, Any]:
+    _binding_for_run(db, flow_run_id, binding_id)
+    return patch_conversation(db, binding_id, title)
 
 
 def _request_bindings(
@@ -304,6 +344,54 @@ def create_conversation(
     return _binding_dict(item)
 
 
+def create_flow_run_conversation(
+    db: Session,
+    flow_run_id: str,
+    payload: FlowRunConversationCreateWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Create a Conversation from the FlowRun's latest execution context.
+
+    The public client selects a FlowRun, not an Attempt owner.  Attempts remain
+    internal execution context used to compile the frozen OpenHands request.
+    """
+
+    if db.get(FlowRun, flow_run_id) is None:
+        raise not_found("flow_run", flow_run_id)
+    if sandboxes.runtime_overview(db, flow_run_id)["rerun_required"]:
+        raise DomainError(
+            "LEGACY_RUNTIME_INCOMPATIBLE",
+            "Historical FlowRun Runtime data is incompatible; rerun the Flow",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    attempt = db.scalar(
+        select(NodeAttempt)
+        .join(NodeRun, NodeRun.id == NodeAttempt.node_run_id)
+        .where(NodeRun.flow_run_id == flow_run_id)
+        .order_by(NodeRun.sequence_no.desc(), NodeAttempt.attempt_no.desc())
+        .limit(1)
+    )
+    if attempt is None:
+        raise DomainError(
+            "FLOW_RUN_CONVERSATION_CONTEXT_REQUIRED",
+            "The FlowRun must have an execution context before creating a Conversation",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    return create_conversation(
+        db,
+        attempt.id,
+        ConversationCreateWrite(
+            title=payload.title,
+            expected_attempt_state_version=attempt.state_version,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
+        ),
+        idempotency_key,
+    )
+
+
 def _handle(db: Session, binding_id: str, *, cursor: str | None = None) -> RuntimeHandle:
     locator = binding_locator(db, binding_id)
     return active_runtime_handle(
@@ -315,8 +403,25 @@ def _handle(db: Session, binding_id: str, *, cursor: str | None = None) -> Runti
     )
 
 
+def _flow_run_handle(
+    db: Session,
+    flow_run_id: str,
+    binding_id: str,
+    *,
+    cursor: str | None = None,
+) -> RuntimeHandle:
+    _binding_for_run(db, flow_run_id, binding_id)
+    return _handle(db, binding_id, cursor=cursor)
+
+
 def runtime_stream_details(db: Session, binding_id: str) -> tuple[str | None, RuntimeHandle]:
     return get_settings().runtime_adapter, _handle(db, binding_id)
+
+
+def flow_run_runtime_stream_details(
+    db: Session, flow_run_id: str, binding_id: str
+) -> tuple[str | None, RuntimeHandle]:
+    return get_settings().runtime_adapter, _flow_run_handle(db, flow_run_id, binding_id)
 
 
 def terminal_resource_details(db: Session, binding_id: str) -> tuple[str, str, str]:
@@ -340,12 +445,32 @@ def terminal_resource_details(db: Session, binding_id: str) -> tuple[str, str, s
     return handle.runtime_resource_name, handle.runtime_resource_id, environment_id
 
 
+def flow_run_terminal_resource_details(
+    db: Session, flow_run_id: str, binding_id: str
+) -> tuple[str, str, str]:
+    _binding_for_run(db, flow_run_id, binding_id)
+    return terminal_resource_details(db, binding_id)
+
+
 def read_conversation_events(
     db: Session, binding_id: str, *, cursor: str | None = None
 ) -> dict[str, Any]:
     """Read OpenHands events live without storing a cursor or event projection."""
 
     batch = get_runtime().read_events(_handle(db, binding_id, cursor=cursor))
+    return _event_batch_dict(batch)
+
+
+def read_flow_run_conversation_events(
+    db: Session,
+    flow_run_id: str,
+    binding_id: str,
+    *,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    batch = get_runtime().read_events(
+        _flow_run_handle(db, flow_run_id, binding_id, cursor=cursor)
+    )
     return _event_batch_dict(batch)
 
 
@@ -419,6 +544,18 @@ def send_question(
     return {"accepted": True, "runtime": _result_dict(result)}
 
 
+def send_flow_run_question(
+    db: Session,
+    flow_run_id: str,
+    binding_id: str,
+    payload: ConversationQuestionWrite,
+    idempotency_key: str,
+    actor: str | None,
+) -> dict[str, Any]:
+    _binding_for_run(db, flow_run_id, binding_id)
+    return send_question(db, binding_id, payload, idempotency_key, actor)
+
+
 def _result_dict(result: RuntimeResult) -> dict[str, Any]:
     value = result.as_dict()
     # A Runtime cursor is returned as transient transport data, never persisted.
@@ -427,6 +564,13 @@ def _result_dict(result: RuntimeResult) -> dict[str, Any]:
 
 def stop_conversation(db: Session, binding_id: str) -> dict[str, Any]:
     get_runtime().cancel(_handle(db, binding_id))
+    return {"accepted": True}
+
+
+def stop_flow_run_conversation(
+    db: Session, flow_run_id: str, binding_id: str
+) -> dict[str, Any]:
+    get_runtime().cancel(_flow_run_handle(db, flow_run_id, binding_id))
     return {"accepted": True}
 
 
@@ -474,12 +618,21 @@ __all__ = (
     "condense_conversation",
     "control_goal",
     "create_conversation",
+    "create_flow_run_conversation",
+    "flow_run_runtime_stream_details",
+    "flow_run_terminal_resource_details",
     "get_conversation",
+    "get_flow_run_conversation",
     "list_conversations",
+    "list_flow_run_conversations",
     "patch_conversation",
+    "patch_flow_run_conversation",
     "read_conversation_events",
+    "read_flow_run_conversation_events",
     "runtime_stream_details",
     "send_question",
+    "send_flow_run_question",
     "stop_conversation",
+    "stop_flow_run_conversation",
     "terminal_resource_details",
 )

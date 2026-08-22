@@ -15,11 +15,9 @@ from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
 from flowweave.shared.schemas import (
-    ConversationAskAgentWrite,
-    ConversationCreateWrite,
-    ConversationGoalWrite,
     ConversationPatchWrite,
     ConversationQuestionWrite,
+    FlowRunConversationCreateWrite,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -32,64 +30,83 @@ def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
 
-@router.get("/node-attempts/{attempt_id}/conversations")
-async def list_flow_run_conversations(attempt_id: str, db: Db) -> list[dict[str, Any]]:
-    """Compatibility route: the Attempt resolves a FlowRun and owns nothing."""
+@router.get("/flow-runs/{flow_run_id}/conversations")
+async def list_flow_run_conversations(
+    flow_run_id: str, db: Db
+) -> list[dict[str, Any]]:
+    return await run_sync(
+        db, lambda session: conversations.list_flow_run_conversations(session, flow_run_id)
+    )
 
-    return await run_sync(db, lambda session: conversations.list_conversations(session, attempt_id))
 
-
-@router.post("/node-attempts/{attempt_id}/conversations", status_code=201)
+@router.post("/flow-runs/{flow_run_id}/conversations", status_code=201)
 async def create_flow_run_conversation(
-    attempt_id: str,
-    payload: ConversationCreateWrite,
+    flow_run_id: str,
+    payload: FlowRunConversationCreateWrite,
     db: Db,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: conversations.create_conversation(
+        lambda session: conversations.create_flow_run_conversation(
             session,
-            attempt_id,
+            flow_run_id,
             payload,
-            _key(idempotency_key, "create-flow-run-conversation", attempt_id),
+            _key(idempotency_key, "create-flow-run-conversation", flow_run_id),
         ),
     )
 
 
-@router.get("/agent-conversations/{binding_id}")
-async def get_flow_run_conversation(binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(db, lambda session: conversations.get_conversation(session, binding_id))
-
-
-@router.patch("/agent-conversations/{binding_id}")
-async def label_flow_run_conversation(
-    binding_id: str, payload: ConversationPatchWrite, db: Db
+@router.get("/flow-runs/{flow_run_id}/conversations/{binding_id}")
+async def get_flow_run_conversation(
+    flow_run_id: str, binding_id: str, db: Db
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: conversations.patch_conversation(session, binding_id, payload.title),
+        lambda session: conversations.get_flow_run_conversation(
+            session, flow_run_id, binding_id
+        ),
     )
 
 
-@router.get("/agent-conversations/{binding_id}/messages")
+@router.patch("/flow-runs/{flow_run_id}/conversations/{binding_id}")
+async def label_flow_run_conversation(
+    flow_run_id: str,
+    binding_id: str,
+    payload: ConversationPatchWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.patch_flow_run_conversation(
+            session, flow_run_id, binding_id, payload.title
+        ),
+    )
+
+
+@router.get("/flow-runs/{flow_run_id}/conversations/{binding_id}/events")
 async def live_conversation_events(
+    flow_run_id: str,
     binding_id: str,
     db: Db,
     cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
-    """Compatibility path returning live OpenHands events, never platform messages."""
+    """Return live OpenHands events without persisting a platform cursor."""
 
     return await run_sync(
         db,
-        lambda session: conversations.read_conversation_events(
-            session, binding_id, cursor=cursor
+        lambda session: conversations.read_flow_run_conversation_events(
+            session, flow_run_id, binding_id, cursor=cursor
         ),
     )
 
 
-@router.post("/agent-conversations/{binding_id}/messages", status_code=202)
+@router.post(
+    "/flow-runs/{flow_run_id}/conversations/{binding_id}/questions",
+    status_code=202,
+)
 async def ask_conversation(
+    flow_run_id: str,
     binding_id: str,
     payload: ConversationQuestionWrite,
     db: Db,
@@ -98,8 +115,9 @@ async def ask_conversation(
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: conversations.send_question(
+        lambda session: conversations.send_flow_run_question(
             session,
+            flow_run_id,
             binding_id,
             payload,
             _key(idempotency_key, "ask-flow-run-conversation", binding_id),
@@ -108,61 +126,36 @@ async def ask_conversation(
     )
 
 
-@router.post("/agent-conversations/{binding_id}/stop", status_code=202)
-async def stop_conversation(binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.stop_conversation(session, binding_id)
-    )
-
-
-@router.post("/agent-conversations/{binding_id}/condense", status_code=202)
-async def condense_conversation(binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.condense_conversation(session, binding_id)
-    )
-
-
-@router.post("/agent-conversations/{binding_id}/goal", status_code=202)
-async def control_conversation_goal(
-    binding_id: str, payload: ConversationGoalWrite, db: Db
+@router.post(
+    "/flow-runs/{flow_run_id}/conversations/{binding_id}/stop",
+    status_code=202,
+)
+async def stop_conversation(
+    flow_run_id: str, binding_id: str, db: Db
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: conversations.control_goal(
-            session,
-            binding_id,
-            action=payload.action,
-            objective=payload.objective,
-            max_iterations=payload.max_iterations,
+        lambda session: conversations.stop_flow_run_conversation(
+            session, flow_run_id, binding_id
         ),
     )
 
 
-@router.post("/agent-conversations/{binding_id}/ask-agent")
-async def ask_agent_diagnostic(
-    binding_id: str, payload: ConversationAskAgentWrite, db: Db
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: conversations.ask_agent(
-            session,
-            binding_id,
-            question=payload.question,
-            timeout_seconds=payload.timeout_seconds,
-        ),
-    )
-
-
-@router.websocket("/agent-conversations/{binding_id}/stream")
+@router.websocket("/flow-runs/{flow_run_id}/conversations/{binding_id}/stream")
 async def conversation_stream(
-    websocket: WebSocket, binding_id: str, container: ContainerDep
+    websocket: WebSocket,
+    flow_run_id: str,
+    binding_id: str,
+    container: ContainerDep,
 ) -> None:
     settings_token = bind_settings(container.settings)
     try:
         async with container.database.session() as db:
             try:
                 adapter, handle = await db.run_sync(
-                    lambda session: conversations.runtime_stream_details(session, binding_id)
+                    lambda session: conversations.flow_run_runtime_stream_details(
+                        session, flow_run_id, binding_id
+                    )
                 )
             except DomainError as exc:
                 await websocket.close(code=4409, reason=exc.message)
@@ -181,9 +174,12 @@ async def conversation_stream(
         reset_settings(settings_token)
 
 
-@router.websocket("/agent-conversations/{binding_id}/terminal")
+@router.websocket("/flow-runs/{flow_run_id}/conversations/{binding_id}/terminal")
 async def conversation_terminal(
-    websocket: WebSocket, binding_id: str, container: ContainerDep
+    websocket: WebSocket,
+    flow_run_id: str,
+    binding_id: str,
+    container: ContainerDep,
 ) -> None:
     settings_token = bind_settings(container.settings)
     terminal: environments.ManagedTerminal | None = None
@@ -196,7 +192,9 @@ async def conversation_terminal(
         async with container.database.session() as db:
             try:
                 resource_name, runtime_id, environment_id = await db.run_sync(
-                    lambda session: conversations.terminal_resource_details(session, binding_id)
+                    lambda session: conversations.flow_run_terminal_resource_details(
+                        session, flow_run_id, binding_id
+                    )
                 )
             except DomainError as exc:
                 await websocket.close(code=4409, reason=exc.message)

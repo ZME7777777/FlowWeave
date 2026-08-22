@@ -79,6 +79,7 @@ def enqueue_flow_run_runtime_replacement(
     flow_run_id: str,
     failed_generation: int,
     reason: str,
+    request_key: str | None = None,
 ) -> None:
     """Publish one idempotent recovery task for a failed active generation."""
 
@@ -87,7 +88,10 @@ def enqueue_flow_run_runtime_replacement(
         task_type="REPLACE_FLOW_RUN_RUNTIME",
         aggregate_type="FLOW_RUN",
         aggregate_id=flow_run_id,
-        idempotency_key=f"runtime-replacement:{flow_run_id}:{failed_generation}",
+        idempotency_key=(
+            f"runtime-replacement:{flow_run_id}:{failed_generation}"
+            f"{f':{request_key}' if request_key else ''}"
+        ),
         payload={
             "failed_generation": failed_generation,
             "reason": reason[:100],

@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from flowweave.modules.orchestration import public as service
+from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
     AgentProfileSwitchWrite,
@@ -24,6 +25,7 @@ from flowweave.shared.schemas import (
     RunStart,
     RuntimeCancelRecoveryWrite,
     RuntimeConfirmationDecisionWrite,
+    RuntimeReplacementWrite,
     SyncSnapshotWrite,
 )
 
@@ -47,6 +49,26 @@ async def list_flow_runs(db: Db) -> list[dict[str, Any]]:
 @router.get("/flow-runs/{run_id}")
 async def flow_run(run_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.run_detail(session, run_id))
+
+
+@router.get("/flow-runs/{run_id}/runtime")
+async def flow_run_runtime(run_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: sandboxes.runtime_overview(session, run_id))
+
+
+@router.post("/flow-runs/{run_id}/runtime/replacements", status_code=202)
+async def replace_flow_run_runtime(
+    run_id: str, payload: RuntimeReplacementWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: sandboxes.request_runtime_replacement(
+            session,
+            run_id,
+            expected_generation=payload.expected_generation,
+            expected_session_row_version=payload.expected_session_row_version,
+        ),
+    )
 
 
 @router.delete("/flow-runs/{run_id}", status_code=204, response_class=Response)

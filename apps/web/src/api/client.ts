@@ -1,7 +1,7 @@
 import type {
-  AgentConversation, AgentMessage, AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunSummary, FlowWrite, MessageAttachmentInput, SkillSource,
+  AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, RuntimeDiagnosticQuery, RuntimeGoalCommand, RuntimeSubagentTask, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -64,10 +64,6 @@ async function responseError(response: Response): Promise<ApiError> {
 }
 export const artifactContentUrl = (artifactId: string, download = false) =>
   `${API_BASE}${ROOT}/artifact-versions/${artifactId}/content${download ? '?download=true' : ''}`;
-export const workspaceImageUrl = (messageId: string, source: string) =>
-  `${API_BASE}${ROOT}/agent-messages/${messageId}/workspace-image?source=${encodeURIComponent(source)}&v=2`;
-export const messageAttachmentUrl = (messageId: string, attachmentId: string, download = false) =>
-  `${API_BASE}${ROOT}/agent-messages/${messageId}/attachments/${attachmentId}${download ? '?download=true' : ''}`;
 
 async function requestText(path: string): Promise<string> {
   let response: Response;
@@ -215,53 +211,28 @@ export const api = {
   syncSnapshot: (runId: string, version: number) => request<FlowRun>(`/flow-runs/${runId}/sync-snapshot`, json('POST', { expected_active_version: version }, true)),
   completeRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/complete`, json('POST', undefined, true)),
   cancelRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/cancel`, json('POST', undefined, true)),
-  conversations: (attemptId: string) => request<AgentConversation[]>(`/node-attempts/${attemptId}/conversations`),
-  createConversation: (attemptId: string, version: number, title?: string, runtime?: { model_name?: string; reasoning_effort?: string }) =>
-    request<AgentConversation>(`/node-attempts/${attemptId}/conversations`, json('POST', {
-      title, expected_attempt_state_version: version, baseline: { include_current_artifacts: true }, ...runtime,
-    }, true)),
-  conversation: (conversationId: string) => request<AgentConversation>(`/agent-conversations/${conversationId}`),
-  conversationSubagents: (conversationId: string) =>
-    request<RuntimeSubagentTask[]>(`/agent-conversations/${conversationId}/subagents`),
-  controlConversationGoal: (conversationId: string, version: number, body: { action: 'START' | 'STOP' | 'RESUME'; objective?: string; max_iterations?: number; max_tokens?: number | null; max_cost_usd?: number | null }) =>
-    request<RuntimeGoalCommand>(`/agent-conversations/${conversationId}/goal`, { ...json('POST', { expected_conversation_version: version, ...body }, true), headers: { ...json('POST', undefined, true).headers, 'X-Actor-ID': 'web-console' } }),
-  askAgent: (conversationId: string, question: string) =>
-    request<RuntimeDiagnosticQuery>(`/agent-conversations/${conversationId}/ask-agent`, { ...json('POST', { question, timeout_seconds: 30, output_classification: 'INTERNAL' }, true), headers: { ...json('POST', undefined, true).headers, 'X-Actor-ID': 'web-console' } }),
-  diagnosticQuery: (id: string) => request<RuntimeDiagnosticQuery>(`/runtime-diagnostic-queries/${id}`, { headers: { 'X-Actor-ID': 'web-console' } }),
-  stopConversation: (conversationId: string, version: number) =>
-    request<AgentConversation>(`/agent-conversations/${conversationId}/stop`, json('POST', { expected_conversation_version: version }, true)),
-  deleteConversation: (conversationId: string) => request<void>(`/agent-conversations/${conversationId}`, json('DELETE')),
-  conversationMessages: (conversationId: string, afterSequence = 0) =>
-    request<AgentMessage[]>(`/agent-conversations/${conversationId}/messages?after_sequence=${afterSequence}&limit=200`),
-  sendConversationMessage: (conversationId: string, content: string, version: number, capabilityRefs: Array<{ capability_type: 'SKILL' | 'MCP'; capability_key: string }> = [], attachments: MessageAttachmentInput[] = [], runtime?: { model_name?: string; reasoning_effort?: string | null }, clientMessageId = randomId()) =>
-    request<AgentMessage>(`/agent-conversations/${conversationId}/messages`, json('POST', {
-      client_message_id: clientMessageId,
+  conversations: (runId: string) => request<FlowRunConversation[]>(`/flow-runs/${runId}/conversations`),
+  createConversation: (runId: string, title?: string, runtime?: { model_name?: string; reasoning_effort?: string }) =>
+    request<FlowRunConversation>(`/flow-runs/${runId}/conversations`, json('POST', { title, ...runtime }, true)),
+  conversation: (runId: string, conversationId: string) =>
+    request<FlowRunConversation>(`/flow-runs/${runId}/conversations/${conversationId}`),
+  conversationEvents: (runId: string, conversationId: string, cursor?: string) =>
+    request<OpenHandsConversationEventBatch>(`/flow-runs/${runId}/conversations/${conversationId}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+  sendConversationQuestion: (runId: string, conversationId: string, content: string, attachments: MessageAttachmentInput[] = [], clientQuestionId = randomId()) =>
+    request<{ accepted: boolean }>(`/flow-runs/${runId}/conversations/${conversationId}/questions`, json('POST', {
+      client_question_id: clientQuestionId,
       content: [
         ...(content ? [{ type: 'text', text: content }] : []),
         ...attachments.map(item => ({ type: 'attachment', filename: item.filename, mime_type: item.mime_type, content_base64: item.content_base64 })),
       ],
-      capability_refs: capabilityRefs,
-      delivery_mode: 'QUEUE_AFTER_TURN',
-      expected_conversation_version: version,
-      ...runtime,
     }, true)),
-  forkConversationMessage: (messageId: string, version: number, forkKind: 'RUNTIME' | 'SEMANTIC') =>
-    request<AgentConversation>(`/agent-messages/${messageId}/fork`, json('POST', {
-      expected_conversation_version: version,
-      fork_kind: forkKind,
-      fork_scope: 'MESSAGE',
-      acknowledge_semantic_state_loss: forkKind === 'SEMANTIC',
+  stopConversation: (runId: string, conversationId: string) =>
+    request<{ accepted: boolean }>(`/flow-runs/${runId}/conversations/${conversationId}/stop`, json('POST', undefined, true)),
+  runtimeOverview: (runId: string) => request<FlowRunRuntimeOverview>(`/flow-runs/${runId}/runtime`),
+  replaceRuntime: (runId: string, generation: number, sessionRowVersion: number) =>
+    request<FlowRunRuntimeOverview>(`/flow-runs/${runId}/runtime/replacements`, json('POST', {
+      expected_generation: generation, expected_session_row_version: sessionRowVersion,
     }, true)),
-  reviseConversationMessage: (messageId: string, version: number, text: string) =>
-    request<AgentConversation>(`/agent-messages/${messageId}/revise`, json('POST', {
-      expected_conversation_version: version, text,
-    }, true)),
-  steerConversationMessage: (messageId: string) =>
-    request<AgentMessage>(`/agent-messages/${messageId}/steer`, json('POST', undefined, true)),
-  cancelQueuedConversationMessage: (messageId: string) =>
-    request<AgentMessage>(`/agent-messages/${messageId}/cancel-queued`, json('POST', undefined, true)),
-  retryConversationMessage: (messageId: string) =>
-    request<AgentMessage>(`/agent-messages/${messageId}/retry`, json('POST', undefined, true)),
   flowEvents: (runId: string, after = 0) => request<RunEvent[]>(`/flow-runs/${runId}/event-history?after=${after}`),
 };
 
@@ -274,9 +245,9 @@ export function environmentTerminalUrl(sessionId: string, rows = 24, columns = 8
   return url.toString();
 }
 
-export function agentTerminalUrl(conversationId: string, rows = 24, columns = 80): string {
+export function agentTerminalUrl(runId: string, conversationId: string, rows = 24, columns = 80): string {
   const base = API_BASE || window.location.origin;
-  const url = new URL(`${ROOT}/agent-conversations/${encodeURIComponent(conversationId)}/terminal`, base);
+  const url = new URL(`${ROOT}/flow-runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(conversationId)}/terminal`, base);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('rows', String(rows));
   url.searchParams.set('columns', String(columns));
@@ -288,14 +259,15 @@ export interface AgentStreamEvent {
   content?: string;
 }
 
-export function agentStreamUrl(conversationId: string): string {
+export function agentStreamUrl(runId: string, conversationId: string): string {
   const base = API_BASE || window.location.origin;
-  const url = new URL(`${ROOT}/agent-conversations/${encodeURIComponent(conversationId)}/stream`, base);
+  const url = new URL(`${ROOT}/flow-runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(conversationId)}/stream`, base);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();
 }
 
 export function subscribeToConversationStream(
+  runId: string,
   conversationId: string,
   onEvent: (event: AgentStreamEvent) => void,
   onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
@@ -308,7 +280,7 @@ export function subscribeToConversationStream(
   const connect = () => {
     if (disposed) return;
     onStatus?.(reconnectAttempt ? 'recovering' : 'connecting');
-    socket = new WebSocket(agentStreamUrl(conversationId));
+    socket = new WebSocket(agentStreamUrl(runId, conversationId));
     socket.onopen = () => { reconnectAttempt = 0; onStatus?.('live'); };
     socket.onmessage = message => {
       try {
@@ -344,6 +316,6 @@ export function subscribeToConversationStream(
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`);
   source.onmessage = onEvent;
-  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED', 'CONVERSATION_CREATED', 'CONVERSATION_STATE_CHANGED', 'AGENT_MESSAGE_CREATED', 'AGENT_MESSAGE_DELIVERY_CHANGED'].forEach(type => source.addEventListener(type, onEvent));
+  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
   return () => source.close();
 }

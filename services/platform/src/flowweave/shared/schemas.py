@@ -654,6 +654,12 @@ class ConversationCreateWrite(ApiModel):
     reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
+class FlowRunConversationCreateWrite(ApiModel):
+    title: str | None = Field(default=None, max_length=160)
+    model_name: str | None = Field(default=None, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+
+
 class ConversationPatchWrite(ApiModel):
     title: str = Field(min_length=1, max_length=160)
 
@@ -700,3 +706,8 @@ class ConversationQuestionWrite(ApiModel):
         if sum(item.type == "attachment" for item in self.content) > 4:
             raise ValueError("a question may contain at most 4 attachments")
         return self
+
+
+class RuntimeReplacementWrite(ApiModel):
+    expected_generation: int = Field(ge=1)
+    expected_session_row_version: int = Field(ge=1)
