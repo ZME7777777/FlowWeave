@@ -95,8 +95,8 @@ def _runtime_resource(workspace_relative: str = "nodes/node-1") -> ManagedSandbo
     return ManagedSandbox(
         id="12345678-1234-4234-9234-123456789abc",
         kind="AGENT_RUNTIME",
-        owner_type="ATTEMPT",
-        owner_id="attempt-1",
+        owner_type="CAPABILITY_VALIDATION",
+        owner_id="validation-1",
         backend="docker",
         backend_resource_name="fw-sbx-runtime",
         image_reference="runtime:locked",
@@ -112,21 +112,6 @@ def _runtime_resource(workspace_relative: str = "nodes/node-1") -> ManagedSandbo
         hard_expires_at=now + timedelta(hours=1),
         next_reconcile_at=now,
     )
-
-
-def _workspace_source_inspection(mounts: list[dict[str, object]]) -> str:
-    return json.dumps(
-        {
-            "Config": {
-                "Labels": {
-                    "flowweave.workspace-source": "true",
-                    "flowweave.manager-scope": "test-scope",
-                }
-            },
-            "Mounts": mounts,
-        }
-    )
-
 
 def test_provider_refuses_to_delete_a_name_owned_by_another_resource(settings, monkeypatch):
     provider = DockerSandboxProvider(_docker_settings(settings))
@@ -414,115 +399,30 @@ def test_owned_delete_requires_matching_resource_and_manager_scope(monkeypatch):
     assert [command[1] for command in commands] == ["inspect"]
 
 
-def test_runtime_bind_mount_exposes_only_the_selected_node_workspace(settings, monkeypatch):
-    provider = DockerSandboxProvider(_docker_settings(settings))
-    inspected: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs):
-        inspected.append(command)
-        return _workspace_source_inspection(
-            [
-                {
-                    "Type": "bind",
-                    "Source": "/srv/flowweave/workspaces",
-                    "Destination": "/workspaces",
-                }
-            ]
+def test_runtime_bind_mount_uses_explicit_host_root_without_source_container(
+    settings, tmp_path
+):
+    (tmp_path / "nodes/node-1").mkdir(parents=True)
+    (tmp_path / ".managed-assets/nodes/node-1").mkdir(parents=True)
+    provider = DockerSandboxProvider(
+        _docker_settings(
+            settings,
+            runtime_host_workspace_root=tmp_path,
+            flow_run_runtime_validation_root=tmp_path,
         )
-
-    monkeypatch.setattr(provider, "_run", fake_run)
+    )
 
     mount = provider._runtime_workspace_mount(_runtime_resource())
 
     assert mount == [
         "--mount",
-        ("type=bind,src=/srv/flowweave/workspaces/nodes/node-1,dst=/workspaces/nodes/node-1"),
+        f"type=bind,src={tmp_path}/nodes/node-1,dst=/workspaces/nodes/node-1",
         "--mount",
         (
-            "type=bind,src=/srv/flowweave/workspaces/.managed-assets/nodes/node-1,"
+            f"type=bind,src={tmp_path}/.managed-assets/nodes/node-1,"
             "dst=/runtime/capabilities/nodes/node-1,readonly"
         ),
     ]
-    assert inspected == [
-        [
-            "docker",
-            "inspect",
-            settings.terminal_environment_workspace_source_container,
-            "--format",
-            "{{json .}}",
-        ]
-    ]
-
-
-def test_runtime_memory_mounts_fixed_user_and_project_indexes_read_only(settings, monkeypatch):
-    provider = DockerSandboxProvider(_docker_settings(settings))
-    resource = _runtime_resource()
-    resource.spec_json = {
-        **resource.spec_json,
-        "memory_enabled": True,
-        "memory_working_dir_relative": "sessions/run-1/node-run-1/1",
-    }
-    monkeypatch.setattr(
-        provider,
-        "_run",
-        lambda *_args, **_kwargs: _workspace_source_inspection(
-            [
-                {
-                    "Type": "bind",
-                    "Source": "/srv/flowweave/workspaces",
-                    "Destination": "/workspaces",
-                }
-            ]
-        ),
-    )
-
-    mounts = provider._runtime_workspace_mount(resource)
-
-    assert (
-        "type=bind,src=/srv/flowweave/workspaces/.managed-memory/attempt/"
-        "attempt-1/runtime/user,dst=/home/flowweave/.openhands/memory,readonly"
-    ) in mounts
-    assert (
-        "type=bind,src=/srv/flowweave/workspaces/.managed-memory/attempt/"
-        "attempt-1/runtime/project,dst=/workspaces/nodes/node-1/sessions/run-1/"
-        "node-run-1/1/.openhands/memory,readonly"
-    ) in mounts
-
-
-def test_runtime_named_volume_mounts_governed_memory_read_only(settings, monkeypatch):
-    provider = DockerSandboxProvider(_docker_settings(settings))
-    resource = _runtime_resource()
-    resource.spec_json = {
-        **resource.spec_json,
-        "memory_enabled": True,
-        "memory_working_dir_relative": "sessions/run-1/node-run-1/1",
-    }
-    monkeypatch.setattr(
-        provider,
-        "_run",
-        lambda *_args, **_kwargs: _workspace_source_inspection(
-            [
-                {
-                    "Type": "volume",
-                    "Name": "flowweave-workspaces",
-                    "Destination": "/workspaces",
-                }
-            ]
-        ),
-    )
-
-    mounts = provider._runtime_workspace_mount(resource)
-
-    assert (
-        "type=volume,src=flowweave-workspaces,"
-        "dst=/home/flowweave/.openhands/memory,"
-        "volume-subpath=.managed-memory/attempt/attempt-1/runtime/user,readonly"
-    ) in mounts
-    assert (
-        "type=volume,src=flowweave-workspaces,"
-        "dst=/workspaces/nodes/node-1/sessions/run-1/node-run-1/1/.openhands/memory,"
-        "volume-subpath=.managed-memory/attempt/attempt-1/runtime/project,readonly"
-    ) in mounts
 
 
 def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_paths(
@@ -570,7 +470,7 @@ def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_pat
     tmpfs = [command[index + 1] for index, item in enumerate(command) if item == "--tmpfs"]
     assert tmpfs == [
         "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
-        "/runtime/workspace:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
+        "/runtime/ephemeral-state:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
     ]
     assert "HOME=/home/flowweave" in command
     assert "OPENHANDS_SUPPRESS_BANNER=1" in command
@@ -873,37 +773,6 @@ def test_runtime_clients_require_worker_role_and_current_scope(settings, monkeyp
     ]
 
 
-def test_runtime_named_volume_mount_uses_an_isolated_subpath(settings, monkeypatch):
-    provider = DockerSandboxProvider(_docker_settings(settings))
-    monkeypatch.setattr(
-        provider,
-        "_run",
-        lambda *_args, **_kwargs: _workspace_source_inspection(
-            [
-                {
-                    "Type": "volume",
-                    "Name": "flowweave-workspaces",
-                    "Destination": "/workspaces",
-                }
-            ]
-        ),
-    )
-
-    assert provider._runtime_workspace_mount(_runtime_resource()) == [
-        "--mount",
-        (
-            "type=volume,src=flowweave-workspaces,dst=/workspaces/nodes/node-1,"
-            "volume-subpath=nodes/node-1"
-        ),
-        "--mount",
-        (
-            "type=volume,src=flowweave-workspaces,"
-            "dst=/runtime/capabilities/nodes/node-1,"
-            "volume-subpath=.managed-assets/nodes/node-1,readonly"
-        ),
-    ]
-
-
 @pytest.mark.parametrize(
     "managed_root",
     [
@@ -927,55 +796,9 @@ def test_runtime_managed_asset_mount_root_must_be_disjoint(settings, monkeypatch
     assert calls == []
 
 
-@pytest.mark.parametrize(
-    ("workspace_relative", "inspection"),
-    [
-        ("../other-node", None),
-        (
-            "nodes/node-1",
-            _workspace_source_inspection(
-                [
-                    {
-                        "Type": "bind",
-                        "Source": "/srv/workspaces",
-                        "Destination": "/workspaces",
-                    },
-                    {
-                        "Type": "bind",
-                        "Source": "/other/workspaces",
-                        "Destination": "/workspaces",
-                    },
-                ]
-            ),
-        ),
-        (
-            "nodes/node-1",
-            json.dumps(
-                {
-                    "Config": {
-                        "Labels": {
-                            "flowweave.workspace-source": "true",
-                            "flowweave.manager-scope": "other-scope",
-                        }
-                    },
-                    "Mounts": [],
-                }
-            ),
-        ),
-    ],
-)
-def test_runtime_workspace_mount_fails_closed(
-    settings, monkeypatch, workspace_relative, inspection
-):
+@pytest.mark.parametrize("workspace_relative", ["../other-node", "/absolute/node"])
+def test_runtime_workspace_mount_fails_closed(settings, workspace_relative):
     provider = DockerSandboxProvider(_docker_settings(settings))
-    calls: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs):
-        calls.append(command)
-        assert inspection is not None
-        return inspection
-
-    monkeypatch.setattr(provider, "_run", fake_run)
 
     with pytest.raises(DomainError) as caught:
         provider._runtime_workspace_mount(_runtime_resource(workspace_relative))
@@ -984,8 +807,6 @@ def test_runtime_workspace_mount_fails_closed(
         "SANDBOX_WORKSPACE_INVALID",
         "SANDBOX_WORKSPACE_SOURCE_INVALID",
     }
-    if inspection is None:
-        assert calls == []
 
 
 def test_reconciler_recreates_a_missing_expected_resource(

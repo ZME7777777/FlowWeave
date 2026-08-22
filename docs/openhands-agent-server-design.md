@@ -1,6 +1,8 @@
 # OpenHands Agent Server 集成与运行时设计
 
-> 本文描述 FlowWeave 当前代码中的实际实现，基于 OpenHands Agent Server、SDK、Tools 1.40.0。重点回答：OpenHands Agent Server 提供什么能力、如何提供和实现，FlowWeave 如何及何时调用，以及 Skill、MCP、Hook、模型和业务上下文如何交给 OpenHands。
+> 历史文档：本文描述已删除的共享 Agent Server/Attempt/Conversation Runtime 架构，不再代表当前生产拓扑。当前冻结设计与实施状态分别以 `docs/flowrun-openhands-runtime-design.md` 和 `docs/flowrun-runtime-task-progress.md` 为准。
+
+> 本文原描述 FlowWeave 旧代码中的实现，基于 OpenHands Agent Server、SDK、Tools 1.40.0。重点回答：OpenHands Agent Server 提供什么能力、如何提供和实现，FlowWeave 如何及何时调用，以及 Skill、MCP、Hook、模型和业务上下文如何交给 OpenHands。
 >
 > 未接入能力的核对以 FlowWeave 镜像中实际安装的 1.40.0 OpenAPI 和 Python 包为准，并参考 `/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk` 源码解释实现。该源码检出点为 `v1.39.1-6-g6d597ff7`，与运行版本非常接近但并非完全相同；凡涉及路由是否存在、请求字段和默认值，均以本地 1.40.0 包为最终依据。
 

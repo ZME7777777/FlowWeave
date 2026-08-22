@@ -43,10 +43,9 @@ make rebuild-deploy
 
 - PostgreSQL named volume `postgres-data`；
 - Artifact named volume `artifacts`；
-- OpenHands named volume `openhands-state`；
-- `${FLOWWEAVE_HOST_WORKSPACE_ROOT}` 指向的宿主机工作区，默认是 `var/workspaces`。
+- `${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT}` 以绝对路径指向 Docker daemon 可见的宿主机工作区，默认是 `${PWD}/var/workspaces`。
 
-不要为了普通部署执行 `docker compose down -v`，`-v` 会删除 named volumes。全量重建会重启 API、Worker、Controller 和 OpenHands，并可能中断正在运行的 Agent、Sandbox 或配置终端，请先确认没有重要任务正在执行。
+不要为了普通部署执行 `docker compose down -v`，`-v` 会删除 named volumes。全量重建会重启 API、Worker 和 Runtime Provider；已运行的 FlowRun generation 不会被 Compose 作为共享服务重建，但平台短暂不可用仍会中断连接，请先确认没有重要任务正在执行。
 
 ### 2.1 外部软件源临时失败
 
@@ -141,8 +140,7 @@ docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-rec
 
 ```bash
 docker build --no-cache -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
-docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate openhands-agent-server
-docker compose --env-file .env -f infra/compose.yaml ps openhands-agent-server
+docker image inspect flowweave-openhands-runtime:1
 ```
 
 新镜像也会被后续动态 Agent Runtime 和终端环境草稿使用。已经运行的动态容器不会被原地替换。OpenHands 镜像必须继续满足 `source.lock.json`、包版本和契约探针约束，不要用浮动上游版本替代。
@@ -178,7 +176,7 @@ docker compose --env-file .env -f infra/compose.yaml ps -a
 
 期望结果：
 
-- `postgres`、`openhands-agent-server`、`runtime-provider`、`api` 为 `healthy`；
+- `postgres`、`runtime-provider`、`api` 为 `healthy`；
 - `worker`、`web` 为 `Up`；
 - `workspace-init`、`migration` 为 `Exited (0)`。
 
@@ -193,7 +191,7 @@ curl -I http://127.0.0.1:5173/
 检查日志：
 
 ```bash
-docker compose --env-file .env -f infra/compose.yaml logs --tail=100 api worker web runtime-provider openhands-agent-server
+docker compose --env-file .env -f infra/compose.yaml logs --tail=100 api worker web runtime-provider
 ```
 
 确认运行容器使用当前镜像：
@@ -215,7 +213,7 @@ done
 | 只改 API 路由且没有共享行为变化 | 只重建、重启 `api` |
 | 改 `services/platform/src` 共享模块 | 一起重建 `migration runtime-provider api worker` |
 | 新增 Alembic 迁移 | 先运行 `migration` 成功，再重启平台服务 |
-| 改 `infra/openhands/**` | 重建 OpenHands Runtime，并重建常驻 `openhands-agent-server` |
+| 改 `infra/openhands/**` | 重建 OpenHands Runtime；后续发布的 Environment Version 和新 generation 使用新镜像 |
 | 改 `infra/sandbox/**` | 重建对应 Sandbox 镜像；后续新 Sandbox 生效 |
 | 改 `infra/dependency-builder/**` | 重建 Dependency Builder；后续新构建任务生效 |
 | 改 Compose、环境变量或多个子系统 | 使用 `make rebuild-deploy` |
@@ -231,7 +229,7 @@ make infra-down
 再次启动完整服务：
 
 ```bash
-make infra-up-openhands
+make infra-up
 ```
 
-除非明确要永久清空本地数据库、Artifact 和 OpenHands 状态，否则不要添加 `-v`。
+除非明确要永久清空本地数据库、Artifact 和 FlowRun Runtime 外置状态，否则不要添加 `-v`。

@@ -60,7 +60,6 @@ class OpenHandsRuntime:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.base_url = settings.openhands_base_url.rstrip("/")
         self.root_session_api_key = settings.openhands_session_api_key
         self.manager_scope = settings.sandbox_manager_scope
         self.workspace_root = settings.workspace_root.resolve()
@@ -78,18 +77,36 @@ class OpenHandsRuntime:
 
     def _base_url_for_handle(self, handle: RuntimeHandle) -> str:
         route = self._environment_route(handle.job_id)
-        return f"http://{route[0]}:8000" if route else self.base_url
+        if route is None:
+            raise DomainError(
+                "RUNTIME_ROUTE_REQUIRED",
+                "The Conversation is not routed through a FlowRun Runtime generation",
+                409,
+                {"conversation_id": handle.conversation_id},
+            )
+        return f"http://{route[0]}:8000"
 
-    def _session_key_for_resource(self, resource_name: str | None) -> str:
+    def _session_key_for_resource(self, resource_name: str) -> str:
         if not resource_name:
-            return self.root_session_api_key
+            raise DomainError(
+                "RUNTIME_ROUTE_REQUIRED",
+                "The request is not routed through a managed Runtime resource",
+                409,
+            )
         return derive_runtime_session_key(
             self.root_session_api_key, self.manager_scope, resource_name
         )
 
     def _session_key_for_handle(self, handle: RuntimeHandle) -> str:
         route = self._environment_route(handle.job_id)
-        return self._session_key_for_resource(route[0] if route else None)
+        if route is None:
+            raise DomainError(
+                "RUNTIME_ROUTE_REQUIRED",
+                "The Conversation is not routed through a FlowRun Runtime generation",
+                409,
+                {"conversation_id": handle.conversation_id},
+            )
+        return self._session_key_for_resource(route[0])
 
     def _request(
         self,
@@ -97,16 +114,16 @@ class OpenHandsRuntime:
         path: str,
         *,
         missing_ok: bool = False,
-        base_url: str | None = None,
-        session_api_key: str | None = None,
+        base_url: str,
+        session_api_key: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
         try:
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.request(
                     method,
-                    f"{base_url or self.base_url}{path}",
-                    headers={"X-Session-API-Key": session_api_key or self.root_session_api_key},
+                    f"{base_url.rstrip('/')}{path}",
+                    headers={"X-Session-API-Key": session_api_key},
                     **kwargs,
                 )
                 if missing_ok and response.status_code == 404:
@@ -997,18 +1014,18 @@ class OpenHandsRuntime:
                 "content": [{"type": "text", "text": self._initial_text(request)}],
                 "run": True,
             }
-        if request.environment_image and not (
+        if not request.environment_image or not (
             request.runtime_sandbox_id
             and request.runtime_resource_name
             and request.runtime_base_url
         ):
             raise DomainError(
                 "RUNTIME_SANDBOX_REQUIRED",
-                "A published environment Runtime must be allocated by the sandbox control plane",
+                "Every FlowRun must use a published Environment Runtime allocation",
                 500,
             )
-        target_base_url = request.runtime_base_url or self.base_url
-        target_session_key = self._session_key_for_resource(request.runtime_resource_name or None)
+        target_base_url = request.runtime_base_url
+        target_session_key = self._session_key_for_resource(request.runtime_resource_name)
         self._negotiate_runtime_contract(
             spec.runtime_contract,
             required_tools=tuple(tool.name for tool in spec.tools),
@@ -1042,12 +1059,14 @@ class OpenHandsRuntime:
         self._contracts[conversation_id] = self._output_contract(request)
         cursor_value = created.get("leaf_event_id") or created.get("last_user_message_id")
         cursor = str(cursor_value) if cursor_value else None
-        job_id = (
-            f"{'env-exec' if run else 'env-chat'}:{request.runtime_resource_name}"
-            if request.runtime_resource_name
-            else conversation_id
+        job_id = f"{'env-exec' if run else 'env-chat'}:{request.runtime_resource_name}"
+        return RuntimeHandle(
+            job_id=job_id,
+            conversation_id=conversation_id,
+            cursor=cursor,
+            runtime_resource_id=request.runtime_sandbox_id,
+            runtime_resource_name=request.runtime_resource_name,
         )
-        return RuntimeHandle(job_id=job_id, conversation_id=conversation_id, cursor=cursor)
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
@@ -1537,8 +1556,8 @@ class OpenHandsRuntime:
         conversation_id: str,
         cursor: str | None,
         *,
-        base_url: str | None = None,
-        session_api_key: str | None = None,
+        base_url: str,
+        session_api_key: str,
     ) -> tuple[list[dict[str, Any]], str | None]:
         items: list[dict[str, Any]] = []
         seen_event_ids: set[str] = set()

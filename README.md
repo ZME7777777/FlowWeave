@@ -19,7 +19,7 @@ apps/web/          React + TypeScript 产品前端
 services/platform/ Python 3.12 FastAPI API、Worker、五段核心加两段前向 Alembic 迁移
 contracts/         跨进程 JSON Schema
 agent-packages/    可导入 Agent Skill/Plugin 示例
-infra/compose.yaml PostgreSQL、migration、API、Worker、Web、可选 OpenHands
+infra/compose.yaml PostgreSQL、migration、Runtime Provider、API、Worker、Web
 ```
 
 ## 启动
@@ -32,10 +32,10 @@ make install
 make infra-up
 ```
 
-访问 <http://localhost:5173>。默认使用 OpenHands Agent Server，并在每次执行时读取节点所选模型服务、模型和加密保存的 API Key。Mock Runtime 只用于自动化测试；如需显式启动完整服务：
+访问 <http://localhost:5173>。默认由 Runtime Provider 为每个 FlowRun 启动独立的 OpenHands Agent Server generation，并在每次执行时读取节点所选模型服务、模型和加密保存的 API Key；Compose 不再运行共享 Agent Server。Mock Runtime 只用于自动化测试；如需显式指定生产适配器：
 
 ```bash
-RUNTIME_ADAPTER=openhands make infra-up-openhands
+RUNTIME_ADAPTER=openhands make infra-up
 ```
 
 修改基础镜像、平台服务或 Web 后，可一条命令无缓存重建全部本地镜像并重新部署完整服务。该命令保留数据库、Artifact 与节点工作区数据：
@@ -46,7 +46,7 @@ make rebuild-deploy
 
 全量重建、单服务部署、运行时镜像更新、迁移顺序和部署后检查详见 [本地编译、打包与部署](docs/local-build-and-deploy.md)。
 
-节点可写资源保存在宿主机 `var/workspaces/nodes/<node-asset-id>/`：`skills/` 存放完整 Skill 包，`files/` 可放文本或附件，`repositories/` 可放代码仓库，`sessions/` 保存各次运行的会话工作区。上传的 MCP/Hook 配置与脚本由平台物化到 `var/workspaces/.managed-assets/nodes/<node-asset-id>/`，并以只读方式挂载到 Runtime 的 `/runtime/capabilities/nodes/<node-asset-id>/`，不会暴露在节点可写挂载中。可通过 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 改为其他宿主机目录。
+节点可写资源保存在宿主机 `var/workspaces/nodes/<node-asset-id>/`：`skills/` 存放完整 Skill 包，`files/` 可放文本或附件，`repositories/` 可放代码仓库，`sessions/` 保存各次运行的会话工作区。上传的 MCP/Hook 配置与脚本由平台物化到 `var/workspaces/.managed-assets/nodes/<node-asset-id>/`，并以只读方式挂载到 Runtime 的 `/runtime/capabilities/nodes/<node-asset-id>/`，不会暴露在节点可写挂载中。可通过绝对路径配置 `FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT` 改为其他宿主机目录。
 
 OpenHands 镜像内置 `sh`、`bash`、Python、Node.js、npm/npx、`js`、uv/uvx、Git、SSH、curl、jq、unzip 与 `lark-cli`。默认会把宿主机 `~/.lark-cli` 及 `~/Library/Application Support/lark-cli` 映射到 Session 容器，并自动为 Linux 创建兼容的 `master.key` 链接，因此在宿主机完成的配置和授权可被所有 Agent 会话直接复用。macOS 首次共享前需在宿主机终端执行一次：
 

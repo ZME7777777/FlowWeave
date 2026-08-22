@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     runtime_task_usage_visibility_max_polls: int = Field(default=5, ge=1, le=100)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
-    openhands_base_url: str = "http://openhands-agent-server:8000"
     openhands_session_api_key: str = "flowweave-internal"
     openhands_workspace_root: Path = Path("/workspaces")
     # Uploaded executable capability assets are mounted separately from the
@@ -48,6 +47,10 @@ class Settings(BaseSettings):
     # can validate FlowRun allocation ownership before asking the daemon to
     # bind the corresponding host paths.
     flow_run_runtime_validation_root: Path = Path("")
+    # Absolute path as seen by the Docker daemon. Runtime Provider pairs this
+    # with flow_run_runtime_validation_root instead of inspecting a shared
+    # source container to discover host mounts.
+    runtime_host_workspace_root: Path = Path("")
     conversation_limit_per_attempt: int = Field(default=20, ge=1, le=100)
     conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
 
@@ -83,7 +86,6 @@ class Settings(BaseSettings):
 
     terminal_environment_backend: str = "disabled"
     openhands_runtime_builder_image: str = "flowweave-openhands-runtime:1"
-    terminal_environment_workspace_source_container: str = "flowweave-openhands-agent-server"
     terminal_environment_session_ttl_seconds: int = Field(default=14_400, ge=300, le=86_400)
     terminal_environment_cleanup_seconds: int = Field(default=30, ge=5, le=3600)
     sandbox_manager_scope: str = "flowweave-local"

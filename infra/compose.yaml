@@ -6,7 +6,6 @@ x-platform-env: &platform-env
   RUNTIME_POLL_SECONDS: ${RUNTIME_POLL_SECONDS:-1}
   RUNTIME_WAKEUP_TIMEOUT_SECONDS: ${RUNTIME_WAKEUP_TIMEOUT_SECONDS:-10}
   RUNTIME_WAKEUP_BACKOFF_MAX_SECONDS: ${RUNTIME_WAKEUP_BACKOFF_MAX_SECONDS:-30}
-  OPENHANDS_BASE_URL: http://openhands-agent-server:8000
   OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
   OPENHANDS_WORKSPACE_ROOT: /workspaces
   CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
@@ -27,7 +26,6 @@ x-docker-client-env: &docker-client-env
   TERMINAL_ENVIRONMENT_BACKEND: ${TERMINAL_ENVIRONMENT_BACKEND:-docker}
   OPENHANDS_RUNTIME_BUILDER_IMAGE: ${OPENHANDS_RUNTIME_BUILDER_IMAGE:-flowweave-openhands-runtime:1}
   TERMINAL_ENVIRONMENT_CLEANUP_SECONDS: ${TERMINAL_ENVIRONMENT_CLEANUP_SECONDS:-30}
-  TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER: ${TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER:-flowweave-openhands-agent-server}
   SANDBOX_BACKEND: docker
   SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
   SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
@@ -50,7 +48,7 @@ services:
     volumes:
       - artifacts:/data/artifacts
       - type: bind
-        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
         target: /data/workspaces
     restart: "no"
 
@@ -76,34 +74,6 @@ services:
       postgres: { condition: service_healthy }
     restart: "no"
 
-  openhands-agent-server:
-    image: flowweave-openhands-runtime:1
-    container_name: flowweave-openhands-agent-server
-    build:
-      context: ..
-      dockerfile: infra/openhands/Dockerfile
-    labels:
-      flowweave.workspace-source: "true"
-      flowweave.manager-scope: "${SANDBOX_MANAGER_SCOPE:-flowweave-local}"
-    environment:
-      SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
-      OH_SESSION_API_KEYS_0: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
-    volumes:
-      - type: bind
-        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
-        target: /workspaces
-      - openhands-state:/root/.openhands
-      - ../agent-packages:/agent-packages:ro
-    expose: ["8000"]
-    healthcheck:
-      test: ["CMD", "/runtime/.venv/bin/python", "-c", "import json,os,urllib.request;h={'X-Session-API-Key':os.environ['SESSION_API_KEY']};ready=json.load(urllib.request.urlopen(urllib.request.Request('http://localhost:8000/ready',headers=h),timeout=3));info=json.load(urllib.request.urlopen(urllib.request.Request('http://localhost:8000/server_info',headers=h),timeout=3));assert ready.get('status')=='ready';assert info.get('build_git_sha')==os.environ['OPENHANDS_BUILD_GIT_SHA']"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 15s
-    depends_on:
-      workspace-init: { condition: service_completed_successfully }
-
   runtime-provider:
     build: { context: .., dockerfile: services/platform/Dockerfile }
     command: ["uvicorn", "flowweave.bootstrap.runtime_provider:create_app", "--host", "0.0.0.0", "--port", "8090", "--factory"]
@@ -118,6 +88,7 @@ services:
       OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OPENHANDS_WORKSPACE_ROOT: /workspaces
       FLOW_RUN_RUNTIME_VALIDATION_ROOT: /runtime-storage
+      RUNTIME_HOST_WORKSPACE_ROOT: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
       DEPENDENCY_BUILDER_BACKEND: docker
       DEPENDENCY_BUILDER_IMAGE: ${DEPENDENCY_BUILDER_IMAGE:-flowweave-dependency-builder:1}
       DEPENDENCY_BUILDER_TIMEOUT_SECONDS: ${DEPENDENCY_BUILDER_TIMEOUT_SECONDS:-300}
@@ -127,7 +98,6 @@ services:
       PLUGIN_RESOLVER_ALLOWED_HOSTS: ${PLUGIN_RESOLVER_ALLOWED_HOSTS:-github.com,gitlab.com}
       TERMINAL_ENVIRONMENT_BACKEND: docker
       OPENHANDS_RUNTIME_BUILDER_IMAGE: ${OPENHANDS_RUNTIME_BUILDER_IMAGE:-flowweave-openhands-runtime:1}
-      TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER: ${TERMINAL_ENVIRONMENT_WORKSPACE_SOURCE_CONTAINER:-flowweave-openhands-agent-server}
       SANDBOX_MANAGER_SCOPE: ${SANDBOX_MANAGER_SCOPE:-flowweave-local}
       SANDBOX_ORPHAN_GRACE_SECONDS: ${SANDBOX_ORPHAN_GRACE_SECONDS:-300}
       SANDBOX_RUNTIME_NETWORK_MODE: ${SANDBOX_RUNTIME_NETWORK_MODE:?set isolated or egress explicitly}
@@ -145,11 +115,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - type: bind
-        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
         target: /runtime-storage
         read_only: true
     depends_on:
-      openhands-agent-server: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8090/health"]
@@ -171,11 +140,10 @@ services:
     volumes:
       - artifacts:/data/artifacts
       - type: bind
-        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
         target: /data/workspaces
     depends_on:
       migration: { condition: service_completed_successfully }
-      openhands-agent-server: { condition: service_healthy }
       runtime-provider: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     healthcheck:
@@ -201,11 +169,10 @@ services:
     volumes:
       - artifacts:/data/artifacts
       - type: bind
-        source: ${FLOWWEAVE_HOST_WORKSPACE_ROOT:-../var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
         target: /data/workspaces
     depends_on:
       migration: { condition: service_completed_successfully }
-      openhands-agent-server: { condition: service_healthy }
       runtime-provider: { condition: service_healthy }
       workspace-init: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -229,7 +196,6 @@ services:
 volumes:
   postgres-data:
   artifacts:
-  openhands-state:
 
 networks:
   default:

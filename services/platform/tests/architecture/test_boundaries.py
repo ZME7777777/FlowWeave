@@ -144,6 +144,42 @@ def test_openhands_image_runs_installed_contract_probe() -> None:
     assert "/runtime/contract_check.py" in makefile
 
 
+def test_flowrun_runtime_has_no_shared_agent_server_or_legacy_launch_fallback() -> None:
+    """FR-08: every Conversation must route through its FlowRun generation."""
+
+    compose = (REPOSITORY / "infra" / "compose.yaml").read_text()
+    settings = (SOURCE / "bootstrap" / "settings.py").read_text()
+    runtime = (SOURCE / "runtime" / "openhands.py").read_text()
+    docker_provider = (
+        SOURCE / "modules" / "sandboxes" / "infrastructure" / "docker.py"
+    ).read_text()
+    sandbox_service = (
+        SOURCE / "modules" / "sandboxes" / "application" / "service.py"
+    ).read_text()
+    runtime_create = sandbox_service.split("def _create_managed_runtime(", 1)[1].split(
+        "def ensure_flow_run_runtime(", 1
+    )[0]
+
+    for forbidden in (
+        "OPENHANDS_BASE_URL",
+        "openhands-agent-server:",
+        "flowweave-openhands-agent-server",
+        "openhands-state:",
+        "WORKSPACE_SOURCE_CONTAINER",
+    ):
+        assert forbidden not in compose
+    assert "openhands_base_url" not in settings
+    assert "terminal_environment_workspace_source_container" not in settings
+    assert "self.base_url" not in runtime
+    assert "or self.base_url" not in runtime
+    assert "RUNTIME_ROUTE_REQUIRED" in runtime
+    assert "terminal_environment_workspace_source_container" not in docker_provider
+    assert "flowweave.workspace-source" not in docker_provider
+    assert "/runtime/workspace:rw" not in docker_provider
+    assert '"ATTEMPT"' not in runtime_create
+    assert '"CONVERSATION"' not in runtime_create
+
+
 def test_runtime_request_has_one_structured_agent_spec_boundary() -> None:
     tree = ast.parse((SOURCE / "runtime" / "base.py").read_text())
     request = next(

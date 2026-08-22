@@ -375,7 +375,6 @@ Schema 只由独立 migration job 变更，API/Worker 启动时不自动迁移�
 | `workspace-init` | 一次性初始化作业 | 无网络依赖 | 初始化 artifact volume 和宿主 Workspace 目录权限 |
 | `postgres` | 常驻 | 默认控制网；宿主默认 `127.0.0.1:55432` | `postgres-data` volume |
 | `migration` | 一次性作业 | 默认控制网 | 等待 PostgreSQL 后执行 `alembic upgrade head` |
-| `openhands-agent-server` | 常驻基础 Agent Server/Workspace source | 仅容器内 8000 | Workspace bind、OpenHands state、只读 agent packages |
 | `runtime-provider` | 常驻特权边界 | 仅 internal `docker-control` 网，容器内 8090 | 唯一挂载 Docker Socket；只读根、drop all caps、no-new-privileges |
 | `api` | 常驻 | 默认网 + internal 控制网；宿主默认 `127.0.0.1:8080` | 非 root 10001；Artifact/Workspace；API Controller key |
 | `worker` | 常驻 | 默认网 + internal 控制网 | 非 root 10001；Artifact/Workspace；独立 Worker Controller key |
@@ -389,7 +388,7 @@ Schema 只由独立 migration job 变更，API/Worker 启动时不自动迁移�
 | 类型 | 创建主体 | 生命周期 | 网络/文件系统策略 |
 |---|---|---|---|
 | Environment Setup | API 经 Controller | 创建、交互、发布/取消/过期、清理 | 受管凭据卷；WebSocket 终端；不得把凭据提交进镜像 |
-| Agent Runtime | Worker 经 Controller | Attempt/Conversation 需要时创建，空闲/硬 TTL 或业务取消后删除 | 每 Runtime 专属 bridge；`isolated` 或 `egress`；独立 API Key；仅挂载所属节点工作区 |
+| FlowRun Agent Runtime | Worker 经 Runtime Provider | 每个 FlowRun 一个稳定 Session、一个 active generation；替换或显式删除 Run 时收口 | 每 Runtime 专属 bridge；`isolated` 或 `egress`；独立 API Key；外置 FlowRun Workspace 与 OpenHands state |
 | Gate Sandbox | Worker 经 Controller | 单次 Gate 执行后销毁 | 禁网、非 root、只读根、cap-drop、no-new-privileges、资源限额 |
 | Dependency Builder | Worker 经 Controller | 单次依赖构建后销毁 | 禁网或最小构建边界；产出 Bundle 进入 Artifact Store |
 

@@ -836,14 +836,12 @@ chmod 0700 "$target"
             self.settings.sandbox_manager_scope,
             resource.backend_resource_name,
         )
-        persistent_flow_run = bool(
-            (resource.spec_json or {}).get("runtime_allocation_relative")
-        )
+        persistent_flow_run = resource.owner_type == "FLOW_RUN"
         runtime_tmpfs = [
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
         ]
-        persistent_environment: list[str] = []
+        runtime_environment: list[str] = []
         if persistent_flow_run:
             if runtime_secret_key is None or len(runtime_secret_key) < 32:
                 raise DomainError(
@@ -851,7 +849,7 @@ chmod 0700 "$target"
                     "The FlowRun Runtime Secret Reference is unavailable",
                     409,
                 )
-            persistent_environment = [
+            runtime_environment = [
                 "-e",
                 "OH_WORKSPACE_PATH=/runtime/workspace/project",
                 "-e",
@@ -864,12 +862,30 @@ chmod 0700 "$target"
                 f"OH_SECRET_KEY={runtime_secret_key}",
             ]
         else:
+            relative = PurePosixPath(
+                str((resource.spec_json or {}).get("workspace_relative") or "")
+            )
             runtime_tmpfs.extend(
                 [
                     "--tmpfs",
-                    "/runtime/workspace:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
+                    "/runtime/ephemeral-state:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
                 ]
             )
+            runtime_environment = [
+                "-e",
+                (
+                    "OH_WORKSPACE_PATH="
+                    f"{PurePosixPath(str(self.settings.openhands_workspace_root)).joinpath(*relative.parts)}"
+                ),
+                "-e",
+                "OH_CONVERSATIONS_PATH=/runtime/ephemeral-state/conversations",
+                "-e",
+                "OH_BASH_EVENTS_DIR=/runtime/ephemeral-state/bash-events",
+                "-e",
+                "OH_PERSISTENCE_DIR=/runtime/ephemeral-state/persistence",
+                "-e",
+                f"OH_SECRET_KEY={session_key}",
+            ]
         command.extend(
             [
                 "--network",
@@ -896,7 +912,7 @@ chmod 0700 "$target"
                 f"SESSION_API_KEY={session_key}",
                 "-e",
                 f"OH_SESSION_API_KEYS_0={session_key}",
-                *persistent_environment,
+                *runtime_environment,
                 verified_image_reference,
                 "agent-server",
                 "--host",
@@ -910,6 +926,16 @@ chmod 0700 "$target"
     def _runtime_workspace_mount(self, resource: ManagedSandbox) -> list[str]:
         if (resource.spec_json or {}).get("runtime_allocation_relative"):
             return self._flow_run_runtime_mounts(resource)
+        if resource.owner_type not in {
+            "CAPABILITY_VALIDATION",
+            "MCP_OAUTH_AUTHORIZATION",
+        }:
+            raise DomainError(
+                "RUNTIME_PROVIDER_OWNER_INVALID",
+                "Only FlowRun or explicit temporary owners may start an Agent Runtime",
+                422,
+                {"owner_type": resource.owner_type, "owner_id": resource.owner_id},
+            )
         relative_raw = str((resource.spec_json or {}).get("workspace_relative") or "")
         relative = PurePosixPath(relative_raw)
         if (
@@ -937,157 +963,51 @@ chmod 0700 "$target"
                 "The Runtime workspace and managed asset roots must be isolated absolute paths",
                 503,
             )
-        raw = self._run(
-            [
-                self.settings.docker_binary,
-                "inspect",
-                self.settings.terminal_environment_workspace_source_container,
-                "--format",
-                "{{json .}}",
-            ],
-            timeout=30,
-        )
-        try:
-            value = cast(object, json.loads(raw))
-            if not isinstance(value, dict):
-                raise ValueError("source inspect data must be an object")
-            source_data = cast(dict[str, object], value)
-            config_value = source_data.get("Config")
-            config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
-            labels_value = config.get("Labels")
-            labels = (
-                {
-                    str(key): str(item)
-                    for key, item in cast(dict[object, object], labels_value).items()
-                }
-                if isinstance(labels_value, dict)
-                else {}
-            )
-            if (
-                labels.get("flowweave.workspace-source") != "true"
-                or labels.get("flowweave.manager-scope") != self.settings.sandbox_manager_scope
-            ):
-                raise ValueError("source container ownership labels do not match")
-            mounts_value = source_data.get("Mounts")
-            if not isinstance(mounts_value, list):
-                raise ValueError("mounts must be a list")
-            matches = [
-                cast(dict[str, object], item)
-                for item in cast(list[object], mounts_value)
-                if isinstance(item, dict)
-                and str(cast(dict[str, object], item).get("Destination") or "") == str(runtime_root)
-            ]
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise DomainError(
-                "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                "Docker returned invalid workspace mount metadata",
-                503,
-            ) from exc
-        if len(matches) != 1:
-            raise DomainError(
-                "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                "The workspace source container must expose exactly one Runtime workspace mount",
-                503,
-            )
-        source_mount = matches[0]
-        mount_type = str(source_mount.get("Type") or "")
+        source, validation_source = self._workspace_source_roots()
         target = runtime_root.joinpath(*relative.parts)
         managed_relative = PurePosixPath(".managed-assets").joinpath(*relative.parts)
         managed_target = managed_runtime_root.joinpath(*relative.parts)
-        memory_enabled = bool((resource.spec_json or {}).get("memory_enabled"))
-        memory_working_raw = str(
-            (resource.spec_json or {}).get("memory_working_dir_relative") or ""
-        )
-        memory_working = PurePosixPath(memory_working_raw)
-        if memory_enabled and (
-            resource.owner_type not in {"ATTEMPT", "CONVERSATION"}
-            or not memory_working_raw
-            or memory_working.is_absolute()
-            or any(part in {"", ".", ".."} for part in memory_working.parts)
+        for candidate in (
+            validation_source.joinpath(*relative.parts),
+            validation_source.joinpath(*managed_relative.parts),
+        ):
+            try:
+                metadata = candidate.lstat()
+            except OSError as exc:
+                raise DomainError(
+                    "SANDBOX_WORKSPACE_SOURCE_INVALID",
+                    "The temporary Runtime workspace is unavailable",
+                    409,
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise DomainError(
+                    "SANDBOX_WORKSPACE_SOURCE_INVALID",
+                    "The temporary Runtime workspace failed integrity validation",
+                    409,
+                )
+        specifications = [
+            f"type=bind,src={source.joinpath(*relative.parts)},dst={target}",
+            (
+                f"type=bind,src={source.joinpath(*managed_relative.parts)},"
+                f"dst={managed_target},readonly"
+            ),
+        ]
+        return [item for specification in specifications for item in ("--mount", specification)]
+
+    def _workspace_source_roots(self) -> tuple[Path, Path]:
+        source = self.settings.runtime_host_workspace_root
+        validation_source = self.settings.flow_run_runtime_validation_root
+        if not source.is_absolute() or any(
+            character in str(source) for character in ",="
         ):
             raise DomainError(
-                "SANDBOX_WORKSPACE_INVALID",
-                "The governed Memory mount contract is invalid",
-                422,
-            )
-        owner_key = re.sub(r"[^A-Za-z0-9._-]+", "-", resource.owner_id).strip(".-")
-        if memory_enabled and not owner_key:
-            raise DomainError(
-                "SANDBOX_WORKSPACE_INVALID",
-                "The governed Memory owner identity is invalid",
-                422,
-            )
-        memory_relative = (
-            PurePosixPath(".managed-memory")
-            / resource.owner_type.lower()
-            / owner_key[:160]
-            / "runtime"
-        )
-        user_memory_target = PurePosixPath("/home/flowweave/.openhands/memory")
-        project_memory_target = target.joinpath(*memory_working.parts) / ".openhands" / "memory"
-        if mount_type == "bind":
-            source = PurePosixPath(str(source_mount.get("Source") or ""))
-            if not source.is_absolute() or any(character in str(source) for character in ",="):
-                raise DomainError(
-                    "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                    "The workspace bind source must be an unambiguous absolute path",
-                    503,
-                )
-            isolated_source = source.joinpath(*relative.parts)
-            managed_source = source.joinpath(*managed_relative.parts)
-            specifications = [
-                f"type=bind,src={isolated_source},dst={target}",
-                (f"type=bind,src={managed_source},dst={managed_target},readonly"),
-            ]
-            if memory_enabled:
-                memory_source = source.joinpath(*memory_relative.parts)
-                specifications.extend(
-                    [
-                        (
-                            f"type=bind,src={memory_source / 'user'},"
-                            f"dst={user_memory_target},readonly"
-                        ),
-                        (
-                            f"type=bind,src={memory_source / 'project'},"
-                            f"dst={project_memory_target},readonly"
-                        ),
-                    ]
-                )
-        elif mount_type == "volume":
-            name = str(source_mount.get("Name") or "")
-            if not name or any(character in name for character in ",="):
-                raise DomainError(
-                    "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                    "The workspace volume name is missing or invalid",
-                    503,
-                )
-            specifications = [
-                (f"type=volume,src={name},dst={target},volume-subpath={relative.as_posix()}"),
-                (
-                    f"type=volume,src={name},dst={managed_target},"
-                    f"volume-subpath={managed_relative.as_posix()},readonly"
-                ),
-            ]
-            if memory_enabled:
-                specifications.extend(
-                    [
-                        (
-                            f"type=volume,src={name},dst={user_memory_target},"
-                            f"volume-subpath={(memory_relative / 'user').as_posix()},readonly"
-                        ),
-                        (
-                            f"type=volume,src={name},dst={project_memory_target},"
-                            f"volume-subpath={(memory_relative / 'project').as_posix()},readonly"
-                        ),
-                    ]
-                )
-        else:
-            raise DomainError(
                 "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                "The workspace source must be a bind mount or named volume",
+                "The Runtime host workspace root must be an unambiguous absolute path",
                 503,
             )
-        return [item for specification in specifications for item in ("--mount", specification)]
+        if not validation_source.is_absolute():
+            validation_source = source
+        return source, validation_source
 
     def _flow_run_runtime_mounts(self, resource: ManagedSandbox) -> list[str]:
         spec = resource.spec_json or {}
@@ -1110,77 +1030,9 @@ chmod 0700 "$target"
                 "The FlowRun Runtime allocation path is invalid",
                 422,
             )
-        raw = self._run(
-            [
-                self.settings.docker_binary,
-                "inspect",
-                self.settings.terminal_environment_workspace_source_container,
-                "--format",
-                "{{json .}}",
-            ],
-            timeout=30,
-        )
-        try:
-            value = cast(object, json.loads(raw))
-            if not isinstance(value, dict):
-                raise ValueError("source inspect data must be an object")
-            source_data = cast(dict[str, object], value)
-            config_value = source_data.get("Config")
-            config = cast(dict[str, object], config_value) if isinstance(config_value, dict) else {}
-            labels_value = config.get("Labels")
-            labels = (
-                {
-                    str(key): str(item)
-                    for key, item in cast(dict[object, object], labels_value).items()
-                }
-                if isinstance(labels_value, dict)
-                else {}
-            )
-            if (
-                labels.get("flowweave.workspace-source") != "true"
-                or labels.get("flowweave.manager-scope")
-                != self.settings.sandbox_manager_scope
-            ):
-                raise ValueError("source container ownership labels do not match")
-            mounts_value = source_data.get("Mounts")
-            if not isinstance(mounts_value, list):
-                raise ValueError("mounts must be a list")
-            matches = [
-                cast(dict[str, object], item)
-                for item in cast(list[object], mounts_value)
-                if isinstance(item, dict)
-                and str(cast(dict[str, object], item).get("Destination") or "")
-                == str(self.settings.openhands_workspace_root)
-            ]
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise DomainError(
-                "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                "Docker returned invalid FlowRun storage mount metadata",
-                503,
-            ) from exc
-        if len(matches) != 1 or str(matches[0].get("Type") or "") != "bind":
-            raise DomainError(
-                "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                "FlowRun Runtime storage requires one host bind root",
-                503,
-            )
-        source_root = Path(str(matches[0].get("Source") or ""))
-        if (
-            not source_root.is_absolute()
-            or any(character in str(source_root) for character in ",=")
-        ):
-            raise DomainError(
-                "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                "The FlowRun Runtime host bind root is invalid",
-                503,
-            )
-        validation_root = self.settings.flow_run_runtime_validation_root
+        source_root, validation_root = self._workspace_source_roots()
         allocation_root = source_root.joinpath(*relative.parts)
-        validation_allocation_root = (
-            validation_root.joinpath(*relative.parts)
-            if validation_root.is_absolute()
-            else allocation_root
-        )
+        validation_allocation_root = validation_root.joinpath(*relative.parts)
         paths = {
             "workspace/project": 0o700,
             "state/conversations": 0o700,

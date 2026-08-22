@@ -8,7 +8,7 @@ FlowWeave 由独立的 migration、API、Worker、Web 和 PostgreSQL 进程组�
 
 ## 节点宿主工作区
 
-默认根目录为 `var/workspaces`，可用 `FLOWWEAVE_HOST_WORKSPACE_ROOT` 覆盖。每个节点资产拥有可写目录 `nodes/<node-asset-id>`，其中：
+默认根目录为 `var/workspaces`，可用绝对路径配置 `FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT` 覆盖。每个节点资产拥有可写目录 `nodes/<node-asset-id>`，其中：
 
 - `skills/<能力名>`：从导入 ZIP 完整解压的 `SKILL.md`、scripts、references 和资源文件。
 - `files`：用户自行放置的文本、附件或其他上下文。
