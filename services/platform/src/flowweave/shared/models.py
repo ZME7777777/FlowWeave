@@ -26,20 +26,8 @@ from flowweave.modules.catalog.infrastructure.models import (
     PluginSourceResolution,
 )
 from flowweave.modules.conversations.infrastructure.models import (
-    AgentConversation,
-    AgentMessage,
     FlowRunConversationBinding,
-    MessageArtifactRef,
-    RuntimeCondensation,
-    RuntimeCondensationCommand,
-    RuntimeConfirmationBatch,
-    RuntimeConversationFork,
-    RuntimeCriticEvaluation,
-    RuntimeDiagnosticQuery,
-    RuntimeGoalCommand,
-    RuntimeGoalStatus,
-    RuntimeSubagentTask,
-    RuntimeSubagentTaskUsage,
+    RuntimeConfirmationApproval,
 )
 from flowweave.modules.environments.infrastructure.models import (
     EnvironmentSetupSession,
@@ -82,8 +70,6 @@ from flowweave.shared.database import now, uid
 from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunState, TaskState
 
 __all__ = (
-    "AgentConversation",
-    "AgentMessage",
     "ArtifactVersion",
     "AttemptInputBinding",
     "AttemptState",
@@ -117,7 +103,6 @@ __all__ = (
     "GateEvaluation",
     "GatePolicy",
     "HumanAction",
-    "MessageArtifactRef",
     "ManagedSandbox",
     "ModelProvider",
     "NodeAsset",
@@ -132,17 +117,8 @@ __all__ = (
     "PluginSourceResolution",
     "RunEvent",
     "RunSnapshot",
-    "RuntimeCondensation",
-    "RuntimeCondensationCommand",
-    "RuntimeConversationFork",
-    "RuntimeCriticEvaluation",
-    "RuntimeDiagnosticQuery",
-    "RuntimeGoalCommand",
-    "RuntimeGoalStatus",
     "RuntimeGeneration",
-    "RuntimeConfirmationBatch",
-    "RuntimeSubagentTask",
-    "RuntimeSubagentTaskUsage",
+    "RuntimeConfirmationApproval",
     "TaskState",
     "TerminalEnvironment",
     "now",

@@ -397,7 +397,7 @@ class RuntimeForkResult:
 
 @dataclass(frozen=True, slots=True)
 class RuntimePendingAction:
-    """A redacted, durable projection of one OpenHands pending action."""
+    """One redacted OpenHands pending action used at the approval boundary."""
 
     action_id: str
     tool_call_id: str
@@ -443,11 +443,11 @@ class RuntimeEvent:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeTaskUsageSnapshot:
-    """One cumulative OpenHands ``task:<task_id>`` metrics snapshot.
+    """One transient cumulative OpenHands ``task:<task_id>`` metrics snapshot.
 
     OpenHands owns the child metrics and replaces this value after every
-    blocking Task run/resume. FlowWeave must therefore replace, never add, the
-    durable projection.
+    blocking Task run/resume. FlowWeave may inspect it for a current operation
+    but must not persist it as Conversation state.
     """
 
     task_id: str

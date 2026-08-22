@@ -34,7 +34,6 @@ class Settings(BaseSettings):
     runtime_poll_seconds: float = Field(default=1.0, gt=0)
     runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
-    runtime_task_usage_visibility_max_polls: int = Field(default=5, ge=1, le=100)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
     openhands_session_api_key: str = "flowweave-internal"
@@ -51,7 +50,7 @@ class Settings(BaseSettings):
     # with flow_run_runtime_validation_root instead of inspecting a shared
     # source container to discover host mounts.
     runtime_host_workspace_root: Path = Path("")
-    conversation_limit_per_attempt: int = Field(default=20, ge=1, le=100)
+    conversation_limit_per_flow_run: int = Field(default=20, ge=1, le=100)
     conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
 
     artifact_backend: str = "local"

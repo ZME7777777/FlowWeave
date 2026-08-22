@@ -27,6 +27,7 @@ def bind_openhands_conversation(
     flow_run_id: str,
     openhands_conversation_id: str,
     display_label: str | None = None,
+    binding_id: str | None = None,
 ) -> FlowRunConversationBinding:
     """Idempotently bind an OpenHands identity to the FlowRun Runtime Session."""
 
@@ -51,6 +52,7 @@ def bind_openhands_conversation(
     )
     if item is None:
         item = FlowRunConversationBinding(
+            **({"id": binding_id} if binding_id is not None else {}),
             flow_run_id=flow_run_id,
             runtime_session_id=connection.runtime_session_id,
             openhands_conversation_id=openhands_conversation_id,
@@ -104,6 +106,50 @@ def conversation_locator(
     )
 
 
+def conversation_binding(
+    db: Session,
+    *,
+    flow_run_id: str,
+    openhands_conversation_id: str,
+) -> FlowRunConversationBinding:
+    """Return the active locator row without adding Conversation semantics."""
+
+    item = db.scalar(
+        select(FlowRunConversationBinding).where(
+            FlowRunConversationBinding.flow_run_id == flow_run_id,
+            FlowRunConversationBinding.openhands_conversation_id
+            == openhands_conversation_id,
+        )
+    )
+    if item is None:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_UNBOUND",
+            "The OpenHands Conversation is not bound to this FlowRun Runtime Session",
+            409,
+            {
+                "flow_run_id": flow_run_id,
+                "openhands_conversation_id": openhands_conversation_id,
+            },
+        )
+    return item
+
+
+def binding_locator(db: Session, binding_id: str) -> FlowRunConversationLocator:
+    item = db.get(FlowRunConversationBinding, binding_id)
+    if item is None:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_UNBOUND",
+            "The FlowRun Conversation locator is unavailable",
+            404,
+            {"binding_id": binding_id},
+        )
+    return FlowRunConversationLocator(
+        flow_run_id=item.flow_run_id,
+        runtime_session_id=item.runtime_session_id,
+        openhands_conversation_id=item.openhands_conversation_id,
+    )
+
+
 def active_runtime_handle(
     db: Session,
     *,
@@ -145,6 +191,8 @@ def active_runtime_handle(
 __all__ = (
     "FlowRunConversationLocator",
     "active_runtime_handle",
+    "binding_locator",
     "bind_openhands_conversation",
+    "conversation_binding",
     "conversation_locator",
 )

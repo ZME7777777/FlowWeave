@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
-from flowweave.modules.conversations.public import recover_conversation_tasks
 from flowweave.modules.environments.public import (
     expire_setup_sessions,
     recover_environment_cleanup_tasks,
@@ -140,9 +139,6 @@ class TaskWorker:
                         lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
                     )
                     await session.run_sync(
-                        lambda db: (mark_uow_owned(db), recover_conversation_tasks(db))[1]
-                    )
-                    await session.run_sync(
                         lambda db: (
                             mark_uow_owned(db),
                             recover_environment_cleanup_tasks(db, commit=False),
@@ -249,14 +245,11 @@ class TaskWorker:
                     await session.run_sync(
                         lambda db: recover_environment_cleanup_tasks(db, commit=False)
                     )
-                    recovered_conversations = await session.run_sync(
-                        lambda db: (mark_uow_owned(db), recover_conversation_tasks(db))[1]
-                    )
                     # Publish maintenance intent before the reconciler opens its
                     # independent short control transactions.
                     await session.commit()
                     await session.run_sync(reconcile_managed_sandboxes)
-                    return expired + recovered_conversations
+                    return expired
                 except BaseException:
                     await session.rollback()
                     raise

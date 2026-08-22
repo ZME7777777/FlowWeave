@@ -650,31 +650,18 @@ class MemorySourceLifecycleWrite(ApiModel):
 class ConversationCreateWrite(ApiModel):
     title: str | None = Field(default=None, max_length=160)
     expected_attempt_state_version: int = Field(ge=1)
-    baseline: dict[str, Any] = Field(default_factory=_empty_any_dict)
     model_name: str | None = Field(default=None, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 class ConversationPatchWrite(ApiModel):
     title: str = Field(min_length=1, max_length=160)
-    expected_conversation_version: int = Field(ge=1)
-
-
-class ConversationStopWrite(ApiModel):
-    expected_conversation_version: int = Field(ge=1)
-
-
-class ConversationCondenseWrite(ApiModel):
-    expected_conversation_version: int = Field(ge=1)
 
 
 class ConversationGoalWrite(ApiModel):
-    expected_conversation_version: int = Field(ge=1)
     action: Literal["START", "STOP", "RESUME"]
     objective: str | None = Field(default=None, max_length=20_000)
     max_iterations: int = Field(default=10, ge=1, le=20)
-    max_tokens: int | None = Field(default=None, ge=1)
-    max_cost_usd: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_goal_action(self) -> ConversationGoalWrite:
@@ -682,9 +669,7 @@ class ConversationGoalWrite(ApiModel):
             raise ValueError("Goal START requires an objective")
         if self.action != "START" and self.objective is not None:
             raise ValueError("Goal STOP/RESUME cannot replace the frozen objective")
-        if self.action != "START" and self.model_fields_set.intersection(
-            {"max_iterations", "max_tokens", "max_cost_usd"}
-        ):
+        if self.action != "START" and "max_iterations" in self.model_fields_set:
             raise ValueError("Goal STOP/RESUME cannot replace frozen governance limits")
         return self
 
@@ -692,90 +677,6 @@ class ConversationGoalWrite(ApiModel):
 class ConversationAskAgentWrite(ApiModel):
     question: str = Field(min_length=1, max_length=20_000)
     timeout_seconds: int = Field(default=30, ge=1, le=120)
-    output_classification: Literal["INTERNAL", "CONFIDENTIAL", "RESTRICTED"] = "INTERNAL"
-
-
-class RuntimeDiagnosticQueryRead(ApiModel):
-    id: str
-    conversation_id: str
-    output_classification: str
-    timeout_seconds: int
-    state: Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED"]
-    response_text: str | None = None
-    cost_usd: float | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    error_code: str | None = None
-    created_at: str
-    completed_at: str | None = None
-
-
-class RuntimeSubagentTaskUsageRead(ApiModel):
-    runtime_task_id: str
-    source_cursor: str | None = None
-    snapshot_digest: str
-    usage_version: int
-    model_name: str
-    accumulated_cost_usd: float
-    prompt_tokens: int
-    completion_tokens: int
-    cache_read_tokens: int
-    cache_write_tokens: int
-    reasoning_tokens: int
-    context_window: int
-    per_turn_tokens: int
-    budget_limit_usd: float | None = None
-    budget_state: Literal["UNBOUNDED", "WITHIN", "EXCEEDED"]
-    budget_exceeded_at: str | None = None
-    updated_at: str
-
-
-class RuntimeSubagentTaskRead(ApiModel):
-    id: str
-    attempt_id: str
-    conversation_id: str
-    action_event_id: str
-    action_cursor: str | None = None
-    tool_call_id: str | None = None
-    llm_response_id: str | None = None
-    observation_event_id: str | None = None
-    observation_cursor: str | None = None
-    runtime_task_id: str | None = None
-    subagent_type: str
-    description: str | None = None
-    resume_task_id: str | None = None
-    state: Literal["REQUESTED", "COMPLETED", "ERROR"]
-    native_status: str | None = None
-    result: str | None = None
-    error_detail: str | None = None
-    usage: RuntimeSubagentTaskUsageRead | None = None
-    created_at: str
-    completed_at: str | None = None
-    updated_at: str
-
-
-class ConversationForkWrite(ApiModel):
-    expected_conversation_version: int = Field(ge=1)
-    title: str | None = Field(default=None, max_length=160)
-    fork_kind: Literal["RUNTIME", "SEMANTIC"] = "RUNTIME"
-    fork_scope: Literal["MESSAGE", "FULL"] = "MESSAGE"
-    reset_metrics: bool = True
-    acknowledge_semantic_state_loss: bool = False
-
-    @model_validator(mode="after")
-    def validate_fork_kind(self) -> ConversationForkWrite:
-        if self.fork_kind == "SEMANTIC" and not self.acknowledge_semantic_state_loss:
-            raise ValueError(
-                "Semantic Fork requires explicit acknowledgement of Runtime state loss"
-            )
-        if self.fork_kind == "RUNTIME" and self.acknowledge_semantic_state_loss:
-            raise ValueError("Runtime Fork must not acknowledge Semantic Fork state loss")
-        return self
-
-
-class ConversationReviseWrite(ApiModel):
-    expected_conversation_version: int = Field(ge=1)
-    text: str = Field(min_length=1, max_length=20_000)
 
 
 class TextPartWrite(ApiModel):
@@ -790,33 +691,12 @@ class AttachmentPartWrite(ApiModel):
     content_base64: str = Field(min_length=1)
 
 
-class CapabilityInvocationWrite(ApiModel):
-    capability_type: Literal["SKILL", "MCP"]
-    capability_key: str = Field(min_length=1, max_length=200)
-
-
-def _empty_capability_invocations() -> list[CapabilityInvocationWrite]:
-    return []
-
-
-class MessageSendWrite(ApiModel):
-    client_message_id: str = Field(min_length=1, max_length=100)
+class ConversationQuestionWrite(ApiModel):
+    client_question_id: str = Field(min_length=1, max_length=100)
     content: list[TextPartWrite | AttachmentPartWrite] = Field(min_length=1, max_length=8)
-    capability_refs: list[CapabilityInvocationWrite] = Field(
-        default_factory=_empty_capability_invocations, max_length=50
-    )
-    delivery_mode: Literal["QUEUE_AFTER_TURN", "INTERRUPT_AND_RESUME"] = "QUEUE_AFTER_TURN"
-    expected_conversation_version: int = Field(ge=1)
-    model_name: str | None = Field(default=None, max_length=240)
-    reasoning_effort: str | None = Field(default=None, max_length=30)
 
     @model_validator(mode="after")
-    def validate_capability_refs(self) -> MessageSendWrite:
-        refs = [
-            (item.capability_type, item.capability_key.strip()) for item in self.capability_refs
-        ]
-        if len(refs) != len(set(refs)):
-            raise ValueError("capability_refs must be unique")
+    def validate_attachments(self) -> ConversationQuestionWrite:
         if sum(item.type == "attachment" for item in self.content) > 4:
-            raise ValueError("a message may contain at most 4 attachments")
+            raise ValueError("a question may contain at most 4 attachments")
         return self

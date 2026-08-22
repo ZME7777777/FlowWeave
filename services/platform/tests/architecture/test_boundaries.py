@@ -180,6 +180,43 @@ def test_flowrun_runtime_has_no_shared_agent_server_or_legacy_launch_fallback() 
     assert '"CONVERSATION"' not in runtime_create
 
 
+def test_flowrun_conversation_model_has_no_platform_message_or_state_truth() -> None:
+    """FR-09: active code keeps only locators and independent approvals."""
+
+    models = (
+        SOURCE / "modules" / "conversations" / "infrastructure" / "models.py"
+    ).read_text()
+    service = (
+        SOURCE / "modules" / "conversations" / "application" / "service.py"
+    ).read_text()
+    orchestration = (
+        SOURCE / "modules" / "orchestration" / "application" / "service.py"
+    ).read_text()
+    worker_handlers = (
+        SOURCE / "modules" / "tasks" / "application" / "handlers.py"
+    ).read_text()
+    for forbidden in (
+        "class AgentConversation",
+        "class AgentMessage",
+        "ConversationKind",
+        "ConversationState",
+        "HUMAN_CREATED",
+        "runtime_cursor:",
+    ):
+        assert forbidden not in models
+        assert forbidden not in service
+        assert forbidden not in orchestration
+    for task_type in (
+        "CREATE_CONVERSATION",
+        "DELIVER_CONVERSATION_MESSAGE",
+        "POLL_CONVERSATION",
+        "WAIT_CONVERSATION_WAKEUP",
+    ):
+        assert task_type not in worker_handlers
+    assert "class FlowRunConversationBinding" in models
+    assert "class RuntimeConfirmationApproval" in models
+
+
 def test_runtime_request_has_one_structured_agent_spec_boundary() -> None:
     tree = ast.parse((SOURCE / "runtime" / "base.py").read_text())
     request = next(

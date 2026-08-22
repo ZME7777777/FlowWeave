@@ -12,7 +12,6 @@ from flowweave.modules.catalog.public import (
     fail_plugin_source_resolution,
     resolve_plugin_source,
 )
-from flowweave.modules.conversations import public as conversations
 from flowweave.modules.environments import public as environments
 from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.sandboxes import public as sandboxes
@@ -40,7 +39,6 @@ def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease
         aggregate_id,
         int(payload.get("poll_no", 1)),
         lease,
-        task_usage_recovery_no=int(payload.get("task_usage_recovery_no", 0)),
         commit=False,
     )
 
@@ -88,42 +86,6 @@ def _cancel_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lea
     )
 
 
-def _create_conversation(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_create_conversation(db, aggregate_id, lease, commit=False)
-
-
-def _fork_conversation(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_fork_conversation(db, aggregate_id, lease, commit=False)
-
-
-def _cleanup_conversation_runtime(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_cleanup_conversation_runtime(db, aggregate_id, lease, commit=False)
-
-
-def _condense_conversation(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_conversation_condensation(db, aggregate_id, lease, commit=False)
-
-
-def _control_conversation_goal(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_goal_command(db, aggregate_id, lease, commit=False)
-
-
-def _ask_conversation_agent(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_ask_agent(db, aggregate_id, lease, commit=False)
-
-
 def _cleanup_setup_container(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
@@ -140,46 +102,6 @@ def _cleanup_environment_credentials(
     db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
 ) -> None:
     environments.process_cleanup_environment_credentials(db, aggregate_id, lease, commit=False)
-
-
-def _deliver_conversation_message(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_deliver_message(db, aggregate_id, lease, commit=False)
-
-
-def _poll_conversation(
-    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_poll_conversation(
-        db,
-        aggregate_id,
-        int(payload.get("poll_no", 1)),
-        lease,
-        task_usage_recovery_no=int(payload.get("task_usage_recovery_no", 0)),
-        commit=False,
-    )
-
-
-def _wait_conversation_wakeup(
-    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_conversation_wakeup(
-        db,
-        aggregate_id,
-        str(payload.get("channel") or "CONVERSATION"),
-        int(payload.get("wakeup_no", 1)),
-        str(payload.get("cursor") or "") or None,
-        lease,
-        backoff_no=int(payload.get("backoff_no", 0)),
-        commit=False,
-    )
-
-
-def _stop_conversation_runtime(
-    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
-) -> None:
-    conversations.process_stop_conversation_runtime(db, aggregate_id, lease, commit=False)
 
 
 def _replace_flow_run_runtime(
@@ -227,19 +149,9 @@ HANDLERS: dict[str, Handler] = {
     "RESUME_RUNTIME": _resume_runtime,
     "RESPOND_RUNTIME_CONFIRMATION": _respond_runtime_confirmation,
     "CANCEL_RUNTIME": _cancel_runtime,
-    "CREATE_CONVERSATION": _create_conversation,
-    "FORK_CONVERSATION": _fork_conversation,
-    "CLEANUP_CONVERSATION_RUNTIME": _cleanup_conversation_runtime,
-    "CONDENSE_CONVERSATION": _condense_conversation,
-    "CONTROL_CONVERSATION_GOAL": _control_conversation_goal,
-    "ASK_CONVERSATION_AGENT": _ask_conversation_agent,
     "CLEANUP_SETUP_CONTAINER": _cleanup_setup_container,
     "CLEANUP_ENVIRONMENT_IMAGE": _cleanup_environment_image,
     "CLEANUP_ENVIRONMENT_CREDENTIALS": _cleanup_environment_credentials,
-    "DELIVER_CONVERSATION_MESSAGE": _deliver_conversation_message,
-    "POLL_CONVERSATION": _poll_conversation,
-    "WAIT_CONVERSATION_WAKEUP": _wait_conversation_wakeup,
-    "STOP_CONVERSATION_RUNTIME": _stop_conversation_runtime,
     "REPLACE_FLOW_RUN_RUNTIME": _replace_flow_run_runtime,
     "CLEANUP_CAPABILITY_IMPORT": _cleanup_capability_import,
     "BUILD_CAPABILITY_DEPENDENCIES": _build_capability_dependencies,
@@ -263,24 +175,6 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
         return
     if task.task_type == "CANCEL_RUNTIME":
         orchestration.record_runtime_task_failure(db, task.aggregate_id, error, terminal=True)
-    elif task.task_type == "CREATE_CONVERSATION":
-        conversations.record_create_conversation_failure(
-            db, task.aggregate_id, error, terminal=True
-        )
-    elif task.task_type == "FORK_CONVERSATION":
-        conversations.record_fork_conversation_failure(db, task.aggregate_id, error, terminal=True)
-    elif task.task_type == "POLL_CONVERSATION":
-        conversations.record_poll_conversation_failure(db, task.aggregate_id, error, terminal=True)
-    elif task.task_type == "CONDENSE_CONVERSATION":
-        conversations.record_conversation_condensation_failure(
-            db, task.aggregate_id, error, terminal=True
-        )
-    elif task.task_type == "CONTROL_CONVERSATION_GOAL":
-        conversations.record_goal_command_failure(db, task.aggregate_id, error, terminal=True)
-    elif task.task_type == "ASK_CONVERSATION_AGENT":
-        conversations.record_ask_agent_failure(db, task.aggregate_id, error, terminal=True)
-    elif task.task_type == "STOP_CONVERSATION_RUNTIME":
-        conversations.record_stop_conversation_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "REPLACE_FLOW_RUN_RUNTIME":
         sandboxes.record_terminal_runtime_replacement_failure(
             db, task.aggregate_id, error

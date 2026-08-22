@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import logging
 import shutil
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -75,14 +74,13 @@ from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.domain.tool_policy import OPENHANDS_VERSION
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.models import (
-    AgentConversation,
-    AgentMessage,
     ArtifactVersion,
     AttemptInputBinding,
     AttemptState,
     BackgroundTask,
     EnvironmentVersion,
     FlowRun,
+    FlowRunConversationBinding,
     FlowRunState,
     GateEvaluation,
     HumanAction,
@@ -92,7 +90,7 @@ from flowweave.shared.models import (
     NodeRunState,
     RunEvent,
     RunSnapshot,
-    RuntimeConfirmationBatch,
+    RuntimeConfirmationApproval,
     TaskState,
     now,
 )
@@ -112,9 +110,6 @@ from flowweave.shared.schemas import (
     SyncSnapshotWrite,
 )
 from flowweave.shared.settings import get_settings
-
-logger = logging.getLogger(__name__)
-
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
@@ -426,7 +421,8 @@ def _active_attempt_runtime_handle(
         db,
         flow_run_id=flow_run_id,
         openhands_conversation_id=openhands_conversation_id,
-        cursor=attempt.runtime_cursor if cursor is None else cursor,
+        # Runtime cursors are transport-local and are never persisted by FlowWeave.
+        cursor=cursor,
         route_kind=route_kind,
     )
 
@@ -755,7 +751,6 @@ def _dispatch_poll(
     poll_no: int,
     *,
     delayed: bool,
-    task_usage_recovery_no: int = 0,
 ) -> None:
     enqueue(
         db,
@@ -763,12 +758,7 @@ def _dispatch_poll(
         aggregate_type="ATTEMPT",
         aggregate_id=attempt.id,
         idempotency_key=f"poll-runtime:{attempt.id}:{poll_no}",
-        payload={
-            "poll_no": poll_no,
-            **(
-                {"task_usage_recovery_no": task_usage_recovery_no} if task_usage_recovery_no else {}
-            ),
-        },
+        payload={"poll_no": poll_no},
         available_at=(
             datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds)
             if delayed
@@ -824,7 +814,6 @@ def process_runtime_wakeup(
     except DomainError:
         wakeup = None
     _require_current_lease(db, lease)
-    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     current = _attempt(db, attempt_id)
     if (
         current.state != AttemptState.EXECUTING
@@ -868,13 +857,11 @@ def process_runtime_wakeup(
     _finish_transaction(db, commit)
 
 
-def _confirmation_dict(item: RuntimeConfirmationBatch) -> dict[str, Any]:
+def _confirmation_dict(item: RuntimeConfirmationApproval) -> dict[str, Any]:
     return {
         "id": item.id,
         "attempt_id": item.attempt_id,
-        "conversation_id": item.conversation_id,
-        "runtime_conversation_id": item.runtime_conversation_id,
-        "runtime_cursor": item.runtime_cursor,
+        "conversation_id": item.flow_run_conversation_binding_id,
         "pending_actions_digest": item.pending_actions_digest,
         "pending_actions": item.pending_actions_json,
         "risk_summary": item.risk_summary_json,
@@ -884,7 +871,6 @@ def _confirmation_dict(item: RuntimeConfirmationBatch) -> dict[str, Any]:
         "decision_reason": item.decision_reason,
         "decided_by": item.decided_by,
         "decided_at": item.decided_at.isoformat() if item.decided_at else None,
-        "runtime_response_cursor": item.runtime_response_cursor,
         "state_version": item.state_version,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -893,24 +879,25 @@ def _confirmation_dict(item: RuntimeConfirmationBatch) -> dict[str, Any]:
 
 def _freeze_runtime_confirmation(
     db: Session, attempt: NodeAttempt, pending: RuntimePendingConfirmation
-) -> RuntimeConfirmationBatch:
-    conversation = db.scalar(
-        select(AgentConversation).where(
-            AgentConversation.attempt_id == attempt.id,
-            AgentConversation.kind == "AUTO",
-        )
-    )
-    if conversation is None or not attempt.conversation_id:
+) -> RuntimeConfirmationApproval:
+    if not attempt.conversation_id:
         raise DomainError(
             "RUNTIME_PROTOCOL_ERROR",
             "OpenHands confirmation is missing its durable conversation mapping",
             502,
         )
+    flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
+    conversation = conversations.conversation_binding(
+        db,
+        flow_run_id=flow_run_id,
+        openhands_conversation_id=attempt.conversation_id,
+    )
     active = db.scalar(
-        select(RuntimeConfirmationBatch)
+        select(RuntimeConfirmationApproval)
         .where(
-            RuntimeConfirmationBatch.conversation_id == conversation.id,
-            RuntimeConfirmationBatch.state.in_(["PENDING", "DECIDING"]),
+            RuntimeConfirmationApproval.flow_run_conversation_binding_id
+            == conversation.id,
+            RuntimeConfirmationApproval.state.in_(["PENDING", "DECIDING"]),
         )
         .with_for_update()
     )
@@ -932,11 +919,9 @@ def _freeze_runtime_confirmation(
         }
         for action in pending.actions
     ]
-    item = RuntimeConfirmationBatch(
+    item = RuntimeConfirmationApproval(
         attempt_id=attempt.id,
-        conversation_id=conversation.id,
-        runtime_conversation_id=attempt.conversation_id,
-        runtime_cursor=pending.cursor,
+        flow_run_conversation_binding_id=conversation.id,
         pending_actions_digest=pending.pending_actions_digest,
         pending_actions_json=actions,
         risk_summary_json=[
@@ -1684,7 +1669,6 @@ def confirm_start(
         attempt_id=attempt.id,
     )
     run.state = FlowRunState.ACTIVE
-    conversations.ensure_auto_conversation(db, attempt)
     _event(db, run.id, "ATTEMPT_EXECUTING", {}, node_run.id, attempt.id)
     if not _inline_execution():
         enqueue(
@@ -1828,12 +1812,12 @@ def recover_runtime_tasks(db: Session) -> int:
                 payload["recovery_mode"] = recovery_mode
         elif attempt.runtime_phase == "CONFIRMING":
             confirmation = db.scalar(
-                select(RuntimeConfirmationBatch)
+                select(RuntimeConfirmationApproval)
                 .where(
-                    RuntimeConfirmationBatch.attempt_id == attempt.id,
-                    RuntimeConfirmationBatch.state == "DECIDING",
+                    RuntimeConfirmationApproval.attempt_id == attempt.id,
+                    RuntimeConfirmationApproval.state == "DECIDING",
                 )
-                .order_by(RuntimeConfirmationBatch.created_at.desc())
+                .order_by(RuntimeConfirmationApproval.created_at.desc())
                 .limit(1)
             )
             if confirmation is None:
@@ -2062,7 +2046,7 @@ def process_start_runtime(
     if attempt.state != AttemptState.EXECUTING or attempt.runtime_phase != "STARTING":
         return
     expected_version = attempt.state_version
-    if attempt.runtime_job_id:
+    if attempt.conversation_id:
         claimed = _claim_runtime_phase(
             db,
             attempt.id,
@@ -2131,11 +2115,7 @@ def process_start_runtime(
         expected_version,
         AttemptState.EXECUTING,
         "STARTING",
-        runtime_job_id=handle.job_id,
         conversation_id=handle.conversation_id,
-        runtime_cursor=handle.cursor,
-        runtime_sandbox_id=allocation.id if allocation else None,
-        runtime_adapter=get_settings().runtime_adapter,
         runtime_phase="RUNNING",
     )
     if claimed is None:
@@ -2145,14 +2125,11 @@ def process_start_runtime(
             cleanup_runtime_memory(owner_type="ATTEMPT", owner_id=attempt.id)
         _require_current_lease(db, lease)
         return
-    conversations.bind_auto_runtime(
+    conversations.bind_openhands_conversation(
         db,
-        claimed.id,
-        runtime_job_id=handle.job_id,
-        runtime_conversation_id=handle.conversation_id,
-        runtime_cursor=handle.cursor,
-        runtime_adapter=get_settings().runtime_adapter,
-        runtime_sandbox_id=claimed.runtime_sandbox_id,
+        flow_run_id=flow_run_id,
+        openhands_conversation_id=handle.conversation_id,
+        display_label=f"运行 {claimed.id}",
     )
     if _inline_execution():
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
@@ -2175,8 +2152,6 @@ def _apply_runtime_result(
 ) -> dict[str, Any]:
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    attempt.runtime_cursor = result.cursor
-    conversations.project_auto_runtime_result(db, attempt.id, result, result_key=result_key)
     if result.status == "CONFIRMATION_REQUIRED":
         if pending_confirmation is None:
             raise DomainError(
@@ -2187,9 +2162,6 @@ def _apply_runtime_result(
         confirmation = _freeze_runtime_confirmation(db, attempt, pending_confirmation)
         attempt.state = AttemptState.WAITING_CONFIRMATION
         attempt.runtime_phase = "WAITING_CONFIRMATION"
-        conversations.set_auto_conversation_state(
-            db, attempt.id, conversations.ConversationState.WAITING_CONFIRMATION
-        )
         run.state = FlowRunState.WAITING_HUMAN
         _event(
             db,
@@ -2205,9 +2177,6 @@ def _apply_runtime_result(
         )
     elif result.status == "HUMAN_INPUT_REQUIRED":
         attempt.state = AttemptState.WAITING_HUMAN
-        conversations.set_auto_conversation_state(
-            db, attempt.id, conversations.ConversationState.WAITING_HUMAN
-        )
         attempt.error_detail = result.human_question
         run.state = FlowRunState.WAITING_HUMAN
         _event(
@@ -2219,11 +2188,6 @@ def _apply_runtime_result(
             attempt.id,
         )
     elif result.status == "COMPLETED":
-        if attempt.runtime_sandbox_id:
-            sandboxes.request_delete(db, attempt.runtime_sandbox_id)
-        conversations.set_auto_conversation_state(
-            db, attempt.id, conversations.ConversationState.IDLE
-        )
         for prepared in prepared_outputs:
             _register_artifact(
                 db,
@@ -2237,15 +2201,7 @@ def _apply_runtime_result(
         _dispatch_gates(db, attempt, "END")
     elif result.status == "RUNNING":
         attempt.runtime_phase = "RUNNING"
-        conversations.set_auto_conversation_state(
-            db, attempt.id, conversations.ConversationState.GENERATING
-        )
     elif result.status == "FAILED":
-        if attempt.runtime_sandbox_id:
-            sandboxes.request_delete(db, attempt.runtime_sandbox_id)
-        conversations.set_auto_conversation_state(
-            db, attempt.id, conversations.ConversationState.FAILED
-        )
         attempt.state = AttemptState.END_BLOCKED
         attempt.runtime_phase = "FAILED"
         attempt.error_code = failure_code
@@ -2298,7 +2254,6 @@ def process_poll_runtime(
     poll_no: int,
     lease: Lease | None = None,
     *,
-    task_usage_recovery_no: int = 0,
     commit: bool = True,
 ) -> None:
     attempt = _attempt(db, attempt_id)
@@ -2320,7 +2275,6 @@ def process_poll_runtime(
         if result.status == "CONFIRMATION_REQUIRED"
         else None
     )
-    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     try:
         _require_current_lease(db, lease)
     except Exception:
@@ -2335,63 +2289,7 @@ def process_poll_runtime(
     if claimed is None:
         return
     prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {})
-    node_run = _node_run(db, claimed.node_run_id)
-    for runtime_event in batch.events:
-        _event(
-            db,
-            node_run.flow_run_id,
-            f"RUNTIME_EVENT_{runtime_event.event_type}",
-            {"runtime_cursor": runtime_event.cursor, **runtime_event.payload},
-            node_run.id,
-            claimed.id,
-        )
-        conversations.project_runtime_event(
-            db,
-            claimed.id,
-            cursor=runtime_event.cursor,
-            event_type=runtime_event.event_type,
-            payload=runtime_event.payload,
-        )
-    auto_conversation = db.scalar(
-        select(AgentConversation).where(
-            AgentConversation.attempt_id == claimed.id,
-            AgentConversation.kind == "AUTO",
-        )
-    )
-    if auto_conversation is not None:
-        conversations.project_runtime_task_usage(db, auto_conversation, batch.task_usage)
-    missing_task_usage_ids = (
-        conversations.missing_runtime_task_usage_ids(
-            db,
-            auto_conversation,
-            observed_stats_task_ids=tuple(snapshot.task_id for snapshot in batch.task_usage),
-        )
-        if auto_conversation is not None and result.status in {"COMPLETED", "FAILED"}
-        else ()
-    )
     failure_code = "RUNTIME_FAILED"
-    if auto_conversation is not None and missing_task_usage_ids:
-        next_recovery_no = task_usage_recovery_no + 1
-        exhausted = next_recovery_no >= get_settings().runtime_task_usage_visibility_max_polls
-        conversations.record_runtime_task_usage_recovery(
-            db,
-            auto_conversation,
-            missing_task_ids=missing_task_usage_ids,
-            recovery_poll=next_recovery_no,
-            exhausted=exhausted,
-        )
-        if exhausted:
-            failure_code = "RUNTIME_TASK_USAGE_UNAVAILABLE"
-            result = RuntimeResult(
-                status="FAILED",
-                cursor=result.cursor or batch.cursor,
-                error=(
-                    "OpenHands terminal Task stats remained unavailable after bounded recovery: "
-                    + ", ".join(missing_task_usage_ids)
-                ),
-            )
-        else:
-            result = RuntimeResult(status="RUNNING", cursor=result.cursor or batch.cursor)
     if result.cursor is None and batch.cursor is not None:
         result = RuntimeResult(
             status=result.status,
@@ -2416,7 +2314,6 @@ def process_poll_runtime(
             claimed,
             poll_no + 1,
             delayed=True,
-            task_usage_recovery_no=(task_usage_recovery_no + 1 if missing_task_usage_ids else 0),
         )
         _finish_transaction(db, commit)
 
@@ -2427,26 +2324,13 @@ def human_input(
     current = _attempt(db, attempt_id)
     current_node_run = _node_run(db, current.node_run_id)
     node = _node(_snapshot(db, current.snapshot_id), current_node_run.flow_node_snapshot_key)
-    auto_conversation = db.scalar(
-        select(AgentConversation).where(
-            AgentConversation.attempt_id == current.id,
-            AgentConversation.kind == "AUTO",
-        )
-    )
-    current_selection = cast(
-        dict[str, Any],
-        (auto_conversation.context_baseline_json if auto_conversation else {}).get(
-            "runtime_selection"
-        )
-        or {},
-    )
     selected_model, selected_effort = resolve_runtime_selection(
         db,
         node,
-        payload.model_name or cast(str | None, current_selection.get("model_name")),
+        payload.model_name or current.model_name,
         payload.reasoning_effort
         if "reasoning_effort" in payload.model_fields_set
-        else cast(str | None, current_selection.get("reasoning_effort")),
+        else current.reasoning_effort,
     )
     attempt = _claim_attempt_version(
         db,
@@ -2472,16 +2356,6 @@ def human_input(
         node_run.id,
         attempt.id,
     )
-    conversations.record_auto_human_input(
-        db,
-        attempt.id,
-        action_id=action.id,
-        content=payload.content,
-        runtime_selection={
-            "model_name": selected_model,
-            "reasoning_effort": selected_effort,
-        },
-    )
     if not _inline_execution():
         enqueue(
             db,
@@ -2506,8 +2380,8 @@ def decide_runtime_confirmation(
     """Durably freeze one batch-level decision before external Runtime I/O."""
 
     duplicate = db.scalar(
-        select(RuntimeConfirmationBatch).where(
-            RuntimeConfirmationBatch.decision_idempotency_key == idempotency_key
+        select(RuntimeConfirmationApproval).where(
+            RuntimeConfirmationApproval.decision_idempotency_key == idempotency_key
         )
     )
     if duplicate is not None:
@@ -2527,8 +2401,8 @@ def decide_runtime_confirmation(
         return _confirmation_dict(duplicate)
 
     batch = db.scalar(
-        select(RuntimeConfirmationBatch)
-        .where(RuntimeConfirmationBatch.id == batch_id)
+        select(RuntimeConfirmationApproval)
+        .where(RuntimeConfirmationApproval.id == batch_id)
         .with_for_update()
     )
     if batch is None:
@@ -2602,7 +2476,7 @@ def decide_runtime_confirmation(
     finish(db)
     if _inline_execution():
         process_runtime_confirmation(db, batch.id)
-    return _confirmation_dict(db.get(RuntimeConfirmationBatch, batch.id) or batch)
+    return _confirmation_dict(db.get(RuntimeConfirmationApproval, batch.id) or batch)
 
 
 def process_runtime_confirmation(
@@ -2612,7 +2486,7 @@ def process_runtime_confirmation(
     *,
     commit: bool = True,
 ) -> None:
-    batch = db.get(RuntimeConfirmationBatch, batch_id)
+    batch = db.get(RuntimeConfirmationApproval, batch_id)
     if batch is None or batch.state != "DECIDING":
         return
     attempt = _attempt(db, batch.attempt_id)
@@ -2631,7 +2505,7 @@ def process_runtime_confirmation(
     handle = _active_attempt_runtime_handle(
         db,
         attempt,
-        conversation_id=attempt.conversation_id or batch.runtime_conversation_id,
+        conversation_id=attempt.conversation_id,
     )
     expected_digest = batch.pending_actions_digest
     accept = batch.decision_accept
@@ -2643,11 +2517,11 @@ def process_runtime_confirmation(
     if pending is not None and pending.pending_actions_digest != expected_digest:
         _require_current_lease(db, lease)
         current = db.scalar(
-            select(RuntimeConfirmationBatch)
+            select(RuntimeConfirmationApproval)
             .where(
-                RuntimeConfirmationBatch.id == batch_id,
-                RuntimeConfirmationBatch.state == "DECIDING",
-                RuntimeConfirmationBatch.state_version == batch_version,
+                RuntimeConfirmationApproval.id == batch_id,
+                RuntimeConfirmationApproval.state == "DECIDING",
+                RuntimeConfirmationApproval.state_version == batch_version,
             )
             .with_for_update()
         )
@@ -2691,15 +2565,14 @@ def process_runtime_confirmation(
     if not accept:
         result = runtime.run(RuntimeHandle(handle.job_id, handle.conversation_id, response_cursor))
         response_cursor = result.cursor or response_cursor
-    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     _require_current_lease(db, lease)
 
     current = db.scalar(
-        select(RuntimeConfirmationBatch)
+        select(RuntimeConfirmationApproval)
         .where(
-            RuntimeConfirmationBatch.id == batch_id,
-            RuntimeConfirmationBatch.state == "DECIDING",
-            RuntimeConfirmationBatch.state_version == batch_version,
+            RuntimeConfirmationApproval.id == batch_id,
+            RuntimeConfirmationApproval.state == "DECIDING",
+            RuntimeConfirmationApproval.state_version == batch_version,
         )
         .with_for_update()
     )
@@ -2714,17 +2587,12 @@ def process_runtime_confirmation(
         "CONFIRMING",
         state=AttemptState.EXECUTING,
         runtime_phase="RUNNING",
-        runtime_cursor=response_cursor,
     )
     if claimed is None:
         db.rollback()
         return
     current.state = "APPROVED" if accept else "REJECTED"
-    current.runtime_response_cursor = response_cursor
     current.state_version += 1
-    conversations.set_auto_conversation_state(
-        db, claimed.id, conversations.ConversationState.GENERATING
-    )
     node_run = _node_run(db, claimed.node_run_id)
     run = _run(db, node_run.flow_run_id)
     run.state = FlowRunState.ACTIVE
@@ -2781,7 +2649,6 @@ def process_resume_runtime(
     if provider is not None:
         runtime.switch_model(handle, provider)
     result = runtime.resume(handle, content)
-    sandboxes.touch_runtime(db, attempt.runtime_sandbox_id)
     try:
         _require_current_lease(db, lease)
     except Exception:
@@ -2797,7 +2664,11 @@ def process_resume_runtime(
     if claimed is None:
         return
     prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {})
-    conversations.mark_auto_human_input_delivered(db, claimed.id, action_id=action.id)
+    action.payload_json = {
+        "content_digest": hashlib.sha256(content.encode()).hexdigest(),
+        "content_length": len(content),
+        "runtime_selection": selection,
+    }
     _apply_runtime_result(
         db,
         claimed,
@@ -2814,86 +2685,21 @@ def process_resume_runtime(
 def _runtime_cancel_targets(
     db: Session, attempt: NodeAttempt
 ) -> list[tuple[str | None, RuntimeHandle, str | None]]:
-    targets: list[tuple[str | None, RuntimeHandle, str | None]] = []
-    seen: set[str] = set()
-    if attempt.runtime_job_id and attempt.conversation_id:
-        seen.add(attempt.conversation_id)
-        automatic = db.scalar(
-            select(AgentConversation).where(
-                AgentConversation.attempt_id == attempt.id,
-                AgentConversation.runtime_conversation_id == attempt.conversation_id,
-            )
-        )
-        targets.append(
-            (
-                attempt.runtime_adapter,
-                _active_attempt_runtime_handle(db, attempt),
-                automatic.id if automatic is not None else None,
-            )
-        )
-    for conversation in db.scalars(
-        select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
-    ):
-        conversation_id = conversation.runtime_conversation_id
-        if not conversation_id or conversation_id in seen:
-            continue
-        seen.add(conversation_id)
-        targets.append(
-            (
-                conversation.runtime_adapter,
-                _active_attempt_runtime_handle(
-                    db,
-                    attempt,
-                    conversation_id=conversation_id,
-                    cursor=conversation.runtime_cursor,
-                    route_kind=(
-                        "EXECUTION"
-                        if conversation.kind == "AUTO"
-                        else "COLLABORATION"
-                    ),
-                ),
-                conversation.id,
-            )
-        )
-    return targets
+    if not attempt.conversation_id:
+        return []
+    return [(None, _active_attempt_runtime_handle(db, attempt), None)]
 
 
 def _managed_runtime_sandbox_ids(db: Session, attempt: NodeAttempt) -> set[str]:
-    candidates = {
-        sandbox_id
-        for sandbox_id in (
-            attempt.runtime_sandbox_id,
-            *(
-                conversation.runtime_sandbox_id
-                for conversation in db.scalars(
-                    select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
-                )
-            ),
-        )
-        if sandbox_id
-    }
-    # Attempt cancellation may stop its OpenHands Conversation, but a FlowRun
-    # Runtime Provider allocation belongs to the Run and can host other work.
-    # Only legacy per-Attempt/per-Conversation containers remain eligible for
-    # the old whole-container recovery path until reconciliation drains them.
-    return {
-        sandbox_id
-        for sandbox_id in candidates
-        if (sandboxes.sandbox_snapshot(db, sandbox_id) or {}).get("owner_type")
-        != "FLOW_RUN"
-    }
+    # A FlowRun Runtime can host other Conversations and is never an Attempt
+    # cancellation target.
+    return set()
 
 
 def _runtime_cancel_recovery_modes(db: Session, attempt: NodeAttempt) -> list[str]:
     if attempt.state != AttemptState.CANCELLED or attempt.runtime_phase != "CANCEL_FAILED":
         return []
-    modes = ["RECONCILE_PARENT"]
-    if any(
-        sandboxes.sandbox_snapshot(db, sandbox_id) is not None
-        for sandbox_id in _managed_runtime_sandbox_ids(db, attempt)
-    ):
-        modes.append("DELETE_MANAGED_RUNTIME")
-    return modes
+    return ["RECONCILE_PARENT"]
 
 
 def process_cancel_runtime(
@@ -2910,191 +2716,18 @@ def process_cancel_runtime(
         return
     expected_version = attempt.state_version
     current_attempt_id = attempt.id
-    targets = _runtime_cancel_targets(db, attempt)
-    pending_task_facts = conversations.pending_runtime_task_control_facts(db, attempt.id)
-    managed_sandbox_ids = _managed_runtime_sandbox_ids(db, attempt) | {
-        sandbox_id for sandbox_id in sandbox_ids if sandbox_id
-    }
-    observed_task_usage_ids: dict[str, tuple[str, ...]] = {}
-    if targets:
-        _release_worker_read_transaction(db, lease)
-        observed_batches: list[tuple[str, Any]] = []
-        for adapter, handle, conversation_id in targets:
-            runtime = runtime_for(adapter, handle)
-            if recovery_mode != "DELETE_MANAGED_RUNTIME" and conversation_id is not None:
-                observed_batches.append((conversation_id, runtime.read_events(handle)))
-            runtime.cancel(handle)
-        _require_current_lease(db, lease)
-        for conversation_id, batch in observed_batches:
-            for runtime_event in batch.events:
-                conversations.project_runtime_conversation_event(
-                    db,
-                    conversation_id,
-                    cursor=runtime_event.cursor,
-                    event_type=runtime_event.event_type,
-                    payload=runtime_event.payload,
-                )
-            conversation = db.get(AgentConversation, conversation_id)
-            if conversation is not None:
-                conversation.runtime_cursor = batch.cursor or conversation.runtime_cursor
-                conversations.project_runtime_task_usage(db, conversation, batch.task_usage)
-                observed_task_usage_ids[conversation.id] = tuple(
-                    snapshot.task_id for snapshot in batch.task_usage
-                )
-        pending_task_facts = conversations.pending_runtime_task_control_facts(db, attempt.id)
-    missing_usage_by_conversation: dict[str, tuple[str, ...]] = {}
-    if recovery_mode != "DELETE_MANAGED_RUNTIME":
-        for conversation in db.scalars(
-            select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
-        ):
-            missing_ids = conversations.missing_runtime_task_usage_ids(
-                db,
-                conversation,
-                observed_stats_task_ids=observed_task_usage_ids.get(conversation.id, ()),
-            )
-            if missing_ids:
-                missing_usage_by_conversation[conversation.id] = missing_ids
-    if missing_usage_by_conversation:
-        previous_recoveries = (
-            db.scalar(
-                select(func.count(RunEvent.cursor)).where(
-                    RunEvent.attempt_id == attempt.id,
-                    RunEvent.event_type.in_(
-                        [
-                            "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_PENDING",
-                            "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_EXHAUSTED",
-                        ]
-                    ),
-                )
-            )
-            or 0
-        )
-        recovery_poll = previous_recoveries + 1
-        exhausted = recovery_poll >= get_settings().runtime_task_usage_visibility_max_polls
-        missing_task_ids = tuple(
-            sorted({task_id for ids in missing_usage_by_conversation.values() for task_id in ids})
-        )
-        for conversation_id, missing_ids in missing_usage_by_conversation.items():
-            conversation = db.get(AgentConversation, conversation_id)
-            if conversation is not None:
-                conversations.record_runtime_task_usage_recovery(
-                    db,
-                    conversation,
-                    missing_task_ids=missing_ids,
-                    recovery_poll=recovery_poll,
-                    exhausted=exhausted,
-                )
-        node_run = _node_run(db, attempt.node_run_id)
-        _event(
-            db,
-            node_run.flow_run_id,
-            (
-                "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_EXHAUSTED"
-                if exhausted
-                else "RUNTIME_SUBAGENT_CANCEL_USAGE_RECOVERY_PENDING"
-            ),
-            {
-                "runtime_task_ids": list(missing_task_ids),
-                "recovery_poll": recovery_poll,
-            },
-            node_run.id,
-            attempt.id,
-        )
-        if exhausted:
-            claimed = _claim_runtime_phase(
-                db,
-                current_attempt_id,
-                expected_version,
-                AttemptState.CANCELLED,
-                "CANCELLING",
-                runtime_phase="CANCEL_FAILED",
-                error_code="RUNTIME_TASK_USAGE_UNAVAILABLE",
-                error_detail=(
-                    "OpenHands terminal Task stats remained unavailable after bounded "
-                    "cancellation recovery: " + ", ".join(missing_task_ids)
-                ),
-            )
-            if claimed is not None:
-                _finish_transaction(db, commit)
-            return
-        enqueue(
-            db,
-            task_type="CANCEL_RUNTIME",
-            aggregate_type="ATTEMPT",
-            aggregate_id=attempt.id,
-            idempotency_key=(
-                f"cancel-task-usage-recovery:{attempt.id}:v{attempt.state_version}:p{recovery_poll}"
-            ),
-            payload={
-                "recovery_mode": recovery_mode or "RECONCILE_PARENT",
-                "sandbox_ids": sorted(managed_sandbox_ids),
-            },
-            available_at=datetime.now(UTC) + timedelta(seconds=get_settings().runtime_poll_seconds),
-        ).max_attempts = 20
-        _finish_transaction(db, commit)
-        return
-    if recovery_mode == "DELETE_MANAGED_RUNTIME" and not managed_sandbox_ids:
+    if recovery_mode == "DELETE_MANAGED_RUNTIME" or sandbox_ids:
         raise DomainError(
-            "MANAGED_RUNTIME_REQUIRED",
-            "Whole-Runtime cleanup requires a managed Runtime sandbox",
+            "FLOW_RUN_RUNTIME_DELETE_FORBIDDEN",
+            "Attempt cancellation cannot delete the shared FlowRun Runtime",
             409,
         )
-    delete_managed_runtime = bool(managed_sandbox_ids) and recovery_mode in {
-        None,
-        "DELETE_MANAGED_RUNTIME",
-    }
-    if pending_task_facts and delete_managed_runtime:
-        for sandbox_id in managed_sandbox_ids:
-            sandboxes.request_delete_durable(db, sandbox_id)
-        db.expire_all()
-        pending_deletions = [
-            sandbox_id
-            for sandbox_id in sorted(managed_sandbox_ids)
-            if sandboxes.sandbox_snapshot(db, sandbox_id) is not None
-        ]
-        if pending_deletions:
-            raise DomainError(
-                "RUNTIME_SANDBOX_DELETE_PENDING",
-                "Managed Runtime deletion is still pending for an in-flight OpenHands Task",
-                503,
-                {"sandbox_ids": pending_deletions},
-            )
-    elif pending_task_facts:
-        claimed = _claim_runtime_phase(
-            db,
-            current_attempt_id,
-            expected_version,
-            AttemptState.CANCELLED,
-            "CANCELLING",
-            runtime_phase="CANCEL_FAILED",
-            error_code="RUNTIME_TASK_CANCEL_UNCONFIRMED",
-            error_detail=(
-                "OpenHands 1.40.0 parent interrupt cannot prove that an already-running "
-                "synchronous Task executor stopped"
-            ),
-        )
-        if claimed is not None:
-            node_run = _node_run(db, claimed.node_run_id)
-            _event(
-                db,
-                node_run.flow_run_id,
-                "RUNTIME_SUBAGENT_CANCEL_UNCONFIRMED",
-                {
-                    "control_scope": "PARENT_CONVERSATION_INTERRUPT",
-                    "pending_tasks": list(pending_task_facts),
-                },
-                node_run.id,
-                claimed.id,
-            )
-            _finish_transaction(db, commit)
-        return
-    if attempt.runtime_sandbox_id:
-        sandboxes.request_delete(db, attempt.runtime_sandbox_id)
-    for conversation in db.scalars(
-        select(AgentConversation).where(AgentConversation.attempt_id == attempt.id)
-    ):
-        if conversation.runtime_sandbox_id:
-            sandboxes.request_delete(db, conversation.runtime_sandbox_id)
+    targets = _runtime_cancel_targets(db, attempt)
+    if targets:
+        _release_worker_read_transaction(db, lease)
+        for adapter, handle, _ in targets:
+            runtime_for(adapter, handle).cancel(handle)
+        _require_current_lease(db, lease)
     claimed = _claim_runtime_phase(
         db,
         current_attempt_id,
@@ -3106,20 +2739,6 @@ def process_cancel_runtime(
     if claimed is not None:
         claimed.error_code = None
         claimed.error_detail = None
-        if pending_task_facts:
-            node_run = _node_run(db, claimed.node_run_id)
-            _event(
-                db,
-                node_run.flow_run_id,
-                "RUNTIME_SUBAGENT_EXECUTION_STOPPED_BY_SANDBOX_DELETION",
-                {
-                    "control_scope": "MANAGED_RUNTIME",
-                    "sandbox_ids": sorted(managed_sandbox_ids),
-                    "pending_tasks": list(pending_task_facts),
-                },
-                node_run.id,
-                claimed.id,
-            )
         _finish_transaction(db, commit)
 
 
@@ -3267,17 +2886,14 @@ def cancel_attempt(
     attempt.state = AttemptState.CANCELLED
     attempt.state_version += 1
     for confirmation in db.scalars(
-        select(RuntimeConfirmationBatch).where(
-            RuntimeConfirmationBatch.attempt_id == attempt.id,
-            RuntimeConfirmationBatch.state.in_(["PENDING", "DECIDING"]),
+        select(RuntimeConfirmationApproval).where(
+            RuntimeConfirmationApproval.attempt_id == attempt.id,
+            RuntimeConfirmationApproval.state.in_(["PENDING", "DECIDING"]),
         )
     ):
         confirmation.state = "CANCELLED"
         confirmation.state_version += 1
     node_run.state = NodeRunState.CANCELLED
-    conversations.set_attempt_conversations_state(
-        db, attempt.id, conversations.ConversationState.READ_ONLY
-    )
     if targets:
         attempt.runtime_phase = "CANCELLING"
         sandbox_ids = _managed_runtime_sandbox_ids(db, attempt)
@@ -3378,9 +2994,6 @@ def accept_attempt(
         node_run_id=node_run.id,
         attempt_id=attempt.id,
     )
-    conversations.set_attempt_conversations_state(
-        db, attempt.id, conversations.ConversationState.READ_ONLY
-    )
     node_run.state = NodeRunState.ACCEPTED
     node_run.accepted_attempt_id = attempt.id
     _event(db, run.id, "NODE_RUN_ACCEPTED", {}, node_run.id, attempt.id)
@@ -3410,9 +3023,6 @@ def reject_attempt(
         {"reason": payload.reason},
         node_run.id,
         attempt.id,
-    )
-    conversations.set_attempt_conversations_state(
-        db, attempt.id, conversations.ConversationState.READ_ONLY
     )
     next_no = (
         db.scalar(
@@ -3842,9 +3452,6 @@ def complete_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, An
             AttemptState.CANCELLED,
         }:
             attempt.state = AttemptState.CANCELLED
-        conversations.set_attempt_conversations_state(
-            db, attempt.id, conversations.ConversationState.READ_ONLY
-        )
     run.state = FlowRunState.COMPLETED
     run.completion_mode = "HUMAN"
     run.finished_at = now()
@@ -3881,14 +3488,8 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
             AttemptState.REJECTED,
             AttemptState.CANCELLED,
         }:
-            conversations.set_attempt_conversations_state(
-                db, attempt.id, conversations.ConversationState.READ_ONLY
-            )
             continue
         attempt.state = AttemptState.CANCELLED
-        conversations.set_attempt_conversations_state(
-            db, attempt.id, conversations.ConversationState.READ_ONLY
-        )
         attempt.state_version += 1
         if _runtime_cancel_targets(db, attempt):
             attempt.runtime_phase = "CANCELLING"
@@ -3898,7 +3499,7 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
                 task_type="CANCEL_RUNTIME",
                 aggregate_type="ATTEMPT",
                 aggregate_id=attempt.id,
-                idempotency_key=f"cancel-runtime:{attempt.id}:{attempt.runtime_job_id}",
+                idempotency_key=f"cancel-runtime:{attempt.id}:{attempt.conversation_id}",
                 payload={"sandbox_ids": sorted(sandbox_ids)},
             ).max_attempts = 20
         else:
@@ -3911,9 +3512,8 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
 def delete_run(db: Session, run_id: str) -> None:
     """Permanently remove a run and all durable execution data it owns.
 
-    Runtime jobs and object storage are cleaned only after the database transaction
-    commits. Runtime cleanup is best-effort because an unavailable executor must not
-    prevent deletion of an already-terminal durable run.
+    The Runtime Provider owns physical cleanup. Conversation bindings cascade
+    with the FlowRun; OpenHands state is deleted only through that Run lifecycle.
     """
 
     run = _run(db, run_id)
@@ -3928,45 +3528,13 @@ def delete_run(db: Session, run_id: str) -> None:
         if attempt_ids
         else []
     )
-    agent_conversations = (
-        list(
-            db.scalars(
-                select(AgentConversation).where(AgentConversation.attempt_id.in_(attempt_ids))
+    conversation_ids = list(
+        db.scalars(
+            select(FlowRunConversationBinding.id).where(
+                FlowRunConversationBinding.flow_run_id == run.id
             )
         )
-        if attempt_ids
-        else []
     )
-    runtime_handles: list[tuple[str | None, RuntimeHandle]] = []
-    attempt_runtime_ids = {attempt.conversation_id for attempt in attempts}
-    for attempt in attempts:
-        if attempt.runtime_job_id and attempt.conversation_id:
-            runtime_handles.append(
-                (
-                    attempt.runtime_adapter,
-                    RuntimeHandle(
-                        job_id=attempt.runtime_job_id,
-                        conversation_id=attempt.conversation_id,
-                        cursor=attempt.runtime_cursor,
-                    ),
-                )
-            )
-    for conversation in agent_conversations:
-        if (
-            conversation.runtime_conversation_id
-            and conversation.runtime_conversation_id not in attempt_runtime_ids
-        ):
-            runtime_handles.append(
-                (
-                    conversation.runtime_adapter,
-                    RuntimeHandle(
-                        job_id=conversation.runtime_job_id or conversation.runtime_conversation_id,
-                        conversation_id=conversation.runtime_conversation_id,
-                        cursor=conversation.runtime_cursor,
-                    ),
-                )
-            )
-
     artifacts = list(
         db.scalars(select(ArtifactVersion).where(ArtifactVersion.flow_run_id == run.id))
     )
@@ -3979,17 +3547,7 @@ def delete_run(db: Session, run_id: str) -> None:
         path = Path(attempt.workspace_ref).resolve()
         if path != workspace_root and path.is_relative_to(workspace_root):
             workspace_paths.add(path)
-    conversation_ids = [item.id for item in agent_conversations]
-    message_ids = (
-        list(
-            db.scalars(
-                select(AgentMessage.id).where(AgentMessage.conversation_id.in_(conversation_ids))
-            )
-        )
-        if conversation_ids
-        else []
-    )
-    task_aggregate_ids = [*attempt_ids, *conversation_ids, *message_ids]
+    task_aggregate_ids = [*attempt_ids, *conversation_ids]
     if task_aggregate_ids:
         db.execute(
             delete(BackgroundTask).where(BackgroundTask.aggregate_id.in_(task_aggregate_ids))
@@ -4001,21 +3559,12 @@ def delete_run(db: Session, run_id: str) -> None:
         db.execute(delete(GateEvaluation).where(GateEvaluation.attempt_id.in_(attempt_ids)))
     db.execute(delete(HumanAction).where(HumanAction.flow_run_id == run.id))
     db.execute(delete(RunEvent).where(RunEvent.flow_run_id == run.id))
-    if conversation_ids:
-        db.execute(delete(AgentConversation).where(AgentConversation.id.in_(conversation_ids)))
     db.execute(delete(ArtifactVersion).where(ArtifactVersion.flow_run_id == run.id))
     if attempt_ids:
         db.execute(delete(NodeAttempt).where(NodeAttempt.id.in_(attempt_ids)))
     if node_run_ids:
         db.execute(delete(NodeRun).where(NodeRun.id.in_(node_run_ids)))
     db.execute(delete(RunSnapshot).where(RunSnapshot.flow_run_id == run.id))
-    for adapter, handle in runtime_handles:
-        register_commit_action(
-            db,
-            lambda adapter=adapter, handle=handle: _cancel_runtime_after_delete(
-                adapter, handle, run_id
-            ),
-        )
     for attempt_id in attempt_ids:
         register_commit_action(
             db,
@@ -4041,18 +3590,6 @@ def delete_run(db: Session, run_id: str) -> None:
     finish(db)
 
 
-def _cancel_runtime_after_delete(adapter: str | None, handle: RuntimeHandle, run_id: str) -> None:
-    try:
-        runtime_for(adapter, handle).cancel(handle)
-    except Exception:
-        logger.warning(
-            "Runtime cleanup failed after flow run %s was permanently deleted (conversation_id=%s)",
-            run_id,
-            handle.conversation_id,
-            exc_info=True,
-        )
-
-
 def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
     attempt = _attempt(db, attempt_id)
     bindings = _bindings(db, attempt.id)
@@ -4072,9 +3609,9 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
     )
     confirmation_batches = list(
         db.scalars(
-            select(RuntimeConfirmationBatch)
-            .where(RuntimeConfirmationBatch.attempt_id == attempt.id)
-            .order_by(RuntimeConfirmationBatch.created_at.desc())
+            select(RuntimeConfirmationApproval)
+            .where(RuntimeConfirmationApproval.attempt_id == attempt.id)
+            .order_by(RuntimeConfirmationApproval.created_at.desc())
         )
     )
     return {
@@ -4085,10 +3622,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "state": attempt.state,
         "state_version": attempt.state_version,
         "runtime_phase": attempt.runtime_phase,
-        "runtime_adapter": attempt.runtime_adapter,
-        "runtime_job_id": attempt.runtime_job_id,
         "conversation_id": attempt.conversation_id,
-        "runtime_cursor": attempt.runtime_cursor,
         "workspace_ref": attempt.workspace_ref,
         "startup_mode": attempt.startup_mode,
         "startup_capability_key": attempt.startup_capability_key,
