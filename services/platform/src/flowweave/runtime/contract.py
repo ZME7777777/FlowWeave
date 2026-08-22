@@ -8,7 +8,7 @@ from flowweave.shared.domain.tool_policy import (
     OPENHANDS_VERSION,
 )
 
-RUNTIME_CONTRACT_SCHEMA_VERSION = 1
+RUNTIME_CONTRACT_SCHEMA_VERSION = 2
 
 OPENHANDS_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("openhands-agent-server", OPENHANDS_VERSION),
@@ -28,6 +28,7 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
             ("POST", "/api/conversations"),
             ("GET", "/api/conversations/{conversation_id}"),
             ("POST", "/api/conversations/{conversation_id}/events"),
+            ("GET", "/api/conversations/{conversation_id}/events/{event_id}"),
             ("GET", "/api/conversations/{conversation_id}/events/search"),
             ("POST", "/api/conversations/{conversation_id}/interrupt"),
             ("POST", "/api/conversations/{conversation_id}/switch_llm"),
@@ -58,6 +59,7 @@ REQUIRED_START_FIELDS: tuple[str, ...] = tuple(
             "max_iterations",
             "observability_metadata",
             "plugins",
+            "worktree",
             "workspace",
         }
     )

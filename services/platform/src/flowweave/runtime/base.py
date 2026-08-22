@@ -362,6 +362,19 @@ class RuntimeHandle:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeConversationIdentity:
+    """Ephemeral OpenHands identity evidence used to verify an original-ID reload."""
+
+    conversation_id: str
+    workspace_working_dir: str
+    persistence_dir: str
+    event_id: str | None
+    parent_id: str | None
+    action_id: str | None
+    tool_call_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeWakeup:
     """Transient notification and the minimal durable Bash compensation state."""
 
@@ -524,6 +537,13 @@ class RuntimePort(Protocol):
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle: ...
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle: ...
+
+    def reload_conversation(
+        self,
+        handle: RuntimeHandle,
+        *,
+        expected: RuntimeConversationIdentity | None = None,
+    ) -> RuntimeConversationIdentity: ...
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch: ...
 

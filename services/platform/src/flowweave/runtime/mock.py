@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from flowweave.runtime.base import (
     RuntimeAskAgentResult,
+    RuntimeConversationIdentity,
     RuntimeEventBatch,
     RuntimeForkResult,
     RuntimeHandle,
@@ -23,6 +24,7 @@ from flowweave.runtime.base import (
     RuntimeWakeup,
     StartAttemptRequest,
 )
+from flowweave.shared.errors import DomainError
 
 
 class MockRuntime:
@@ -120,6 +122,29 @@ class MockRuntime:
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         return RuntimeEventBatch(cursor=handle.cursor)
+
+    def reload_conversation(
+        self,
+        handle: RuntimeHandle,
+        *,
+        expected: RuntimeConversationIdentity | None = None,
+    ) -> RuntimeConversationIdentity:
+        identity = RuntimeConversationIdentity(
+            conversation_id=handle.conversation_id,
+            workspace_working_dir="/mock/workspace",
+            persistence_dir="/mock/conversations",
+            event_id=handle.cursor,
+            parent_id=None,
+            action_id=None,
+            tool_call_id=None,
+        )
+        if expected is not None and identity != expected:
+            raise DomainError(
+                "RUNTIME_RELOAD_IDENTITY_MISMATCH",
+                "The mock Conversation identity did not survive reload",
+                409,
+            )
+        return identity
 
     async def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]:
         del handle

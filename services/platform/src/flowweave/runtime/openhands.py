@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import time
 from collections.abc import AsyncIterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
+from uuid import UUID
 
 import httpx
 from websockets.asyncio.client import connect
@@ -20,6 +22,7 @@ from flowweave.runtime.base import (
     RuntimeAskAgentResult,
     RuntimeCondenser,
     RuntimeContract,
+    RuntimeConversationIdentity,
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeEventType,
@@ -117,9 +120,9 @@ class OpenHandsRuntime:
             if exc.response.status_code == 404 and path.startswith("/api/conversations/"):
                 raise DomainError(
                     "RUNTIME_CONVERSATION_MISSING",
-                    "Agent Runtime conversation no longer exists; retry will rebuild it",
+                    "The original OpenHands Conversation is unavailable and cannot be replaced",
                     409,
-                    {"status_code": 404},
+                    {"status_code": 404, "path": path},
                 ) from exc
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
@@ -942,6 +945,7 @@ class OpenHandsRuntime:
                 "kind": "LocalWorkspace",
                 "working_dir": self._request_workspace_path(request),
             },
+            "worktree": False,
             "max_iterations": spec.budgets.max_iterations,
             "agent": agent,
             "confirmation_policy": {
@@ -1021,6 +1025,20 @@ class OpenHandsRuntime:
         conversation_id = str(created.get("id") or "")
         if not conversation_id:
             raise DomainError("RUNTIME_PROTOCOL_ERROR", "Missing conversation id", 502)
+        try:
+            canonical_conversation_id = str(UUID(conversation_id))
+        except ValueError as exc:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned an invalid Conversation identity",
+                502,
+            ) from exc
+        if canonical_conversation_id != conversation_id:
+            raise DomainError(
+                "RUNTIME_PROTOCOL_ERROR",
+                "OpenHands returned a non-canonical Conversation identity",
+                502,
+            )
         self._contracts[conversation_id] = self._output_contract(request)
         cursor_value = created.get("leaf_event_id") or created.get("last_user_message_id")
         cursor = str(cursor_value) if cursor_value else None
@@ -1036,6 +1054,180 @@ class OpenHandsRuntime:
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=True)
+
+    @staticmethod
+    def _formal_identity(value: object, *, field: str, required: bool) -> str | None:
+        if value is None and not required:
+            return None
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > 200
+            or (
+                not (field == "parent_id" and value == "__root__")
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", value) is None
+            )
+        ):
+            raise DomainError(
+                "RUNTIME_EVENT_IDENTITY_INVALID",
+                "OpenHands returned an invalid formal event identity",
+                502,
+                {"field": field},
+            )
+        return value
+
+    @classmethod
+    def _event_identity(
+        cls, item: dict[str, Any]
+    ) -> tuple[str, str | None, str | None, str | None]:
+        event_id = cls._formal_identity(item.get("id"), field="id", required=True)
+        assert event_id is not None
+        return (
+            event_id,
+            cls._formal_identity(item.get("parent_id"), field="parent_id", required=False),
+            cls._formal_identity(item.get("action_id"), field="action_id", required=False),
+            cls._formal_identity(
+                item.get("tool_call_id"), field="tool_call_id", required=False
+            ),
+        )
+
+    def _conversation_state(self, handle: RuntimeHandle) -> dict[str, Any]:
+        try:
+            expected_id = str(UUID(handle.conversation_id))
+        except ValueError as exc:
+            raise DomainError(
+                "RUNTIME_CONVERSATION_ID_INVALID",
+                "The OpenHands Conversation locator is invalid",
+                409,
+            ) from exc
+        if expected_id != handle.conversation_id:
+            raise DomainError(
+                "RUNTIME_CONVERSATION_ID_INVALID",
+                "The OpenHands Conversation locator is not canonical",
+                409,
+            )
+        state = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+        if str(state.get("id") or "") != handle.conversation_id:
+            raise DomainError(
+                "RUNTIME_CONVERSATION_IDENTITY_DRIFT",
+                "OpenHands returned a different Conversation identity",
+                409,
+                {"conversation_id": handle.conversation_id},
+            )
+        raw_workspace = state.get("workspace")
+        workspace = (
+            cast(dict[str, Any], raw_workspace) if isinstance(raw_workspace, dict) else {}
+        )
+        working_dir_raw = workspace.get("working_dir")
+        working_dir = (
+            PurePosixPath(working_dir_raw) if isinstance(working_dir_raw, str) else None
+        )
+        project_root = PurePosixPath("/runtime/workspace/project")
+        if (
+            workspace.get("kind") != "LocalWorkspace"
+            or working_dir is None
+            or not working_dir.is_absolute()
+            or ".." in working_dir.parts
+            or not working_dir.is_relative_to(project_root)
+        ):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_IDENTITY_DRIFT",
+                "The reloaded Conversation is not bound to the FlowRun workspace",
+                409,
+                {"conversation_id": handle.conversation_id},
+            )
+        if state.get("persistence_dir") != "/runtime/state/conversations":
+            raise DomainError(
+                "RUNTIME_PERSISTENCE_IDENTITY_DRIFT",
+                "The reloaded Conversation is not bound to external OpenHands state",
+                409,
+                {"conversation_id": handle.conversation_id},
+            )
+        return state
+
+    def reload_conversation(
+        self,
+        handle: RuntimeHandle,
+        *,
+        expected: RuntimeConversationIdentity | None = None,
+    ) -> RuntimeConversationIdentity:
+        """Hydrate one persisted Conversation by its original OpenHands identity."""
+
+        if expected is not None and expected.conversation_id != handle.conversation_id:
+            raise DomainError(
+                "RUNTIME_RELOAD_IDENTITY_MISMATCH",
+                "The reload probe targets a different OpenHands Conversation",
+                409,
+                {"conversation_id": handle.conversation_id},
+            )
+        state = self._conversation_state(handle)
+        leaf_event_id = self._formal_identity(
+            state.get("leaf_event_id"), field="leaf_event_id", required=False
+        )
+        probe_event_id = (
+            expected.event_id
+            if expected is not None and expected.event_id is not None
+            else leaf_event_id
+        )
+        event: dict[str, Any] | None = None
+        if probe_event_id is not None:
+            event = self._request(
+                "GET",
+                f"/api/conversations/{handle.conversation_id}/events/{probe_event_id}",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            )
+            if str(event.get("id") or "") != probe_event_id:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_DRIFT",
+                    "OpenHands reloaded a different event identity",
+                    409,
+                    {"conversation_id": handle.conversation_id},
+                )
+        else:
+            page = self._request(
+                "GET",
+                f"/api/conversations/{handle.conversation_id}/events/search",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                params={"limit": 1, "sort_order": "TIMESTAMP_DESC"},
+            )
+            raw_items = page.get("items")
+            if not isinstance(raw_items, list) or any(
+                not isinstance(item, dict) for item in cast(list[object], raw_items)
+            ):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned an invalid event identity page",
+                    502,
+                )
+            if raw_items:
+                event = cast(dict[str, Any], raw_items[0])
+
+        event_identity = self._event_identity(event) if event is not None else None
+        raw_workspace = cast(dict[str, Any], state["workspace"])
+        identity = RuntimeConversationIdentity(
+            conversation_id=handle.conversation_id,
+            workspace_working_dir=str(raw_workspace["working_dir"]),
+            persistence_dir=str(state["persistence_dir"]),
+            event_id=event_identity[0] if event_identity is not None else None,
+            parent_id=event_identity[1] if event_identity is not None else None,
+            action_id=event_identity[2] if event_identity is not None else None,
+            tool_call_id=event_identity[3] if event_identity is not None else None,
+        )
+        if expected is not None and identity != expected:
+            raise DomainError(
+                "RUNTIME_RELOAD_IDENTITY_MISMATCH",
+                "The original OpenHands Conversation or event identity did not survive reload",
+                409,
+                {"conversation_id": handle.conversation_id},
+            )
+        return identity
 
     @staticmethod
     def _text_content(value: object) -> str:
@@ -1349,9 +1541,19 @@ class OpenHandsRuntime:
         session_api_key: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
         items: list[dict[str, Any]] = []
+        seen_event_ids: set[str] = set()
+        seen_page_ids: set[str] = set()
         page_id = cursor
         first_page = True
         while True:
+            if page_id is not None:
+                if page_id in seen_page_ids:
+                    raise DomainError(
+                        "RUNTIME_EVENT_IDENTITY_INVALID",
+                        "OpenHands returned a cyclic event page identity",
+                        502,
+                    )
+                seen_page_ids.add(page_id)
             params: dict[str, Any] = {"limit": 100, "sort_order": "TIMESTAMP"}
             if page_id:
                 params["page_id"] = page_id
@@ -1363,15 +1565,24 @@ class OpenHandsRuntime:
                 params=params,
             )
             raw_items: object = data.get("items", [])
-            page_items = (
-                [
-                    cast(dict[str, Any], item)
-                    for item in cast(list[object], raw_items)
-                    if isinstance(item, dict)
-                ]
-                if isinstance(raw_items, list)
-                else []
-            )
+            if not isinstance(raw_items, list) or any(
+                not isinstance(item, dict) for item in cast(list[object], raw_items)
+            ):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned an invalid event identity page",
+                    502,
+                )
+            page_items = [
+                cast(dict[str, Any], item) for item in cast(list[object], raw_items)
+            ]
+            page_event_ids = [self._event_identity(item)[0] for item in page_items]
+            if len(set(page_event_ids)) != len(page_event_ids):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned duplicate formal event identities",
+                    502,
+                )
             if first_page and cursor:
                 anchor_index = next(
                     (
@@ -1382,10 +1593,35 @@ class OpenHandsRuntime:
                     None,
                 )
                 if anchor_index is None:
-                    return [], cursor
+                    raise DomainError(
+                        "RUNTIME_EVENT_IDENTITY_MISMATCH",
+                        "The persisted OpenHands event anchor is missing after reload",
+                        409,
+                        {"conversation_id": conversation_id, "event_id": cursor},
+                    )
                 page_items = page_items[anchor_index + 1 :]
+                page_event_ids = page_event_ids[anchor_index + 1 :]
+            elif not first_page and page_id and (
+                not page_event_ids or page_event_ids[0] != page_id
+            ):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned a page without its formal event anchor",
+                    502,
+                    {"conversation_id": conversation_id, "event_id": page_id},
+                )
+            if any(event_id in seen_event_ids for event_id in page_event_ids):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands replayed a formal event identity across pages",
+                    502,
+                )
+            seen_event_ids.update(page_event_ids)
             items.extend(page_items)
-            next_page_id = str(data.get("next_page_id") or "") or None
+            raw_next_page_id = data.get("next_page_id")
+            next_page_id = self._formal_identity(
+                raw_next_page_id, field="next_page_id", required=False
+            )
             if not next_page_id or next_page_id == page_id:
                 break
             page_id = next_page_id
@@ -1519,12 +1755,7 @@ class OpenHandsRuntime:
     def get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
-        state = self._request(
-            "GET",
-            f"/api/conversations/{handle.conversation_id}",
-            base_url=base_url,
-            session_api_key=session_api_key,
-        )
+        state = self._conversation_state(handle)
         if str(state.get("execution_status") or "").lower() != "waiting_for_confirmation":
             return None
         leaf = str(state.get("leaf_event_id") or "") or None
@@ -1668,18 +1899,13 @@ class OpenHandsRuntime:
         )
         events = tuple(
             RuntimeEvent(
-                cursor=str(item.get("id") or f"{cursor or '0'}:{index}"),
+                cursor=self._event_identity(item)[0],
                 event_type=self._event_type(item),
                 payload=self._event_payload(item),
             )
-            for index, item in enumerate(items, start=1)
+            for item in items
         )
-        state = self._request(
-            "GET",
-            f"/api/conversations/{handle.conversation_id}",
-            base_url=base_url,
-            session_api_key=session_api_key,
-        )
+        state = self._conversation_state(handle)
         state_cursor = str(state.get("leaf_event_id") or cursor or handle.cursor or "") or None
         return RuntimeEventBatch(
             events=events,
@@ -2132,12 +2358,7 @@ class OpenHandsRuntime:
 
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         base_url = self._base_url_for_handle(handle)
-        data = self._request(
-            "GET",
-            f"/api/conversations/{handle.conversation_id}",
-            base_url=base_url,
-            session_api_key=self._session_key_for_handle(handle),
-        )
+        data = self._conversation_state(handle)
         status = str(data.get("execution_status") or "running").lower()
         cursor = str(data.get("leaf_event_id") or handle.cursor or "") or None
         if status == "finished":
@@ -2198,12 +2419,7 @@ class OpenHandsRuntime:
             or created.get("leaf_event_id")
         )
         if not cursor_value:
-            state = self._request(
-                "GET",
-                f"/api/conversations/{handle.conversation_id}",
-                base_url=self._base_url_for_handle(handle),
-                session_api_key=self._session_key_for_handle(handle),
-            )
+            state = self._conversation_state(handle)
             cursor_value = state.get("last_user_message_id") or handle.cursor
         cursor = str(cursor_value) if cursor_value else None
         return RuntimeResult(status="RUNNING", cursor=cursor)
@@ -2231,12 +2447,7 @@ class OpenHandsRuntime:
 
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
-        state = self._request(
-            "GET",
-            f"/api/conversations/{handle.conversation_id}",
-            base_url=base_url,
-            session_api_key=session_api_key,
-        )
+        state = self._conversation_state(handle)
         status = str(state.get("execution_status") or "").lower()
         # Only IDLE/PAUSED are resumable. A worker may crash after a rejected
         # batch has already resumed and completed but before FlowWeave commits
@@ -2296,12 +2507,7 @@ class OpenHandsRuntime:
     ) -> RuntimeAskAgentResult:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
-        before_state = self._request(
-            "GET",
-            f"/api/conversations/{handle.conversation_id}",
-            base_url=base_url,
-            session_api_key=session_api_key,
-        )
+        before_state = self._conversation_state(handle)
         before = next(
             (
                 item
@@ -2364,12 +2570,7 @@ class OpenHandsRuntime:
                 "OpenHands ask_agent response exceeds the governed size limit",
                 502,
             )
-        after_state = self._request(
-            "GET",
-            f"/api/conversations/{handle.conversation_id}",
-            base_url=base_url,
-            session_api_key=session_api_key,
-        )
+        after_state = self._conversation_state(handle)
         after = next(
             (
                 item
@@ -2394,12 +2595,7 @@ class OpenHandsRuntime:
 
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
-        source_state = self._request(
-            "GET",
-            f"/api/conversations/{handle.conversation_id}",
-            base_url=base_url,
-            session_api_key=session_api_key,
-        )
+        source_state = self._conversation_state(handle)
         source_leaf = str(source_state.get("leaf_event_id") or "") or None
         source_status = str(source_state.get("execution_status") or "").lower()
         if source_leaf != expected_source_leaf_event_id:

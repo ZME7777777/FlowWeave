@@ -115,6 +115,8 @@ REQUIRED_PATHS = {
     "/server_info",
     "/api/conversations",
     "/api/conversations/{conversation_id}/condense",
+    "/api/conversations/{conversation_id}/events/search",
+    "/api/conversations/{conversation_id}/events/{event_id}",
     "/api/conversations/{conversation_id}/events/respond_to_confirmation",
     "/api/conversations/{conversation_id}/fork",
     "/api/conversations/{conversation_id}/navigate",
@@ -155,6 +157,7 @@ REQUIRED_START_FIELDS = {
     "plugins",
     "load_ambient_plugins",
     "security_analyzer",
+    "worktree",
     "workspace",
 }
 EXPECTED_TOOL_MODULES = {
