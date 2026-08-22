@@ -1,3 +1,8 @@
+from flowweave.modules.conversations.application.locator import (
+    active_runtime_handle,
+    bind_openhands_conversation,
+    conversation_locator,
+)
 from flowweave.modules.conversations.application.service import (
     attachment_workspace,
     bind_auto_runtime,
@@ -62,9 +67,12 @@ from flowweave.modules.conversations.domain.enums import ConversationState
 
 __all__ = (
     "ConversationState",
+    "active_runtime_handle",
     "bind_auto_runtime",
+    "bind_openhands_conversation",
     "cancel_queued_message",
     "create_conversation",
+    "conversation_locator",
     "delete_conversation",
     "discard_prepared_message_content",
     "attachment_workspace",

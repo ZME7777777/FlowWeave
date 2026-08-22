@@ -29,6 +29,18 @@ class RuntimeSessionFence:
     generation_row_version: int
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveRuntimeConnection:
+    """Protected physical connection resolved from the active logical generation."""
+
+    runtime_session_id: str
+    flow_run_id: str
+    managed_runtime_id: str
+    resource_name: str
+    generation: int
+    runtime_fence: RuntimeSessionFence
+
+
 def ensure_flow_run_runtime_session(
     db: Session,
     *,
@@ -378,6 +390,48 @@ def assert_active_runtime_fence(
     return _fence(session, item)
 
 
+def active_flow_run_runtime_connection(
+    db: Session, *, flow_run_id: str
+) -> ActiveRuntimeConnection:
+    """Resolve the only routable Agent Server generation for a FlowRun."""
+
+    match = db.execute(
+        select(FlowRunRuntime, RuntimeGeneration, ManagedSandbox)
+        .join(
+            RuntimeGeneration,
+            (RuntimeGeneration.runtime_session_id == FlowRunRuntime.id)
+            & (RuntimeGeneration.generation == FlowRunRuntime.active_generation),
+        )
+        .join(ManagedSandbox, ManagedSandbox.id == RuntimeGeneration.managed_runtime_id)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.status == "ACTIVE",
+            RuntimeGeneration.state == "READY",
+            ManagedSandbox.kind == "AGENT_RUNTIME",
+            ManagedSandbox.owner_type == "FLOW_RUN",
+            ManagedSandbox.owner_id == flow_run_id,
+            ManagedSandbox.desired_state == "RUNNING",
+            ManagedSandbox.observed_state == "RUNNING",
+        )
+    ).one_or_none()
+    if match is None:
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_ACTIVE",
+            "The FlowRun has no active Agent Server generation",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    session, generation, managed_runtime = match
+    return ActiveRuntimeConnection(
+        runtime_session_id=session.id,
+        flow_run_id=session.flow_run_id,
+        managed_runtime_id=managed_runtime.id,
+        resource_name=managed_runtime.backend_resource_name,
+        generation=generation.generation,
+        runtime_fence=_fence(session, generation),
+    )
+
+
 def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
     """Remove logical Runtime records after all physical generations are gone."""
 
@@ -430,7 +484,9 @@ def _fence(
 
 
 __all__ = (
+    "ActiveRuntimeConnection",
     "RuntimeSessionFence",
+    "active_flow_run_runtime_connection",
     "activate_runtime_generation",
     "assert_active_runtime_fence",
     "delete_flow_run_runtime_session",

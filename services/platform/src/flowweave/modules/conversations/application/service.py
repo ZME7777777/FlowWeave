@@ -19,6 +19,10 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.public import resolve_snapshot_memory
+from flowweave.modules.conversations.application.locator import (
+    active_runtime_handle,
+    bind_openhands_conversation,
+)
 from flowweave.modules.conversations.domain.enums import (
     CONVERSATION_ENABLED_ATTEMPT_STATES,
     TERMINAL_ATTEMPT_STATES,
@@ -242,22 +246,21 @@ def _event(
     )
 
 
-def _runtime_handle(item: AgentConversation) -> RuntimeHandle:
+def _runtime_handle(db: Session, item: AgentConversation) -> RuntimeHandle:
     if not item.runtime_conversation_id or not item.runtime_adapter:
         raise DomainError(
             "RUNTIME_CONVERSATION_UNAVAILABLE",
             "Conversation has no available Runtime",
             409,
         )
-    return RuntimeHandle(
-        item.runtime_job_id or item.runtime_conversation_id,
-        item.runtime_conversation_id,
-        item.runtime_cursor,
-        runtime_resource_id=item.runtime_sandbox_id or "",
-        runtime_resource_name=(
-            (item.runtime_job_id or "").split(":", 1)[1]
-            if ":" in (item.runtime_job_id or "")
-            else ""
+    _, flow_run_id = _context(db, _attempt(db, item.attempt_id))
+    return active_runtime_handle(
+        db,
+        flow_run_id=flow_run_id,
+        openhands_conversation_id=item.runtime_conversation_id,
+        cursor=item.runtime_cursor,
+        route_kind=(
+            "EXECUTION" if item.kind == ConversationKind.AUTO else "COLLABORATION"
         ),
     )
 
@@ -828,10 +831,9 @@ def _connection_status(db: Session, item: AgentConversation) -> dict[str, Any]:
 
 def terminal_container_id(db: Session, conversation_id: str) -> str:
     item = _conversation(db, conversation_id)
-    job_id = item.runtime_job_id or ""
-    for prefix in ("env-exec:", "env-chat:"):
-        if job_id.startswith(prefix) and job_id.removeprefix(prefix):
-            return job_id.removeprefix(prefix)
+    handle = _runtime_handle(db, item)
+    if handle.runtime_resource_name:
+        return handle.runtime_resource_name
     raise DomainError(
         "AGENT_TERMINAL_UNAVAILABLE",
         "This Agent conversation is not running in a terminal environment",
@@ -843,13 +845,9 @@ def terminal_resource_details(db: Session, conversation_id: str) -> tuple[str, s
     """Return the Runtime resource name and its ownership identifiers."""
 
     item = _conversation(db, conversation_id)
-    resource_name = terminal_container_id(db, conversation_id)
-    sandbox_id = item.runtime_sandbox_id
-    if not sandbox_id and item.kind == ConversationKind.AUTO:
-        # AUTO conversations share the Attempt Runtime. Older/in-flight rows
-        # may predate projection of the sandbox ledger ID onto the
-        # conversation, so resolve it from the authoritative Attempt binding.
-        sandbox_id = _attempt(db, item.attempt_id).runtime_sandbox_id
+    handle = _runtime_handle(db, item)
+    resource_name = handle.runtime_resource_name
+    sandbox_id = handle.runtime_resource_id
     if not sandbox_id:
         raise DomainError(
             "AGENT_TERMINAL_UNAVAILABLE",
@@ -999,6 +997,13 @@ def bind_auto_runtime(
 ) -> None:
     attempt = _attempt(db, attempt_id)
     item = ensure_auto_conversation(db, attempt)
+    _, flow_run_id = _context(db, attempt)
+    bind_openhands_conversation(
+        db,
+        flow_run_id=flow_run_id,
+        openhands_conversation_id=runtime_conversation_id,
+        display_label=item.title,
+    )
     item.runtime_job_id = runtime_job_id
     item.runtime_conversation_id = runtime_conversation_id
     item.runtime_cursor = runtime_cursor
@@ -1569,19 +1574,7 @@ def runtime_stream_details(db: Session, conversation_id: str) -> tuple[str | Non
             "This Agent conversation is not connected to a Runtime",
             409,
         )
-    sandbox_id = item.runtime_sandbox_id
-    if not sandbox_id and item.kind == ConversationKind.AUTO:
-        sandbox_id = _attempt(db, item.attempt_id).runtime_sandbox_id
-    sandbox = sandboxes.sandbox_snapshot(db, sandbox_id)
-    resource_id = str(sandbox.get("id") or "") if sandbox is not None else ""
-    resource_name = str(sandbox.get("backend_resource_name") or "") if sandbox is not None else ""
-    return item.runtime_adapter, RuntimeHandle(
-        item.runtime_job_id or item.runtime_conversation_id,
-        item.runtime_conversation_id,
-        item.runtime_cursor,
-        resource_id,
-        resource_name,
-    )
+    return item.runtime_adapter, _runtime_handle(db, item)
 
 
 def _fork_message_text(message: AgentMessage) -> str:
@@ -1926,11 +1919,7 @@ def process_fork_conversation(
             409,
         )
     expected_target_version = target.state_version
-    handle = RuntimeHandle(
-        command.runtime_job_id,
-        command.source_runtime_conversation_id,
-        source.runtime_cursor,
-    )
+    handle = _runtime_handle(db, source)
     adapter = command.runtime_adapter
     target_title = target.title
     db.rollback()
@@ -1975,6 +1964,13 @@ def process_fork_conversation(
     }
     target.state = ConversationState.IDLE
     target.state_version += 1
+    _, flow_run_id = _context(db, _attempt(db, target.attempt_id))
+    bind_openhands_conversation(
+        db,
+        flow_run_id=flow_run_id,
+        openhands_conversation_id=result.handle.conversation_id,
+        display_label=target.title,
+    )
     source.state = ConversationState.IDLE
     source.state_version += 1
     command.resolved_source_event_id = result.source_event_id
@@ -2203,10 +2199,13 @@ def process_conversation_condensation(
         return
 
     command_version = command.state_version
+    active_handle = _runtime_handle(db, conversation)
     handle = RuntimeHandle(
-        conversation.runtime_job_id or command.runtime_conversation_id,
-        command.runtime_conversation_id,
+        active_handle.job_id,
+        active_handle.conversation_id,
         command.baseline_cursor,
+        runtime_resource_id=active_handle.runtime_resource_id,
+        runtime_resource_name=active_handle.runtime_resource_name,
     )
     runtime_adapter = conversation.runtime_adapter
     runtime_sandbox_id = conversation.runtime_sandbox_id
@@ -2620,7 +2619,7 @@ def request_goal_command(
             expected=payload.expected_conversation_version,
             actual=item.state_version,
         )
-    handle = _runtime_handle(item)
+    handle = _runtime_handle(db, item)
     active = db.scalar(
         select(RuntimeGoalCommand).where(
             RuntimeGoalCommand.conversation_id == item.id,
@@ -2749,7 +2748,7 @@ def process_goal_command(
         db.rollback()
         return
     item = _conversation(db, command.conversation_id)
-    handle = _runtime_handle(item)
+    handle = _runtime_handle(db, item)
     adapter = item.runtime_adapter
     command_version = command.state_version
     command_state = command.state
@@ -2958,7 +2957,7 @@ def request_ask_agent(
             "ask_agent requires an active human conversation",
             409,
         )
-    handle = _runtime_handle(item)
+    handle = _runtime_handle(db, item)
     question = payload.question.strip()
     query = RuntimeDiagnosticQuery(
         attempt_id=item.attempt_id,
@@ -3074,7 +3073,7 @@ def process_ask_agent(db: Session, query_id: str, lease: Lease, *, commit: bool 
         db.commit() if commit else db.flush()
         return
     item = _conversation(db, query.conversation_id)
-    handle = _runtime_handle(item)
+    handle = _runtime_handle(db, item)
     adapter = item.runtime_adapter
     timeout_seconds = query.timeout_seconds
     question_digest = query.question_digest
@@ -3293,15 +3292,7 @@ def delete_conversation(db: Session, conversation_id: str) -> None:
             "The automatic execution conversation is part of the Attempt audit trail",
             409,
         )
-    handle = (
-        RuntimeHandle(
-            item.runtime_job_id or item.runtime_conversation_id,
-            item.runtime_conversation_id,
-            item.runtime_cursor,
-        )
-        if item.runtime_conversation_id
-        else None
-    )
+    handle = _runtime_handle(db, item) if item.runtime_conversation_id else None
     db.rollback()
     if handle is not None:
         get_runtime().cancel(handle)
@@ -4288,6 +4279,12 @@ def process_create_conversation(
         return
     db.expire_all()
     current = _conversation(db, conversation_id)
+    bind_openhands_conversation(
+        db,
+        flow_run_id=run_id,
+        openhands_conversation_id=handle.conversation_id,
+        display_label=current.title,
+    )
     program = db.scalar(
         select(AgentMessage)
         .where(
@@ -4323,11 +4320,7 @@ def process_cleanup_conversation_runtime(
     ):
         return
     runtime_conversation_id = item.runtime_conversation_id
-    handle = RuntimeHandle(
-        item.runtime_job_id or runtime_conversation_id,
-        runtime_conversation_id,
-        item.runtime_cursor,
-    )
+    handle = _runtime_handle(db, item)
     adapter = item.runtime_adapter
     runtime_sandbox_id = item.runtime_sandbox_id
     db.rollback()
@@ -4372,11 +4365,7 @@ def process_stop_conversation_runtime(
     ):
         sandboxes.request_delete_durable(db, runtime_sandbox_id)
     if runtime_conversation_id:
-        handle = RuntimeHandle(
-            item.runtime_job_id or runtime_conversation_id,
-            runtime_conversation_id,
-            item.runtime_cursor,
-        )
+        handle = _runtime_handle(db, item)
         adapter = item.runtime_adapter
         db.rollback()
         runtime_for(adapter, handle).cancel(handle)
@@ -5405,7 +5394,7 @@ def process_poll_conversation(
         conversation.state_version += 1
         db.commit() if commit else db.flush()
         return
-    handle = _runtime_handle(conversation)
+    handle = _runtime_handle(db, conversation)
     adapter = conversation.runtime_adapter
     runtime_sandbox_id = conversation.runtime_sandbox_id
     active_goal_id = active_goal.id if active_goal is not None else None
@@ -5614,11 +5603,7 @@ def process_deliver_message(
         return
     message.delivery_state = DeliveryState.DELIVERING
     current_conversation_id = conversation.id
-    handle = RuntimeHandle(
-        conversation.runtime_job_id or conversation.runtime_conversation_id,
-        conversation.runtime_conversation_id,
-        conversation.runtime_cursor,
-    )
+    handle = _runtime_handle(db, conversation)
     content_json = dict(message.content_json)
     runtime_selection = cast(dict[str, Any], content_json.get("runtime_selection") or {})
     provider = (

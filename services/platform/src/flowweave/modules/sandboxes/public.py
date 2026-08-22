@@ -35,17 +35,21 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     runtime_allocation_for_flow_run,
 )
 from flowweave.modules.sandboxes.application.runtime_sessions import (
+    ActiveRuntimeConnection,
     RuntimeSessionFence,
+    active_flow_run_runtime_connection,
     assert_active_runtime_fence,
     ensure_flow_run_runtime_session,
 )
 
 __all__ = (
+    "ActiveRuntimeConnection",
     "ReconcileReport",
     "RuntimeProviderAllocation",
     "RuntimeSessionFence",
     "RuntimeStorageAllocation",
     "allocate_flow_run_runtime",
+    "active_flow_run_runtime_connection",
     "assert_active_runtime_fence",
     "cleanup_unclaimed_runtime_memory",
     "create_temporary_runtime",

@@ -28,6 +28,7 @@ from flowweave.modules.catalog.infrastructure.models import (
 from flowweave.modules.conversations.infrastructure.models import (
     AgentConversation,
     AgentMessage,
+    FlowRunConversationBinding,
     MessageArtifactRef,
     RuntimeCondensation,
     RuntimeCondensationCommand,
@@ -108,6 +109,7 @@ __all__ = (
     "FlowPortMapping",
     "FlowNode",
     "FlowRun",
+    "FlowRunConversationBinding",
     "FlowRunRuntime",
     "FlowRunRuntimeAllocation",
     "FlowRunRuntimeSecretReference",

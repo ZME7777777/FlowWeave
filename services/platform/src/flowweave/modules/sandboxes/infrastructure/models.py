@@ -60,6 +60,11 @@ class FlowRunRuntime(Base):
 
     __tablename__ = "flow_run_runtimes"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "flow_run_id",
+            name="uq_flow_run_runtime_session_owner",
+        ),
         CheckConstraint(
             "active_generation IS NULL OR active_generation >= 1",
             name="ck_flow_run_runtime_active_generation",

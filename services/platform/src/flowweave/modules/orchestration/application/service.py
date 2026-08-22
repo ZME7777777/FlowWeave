@@ -405,6 +405,32 @@ def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
     return item
 
 
+def _active_attempt_runtime_handle(
+    db: Session,
+    attempt: NodeAttempt,
+    *,
+    conversation_id: str | None = None,
+    cursor: str | None = None,
+    route_kind: str = "EXECUTION",
+) -> RuntimeHandle:
+    openhands_conversation_id = conversation_id or attempt.conversation_id
+    if not openhands_conversation_id:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_UNAVAILABLE",
+            "The Attempt has no OpenHands Conversation identity",
+            409,
+            {"attempt_id": attempt.id},
+        )
+    flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
+    return conversations.active_runtime_handle(
+        db,
+        flow_run_id=flow_run_id,
+        openhands_conversation_id=openhands_conversation_id,
+        cursor=attempt.runtime_cursor if cursor is None else cursor,
+        route_kind=route_kind,
+    )
+
+
 def _node_run(db: Session, node_run_id: str) -> NodeRun:
     item = db.get(NodeRun, node_run_id)
     if not item:
@@ -787,14 +813,7 @@ def process_runtime_wakeup(
     if attempt.state != AttemptState.EXECUTING or attempt.runtime_phase != "RUNNING":
         return
     expected_version = attempt.state_version
-    sandbox = sandboxes.sandbox_snapshot(db, attempt.runtime_sandbox_id) or {}
-    handle = RuntimeHandle(
-        attempt.runtime_job_id or "",
-        attempt.conversation_id or "",
-        attempt.runtime_cursor,
-        str(sandbox.get("id") or ""),
-        str(sandbox.get("backend_resource_name") or ""),
-    )
+    handle = _active_attempt_runtime_handle(db, attempt)
     _release_worker_read_transaction(db, lease)
     try:
         wakeup = get_runtime().wait_for_wakeup(
@@ -2287,9 +2306,7 @@ def process_poll_runtime(
         return
     expected_version = attempt.state_version
     current_attempt_id = attempt.id
-    handle = RuntimeHandle(
-        attempt.runtime_job_id or "", attempt.conversation_id or "", attempt.runtime_cursor
-    )
+    handle = _active_attempt_runtime_handle(db, attempt)
     _release_worker_read_transaction(db, lease)
     runtime = get_runtime()
     batch = runtime.read_events(handle)
@@ -2611,10 +2628,10 @@ def process_runtime_confirmation(
     batch_version = batch.state_version
     attempt_version = attempt.state_version
     attempt_id = attempt.id
-    handle = RuntimeHandle(
-        attempt.runtime_job_id or "",
-        attempt.conversation_id or batch.runtime_conversation_id,
-        attempt.runtime_cursor,
+    handle = _active_attempt_runtime_handle(
+        db,
+        attempt,
+        conversation_id=attempt.conversation_id or batch.runtime_conversation_id,
     )
     expected_digest = batch.pending_actions_digest
     accept = batch.decision_accept
@@ -2745,9 +2762,7 @@ def process_resume_runtime(
         raise not_found("human_action", action_id)
     current_attempt_id = attempt.id
     content = str(action.payload_json.get("content", ""))
-    handle = RuntimeHandle(
-        attempt.runtime_job_id or "", attempt.conversation_id or "", attempt.runtime_cursor
-    )
+    handle = _active_attempt_runtime_handle(db, attempt)
     selection = cast(dict[str, Any], action.payload_json.get("runtime_selection") or {})
     node_run = _node_run(db, attempt.node_run_id)
     node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
@@ -2812,9 +2827,7 @@ def _runtime_cancel_targets(
         targets.append(
             (
                 attempt.runtime_adapter,
-                RuntimeHandle(
-                    attempt.runtime_job_id, attempt.conversation_id, attempt.runtime_cursor
-                ),
+                _active_attempt_runtime_handle(db, attempt),
                 automatic.id if automatic is not None else None,
             )
         )
@@ -2828,10 +2841,16 @@ def _runtime_cancel_targets(
         targets.append(
             (
                 conversation.runtime_adapter,
-                RuntimeHandle(
-                    conversation.runtime_job_id or conversation_id,
-                    conversation_id,
-                    conversation.runtime_cursor,
+                _active_attempt_runtime_handle(
+                    db,
+                    attempt,
+                    conversation_id=conversation_id,
+                    cursor=conversation.runtime_cursor,
+                    route_kind=(
+                        "EXECUTION"
+                        if conversation.kind == "AUTO"
+                        else "COLLABORATION"
+                    ),
                 ),
                 conversation.id,
             )
