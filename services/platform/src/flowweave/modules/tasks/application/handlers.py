@@ -15,6 +15,7 @@ from flowweave.modules.catalog.public import (
 from flowweave.modules.conversations import public as conversations
 from flowweave.modules.environments import public as environments
 from flowweave.modules.orchestration import public as orchestration
+from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, lease_is_current
 from flowweave.shared.models import BackgroundTask, TaskState
 
@@ -181,6 +182,18 @@ def _stop_conversation_runtime(
     conversations.process_stop_conversation_runtime(db, aggregate_id, lease, commit=False)
 
 
+def _replace_flow_run_runtime(
+    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
+) -> None:
+    sandboxes.process_flow_run_runtime_replacement(
+        db,
+        aggregate_id,
+        int(payload["failed_generation"]),
+        lease,
+        commit=False,
+    )
+
+
 def _cleanup_capability_import(
     db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
 ) -> None:
@@ -227,6 +240,7 @@ HANDLERS: dict[str, Handler] = {
     "POLL_CONVERSATION": _poll_conversation,
     "WAIT_CONVERSATION_WAKEUP": _wait_conversation_wakeup,
     "STOP_CONVERSATION_RUNTIME": _stop_conversation_runtime,
+    "REPLACE_FLOW_RUN_RUNTIME": _replace_flow_run_runtime,
     "CLEANUP_CAPABILITY_IMPORT": _cleanup_capability_import,
     "BUILD_CAPABILITY_DEPENDENCIES": _build_capability_dependencies,
     "RESOLVE_PLUGIN_SOURCE": _resolve_plugin_source,
@@ -267,5 +281,9 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
         conversations.record_ask_agent_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "STOP_CONVERSATION_RUNTIME":
         conversations.record_stop_conversation_failure(db, task.aggregate_id, error, terminal=True)
+    elif task.task_type == "REPLACE_FLOW_RUN_RUNTIME":
+        sandboxes.record_terminal_runtime_replacement_failure(
+            db, task.aggregate_id, error
+        )
     elif task.task_type == "RESOLVE_PLUGIN_SOURCE":
         fail_plugin_source_resolution(db, task.aggregate_id, error)

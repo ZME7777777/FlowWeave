@@ -8,15 +8,12 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from flowweave.modules.sandboxes.infrastructure.docker import (
-    DockerObservation,
-    DockerSandboxProvider,
-    backend_name,
-)
-from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
+)
+from flowweave.modules.sandboxes.application.runtime_replacement import (
+    enqueue_flow_run_runtime_replacement,
 )
 from flowweave.modules.sandboxes.application.runtime_sessions import (
     RuntimeSessionFence,
@@ -26,6 +23,16 @@ from flowweave.modules.sandboxes.application.runtime_sessions import (
     ensure_runtime_generation,
     fail_runtime_generation,
     next_runtime_generation_number,
+)
+from flowweave.modules.sandboxes.infrastructure.docker import (
+    DockerObservation,
+    DockerSandboxProvider,
+    backend_name,
+)
+from flowweave.modules.sandboxes.infrastructure.models import (
+    FlowRunRuntime,
+    ManagedSandbox,
+    RuntimeGeneration,
 )
 from flowweave.runtime.workspace import cleanup_runtime_memory
 from flowweave.shared.application.transactions import register_rollback_action
@@ -869,6 +876,38 @@ def _apply_reconcile_outcome(
         elif outcome.error is not None:
             _error(current, outcome.error)
             errors = 1
+        if (
+            errors
+            and current.kind == "AGENT_RUNTIME"
+            and current.owner_type == "FLOW_RUN"
+        ):
+            active_session = control_db.scalar(
+                select(FlowRunRuntime)
+                .join(
+                    RuntimeGeneration,
+                    (RuntimeGeneration.runtime_session_id == FlowRunRuntime.id)
+                    & (RuntimeGeneration.generation == FlowRunRuntime.active_generation),
+                )
+                .where(
+                    FlowRunRuntime.flow_run_id == current.owner_id,
+                    FlowRunRuntime.status == "ACTIVE",
+                    RuntimeGeneration.managed_runtime_id == current.id,
+                    RuntimeGeneration.generation == current.generation,
+                )
+                .with_for_update()
+            )
+            if active_session is not None:
+                # Freeze new routing in the same transaction that records the
+                # failed observation; the durable task then owns replacement.
+                active_session.status = "RECONNECTING"
+                active_session.row_version += 1
+                active_session.updated_at = now
+                enqueue_flow_run_runtime_replacement(
+                    control_db,
+                    flow_run_id=current.owner_id,
+                    failed_generation=current.generation,
+                    reason=current.last_error_code or "RUNTIME_HEALTH_FAILED",
+                )
         control_db.commit()
     return deleted, errors
 

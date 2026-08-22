@@ -69,6 +69,22 @@ class FlowRunRuntime(Base):
             "active_generation IS NULL OR active_generation >= 1",
             name="ck_flow_run_runtime_active_generation",
         ),
+        CheckConstraint(
+            "replacement_generation IS NULL OR replacement_generation >= 1",
+            name="ck_flow_run_runtime_replacement_generation",
+        ),
+        CheckConstraint(
+            "replacement_generation IS NULL OR active_generation IS NULL "
+            "OR replacement_generation > active_generation",
+            name="ck_flow_run_runtime_replacement_order",
+        ),
+        CheckConstraint(
+            "(replacement_lease_token IS NULL AND replacement_lease_owner IS NULL "
+            "AND replacement_lease_until IS NULL) OR "
+            "(replacement_lease_token IS NOT NULL AND replacement_lease_owner IS NOT NULL "
+            "AND replacement_lease_until IS NOT NULL)",
+            name="ck_flow_run_runtime_replacement_lease",
+        ),
         CheckConstraint("row_version >= 1", name="ck_flow_run_runtime_row_version"),
         CheckConstraint("runtime_image_digest <> ''", name="ck_flow_run_runtime_image_digest"),
         CheckConstraint(
@@ -80,6 +96,12 @@ class FlowRunRuntime(Base):
             ["id", "active_generation"],
             ["runtime_generations.runtime_session_id", "runtime_generations.generation"],
             name="fk_flow_run_runtime_active_generation",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ["id", "replacement_generation"],
+            ["runtime_generations.runtime_session_id", "runtime_generations.generation"],
+            name="fk_flow_run_runtime_replacement_generation",
             use_alter=True,
         ),
     )
@@ -100,6 +122,14 @@ class FlowRunRuntime(Base):
         index=True,
     )
     active_generation: Mapped[int | None] = mapped_column(Integer)
+    replacement_generation: Mapped[int | None] = mapped_column(Integer)
+    replacement_lease_token: Mapped[str | None] = mapped_column(String(36), unique=True)
+    replacement_lease_owner: Mapped[str | None] = mapped_column(String(200))
+    replacement_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replacement_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replacement_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replacement_error_code: Mapped[str | None] = mapped_column(String(100))
+    replacement_error_summary: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(30), default="STARTING", index=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

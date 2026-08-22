@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -39,6 +39,19 @@ class ActiveRuntimeConnection:
     resource_name: str
     generation: int
     runtime_fence: RuntimeSessionFence
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeReplacementLease:
+    """Durable single-worker lease for one N -> N+1 replacement."""
+
+    runtime_session_id: str
+    flow_run_id: str
+    source_generation: int
+    target_generation: int | None
+    token: str
+    owner: str
+    lease_until: datetime
 
 
 def ensure_flow_run_runtime_session(
@@ -289,6 +302,384 @@ def activate_runtime_generation(
     return _fence(session, generation)
 
 
+def prepare_runtime_generation(
+    db: Session,
+    *,
+    session: FlowRunRuntime,
+    generation: RuntimeGeneration,
+    instance_id: str,
+    replacement_lease_token: str,
+) -> None:
+    """Record that N+1 is healthy without making it routable."""
+
+    _require_replacement_lease(session, replacement_lease_token)
+    if session.replacement_generation != generation.generation:
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_TARGET_FENCED",
+            "The prepared Runtime is not the Session replacement target",
+            409,
+            {"runtime_session_id": session.id, "generation": generation.generation},
+        )
+    if (
+        generation.state == "READY"
+        and generation.instance_id == instance_id
+        and generation.runtime_image_digest == session.runtime_image_digest
+    ):
+        return
+    now = datetime.now(UTC)
+    result = db.execute(
+        update(RuntimeGeneration)
+        .where(
+            RuntimeGeneration.id == generation.id,
+            RuntimeGeneration.runtime_session_id == session.id,
+            RuntimeGeneration.generation == generation.generation,
+            RuntimeGeneration.fence_token == generation.fence_token,
+            RuntimeGeneration.row_version == generation.row_version,
+            RuntimeGeneration.state.in_(("PROVISIONING", "READY")),
+        )
+        .values(
+            state="READY",
+            instance_id=instance_id,
+            ready_at=now,
+            failure_code=None,
+            failure_summary=None,
+            row_version=RuntimeGeneration.row_version + 1,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        raise DomainError(
+            "RUNTIME_GENERATION_FENCED",
+            "The Runtime generation prepare command is stale",
+            409,
+            {"runtime_session_id": session.id, "generation": generation.generation},
+        )
+    db.flush()
+    db.refresh(generation)
+
+
+def acquire_runtime_replacement_lease(
+    db: Session,
+    *,
+    flow_run_id: str,
+    owner: str,
+    lease_seconds: int,
+) -> tuple[FlowRunRuntime, RuntimeReplacementLease]:
+    """Freeze routing and acquire or take over the durable replacement lease."""
+
+    if not owner or len(owner) > 200 or lease_seconds < 30:
+        raise ValueError("Invalid Runtime replacement lease")
+    now = datetime.now(UTC)
+    session = db.scalar(
+        select(FlowRunRuntime)
+        .where(FlowRunRuntime.flow_run_id == flow_run_id)
+        .with_for_update()
+    )
+    if session is None or session.active_generation is None:
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_ACTIVE",
+            "The FlowRun has no active generation to replace",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    if session.status not in {"ACTIVE", "REPLACING", "RECONNECTING", "DEGRADED"}:
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_NOT_ALLOWED",
+            "The Runtime Session does not allow replacement",
+            409,
+            {"runtime_session_id": session.id, "status": session.status},
+        )
+    if (
+        session.replacement_lease_token is not None
+        and session.replacement_lease_until is not None
+        and session.replacement_lease_until > now
+        and session.replacement_lease_owner != owner
+    ):
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_LEASE_HELD",
+            "Another worker owns the Runtime replacement lease",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    token = (
+        session.replacement_lease_token
+        if session.replacement_lease_owner == owner
+        and session.replacement_lease_token is not None
+        else uid()
+    )
+    lease_until = now + timedelta(seconds=lease_seconds)
+    session.status = "REPLACING"
+    session.replacement_lease_token = token
+    session.replacement_lease_owner = owner
+    session.replacement_lease_until = lease_until
+    session.replacement_started_at = session.replacement_started_at or now
+    session.replacement_error_code = None
+    session.replacement_error_summary = None
+    session.row_version += 1
+    session.updated_at = now
+    db.flush()
+    return session, _replacement_lease(session)
+
+
+def attach_runtime_replacement_generation(
+    db: Session,
+    *,
+    session: FlowRunRuntime,
+    generation: RuntimeGeneration,
+    replacement_lease_token: str,
+) -> RuntimeReplacementLease:
+    """Attach the one durable N+1 target, idempotently across worker restarts."""
+
+    _require_replacement_lease(session, replacement_lease_token)
+    if generation.runtime_session_id != session.id or generation.generation <= int(
+        session.active_generation or 0
+    ):
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_TARGET_INVALID",
+            "The replacement generation does not follow the active generation",
+            409,
+            {"runtime_session_id": session.id, "generation": generation.generation},
+        )
+    if session.replacement_generation not in {None, generation.generation}:
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_TARGET_FENCED",
+            "The Runtime Session already has another replacement target",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    if session.replacement_generation is None:
+        session.replacement_generation = generation.generation
+        session.row_version += 1
+        session.updated_at = datetime.now(UTC)
+        db.flush()
+    return _replacement_lease(session)
+
+
+def renew_runtime_replacement_lease(
+    db: Session,
+    *,
+    runtime_session_id: str,
+    replacement_lease_token: str,
+    owner: str,
+    lease_seconds: int,
+) -> RuntimeReplacementLease:
+    """Renew only the currently owned replacement lease."""
+
+    now = datetime.now(UTC)
+    result = db.execute(
+        update(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.id == runtime_session_id,
+            FlowRunRuntime.replacement_lease_token == replacement_lease_token,
+            FlowRunRuntime.replacement_lease_owner == owner,
+            FlowRunRuntime.replacement_lease_until >= now,
+            FlowRunRuntime.status.in_(("REPLACING", "RECONNECTING", "DEGRADED")),
+        )
+        .values(
+            replacement_lease_until=now + timedelta(seconds=lease_seconds),
+            row_version=FlowRunRuntime.row_version + 1,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_LEASE_LOST",
+            "The Runtime replacement lease is stale",
+            409,
+            {"runtime_session_id": runtime_session_id},
+        )
+    db.flush()
+    session = db.get(FlowRunRuntime, runtime_session_id)
+    if session is None:
+        raise RuntimeError("Runtime Session disappeared after replacement lease renewal")
+    db.refresh(session)
+    return _replacement_lease(session)
+
+
+def mark_runtime_generation_draining(
+    db: Session,
+    *,
+    session: FlowRunRuntime,
+    generation: RuntimeGeneration,
+    replacement_lease_token: str,
+) -> None:
+    """Fence the source generation lifecycle before physical drain."""
+
+    _require_replacement_lease(session, replacement_lease_token)
+    if generation.generation != session.active_generation:
+        raise DomainError(
+            "RUNTIME_GENERATION_FENCED",
+            "Only the frozen source generation can be drained",
+            409,
+            {"runtime_session_id": session.id, "generation": generation.generation},
+        )
+    if generation.state in {"DRAINING", "STOPPED", "DELETED"}:
+        return
+    _transition_generation(
+        db,
+        generation,
+        from_states=("READY",),
+        state="DRAINING",
+        draining_at=datetime.now(UTC),
+    )
+
+
+def mark_runtime_generation_stopped(
+    db: Session,
+    *,
+    session: FlowRunRuntime,
+    generation: RuntimeGeneration,
+    replacement_lease_token: str,
+    graceful: bool,
+) -> None:
+    """Persist that the old writer is physically stopped or absent."""
+
+    _require_replacement_lease(session, replacement_lease_token)
+    if generation.generation != session.active_generation:
+        raise DomainError(
+            "RUNTIME_GENERATION_FENCED",
+            "Only the frozen source generation can be stopped",
+            409,
+            {"runtime_session_id": session.id, "generation": generation.generation},
+        )
+    if generation.state in {"STOPPED", "DELETED"}:
+        return
+    now = datetime.now(UTC)
+    _transition_generation(
+        db,
+        generation,
+        from_states=("READY", "DRAINING"),
+        state="STOPPED",
+        stopped_at=now,
+    )
+    session.replacement_not_before = (
+        None if graceful else now + timedelta(seconds=45)
+    )
+    session.row_version += 1
+    session.updated_at = now
+    db.flush()
+
+
+def mark_runtime_generation_deleted(
+    db: Session,
+    *,
+    session: FlowRunRuntime,
+    generation: RuntimeGeneration,
+    replacement_lease_token: str,
+) -> None:
+    """Retain the generation audit row after its physical provider is gone."""
+
+    _require_replacement_lease(session, replacement_lease_token)
+    if generation.generation != session.active_generation:
+        raise DomainError(
+            "RUNTIME_GENERATION_FENCED",
+            "Only the frozen source generation can be deleted",
+            409,
+            {"runtime_session_id": session.id, "generation": generation.generation},
+        )
+    if generation.state == "DELETED":
+        return
+    _transition_generation(
+        db,
+        generation,
+        from_states=("STOPPED",),
+        state="DELETED",
+        stopped_at=generation.stopped_at or datetime.now(UTC),
+    )
+    generation.deleted_at = datetime.now(UTC)
+    generation.row_version += 1
+    generation.updated_at = datetime.now(UTC)
+    db.flush()
+
+
+def activate_runtime_replacement(
+    db: Session,
+    *,
+    session: FlowRunRuntime,
+    source: RuntimeGeneration,
+    target: RuntimeGeneration,
+    replacement_lease_token: str,
+) -> RuntimeSessionFence:
+    """CAS-switch routing only after the old writer stopped and N+1 reloaded."""
+
+    _require_replacement_lease(session, replacement_lease_token)
+    if (
+        session.active_generation != source.generation
+        or session.replacement_generation != target.generation
+        or source.state not in {"STOPPED", "DELETED"}
+        or target.state != "READY"
+        or not target.instance_id
+    ):
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_NOT_READY",
+            "The Runtime replacement cannot be activated before drain and reload",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    now = datetime.now(UTC)
+    expected_version = session.row_version
+    result = db.execute(
+        update(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.id == session.id,
+            FlowRunRuntime.row_version == expected_version,
+            FlowRunRuntime.active_generation == source.generation,
+            FlowRunRuntime.replacement_generation == target.generation,
+            FlowRunRuntime.replacement_lease_token == replacement_lease_token,
+            FlowRunRuntime.status.in_(("REPLACING", "RECONNECTING", "DEGRADED")),
+        )
+        .values(
+            active_generation=target.generation,
+            replacement_generation=None,
+            replacement_lease_token=None,
+            replacement_lease_owner=None,
+            replacement_lease_until=None,
+            replacement_started_at=None,
+            replacement_not_before=None,
+            replacement_error_code=None,
+            replacement_error_summary=None,
+            status="ACTIVE",
+            row_version=FlowRunRuntime.row_version + 1,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        raise DomainError(
+            "RUNTIME_SESSION_FENCED",
+            "The Runtime replacement activation command is stale",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    db.flush()
+    db.refresh(session)
+    db.refresh(target)
+    return _fence(session, target)
+
+
+def record_runtime_replacement_failure(
+    db: Session,
+    *,
+    session: FlowRunRuntime,
+    replacement_lease_token: str,
+    error_code: str,
+    error_summary: str,
+    retryable: bool,
+) -> None:
+    """Keep routing frozen and preserve the one N+1 target for diagnosis/retry."""
+
+    _require_replacement_lease(session, replacement_lease_token, require_current=False)
+    now = datetime.now(UTC)
+    session.status = "RECONNECTING" if retryable else "DEGRADED"
+    session.replacement_error_code = error_code[:100]
+    session.replacement_error_summary = error_summary[:2000]
+    session.replacement_lease_token = None
+    session.replacement_lease_owner = None
+    session.replacement_lease_until = None
+    session.row_version += 1
+    session.updated_at = now
+    db.flush()
+
+
 def fail_runtime_generation(
     db: Session,
     *,
@@ -458,6 +849,10 @@ def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
             {"flow_run_id": flow_run_id, "managed_runtime_id": linked_runtime_id},
         )
     session.active_generation = None
+    session.replacement_generation = None
+    session.replacement_lease_token = None
+    session.replacement_lease_owner = None
+    session.replacement_lease_until = None
     session.status = "DELETING"
     session.row_version += 1
     session.updated_at = datetime.now(UTC)
@@ -483,15 +878,108 @@ def _fence(
     )
 
 
+def _replacement_lease(session: FlowRunRuntime) -> RuntimeReplacementLease:
+    if (
+        session.active_generation is None
+        or session.replacement_lease_token is None
+        or session.replacement_lease_owner is None
+        or session.replacement_lease_until is None
+    ):
+        raise RuntimeError("Runtime replacement lease is incomplete")
+    return RuntimeReplacementLease(
+        runtime_session_id=session.id,
+        flow_run_id=session.flow_run_id,
+        source_generation=session.active_generation,
+        target_generation=session.replacement_generation,
+        token=session.replacement_lease_token,
+        owner=session.replacement_lease_owner,
+        lease_until=session.replacement_lease_until,
+    )
+
+
+def _require_replacement_lease(
+    session: FlowRunRuntime,
+    token: str,
+    *,
+    require_current: bool = True,
+) -> None:
+    if (
+        session.replacement_lease_token != token
+        or session.status not in {"REPLACING", "RECONNECTING", "DEGRADED"}
+        or (
+            require_current
+            and (
+                session.replacement_lease_until is None
+                or session.replacement_lease_until < datetime.now(UTC)
+            )
+        )
+    ):
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_LEASE_LOST",
+            "The Runtime replacement lease is stale",
+            409,
+            {"runtime_session_id": session.id},
+        )
+
+
+def _transition_generation(
+    db: Session,
+    generation: RuntimeGeneration,
+    *,
+    from_states: tuple[str, ...],
+    state: str,
+    draining_at: datetime | None = None,
+    stopped_at: datetime | None = None,
+) -> None:
+    result = db.execute(
+        update(RuntimeGeneration)
+        .where(
+            RuntimeGeneration.id == generation.id,
+            RuntimeGeneration.fence_token == generation.fence_token,
+            RuntimeGeneration.row_version == generation.row_version,
+            RuntimeGeneration.state.in_(from_states),
+        )
+        .values(
+            state=state,
+            draining_at=draining_at if draining_at is not None else generation.draining_at,
+            stopped_at=stopped_at if stopped_at is not None else generation.stopped_at,
+            row_version=RuntimeGeneration.row_version + 1,
+            updated_at=datetime.now(UTC),
+        )
+    )
+    if result.rowcount != 1:
+        raise DomainError(
+            "RUNTIME_GENERATION_FENCED",
+            "The Runtime generation lifecycle command is stale",
+            409,
+            {
+                "runtime_session_id": generation.runtime_session_id,
+                "generation": generation.generation,
+            },
+        )
+    db.flush()
+    db.refresh(generation)
+
+
 __all__ = (
     "ActiveRuntimeConnection",
+    "RuntimeReplacementLease",
     "RuntimeSessionFence",
+    "acquire_runtime_replacement_lease",
     "active_flow_run_runtime_connection",
     "activate_runtime_generation",
+    "activate_runtime_replacement",
+    "attach_runtime_replacement_generation",
     "assert_active_runtime_fence",
     "delete_flow_run_runtime_session",
     "ensure_flow_run_runtime_session",
     "ensure_runtime_generation",
     "fail_runtime_generation",
+    "mark_runtime_generation_draining",
+    "mark_runtime_generation_deleted",
+    "mark_runtime_generation_stopped",
     "next_runtime_generation_number",
+    "prepare_runtime_generation",
+    "record_runtime_replacement_failure",
+    "renew_runtime_replacement_lease",
 )

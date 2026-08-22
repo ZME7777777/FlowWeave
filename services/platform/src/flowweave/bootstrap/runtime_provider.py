@@ -564,6 +564,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allowed_roles_by_path: dict[str, frozenset[str]] = {
                 "/v1/sandboxes/ensure": frozenset({"api", "worker"}),
                 "/v1/sandboxes/inspect": frozenset({"worker"}),
+                "/v1/sandboxes/drain": frozenset({"worker"}),
                 "/v1/sandboxes/delete": frozenset({"worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
@@ -693,6 +694,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload.resource_name, str(payload.resource_id)
         )
         return {"deleted": True}
+
+    @app.post("/v1/sandboxes/drain")
+    async def drain(payload: SandboxDeleteWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        result = DockerSandboxProvider(configured).drain_expected(
+            payload.resource_name, str(payload.resource_id)
+        )
+        return {"graceful": result.graceful, "stopped": result.stopped}
 
     @app.post("/v1/sandboxes/list")
     async def list_sandboxes(payload: ScopedRequest) -> dict[str, Any]:

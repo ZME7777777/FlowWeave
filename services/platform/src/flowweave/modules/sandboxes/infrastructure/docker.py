@@ -15,6 +15,10 @@ from typing import cast
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.runtime.auth import derive_runtime_session_key
+from flowweave.shared.domain.tool_policy import (
+    OPENHANDS_SOURCE_COMMIT,
+    OPENHANDS_VERSION,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
@@ -39,6 +43,14 @@ class DockerObservation:
     state: str
     labels: dict[str, str]
     resource_type: str = "container"
+
+
+@dataclass(frozen=True, slots=True)
+class DockerDrainResult:
+    """Physical fencing result for one old Agent Server generation."""
+
+    graceful: bool
+    stopped: bool
 
 
 class DockerSandboxProvider:
@@ -1233,11 +1245,18 @@ chmod 0700 "$target"
 
     def _wait_for_agent_server(self, resource_name: str) -> None:
         deadline = time.monotonic() + self.settings.terminal_environment_start_timeout_seconds
+        session_key = derive_runtime_session_key(
+            self.settings.openhands_session_api_key,
+            self.settings.sandbox_manager_scope,
+            resource_name,
+        )
         while time.monotonic() < deadline:
             try:
                 # The controller deliberately does not join the untrusted Runtime
-                # network. Probe readiness from inside the owned container instead
-                # of making the Docker-socket holder reachable from sandboxes.
+                # network. Probe readiness and immutable server capabilities from
+                # inside the owned container instead of making the Docker-socket
+                # holder reachable from sandboxes. This does not hydrate a
+                # Conversation, so N+1 remains a non-writer during prewarm.
                 self._run(
                     [
                         self.settings.docker_binary,
@@ -1246,10 +1265,23 @@ chmod 0700 "$target"
                         "/runtime/.venv/bin/python",
                         "-c",
                         (
-                            "import socket; "
-                            "connection=socket.create_connection(('127.0.0.1',8000),1); "
-                            "connection.close()"
+                            "import json,sys,urllib.request;"
+                            "headers={'X-Session-API-Key':sys.argv[1]};"
+                            "get=lambda path:json.load(urllib.request.urlopen("
+                            "urllib.request.Request('http://127.0.0.1:8000'+path,"
+                            "headers=headers),timeout=2));"
+                            "ready=get('/ready');info=get('/server_info');"
+                            "assert ready.get('status')=='ready';"
+                            "assert [info.get(key) for key in ('version','sdk_version',"
+                            "'tools_version','workspace_version')]==[sys.argv[2]]*4;"
+                            "assert info.get('build_git_sha')==sys.argv[3];"
+                            "assert info.get('build_git_ref')==sys.argv[3];"
+                            "assert isinstance(info.get('capabilities'),list);"
+                            "assert isinstance(info.get('usable_tools'),list)"
                         ),
+                        session_key,
+                        OPENHANDS_VERSION,
+                        OPENHANDS_SOURCE_COMMIT,
                     ],
                     timeout=3,
                 )
@@ -1348,6 +1380,141 @@ chmod 0700 "$target"
             state=state,
             labels=labels,
         )
+
+    def drain_expected(
+        self, resource_name: str, expected_resource_id: str
+    ) -> DockerDrainResult:
+        """Disconnect writers, invoke OpenHands pause, then stop the old container."""
+
+        if controller_is_remote(self.settings):
+            try:
+                raw = DockerControllerClient(self.settings).post(
+                    "/v1/sandboxes/drain",
+                    {
+                        "resource_name": resource_name,
+                        "resource_id": expected_resource_id,
+                    },
+                    timeout=60,
+                )
+            except DockerControllerError as exc:
+                raise DomainError(
+                    "SANDBOX_BACKEND_UNAVAILABLE",
+                    "The Docker Runtime Provider is unavailable",
+                    503,
+                ) from exc
+            graceful = raw.get("graceful")
+            stopped = raw.get("stopped")
+            if not isinstance(graceful, bool) or not isinstance(stopped, bool):
+                raise DomainError(
+                    "SANDBOX_DOCKER_PROTOCOL_ERROR",
+                    "Invalid controller drain data",
+                    502,
+                )
+            return DockerDrainResult(graceful=graceful, stopped=stopped)
+
+        observation = self.inspect(resource_name)
+        if observation is None:
+            return DockerDrainResult(graceful=False, stopped=True)
+        self._verify_owner(
+            observation,
+            expected_resource_id,
+            self.settings.sandbox_manager_scope,
+        )
+        if observation.labels.get("flowweave.kind") != "agent-runtime":
+            raise DomainError(
+                "SANDBOX_RESOURCE_CONFLICT",
+                "Only an owned Agent Runtime can be drained",
+                409,
+                {"resource_name": resource_name},
+            )
+
+        # Remove every data-plane attachment before asking the process to
+        # release its OpenHands leases. docker exec remains available through
+        # the daemon, so no late API/Worker request can reopen a Conversation
+        # in the interval between prepare-for-sandbox-pause and stop.
+        raw_networks = self._run(
+            [
+                self.settings.docker_binary,
+                "inspect",
+                observation.resource_identifier,
+                "--format",
+                "{{json .NetworkSettings.Networks}}",
+            ],
+            timeout=30,
+        )
+        try:
+            value = cast(object, json.loads(raw_networks))
+            networks = (
+                [str(name) for name in cast(dict[object, object], value)]
+                if isinstance(value, dict)
+                else []
+            )
+        except json.JSONDecodeError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR",
+                "Docker returned invalid Runtime attachment metadata",
+                502,
+            ) from exc
+        for network_name in networks:
+            self._run(
+                [
+                    self.settings.docker_binary,
+                    "network",
+                    "disconnect",
+                    "--force",
+                    network_name,
+                    observation.resource_identifier,
+                ],
+                timeout=30,
+            )
+
+        session_key = derive_runtime_session_key(
+            self.settings.openhands_session_api_key,
+            self.settings.sandbox_manager_scope,
+            resource_name,
+        )
+        graceful = True
+        try:
+            self._run(
+                [
+                    self.settings.docker_binary,
+                    "exec",
+                    observation.resource_identifier,
+                    "/runtime/.venv/bin/python",
+                    "-c",
+                    (
+                        "import sys,urllib.request;"
+                        "request=urllib.request.Request("
+                        "'http://127.0.0.1:8000/api/conversations/"
+                        "prepare-for-sandbox-pause',method='POST',"
+                        "headers={'X-Session-API-Key':sys.argv[1]});"
+                        "response=urllib.request.urlopen(request,timeout=30);"
+                        "assert response.status==204"
+                    ),
+                    session_key,
+                ],
+                timeout=35,
+            )
+        except DomainError:
+            graceful = False
+        try:
+            self._run(
+                [
+                    self.settings.docker_binary,
+                    "stop",
+                    "--time",
+                    "30",
+                    observation.resource_identifier,
+                ],
+                timeout=40,
+            )
+        except DomainError as exc:
+            if self.inspect(resource_name) is not None:
+                raise exc
+        return DockerDrainResult(graceful=graceful, stopped=True)
+
+    def drain(self, resource: ManagedSandbox) -> DockerDrainResult:
+        return self.drain_expected(resource.backend_resource_name, resource.id)
 
     def delete_expected(self, resource_name: str, expected_resource_id: str) -> None:
         if controller_is_remote(self.settings):

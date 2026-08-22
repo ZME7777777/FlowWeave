@@ -34,6 +34,11 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
 )
+from flowweave.modules.sandboxes.application.runtime_replacement import (
+    enqueue_flow_run_runtime_replacement,
+    process_flow_run_runtime_replacement,
+    record_terminal_runtime_replacement_failure,
+)
 from flowweave.modules.sandboxes.application.runtime_sessions import (
     ActiveRuntimeConnection,
     RuntimeSessionFence,
@@ -61,6 +66,7 @@ __all__ = (
     "environment_has_live_sandbox",
     "ensure_capability_manifest_directory",
     "ensure_flow_run_runtime_session",
+    "enqueue_flow_run_runtime_replacement",
     "flow_run_capability_path",
     "flow_run_workspace_project_path",
     "image_has_live_sandbox",
@@ -69,6 +75,8 @@ __all__ = (
     "owner_has_live_sandbox",
     "openhands_flow_run_capability_path",
     "openhands_flow_run_project_path",
+    "process_flow_run_runtime_replacement",
+    "record_terminal_runtime_replacement_failure",
     "reconcile_managed_sandboxes",
     "request_delete",
     "request_delete_durable",
