@@ -18,6 +18,15 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
 )
+from flowweave.modules.sandboxes.application.runtime_sessions import (
+    RuntimeSessionFence,
+    activate_runtime_generation,
+    delete_flow_run_runtime_session,
+    ensure_flow_run_runtime_session,
+    ensure_runtime_generation,
+    fail_runtime_generation,
+    next_runtime_generation_number,
+)
 from flowweave.runtime.workspace import cleanup_runtime_memory
 from flowweave.shared.application.transactions import register_rollback_action
 from flowweave.shared.database import uid
@@ -40,6 +49,7 @@ class RuntimeProviderAllocation:
     id: str
     resource_name: str
     base_url: str
+    runtime_fence: RuntimeSessionFence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,29 +247,58 @@ def _create_managed_runtime(
         connection.commit()
         try:
             with Session(bind=connection, expire_on_commit=False) as control_db:
-                resource = control_db.scalar(
-                    select(ManagedSandbox)
-                    .where(
-                        ManagedSandbox.kind == "AGENT_RUNTIME",
-                        ManagedSandbox.owner_type == owner_type,
-                        ManagedSandbox.owner_id == owner_id,
-                        ManagedSandbox.desired_state == "RUNNING",
+                logical_session = (
+                    ensure_flow_run_runtime_session(
+                        control_db,
+                        flow_run_id=flow_run_id,
+                        environment_version_id=environment_version_id,
+                        runtime_image_digest=image,
+                        workspace_allocation=flow_run_allocation,
                     )
-                    .with_for_update()
+                    if flow_run_id is not None and flow_run_allocation is not None
+                    else None
                 )
-                if resource is None:
-                    generation = (
-                        int(
-                            control_db.scalar(
-                                select(func.coalesce(func.max(ManagedSandbox.generation), 0)).where(
-                                    ManagedSandbox.kind == "AGENT_RUNTIME",
-                                    ManagedSandbox.owner_type == owner_type,
-                                    ManagedSandbox.owner_id == owner_id,
-                                )
-                            )
-                            or 0
+                active_resources = list(
+                    control_db.scalars(
+                        select(ManagedSandbox)
+                        .where(
+                            ManagedSandbox.kind == "AGENT_RUNTIME",
+                            ManagedSandbox.owner_type == owner_type,
+                            ManagedSandbox.owner_id == owner_id,
+                            ManagedSandbox.desired_state == "RUNNING",
                         )
-                        + 1
+                        .order_by(ManagedSandbox.generation.desc())
+                        .limit(2)
+                        .with_for_update()
+                    )
+                )
+                if len(active_resources) > 1:
+                    raise DomainError(
+                        "RUNTIME_GENERATION_CONFLICT",
+                        "The Runtime owner has multiple writable physical generations",
+                        409,
+                        {"owner_type": owner_type, "owner_id": owner_id},
+                    )
+                resource = active_resources[0] if active_resources else None
+                if resource is None:
+                    managed_generation_floor = int(
+                        control_db.scalar(
+                            select(func.coalesce(func.max(ManagedSandbox.generation), 0)).where(
+                                ManagedSandbox.kind == "AGENT_RUNTIME",
+                                ManagedSandbox.owner_type == owner_type,
+                                ManagedSandbox.owner_id == owner_id,
+                            )
+                        )
+                        or 0
+                    )
+                    generation = (
+                        next_runtime_generation_number(
+                            control_db,
+                            logical_session.id,
+                            managed_generation_floor=managed_generation_floor,
+                        )
+                        if logical_session is not None
+                        else managed_generation_floor + 1
                     )
                     resource_id = uid()
                     created_at = datetime.now(UTC)
@@ -327,6 +366,16 @@ def _create_managed_runtime(
                         409,
                         {"sandbox_id": resource.id},
                     )
+                logical_generation = (
+                    ensure_runtime_generation(
+                        control_db,
+                        session=logical_session,
+                        generation=resource.generation,
+                        managed_runtime=resource,
+                    )
+                    if logical_session is not None
+                    else None
+                )
                 control_db.commit()
 
                 try:
@@ -337,6 +386,16 @@ def _create_managed_runtime(
                     _error(resource, exc)
                     resource.desired_state = "DELETED"
                     resource.next_reconcile_at = datetime.now(UTC)
+                    if logical_session is not None and logical_generation is not None:
+                        fail_runtime_generation(
+                            control_db,
+                            session=logical_session,
+                            generation=logical_generation,
+                            failure_code=exc.code,
+                            failure_summary=(
+                                "Runtime Provider provisioning failed; inspect protected logs"
+                            ),
+                        )
                     control_db.commit()
                     raise
 
@@ -345,11 +404,22 @@ def _create_managed_runtime(
                 _renew_runtime_lease(resource, now=datetime.now(UTC))
                 resource.last_error_code = None
                 resource.last_error_detail = None
+                runtime_fence = (
+                    activate_runtime_generation(
+                        control_db,
+                        session=logical_session,
+                        generation=logical_generation,
+                        instance_id=observation.resource_identifier,
+                    )
+                    if logical_session is not None and logical_generation is not None
+                    else None
+                )
                 control_db.commit()
                 allocation = RuntimeProviderAllocation(
                     id=resource.id,
                     resource_name=resource.backend_resource_name,
                     base_url=f"http://{resource.backend_resource_name}:8000",
+                    runtime_fence=runtime_fence,
                 )
         finally:
             if connection.in_transaction():
@@ -436,6 +506,10 @@ def request_delete_durable(db: Session, sandbox_id: str | None) -> None:
         resource = control_db.get(ManagedSandbox, sandbox_id)
         if resource is None:
             return
+        if resource.owner_type == "FLOW_RUN":
+            # Attempt/Conversation cleanup cannot stop Run-owned compute. The
+            # explicit FlowRun deletion path uses delete_sandbox_now instead.
+            return
         resource.desired_state = "DELETED"
         resource.next_reconcile_at = datetime.now(UTC)
         control_db.commit()
@@ -481,11 +555,14 @@ def delete_flow_run_runtimes_now(db: Session, flow_run_id: str) -> None:
     for sandbox_id in sandbox_ids:
         delete_sandbox_now(db, sandbox_id)
     db.flush()
+    delete_flow_run_runtime_session(db, flow_run_id)
 
 
 def request_delete(db: Session, sandbox_id: str) -> None:
     resource = db.get(ManagedSandbox, sandbox_id)
     if resource is None:
+        return
+    if resource.owner_type == "FLOW_RUN":
         return
     resource.desired_state = "DELETED"
     resource.next_reconcile_at = datetime.now(UTC)

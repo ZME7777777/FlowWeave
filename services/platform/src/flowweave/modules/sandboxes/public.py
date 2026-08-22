@@ -34,12 +34,19 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
 )
+from flowweave.modules.sandboxes.application.runtime_sessions import (
+    RuntimeSessionFence,
+    assert_active_runtime_fence,
+    ensure_flow_run_runtime_session,
+)
 
 __all__ = (
     "ReconcileReport",
     "RuntimeProviderAllocation",
+    "RuntimeSessionFence",
     "RuntimeStorageAllocation",
     "allocate_flow_run_runtime",
+    "assert_active_runtime_fence",
     "cleanup_unclaimed_runtime_memory",
     "create_temporary_runtime",
     "create_setup_sandbox",
@@ -49,6 +56,7 @@ __all__ = (
     "delete_flow_run_runtime_allocation",
     "environment_has_live_sandbox",
     "ensure_capability_manifest_directory",
+    "ensure_flow_run_runtime_session",
     "flow_run_capability_path",
     "flow_run_workspace_project_path",
     "image_has_live_sandbox",

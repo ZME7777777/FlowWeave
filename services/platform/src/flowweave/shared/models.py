@@ -68,9 +68,11 @@ from flowweave.modules.runs.infrastructure.models import (
     RunSnapshot,
 )
 from flowweave.modules.sandboxes.infrastructure.models import (
+    FlowRunRuntime,
     FlowRunRuntimeAllocation,
     FlowRunRuntimeSecretReference,
     ManagedSandbox,
+    RuntimeGeneration,
 )
 from flowweave.modules.tasks.infrastructure.models import (
     BackgroundTask,
@@ -106,6 +108,7 @@ __all__ = (
     "FlowPortMapping",
     "FlowNode",
     "FlowRun",
+    "FlowRunRuntime",
     "FlowRunRuntimeAllocation",
     "FlowRunRuntimeSecretReference",
     "FlowRunState",
@@ -134,6 +137,7 @@ __all__ = (
     "RuntimeDiagnosticQuery",
     "RuntimeGoalCommand",
     "RuntimeGoalStatus",
+    "RuntimeGeneration",
     "RuntimeConfirmationBatch",
     "RuntimeSubagentTask",
     "RuntimeSubagentTaskUsage",

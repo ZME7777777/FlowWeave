@@ -1456,8 +1456,15 @@ def start_flow(
     db.add(snapshot)
     db.flush()
     sandboxes.allocate_flow_run_runtime(db, run.id)
-    sandboxes.runtime_allocation_for_flow_run(
+    runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
         db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+    )
+    sandboxes.ensure_flow_run_runtime_session(
+        db,
+        flow_run_id=run.id,
+        environment_version_id=environment.id,
+        runtime_image_digest=environment.image_digest,
+        workspace_allocation=runtime_allocation,
     )
     hold_snapshot_memory_references(
         db,
@@ -3517,8 +3524,15 @@ def sync_snapshot(
     db.add(snapshot)
     db.flush()
     sandboxes.allocate_flow_run_runtime(db, run.id)
-    sandboxes.runtime_allocation_for_flow_run(
+    runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
         db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+    )
+    sandboxes.ensure_flow_run_runtime_session(
+        db,
+        flow_run_id=run.id,
+        environment_version_id=environment.id,
+        runtime_image_digest=environment.image_digest,
+        workspace_allocation=runtime_allocation,
     )
     hold_snapshot_memory_references(
         db,
