@@ -295,12 +295,24 @@ def recover_environment_cleanup_tasks(db: Session, *, commit: bool = True) -> in
         if task is None:
             _enqueue_setup_cleanup(db, item)
             recovered += 1
-        elif task.state == TaskState.DEAD:
+        elif task.state == TaskState.DEAD or (
+            task.state == TaskState.SUCCEEDED
+            and str((task.payload_json or {}).get("container_id") or "") == item.container_id
+            and (
+                item.sandbox_id is None
+                or str((task.payload_json or {}).get("sandbox_id") or "") == item.sandbox_id
+            )
+        ):
+            postcondition_missing = task.state == TaskState.SUCCEEDED
             task.state = TaskState.RETRY
             task.available_at = datetime.now(UTC)
             task.lease_owner = None
             task.lease_until = None
-            task.last_error = "RESOURCE_CLEANUP_RECOVERY"
+            task.last_error = (
+                "RESOURCE_CLEANUP_POSTCONDITION_MISSING"
+                if postcondition_missing
+                else "RESOURCE_CLEANUP_RECOVERY"
+            )
             task.max_attempts = max(task.max_attempts, _CLEANUP_MAX_ATTEMPTS)
             recovered += 1
     dead_image_tasks = list(
@@ -359,16 +371,26 @@ def process_cleanup_setup_container(
     if not expected_container_id or item.container_id != expected_container_id:
         return
     expected_sandbox_id = str(payload.get("sandbox_id") or "")
-    if expected_sandbox_id and item.sandbox_id != expected_sandbox_id:
+    current_sandbox_id = item.sandbox_id
+    if expected_sandbox_id and current_sandbox_id not in {None, expected_sandbox_id}:
         return
     db.rollback()
-    if expected_sandbox_id:
-        sandboxes.delete_sandbox_now(db, expected_sandbox_id)
+    if expected_sandbox_id and current_sandbox_id == expected_sandbox_id:
+        try:
+            sandboxes.delete_sandbox_now(db, expected_sandbox_id)
+        except DomainError as exc:
+            # The Runtime Provider reconciler may confirm external deletion
+            # and remove the ledger row between cleanup enqueue and delivery.
+            # Its SET NULL foreign key is then authoritative; the setup task
+            # still owns clearing the denormalized container locator.
+            if exc.code != "RESOURCE_NOT_FOUND":
+                raise
     else:
-        # Compatibility for setup sessions created before the sandbox ledger.
-        docker.remove_legacy_setup_container(
-            expected_container_id, environment_id=item.environment_id
-        )
+        if not expected_sandbox_id:
+            # Compatibility for setup sessions created before the sandbox ledger.
+            docker.remove_legacy_setup_container(
+                expected_container_id, environment_id=item.environment_id
+            )
     if not lease_is_current(db, lease):
         raise RuntimeError("task lease was lost during setup container cleanup")
     current = db.scalar(
@@ -376,7 +398,11 @@ def process_cleanup_setup_container(
         .where(EnvironmentSetupSession.id == session_id)
         .with_for_update()
     )
-    if current is not None and current.container_id == expected_container_id:
+    if (
+        current is not None
+        and current.container_id == expected_container_id
+        and current.sandbox_id in {None, expected_sandbox_id or None}
+    ):
         if bool(payload.get("delete_session")) and current.state == "CANCELLED":
             db.delete(current)
         else:

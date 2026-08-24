@@ -24,6 +24,7 @@ from flowweave.shared.models import (
     EnvironmentVersion,
     FlowDefinition,
     FlowRun,
+    ManagedSandbox,
     TaskState,
 )
 
@@ -1381,6 +1382,109 @@ def test_expired_setup_session_is_reclaimed_before_starting_another(
             )
         )
         assert [item.id for item in active] == [second.json()["id"]]
+
+
+def test_setup_cleanup_clears_locator_after_provider_reconciles_sandbox_first(
+    client, db_session_factory, worker_container, monkeypatch
+):
+    _created_sandboxes, removed, _fail_delete = _mock_setup_provider(monkeypatch)
+    environment = client.post(
+        "/api/v1/terminal-environments",
+        json={
+            "name": "Sandbox 先回收环境",
+            "description": "验证 Provider 与配置清理任务的竞态",
+            "base_image": _BASE_IMAGE,
+        },
+    ).json()
+    setup = client.post(
+        f"/api/v1/terminal-environments/{environment['id']}/setup-sessions",
+        json={},
+    ).json()
+
+    with db_session_factory() as db:
+        item = db.get(EnvironmentSetupSession, setup["id"])
+        assert item is not None and item.sandbox_id is not None
+        sandbox_id = item.sandbox_id
+        item.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+
+    with db_session_factory() as db:
+        assert environment_service.expire_setup_sessions(db) == 1
+        sandbox = db.get(ManagedSandbox, sandbox_id)
+        assert sandbox is not None
+        db.delete(sandbox)
+        db.commit()
+
+    assert TaskWorker(worker_container)._run_once_sync() is True
+    with db_session_factory() as db:
+        item = db.get(EnvironmentSetupSession, setup["id"])
+        assert item is not None
+        assert item.state == "EXPIRED"
+        assert item.sandbox_id is None
+        assert item.container_id == ""
+    assert removed == []
+    deleted = client.delete(f"/api/v1/terminal-environments/{environment['id']}")
+    assert deleted.status_code == 204, deleted.text
+
+
+def test_cleanup_recovery_requeues_succeeded_task_with_stale_container_locator(
+    client, db_session_factory, worker_container, monkeypatch
+):
+    _created_sandboxes, removed, _fail_delete = _mock_setup_provider(monkeypatch)
+    environment = client.post(
+        "/api/v1/terminal-environments",
+        json={
+            "name": "历史清理后置条件修复",
+            "description": "验证错误成功任务会自动恢复",
+            "base_image": _BASE_IMAGE,
+        },
+    ).json()
+    setup = client.post(
+        f"/api/v1/terminal-environments/{environment['id']}/setup-sessions",
+        json={},
+    ).json()
+
+    with db_session_factory() as db:
+        item = db.get(EnvironmentSetupSession, setup["id"])
+        assert item is not None and item.sandbox_id is not None
+        sandbox_id = item.sandbox_id
+        item.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+
+    with db_session_factory() as db:
+        assert environment_service.expire_setup_sessions(db) == 1
+        item = db.get(EnvironmentSetupSession, setup["id"])
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "CLEANUP_SETUP_CONTAINER",
+                BackgroundTask.aggregate_id == setup["id"],
+            )
+        )
+        sandbox = db.get(ManagedSandbox, sandbox_id)
+        assert item is not None and task is not None and sandbox is not None
+        db.delete(sandbox)
+        task.state = TaskState.SUCCEEDED
+        db.commit()
+
+    with db_session_factory() as db:
+        assert environment_service.recover_environment_cleanup_tasks(db) == 1
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "CLEANUP_SETUP_CONTAINER",
+                BackgroundTask.aggregate_id == setup["id"],
+            )
+        )
+        assert task is not None
+        assert task.state == TaskState.RETRY
+        assert task.last_error == "RESOURCE_CLEANUP_POSTCONDITION_MISSING"
+
+    assert TaskWorker(worker_container)._run_once_sync() is True
+    with db_session_factory() as db:
+        item = db.get(EnvironmentSetupSession, setup["id"])
+        assert item is not None and item.container_id == ""
+    assert removed == []
+    deleted = client.delete(f"/api/v1/terminal-environments/{environment['id']}")
+    assert deleted.status_code == 204, deleted.text
 
 
 def test_setup_cleanup_failure_retries_without_losing_container_ownership(
