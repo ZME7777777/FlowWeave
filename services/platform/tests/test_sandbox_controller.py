@@ -246,6 +246,42 @@ def test_only_worker_can_remove_environment_credentials(settings, monkeypatch):
     assert removed == [_ENVIRONMENT_ID]
 
 
+def test_controller_resolves_platform_setup_image_tag(settings, monkeypatch):
+    resolved: list[str] = []
+
+    def resolve_setup_image(reference: str) -> tuple[str, str]:
+        environments_docker.validate_image(reference)
+        resolved.append(reference)
+        return reference, "sha256:" + "a" * 64
+
+    monkeypatch.setattr(environments_docker, "resolve_setup_image", resolve_setup_image)
+    payload = {
+        "manager_scope": _SCOPE,
+        "reference": "flowweave-openhands-runtime:1",
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/environments/resolve-base-image",
+            headers=_api_headers(),
+            json=payload,
+        )
+        invalid = client.post(
+            "/v1/environments/resolve-base-image",
+            headers=_api_headers(),
+            json={**payload, "reference": "flowweave/../host:1"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "reference": "flowweave-openhands-runtime:1",
+        "digest": "sha256:" + "a" * 64,
+    }
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "ENVIRONMENT_IMAGE_INVALID"
+    assert resolved == ["flowweave-openhands-runtime:1"]
+
+
 @pytest.mark.parametrize(
     ("path", "allowed_role"),
     (
@@ -253,6 +289,7 @@ def test_only_worker_can_remove_environment_credentials(settings, monkeypatch):
         ("/v1/sandboxes/delete", "worker"),
         ("/v1/sandboxes/list", "worker"),
         ("/v1/environments/remove-image", "worker"),
+        ("/v1/environments/resolve-base-image", "api"),
         ("/v1/environments/publish", "api"),
         ("/v1/gates/execute", "worker"),
         ("/v1/dependencies/build", "worker"),

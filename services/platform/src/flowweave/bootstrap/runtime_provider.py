@@ -198,8 +198,8 @@ class RemoveImageWrite(ScopedRequest):
 
 class ResolveBaseImageWrite(ScopedRequest):
     reference: str = Field(
-        max_length=500,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,430}@sha256:[0-9a-f]{64}$",
+        max_length=512,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$",
     )
 
 
