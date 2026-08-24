@@ -29,14 +29,41 @@ from flowweave.shared.models import (
 )
 
 _BASE_IMAGE = "flowweave-openhands-runtime@sha256:" + "1" * 64
+_REAL_RESOLVE_SETUP_IMAGE = environment_docker.resolve_setup_image
 
 
 @pytest.fixture(autouse=True)
-def _resolve_test_base_image(monkeypatch):
+def _resolve_test_setup_image(monkeypatch):
     monkeypatch.setattr(
         environment_docker,
-        "resolve_base_image",
-        lambda reference: (reference, "sha256:" + "1" * 64),
+        "resolve_setup_image",
+        lambda _reference: (_BASE_IMAGE, "sha256:" + "1" * 64),
+    )
+
+
+def test_platform_setup_image_tag_is_frozen_to_content_digest(monkeypatch):
+    digest = "sha256:" + "2" * 64
+    monkeypatch.setattr(environment_docker, "require_backend", lambda: None)
+    monkeypatch.setattr(
+        environment_docker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            docker_binary="docker",
+            docker_controller_mode="local",
+            terminal_environment_publish_timeout_seconds=600,
+        ),
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_run",
+        lambda command, **_kwargs: (
+            digest if command[-1] == "{{.Id}}" else '{"Id":"' + digest + '","RepoDigests":[]}'
+        ),
+    )
+
+    assert _REAL_RESOLVE_SETUP_IMAGE("flowweave-openhands-runtime:1") == (
+        "flowweave-openhands-runtime:1",
+        digest,
     )
 
 
@@ -588,12 +615,23 @@ def test_terminal_environment_publish_does_not_bind_nodes(client, worker_contain
         json={
             "name": "飞书工具环境",
             "description": "安装交互式 CLI",
-            "base_image": _BASE_IMAGE,
         },
     )
     assert created.status_code == 201, created.text
     environment = created.json()
     assert environment["versions"] == []
+    assert "base_image" not in environment
+    assert "base_image_digest" not in environment
+
+    rejected_override = client.post(
+        "/api/v1/terminal-environments",
+        json={
+            "name": "不允许覆盖启动镜像",
+            "description": "",
+            "base_image": _BASE_IMAGE,
+        },
+    )
+    assert rejected_override.status_code == 422, rejected_override.text
 
     setup = client.post(
         f"/api/v1/terminal-environments/{environment['id']}/setup-sessions",
@@ -660,7 +698,6 @@ def test_setup_allocation_starts_after_caller_transaction_is_released(client, mo
         json={
             "name": "配置短事务环境",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
 
@@ -679,7 +716,7 @@ def test_setup_global_capacity_applies_across_environments(client, monkeypatch):
         environment_service,
         "get_settings",
         lambda: SimpleNamespace(
-            terminal_environment_base_image="flowweave-openhands-runtime:1",
+            terminal_environment_setup_image="flowweave-openhands-runtime:1",
             terminal_environment_max_active_sessions=1,
             terminal_environment_session_ttl_seconds=14_400,
         ),
@@ -691,7 +728,6 @@ def test_setup_global_capacity_applies_across_environments(client, monkeypatch):
             json={
                 "name": f"global-capacity-{suffix}",
                 "description": "",
-                "base_image": _BASE_IMAGE,
             },
         )
         assert response.status_code == 201, response.text
@@ -718,7 +754,6 @@ def test_publish_docker_io_holds_no_database_transaction(client, db_session_fact
         json={
             "name": "发布短事务环境",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -777,7 +812,6 @@ def test_late_publish_result_after_cancel_is_cleaned_without_becoming_ready(
         json={
             "name": "发布竞态环境",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -850,7 +884,6 @@ def test_environment_version_run_reference_is_reported_and_blocks_deletion(
         json={
             "name": "运行占用环境",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     with db_session_factory() as db:
@@ -924,7 +957,6 @@ def test_delete_unused_versions_clears_provenance_and_preserves_version_high_wat
         json={
             "name": "版本清理环境",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
 
@@ -975,7 +1007,6 @@ def test_environment_delete_removes_versions_and_enqueues_image_cleanup(client, 
         json={
             "name": "环境删除镜像回收",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     digest = "sha256:" + "8" * 64
@@ -1029,7 +1060,6 @@ def test_environment_credential_cleanup_waits_for_live_sandbox(
         json={
             "name": "凭据卷最终门禁",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     client.delete(f"/api/v1/terminal-environments/{environment['id']}")
@@ -1062,7 +1092,6 @@ def test_image_cleanup_final_gate_does_not_touch_referenced_image(
         json={
             "name": "镜像最终门禁",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     digest = "sha256:" + "7" * 64
@@ -1131,7 +1160,6 @@ def test_setup_session_reports_disabled_backend(client):
         json={
             "name": "关闭后端环境",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     )
     assert created.status_code == 201, created.text
@@ -1162,7 +1190,6 @@ def test_setup_terminal_uses_session_scoped_persistent_tmux(client, monkeypatch)
         json={
             "name": "持久配置终端",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -1342,7 +1369,6 @@ def test_expired_setup_session_is_reclaimed_before_starting_another(
         json={
             "name": "过期回收环境",
             "description": "验证过期容器不会阻塞后续配置",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     first = client.post(
@@ -1393,7 +1419,6 @@ def test_setup_cleanup_clears_locator_after_provider_reconciles_sandbox_first(
         json={
             "name": "Sandbox 先回收环境",
             "description": "验证 Provider 与配置清理任务的竞态",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -1436,7 +1461,6 @@ def test_cleanup_recovery_requeues_succeeded_task_with_stale_container_locator(
         json={
             "name": "历史清理后置条件修复",
             "description": "验证错误成功任务会自动恢复",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -1509,7 +1533,6 @@ def test_setup_cleanup_failure_retries_without_losing_container_ownership(
         json={
             "name": "清理重试环境",
             "description": "",
-            "base_image": _BASE_IMAGE,
         },
     ).json()
     session = client.post(

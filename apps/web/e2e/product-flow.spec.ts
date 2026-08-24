@@ -1,6 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 
 const apiBase = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
 const suffix = Date.now().toString(36);
@@ -66,17 +65,9 @@ async function readyEnvironmentVersionId(request: APIRequestContext) {
       .flatMap(environment => environment.versions)
       .find(version => version.state === 'READY' && version.runtime_compatible);
     if (published) return published.id;
-    const baseImage = (process.env.E2E_RUNTIME_BASE_IMAGE
-      ?? execFileSync(
-        'docker',
-        ['image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'flowweave-openhands-runtime:1'],
-        { encoding: 'utf8' },
-      ).trim());
-    expect(baseImage).toMatch(/^flowweave-openhands-runtime@sha256:[0-9a-f]{64}$/);
     const environment = await post(request, '/terminal-environments', {
       name: `E2E运行环境-${suffix}`,
       description: '端到端验收所需的已发布 OpenHands Runtime',
-      base_image: baseImage,
     });
     const setup = await post(request, `/terminal-environments/${environment.id}/setup-sessions`, {});
     const version = await post(request, `/environment-setup-sessions/${setup.id}/publish`, {});
@@ -158,6 +149,43 @@ async function dropAsset(page: Page, asset: Locator, canvas: Locator, position: 
   await canvas.dispatchEvent('drop', event);
   await dataTransfer.dispose();
 }
+
+test('terminal environment creation keeps the setup image internal', async ({ page }) => {
+  let submitted: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/terminal-environments', async route => {
+    if (route.request().method() === 'POST') {
+      submitted = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: '00000000-0000-0000-0000-000000000013',
+          name: submitted.name,
+          description: submitted.description,
+          row_version: 1,
+          versions: [],
+          active_sessions: [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+  });
+  await login(page);
+  await page.getByRole('button', { name: '终端环境' }).click();
+  await page.getByRole('button', { name: '新建环境' }).click();
+  const editor = page.locator('form.environment-create-dialog');
+  await expect(editor.getByText('基础镜像', { exact: true })).toHaveCount(0);
+  await editor.getByLabel('名称').fill('UI 内部启动镜像验收');
+  await editor.getByLabel('说明').fill('用户只定义环境元数据');
+  await editor.getByRole('button', { name: '创建环境' }).click();
+  await expect.poll(() => submitted).toEqual({
+    name: 'UI 内部启动镜像验收',
+    description: '用户只定义环境元数据',
+  });
+});
 
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
   const environmentVersionId = await readyEnvironmentVersionId(page.request);

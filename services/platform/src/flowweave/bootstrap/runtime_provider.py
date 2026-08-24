@@ -730,7 +730,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/environments/resolve-base-image")
     async def _resolve_base_image(payload: ResolveBaseImageWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
-        reference, digest = environments_docker.resolve_base_image(payload.reference)
+        reference, digest = environments_docker.resolve_setup_image(payload.reference)
         return {"reference": reference, "digest": digest}
 
     @app.post("/v1/environments/remove-credentials")

@@ -147,7 +147,8 @@ stateDiagram-v2
   EXPIRED --> [*]
 ```
 
-1. Setup Session 选择环境基础镜像或已有 Environment Version。
+1. 首次 Setup Session 使用平台配置并在 Environment 创建时冻结 digest 的内部启动镜像；
+   后续 Setup Session 可以已有 Environment Version 为父版本。
 2. API 经 Controller 创建 `ENVIRONMENT_SETUP` Managed Sandbox，并把终端字节流通过 WebSocket 双向转发。
 3. 每个环境拥有独立凭据 Volume；Setup 容器可以在其中完成 Lark CLI 等本地授权。
 4. 发布操作由 API 身份调用 Controller，将 Setup 容器提交为 `flowweave/environment-*` 镜像，记录 digest、父版本和 manifest；凭据 Volume 不进入镜像。

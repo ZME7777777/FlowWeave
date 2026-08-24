@@ -57,16 +57,11 @@ def validate_image(value: str) -> str:
     return image
 
 
-def resolve_base_image(value: str) -> tuple[str, str]:
-    """Pull and freeze one user base image by registry and local content digest."""
+def resolve_setup_image(value: str) -> tuple[str, str]:
+    """Resolve the platform-owned setup seed and freeze its local content digest."""
 
     reference = validate_image(value)
-    if not _DIGEST_LOCKED_IMAGE.fullmatch(reference):
-        raise DomainError(
-            "ENVIRONMENT_BASE_IMAGE_NOT_IMMUTABLE",
-            "The base image must use an explicit repository@sha256 digest",
-            422,
-        )
+    digest_locked = bool(_DIGEST_LOCKED_IMAGE.fullmatch(reference))
     settings = get_settings()
     require_backend()
     if controller_is_remote(settings):
@@ -84,8 +79,10 @@ def resolve_base_image(value: str) -> tuple[str, str]:
             ) from exc
         canonical = str(raw.get("reference") or "")
         digest = str(raw.get("digest") or "")
-        if not _DIGEST_LOCKED_IMAGE.fullmatch(canonical) or not re.fullmatch(
-            r"sha256:[0-9a-f]{64}", digest
+        if (
+            not _IMAGE.fullmatch(canonical)
+            or ".." in canonical
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
         ):
             raise DomainError(
                 "ENVIRONMENT_DOCKER_PROTOCOL_ERROR",
@@ -94,12 +91,9 @@ def resolve_base_image(value: str) -> tuple[str, str]:
             )
         return canonical, digest
 
-    # A digest reference that is already present locally is immutable evidence
-    # in its own right.  Do not make local Runtime publication depend on a
-    # registry pull (the FlowWeave-built Runtime image is intentionally local
-    # in development and CI); the inspect below still proves the exact
-    # requested RepoDigest before accepting it.  Pull only when that proof is
-    # absent locally.
+    # The operator may configure a local build tag for the platform-owned seed.
+    # Freeze the inspected content ID on each Environment before any setup
+    # session starts; later tag movement cannot change that Environment.
     try:
         _run(
             [settings.docker_binary, "image", "inspect", reference, "--format", "{{.Id}}"],
@@ -128,12 +122,15 @@ def resolve_base_image(value: str) -> tuple[str, str]:
             if isinstance(repo_digests_value, list)
             else []
         )
-        requested_digest = reference.rsplit("@", 1)[1]
-        canonical = next(item for item in repo_digests if item.endswith(f"@{requested_digest}"))
+        if digest_locked:
+            requested_digest = reference.rsplit("@", 1)[1]
+            canonical = next(item for item in repo_digests if item.endswith(f"@{requested_digest}"))
+        else:
+            canonical = reference
     except (json.JSONDecodeError, StopIteration, ValueError) as exc:
         raise DomainError(
             "ENVIRONMENT_BASE_IMAGE_PROVENANCE_INVALID",
-            "Docker could not prove the requested base image digest",
+            "Docker could not freeze the platform setup image",
             409,
         ) from exc
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):

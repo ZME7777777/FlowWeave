@@ -176,7 +176,6 @@ class NodeAssetWrite(ApiModel):
 class TerminalEnvironmentWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
-    base_image: str = Field(min_length=1, max_length=500)
     row_version: int | None = None
 
 

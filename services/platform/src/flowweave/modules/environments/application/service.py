@@ -560,8 +560,6 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
         "id": item.id,
         "name": item.name,
         "description": item.description,
-        "base_image": item.base_image,
-        "base_image_digest": item.base_image_digest,
         "row_version": item.row_version,
         "versions": [
             _version_dict(
@@ -635,7 +633,6 @@ def read_environment(db: Session, environment_id: str) -> dict[str, Any]:
 def save_environment(
     db: Session, payload: TerminalEnvironmentWrite, environment_id: str | None = None
 ) -> dict[str, Any]:
-    requested_base_image = docker.validate_image(payload.base_image)
     if environment_id:
         item = _environment(db, environment_id)
         if payload.row_version != item.row_version:
@@ -645,27 +642,10 @@ def save_environment(
                 actual=item.row_version,
             )
         item.row_version += 1
-        if requested_base_image == item.base_image and item.base_image_digest:
-            base_image = item.base_image
-            base_image_digest = item.base_image_digest
-        else:
-            has_history = db.scalar(
-                select(EnvironmentVersion.id).where(EnvironmentVersion.environment_id == item.id)
-            ) or db.scalar(
-                select(EnvironmentSetupSession.id).where(
-                    EnvironmentSetupSession.environment_id == item.id
-                )
-            )
-            if has_history:
-                raise DomainError(
-                    "ENVIRONMENT_BASE_IMAGE_IMMUTABLE",
-                    "The user base image cannot change after setup or publication",
-                    409,
-                    {"environment_id": item.id},
-                )
-            base_image, base_image_digest = docker.resolve_base_image(requested_base_image)
     else:
-        base_image, base_image_digest = docker.resolve_base_image(requested_base_image)
+        base_image, base_image_digest = docker.resolve_setup_image(
+            get_settings().terminal_environment_setup_image
+        )
         item = TerminalEnvironment(
             name=payload.name,
             description=payload.description,
@@ -675,8 +655,6 @@ def save_environment(
         db.add(item)
     item.name = payload.name
     item.description = payload.description
-    item.base_image = base_image
-    item.base_image_digest = base_image_digest
     item.updated_at = datetime.now(UTC)
     finish(db)
     return environment_dict(db, item)
@@ -737,7 +715,7 @@ def create_setup_session(
                     if not environment.base_image_digest:
                         raise DomainError(
                             "ENVIRONMENT_BASE_IMAGE_UNRESOLVED",
-                            "This historical Environment has no frozen base image digest",
+                            "This historical Environment has no frozen setup image digest",
                             409,
                             {"environment_id": environment.id},
                         )
@@ -925,7 +903,7 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                 if not item.base_image_reference or not item.base_image_digest:
                     raise DomainError(
                         "ENVIRONMENT_BASE_IMAGE_UNRESOLVED",
-                        "This historical setup session has no frozen user base image",
+                        "This historical setup session has no frozen image provenance",
                         409,
                         {"session_id": item.id},
                     )

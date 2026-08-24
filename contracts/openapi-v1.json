@@ -2200,12 +2200,6 @@
       "TerminalEnvironmentWrite": {
         "additionalProperties": false,
         "properties": {
-          "base_image": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Base Image",
-            "type": "string"
-          },
           "description": {
             "default": "",
             "title": "Description",
@@ -2230,8 +2224,7 @@
           }
         },
         "required": [
-          "name",
-          "base_image"
+          "name"
         ],
         "title": "TerminalEnvironmentWrite",
         "type": "object"

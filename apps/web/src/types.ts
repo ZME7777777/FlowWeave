@@ -129,13 +129,12 @@ export interface EnvironmentSetupSession {
   base_image_reference: string; expires_at: string; error_detail?: string | null;
 }
 export interface TerminalEnvironment {
-  id: string; name: string; description: string; base_image: string;
-  base_image_digest?: string | null; row_version: number;
+  id: string; name: string; description: string; row_version: number;
   versions: EnvironmentVersion[]; active_sessions: EnvironmentSetupSession[];
   created_at: string; updated_at: string;
 }
 export interface TerminalEnvironmentWrite {
-  name: string; description: string; base_image: string; row_version?: number | null;
+  name: string; description: string; row_version?: number | null;
 }
 export interface NodeAsset {
   id: string; directory_id?: string | null; name: string; description: string;

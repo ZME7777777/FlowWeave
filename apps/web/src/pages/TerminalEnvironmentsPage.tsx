@@ -172,7 +172,6 @@ export function TerminalEnvironmentsPage() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [baseImage, setBaseImage] = useState('');
   const [terminal, setTerminal] = useState<EnvironmentSetupSession | null>(null);
   const [openingEnvironmentId, setOpeningEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -184,7 +183,7 @@ export function TerminalEnvironmentsPage() {
     );
     if (!stillRunning) setTerminal(null);
   }, [environments, isLoading, terminal]);
-  const create = useMutation({ mutationFn: () => api.createTerminalEnvironment({ name: name.trim(), description: description.trim(), base_image: baseImage.trim() }), onSuccess: async () => { setCreating(false); setName(''); setDescription(''); setBaseImage(''); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }, onError: reason => setError(reason instanceof Error ? reason.message : '创建失败') });
+  const create = useMutation({ mutationFn: () => api.createTerminalEnvironment({ name: name.trim(), description: description.trim() }), onSuccess: async () => { setCreating(false); setName(''); setDescription(''); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }, onError: reason => setError(reason instanceof Error ? reason.message : '创建失败') });
   const open = async (environment: TerminalEnvironment, baseVersionId?: string) => {
     if (openingEnvironmentId) return;
     setOpeningEnvironmentId(environment.id);
@@ -236,7 +235,7 @@ export function TerminalEnvironmentsPage() {
     <div className="environment-warning"><b>凭据风险</b><span>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</span></div>
     {error && <p className="error">{error}</p>}
     {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <div className="environment-grid">{environments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const latestCompatible = environment.versions.find(item => item.state === 'READY' && item.runtime_compatible); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
-      <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3><small>{environment.base_image}</small></div><button className="ghost" aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}><Trash2 size={15}/></button></header>
+      <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3></div><button className="ghost" aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}><Trash2 size={15}/></button></header>
       <p>{environment.description || '未填写说明'}</p>
       <dl><div><dt>可运行版本</dt><dd>{environment.versions.filter(item => item.state === 'READY' && item.runtime_compatible).length}</dd></div><div><dt>最新可运行版本</dt><dd>{latestCompatible ? `v${latestCompatible.version_no} · ${latestCompatible.image_digest.slice(0, 19)}…` : '需要重新发布'}</dd></div><div><dt>配置会话</dt><dd>{active ? active.state : '无'}</dd></div></dl>
       {latest?.manifest.commands && <div className="environment-tools">{Object.entries(latest.manifest.commands).slice(0, 8).map(([command, version]) => <span key={command} title={version}>{command}</span>)}</div>}
@@ -251,7 +250,7 @@ export function TerminalEnvironmentsPage() {
       })}</div></details>}
       <footer>{active ? <button className="primary" onClick={() => setTerminal(active)}><Terminal size={14}/>继续配置</button> : <button className="secondary" disabled={openingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
     </article>; })}</div> : <div className="empty">暂无终端环境。新建后可在隔离终端中安装节点需要的命令。</div>}
-    {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label>名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label>基础镜像<input required placeholder="repository/image@sha256:…" value={baseImage} onChange={event => setBaseImage(event.target.value)}/><small>必须提供仓库 digest；浮动 tag 不可发布。</small></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
+    {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label className="wide">名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
     {terminal && <TerminalPanel session={terminal} onClose={closeTerminal}/>}
   </main>;
 }

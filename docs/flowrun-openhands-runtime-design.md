@@ -85,6 +85,8 @@ generation 都不是 Conversation 身份。FlowWeave 的 API 不向客户端暴�
 ### 4.1 产品约束
 
 - Environment 由用户显式创建；Environment Version 是追加式、不可变且 digest 锁定的发布物。
+- 新建 Environment 只收集名称和说明。首次 Setup Session 由平台选择并冻结内部启动镜像；
+  该镜像只是建造配置终端的种子，不是用户 Environment Version，也不能被 Flow 绑定。
 - Flow/Flow Snapshot 必须显式绑定一个 `READY` Environment Version。一个 FlowRun 内所有 Conversation
   使用该 Run 冻结的同一版本，不允许节点在运行时切换环境。
 - 未绑定、仍在构建、验证失败、已退役、digest 漂移或目标平台不兼容时，流程不得发布或启动。
@@ -92,11 +94,13 @@ generation 都不是 Conversation 身份。FlowWeave 的 API 不向客户端暴�
 
 ### 4.2 OpenHands 原生打包链
 
-Environment Version 保存用户 base image 的不可变 digest。发布阶段由 Runtime Provider 调用
+Setup Session 从平台内部启动镜像或本 Environment 已发布版本建立可交互终端。发布时先将
+用户在终端中完成的文件系统冻结为不可变用户 base image，再由 Runtime Provider 调用
 OpenHands 正式 `openhands.agent_server.docker.build` 能力（即 `DockerDevWorkspace` 使用的 build 链）
 将该 base image 打包为包含固定 OpenHands Agent Server、SDK、Tools、Workspace 和 FlowWeave 固定
 overlay 的 Runtime Image。构建结果必须冻结：
 
+- 平台 Setup 启动镜像引用及创建会话时解析的内容 digest；
 - 用户 base image repository 和 digest；
 - OpenHands source commit、source archive digest 和四包版本；
 - overlay digest、build target、platform 和构建日志摘要；
@@ -225,7 +229,7 @@ Conversation 中的发言角色”。系统/Tool 事件按 OpenHands 原生事�
 
 现 Sandbox Controller 收缩后的 Runtime Provider 保留：
 
-- Environment base image 验证和 OpenHands 正式 Runtime Image 打包；
+- 平台 Setup 启动镜像验证、digest 冻结和 OpenHands 正式 Runtime Image 打包；
 - FlowRun 持久目录分配、挂载校验和生命周期；
 - 容器启动、健康、网络、端口、资源配额、日志、TTL、停止和物理删除；
 - Runtime Session/generation、replacement lease、fencing、drain 和故障恢复；
