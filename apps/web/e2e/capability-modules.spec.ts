@@ -71,3 +71,78 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(page.locator('.capability-guidance')).toHaveCount(0);
   await expect(page.locator('.capability-tools')).toHaveCount(0);
 });
+
+test('every capability module supports selecting and bulk deleting capability lineages', async ({ page }) => {
+  const moduleTypes = ['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'TOOL_POLICY', 'AGENT_DEFINITION'] as const;
+  const labels: Record<(typeof moduleTypes)[number], string> = {
+    SKILL: 'Skill',
+    PLUGIN: 'Plugin',
+    MCP: 'MCP',
+    HOOK: 'Hook',
+    TOOL_POLICY: 'Tool Policy',
+    AGENT_DEFINITION: 'Agent Definition',
+  };
+  let capabilities = moduleTypes.flatMap((capabilityType, moduleIndex) => [0, 1].map(itemIndex => ({
+    id: `version-${moduleIndex}-${itemIndex}`,
+    lineage_id: `lineage-${moduleIndex}-${itemIndex}`,
+    revision_number: 1,
+    is_latest: true,
+    capability_type: capabilityType,
+    capability_key: `bulk-delete-${capabilityType.toLowerCase()}-${itemIndex}`,
+    description: `${labels[capabilityType]} batch delete fixture`,
+    version: '1.0.0',
+    filename: `${capabilityType.toLowerCase()}.json`,
+    content_hash: `${moduleIndex}${itemIndex}`.padStart(64, '0'),
+    byte_size: 128,
+    import_id: `import-${moduleIndex}-${itemIndex}`,
+    created_at: new Date(2026, 7, 24, 10, moduleIndex, itemIndex).toISOString(),
+    reference_count: 0,
+    is_builtin: false,
+    document: {},
+    dependencies: {},
+    dependency_build_state: 'NOT_REQUIRED',
+    dependency_build_error: null,
+  })));
+  capabilities.push({
+    ...capabilities.find(item => item.capability_type === 'TOOL_POLICY')!,
+    id: 'version-builtin-policy',
+    lineage_id: 'lineage-builtin-policy',
+    capability_key: 'builtin-default-policy',
+    is_builtin: true,
+  });
+
+  await page.route('**/api/v1/capabilities', async route => {
+    if (route.request().method() === 'DELETE') {
+      const payload = route.request().postDataJSON() as { ids: string[] };
+      capabilities = capabilities.filter(item => !payload.ids.includes(item.id));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ deleted_ids: payload.ids, blocked: [] }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(capabilities) });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  const modules = page.getByRole('navigation', { name: '能力模块' });
+
+  for (const capabilityType of moduleTypes) {
+    const label = labels[capabilityType];
+    await modules.getByRole('button', { name: new RegExp(label) }).click();
+    const bulkDelete = page.getByRole('button', { name: '批量删除 (0)' });
+    await expect(bulkDelete).toBeDisabled();
+    const checkboxes = page.getByRole('checkbox', { name: new RegExp(`选择能力 bulk-delete-${capabilityType.toLowerCase()}-`) });
+    await expect(checkboxes).toHaveCount(2);
+    if (capabilityType === 'TOOL_POLICY') await expect(page.getByRole('checkbox', { name: '选择能力 builtin-default-policy' })).toBeDisabled();
+    await page.getByRole('button', { name: '全选当前模块' }).click();
+    await expect(checkboxes.nth(0)).toBeChecked();
+    await expect(checkboxes.nth(1)).toBeChecked();
+    await expect(page.getByRole('button', { name: '批量删除 (2)' })).toBeEnabled();
+    await page.getByRole('button', { name: '批量删除 (2)' }).click();
+    const confirm = page.getByRole('alertdialog');
+    await expect(confirm).toContainText('删除所选的 2 项能力');
+    await expect(confirm).toContainText('全部历史版本');
+    await confirm.getByRole('button', { name: '确认删除' }).click();
+    await expect(checkboxes).toHaveCount(0);
+    await expect(page.getByRole('status')).toContainText('已删除 2 条无关联能力记录');
+  }
+});

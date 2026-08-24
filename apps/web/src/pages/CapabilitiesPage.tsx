@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Braces, Eye, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, ShieldCheck, Trash2, Upload } from 'lucide-react';
+import { Braces, CheckSquare, Eye, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../api/client';
 import { HookEditorDialog, type HookScriptAsset } from '../components/HookEditorDialog';
@@ -225,10 +225,14 @@ export function CapabilitiesPage() {
   const [agentDefinitionJson, setAgentDefinitionJson] = useState(AGENT_DEFINITION_JSON_EXAMPLE);
   const [busy, setBusy] = useState(false);
   const [importingSkill, setImportingSkill] = useState(false);
+  const [selectedLineageIds, setSelectedLineageIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const lineages = useMemo(() => groupCapabilities(capabilities), [capabilities]);
   const visible = useMemo(() => lineages.filter(group => group.latest.capability_type === type), [lineages, type]);
+  const selectableVisible = useMemo(() => visible.filter(group => !group.latest.is_builtin), [visible]);
+  const selectedVisible = useMemo(() => selectableVisible.filter(group => selectedLineageIds.has(group.id)), [selectableVisible, selectedLineageIds]);
+  const allVisibleSelected = selectableVisible.length > 0 && selectableVisible.every(group => selectedLineageIds.has(group.id));
   const parsedMcp = useMemo(() => {
     try { return { document: parseMcpDocument(mcpJson), error: '' }; }
     catch (reason) { return { document: undefined, error: reason instanceof Error ? reason.message : 'MCP JSON 无效。' }; }
@@ -430,14 +434,39 @@ export function CapabilitiesPage() {
       setNotice(`已发布固定 commit ${published.requested_commit.slice(0, 12)} 的不可变 Plugin 版本。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setGitBusy(false); }
   };
-  const remove = async (ids: string[], capabilityCount: number) => {
-    if (!ids.length || !await dialog.confirm({ title: `删除所选的 ${capabilityCount} 项能力？`, message: '有关联的记录会保留，其余记录会直接删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+  const toggleLineage = (lineageId: string) => setSelectedLineageIds(old => {
+    const next = new Set(old);
+    if (next.has(lineageId)) next.delete(lineageId); else next.add(lineageId);
+    return next;
+  });
+  const toggleVisible = () => setSelectedLineageIds(old => {
+    const next = new Set(old);
+    if (allVisibleSelected) selectableVisible.forEach(group => next.delete(group.id));
+    else selectableVisible.forEach(group => next.add(group.id));
+    return next;
+  });
+  const remove = async (groups: CapabilityLineage[], retainBlockedSelection = false) => {
+    if (!groups.length || !await dialog.confirm({ title: `删除所选的 ${groups.length} 项能力？`, message: '将删除所选能力的全部历史版本；有关联或系统内置的版本会保留并说明原因，其余版本会直接删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      const result = await api.deleteCapabilities(ids);
+      const ids = groups.flatMap(group => group.versions.map(item => item.id));
+      const deletedIds: string[] = [];
+      const blocked: BlockedCapabilityDelete[] = [];
+      for (let start = 0; start < ids.length; start += 100) {
+        const result = await api.deleteCapabilities(ids.slice(start, start + 100));
+        deletedIds.push(...result.deleted_ids);
+        blocked.push(...result.blocked);
+      }
+      const blockedIds = new Set(blocked.map(item => item.id));
+      setSelectedLineageIds(old => {
+        const next = new Set(old);
+        groups.forEach(group => next.delete(group.id));
+        if (retainBlockedSelection) groups.filter(group => group.versions.some(item => blockedIds.has(item.id))).forEach(group => next.add(group.id));
+        return next;
+      });
       await qc.invalidateQueries({ queryKey: ['capabilities'] });
-      if (result.deleted_ids.length) setNotice(`已删除 ${result.deleted_ids.length} 条无关联能力记录。`);
-      if (result.blocked.length) setError(blockedCapabilityMessage(result.blocked));
+      if (deletedIds.length) setNotice(`已删除 ${deletedIds.length} 条无关联能力记录。`);
+      if (blocked.length) setError(blockedCapabilityMessage(blocked));
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
   const openEditor = async (item: CapabilityAsset) => {
@@ -476,7 +505,7 @@ export function CapabilitiesPage() {
 
   return <section className="page capabilities-page">
     <div className="page-head"><div><span className="eyebrow">CAPABILITY REPOSITORY</span><h1>能力仓库</h1><p>按能力模块管理不可变版本；进入模块后，只展示该模块的功能与能力列表。</p></div></div>
-    <nav className="capability-module-nav" aria-label="能力模块">{CAPABILITY_MODULES.map(item => <button key={item} className={type === item ? 'active' : ''} aria-current={type === item ? 'page' : undefined} onClick={() => { setType(item); setError(''); setNotice(''); }}><span>{typeLabel(item)}</span><em>{count(item)}</em></button>)}</nav>
+    <nav className="capability-module-nav" aria-label="能力模块">{CAPABILITY_MODULES.map(item => <button key={item} className={type === item ? 'active' : ''} aria-current={type === item ? 'page' : undefined} onClick={() => { setType(item); setSelectedLineageIds(new Set()); setError(''); setNotice(''); }}><span>{typeLabel(item)}</span><em>{count(item)}</em></button>)}</nav>
     <section className="capability-module-head">
       <div><span className="eyebrow">{typeLabel(type).toUpperCase()}</span><h2>{typeLabel(type)}</h2></div>
       <div className="capability-module-actions">
@@ -501,7 +530,8 @@ export function CapabilitiesPage() {
     </section></div>}
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
     {type === 'SKILL' && <section className="capability-collection-section skill-collection-section"><header><div><Layers3 size={19}/><span><b>Skill 组合</b><small>Skill 专属的批量选择模板；固定引用具体 Skill Version，不进入节点或 Runtime。</small></span></div><div className="skill-collection-header-actions"><em>{capabilityCollections.length} 个组合</em><button className="secondary" disabled={importingSkill || busy} onClick={() => { setError(''); setEditingCollection(null); }}><Layers3 size={14}/>新建 Skill 组合</button></div></header>{collectionsLoading ? <div className="empty compact">加载 Skill 组合…</div> : capabilityCollections.length ? <div className="capability-collection-grid">{capabilityCollections.map(collection => <article key={collection.id}><header><span>{collection.category || '未分类'}</span><em>{collection.members.length} 项</em></header><h3>{collection.name}</h3><p>{collection.description || '暂无说明'}</p><div>{collection.members.map(member => <code key={member.id}>{member.capability_key}<small>rev {member.revision_number}</small></code>)}</div><footer><button className="secondary" onClick={() => setEditingCollection(collection)}><Pencil size={12}/>编辑</button><button className="ghost" onClick={() => void removeCollection(collection)}><Trash2 size={12}/>删除</button></footer></article>)}</div> : <div className="capability-collection-empty"><span>还没有 Skill 组合。选择固定 Skill 版本后，节点可一键批量添加。</span><button className="secondary" onClick={() => setEditingCollection(null)}>创建第一个 Skill 组合</button></div>}</section>}
-    {isLoading ? <div className="empty">加载 {typeLabel(type)}…</div> : visible.length ? <div className="capability-card-grid">{visible.map(group => <CapabilityCard key={group.id} group={group} onEdit={() => void openEditor(group.latest)} onViewPolicy={() => setViewingPolicy(group)} onProfileHistory={() => setProfileHistory(group)} onDelete={() => void remove(group.versions.map(item => item.id), 1)}/>)}</div> : <div className="empty"><FileArchive size={30}/><b>暂无 {typeLabel(type)}</b><span>使用本模块右上角的功能创建或导入。</span></div>}
+    {!isLoading && <div className="capability-bulk-tools"><span>共 {visible.length} 项 {typeLabel(type)}{visible.some(group => group.latest.is_builtin) ? ` · ${visible.filter(group => group.latest.is_builtin).length} 项系统内置不可删除` : ''}</span><div className="bulk-actions"><button className="secondary" disabled={!selectableVisible.length || busy} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前模块'}</button><button className="danger" disabled={!selectedVisible.length || busy} onClick={() => void remove(selectedVisible, true)}><Trash2 size={14}/>{busy ? '删除中…' : `批量删除 (${selectedVisible.length})`}</button></div></div>}
+    {isLoading ? <div className="empty">加载 {typeLabel(type)}…</div> : visible.length ? <div className="capability-card-grid">{visible.map(group => <CapabilityCard key={group.id} group={group} selected={selectedLineageIds.has(group.id)} onToggle={() => toggleLineage(group.id)} onEdit={() => void openEditor(group.latest)} onViewPolicy={() => setViewingPolicy(group)} onProfileHistory={() => setProfileHistory(group)} onDelete={() => void remove([group])}/>)}</div> : <div className="empty"><FileArchive size={30}/><b>暂无 {typeLabel(type)}</b><span>使用本模块右上角的功能创建或导入。</span></div>}
     {viewingPolicy && <div className="modal-backdrop"><section className="modal capability-source-editor tool-policy-viewer" role="dialog" aria-modal="true" aria-label={`查看 Tool Policy ${viewingPolicy.latest.capability_key}`}><header><div><span className="eyebrow">TOOL POLICY</span><h2>{viewingPolicy.latest.capability_key}</h2></div><button className="ghost" onClick={() => setViewingPolicy(undefined)}>关闭</button></header>{viewingPolicy.latest.is_builtin && <div className="builtin-policy-note"><LockKeyhole size={17}/><span><b>系统内置 · 不可删除</b><small>节点未显式选择策略时，平台会冻结此默认策略；保留它可保证新节点可保存、历史 Runtime 可重放。</small></span></div>}<div className="policy-version-list">{viewingPolicy.versions.map(version => <details key={version.id} open={version.id === viewingPolicy.latest.id}><summary><b>rev {version.revision_number}</b><span>{version.is_latest ? '当前版本' : '历史版本'} · {version.content_hash.slice(0, 10)}</span></summary><pre>{JSON.stringify(version.document, null, 2)}</pre></details>)}</div><footer><button className="primary" onClick={() => setViewingPolicy(undefined)}>完成</button></footer></section></div>}
     {profileHistory && <AgentProfileHistoryDialog packageId={profileHistory.id} capabilityKey={profileHistory.latest.capability_key} onClose={() => setProfileHistory(undefined)}/>}
     {editing && <div className="modal-backdrop"><section className="modal capability-source-editor" role="dialog" aria-label={`编辑 Skill ${editing.capability_key}`}><header><div><span className="eyebrow">EDIT SKILL</span><h2>编辑 {editing.capability_key}</h2></div><button className="ghost" onClick={() => setEditing(undefined)}>关闭</button></header><p>保存会发布新的不可变 Skill 版本；已有节点和 Run Snapshot 继续引用原版本，升级必须显式重新绑定。</p><textarea aria-label="Skill 源码" value={source} onChange={event => setSource(event.target.value)}/><div className="dependency-policy"><b>声明依赖（写入 SKILL.md frontmatter）</b><code>{DEPENDENCY_EXAMPLE}</code><span>所有版本必须精确固定。CLI 必须在平台白名单中；不接受终端命令。</span></div><footer><button className="ghost" onClick={() => setEditing(undefined)}>取消</button><button className="primary" disabled={busy} onClick={() => void saveSource()}>{busy ? '保存中…' : '发布新版本'}</button></footer></section></div>}
@@ -573,10 +603,10 @@ function McpEditorDialog(props: McpEditorDialogProps) {
   </section></div>;
 }
 
-interface CardProps { group: CapabilityLineage; onEdit: () => void; onViewPolicy: () => void; onProfileHistory: () => void; onDelete: () => void }
-function CapabilityCard({ group, onEdit, onViewPolicy, onProfileHistory, onDelete }: CardProps) {
+interface CardProps { group: CapabilityLineage; selected: boolean; onToggle: () => void; onEdit: () => void; onViewPolicy: () => void; onProfileHistory: () => void; onDelete: () => void }
+function CapabilityCard({ group, selected, onToggle, onEdit, onViewPolicy, onProfileHistory, onDelete }: CardProps) {
   const item = group.latest;
   const dependencyLabel = item.dependency_build_state === 'READY' ? '依赖可用' : item.dependency_build_state === 'PENDING' ? '依赖构建中' : item.dependency_build_state === 'FAILED' ? '依赖构建失败' : '无需额外依赖';
   const totalReferences = group.versions.reduce((total, version) => total + version.reference_count, 0);
-  return <article className={`capability-card ${item.is_builtin ? 'builtin' : ''}`}><header>{item.is_builtin && <span className="builtin-badge"><LockKeyhole size={12}/>系统内置</span>}<span className={`capability-card-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type === 'SKILL' ? <FileArchive size={18}/> : item.capability_type === 'TOOL_POLICY' ? <ShieldCheck size={18}/> : <PlugZap size={18}/>}</span><span className="cap-type">{typeLabel(item.capability_type)}</span></header><h3>{item.capability_key}</h3><p>{item.description || '暂无能力说明'}</p><div className="capability-version"><span>rev {item.revision_number}</span><code title={item.id}>{item.id.slice(0, 8)}</code><code title={item.content_hash}>{item.content_hash.slice(0, 10)}</code></div><div className={`dependency-state ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}{item.dependency_build_error ? `：${item.dependency_build_error}` : ''}</div><dl><dt>来源文件</dt><dd>{item.filename}</dd><dt>文件大小</dt><dd>{formatBytes(item.byte_size)}</dd><dt>更新时间</dt><dd>{new Date(item.created_at).toLocaleString()}</dd><dt>节点引用</dt><dd>{totalReferences} 个</dd></dl><footer>{item.capability_type === 'SKILL' && <button className="secondary" onClick={onEdit}><Pencil size={13}/>编辑</button>}{item.capability_type === 'TOOL_POLICY' && <button className="secondary" onClick={onViewPolicy}><Eye size={13}/>查看策略</button>}{item.capability_type === 'AGENT_PROFILE' && <button className="secondary" onClick={onProfileHistory}><Layers3 size={13}/>版本与绑定</button>}{item.is_builtin ? <button className="ghost" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={13}/>不可删除</button> : <button className="ghost" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={onDelete}><Trash2 size={13}/>删除能力</button>}</footer></article>;
+  return <article className={`capability-card ${item.is_builtin ? 'builtin' : ''} ${selected ? 'selected' : ''}`}><header><label className="capability-card-select resource-check" title={item.is_builtin ? '系统内置默认策略，不能选择删除' : `选择能力 ${item.capability_key}`}><input type="checkbox" aria-label={`选择能力 ${item.capability_key}`} checked={selected} disabled={item.is_builtin} onChange={onToggle}/><span className={`capability-card-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type === 'SKILL' ? <FileArchive size={18}/> : item.capability_type === 'TOOL_POLICY' ? <ShieldCheck size={18}/> : <PlugZap size={18}/>}</span></label>{item.is_builtin && <span className="builtin-badge"><LockKeyhole size={12}/>系统内置</span>}<span className="cap-type">{typeLabel(item.capability_type)}</span></header><h3>{item.capability_key}</h3><p>{item.description || '暂无能力说明'}</p><div className="capability-version"><span>rev {item.revision_number}</span><code title={item.id}>{item.id.slice(0, 8)}</code><code title={item.content_hash}>{item.content_hash.slice(0, 10)}</code></div><div className={`dependency-state ${item.dependency_build_state.toLowerCase()}`} title={item.dependency_build_error || ''}>{dependencyLabel}{item.dependency_build_error ? `：${item.dependency_build_error}` : ''}</div><dl><dt>来源文件</dt><dd>{item.filename}</dd><dt>文件大小</dt><dd>{formatBytes(item.byte_size)}</dd><dt>更新时间</dt><dd>{new Date(item.created_at).toLocaleString()}</dd><dt>节点引用</dt><dd>{totalReferences} 个</dd></dl><footer>{item.capability_type === 'SKILL' && <button className="secondary" onClick={onEdit}><Pencil size={13}/>编辑</button>}{item.capability_type === 'TOOL_POLICY' && <button className="secondary" onClick={onViewPolicy}><Eye size={13}/>查看策略</button>}{item.capability_type === 'AGENT_PROFILE' && <button className="secondary" onClick={onProfileHistory}><Layers3 size={13}/>版本与绑定</button>}{item.is_builtin ? <button className="ghost" disabled title="系统内置默认策略，不能删除"><LockKeyhole size={13}/>不可删除</button> : <button className="ghost" title={totalReferences > 0 ? '有关联的记录会保留并说明绑定节点，其余记录直接删除' : '删除能力'} onClick={onDelete}><Trash2 size={13}/>删除能力</button>}</footer></article>;
 }
