@@ -222,11 +222,21 @@ def main() -> None:
     assert provenance["source_archive_sha256"] == EXPECTED_SOURCE_ARCHIVE_SHA256
     assert provenance["overlays"] == {}
     direct_urls = {}
+    allowed_source_roots = (
+        "file:///opt/openhands-source",
+        # OpenHands' official ``docker.build`` source target installs the
+        # copied, non-editable fixed source below /agent-server.
+        "file:///agent-server",
+    )
     for package in PACKAGES:
         direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
-        expected_url = f"file:///opt/openhands-source/{package}"
-        assert direct_url.get("url") == expected_url, (package, direct_url)
+        actual_url = direct_url.get("url")
+        assert actual_url in tuple(f"{root}/{package}" for root in allowed_source_roots), (
+            package,
+            direct_url,
+        )
         direct_urls[package] = direct_url["url"]
+    assert len({url.rsplit("/", 1)[0] for url in direct_urls.values()}) == 1
     assert Plugin.__module__ == "openhands.sdk.plugin.plugin"
     assert fetch_plugin_with_resolution.__module__ == "openhands.sdk.plugin.fetch"
 

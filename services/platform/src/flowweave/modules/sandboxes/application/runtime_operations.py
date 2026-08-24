@@ -32,9 +32,7 @@ def runtime_overview(db: Session, flow_run_id: str) -> dict[str, Any]:
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
-    session = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id)
-    )
+    session = db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id))
     if session is None:
         return {
             "flow_run_id": flow_run_id,
@@ -110,9 +108,7 @@ def request_runtime_replacement(
     """Fence writes immediately and enqueue one generation-scoped replacement."""
 
     session = db.scalar(
-        select(FlowRunRuntime)
-        .where(FlowRunRuntime.flow_run_id == flow_run_id)
-        .with_for_update()
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
     )
     if session is None or session.active_generation is None:
         raise DomainError(

@@ -31,9 +31,7 @@ def _key(value: str | None, action: str, identifier: str) -> str:
 
 
 @router.get("/flow-runs/{flow_run_id}/conversations")
-async def list_flow_run_conversations(
-    flow_run_id: str, db: Db
-) -> list[dict[str, Any]]:
+async def list_flow_run_conversations(flow_run_id: str, db: Db) -> list[dict[str, Any]]:
     return await run_sync(
         db, lambda session: conversations.list_flow_run_conversations(session, flow_run_id)
     )
@@ -58,14 +56,10 @@ async def create_flow_run_conversation(
 
 
 @router.get("/flow-runs/{flow_run_id}/conversations/{binding_id}")
-async def get_flow_run_conversation(
-    flow_run_id: str, binding_id: str, db: Db
-) -> dict[str, Any]:
+async def get_flow_run_conversation(flow_run_id: str, binding_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: conversations.get_flow_run_conversation(
-            session, flow_run_id, binding_id
-        ),
+        lambda session: conversations.get_flow_run_conversation(session, flow_run_id, binding_id),
     )
 
 
@@ -130,14 +124,10 @@ async def ask_conversation(
     "/flow-runs/{flow_run_id}/conversations/{binding_id}/stop",
     status_code=202,
 )
-async def stop_conversation(
-    flow_run_id: str, binding_id: str, db: Db
-) -> dict[str, Any]:
+async def stop_conversation(flow_run_id: str, binding_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: conversations.stop_flow_run_conversation(
-            session, flow_run_id, binding_id
-        ),
+        lambda session: conversations.stop_flow_run_conversation(session, flow_run_id, binding_id),
     )
 
 

@@ -8,9 +8,6 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from flowweave.modules.conversations.infrastructure.models import (
-    FlowRunConversationBinding,
-)
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
 )
@@ -41,6 +38,7 @@ from flowweave.runtime.base import RuntimeConversationIdentity, RuntimeHandle
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
+from flowweave.shared.models import FlowRunConversationBinding
 from flowweave.shared.settings import get_settings
 
 
@@ -107,9 +105,7 @@ def record_terminal_runtime_replacement_failure(
     """Make exhausted replacement retries explicitly diagnosable and non-routable."""
 
     session = db.scalar(
-        select(FlowRunRuntime)
-        .where(FlowRunRuntime.flow_run_id == flow_run_id)
-        .with_for_update()
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
     )
     if (
         session is None
@@ -247,9 +243,7 @@ def _ensure_replacement_state(
                         session.id,
                         managed_generation_floor=int(
                             control_db.scalar(
-                                select(
-                                    func.coalesce(func.max(ManagedSandbox.generation), 0)
-                                ).where(
+                                select(func.coalesce(func.max(ManagedSandbox.generation), 0)).where(
                                     ManagedSandbox.kind == "AGENT_RUNTIME",
                                     ManagedSandbox.owner_type == "FLOW_RUN",
                                     ManagedSandbox.owner_id == flow_run_id,
@@ -282,9 +276,7 @@ def _ensure_replacement_state(
                         hard_expires_at=created_at
                         + timedelta(seconds=settings.sandbox_runtime_hard_ttl_seconds),
                         next_reconcile_at=created_at
-                        + timedelta(
-                            seconds=settings.terminal_environment_start_timeout_seconds
-                        ),
+                        + timedelta(seconds=settings.terminal_environment_start_timeout_seconds),
                     )
                     control_db.add(target_runtime)
                     target = ensure_runtime_generation(
@@ -388,10 +380,7 @@ def _record_failure(
 ) -> None:
     with Session(bind=engine, expire_on_commit=False) as control_db:
         session = control_db.get(FlowRunRuntime, state.runtime_session_id)
-        if (
-            session is None
-            or session.replacement_lease_token != state.replacement_lease_token
-        ):
+        if session is None or session.replacement_lease_token != state.replacement_lease_token:
             control_db.rollback()
             return
         record_runtime_replacement_failure(
@@ -441,9 +430,7 @@ def process_flow_run_runtime_replacement(
                     "The replacement Runtime provider record is unavailable",
                     409,
                 )
-            runtime_secret = resolve_runtime_secret(
-                control_db, session.workspace_allocation_id
-            )
+            runtime_secret = resolve_runtime_secret(control_db, session.workspace_allocation_id)
             control_db.commit()
 
         observation = provider.ensure_running(
@@ -508,7 +495,7 @@ def process_flow_run_runtime_replacement(
                     raise
 
         graceful = False
-        if source is not None and source.state not in {"STOPPED", "DELETED"}:
+        if source.state not in {"STOPPED", "DELETED"}:
             with Session(bind=engine, expire_on_commit=False) as control_db:
                 session = _renew(control_db, state)
                 source = control_db.get(RuntimeGeneration, state.source_generation_id)

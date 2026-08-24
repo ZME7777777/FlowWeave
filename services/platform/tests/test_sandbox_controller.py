@@ -71,7 +71,7 @@ def test_controller_rejects_unauthenticated_control_request(settings, monkeypatc
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, resource: touched.append(True),
+        lambda self, resource, **_kwargs: touched.append(True),
     )
 
     with TestClient(create_app(_settings(settings))) as client:
@@ -87,7 +87,7 @@ def test_controller_rejects_wrong_scope_before_docker(settings, monkeypatch):
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, resource: touched.append(True),
+        lambda self, resource, **_kwargs: touched.append(True),
     )
 
     with TestClient(create_app(_settings(settings))) as client:
@@ -107,7 +107,7 @@ def test_controller_rejects_arbitrary_docker_arguments(settings, monkeypatch):
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, resource: touched.append(True),
+        lambda self, resource, **_kwargs: touched.append(True),
     )
 
     with TestClient(create_app(_settings(settings))) as client:
@@ -127,7 +127,7 @@ def test_controller_rejects_non_deterministic_resource_name(settings, monkeypatc
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, resource: touched.append(True),
+        lambda self, resource, **_kwargs: touched.append(True),
     )
 
     with TestClient(create_app(_settings(settings))) as client:
@@ -147,7 +147,7 @@ def test_controller_rejects_invalid_sandbox_contract_before_docker(settings, mon
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, resource: touched.append(True),
+        lambda self, resource, **_kwargs: touched.append(True),
     )
 
     invalid_payloads = (
@@ -199,7 +199,7 @@ def test_controller_enforces_principal_operation_boundaries(settings, monkeypatc
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, resource: touched.append(True),
+        lambda self, resource, **_kwargs: touched.append(True),
     )
 
     with TestClient(create_app(_settings(settings))) as client:
@@ -344,7 +344,7 @@ def test_controller_rejects_oversized_body_before_handler(settings, monkeypatch)
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, resource: touched.append(True),
+        lambda self, resource, **_kwargs: touched.append(True),
     )
 
     with TestClient(create_app(_settings(settings))) as client:
@@ -378,7 +378,7 @@ def test_controller_rejects_too_narrow_terminal_resize(settings):
 def test_controller_accepts_fixed_high_level_operation(settings, monkeypatch):
     observed: list[str] = []
 
-    def ensure_running(self, resource):
+    def ensure_running(self, resource, **_kwargs):
         observed.append(resource.id)
         return DockerObservation(
             resource_id=resource.id,
@@ -405,7 +405,7 @@ def test_controller_accepts_fixed_high_level_operation(settings, monkeypatch):
 def test_controller_accepts_mcp_oauth_authorization_runtime(settings, monkeypatch):
     observed: list[str] = []
 
-    def ensure_running(self, resource):
+    def ensure_running(self, resource, **_kwargs):
         observed.append(resource.owner_type)
         return DockerObservation(
             resource_id=resource.id,

@@ -56,12 +56,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for table_name in ("run_snapshots", "flow_definitions"):
-        op.drop_constraint(
-            f"fk_{table_name}_environment_version", table_name, type_="foreignkey"
-        )
-        op.drop_index(
-            f"ix_{table_name}_environment_version_id", table_name=table_name
-        )
+        op.drop_constraint(f"fk_{table_name}_environment_version", table_name, type_="foreignkey")
+        op.drop_index(f"ix_{table_name}_environment_version_id", table_name=table_name)
         op.drop_column(table_name, "environment_version_id")
 
     op.drop_column("environment_setup_sessions", "base_image_digest")

@@ -371,8 +371,8 @@ def build_runtime_request(
             asset_id=str(asset.get("id") or ""),
             workspace_ref=workspace_ref,
         )
-        runtime_workspace_relative, runtime_working_dir_relative = (
-            isolated_runtime_workspace_paths(workspace_ref, node_workspace_ref)
+        runtime_workspace_relative, runtime_working_dir_relative = isolated_runtime_workspace_paths(
+            workspace_ref, node_workspace_ref
         )
     raw_agent_spec = node.get("runtime_agent_spec")
     if not isinstance(raw_agent_spec, dict):

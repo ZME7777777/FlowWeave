@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const apiBase = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
 const suffix = Date.now().toString(36);
@@ -53,14 +54,49 @@ async function createAsset(request: APIRequestContext, name: string) {
   });
 }
 
+let readyEnvironmentVersion: Promise<string> | undefined;
+
+async function readyEnvironmentVersionId(request: APIRequestContext) {
+  readyEnvironmentVersion ??= (async () => {
+    const existing = await request.get(`${apiBase}/api/v1/terminal-environments`);
+    expect(existing.ok(), await existing.text()).toBeTruthy();
+    const environments = await existing.json() as Array<{ name: string; versions: Array<{ id: string; state: string; runtime_compatible: boolean }> }>;
+    const published = environments
+      .filter(environment => environment.name.startsWith('E2E运行环境-'))
+      .flatMap(environment => environment.versions)
+      .find(version => version.state === 'READY' && version.runtime_compatible);
+    if (published) return published.id;
+    const baseImage = (process.env.E2E_RUNTIME_BASE_IMAGE
+      ?? execFileSync(
+        'docker',
+        ['image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'flowweave-openhands-runtime:1'],
+        { encoding: 'utf8' },
+      ).trim());
+    expect(baseImage).toMatch(/^flowweave-openhands-runtime@sha256:[0-9a-f]{64}$/);
+    const environment = await post(request, '/terminal-environments', {
+      name: `E2E运行环境-${suffix}`,
+      description: '端到端验收所需的已发布 OpenHands Runtime',
+      base_image: baseImage,
+    });
+    const setup = await post(request, `/terminal-environments/${environment.id}/setup-sessions`, {});
+    const version = await post(request, `/environment-setup-sessions/${setup.id}/publish`, {});
+    expect(version.state).toBe('READY');
+    expect(version.runtime_compatible).toBeTruthy();
+    return version.id as string;
+  })();
+  return readyEnvironmentVersion;
+}
+
 async function createFlow(request: APIRequestContext, assetId: string, name: string) {
   const gates = [
     { stage: 'START', position: 0, gate_type: 'JAVASCRIPT', enabled: true, timeout_seconds: 30, config: { code: "return {decision: 'PASS', summary: '开始门禁通过', reasons: [], evidence: [], details: {}};" } },
     { stage: 'END', position: 0, gate_type: 'PYTHON', enabled: true, timeout_seconds: 30, config: { code: "result = {'decision': 'PASS', 'summary': '结束门禁通过', 'reasons': [], 'evidence': [], 'details': {}}" } },
   ];
+  const environmentVersionId = await readyEnvironmentVersionId(request);
   return post(request, '/flows', {
     name,
     description: '同一资产重复放置并显式映射产物',
+    environment_version_id: environmentVersionId,
     lark_root_folder_url: 'https://example.feishu.cn/drive/folder/e2e-flow-root',
     default_entry_key: 'design_a',
     nodes: [
@@ -124,6 +160,7 @@ async function dropAsset(page: Page, asset: Locator, canvas: Locator, position: 
 }
 
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
+  const environmentVersionId = await readyEnvironmentVersionId(page.request);
   await login(page);
 
   const providerName = `UI模型服务-${suffix}`;
@@ -257,6 +294,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await expect(canvas.locator('.react-flow__node')).toHaveCount(2);
   await page.getByLabel('流程名称').fill(`UI流程-${suffix}`);
   await page.getByLabel('飞书 Wiki 根节点').fill('https://example.feishu.cn/wiki/e2e-ui-root');
+  await page.getByLabel('运行环境版本').selectOption(environmentVersionId);
   await expect(page.getByRole('button', { name: '保存流程' })).toBeEnabled();
   const flowSaved = page.waitForResponse(response => response.url().endsWith('/api/v1/flows') && response.request().method() === 'POST');
   await page.getByRole('button', { name: '保存流程' }).click();
@@ -275,9 +313,8 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await runGroup.getByRole('button', { name: '启动', exact: true }).click();
   const dialog = page.locator('form.start-run-modal');
   await dialog.getByLabel('运行名称').fill(`运行验收-${suffix}`);
-  await dialog.getByLabel('终端镜像').selectOption({ index: 1 });
   const createdRunResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/flows/${flow.id}/runs`) && response.request().method() === 'POST');
-  await dialog.getByRole('button', { name: '创建运行' }).click();
+  await dialog.getByRole('button', { name: '创建运行', exact: true }).click();
   const createdRun = await (await createdRunResponse).json();
   await expect(page.getByText('点击任意节点，在右侧配置输入并开始一次独立执行', { exact: true })).toBeVisible();
   await expect(page.locator('.action-panel')).toHaveCount(0);
@@ -305,7 +342,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await page.locator('.run-rail .timeline').getByRole('button', { name: /首轮方案/ }).click();
   await expect(page.locator('.run-graph .run-graph-node.snapshot-selected')).toHaveCount(0);
   await expect(attemptControl).toContainText('首轮方案');
-  const agentChatEntry = attemptControl.getByRole('button', { name: '进入 Agent 对话' });
+  const agentChatEntry = attemptControl.getByRole('button', { name: '进入 FlowRun 会话' });
   await expect(agentChatEntry).toBeVisible();
   await expect(attemptControl.locator('.attempt-runtime-summary')).toHaveCount(0);
   expect(await attemptControl.evaluate(panel => {
@@ -324,6 +361,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
     data: {
       name: flow.name,
       description: '运行中发布的新流程配置',
+      environment_version_id: flow.environment_version_id,
       lark_root_folder_url: flow.lark_root_folder_url,
       default_entry_key: flow.default_entry_key,
       row_version: flow.row_version,

@@ -1,25 +1,5 @@
 """Stable public facade for managed sandbox resources."""
 
-from flowweave.modules.sandboxes.application.service import (
-    ReconcileReport,
-    RuntimeProviderAllocation,
-    create_temporary_runtime,
-    create_setup_sandbox,
-    delete_flow_run_runtimes_now,
-    delete_environment_credentials,
-    delete_sandbox_now,
-    environment_has_live_sandbox,
-    image_has_live_sandbox,
-    latest_runtime_sandbox_snapshot,
-    ensure_flow_run_runtime,
-    owner_has_live_sandbox,
-    reconcile_managed_sandboxes,
-    request_delete,
-    request_delete_durable,
-    sandbox_dict,
-    sandbox_snapshot,
-    touch_runtime,
-)
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     RuntimeStorageAllocation,
     allocate_flow_run_runtime,
@@ -33,14 +13,14 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
 )
+from flowweave.modules.sandboxes.application.runtime_operations import (
+    request_runtime_replacement,
+    runtime_overview,
+)
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
     process_flow_run_runtime_replacement,
     record_terminal_runtime_replacement_failure,
-)
-from flowweave.modules.sandboxes.application.runtime_operations import (
-    request_runtime_replacement,
-    runtime_overview,
 )
 from flowweave.modules.sandboxes.application.runtime_sessions import (
     ActiveRuntimeConnection,
@@ -48,6 +28,26 @@ from flowweave.modules.sandboxes.application.runtime_sessions import (
     active_flow_run_runtime_connection,
     assert_active_runtime_fence,
     ensure_flow_run_runtime_session,
+)
+from flowweave.modules.sandboxes.application.service import (
+    ReconcileReport,
+    RuntimeProviderAllocation,
+    create_setup_sandbox,
+    create_temporary_runtime,
+    delete_environment_credentials,
+    delete_flow_run_runtimes_now,
+    delete_sandbox_now,
+    ensure_flow_run_runtime,
+    environment_has_live_sandbox,
+    image_has_live_sandbox,
+    latest_runtime_sandbox_snapshot,
+    owner_has_live_sandbox,
+    reconcile_managed_sandboxes,
+    request_delete,
+    request_delete_durable,
+    sandbox_dict,
+    sandbox_snapshot,
+    touch_runtime,
 )
 
 __all__ = (

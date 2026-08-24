@@ -166,7 +166,38 @@ def _request() -> StartAttemptRequest:
             budgets=RuntimeBudgets(max_iterations=20),
         ),
         node_workspace_ref="/workspaces/nodes/node-1",
+        environment_image="sha256:" + "2" * 64,
+        environment_id="environment-1",
+        environment_version_id="environment-version-1",
+        environment_version_no=1,
+        runtime_workspace_relative="workspace/project",
+        runtime_working_dir_relative="",
+        runtime_sandbox_id="runtime-1",
+        runtime_resource_name="fw-sbx-flow-run-1",
+        runtime_base_url="http://runtime.test:8000",
     )
+
+
+def _handle(cursor: str | None = None) -> RuntimeHandle:
+    return RuntimeHandle(
+        "env-exec:fw-sbx-flow-run-1",
+        "10000000-0000-4000-8000-000000000002",
+        cursor,
+        "runtime-1",
+        "fw-sbx-flow-run-1",
+    )
+
+
+def _state(**values: object) -> dict[str, object]:
+    return {
+        "id": "10000000-0000-4000-8000-000000000002",
+        "workspace": {
+            "kind": "LocalWorkspace",
+            "working_dir": "/runtime/workspace/project",
+        },
+        "persistence_dir": "/runtime/state/conversations",
+        **values,
+    }
 
 
 @pytest.mark.parametrize(
@@ -187,7 +218,7 @@ def test_openhands_serializes_native_critic_without_invalid_zero_iteration_refin
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-critic", "leaf_event_id": "event-1"}
+        return {"id": "10000000-0000-4000-8000-000000000001", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     baseline = _request()
@@ -224,12 +255,18 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-1", "leaf_event_id": "event-1"}
+        return {"id": "10000000-0000-4000-8000-000000000002", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     handle = runtime.start(_request())
 
-    assert handle == RuntimeHandle("conversation-1", "conversation-1", "event-1")
+    assert handle == RuntimeHandle(
+        "env-exec:fw-sbx-flow-run-1",
+        "10000000-0000-4000-8000-000000000002",
+        "event-1",
+        "runtime-1",
+        "fw-sbx-flow-run-1",
+    )
     payload = captured["json"]
     assert isinstance(payload, dict)
     assert payload["workspace"] == {
@@ -530,7 +567,7 @@ def test_openhands_materializes_governed_profile_without_server_store_lookup(
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-profile", "leaf_event_id": "event-1"}
+        return {"id": "10000000-0000-4000-8000-000000000009", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     baseline = _request()
@@ -563,7 +600,7 @@ def test_openhands_serializes_governed_agent_definitions(openhands_settings, mon
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-subagents", "leaf_event_id": "event-1"}
+        return {"id": "10000000-0000-4000-8000-000000000010", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     baseline = _request()
@@ -617,7 +654,7 @@ def test_openhands_sends_frozen_plugins_and_leaves_ambient_discovery_native(
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-plugin", "leaf_event_id": "event-1"}
+        return {"id": "10000000-0000-4000-8000-000000000008", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     baseline = _request()
@@ -655,7 +692,7 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-codex", "leaf_event_id": "event-1"}
+        return {"id": "10000000-0000-4000-8000-000000000004", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     baseline = _request()
@@ -709,7 +746,17 @@ def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
         del kwargs
         requests.append((path, base_url))
         if path == "/api/conversations":
-            return {"id": "conversation-env", "leaf_event_id": "event-1"}
+            return {"id": "10000000-0000-4000-8000-000000000006", "leaf_event_id": "event-1"}
+        if path == "/api/conversations/10000000-0000-4000-8000-000000000006":
+            return {
+                "id": "10000000-0000-4000-8000-000000000006",
+                "leaf_event_id": "event-2",
+                "workspace": {
+                    "kind": "LocalWorkspace",
+                    "working_dir": "/runtime/workspace/project",
+                },
+                "persistence_dir": "/runtime/state/conversations",
+            }
         return {
             "items": [
                 {
@@ -743,11 +790,11 @@ def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
     assert requests == [
         ("/api/conversations", "http://runtime-container-1:8000"),
         (
-            "/api/conversations/conversation-env/events/search",
+            "/api/conversations/10000000-0000-4000-8000-000000000006/events/search",
             "http://runtime-container-1:8000",
         ),
         (
-            "/api/conversations/conversation-env",
+            "/api/conversations/10000000-0000-4000-8000-000000000006",
             "http://runtime-container-1:8000",
         ),
     ]
@@ -757,7 +804,15 @@ def test_openhands_rejects_environment_without_control_plane_allocation(openhand
     runtime = OpenHandsRuntime(openhands_settings)
 
     with pytest.raises(DomainError) as caught:
-        runtime.start(replace(_request(), environment_image="sha256:" + "c" * 64))
+        runtime.start(
+            replace(
+                _request(),
+                environment_image="sha256:" + "c" * 64,
+                runtime_sandbox_id="",
+                runtime_resource_name="",
+                runtime_base_url="",
+            )
+        )
 
     assert caught.value.code == "RUNTIME_SANDBOX_REQUIRED"
 
@@ -794,7 +849,7 @@ def test_openhands_environment_cancel_only_interrupts_agent(openhands_settings, 
         del method, base_url, kwargs
         requests.append(path)
         if path == "/api/conversations":
-            return {"id": "conversation-chat", "leaf_event_id": "event-1"}
+            return {"id": "10000000-0000-4000-8000-000000000003", "leaf_event_id": "event-1"}
         if path.endswith("/interrupt"):
             return {}
         return {"execution_status": "idle"}
@@ -814,8 +869,8 @@ def test_openhands_environment_cancel_only_interrupts_agent(openhands_settings, 
     runtime.cancel(handle)
     assert requests == [
         "/api/conversations",
-        "/api/conversations/conversation-chat/interrupt",
-        "/api/conversations/conversation-chat",
+        "/api/conversations/10000000-0000-4000-8000-000000000003/interrupt",
+        "/api/conversations/10000000-0000-4000-8000-000000000003",
     ]
 
 
@@ -824,10 +879,11 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[dict[str, object]] = []
+    conversation_id = "10000000-0000-4000-8000-000000000011"
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         requests.append({"method": method, "path": path, **kwargs})
-        return {"id": "collaboration-1" if path == "/api/conversations" else "user-1"}
+        return {"id": conversation_id if path == "/api/conversations" else "user-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     handle = runtime.create_conversation(replace(_request(), interaction_mode="COLLABORATION"))
@@ -843,13 +899,13 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(
     assert "可用 Skill 与 MCP 均为候选能力" in system_context
     assert "先理解用户意图，再自行选择真正相关的能力" in system_context
     assert "https://example.feishu.cn/docx/prd-input" in system_context
-    assert requests[1]["path"] == "/api/conversations/collaboration-1/events"
+    assert requests[1]["path"] == f"/api/conversations/{conversation_id}/events"
     assert requests[1]["json"] == {
         "role": "user",
         "content": [{"type": "text", "text": "你好"}],
         "run": True,
     }
-    assert runtime._contracts["collaboration-1"] == []
+    assert runtime._contracts[conversation_id] == []
 
 
 @pytest.mark.parametrize(
@@ -868,10 +924,10 @@ def test_openhands_accepts_only_declared_official_https_output_urls(
     openhands_settings, uri, accepted
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    runtime._contracts["conversation-1"] = [{"field_key": "design"}]
+    runtime._contracts["10000000-0000-4000-8000-000000000002"] = [{"field_key": "design"}]
 
     outputs = runtime._outputs(
-        "conversation-1",
+        "10000000-0000-4000-8000-000000000002",
         '{"outputs": {"design": {"uri": ' + repr(uri).replace("'", '"') + "}, "
         '"undeclared": "https://example.feishu.cn/docx/other"}}',
     )
@@ -884,7 +940,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    runtime._contracts["conversation-1"] = [
+    runtime._contracts["10000000-0000-4000-8000-000000000002"] = [
         {
             "field_key": "design",
             "artifact_type": "URL",
@@ -920,7 +976,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
                     {"kind": "FutureEvent", "id": "13", "source": "environment"},
                 ]
             },
-            {"leaf_event_id": "13", "stats": {"usage_to_metrics": {}}},
+            _state(leaf_event_id="13", stats={"usage_to_metrics": {}}),
             {
                 "items": [
                     {
@@ -942,7 +998,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
                     },
                 ]
             },
-            {"leaf_event_id": "14", "stats": {"usage_to_metrics": {}}},
+            _state(leaf_event_id="14", stats={"usage_to_metrics": {}}),
         ]
     )
     requests: list[tuple[str, str, object]] = []
@@ -952,12 +1008,10 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    handle = RuntimeHandle("conversation-1", "conversation-1", "10")
+    handle = _handle("10")
 
     running = runtime.read_events(handle)
-    terminal = runtime.read_events(
-        RuntimeHandle("conversation-1", "conversation-1", running.cursor)
-    )
+    terminal = runtime.read_events(_handle(running.cursor))
 
     assert [event.event_type for event in running.events] == ["MESSAGE", "THOUGHT", "STATE"]
     assert [event.cursor for event in running.events] == ["11", "12", "13"]
@@ -976,16 +1030,16 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
     assert requests == [
         (
             "GET",
-            "/api/conversations/conversation-1/events/search",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/events/search",
             {"limit": 100, "sort_order": "TIMESTAMP", "page_id": "10"},
         ),
-        ("GET", "/api/conversations/conversation-1", None),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
         (
             "GET",
-            "/api/conversations/conversation-1/events/search",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/events/search",
             {"limit": 100, "sort_order": "TIMESTAMP", "page_id": "13"},
         ),
-        ("GET", "/api/conversations/conversation-1", None),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
     ]
 
 
@@ -1005,11 +1059,16 @@ def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
                     }
                 ]
             },
-            {
-                "execution_status": "finished",
-                "leaf_event_id": "old-finish",
-                "last_user_message_id": "new-user",
-            },
+            _state(
+                execution_status="finished",
+                leaf_event_id="old-finish",
+                last_user_message_id="new-user",
+            ),
+            _state(
+                execution_status="finished",
+                leaf_event_id="old-finish",
+                last_user_message_id="new-user",
+            ),
             {
                 "items": [
                     {
@@ -1024,7 +1083,7 @@ def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
     )
 
     monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
-    handle = RuntimeHandle("job-1", "conversation-1", "old-finish")
+    handle = _handle("old-finish")
 
     batch = runtime.read_events(handle)
     inspected = runtime.inspect(handle)
@@ -1036,10 +1095,8 @@ def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
     assert inspected.final_message is None
 
 
-def test_openhands_retries_temporarily_missing_anchor_and_recovers_new_events(
-    openhands_settings, monkeypatch
-):
-    """A persistence race must not replay history or permanently strand the cursor."""
+def test_openhands_rejects_missing_persisted_event_anchor(openhands_settings, monkeypatch):
+    """Event correlation must fail closed instead of guessing across missing anchors."""
 
     runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
@@ -1054,7 +1111,7 @@ def test_openhands_retries_temporarily_missing_anchor_and_recovers_new_events(
                     }
                 ]
             },
-            {"leaf_event_id": "old-finish", "stats": {"usage_to_metrics": {}}},
+            _state(leaf_event_id="old-finish", stats={"usage_to_metrics": {}}),
             {
                 "items": [
                     {
@@ -1074,20 +1131,16 @@ def test_openhands_retries_temporarily_missing_anchor_and_recovers_new_events(
                     },
                 ]
             },
-            {"leaf_event_id": "message-2", "stats": {"usage_to_metrics": {}}},
+            _state(leaf_event_id="message-2", stats={"usage_to_metrics": {}}),
         ]
     )
     monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
-    handle = RuntimeHandle("job-1", "conversation-1", "cursor-1")
+    handle = _handle("cursor-1")
 
-    raced = runtime.read_events(handle)
-    recovered = runtime.read_events(handle)
+    with pytest.raises(DomainError) as caught:
+        runtime.read_events(handle)
 
-    assert raced.events == ()
-    assert raced.cursor == "cursor-1"
-    assert recovered.cursor == "message-2"
-    assert [event.cursor for event in recovered.events] == ["message-2"]
-    assert recovered.events[0].payload["content"] == "recovered"
+    assert caught.value.code == "RUNTIME_EVENT_IDENTITY_MISMATCH"
 
 
 def test_openhands_finished_turn_uses_assistant_message_after_latest_user(
@@ -1096,11 +1149,11 @@ def test_openhands_finished_turn_uses_assistant_message_after_latest_user(
     runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
         [
-            {
-                "execution_status": "finished",
-                "leaf_event_id": "state-finished",
-                "last_user_message_id": "user-current",
-            },
+            _state(
+                execution_status="finished",
+                leaf_event_id="state-finished",
+                last_user_message_id="user-current",
+            ),
             {
                 "items": [
                     {
@@ -1131,7 +1184,7 @@ def test_openhands_finished_turn_uses_assistant_message_after_latest_user(
     )
     monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
 
-    result = runtime.inspect(RuntimeHandle("job-1", "conversation-1", "old-finish"))
+    result = runtime.inspect(_handle("old-finish"))
 
     assert result.status == "COMPLETED"
     assert result.final_message == "你好！"
@@ -1146,21 +1199,23 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         requests.append((method, path, kwargs.get("json")))
-        return {}
+        return (
+            _state(execution_status="running", leaf_event_id="cursor-1") if method == "GET" else {}
+        )
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     result = runtime.resume(
-        RuntimeHandle("job-1", "conversation-1", "cursor-1"),
+        _handle("cursor-1"),
         "新的约束",
         ("data:image/png;base64,aW1hZ2U=",),
     )
 
     assert result.status == "RUNNING"
     assert requests == [
-        ("POST", "/api/conversations/conversation-1/interrupt", {}),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/interrupt", {}),
         (
             "POST",
-            "/api/conversations/conversation-1/events",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/events",
             {
                 "role": "user",
                 "content": [
@@ -1170,7 +1225,7 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(
                 "run": True,
             },
         ),
-        ("GET", "/api/conversations/conversation-1", None),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
     ]
 
 
@@ -1182,7 +1237,7 @@ def test_openhands_send_message_advances_cursor_to_user_event(openhands_settings
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     result = runtime.send_message(
-        RuntimeHandle("job-1", "conversation-1", "initial-event-1"),
+        _handle("initial-event-1"),
         "读取当前输入",
     )
 
@@ -1273,7 +1328,7 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
     monkeypatch.setattr(DockerControllerClient, "stream_runtime_events", stream)
     handle = RuntimeHandle(
         "env-chat:fw-sbx-runtime",
-        "conversation-1",
+        "10000000-0000-4000-8000-000000000002",
         runtime_resource_id="sandbox-1",
         runtime_resource_name="fw-sbx-runtime",
     )
@@ -1287,7 +1342,7 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
     assert observed == {
         "resource_name": "fw-sbx-runtime",
         "resource_id": "sandbox-1",
-        "conversation_id": "conversation-1",
+        "conversation_id": "10000000-0000-4000-8000-000000000002",
     }
 
 
@@ -1304,7 +1359,9 @@ async def test_openhands_isolated_stream_rejects_missing_sandbox_binding(openhan
 
     with pytest.raises(DomainError, match="verified sandbox binding"):
         await anext(
-            runtime.stream_events(RuntimeHandle("env-chat:fw-sbx-runtime", "conversation-1"))
+            runtime.stream_events(
+                RuntimeHandle("env-chat:fw-sbx-runtime", "10000000-0000-4000-8000-000000000002")
+            )
         )
 
 
@@ -1318,7 +1375,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     runtime.switch_model(
-        RuntimeHandle("job-1", "conversation-1", "cursor-1"),
+        _handle("cursor-1"),
         RuntimeProvider(
             provider_id="codex-oauth",
             base_url="https://chatgpt.com/backend-api/codex",
@@ -1331,7 +1388,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     )
 
     assert captured["method"] == "POST"
-    assert captured["path"] == "/api/conversations/conversation-1/switch_llm"
+    assert captured["path"] == "/api/conversations/10000000-0000-4000-8000-000000000002/switch_llm"
     payload = captured["json"]
     assert isinstance(payload, dict)
     assert payload["llm"]["model"] == "openai/gpt-5.6-sol"
@@ -1349,7 +1406,10 @@ def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(
     responses = iter(
         [
             {"success": True},
-            {"last_user_message_id": "user-event-current", "leaf_event_id": "state-running"},
+            _state(
+                last_user_message_id="user-event-current",
+                leaf_event_id="state-running",
+            ),
         ]
     )
     requests: list[tuple[str, str]] = []
@@ -1359,13 +1419,13 @@ def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    result = runtime.send_message(RuntimeHandle("job-1", "conversation-1", "old-finish"), "你好")
+    result = runtime.send_message(_handle("old-finish"), "你好")
 
     assert result.status == "RUNNING"
     assert result.cursor == "user-event-current"
     assert requests == [
-        ("POST", "/api/conversations/conversation-1/events"),
-        ("GET", "/api/conversations/conversation-1"),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/events"),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002"),
     ]
 
 
@@ -1383,9 +1443,9 @@ def test_openhands_projects_and_decides_native_confirmation_batch(openhands_sett
     }
     responses = iter(
         [
-            {"execution_status": "waiting_for_confirmation", "leaf_event_id": "action-1"},
+            _state(execution_status="waiting_for_confirmation", leaf_event_id="action-1"),
             {"items": [{"kind": "MessageEvent", "id": "user-1"}, action]},
-            {"execution_status": "waiting_for_confirmation", "leaf_event_id": "action-1"},
+            _state(execution_status="waiting_for_confirmation", leaf_event_id="action-1"),
             {"items": [{"kind": "MessageEvent", "id": "user-1"}, action]},
             {"success": True},
         ]
@@ -1397,7 +1457,7 @@ def test_openhands_projects_and_decides_native_confirmation_batch(openhands_sett
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    handle = RuntimeHandle("job-1", "conversation-1", "user-1")
+    handle = _handle("user-1")
     pending = runtime.get_pending_confirmation(handle)
 
     assert pending is not None
@@ -1411,7 +1471,7 @@ def test_openhands_projects_and_decides_native_confirmation_batch(openhands_sett
     assert result.status == "RUNNING"
     assert requests[-1] == (
         "POST",
-        "/api/conversations/conversation-1/events/respond_to_confirmation",
+        "/api/conversations/10000000-0000-4000-8000-000000000002/events/respond_to_confirmation",
         {"accept": True, "reason": "approved"},
     )
 
@@ -1420,7 +1480,7 @@ def test_openhands_confirmation_rejects_drifted_batch(openhands_settings, monkey
     runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
         [
-            {"execution_status": "waiting_for_confirmation", "leaf_event_id": "action-2"},
+            _state(execution_status="waiting_for_confirmation", leaf_event_id="action-2"),
             {
                 "items": [
                     {
@@ -1438,7 +1498,10 @@ def test_openhands_confirmation_rejects_drifted_batch(openhands_settings, monkey
     monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
     with pytest.raises(DomainError) as raised:
         runtime.respond_to_confirmation(
-            RuntimeHandle("job-1", "conversation-1"), "stale-digest", False, "no"
+            _handle(),
+            "stale-digest",
+            False,
+            "no",
         )
     assert raised.value.code == "RUNTIME_CONFIRMATION_DRIFTED"
 
@@ -1447,7 +1510,7 @@ def test_openhands_run_uses_native_endpoint_without_user_message(openhands_setti
     runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
         [
-            {"execution_status": "idle", "leaf_event_id": "reject-1"},
+            _state(execution_status="idle", leaf_event_id="reject-1"),
             {"success": True},
         ]
     )
@@ -1458,12 +1521,12 @@ def test_openhands_run_uses_native_endpoint_without_user_message(openhands_setti
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    result = runtime.run(RuntimeHandle("job-1", "conversation-1", "action-1"))
+    result = runtime.run(_handle("action-1"))
 
     assert result == RuntimeResult(status="RUNNING", cursor="reject-1")
     assert requests == [
-        ("GET", "/api/conversations/conversation-1", None),
-        ("POST", "/api/conversations/conversation-1/run", {}),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run", {}),
     ]
 
 
@@ -1473,13 +1536,13 @@ def test_openhands_run_does_not_retrigger_running_conversation(openhands_setting
 
     def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         requests.append((method, path))
-        return {"execution_status": "running", "leaf_event_id": "running-1"}
+        return _state(execution_status="running", leaf_event_id="running-1")
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    result = runtime.run(RuntimeHandle("job-1", "conversation-1"))
+    result = runtime.run(_handle())
 
     assert result.cursor == "running-1"
-    assert requests == [("GET", "/api/conversations/conversation-1")]
+    assert requests == [("GET", "/api/conversations/10000000-0000-4000-8000-000000000002")]
 
 
 @pytest.mark.parametrize(
@@ -1494,13 +1557,13 @@ def test_openhands_run_does_not_retrigger_non_resumable_conversation(
 
     def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         requests.append((method, path))
-        return {"execution_status": status, "leaf_event_id": "after-confirmation"}
+        return _state(execution_status=status, leaf_event_id="after-confirmation")
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    result = runtime.run(RuntimeHandle("job-1", "conversation-1", "action-1"))
+    result = runtime.run(_handle("action-1"))
 
     assert result.cursor == "after-confirmation"
-    assert requests == [("GET", "/api/conversations/conversation-1")]
+    assert requests == [("GET", "/api/conversations/10000000-0000-4000-8000-000000000002")]
 
 
 def test_openhands_maps_disabled_confirmation_policy(openhands_settings, monkeypatch):
@@ -1509,7 +1572,7 @@ def test_openhands_maps_disabled_confirmation_policy(openhands_settings, monkeyp
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-never", "leaf_event_id": "event-never"}
+        return {"id": "10000000-0000-4000-8000-000000000007", "leaf_event_id": "event-never"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     request = _request()
@@ -1531,7 +1594,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         captured.update({"method": method, "path": path, **kwargs})
-        return {"id": "conversation-condense", "leaf_event_id": "event-1"}
+        return {"id": "10000000-0000-4000-8000-000000000005", "leaf_event_id": "event-1"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     request = _request()
@@ -1579,10 +1642,12 @@ def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
         return {"success": True}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    result = runtime.condense(RuntimeHandle("job-1", "conversation-1", "event-4"))
+    result = runtime.condense(_handle("event-4"))
 
     assert result == RuntimeResult(status="RUNNING", cursor="event-4")
-    assert requests == [("POST", "/api/conversations/conversation-1/condense", None)]
+    assert requests == [
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/condense", None)
+    ]
 
 
 def test_openhands_read_events_projects_only_native_task_cumulative_usage(
@@ -1592,9 +1657,9 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
     responses = iter(
         [
             {"items": [], "next_page_id": None},
-            {
-                "leaf_event_id": "task-observation-1",
-                "stats": {
+            _state(
+                leaf_event_id="task-observation-1",
+                stats={
                     "usage_to_metrics": {
                         "flowweave:provider-1": {"accumulated_cost": 9.0},
                         "task:task_00000001": {
@@ -1612,12 +1677,12 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
                         },
                     }
                 },
-            },
+            ),
         ]
     )
     monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
 
-    batch = runtime.read_events(RuntimeHandle("job-1", "conversation-1"))
+    batch = runtime.read_events(_handle())
 
     assert len(batch.task_usage) == 1
     usage = batch.task_usage[0]
@@ -1834,12 +1899,12 @@ def test_openhands_cancel_waits_until_agent_is_no_longer_running(openhands_setti
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    runtime.cancel(RuntimeHandle("job-1", "conversation-1", "cursor-1"))
+    runtime.cancel(_handle("cursor-1"))
 
     assert requests == [
-        ("POST", "/api/conversations/conversation-1/interrupt", True),
-        ("GET", "/api/conversations/conversation-1", True),
-        ("GET", "/api/conversations/conversation-1", True),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/interrupt", True),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", True),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", True),
     ]
 
 
@@ -1852,7 +1917,15 @@ def test_openhands_cancel_treats_missing_conversation_as_already_stopped(
         return {"_flowweave_missing": True}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    runtime.cancel(RuntimeHandle("job-1", "missing-conversation", None))
+    runtime.cancel(
+        RuntimeHandle(
+            "env-exec:fw-sbx-flow-run-1",
+            "missing-conversation",
+            None,
+            "runtime-1",
+            "fw-sbx-flow-run-1",
+        )
+    )
 
 
 def _plugin_validation_request() -> RuntimePluginValidationRequest:

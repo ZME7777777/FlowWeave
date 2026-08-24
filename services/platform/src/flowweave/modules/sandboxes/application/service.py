@@ -232,9 +232,7 @@ def _create_managed_runtime(
             422,
             {"owner_type": owner_type, "owner_id": owner_id},
         )
-    flow_run_allocation = (
-        runtime_allocation_for_flow_run(db, flow_run_id) if flow_run_id else None
-    )
+    flow_run_allocation = runtime_allocation_for_flow_run(db, flow_run_id) if flow_run_id else None
     runtime_secret_key = (
         resolve_runtime_secret(db, flow_run_allocation.id)
         if flow_run_allocation is not None
@@ -330,9 +328,7 @@ def _create_managed_runtime(
                             "workspace_relative": workspace_relative or None,
                             "flow_run_id": flow_run_id,
                             "runtime_allocation_id": (
-                                flow_run_allocation.id
-                                if flow_run_allocation is not None
-                                else None
+                                flow_run_allocation.id if flow_run_allocation is not None else None
                             ),
                             "runtime_allocation_relative": (
                                 flow_run_allocation.relative_root
@@ -709,9 +705,7 @@ def _claim_reconcile_batch(
             )
             # Temporary compute retains an absolute safety boundary. FlowRun
             # compute follows the explicit Run lifecycle instead of a wall clock.
-            hard_expired = (
-                resource.owner_type != "FLOW_RUN" and resource.hard_expires_at <= now
-            )
+            hard_expired = resource.owner_type != "FLOW_RUN" and resource.hard_expires_at <= now
             if (hard_expired or idle_expired or owner_inactive) and (
                 resource.desired_state != "DELETED"
             ):
@@ -752,9 +746,7 @@ def _perform_reconcile(
             and resource.owner_type == "FLOW_RUN"
         ):
             return _ReconcileOutcome("RUNTIME_LOST")
-        observation = provider.ensure_running(
-            resource, runtime_secret_key=runtime_secret_key
-        )
+        observation = provider.ensure_running(resource, runtime_secret_key=runtime_secret_key)
         return _ReconcileOutcome("RUNNING", observation)
     except DomainError as exc:
         return _ReconcileOutcome("ERROR", error=exc)
@@ -832,11 +824,7 @@ def _apply_reconcile_outcome(
         elif outcome.error is not None:
             _error(current, outcome.error)
             errors = 1
-        if (
-            errors
-            and current.kind == "AGENT_RUNTIME"
-            and current.owner_type == "FLOW_RUN"
-        ):
+        if errors and current.kind == "AGENT_RUNTIME" and current.owner_type == "FLOW_RUN":
             active_session = control_db.scalar(
                 select(FlowRunRuntime)
                 .join(

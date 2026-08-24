@@ -58,7 +58,10 @@ export function AgentChatPage() {
   const runQuery = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId) });
   const runtimeQuery = useQuery({ queryKey: ['flow-run-runtime', selectedRunId], queryFn: () => api.runtimeOverview(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 2000 });
   const conversationsQuery = useQuery({ queryKey: ['flow-run-conversations', selectedRunId], queryFn: () => api.conversations(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 4000 });
-  const conversations = conversationsQuery.data ?? [];
+  const conversations = useMemo(
+    () => conversationsQuery.data ?? [],
+    [conversationsQuery.data],
+  );
   const selected = useMemo(() => conversations.find(item => item.id === selectedConversationId) ?? conversations[0], [conversations, selectedConversationId]);
   const selectedId = selected?.id;
   useEffect(() => { if (selectedId && selectedId !== selectedConversationId) selectConversation(selectedId); }, [selectConversation, selectedConversationId, selectedId]);

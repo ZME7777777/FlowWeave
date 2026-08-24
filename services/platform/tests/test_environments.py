@@ -10,7 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 from flowweave.bootstrap.worker import TaskWorker
 from flowweave.modules.environments.application import service as environment_service
 from flowweave.modules.environments.infrastructure import docker as environment_docker
-from flowweave.modules.environments.infrastructure.docker import PublishedImage
+from flowweave.modules.environments.infrastructure.docker import OpenHandsBuild, PublishedImage
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
@@ -26,6 +26,17 @@ from flowweave.shared.models import (
     FlowRun,
     TaskState,
 )
+
+_BASE_IMAGE = "flowweave-openhands-runtime@sha256:" + "1" * 64
+
+
+@pytest.fixture(autouse=True)
+def _resolve_test_base_image(monkeypatch):
+    monkeypatch.setattr(
+        environment_docker,
+        "resolve_base_image",
+        lambda reference: (reference, "sha256:" + "1" * 64),
+    )
 
 
 def _node_payload() -> dict[str, object]:
@@ -49,11 +60,34 @@ def _runtime_provenance() -> dict[str, object]:
         "package_versions": dict(OPENHANDS_PACKAGE_VERSIONS),
         "source_commit": OPENHANDS_SOURCE_COMMIT,
         "source_ref": OPENHANDS_SOURCE_COMMIT,
+        "source_archive_digest": (
+            "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
+        ),
+        "overlays": {},
     }
 
 
-def _runtime_manifest(**values: object) -> dict[str, object]:
-    return {**values, "runtime_provenance": _runtime_provenance()}
+def _runtime_manifest(
+    *, image_digest: str = "sha256:" + "a" * 64, **values: object
+) -> dict[str, object]:
+    return {
+        **values,
+        "image_id": image_digest,
+        "runtime_provenance": _runtime_provenance(),
+        "build": {
+            "builder": "openhands.agent_server.docker.build",
+            "target": "source-minimal",
+            "platform": "linux/arm64",
+            "user_base_image_reference": _BASE_IMAGE,
+            "user_base_image_digest": "sha256:" + "1" * 64,
+            "runtime_image_digest": image_digest,
+        },
+        "validation": {
+            "contract_check": {"status": "PASSED"},
+            "tool_workspace_probe": {"status": "PASSED"},
+            "security_scan": {"status": "PASSED"},
+        },
+    }
 
 
 def _mock_setup_provider(monkeypatch):
@@ -88,16 +122,47 @@ def _mock_setup_provider(monkeypatch):
     )
     monkeypatch.setattr(
         "flowweave.modules.environments.infrastructure.docker.publish_setup_container",
-        lambda resource_name, *, sandbox_id, environment_id, version_id, version_no: (
+        lambda resource_name,
+        *,
+        sandbox_id,
+        environment_id,
+        version_id,
+        version_no,
+        base_image_reference,
+        base_image_digest: (
             environment_docker.publish_container(
                 f"immutable-{resource_name}",
                 environment_id=environment_id,
                 version_id=version_id,
                 version_no=version_no,
+                base_image_reference=base_image_reference,
+                base_image_digest=base_image_digest,
             )
         ),
     )
     return created, removed, fail_delete
+
+
+def _mock_formal_publish_pipeline(monkeypatch, calls: list[str] | None = None) -> None:
+    def build(**kwargs):
+        if calls is not None:
+            calls.append("formal-build")
+        return OpenHandsBuild(
+            reference="flowweave/formal-openhands-runtime:test",
+            log_digest="a" * 64,
+            telemetry={"duration_seconds": 1},
+            target="source-minimal",
+            platform=str(kwargs["platform"]),
+        )
+
+    def probe(_image_digest, *, probe_token):
+        assert probe_token == "version1"
+        if calls is not None:
+            calls.append("probe")
+        return {"agent-server": "1.42.0"}, _runtime_provenance(), "b" * 64
+
+    monkeypatch.setattr(environment_docker, "_build_openhands_runtime", build)
+    monkeypatch.setattr(environment_docker, "_probe_runtime_image", probe)
 
 
 def test_legacy_container_cleanup_requires_matching_ownership_labels(monkeypatch):
@@ -231,6 +296,7 @@ def test_image_cleanup_refuses_a_retargeted_tag(monkeypatch):
 
 def test_publish_preserves_container_files_before_commit(monkeypatch):
     calls: list[str] = []
+    _mock_formal_publish_pipeline(monkeypatch, calls)
 
     monkeypatch.setattr(environment_docker, "require_backend", lambda: None)
     monkeypatch.setattr(
@@ -260,25 +326,33 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
     )
 
     committed = False
+    wrapped = False
 
     def fake_run(command, **kwargs):
-        nonlocal committed
+        nonlocal committed, wrapped
         if "commit" in command:
             calls.append("commit")
             committed = True
-            return "sha256:image"
-        if command[-2:] == ["-c", "command -v agent-server"]:
-            return "/runtime/bin/agent-server"
+            return "sha256:" + "c" * 64
+        if command[1] == "build":
+            calls.append("wrap")
+            wrapped = True
+            return ""
         if command[1:3] == ["image", "inspect"]:
-            if not committed:
+            reference = command[3]
+            if reference == "flowweave/environment-environment-1:v1-version1" and not wrapped:
                 raise DomainError(
                     "ENVIRONMENT_DOCKER_FAILED",
                     "missing",
                     502,
                     {"detail": "No such image"},
                 )
+            if reference.endswith("-base:v1-version1"):
+                return '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux"}'
+            if reference == "flowweave/formal-openhands-runtime:test":
+                return '{"Id":"sha256:' + "d" * 64 + '"}'
             return (
-                '{"Id":"sha256:image","Architecture":"arm64","Os":"linux",'
+                '{"Id":"sha256:' + "e" * 64 + '","Architecture":"arm64","Os":"linux",'
                 '"Config":{"Labels":{'
                 '"flowweave.managed":"environment-image",'
                 '"flowweave.manager-scope":"test-scope",'
@@ -294,9 +368,11 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
         environment_id="environment-1",
         version_id="version-1",
         version_no=1,
+        base_image_reference="python@sha256:" + "1" * 64,
+        base_image_digest="sha256:" + "1" * 64,
     )
 
-    assert calls == ["inspect", "scan", "commit"]
+    assert calls == ["scan", "commit", "formal-build", "wrap", "probe"]
     assert published.reference == "flowweave/environment-environment-1:v1-version1"
     assert published.manifest["filesystem_change_count"] == 2
 
@@ -335,6 +411,8 @@ def test_publish_refuses_a_tag_owned_by_another_version(monkeypatch):
             environment_id="environment-1",
             version_id="version-1",
             version_no=1,
+            base_image_reference="python@sha256:" + "1" * 64,
+            base_image_digest="sha256:" + "1" * 64,
         )
 
     assert caught.value.code == "ENVIRONMENT_IMAGE_TAG_CONFLICT"
@@ -342,6 +420,7 @@ def test_publish_refuses_a_tag_owned_by_another_version(monkeypatch):
 
 
 def test_publish_fails_if_docker_drops_image_ownership_labels(monkeypatch):
+    _mock_formal_publish_pipeline(monkeypatch)
     monkeypatch.setattr(environment_docker, "require_backend", lambda: None)
     monkeypatch.setattr(
         environment_docker,
@@ -360,20 +439,27 @@ def test_publish_fails_if_docker_drops_image_ownership_labels(monkeypatch):
     )
     monkeypatch.setattr(environment_docker, "container_diff", lambda _container_id: [])
     committed = False
+    wrapped = False
 
     def fake_run(command, **_kwargs):
-        nonlocal committed
-        if command[1:3] == ["image", "inspect"] and not committed:
-            raise DomainError(
-                "ENVIRONMENT_DOCKER_FAILED", "missing", 502, {"detail": "No such image"}
-            )
+        nonlocal committed, wrapped
         if "commit" in command:
             committed = True
-            return "sha256:image"
-        if command[-2:] == ["-c", "command -v agent-server"]:
-            return "/runtime/bin/agent-server"
+            return "sha256:" + "c" * 64
+        if command[1] == "build":
+            wrapped = True
+            return ""
         if command[1:3] == ["image", "inspect"]:
-            return '{"Id":"sha256:image","Config":{"Labels":{}}}'
+            reference = command[3]
+            if reference == "flowweave/environment-environment-1:v1-version1" and not wrapped:
+                raise DomainError(
+                    "ENVIRONMENT_DOCKER_FAILED", "missing", 502, {"detail": "No such image"}
+                )
+            if reference.endswith("-base:v1-version1"):
+                return '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux"}'
+            if reference == "flowweave/formal-openhands-runtime:test":
+                return '{"Id":"sha256:' + "d" * 64 + '"}'
+            return '{"Id":"sha256:' + "e" * 64 + '","Config":{"Labels":{}}}'
         raise AssertionError(command)
 
     monkeypatch.setattr(environment_docker, "_run", fake_run)
@@ -384,12 +470,15 @@ def test_publish_fails_if_docker_drops_image_ownership_labels(monkeypatch):
             environment_id="environment-1",
             version_id="version-1",
             version_no=1,
+            base_image_reference="python@sha256:" + "1" * 64,
+            base_image_digest="sha256:" + "1" * 64,
         )
 
     assert caught.value.code == "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH"
 
 
 def test_publish_allows_authentication_files(monkeypatch):
+    _mock_formal_publish_pipeline(monkeypatch)
     monkeypatch.setattr(environment_docker, "require_backend", lambda: None)
     monkeypatch.setattr(
         environment_docker,
@@ -416,21 +505,28 @@ def test_publish_allows_authentication_files(monkeypatch):
         ],
     )
     committed = False
+    wrapped = False
 
     def fake_run(command, **_kwargs):
-        nonlocal committed
-        if command[1:3] == ["image", "inspect"] and not committed:
-            raise DomainError(
-                "ENVIRONMENT_DOCKER_FAILED", "missing", 502, {"detail": "No such image"}
-            )
-        if command[-2:] == ["-c", "command -v agent-server"]:
-            return "/runtime/bin/agent-server"
+        nonlocal committed, wrapped
         if "commit" in command:
             committed = True
-            return "sha256:image"
+            return "sha256:" + "c" * 64
+        if command[1] == "build":
+            wrapped = True
+            return ""
         if command[1:3] == ["image", "inspect"]:
+            reference = command[3]
+            if reference == "flowweave/environment-environment-1:v1-version1" and not wrapped:
+                raise DomainError(
+                    "ENVIRONMENT_DOCKER_FAILED", "missing", 502, {"detail": "No such image"}
+                )
+            if reference.endswith("-base:v1-version1"):
+                return '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux"}'
+            if reference == "flowweave/formal-openhands-runtime:test":
+                return '{"Id":"sha256:' + "d" * 64 + '"}'
             return (
-                '{"Id":"sha256:image","Architecture":"arm64","Os":"linux",'
+                '{"Id":"sha256:' + "e" * 64 + '","Architecture":"arm64","Os":"linux",'
                 '"Config":{"Labels":{'
                 '"flowweave.managed":"environment-image",'
                 '"flowweave.manager-scope":"test-scope",'
@@ -447,6 +543,8 @@ def test_publish_allows_authentication_files(monkeypatch):
         environment_id="environment-1",
         version_id="version-1",
         version_no=1,
+        base_image_reference="python@sha256:" + "1" * 64,
+        base_image_digest="sha256:" + "1" * 64,
     )
 
     assert committed is True
@@ -457,8 +555,18 @@ def test_terminal_environment_publish_does_not_bind_nodes(client, worker_contain
     created_sandboxes, removed, _fail_delete = _mock_setup_provider(monkeypatch)
     published_container_ids: list[str] = []
 
-    def publish(container_id, *, environment_id, version_id, version_no):
+    def publish(
+        container_id,
+        *,
+        environment_id,
+        version_id,
+        version_no,
+        base_image_reference,
+        base_image_digest,
+    ):
         assert version_id
+        assert base_image_reference == _BASE_IMAGE
+        assert base_image_digest == "sha256:" + "1" * 64
         published_container_ids.append(container_id)
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
@@ -479,7 +587,7 @@ def test_terminal_environment_publish_does_not_bind_nodes(client, worker_contain
         json={
             "name": "飞书工具环境",
             "description": "安装交互式 CLI",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     )
     assert created.status_code == 201, created.text
@@ -551,7 +659,7 @@ def test_setup_allocation_starts_after_caller_transaction_is_released(client, mo
         json={
             "name": "配置短事务环境",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
 
@@ -582,7 +690,7 @@ def test_setup_global_capacity_applies_across_environments(client, monkeypatch):
             json={
                 "name": f"global-capacity-{suffix}",
                 "description": "",
-                "base_image": "flowweave-openhands-runtime:1",
+                "base_image": _BASE_IMAGE,
             },
         )
         assert response.status_code == 201, response.text
@@ -609,7 +717,7 @@ def test_publish_docker_io_holds_no_database_transaction(client, db_session_fact
         json={
             "name": "发布短事务环境",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -619,7 +727,7 @@ def test_publish_docker_io_holds_no_database_transaction(client, db_session_fact
     transaction_states: list[tuple[str, object]] = []
 
     def publish_without_transaction(
-        _resource_name, *, sandbox_id, environment_id, version_id, version_no
+        _resource_name, *, sandbox_id, environment_id, version_id, version_no, **_base
     ):
         del sandbox_id
         assert version_id
@@ -643,7 +751,7 @@ def test_publish_docker_io_holds_no_database_transaction(client, db_session_fact
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest="sha256:" + "e" * 64,
-            manifest=_runtime_manifest(schema_version=1),
+            manifest=_runtime_manifest(image_digest="sha256:" + "e" * 64, schema_version=1),
         )
 
     monkeypatch.setattr(
@@ -668,7 +776,7 @@ def test_late_publish_result_after_cancel_is_cleaned_without_becoming_ready(
         json={
             "name": "发布竞态环境",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -677,7 +785,9 @@ def test_late_publish_result_after_cancel_is_cleaned_without_becoming_ready(
     ).json()
     digest = "sha256:" + "f" * 64
 
-    def publish_after_cancel(_resource_name, *, sandbox_id, environment_id, version_id, version_no):
+    def publish_after_cancel(
+        _resource_name, *, sandbox_id, environment_id, version_id, version_no, **_base
+    ):
         del sandbox_id
         assert version_id
         with db_session_factory() as concurrent_db:
@@ -685,7 +795,7 @@ def test_late_publish_result_after_cancel_is_cleaned_without_becoming_ready(
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest=digest,
-            manifest=_runtime_manifest(schema_version=1),
+            manifest=_runtime_manifest(image_digest=digest, schema_version=1),
         )
 
     monkeypatch.setattr(
@@ -739,7 +849,7 @@ def test_environment_version_run_reference_is_reported_and_blocks_deletion(
         json={
             "name": "运行占用环境",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     with db_session_factory() as db:
@@ -790,10 +900,11 @@ def test_delete_unused_versions_clears_provenance_and_preserves_version_high_wat
     removed_images: list[str] = []
     monkeypatch.setattr(
         "flowweave.modules.environments.infrastructure.docker.publish_container",
-        lambda container_id, *, environment_id, version_id, version_no: PublishedImage(
+        lambda container_id, *, environment_id, version_id, version_no, **_base: PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest="sha256:" + str(version_no) * 64,
             manifest=_runtime_manifest(
+                image_digest="sha256:" + str(version_no) * 64,
                 schema_version=1,
                 container_id=container_id,
                 version_id=version_id,
@@ -812,7 +923,7 @@ def test_delete_unused_versions_clears_provenance_and_preserves_version_high_wat
         json={
             "name": "版本清理环境",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
 
@@ -863,7 +974,7 @@ def test_environment_delete_removes_versions_and_enqueues_image_cleanup(client, 
         json={
             "name": "环境删除镜像回收",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     digest = "sha256:" + "8" * 64
@@ -917,7 +1028,7 @@ def test_environment_credential_cleanup_waits_for_live_sandbox(
         json={
             "name": "凭据卷最终门禁",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     client.delete(f"/api/v1/terminal-environments/{environment['id']}")
@@ -950,7 +1061,7 @@ def test_image_cleanup_final_gate_does_not_touch_referenced_image(
         json={
             "name": "镜像最终门禁",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     digest = "sha256:" + "7" * 64
@@ -1019,7 +1130,7 @@ def test_setup_session_reports_disabled_backend(client):
         json={
             "name": "关闭后端环境",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     )
     assert created.status_code == 201, created.text
@@ -1050,7 +1161,7 @@ def test_setup_terminal_uses_session_scoped_persistent_tmux(client, monkeypatch)
         json={
             "name": "持久配置终端",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     setup = client.post(
@@ -1230,7 +1341,7 @@ def test_expired_setup_session_is_reclaimed_before_starting_another(
         json={
             "name": "过期回收环境",
             "description": "验证过期容器不会阻塞后续配置",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     first = client.post(
@@ -1278,10 +1389,11 @@ def test_setup_cleanup_failure_retries_without_losing_container_ownership(
     created_sandboxes, removed, fail_delete = _mock_setup_provider(monkeypatch)
     monkeypatch.setattr(
         "flowweave.modules.environments.infrastructure.docker.publish_container",
-        lambda container_id, *, environment_id, version_id, version_no: PublishedImage(
+        lambda container_id, *, environment_id, version_id, version_no, **_base: PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest="sha256:" + "d" * 64,
             manifest=_runtime_manifest(
+                image_digest="sha256:" + "d" * 64,
                 schema_version=1,
                 container_id=container_id,
                 version_id=version_id,
@@ -1293,7 +1405,7 @@ def test_setup_cleanup_failure_retries_without_losing_container_ownership(
         json={
             "name": "清理重试环境",
             "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
+            "base_image": _BASE_IMAGE,
         },
     ).json()
     session = client.post(

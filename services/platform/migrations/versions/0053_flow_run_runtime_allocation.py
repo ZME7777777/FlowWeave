@@ -36,9 +36,7 @@ def upgrade() -> None:
             "relative_root LIKE '.flow-run-runtimes/%'",
             name="ck_flow_run_runtime_allocation_root",
         ),
-        sa.ForeignKeyConstraint(
-            ["flow_run_id"], ["flow_runs.id"], ondelete="RESTRICT"
-        ),
+        sa.ForeignKeyConstraint(["flow_run_id"], ["flow_runs.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
             ["secret_reference_id"],
             ["flow_run_runtime_secret_references.id"],
@@ -50,9 +48,7 @@ def upgrade() -> None:
             "secret_reference_id",
             name="uq_flow_run_runtime_allocations_secret_reference_id",
         ),
-        sa.UniqueConstraint(
-            "relative_root", name="uq_flow_run_runtime_allocations_relative_root"
-        ),
+        sa.UniqueConstraint("relative_root", name="uq_flow_run_runtime_allocations_relative_root"),
     )
     op.create_index(
         "ix_flow_run_runtime_allocations_flow_run_id",
@@ -89,9 +85,7 @@ def downgrade() -> None:
         "managed_sandboxes",
         type_="foreignkey",
     )
-    op.drop_index(
-        "ix_managed_sandboxes_runtime_allocation_id", table_name="managed_sandboxes"
-    )
+    op.drop_index("ix_managed_sandboxes_runtime_allocation_id", table_name="managed_sandboxes")
     op.drop_column("managed_sandboxes", "runtime_allocation_id")
     op.drop_index(
         "ix_flow_run_runtime_allocations_secret_reference_id",

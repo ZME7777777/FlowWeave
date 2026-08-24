@@ -112,9 +112,9 @@ def _use_local_worker_control(document: dict[str, Any]) -> None:
 
 def _reuse_api_key_for_worker(document: dict[str, Any]) -> None:
     document["services"]["worker"]["environment"]["DOCKER_CONTROLLER_API_KEY"] = _API_KEY
-    document["services"]["runtime-provider"]["environment"][
-        "DOCKER_CONTROLLER_WORKER_API_KEY"
-    ] = _API_KEY
+    document["services"]["runtime-provider"]["environment"]["DOCKER_CONTROLLER_WORKER_API_KEY"] = (
+        _API_KEY
+    )
 
 
 def _leak_database_credentials(document: dict[str, Any]) -> None:

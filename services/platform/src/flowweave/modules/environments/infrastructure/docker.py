@@ -28,9 +28,7 @@ from flowweave.shared.infrastructure.docker_controller import (
 from flowweave.shared.settings import get_settings
 
 _IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
-_DIGEST_LOCKED_IMAGE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,430}@sha256:[0-9a-f]{64}$"
-)
+_DIGEST_LOCKED_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,430}@sha256:[0-9a-f]{64}$")
 _SAFE_NAME = re.compile(r"[^a-z0-9_.-]+")
 _TERMINAL_PROMPT = r"flowweave@\h:\w\$ "
 _TERMINAL_SHELL_SCRIPT = (
@@ -96,10 +94,24 @@ def resolve_base_image(value: str) -> tuple[str, str]:
             )
         return canonical, digest
 
-    _run(
-        [settings.docker_binary, "pull", reference],
-        timeout=settings.terminal_environment_publish_timeout_seconds,
-    )
+    # A digest reference that is already present locally is immutable evidence
+    # in its own right.  Do not make local Runtime publication depend on a
+    # registry pull (the FlowWeave-built Runtime image is intentionally local
+    # in development and CI); the inspect below still proves the exact
+    # requested RepoDigest before accepting it.  Pull only when that proof is
+    # absent locally.
+    try:
+        _run(
+            [settings.docker_binary, "image", "inspect", reference, "--format", "{{.Id}}"],
+            timeout=30,
+        )
+    except DomainError as exc:
+        if not _docker_resource_absent(exc, "image"):
+            raise
+        _run(
+            [settings.docker_binary, "pull", reference],
+            timeout=settings.terminal_environment_publish_timeout_seconds,
+        )
     raw = _run(
         [settings.docker_binary, "image", "inspect", reference, "--format", "{{json .}}"],
         timeout=30,
@@ -117,9 +129,7 @@ def resolve_base_image(value: str) -> tuple[str, str]:
             else []
         )
         requested_digest = reference.rsplit("@", 1)[1]
-        canonical = next(
-            item for item in repo_digests if item.endswith(f"@{requested_digest}")
-        )
+        canonical = next(item for item in repo_digests if item.endswith(f"@{requested_digest}"))
     except (json.JSONDecodeError, StopIteration, ValueError) as exc:
         raise DomainError(
             "ENVIRONMENT_BASE_IMAGE_PROVENANCE_INVALID",
@@ -783,7 +793,11 @@ def _build_openhands_runtime(
     )
     marker = "FLOWWEAVE_OPENHANDS_BUILD="
     result_line = next(
-        (line.removeprefix(marker) for line in reversed(output.splitlines()) if line.startswith(marker)),
+        (
+            line.removeprefix(marker)
+            for line in reversed(output.splitlines())
+            if line.startswith(marker)
+        ),
         None,
     )
     try:
@@ -833,10 +847,15 @@ def _probe_runtime_image(
             [
                 settings.docker_binary,
                 "exec",
+                "--env",
+                "HOME=/tmp",
                 probe_name,
                 "/agent-server/.venv/bin/python",
-                "/agent-server/openhands-agent-server/openhands/agent_server/"
-                "flowweave_contract_check.py",
+                # The FlowWeave probe is inherited from the fixed base image.
+                # Do not execute a same-named file from OpenHands' source
+                # directory: that would put its ``openai`` subpackage ahead
+                # of the third-party dependency on sys.path.
+                "/runtime/contract_check.py",
             ],
             timeout=120,
         )
@@ -869,9 +888,7 @@ def publish_container(
     slug = _SAFE_NAME.sub("-", environment_id.lower()).strip("-.")[:32]
     version_token = version_id.replace("-", "").lower()
     reference = f"flowweave/environment-{slug}:v{version_no}-{version_token}"
-    customized_reference = (
-        f"flowweave/environment-{slug}-base:v{version_no}-{version_token}"
-    )
+    customized_reference = f"flowweave/environment-{slug}-base:v{version_no}-{version_token}"
     expected_labels = {
         "flowweave.managed": "environment-image",
         "flowweave.manager-scope": settings.sandbox_manager_scope,
@@ -1002,7 +1019,12 @@ def publish_container(
         )
     platform = f"linux/{platform_arch}"
     build = _build_openhands_runtime(
-        base_image=customized_digest,
+        # ``docker image inspect`` returns a config digest (``sha256:…``),
+        # which Dockerfile ``FROM`` treats as a registry image name rather
+        # than a local image reference.  The unique commit tag is the local
+        # addressable reference for that exact inspected image; the digest is
+        # retained below as immutable provenance.
+        base_image=customized_reference,
         environment_id=environment_id,
         version_id=version_id,
         version_no=version_no,

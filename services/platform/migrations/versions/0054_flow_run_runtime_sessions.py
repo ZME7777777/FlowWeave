@@ -36,9 +36,7 @@ def upgrade() -> None:
             "active_generation IS NULL OR active_generation >= 1",
             name="ck_flow_run_runtime_active_generation",
         ),
-        sa.CheckConstraint(
-            "runtime_image_digest <> ''", name="ck_flow_run_runtime_image_digest"
-        ),
+        sa.CheckConstraint("runtime_image_digest <> ''", name="ck_flow_run_runtime_image_digest"),
         sa.CheckConstraint("row_version >= 1", name="ck_flow_run_runtime_row_version"),
         sa.CheckConstraint(
             "status IN ('STARTING', 'ACTIVE', 'REPLACING', 'RECONNECTING', "
@@ -73,9 +71,7 @@ def upgrade() -> None:
         "flow_run_runtimes",
         ["flow_run_id"],
     )
-    op.create_index(
-        "ix_flow_run_runtimes_status", "flow_run_runtimes", ["status"]
-    )
+    op.create_index("ix_flow_run_runtimes_status", "flow_run_runtimes", ["status"])
     op.create_index(
         "ix_flow_run_runtimes_workspace_allocation_id",
         "flow_run_runtimes",
@@ -103,9 +99,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint("generation >= 1", name="ck_runtime_generation_number"),
-        sa.CheckConstraint(
-            "runtime_image_digest <> ''", name="ck_runtime_generation_image_digest"
-        ),
+        sa.CheckConstraint("runtime_image_digest <> ''", name="ck_runtime_generation_image_digest"),
         sa.CheckConstraint("row_version >= 1", name="ck_runtime_generation_row_version"),
         sa.CheckConstraint(
             "state IN ('PROVISIONING', 'READY', 'DRAINING', 'STOPPED', 'DELETED', 'FAILED')",
@@ -121,9 +115,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("fence_token", name="uq_runtime_generations_fence_token"),
-        sa.UniqueConstraint(
-            "managed_runtime_id", name="uq_runtime_generations_managed_runtime_id"
-        ),
+        sa.UniqueConstraint("managed_runtime_id", name="uq_runtime_generations_managed_runtime_id"),
         sa.UniqueConstraint(
             "runtime_session_id",
             "generation",
@@ -140,9 +132,7 @@ def upgrade() -> None:
         "runtime_generations",
         ["runtime_session_id"],
     )
-    op.create_index(
-        "ix_runtime_generations_state", "runtime_generations", ["state"]
-    )
+    op.create_index("ix_runtime_generations_state", "runtime_generations", ["state"])
     op.create_foreign_key(
         "fk_flow_run_runtime_active_generation",
         "flow_run_runtimes",
@@ -159,9 +149,7 @@ def downgrade() -> None:
         "flow_run_runtimes",
         type_="foreignkey",
     )
-    op.drop_index(
-        "ix_runtime_generations_state", table_name="runtime_generations"
-    )
+    op.drop_index("ix_runtime_generations_state", table_name="runtime_generations")
     op.drop_index(
         "ix_runtime_generations_runtime_session_id",
         table_name="runtime_generations",
@@ -176,9 +164,7 @@ def downgrade() -> None:
         table_name="flow_run_runtimes",
     )
     op.drop_index("ix_flow_run_runtimes_status", table_name="flow_run_runtimes")
-    op.drop_index(
-        "ix_flow_run_runtimes_flow_run_id", table_name="flow_run_runtimes"
-    )
+    op.drop_index("ix_flow_run_runtimes_flow_run_id", table_name="flow_run_runtimes")
     op.drop_index(
         "ix_flow_run_runtimes_environment_version_id",
         table_name="flow_run_runtimes",

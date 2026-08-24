@@ -121,6 +121,10 @@ def test_start_rejects_missing_contract_before_runtime_http(
             ),
             tools=(RuntimeTool(name="terminal"),),
         ),
+        environment_image="sha256:" + "1" * 64,
+        runtime_sandbox_id="runtime-contract-test",
+        runtime_resource_name="fw-sbx-runtime-contract-test",
+        runtime_base_url="http://runtime-contract-test:8000",
     )
 
     with pytest.raises(DomainError) as error:

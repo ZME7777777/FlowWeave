@@ -3,9 +3,6 @@
 import sqlalchemy as sa
 from alembic import op
 
-from flowweave.modules.environments.infrastructure import models as environment_models  # noqa: F401
-from flowweave.shared.database import Base
-
 revision = "0014_terminal_environments"
 down_revision = "0013_lazy_lark_run_resources"
 branch_labels = None
@@ -14,8 +11,55 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    for table_name in ("terminal_environments", "environment_versions"):
-        Base.metadata.tables[table_name].create(bind, checkfirst=True)
+    op.create_table(
+        "terminal_environments",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("name", sa.String(200), nullable=False, unique=True),
+        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("base_image", sa.String(500), nullable=False),
+        sa.Column("row_version", sa.Integer(), nullable=False),
+        sa.Column("last_version_no", sa.Integer(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_table(
+        "environment_versions",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column(
+            "environment_id",
+            sa.String(36),
+            sa.ForeignKey("terminal_environments.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("version_no", sa.Integer(), nullable=False),
+        sa.Column(
+            "parent_version_id",
+            sa.String(36),
+            sa.ForeignKey("environment_versions.id", ondelete="RESTRICT"),
+            nullable=True,
+        ),
+        sa.Column("state", sa.String(30), nullable=False),
+        sa.Column("image_reference", sa.String(500), nullable=False),
+        sa.Column("image_digest", sa.String(100), nullable=False),
+        sa.Column("manifest_json", sa.JSON(), nullable=False),
+        sa.Column("error_detail", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint(
+            "environment_id",
+            "version_no",
+            name="uq_environment_version",
+        ),
+    )
+    op.create_index(
+        "ix_environment_versions_environment_id",
+        "environment_versions",
+        ["environment_id"],
+    )
+    op.create_index(
+        "ix_environment_versions_state",
+        "environment_versions",
+        ["state"],
+    )
     # Keep historical migrations independent from future ORM columns. In
     # particular, ``sandbox_id`` is introduced by 0017 after the referenced
     # managed_sandboxes table exists. Using today's full ORM table here would

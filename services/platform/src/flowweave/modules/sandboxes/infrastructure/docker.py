@@ -4,8 +4,8 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import stat
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -997,9 +997,7 @@ chmod 0700 "$target"
     def _workspace_source_roots(self) -> tuple[Path, Path]:
         source = self.settings.runtime_host_workspace_root
         validation_source = self.settings.flow_run_runtime_validation_root
-        if not source.is_absolute() or any(
-            character in str(source) for character in ",="
-        ):
+        if not source.is_absolute() or any(character in str(source) for character in ",="):
             raise DomainError(
                 "SANDBOX_WORKSPACE_SOURCE_INVALID",
                 "The Runtime host workspace root must be an unambiguous absolute path",
@@ -1233,9 +1231,7 @@ chmod 0700 "$target"
             labels=labels,
         )
 
-    def drain_expected(
-        self, resource_name: str, expected_resource_id: str
-    ) -> DockerDrainResult:
+    def drain_expected(self, resource_name: str, expected_resource_id: str) -> DockerDrainResult:
         """Disconnect writers, invoke OpenHands pause, then stop the old container."""
 
         if controller_is_remote(self.settings):

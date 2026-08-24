@@ -47,6 +47,7 @@ def test_flow_validation_allows_same_asset_twice_but_checks_mapping_and_gate_pos
     payload = FlowWrite.model_validate(
         {
             "name": "repeat asset",
+            "environment_version_id": "00000000-0000-4000-8000-000000000001",
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
             "nodes": [
                 {
@@ -84,6 +85,7 @@ def test_flow_validation_supports_branching_merging_and_multiple_ports():
     payload = FlowWrite.model_validate(
         {
             "name": "branch and merge",
+            "environment_version_id": "00000000-0000-4000-8000-000000000001",
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
             "nodes": [
                 {"instance_key": "source_a", "node_asset_id": "source"},
@@ -132,6 +134,7 @@ def test_flow_validation_rejects_cycles_but_not_branching_or_merging():
     payload = FlowWrite.model_validate(
         {
             "name": "cycle",
+            "environment_version_id": "00000000-0000-4000-8000-000000000001",
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
             "nodes": [
                 {"instance_key": "a", "node_asset_id": "asset"},
@@ -157,6 +160,7 @@ def test_flow_validation_rejects_multiple_sources_for_one_target_input():
     payload = FlowWrite.model_validate(
         {
             "name": "ambiguous input",
+            "environment_version_id": "00000000-0000-4000-8000-000000000001",
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/root",
             "nodes": [
                 {"instance_key": "source_a", "node_asset_id": "source"},

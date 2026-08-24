@@ -408,7 +408,9 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
         "MEMORY_POLICY",
         "CRITIC_POLICY",
     ]
-    workspace = Path("test-workspaces") / saved.json()["workspace_ref"]
+    workspace = (
+        Path(client.app.state.container.settings.workspace_root) / saved.json()["workspace_ref"]
+    )
     assert (workspace / "skills/requirements-analysis/references/checklist.md").read_text() == (
         "# Checklist\n"
     )
@@ -416,7 +418,11 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
         "print('ok')\n"
     )
     assert (workspace / "skills/technical-design/scripts/check.sh").stat().st_mode & 0o111
-    managed = Path("test-workspaces/.managed-assets") / saved.json()["workspace_ref"]
+    managed = (
+        Path(client.app.state.container.settings.workspace_root)
+        / ".managed-assets"
+        / saved.json()["workspace_ref"]
+    )
     mcp_config = (managed / "mcp/local-review/config.json").read_text()
     assert '"command": "python"' in mcp_config
     assert '"cwd": "/runtime/capabilities/nodes/' in mcp_config
@@ -581,7 +587,11 @@ def test_stdio_mcp_persists_multiple_scripts_and_materializes_them(client):
         },
     )
     assert saved.status_code == 201, saved.text
-    managed = Path("test-workspaces/.managed-assets") / saved.json()["workspace_ref"]
+    managed = (
+        Path(client.app.state.container.settings.workspace_root)
+        / ".managed-assets"
+        / saved.json()["workspace_ref"]
+    )
     mcp_root = managed / "mcp/local-tools"
     assert (mcp_root / "scripts/server.py").read_text() == "print('server')\n"
     assert (mcp_root / "scripts/settings.json").read_text() == '{"mode": "readonly"}\n'
@@ -877,7 +887,10 @@ def test_editing_one_skill_saves_in_place_and_refreshes_bound_node(client):
         },
     )
     assert bound_node.status_code == 201, bound_node.text
-    workspace = Path("test-workspaces") / bound_node.json()["workspace_ref"]
+    workspace = (
+        Path(client.app.state.container.settings.workspace_root)
+        / bound_node.json()["workspace_ref"]
+    )
     skill_file = workspace / "skills/requirements-analysis/SKILL.md"
     assert "v1" in skill_file.read_text()
 

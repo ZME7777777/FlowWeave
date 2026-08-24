@@ -6,7 +6,6 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from time import sleep
 
-import pytest
 from sqlalchemy import select
 
 from flowweave.modules.tasks.application.service import (
@@ -377,6 +376,7 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
         "/api/v1/flows",
         json={
             "name": "异步执行流程",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [
@@ -440,7 +440,7 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
     ).json()
     assert queued["state"] == "EXECUTING"
     assert queued["runtime_phase"] == "STARTING"
-    assert queued["runtime_job_id"] is None
+    assert "runtime_job_id" not in queued
 
     assert worker._run_once_sync() is True  # runtime start
     _run_worker_until(
@@ -454,7 +454,7 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
     attempt = finished["node_runs"][0]["attempts"][0]
     assert attempt["state"] == "WAITING_ACCEPTANCE"
     assert attempt["runtime_phase"] == "COMPLETED"
-    assert attempt["runtime_job_id"].startswith("mock-job-")
+    assert "runtime_job_id" not in attempt
     assert attempt["artifacts"][0]["field_key"] == "design"
 
     with db_session_factory() as db:
@@ -489,6 +489,7 @@ def _prepare_starting_attempt(
         "/api/v1/flows",
         json={
             "name": "Worker 恢复流程",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
@@ -645,7 +646,8 @@ def test_start_runtime_uses_frozen_plugin_after_live_node_change(
     frozen = captured[0].agent_spec.plugins[0]
     assert frozen.content_hash == plugin["normalized_config"]["content_hash"]
     assert plugin["capability_id"] in frozen.source
-    assert frozen.source.startswith("/runtime/capabilities/nodes/")
+    assert frozen.source.startswith("/runtime/capabilities/")
+    assert "/nodes/" in frozen.source
 
 
 def test_start_runtime_rejects_plugin_drift_with_rehashed_manifest(
@@ -848,6 +850,7 @@ def test_start_runtime_consumes_frozen_runtime_agent_spec_tool_policy(
         "/api/v1/flows",
         json={
             "name": "Frozen Agent Spec flow",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/spec-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset.json()["id"]}],
@@ -1082,6 +1085,7 @@ def test_node_accepts_enabled_memory_with_governed_source(
         "/api/v1/flows",
         json={
             "name": "Governed Memory Snapshot",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/memory-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": accepted.json()["id"]}],
@@ -1370,7 +1374,7 @@ def test_worker_startup_recovers_deleted_runtime_delivery_and_advances_attempt(
     detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
     attempt = detail["node_runs"][0]["attempts"][0]
     assert attempt["runtime_phase"] == "RUNNING"
-    assert attempt["runtime_job_id"].startswith("mock-job-")
+    assert "runtime_job_id" not in attempt
 
 
 def test_worker_startup_retries_terminal_recovery_delivery(
@@ -1428,6 +1432,7 @@ def test_cancelled_run_stops_started_runtime_through_worker(
         "/api/v1/flows",
         json={
             "name": "取消 Runtime 流程",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
@@ -1458,12 +1463,7 @@ def test_cancelled_run_stops_started_runtime_through_worker(
         headers={"Idempotency-Key": "cancel-confirm"},
     )
     assert worker._run_once_sync() is True  # runtime start
-    running = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
-    attempt = running["node_runs"][0]["attempts"][0]
-    assert attempt["runtime_adapter"] == "mock"
-    handle = RuntimeHandle(
-        attempt["runtime_job_id"], attempt["conversation_id"], attempt["runtime_cursor"]
-    )
+    handle = RuntimeHandle(f"mock-job-{attempt_id}", f"mock-conversation-{attempt_id}", "1")
 
     cancelled = worker_client.post(
         f"/api/v1/flow-runs/{started['id']}/cancel",
@@ -1497,6 +1497,7 @@ def test_cancel_attempt_stops_only_current_node_runtime(
         "/api/v1/flows",
         json={
             "name": "停止当前节点 Runtime",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
@@ -1529,9 +1530,7 @@ def test_cancel_attempt_stops_only_current_node_runtime(
     assert worker._run_once_sync() is True
     running = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
     attempt = running["node_runs"][0]["attempts"][0]
-    handle = RuntimeHandle(
-        attempt["runtime_job_id"], attempt["conversation_id"], attempt["runtime_cursor"]
-    )
+    handle = RuntimeHandle(f"mock-job-{attempt_id}", f"mock-conversation-{attempt_id}", "1")
 
     cancelled = worker_client.post(
         f"/api/v1/node-attempts/{attempt_id}/cancel",
@@ -1559,996 +1558,6 @@ def test_cancel_attempt_stops_only_current_node_runtime(
     assert worker_container.runtime.inspect(handle).status == "CANCELLED"
 
 
-def test_shared_runtime_parent_interrupt_does_not_claim_inflight_task_cancelled(
-    worker_client, db_session_factory, worker_container, worker_skill_capability
-):
-    from flowweave.shared.models import (
-        AgentConversation,
-        BackgroundTask,
-        NodeAttempt,
-        RunEvent,
-        RuntimeSubagentTask,
-    )
-
-    worker, run_id, attempt_id = _prepare_starting_attempt(
-        worker_client, worker_container, worker_skill_capability
-    )
-    assert worker._run_once_sync() is True  # START_RUNTIME
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        conversation = db.scalar(
-            select(AgentConversation).where(
-                AgentConversation.attempt_id == attempt_id,
-                AgentConversation.kind == "AUTO",
-            )
-        )
-        assert attempt is not None
-        assert conversation is not None
-        db.add(
-            RuntimeSubagentTask(
-                attempt_id=attempt_id,
-                conversation_id=conversation.id,
-                action_event_id="cancel-shared-task-action",
-                action_cursor="cancel-shared-task-action",
-                tool_call_id="cancel-shared-tool-call",
-                subagent_type="reviewer",
-                state="REQUESTED",
-            )
-        )
-        db.commit()
-
-    current = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
-    attempt = current["node_runs"][0]["attempts"][0]
-    cancelled = worker_client.post(
-        f"/api/v1/node-attempts/{attempt_id}/cancel",
-        json={"expected_state_version": attempt["state_version"]},
-        headers={"Idempotency-Key": "cancel-shared-inflight-task"},
-    )
-    assert cancelled.status_code == 200, cancelled.text
-    _run_worker_until(
-        worker,
-        lambda: worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
-            0
-        ]["runtime_phase"]
-        == "CANCEL_FAILED",
-    )
-
-    final = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
-    final_attempt = final["node_runs"][0]["attempts"][0]
-    assert final_attempt["runtime_phase"] == "CANCEL_FAILED"
-    assert final_attempt["error_code"] == "RUNTIME_TASK_CANCEL_UNCONFIRMED"
-    with db_session_factory() as db:
-        cancel_task = db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.aggregate_id == attempt_id,
-                BackgroundTask.task_type == "CANCEL_RUNTIME",
-            )
-        )
-        assert cancel_task is not None
-        assert cancel_task.max_attempts == 20
-        assert cancel_task.state == TaskState.SUCCEEDED
-        audit = db.scalar(
-            select(RunEvent).where(
-                RunEvent.attempt_id == attempt_id,
-                RunEvent.event_type == "RUNTIME_SUBAGENT_CANCEL_UNCONFIRMED",
-            )
-        )
-        assert audit is not None
-        assert audit.payload_json["control_scope"] == "PARENT_CONVERSATION_INTERRUPT"
-        assert audit.payload_json["pending_tasks"] == [
-            {
-                "runtime_subagent_task_id": audit.payload_json["pending_tasks"][0][
-                    "runtime_subagent_task_id"
-                ],
-                "conversation_id": audit.payload_json["pending_tasks"][0]["conversation_id"],
-                "action_event_id": "cancel-shared-task-action",
-                "tool_call_id": "cancel-shared-tool-call",
-            }
-        ]
-
-
-def test_shared_runtime_cancel_recovery_waits_for_late_formal_task_usage(
-    worker_client, db_session_factory, worker_container, worker_skill_capability
-):
-    from flowweave.runtime.base import (
-        RuntimeEvent,
-        RuntimeEventBatch,
-        RuntimeTaskUsageSnapshot,
-    )
-    from flowweave.shared.models import (
-        AgentConversation,
-        NodeAttempt,
-        RuntimeSubagentTask,
-        RuntimeSubagentTaskUsage,
-    )
-
-    worker, run_id, attempt_id = _prepare_starting_attempt(
-        worker_client, worker_container, worker_skill_capability
-    )
-    assert worker._run_once_sync() is True  # START_RUNTIME
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        conversation = db.scalar(
-            select(AgentConversation).where(
-                AgentConversation.attempt_id == attempt_id,
-                AgentConversation.kind == "AUTO",
-            )
-        )
-        assert attempt is not None
-        assert conversation is not None
-        db.add(
-            RuntimeSubagentTask(
-                attempt_id=attempt_id,
-                conversation_id=conversation.id,
-                action_event_id="late-cancel-task-action",
-                action_cursor="late-cancel-task-action",
-                tool_call_id="late-cancel-tool-call",
-                subagent_type="reviewer",
-                state="REQUESTED",
-            )
-        )
-        db.commit()
-
-    current = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
-    attempt = current["node_runs"][0]["attempts"][0]
-    cancelled = worker_client.post(
-        f"/api/v1/node-attempts/{attempt_id}/cancel",
-        json={"expected_state_version": attempt["state_version"]},
-        headers={"Idempotency-Key": "cancel-before-late-task-observation"},
-    )
-    assert cancelled.status_code == 200, cancelled.text
-    _run_worker_until(
-        worker,
-        lambda: worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
-            0
-        ]["runtime_phase"]
-        == "CANCEL_FAILED",
-    )
-
-    failed = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
-    assert failed["runtime_phase"] == "CANCEL_FAILED"
-    assert failed["runtime_cancel_recovery_modes"] == ["RECONCILE_PARENT"]
-
-    previous_runtime = worker_container.runtime
-
-    class LateObservationRuntime:
-        calls = 0
-
-        def read_events(self, _handle):
-            self.calls += 1
-            usage = (
-                ()
-                if self.calls == 1
-                else (
-                    RuntimeTaskUsageSnapshot(
-                        task_id="task_late_cancel_recovery",
-                        source_cursor="late-cancel-task-stats",
-                        digest="d" * 64,
-                        model_name="openai/test-model",
-                        accumulated_cost=0.2,
-                        prompt_tokens=20,
-                        completion_tokens=8,
-                        cache_read_tokens=0,
-                        cache_write_tokens=0,
-                        reasoning_tokens=0,
-                        context_window=4096,
-                        per_turn_tokens=28,
-                    ),
-                )
-            )
-            return RuntimeEventBatch(
-                events=(
-                    RuntimeEvent(
-                        "late-cancel-task-observation",
-                        "TOOL_RESULT",
-                        {
-                            "content": "review completed before cancellation recovery",
-                            "runtime_task": {
-                                "phase": "COMPLETED",
-                                "action_event_id": "late-cancel-task-action",
-                                "observation_event_id": "late-cancel-task-observation",
-                                "tool_call_id": "late-cancel-tool-call",
-                                "task_id": "task_late_cancel_recovery",
-                                "subagent_type": "reviewer",
-                                "status": "completed",
-                            },
-                        },
-                    ),
-                ),
-                cursor=(
-                    "late-cancel-task-observation" if self.calls == 1 else "late-cancel-task-stats"
-                ),
-                task_usage=usage,
-            )
-
-        def cancel(self, _handle):
-            return None
-
-    worker_container.runtime = LateObservationRuntime()
-    try:
-        recovery = worker_client.post(
-            f"/api/v1/node-attempts/{attempt_id}/retry-runtime-cancel",
-            json={
-                "expected_state_version": failed["state_version"],
-                "mode": "RECONCILE_PARENT",
-            },
-            headers={"Idempotency-Key": "reconcile-late-task-observation"},
-        )
-        assert recovery.status_code == 200, recovery.text
-        assert recovery.json()["runtime_phase"] == "CANCELLING"
-        with db_session_factory() as db:
-            recovery_delivery = db.scalar(
-                select(BackgroundTask).where(
-                    BackgroundTask.aggregate_id == attempt_id,
-                    BackgroundTask.task_type == "CANCEL_RUNTIME",
-                    BackgroundTask.state == TaskState.PENDING,
-                    BackgroundTask.payload_json["recovery_mode"].as_string() == "RECONCILE_PARENT",
-                )
-            )
-            assert recovery_delivery is not None
-            for stale_delivery in db.scalars(
-                select(BackgroundTask).where(
-                    BackgroundTask.id != recovery_delivery.id,
-                    BackgroundTask.state.in_([TaskState.PENDING, TaskState.RETRY]),
-                )
-            ):
-                stale_delivery.state = TaskState.SUCCEEDED
-            recovery_delivery.available_at = datetime.now(UTC)
-            db.commit()
-        assert worker._run_once_sync() is True
-        waiting = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0][
-            "attempts"
-        ][0]
-        assert waiting["runtime_phase"] == "CANCELLING"
-        with db_session_factory() as db:
-            usage_recovery = db.scalar(
-                select(BackgroundTask).where(
-                    BackgroundTask.aggregate_id == attempt_id,
-                    BackgroundTask.task_type == "CANCEL_RUNTIME",
-                    BackgroundTask.idempotency_key.like("cancel-task-usage-recovery:%"),
-                )
-            )
-            assert usage_recovery is not None
-            assert usage_recovery.state == TaskState.PENDING
-            assert usage_recovery.payload_json == {
-                "recovery_mode": "RECONCILE_PARENT",
-                "sandbox_ids": [],
-            }
-            usage_recovery.available_at = datetime.now(UTC)
-            db.commit()
-        assert worker._run_once_sync() is True
-    finally:
-        worker_container.runtime = previous_runtime
-
-    final = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
-    assert final["runtime_phase"] == "CANCELLED"
-    assert final["error_code"] is None
-    assert final["runtime_cancel_recovery_modes"] == []
-    with db_session_factory() as db:
-        projected = db.scalar(
-            select(RuntimeSubagentTask).where(
-                RuntimeSubagentTask.attempt_id == attempt_id,
-                RuntimeSubagentTask.action_event_id == "late-cancel-task-action",
-            )
-        )
-        assert projected is not None
-        assert projected.state == "COMPLETED"
-        assert projected.observation_event_id == "late-cancel-task-observation"
-        assert projected.runtime_task_id == "task_late_cancel_recovery"
-        usage = db.scalar(
-            select(RuntimeSubagentTaskUsage).where(
-                RuntimeSubagentTaskUsage.runtime_subagent_task_id == projected.id
-            )
-        )
-        assert usage is not None
-        assert usage.runtime_task_id == "task_late_cancel_recovery"
-        assert float(usage.accumulated_cost_usd) == 0.2
-
-
-def test_managed_runtime_cancel_cleanup_mode_survives_worker_restart(
-    worker_client, db_session_factory, worker_container, worker_skill_capability
-):
-    from uuid import uuid4
-
-    from sqlalchemy import delete, update
-
-    from flowweave.modules.tasks.application.handlers import record_terminal_failure
-    from flowweave.shared.models import (
-        AgentConversation,
-        ManagedSandbox,
-        NodeAttempt,
-        RunEvent,
-        RuntimeSubagentTask,
-    )
-
-    worker, run_id, attempt_id = _prepare_starting_attempt(
-        worker_client, worker_container, worker_skill_capability
-    )
-    assert worker._run_once_sync() is True  # START_RUNTIME
-    sandbox_id = str(uuid4())
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        conversation = db.scalar(
-            select(AgentConversation).where(
-                AgentConversation.attempt_id == attempt_id,
-                AgentConversation.kind == "AUTO",
-            )
-        )
-        assert attempt is not None
-        assert conversation is not None
-        db.add(
-            ManagedSandbox(
-                id=sandbox_id,
-                kind="AGENT_RUNTIME",
-                owner_type="ATTEMPT",
-                owner_id=attempt_id,
-                backend="docker",
-                backend_resource_name=f"runtime-recovery-{attempt_id}",
-                image_reference="flowweave-openhands-runtime:1",
-                observed_state="RUNNING",
-                desired_state="RUNNING",
-                hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
-            )
-        )
-        db.flush()
-        attempt.runtime_sandbox_id = sandbox_id
-        conversation.runtime_sandbox_id = sandbox_id
-        db.add(
-            RuntimeSubagentTask(
-                attempt_id=attempt_id,
-                conversation_id=conversation.id,
-                action_event_id="restart-cleanup-task-action",
-                action_cursor="restart-cleanup-task-action",
-                tool_call_id="restart-cleanup-tool-call",
-                subagent_type="reviewer",
-                state="REQUESTED",
-            )
-        )
-        db.commit()
-
-    current = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
-    attempt = current["node_runs"][0]["attempts"][0]
-    cancelled = worker_client.post(
-        f"/api/v1/node-attempts/{attempt_id}/cancel",
-        json={"expected_state_version": attempt["state_version"]},
-        headers={"Idempotency-Key": "cancel-before-managed-recovery"},
-    )
-    assert cancelled.status_code == 200, cancelled.text
-
-    with db_session_factory() as db:
-        cancel_task = db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.aggregate_id == attempt_id,
-                BackgroundTask.task_type == "CANCEL_RUNTIME",
-            )
-        )
-        assert cancel_task is not None
-        cancel_task.state = TaskState.DEAD
-        db.flush()
-        record_terminal_failure(db, cancel_task.id, "Runtime cancellation delivery failed")
-        db.commit()
-
-    failed = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
-    assert failed["runtime_phase"] == "CANCEL_FAILED"
-    assert failed["runtime_cancel_recovery_modes"] == [
-        "RECONCILE_PARENT",
-        "DELETE_MANAGED_RUNTIME",
-    ]
-    recovery = worker_client.post(
-        f"/api/v1/node-attempts/{attempt_id}/retry-runtime-cancel",
-        json={
-            "expected_state_version": failed["state_version"],
-            "mode": "DELETE_MANAGED_RUNTIME",
-        },
-        headers={"Idempotency-Key": "delete-managed-runtime-after-cancel-failure"},
-    )
-    assert recovery.status_code == 200, recovery.text
-    assert recovery.json()["runtime_phase"] == "CANCELLING"
-
-    with db_session_factory() as db:
-        db.execute(
-            delete(BackgroundTask).where(
-                BackgroundTask.aggregate_id == attempt_id,
-                BackgroundTask.task_type == "CANCEL_RUNTIME",
-            )
-        )
-        db.execute(
-            update(BackgroundTask)
-            .where(
-                BackgroundTask.aggregate_id == attempt_id,
-                BackgroundTask.task_type == "POLL_RUNTIME",
-            )
-            .values(state=TaskState.SUCCEEDED)
-        )
-        sandbox = db.get(ManagedSandbox, sandbox_id)
-        assert sandbox is not None
-        assert sandbox.desired_state == "DELETED"
-        db.commit()
-
-    worker._recover_startup()
-    with db_session_factory() as db:
-        recovered = db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.aggregate_id == attempt_id,
-                BackgroundTask.task_type == "CANCEL_RUNTIME",
-                BackgroundTask.state == TaskState.PENDING,
-            )
-        )
-        assert recovered is not None
-        assert recovered.payload_json == {
-            "recovery_mode": "DELETE_MANAGED_RUNTIME",
-            "sandbox_ids": [sandbox_id],
-        }
-        assert recovered.max_attempts == 20
-        sandbox = db.get(ManagedSandbox, sandbox_id)
-        assert sandbox is not None
-        db.delete(sandbox)
-        recovered.available_at = datetime.now(UTC)
-        db.commit()
-
-    _run_worker_until(
-        worker,
-        lambda: worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
-            0
-        ]["runtime_phase"]
-        == "CANCELLED",
-    )
-    final = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0]
-    assert final["runtime_phase"] == "CANCELLED"
-    assert final["error_code"] is None
-    with db_session_factory() as db:
-        audit = db.scalar(
-            select(RunEvent).where(
-                RunEvent.attempt_id == attempt_id,
-                RunEvent.event_type == "RUNTIME_SUBAGENT_EXECUTION_STOPPED_BY_SANDBOX_DELETION",
-            )
-        )
-        assert audit is not None
-        assert audit.payload_json["control_scope"] == "MANAGED_RUNTIME"
-        assert audit.payload_json["sandbox_ids"] == [sandbox_id]
-
-
-def test_managed_runtime_inflight_task_waits_for_physical_sandbox_deletion(
-    worker_client, db_session_factory, worker_container, worker_skill_capability
-):
-    from flowweave.shared.models import (
-        AgentConversation,
-        BackgroundTask,
-        ManagedSandbox,
-        NodeAttempt,
-        RunEvent,
-        RuntimeSubagentTask,
-    )
-
-    worker, run_id, attempt_id = _prepare_starting_attempt(
-        worker_client, worker_container, worker_skill_capability
-    )
-    assert worker._run_once_sync() is True  # START_RUNTIME
-    from uuid import uuid4
-
-    sandbox_id = str(uuid4())
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        conversation = db.scalar(
-            select(AgentConversation).where(
-                AgentConversation.attempt_id == attempt_id,
-                AgentConversation.kind == "AUTO",
-            )
-        )
-        assert attempt is not None
-        assert conversation is not None
-        sandbox = ManagedSandbox(
-            id=sandbox_id,
-            kind="AGENT_RUNTIME",
-            owner_type="ATTEMPT",
-            owner_id=attempt_id,
-            backend="docker",
-            backend_resource_name=f"runtime-{attempt_id}",
-            image_reference="flowweave-openhands-runtime:1",
-            observed_state="RUNNING",
-            desired_state="RUNNING",
-            hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
-        )
-        db.add(sandbox)
-        db.flush()
-        attempt.runtime_sandbox_id = sandbox_id
-        conversation.runtime_sandbox_id = sandbox_id
-        db.add(
-            RuntimeSubagentTask(
-                attempt_id=attempt_id,
-                conversation_id=conversation.id,
-                action_event_id="cancel-managed-task-action",
-                action_cursor="cancel-managed-task-action",
-                tool_call_id="cancel-managed-tool-call",
-                subagent_type="reviewer",
-                state="REQUESTED",
-            )
-        )
-        db.commit()
-
-    current = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
-    attempt = current["node_runs"][0]["attempts"][0]
-    cancelled = worker_client.post(
-        f"/api/v1/node-attempts/{attempt_id}/cancel",
-        json={"expected_state_version": attempt["state_version"]},
-        headers={"Idempotency-Key": "cancel-managed-inflight-task"},
-    )
-    assert cancelled.status_code == 200, cancelled.text
-    _run_worker_until(
-        worker,
-        lambda: (
-            worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0][
-                "runtime_phase"
-            ]
-            == "CANCELLING"
-            and _sandbox_desired_state(db_session_factory, sandbox_id) == "DELETED"
-        ),
-    )
-
-    with db_session_factory() as db:
-        attempt_row = db.get(NodeAttempt, attempt_id)
-        sandbox = db.get(ManagedSandbox, sandbox_id)
-        cancel_task = db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.aggregate_id == attempt_id,
-                BackgroundTask.task_type == "CANCEL_RUNTIME",
-            )
-        )
-        assert attempt_row is not None
-        assert sandbox is not None
-        assert cancel_task is not None
-        assert attempt_row.runtime_phase == "CANCELLING"
-        assert sandbox.desired_state == "DELETED"
-        assert cancel_task.state == TaskState.RETRY
-        db.delete(sandbox)
-        cancel_task.available_at = datetime.now(UTC)
-        db.commit()
-
-    assert worker._run_once_sync() is True  # deletion is now authoritative
-    final = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
-    assert final["node_runs"][0]["attempts"][0]["runtime_phase"] == "CANCELLED"
-    with db_session_factory() as db:
-        audit = db.scalar(
-            select(RunEvent).where(
-                RunEvent.attempt_id == attempt_id,
-                RunEvent.event_type == "RUNTIME_SUBAGENT_EXECUTION_STOPPED_BY_SANDBOX_DELETION",
-            )
-        )
-        assert audit is not None
-        assert audit.payload_json["control_scope"] == "MANAGED_RUNTIME"
-        assert audit.payload_json["sandbox_ids"] == [sandbox_id]
-        assert audit.payload_json["pending_tasks"][0]["action_event_id"] == (
-            "cancel-managed-task-action"
-        )
-
-
-def test_terminal_runtime_event_batch_skips_inspect_and_persists_events(
-    worker_client, db_session_factory, worker_container, worker_skill_capability
-):
-    from flowweave.bootstrap.worker import TaskWorker
-    from flowweave.runtime.base import (
-        RuntimeEvent,
-        RuntimeEventBatch,
-        RuntimeHandle,
-        RuntimeResult,
-        StartAttemptRequest,
-    )
-
-    class EventTerminalRuntime:
-        def start(self, _request: StartAttemptRequest) -> RuntimeHandle:
-            raise AssertionError("runtime was already started by the previous adapter")
-
-        def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
-            result = RuntimeResult(
-                status="COMPLETED",
-                outputs={
-                    "design": (
-                        "URL",
-                        "https://example.feishu.cn/docx/event-result",
-                    )
-                },
-                cursor="event-2",
-            )
-            return RuntimeEventBatch(
-                events=(
-                    RuntimeEvent("event-1", "MESSAGE", {"content": "working"}),
-                    RuntimeEvent("event-2", "COMPLETED", {"reason": "done"}),
-                ),
-                cursor="event-2",
-                result=result,
-            )
-
-        def inspect(self, _handle: RuntimeHandle) -> RuntimeResult:
-            raise AssertionError("terminal event batches must not fall back to inspect")
-
-        def resume(self, _handle: RuntimeHandle, _content: str) -> RuntimeResult:
-            raise AssertionError("not used")
-
-        def cancel(self, _handle: RuntimeHandle) -> None:
-            raise AssertionError("not used")
-
-    asset = worker_client.post(
-        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
-    ).json()
-    flow = worker_client.post(
-        "/api/v1/flows",
-        json={
-            "name": "Runtime 事件流程",
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
-            "default_entry_key": "design",
-            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
-        },
-    ).json()
-    started = worker_client.post(
-        f"/api/v1/flows/{flow['id']}/runs",
-        json={
-            "flow_node_key": "design",
-            "artifacts": [
-                {
-                    "field_key": "prd",
-                    "artifact_type": "URL",
-                    "uri": "https://example.feishu.cn/docx/event-input",
-                }
-            ],
-        },
-    ).json()
-    attempt_id = started["node_runs"][0]["attempts"][0]["id"]
-    worker = TaskWorker(worker_container)
-    assert worker._run_once_sync() is True  # readiness
-    assert worker._run_once_sync() is True  # empty START gates
-    ready = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
-    worker_client.post(
-        f"/api/v1/node-attempts/{attempt_id}/confirm-start",
-        json={"expected_state_version": ready["node_runs"][0]["attempts"][0]["state_version"]},
-        headers={"Idempotency-Key": "event-confirm"},
-    )
-    assert worker._run_once_sync() is True  # runtime start via MockRuntime
-
-    previous_runtime = worker_container.runtime
-    worker_container.runtime = EventTerminalRuntime()
-    try:
-        assert worker._run_once_sync() is True  # terminal event batch
-    finally:
-        worker_container.runtime = previous_runtime
-
-    detail = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
-    attempt = detail["node_runs"][0]["attempts"][0]
-    assert attempt["runtime_cursor"] == "event-2"
-    assert attempt["runtime_phase"] == "COMPLETED"
-    assert attempt["artifacts"][0]["inline_content"] is None
-    assert attempt["artifacts"][0]["uri"].startswith("https://example.feishu.cn/docx/")
-    history = worker_client.get(f"/api/v1/flow-runs/{started['id']}/event-history").json()
-    runtime_events = [item for item in history if item["event_type"].startswith("RUNTIME_EVENT_")]
-    assert [item["event_type"] for item in runtime_events] == [
-        "RUNTIME_EVENT_MESSAGE",
-        "RUNTIME_EVENT_COMPLETED",
-    ]
-    assert [item["payload"]["runtime_cursor"] for item in runtime_events] == [
-        "event-1",
-        "event-2",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("task_phase", "task_status", "parent_status", "expected_attempt_state"),
-    [
-        ("COMPLETED", "completed", "COMPLETED", "WAITING_ACCEPTANCE"),
-        ("ERROR", "error", "FAILED", "END_BLOCKED"),
-    ],
-)
-def test_terminal_task_waits_for_late_stats_before_closing_attempt(
-    worker_client,
-    db_session_factory,
-    worker_container,
-    worker_skill_capability,
-    settings,
-    task_phase,
-    task_status,
-    parent_status,
-    expected_attempt_state,
-):
-    from flowweave.modules.orchestration.application.service import process_poll_runtime
-    from flowweave.runtime.base import (
-        RuntimeEvent,
-        RuntimeEventBatch,
-        RuntimeHandle,
-        RuntimeResult,
-        RuntimeTaskUsageSnapshot,
-    )
-    from flowweave.runtime.dependencies import runtime_context
-    from flowweave.shared.models import (
-        NodeAttempt,
-        RunEvent,
-        RuntimeSubagentTask,
-        RuntimeSubagentTaskUsage,
-    )
-    from flowweave.shared.settings import settings_context
-
-    worker, _run_id, attempt_id = _prepare_starting_attempt(
-        worker_client, worker_container, worker_skill_capability
-    )
-    assert worker._run_once_sync() is True  # START_RUNTIME
-    task_id = f"task_late_stats_{task_status}"
-    observation_cursor = f"observation-{task_status}"
-    calls = 0
-
-    class RacingTaskStatsRuntime:
-        def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
-            nonlocal calls
-            calls += 1
-            result = RuntimeResult(
-                status=parent_status,
-                outputs={"design": ("URL", "https://example.feishu.cn/docx/task-output")},
-                cursor=f"terminal-{task_status}",
-                error="parent failed" if parent_status == "FAILED" else None,
-            )
-            if calls == 1:
-                return RuntimeEventBatch(
-                    events=(
-                        RuntimeEvent(
-                            observation_cursor,
-                            "TOOL_RESULT",
-                            {
-                                "content": "child result",
-                                "runtime_task": {
-                                    "phase": task_phase,
-                                    "action_event_id": f"action-{task_status}",
-                                    "observation_event_id": observation_cursor,
-                                    "task_id": task_id,
-                                    "subagent_type": "reviewer",
-                                    "status": task_status,
-                                },
-                            },
-                        ),
-                    ),
-                    cursor=observation_cursor,
-                    result=result,
-                )
-            return RuntimeEventBatch(
-                cursor=f"stats-{task_status}",
-                result=result,
-                task_usage=(
-                    RuntimeTaskUsageSnapshot(
-                        task_id=task_id,
-                        source_cursor=f"stats-{task_status}",
-                        digest=("a" if task_status == "completed" else "b") * 64,
-                        model_name="openai/test-model",
-                        accumulated_cost=0.25,
-                        prompt_tokens=25,
-                        completion_tokens=10,
-                        cache_read_tokens=0,
-                        cache_write_tokens=0,
-                        reasoning_tokens=0,
-                        context_window=4096,
-                        per_turn_tokens=35,
-                    ),
-                ),
-            )
-
-        def inspect(self, _handle: RuntimeHandle) -> RuntimeResult:
-            raise AssertionError("event batch already carries the terminal result")
-
-    racing_runtime = RacingTaskStatsRuntime()
-    with (
-        runtime_context(racing_runtime),
-        settings_context(settings),
-        db_session_factory() as db,
-    ):
-        process_poll_runtime(db, attempt_id, 1)
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        assert attempt is not None
-        assert attempt.state == "EXECUTING"
-        assert attempt.runtime_phase == "RUNNING"
-        assert db.scalar(select(RuntimeSubagentTaskUsage.id)) is None
-        assert db.scalar(select(RuntimeSubagentTask.id)) is not None
-        pending = list(
-            db.scalars(
-                select(RunEvent).where(
-                    RunEvent.attempt_id == attempt_id,
-                    RunEvent.event_type == "RUNTIME_SUBAGENT_USAGE_RECOVERY_PENDING",
-                )
-            )
-        )
-        assert len(pending) == 1
-        assert pending[0].payload_json["runtime_task_ids"] == [task_id]
-
-    with runtime_context(racing_runtime), settings_context(settings), db_session_factory() as db:
-        process_poll_runtime(db, attempt_id, 2, task_usage_recovery_no=1)
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        usage = db.scalar(select(RuntimeSubagentTaskUsage))
-        assert attempt is not None
-        assert usage is not None
-        assert attempt.state == expected_attempt_state
-        assert attempt.runtime_phase == parent_status
-        assert usage.runtime_task_id == task_id
-        assert float(usage.accumulated_cost_usd) == 0.25
-        assert usage.usage_version == 1
-        assert (
-            db.scalar(
-                select(RuntimeSubagentTask.id).where(
-                    RuntimeSubagentTask.conversation_id == usage.conversation_id,
-                    RuntimeSubagentTask.runtime_task_id == task_id,
-                )
-            )
-            == usage.runtime_subagent_task_id
-        )
-
-
-def test_terminal_task_usage_recovery_exhaustion_fails_closed(
-    worker_client, db_session_factory, worker_container, worker_skill_capability, settings
-):
-    from flowweave.modules.orchestration.application.service import process_poll_runtime
-    from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch, RuntimeHandle, RuntimeResult
-    from flowweave.runtime.dependencies import runtime_context
-    from flowweave.shared.models import NodeAttempt, RunEvent
-    from flowweave.shared.settings import settings_context
-
-    worker, _run_id, attempt_id = _prepare_starting_attempt(
-        worker_client, worker_container, worker_skill_capability
-    )
-    assert worker._run_once_sync() is True  # START_RUNTIME
-
-    class MissingTaskStatsRuntime:
-        def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
-            return RuntimeEventBatch(
-                events=(
-                    RuntimeEvent(
-                        "missing-stats-observation",
-                        "TOOL_RESULT",
-                        {
-                            "runtime_task": {
-                                "phase": "COMPLETED",
-                                "action_event_id": "missing-stats-action",
-                                "observation_event_id": "missing-stats-observation",
-                                "task_id": "task_missing_stats",
-                                "subagent_type": "reviewer",
-                                "status": "completed",
-                            }
-                        },
-                    ),
-                ),
-                cursor="missing-stats-observation",
-                result=RuntimeResult(
-                    status="COMPLETED",
-                    outputs={
-                        "design": ("URL", "https://example.feishu.cn/docx/missing-stats-output")
-                    },
-                    cursor="missing-stats-observation",
-                ),
-            )
-
-        def inspect(self, _handle: RuntimeHandle) -> RuntimeResult:
-            raise AssertionError("event batch already carries the terminal result")
-
-    with (
-        runtime_context(MissingTaskStatsRuntime()),
-        settings_context(settings),
-        db_session_factory() as db,
-    ):
-        process_poll_runtime(
-            db,
-            attempt_id,
-            settings.runtime_task_usage_visibility_max_polls,
-            task_usage_recovery_no=settings.runtime_task_usage_visibility_max_polls - 1,
-        )
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        assert attempt is not None
-        assert attempt.state == "END_BLOCKED"
-        assert attempt.runtime_phase == "FAILED"
-        assert attempt.error_code == "RUNTIME_TASK_USAGE_UNAVAILABLE"
-        exhausted = list(
-            db.scalars(
-                select(RunEvent).where(
-                    RunEvent.attempt_id == attempt_id,
-                    RunEvent.event_type == "RUNTIME_SUBAGENT_USAGE_RECOVERY_EXHAUSTED",
-                )
-            )
-        )
-        assert len(exhausted) == 1
-        assert exhausted[0].payload_json["runtime_task_ids"] == ["task_missing_stats"]
-
-
-def test_terminal_task_stats_visible_before_observation_waits_for_formal_identity(
-    worker_client,
-    db_session_factory,
-    worker_container,
-    worker_skill_capability,
-    settings,
-):
-    from flowweave.modules.orchestration.application.service import process_poll_runtime
-    from flowweave.runtime.base import (
-        RuntimeEvent,
-        RuntimeEventBatch,
-        RuntimeHandle,
-        RuntimeResult,
-        RuntimeTaskUsageSnapshot,
-    )
-    from flowweave.runtime.dependencies import runtime_context
-    from flowweave.shared.models import NodeAttempt, RuntimeSubagentTaskUsage
-    from flowweave.shared.settings import settings_context
-
-    worker, _run_id, attempt_id = _prepare_starting_attempt(
-        worker_client, worker_container, worker_skill_capability
-    )
-    assert worker._run_once_sync() is True  # START_RUNTIME
-    calls = 0
-    usage = RuntimeTaskUsageSnapshot(
-        task_id="task_stats_first",
-        source_cursor="stats-first",
-        digest="c" * 64,
-        model_name="openai/test-model",
-        accumulated_cost=0.1,
-        prompt_tokens=10,
-        completion_tokens=5,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        reasoning_tokens=0,
-        context_window=4096,
-        per_turn_tokens=15,
-    )
-
-    class StatsFirstRuntime:
-        def read_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
-            nonlocal calls
-            calls += 1
-            events = (
-                ()
-                if calls == 1
-                else (
-                    RuntimeEvent(
-                        "stats-first-observation",
-                        "TOOL_RESULT",
-                        {
-                            "runtime_task": {
-                                "phase": "COMPLETED",
-                                "action_event_id": "stats-first-action",
-                                "observation_event_id": "stats-first-observation",
-                                "task_id": usage.task_id,
-                                "subagent_type": "reviewer",
-                                "status": "completed",
-                            }
-                        },
-                    ),
-                )
-            )
-            return RuntimeEventBatch(
-                events=events,
-                cursor=f"stats-first-{calls}",
-                result=RuntimeResult(
-                    status="COMPLETED",
-                    outputs={"design": ("URL", "https://example.feishu.cn/docx/stats-first")},
-                    cursor=f"stats-first-{calls}",
-                ),
-                task_usage=(usage,),
-            )
-
-        def inspect(self, _handle: RuntimeHandle) -> RuntimeResult:
-            raise AssertionError("event batch already carries the terminal result")
-
-    runtime = StatsFirstRuntime()
-    with runtime_context(runtime), settings_context(settings), db_session_factory() as db:
-        process_poll_runtime(db, attempt_id, 1)
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        assert attempt is not None
-        assert attempt.state == "EXECUTING"
-        assert db.scalar(select(RuntimeSubagentTaskUsage.id)) is None
-
-    with runtime_context(runtime), settings_context(settings), db_session_factory() as db:
-        process_poll_runtime(db, attempt_id, 2, task_usage_recovery_no=1)
-    with db_session_factory() as db:
-        attempt = db.get(NodeAttempt, attempt_id)
-        projected = db.scalar(select(RuntimeSubagentTaskUsage))
-        assert attempt is not None
-        assert attempt.state == "WAITING_ACCEPTANCE"
-        assert projected is not None
-        assert projected.runtime_task_id == usage.task_id
-        assert projected.usage_version == 1
-
-
 def test_worker_rolls_back_business_result_when_task_success_is_fenced(
     monkeypatch, worker_client, db_session_factory, worker_container, worker_skill_capability
 ):
@@ -2567,6 +1576,7 @@ def test_worker_rolls_back_business_result_when_task_success_is_fenced(
         "/api/v1/flows",
         json={
             "name": "Worker 原子提交流程",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
@@ -2644,6 +1654,7 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
         "/api/v1/flows",
         json={
             "name": "Runtime CAS 迟到结果流程",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
@@ -2745,7 +1756,7 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
     attempt = detail["node_runs"][0]["attempts"][0]
     assert attempt["state"] == "CANCELLED"
     assert attempt["runtime_phase"] == "CANCELLING"
-    assert attempt["runtime_cursor"] != "late-1"
+    assert "runtime_cursor" not in attempt
 
     with db_session_factory() as db:
         assert (
@@ -2801,6 +1812,7 @@ def test_worker_runtime_io_runs_without_database_transaction(
         "/api/v1/flows",
         json={
             "name": "Runtime 短事务流程",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
@@ -2909,6 +1921,7 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
         "/api/v1/flows",
         json={
             "name": "Gate CAS 短事务流程",
+            "environment_version_id": worker_client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [

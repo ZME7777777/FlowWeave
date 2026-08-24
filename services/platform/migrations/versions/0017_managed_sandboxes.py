@@ -3,9 +3,6 @@
 import sqlalchemy as sa
 from alembic import op
 
-from flowweave.modules.sandboxes.infrastructure import models as sandbox_models  # noqa: F401
-from flowweave.shared.database import Base
-
 revision = "0017_managed_sandboxes"
 down_revision = "0016_env_version_delete"
 branch_labels = None
@@ -14,7 +11,59 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    Base.metadata.tables["managed_sandboxes"].create(bind, checkfirst=True)
+    # Freeze the 0017 shape. FR-02 adds runtime_allocation_id only after the
+    # referenced allocation table is created in 0053.
+    op.create_table(
+        "managed_sandboxes",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("kind", sa.String(40), nullable=False),
+        sa.Column("owner_type", sa.String(40), nullable=False),
+        sa.Column("owner_id", sa.String(100), nullable=False),
+        sa.Column("backend", sa.String(30), nullable=False),
+        sa.Column("backend_resource_id", sa.String(100), nullable=False),
+        sa.Column("backend_resource_name", sa.String(100), nullable=False),
+        sa.Column("desired_state", sa.String(20), nullable=False),
+        sa.Column("observed_state", sa.String(20), nullable=False),
+        sa.Column("generation", sa.Integer(), nullable=False),
+        sa.Column("image_reference", sa.String(500), nullable=False),
+        sa.Column("spec_json", sa.JSON(), nullable=False),
+        sa.Column("last_activity_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("idle_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("hard_expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("cleanup_attempts", sa.Integer(), nullable=False),
+        sa.Column("next_reconcile_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("last_error_code", sa.String(100), nullable=True),
+        sa.Column("last_error_detail", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint(
+            "backend",
+            "backend_resource_name",
+            name="uq_sandbox_backend_name",
+        ),
+        sa.UniqueConstraint(
+            "kind",
+            "owner_type",
+            "owner_id",
+            "generation",
+            name="uq_sandbox_owner_generation",
+        ),
+    )
+    for column_name in (
+        "kind",
+        "owner_type",
+        "owner_id",
+        "desired_state",
+        "observed_state",
+        "idle_expires_at",
+        "hard_expires_at",
+        "next_reconcile_at",
+    ):
+        op.create_index(
+            f"ix_managed_sandboxes_{column_name}",
+            "managed_sandboxes",
+            [column_name],
+        )
     columns = {
         column["name"] for column in sa.inspect(bind).get_columns("environment_setup_sessions")
     }
@@ -126,4 +175,4 @@ def downgrade() -> None:
             table_name="environment_setup_sessions",
         )
         op.drop_column("environment_setup_sessions", "sandbox_id")
-    Base.metadata.tables["managed_sandboxes"].drop(bind, checkfirst=True)
+    op.drop_table("managed_sandboxes")

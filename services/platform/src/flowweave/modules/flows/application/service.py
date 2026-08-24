@@ -160,9 +160,7 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
             422,
             {"environment_version_id": payload.environment_version_id},
         )
-    validate_runtime_manifest(
-        environment.manifest_json, environment_version_id=environment.id
-    )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     ports = _ports(db, {x.node_asset_id for x in payload.nodes}, lock_assets=True)
     validate_flow(payload.model_dump(), ports)
     duplicate_query = select(FlowDefinition).where(FlowDefinition.name == payload.name)

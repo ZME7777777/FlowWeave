@@ -269,6 +269,7 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
         "/api/v1/flows",
         json={
             "name": "CAS 并发流程",
+            "environment_version_id": client.environment_version_id,
             "lark_root_folder_url": ("https://example.feishu.cn/drive/folder/cas-root"),
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],

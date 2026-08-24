@@ -153,9 +153,7 @@ def test_flowrun_runtime_has_no_shared_agent_server_or_legacy_launch_fallback() 
     docker_provider = (
         SOURCE / "modules" / "sandboxes" / "infrastructure" / "docker.py"
     ).read_text()
-    sandbox_service = (
-        SOURCE / "modules" / "sandboxes" / "application" / "service.py"
-    ).read_text()
+    sandbox_service = (SOURCE / "modules" / "sandboxes" / "application" / "service.py").read_text()
     runtime_create = sandbox_service.split("def _create_managed_runtime(", 1)[1].split(
         "def ensure_flow_run_runtime(", 1
     )[0]
@@ -183,18 +181,12 @@ def test_flowrun_runtime_has_no_shared_agent_server_or_legacy_launch_fallback() 
 def test_flowrun_conversation_model_has_no_platform_message_or_state_truth() -> None:
     """FR-09: active code keeps only locators and independent approvals."""
 
-    models = (
-        SOURCE / "modules" / "conversations" / "infrastructure" / "models.py"
-    ).read_text()
-    service = (
-        SOURCE / "modules" / "conversations" / "application" / "service.py"
-    ).read_text()
+    models = (SOURCE / "modules" / "conversations" / "infrastructure" / "models.py").read_text()
+    service = (SOURCE / "modules" / "conversations" / "application" / "service.py").read_text()
     orchestration = (
         SOURCE / "modules" / "orchestration" / "application" / "service.py"
     ).read_text()
-    worker_handlers = (
-        SOURCE / "modules" / "tasks" / "application" / "handlers.py"
-    ).read_text()
+    worker_handlers = (SOURCE / "modules" / "tasks" / "application" / "handlers.py").read_text()
     for forbidden in (
         "class AgentConversation",
         "class AgentMessage",
@@ -298,9 +290,7 @@ def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
 def test_flowrun_api_and_web_do_not_restore_legacy_conversation_or_endpoint_truth() -> None:
     """FR-11: clients carry FlowRun locators and see only logical Runtime health."""
 
-    router = (
-        SOURCE / "modules" / "conversations" / "presentation" / "router.py"
-    ).read_text()
+    router = (SOURCE / "modules" / "conversations" / "presentation" / "router.py").read_text()
     operations = (
         SOURCE / "modules" / "sandboxes" / "application" / "runtime_operations.py"
     ).read_text()

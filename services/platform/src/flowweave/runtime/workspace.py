@@ -142,9 +142,7 @@ def flow_run_managed_node_assets_path(
     )
 
 
-def openhands_flow_run_managed_node_assets_path(
-    manifest_digest: str, asset_id: str
-) -> Path:
+def openhands_flow_run_managed_node_assets_path(manifest_digest: str, asset_id: str) -> Path:
     return Path(
         openhands_flow_run_capability_path(
             manifest_digest, *node_workspace_relative(asset_id).parts
@@ -295,9 +293,7 @@ def materialize_runtime_memory(
     project_root = flow_run_workspace_project_path(flow_run_id)
     working_dir = Path(workspace_ref)
     capability_root = flow_run_capability_path(flow_run_id, manifest_digest)
-    source_root = flow_run_capability_path(
-        flow_run_id, manifest_digest, "memory", bundle_digest
-    )
+    source_root = flow_run_capability_path(flow_run_id, manifest_digest, "memory", bundle_digest)
     source_index = source_root / "MEMORY.md"
     runtime_index = openhands_flow_run_capability_path(
         manifest_digest, "memory", bundle_digest, "MEMORY.md"
@@ -373,9 +369,9 @@ def isolated_runtime_workspace_paths(
                 "The Attempt workspace is outside its FlowRun allocation",
                 422,
             ) from exc
-        if (
-            len(allocation_relative.parts) < 7
-            or allocation_relative.parts[2:4] != ("workspace", "project")
+        if len(allocation_relative.parts) < 7 or allocation_relative.parts[2:4] != (
+            "workspace",
+            "project",
         ):
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",

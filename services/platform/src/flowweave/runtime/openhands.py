@@ -251,18 +251,20 @@ class OpenHandsRuntime:
             create_operation = cast(
                 dict[str, Any], cast(dict[str, Any], paths["/api/conversations"])["post"]
             )
-            request_schema = create_operation["requestBody"]["content"]["application/json"][
-                "schema"
-            ]
-            schemas = openapi["components"]["schemas"]
-            start_schema = schemas["StartConversationRequest"]
+            request_body = cast(dict[str, Any], create_operation["requestBody"])
+            content = cast(dict[str, Any], request_body["content"])
+            media_type = cast(dict[str, Any], content["application/json"])
+            request_schema: object = media_type["schema"]
+            components = cast(dict[str, Any], openapi["components"])
+            schemas = cast(dict[str, Any], components["schemas"])
+            start_schema = cast(dict[str, Any], schemas["StartConversationRequest"])
             start_fields: object = start_schema["properties"]
         except (KeyError, TypeError):
             raise cls._incompatible("invalid_start_conversation_schema") from None
-        if (
-            not isinstance(request_schema, dict)
-            or request_schema.get("$ref") != "#/components/schemas/StartConversationRequest"
-        ):
+        if not isinstance(request_schema, dict):
+            raise cls._incompatible("invalid_start_conversation_schema")
+        request_schema_map = cast(dict[str, object], request_schema)
+        if request_schema_map.get("$ref") != "#/components/schemas/StartConversationRequest":
             raise cls._incompatible("invalid_start_conversation_schema")
         if not isinstance(start_fields, dict):
             raise cls._incompatible("invalid_start_conversation_schema")
@@ -759,9 +761,7 @@ class OpenHandsRuntime:
             and request.runtime_working_dir_relative
         ):
             working = Path(request.runtime_working_dir_relative)
-            if working.is_absolute() or any(
-                part in {"", ".", ".."} for part in working.parts
-            ):
+            if working.is_absolute() or any(part in {"", ".", ".."} for part in working.parts):
                 raise DomainError(
                     "RUNTIME_WORKSPACE_INVALID",
                     "The FlowRun Runtime working directory is invalid",
@@ -1102,9 +1102,7 @@ class OpenHandsRuntime:
             event_id,
             cls._formal_identity(item.get("parent_id"), field="parent_id", required=False),
             cls._formal_identity(item.get("action_id"), field="action_id", required=False),
-            cls._formal_identity(
-                item.get("tool_call_id"), field="tool_call_id", required=False
-            ),
+            cls._formal_identity(item.get("tool_call_id"), field="tool_call_id", required=False),
         )
 
     def _conversation_state(self, handle: RuntimeHandle) -> dict[str, Any]:
@@ -1136,13 +1134,9 @@ class OpenHandsRuntime:
                 {"conversation_id": handle.conversation_id},
             )
         raw_workspace = state.get("workspace")
-        workspace = (
-            cast(dict[str, Any], raw_workspace) if isinstance(raw_workspace, dict) else {}
-        )
+        workspace = cast(dict[str, Any], raw_workspace) if isinstance(raw_workspace, dict) else {}
         working_dir_raw = workspace.get("working_dir")
-        working_dir = (
-            PurePosixPath(working_dir_raw) if isinstance(working_dir_raw, str) else None
-        )
+        working_dir = PurePosixPath(working_dir_raw) if isinstance(working_dir_raw, str) else None
         project_root = PurePosixPath("/runtime/workspace/project")
         if (
             workspace.get("kind") != "LocalWorkspace"
@@ -1589,9 +1583,7 @@ class OpenHandsRuntime:
                     "OpenHands returned an invalid event identity page",
                     502,
                 )
-            page_items = [
-                cast(dict[str, Any], item) for item in cast(list[object], raw_items)
-            ]
+            page_items = [cast(dict[str, Any], item) for item in cast(list[object], raw_items)]
             page_event_ids = [self._event_identity(item)[0] for item in page_items]
             if len(set(page_event_ids)) != len(page_event_ids):
                 raise DomainError(
@@ -1617,8 +1609,8 @@ class OpenHandsRuntime:
                     )
                 page_items = page_items[anchor_index + 1 :]
                 page_event_ids = page_event_ids[anchor_index + 1 :]
-            elif not first_page and page_id and (
-                not page_event_ids or page_event_ids[0] != page_id
+            elif (
+                not first_page and page_id and (not page_event_ids or page_event_ids[0] != page_id)
             ):
                 raise DomainError(
                     "RUNTIME_EVENT_IDENTITY_INVALID",

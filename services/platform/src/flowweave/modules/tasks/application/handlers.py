@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
@@ -72,7 +72,11 @@ def _cancel_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lea
     raw_mode = payload.get("recovery_mode")
     raw_sandbox_ids = payload.get("sandbox_ids")
     sandbox_ids = (
-        tuple(str(item) for item in raw_sandbox_ids if isinstance(item, str) and item)
+        tuple(
+            str(item)
+            for item in cast(list[object], raw_sandbox_ids)
+            if isinstance(item, str) and item
+        )
         if isinstance(raw_sandbox_ids, list)
         else ()
     )
@@ -176,8 +180,6 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
     if task.task_type == "CANCEL_RUNTIME":
         orchestration.record_runtime_task_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "REPLACE_FLOW_RUN_RUNTIME":
-        sandboxes.record_terminal_runtime_replacement_failure(
-            db, task.aggregate_id, error
-        )
+        sandboxes.record_terminal_runtime_replacement_failure(db, task.aggregate_id, error)
     elif task.task_type == "RESOLVE_PLUGIN_SOURCE":
         fail_plugin_source_resolution(db, task.aggregate_id, error)

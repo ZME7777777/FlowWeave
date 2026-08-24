@@ -8,7 +8,6 @@ Create Date: 2026-08-22
 import sqlalchemy as sa
 from alembic import op
 
-
 revision = "0057_flow_run_conversations"
 down_revision = "0056_runtime_replacement"
 branch_labels = None
@@ -104,8 +103,7 @@ def upgrade() -> None:
         sa.CheckConstraint("action_count > 0", name="ck_runtime_confirmation_action_count"),
         sa.CheckConstraint("state_version > 0", name="ck_runtime_confirmation_version"),
         sa.CheckConstraint(
-            "state IN ('PENDING', 'DECIDING', 'APPROVED', 'REJECTED', "
-            "'EXPIRED', 'CANCELLED')",
+            "state IN ('PENDING', 'DECIDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CANCELLED')",
             name="ck_runtime_confirmation_approval_state",
         ),
         sa.UniqueConstraint(

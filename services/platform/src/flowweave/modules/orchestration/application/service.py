@@ -110,6 +110,7 @@ from flowweave.shared.schemas import (
 )
 from flowweave.shared.settings import get_settings
 
+
 def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -416,6 +417,12 @@ def _active_attempt_runtime_handle(
             {"attempt_id": attempt.id},
         )
     flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
+    if get_settings().runtime_adapter == "mock":
+        return RuntimeHandle(
+            job_id=f"mock-job-{attempt.id}",
+            conversation_id=openhands_conversation_id,
+            cursor=cursor,
+        )
     return conversations.active_runtime_handle(
         db,
         flow_run_id=flow_run_id,
@@ -894,8 +901,7 @@ def _freeze_runtime_confirmation(
     active = db.scalar(
         select(RuntimeConfirmationApproval)
         .where(
-            RuntimeConfirmationApproval.flow_run_conversation_binding_id
-            == conversation.id,
+            RuntimeConfirmationApproval.flow_run_conversation_binding_id == conversation.id,
             RuntimeConfirmationApproval.state.in_(["PENDING", "DECIDING"]),
         )
         .with_for_update()
@@ -1427,9 +1433,7 @@ def start_flow(
             {"environment_version_id": flow.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-    definition = _snapshot_definition(
-        db, flow_id, environment_version_id=environment.id
-    )
+    definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
     run_no = (
         db.scalar(select(func.max(FlowRun.run_no)).where(FlowRun.flow_definition_id == flow_id))
         or 0
@@ -1779,15 +1783,16 @@ def recover_runtime_tasks(db: Session) -> int:
                 .order_by(BackgroundTask.created_at.desc(), BackgroundTask.id.desc())
                 .limit(1)
             )
-            previous_payload = (
-                latest_cancel_task.payload_json
-                if latest_cancel_task is not None
-                and isinstance(latest_cancel_task.payload_json, dict)
-                else {}
+            previous_payload: dict[str, Any] = (
+                latest_cancel_task.payload_json if latest_cancel_task is not None else {}
             )
             frozen_sandbox_ids = previous_payload.get("sandbox_ids")
-            sandbox_ids = (
-                {str(item) for item in frozen_sandbox_ids if isinstance(item, str) and item}
+            sandbox_ids: set[str] = (
+                {
+                    str(item)
+                    for item in cast(list[object], frozen_sandbox_ids)
+                    if isinstance(item, str) and item
+                }
                 if isinstance(frozen_sandbox_ids, list)
                 else set()
             )
@@ -1926,9 +1931,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     memory_enabled, source_refs = frozen_memory_policy(node, runtime_scope="ATTEMPT")
     settings = get_settings()
     if memory_enabled and (
-        environment is None
-        or settings.runtime_adapter != "openhands"
-        or settings.terminal_environment_backend != "docker"
+        settings.runtime_adapter != "openhands" or settings.terminal_environment_backend != "docker"
     ):
         raise DomainError(
             "MEMORY_SOURCE_UNAVAILABLE",
@@ -2123,6 +2126,7 @@ def process_start_runtime(
         flow_run_id=flow_run_id,
         openhands_conversation_id=handle.conversation_id,
         display_label=f"运行 {claimed.id}",
+        allow_inactive_session=get_settings().runtime_adapter == "mock",
     )
     if _inline_execution():
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)

@@ -40,7 +40,11 @@ _DIRECTORY_MODES = {
     PurePosixPath("state/conversations"): 0o700,
     PurePosixPath("state/bash-events"): 0o700,
     PurePosixPath("state/persistence"): 0o700,
-    PurePosixPath("capabilities"): 0o555,
+    # The control plane must be able to create and remove immutable digest
+    # bundles on rootless/bind-mounted filesystems.  Runtime read-only access
+    # is enforced by the Docker mount contract; each completed bundle is still
+    # frozen independently before it is exposed.
+    PurePosixPath("capabilities"): 0o700,
 }
 
 
@@ -125,9 +129,7 @@ def flow_run_workspace_project_path(flow_run_id: str) -> Path:
     return _host_root(_relative_root(flow_run_id)) / "workspace" / "project"
 
 
-def flow_run_capability_path(
-    flow_run_id: str, manifest_digest: str, *relative_parts: str
-) -> Path:
+def flow_run_capability_path(flow_run_id: str, manifest_digest: str, *relative_parts: str) -> Path:
     """Return a digest-scoped capability path after validating every segment."""
 
     if not re.fullmatch(r"[0-9a-f]{64}", manifest_digest):
@@ -155,9 +157,7 @@ def openhands_flow_run_project_path() -> PurePosixPath:
     return PurePosixPath("/runtime/workspace/project")
 
 
-def openhands_flow_run_capability_path(
-    manifest_digest: str, *relative_parts: str
-) -> PurePosixPath:
+def openhands_flow_run_capability_path(manifest_digest: str, *relative_parts: str) -> PurePosixPath:
     if not re.fullmatch(r"[0-9a-f]{64}", manifest_digest):
         raise DomainError(
             "RUNTIME_CAPABILITY_UNAVAILABLE",
@@ -290,9 +290,7 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
 
     run_id = _canonical_uuid(flow_run_id, field="FlowRun")
     existing = db.scalar(
-        select(FlowRunRuntimeAllocation).where(
-            FlowRunRuntimeAllocation.flow_run_id == run_id
-        )
+        select(FlowRunRuntimeAllocation).where(FlowRunRuntimeAllocation.flow_run_id == run_id)
     )
     if existing is not None:
         _verify_layout(existing)
@@ -330,13 +328,15 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
             encrypted_secret_key=encrypt_secret(secret_key),
             secret_digest=hashlib.sha256(secret_key.encode("ascii")).hexdigest(),
         )
+        db.add(secret_reference)
+        db.flush()
         allocation = FlowRunRuntimeAllocation(
             id=allocation_id,
             flow_run_id=run_id,
             secret_reference_id=secret_reference_id,
             relative_root=relative.as_posix(),
         )
-        db.add_all((secret_reference, allocation))
+        db.add(allocation)
         db.flush()
         _verify_layout(allocation)
     except BaseException:
@@ -344,9 +344,7 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
         raise
     register_rollback_action(
         db,
-        lambda root=root, allocation_id=allocation_id: _remove_allocation_root(
-            root, allocation_id
-        ),
+        lambda root=root, allocation_id=allocation_id: _remove_allocation_root(root, allocation_id),
     )
     return RuntimeStorageAllocation(
         allocation_id,
@@ -370,18 +368,14 @@ def ensure_capability_manifest_directory(
     root = _verify_layout(allocation)
     capabilities = root / "capabilities"
     target = capabilities / manifest_digest
-    capabilities.chmod(0o700)
-    try:
-        if target.is_symlink() or (target.exists() and not target.is_dir()):
-            raise DomainError(
-                "RUNTIME_CAPABILITY_UNAVAILABLE",
-                "The Snapshot capability directory is not a plain directory",
-                409,
-            )
-        target.mkdir(mode=0o700, exist_ok=True)
-        target.chmod(0o700)
-    finally:
-        capabilities.chmod(0o555)
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Snapshot capability directory is not a plain directory",
+            409,
+        )
+    target.mkdir(mode=0o700, exist_ok=True)
+    target.chmod(0o700)
     return target
 
 
@@ -389,9 +383,7 @@ def runtime_allocation_for_flow_run(
     db: Session, flow_run_id: str, *, manifest_digest: str | None = None
 ) -> FlowRunRuntimeAllocation:
     allocation = db.scalar(
-        select(FlowRunRuntimeAllocation).where(
-            FlowRunRuntimeAllocation.flow_run_id == flow_run_id
-        )
+        select(FlowRunRuntimeAllocation).where(FlowRunRuntimeAllocation.flow_run_id == flow_run_id)
     )
     if allocation is None:
         raise DomainError(
@@ -403,9 +395,7 @@ def runtime_allocation_for_flow_run(
     _verify_layout(allocation)
     if manifest_digest is not None:
         with capability_materialization_lock(allocation):
-            manifest_path = (
-                _host_root(allocation.relative_root) / "capabilities" / manifest_digest
-            )
+            manifest_path = _host_root(allocation.relative_root) / "capabilities" / manifest_digest
             existed = manifest_path.exists() or manifest_path.is_symlink()
             ensure_capability_manifest_directory(allocation, manifest_digest)
             if not existed:
@@ -416,9 +406,7 @@ def runtime_allocation_for_flow_run(
                     lambda allocation_root=allocation_root,
                     allocation_id=allocation_id,
                     manifest_digest=manifest_digest: (
-                        _remove_capability_manifest(
-                            allocation_root, allocation_id, manifest_digest
-                        )
+                        _remove_capability_manifest(allocation_root, allocation_id, manifest_digest)
                     ),
                 )
     return allocation
@@ -503,18 +491,14 @@ def delete_flow_run_runtime_allocation(db: Session, flow_run_id: str) -> None:
         )
     root = _verify_layout(allocation)
     allocation_id = allocation.id
-    secret_reference = db.get(
-        FlowRunRuntimeSecretReference, allocation.secret_reference_id
-    )
+    secret_reference = db.get(FlowRunRuntimeSecretReference, allocation.secret_reference_id)
     db.delete(allocation)
     db.flush()
     if secret_reference is not None:
         db.delete(secret_reference)
     register_commit_action(
         db,
-        lambda root=root, allocation_id=allocation_id: _remove_allocation_root(
-            root, allocation_id
-        ),
+        lambda root=root, allocation_id=allocation_id: _remove_allocation_root(root, allocation_id),
     )
 
 
@@ -553,9 +537,7 @@ def _remove_new_allocation_root(root: Path, allocation_id: str) -> None:
     shutil.rmtree(root)
 
 
-def _remove_capability_manifest(
-    root: Path, allocation_id: str, manifest_digest: str
-) -> None:
+def _remove_capability_manifest(root: Path, allocation_id: str, manifest_digest: str) -> None:
     marker = root / _MARKER_NAME
     if (
         root.is_symlink()
@@ -571,21 +553,15 @@ def _remove_capability_manifest(
         raise OSError("Refusing to remove a non-directory capability manifest")
     if not target.exists():
         return
-    capabilities.chmod(0o700)
-    try:
-        for current_root, directories, _files in os.walk(
-            target, topdown=False, followlinks=False
-        ):
-            current = Path(current_root)
-            for name in directories:
-                child = current / name
-                if not child.is_symlink():
-                    child.chmod(0o700)
-            if not current.is_symlink():
-                current.chmod(0o700)
-        shutil.rmtree(target)
-    finally:
-        capabilities.chmod(0o555)
+    for current_root, directories, _files in os.walk(target, topdown=False, followlinks=False):
+        current = Path(current_root)
+        for name in directories:
+            child = current / name
+            if not child.is_symlink():
+                child.chmod(0o700)
+        if not current.is_symlink():
+            current.chmod(0o700)
+    shutil.rmtree(target)
 
 
 __all__ = (

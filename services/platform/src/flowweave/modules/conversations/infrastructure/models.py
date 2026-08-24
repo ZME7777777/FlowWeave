@@ -70,8 +70,7 @@ class RuntimeConfirmationApproval(Base):
         CheckConstraint("action_count > 0", name="ck_runtime_confirmation_action_count"),
         CheckConstraint("state_version > 0", name="ck_runtime_confirmation_version"),
         CheckConstraint(
-            "state IN ('PENDING', 'DECIDING', 'APPROVED', 'REJECTED', "
-            "'EXPIRED', 'CANCELLED')",
+            "state IN ('PENDING', 'DECIDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CANCELLED')",
             name="ck_runtime_confirmation_approval_state",
         ),
     )

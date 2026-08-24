@@ -74,7 +74,8 @@ def _asset(storage_key: str, filename: str, digest: str) -> dict[str, object]:
 
 
 def test_governed_memory_uses_openhands_project_loader_and_read_only_source(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ):
     settings = Settings(workspace_root=tmp_path / "workspaces")
     project_root = settings.workspace_root / ".flow-run-runtimes/scope/run/workspace/project"
@@ -119,8 +120,10 @@ def test_governed_memory_uses_openhands_project_loader_and_read_only_source(
 
         loader_index = working_dir / ".openhands/memory/MEMORY.md"
         assert loader_index.is_symlink()
-        assert loader_index.readlink().as_posix().startswith(
-            "/runtime/capabilities/" + "a" * 64 + "/memory/"
+        assert (
+            loader_index.readlink()
+            .as_posix()
+            .startswith("/runtime/capabilities/" + "a" * 64 + "/memory/")
         )
         bundle_dir = next((capability_root / "memory").iterdir())
         source_index = bundle_dir / "MEMORY.md"

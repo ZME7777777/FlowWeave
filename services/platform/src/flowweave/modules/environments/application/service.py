@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection, Engine
@@ -61,9 +61,7 @@ def _version_dict(
         "run_reference_count": run_reference_count,
         "flow_reference_count": flow_reference_count,
         "snapshot_reference_count": snapshot_reference_count,
-        "reference_count": (
-            run_reference_count + flow_reference_count + snapshot_reference_count
-        ),
+        "reference_count": (run_reference_count + flow_reference_count + snapshot_reference_count),
         "created_at": _time(item.created_at),
     }
 
@@ -106,26 +104,30 @@ def validate_runtime_manifest(
 ) -> None:
     """Reject environment images that cannot satisfy the frozen Runtime contract."""
 
-    document = manifest if isinstance(manifest, dict) else {}
+    document = cast(dict[str, object], manifest) if isinstance(manifest, dict) else {}
     provenance = document.get("runtime_provenance")
-    provenance = provenance if isinstance(provenance, dict) else {}
+    provenance = cast(dict[str, object], provenance) if isinstance(provenance, dict) else {}
     packages = provenance.get("package_versions")
-    actual_packages = packages if isinstance(packages, dict) else {}
+    actual_packages = cast(dict[str, object], packages) if isinstance(packages, dict) else {}
     expected_packages = dict(OPENHANDS_PACKAGE_VERSIONS)
     actual_commit = provenance.get("source_commit")
     actual_ref = provenance.get("source_ref")
     overlays = provenance.get("overlays")
-    actual_overlays = overlays if isinstance(overlays, dict) else {}
+    actual_overlays = cast(dict[str, object], overlays) if isinstance(overlays, dict) else {}
     build = document.get("build")
-    build = build if isinstance(build, dict) else {}
+    build = cast(dict[str, object], build) if isinstance(build, dict) else {}
     validation = document.get("validation")
-    validation = validation if isinstance(validation, dict) else {}
+    validation = cast(dict[str, object], validation) if isinstance(validation, dict) else {}
     contract_check = validation.get("contract_check")
-    contract_check = contract_check if isinstance(contract_check, dict) else {}
+    contract_check = (
+        cast(dict[str, object], contract_check) if isinstance(contract_check, dict) else {}
+    )
     tool_probe = validation.get("tool_workspace_probe")
-    tool_probe = tool_probe if isinstance(tool_probe, dict) else {}
+    tool_probe = cast(dict[str, object], tool_probe) if isinstance(tool_probe, dict) else {}
     security_scan = validation.get("security_scan")
-    security_scan = security_scan if isinstance(security_scan, dict) else {}
+    security_scan = (
+        cast(dict[str, object], security_scan) if isinstance(security_scan, dict) else {}
+    )
     if (
         actual_packages != expected_packages
         or actual_commit != OPENHANDS_SOURCE_COMMIT
@@ -622,9 +624,7 @@ def save_environment(
             base_image_digest = item.base_image_digest
         else:
             has_history = db.scalar(
-                select(EnvironmentVersion.id).where(
-                    EnvironmentVersion.environment_id == item.id
-                )
+                select(EnvironmentVersion.id).where(EnvironmentVersion.environment_id == item.id)
             ) or db.scalar(
                 select(EnvironmentSetupSession.id).where(
                     EnvironmentSetupSession.environment_id == item.id
@@ -637,9 +637,7 @@ def save_environment(
                     409,
                     {"environment_id": item.id},
                 )
-            base_image, base_image_digest = docker.resolve_base_image(
-                requested_base_image
-            )
+            base_image, base_image_digest = docker.resolve_base_image(requested_base_image)
     else:
         base_image, base_image_digest = docker.resolve_base_image(requested_base_image)
         item = TerminalEnvironment(
@@ -1196,9 +1194,7 @@ def delete_environment(db: Session, environment_id: str) -> None:
         select(FlowRun.id).where(FlowRun.environment_version_id.in_(version_ids))
     )
     flow_reference = db.scalar(
-        select(FlowDefinition.id).where(
-            FlowDefinition.environment_version_id.in_(version_ids)
-        )
+        select(FlowDefinition.id).where(FlowDefinition.environment_version_id.in_(version_ids))
     )
     snapshot_reference = db.scalar(
         select(RunSnapshot.id).where(RunSnapshot.environment_version_id.in_(version_ids))

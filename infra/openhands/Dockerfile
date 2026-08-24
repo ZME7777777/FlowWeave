@@ -7,14 +7,25 @@ WORKDIR /runtime
 COPY --from=node_runtime /usr/local/ /usr/local/
 COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker_cli /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
+RUN sed -i \
+      -e 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+      -e 's|https://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+      /etc/apt/sources.list.d/debian.sources
 RUN apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-      bash bash-completion build-essential ca-certificates coreutils curl default-jdk-headless \
-      default-mysql-client dnsutils file findutils gawk git grep gzip iproute2 iputils-ping jq \
-      less maven netcat-openbsd openssh-client pkg-config procps psmisc python3.13 \
-      python3.13-venv python3-pip sed tar tmux tree unzip util-linux wget xz-utils zip \
- && rm -rf /var/lib/apt/lists/* \
- && python3.13 -m pip install --break-system-packages --no-cache-dir uv==0.7.8 \
+      bash ca-certificates coreutils findutils grep gzip python3.13 python3.13-venv \
+      python3-pip sed tar util-linux xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      bash-completion curl default-mysql-client dnsutils file gawk git iproute2 iputils-ping \
+      jq less netcat-openbsd openssh-client pkg-config procps psmisc tmux tree unzip wget zip \
+ && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      build-essential default-jdk-headless maven \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3.13 -m pip install --break-system-packages --no-cache-dir uv==0.7.8 \
  && npm install --global @larksuite/cli@1.0.84 \
  && npm cache clean --force \
  && ln -sf /usr/bin/python3.13 /usr/local/bin/python \

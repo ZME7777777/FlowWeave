@@ -11,15 +11,20 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toBeVisible();
   await expect(actions.getByText('上传 Plugin ZIP', { exact: true })).toHaveCount(0);
   await expect(page.locator('.skill-collection-section')).toBeVisible();
-  const collectionDialog = page.getByRole('heading', { name: '新建 Skill 组合' });
+  const collectionEditor = page.locator('form.capability-collection-editor');
+  const collectionDialog = collectionEditor.getByRole('heading', { name: '新建 Skill 组合' });
   await page.getByRole('button', { name: '新建 Skill 组合' }).click();
   await expect(collectionDialog).toBeVisible();
-  await expect(page.getByText('还没有可选的 Skill 版本，请先关闭窗口并上传 Skill ZIP。')).toBeVisible();
-  await page.getByRole('button', { name: '关闭' }).click();
+  // The persistent local E2E database may already contain immutable Skill
+  // versions from a preceding product scenario.  Both states must keep the
+  // collection editor available.
+  await expect(collectionEditor.getByText('还没有可选的 Skill 版本，请先关闭窗口并上传 Skill ZIP。')
+    .or(collectionEditor.locator('.capability-collection-members input[type="checkbox"]').first())).toBeVisible();
+  await collectionEditor.getByRole('button', { name: '关闭' }).click();
   await expect(collectionDialog).toBeHidden();
   await page.getByRole('button', { name: '创建第一个 Skill 组合' }).click();
   await expect(collectionDialog).toBeVisible();
-  await page.getByRole('button', { name: '取消' }).click();
+  await collectionEditor.getByRole('button', { name: '取消' }).click();
   await expect(collectionDialog).toBeHidden();
 
   await modules.getByRole('button', { name: /Plugin/ }).click();

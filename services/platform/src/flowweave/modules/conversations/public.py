@@ -1,7 +1,7 @@
 from flowweave.modules.conversations.application.locator import (
     active_runtime_handle,
-    binding_locator,
     bind_openhands_conversation,
+    binding_locator,
     conversation_binding,
     conversation_locator,
 )
@@ -22,8 +22,8 @@ from flowweave.modules.conversations.application.service import (
     read_conversation_events,
     read_flow_run_conversation_events,
     runtime_stream_details,
-    send_question,
     send_flow_run_question,
+    send_question,
     stop_conversation,
     stop_flow_run_conversation,
     terminal_resource_details,

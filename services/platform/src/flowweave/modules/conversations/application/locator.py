@@ -28,6 +28,7 @@ def bind_openhands_conversation(
     openhands_conversation_id: str,
     display_label: str | None = None,
     binding_id: str | None = None,
+    allow_inactive_session: bool = False,
 ) -> FlowRunConversationBinding:
     """Idempotently bind an OpenHands identity to the FlowRun Runtime Session."""
 
@@ -37,16 +38,26 @@ def bind_openhands_conversation(
             "OpenHands omitted the Conversation identity",
             502,
         )
-    connection = sandboxes.active_flow_run_runtime_connection(
-        db, flow_run_id=flow_run_id
-    )
+    runtime_session_id: str
+    if allow_inactive_session:
+        overview = sandboxes.runtime_overview(db, flow_run_id)
+        runtime_session_id = str(overview.get("runtime_session_id") or "")
+        if not runtime_session_id:
+            raise DomainError(
+                "RUNTIME_SESSION_NOT_ACTIVE",
+                "The FlowRun has no Runtime Session",
+                409,
+                {"flow_run_id": flow_run_id},
+            )
+    else:
+        runtime_session_id = sandboxes.active_flow_run_runtime_connection(
+            db, flow_run_id=flow_run_id
+        ).runtime_session_id
     item = db.scalar(
         select(FlowRunConversationBinding)
         .where(
-            FlowRunConversationBinding.runtime_session_id
-            == connection.runtime_session_id,
-            FlowRunConversationBinding.openhands_conversation_id
-            == openhands_conversation_id,
+            FlowRunConversationBinding.runtime_session_id == runtime_session_id,
+            FlowRunConversationBinding.openhands_conversation_id == openhands_conversation_id,
         )
         .with_for_update()
     )
@@ -54,7 +65,7 @@ def bind_openhands_conversation(
         item = FlowRunConversationBinding(
             **({"id": binding_id} if binding_id is not None else {}),
             flow_run_id=flow_run_id,
-            runtime_session_id=connection.runtime_session_id,
+            runtime_session_id=runtime_session_id,
             openhands_conversation_id=openhands_conversation_id,
             display_label=display_label,
         )
@@ -85,8 +96,7 @@ def conversation_locator(
     item = db.scalar(
         select(FlowRunConversationBinding).where(
             FlowRunConversationBinding.flow_run_id == flow_run_id,
-            FlowRunConversationBinding.openhands_conversation_id
-            == openhands_conversation_id,
+            FlowRunConversationBinding.openhands_conversation_id == openhands_conversation_id,
         )
     )
     if item is None:
@@ -117,8 +127,7 @@ def conversation_binding(
     item = db.scalar(
         select(FlowRunConversationBinding).where(
             FlowRunConversationBinding.flow_run_id == flow_run_id,
-            FlowRunConversationBinding.openhands_conversation_id
-            == openhands_conversation_id,
+            FlowRunConversationBinding.openhands_conversation_id == openhands_conversation_id,
         )
     )
     if item is None:
@@ -165,9 +174,7 @@ def active_runtime_handle(
         flow_run_id=flow_run_id,
         openhands_conversation_id=openhands_conversation_id,
     )
-    connection = sandboxes.active_flow_run_runtime_connection(
-        db, flow_run_id=flow_run_id
-    )
+    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
     if connection.runtime_session_id != locator.runtime_session_id:
         raise DomainError(
             "RUNTIME_CONVERSATION_SESSION_DRIFT",

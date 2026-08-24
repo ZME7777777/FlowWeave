@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from flowweave.modules.runs.infrastructure.models import FlowRun
 from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntime,
     FlowRunRuntimeAllocation,
@@ -16,6 +15,7 @@ from flowweave.modules.sandboxes.infrastructure.models import (
 )
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
+from flowweave.shared.models import FlowRun
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,9 +71,7 @@ def ensure_flow_run_runtime_session(
             409,
             {"flow_run_id": flow_run_id},
         )
-    owner_id = db.scalar(
-        select(FlowRun.id).where(FlowRun.id == flow_run_id).with_for_update()
-    )
+    owner_id = db.scalar(select(FlowRun.id).where(FlowRun.id == flow_run_id).with_for_update())
     if owner_id is None or workspace_allocation.flow_run_id != flow_run_id:
         raise DomainError(
             "RUNTIME_SESSION_OWNER_INVALID",
@@ -82,9 +80,7 @@ def ensure_flow_run_runtime_session(
             {"flow_run_id": flow_run_id},
         )
     item = db.scalar(
-        select(FlowRunRuntime)
-        .where(FlowRunRuntime.flow_run_id == flow_run_id)
-        .with_for_update()
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
     )
     if item is None:
         item = FlowRunRuntime(
@@ -371,9 +367,7 @@ def acquire_runtime_replacement_lease(
         raise ValueError("Invalid Runtime replacement lease")
     now = datetime.now(UTC)
     session = db.scalar(
-        select(FlowRunRuntime)
-        .where(FlowRunRuntime.flow_run_id == flow_run_id)
-        .with_for_update()
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
     )
     if session is None or session.active_generation is None:
         raise DomainError(
@@ -403,8 +397,7 @@ def acquire_runtime_replacement_lease(
         )
     token = (
         session.replacement_lease_token
-        if session.replacement_lease_owner == owner
-        and session.replacement_lease_token is not None
+        if session.replacement_lease_owner == owner and session.replacement_lease_token is not None
         else uid()
     )
     lease_until = now + timedelta(seconds=lease_seconds)
@@ -552,9 +545,7 @@ def mark_runtime_generation_stopped(
         state="STOPPED",
         stopped_at=now,
     )
-    session.replacement_not_before = (
-        None if graceful else now + timedelta(seconds=45)
-    )
+    session.replacement_not_before = None if graceful else now + timedelta(seconds=45)
     session.row_version += 1
     session.updated_at = now
     db.flush()
@@ -781,9 +772,7 @@ def assert_active_runtime_fence(
     return _fence(session, item)
 
 
-def active_flow_run_runtime_connection(
-    db: Session, *, flow_run_id: str
-) -> ActiveRuntimeConnection:
+def active_flow_run_runtime_connection(db: Session, *, flow_run_id: str) -> ActiveRuntimeConnection:
     """Resolve the only routable Agent Server generation for a FlowRun."""
 
     match = db.execute(
@@ -827,9 +816,7 @@ def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
     """Remove logical Runtime records after all physical generations are gone."""
 
     session = db.scalar(
-        select(FlowRunRuntime)
-        .where(FlowRunRuntime.flow_run_id == flow_run_id)
-        .with_for_update()
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
     )
     if session is None:
         return
@@ -857,18 +844,12 @@ def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
     session.row_version += 1
     session.updated_at = datetime.now(UTC)
     db.flush()
-    db.execute(
-        delete(RuntimeGeneration).where(
-            RuntimeGeneration.runtime_session_id == session.id
-        )
-    )
+    db.execute(delete(RuntimeGeneration).where(RuntimeGeneration.runtime_session_id == session.id))
     db.delete(session)
     db.flush()
 
 
-def _fence(
-    session: FlowRunRuntime, generation: RuntimeGeneration
-) -> RuntimeSessionFence:
+def _fence(session: FlowRunRuntime, generation: RuntimeGeneration) -> RuntimeSessionFence:
     return RuntimeSessionFence(
         runtime_session_id=session.id,
         generation=generation.generation,

@@ -16,6 +16,7 @@ from flowweave.shared.models import (
     EnvironmentVersion,
     FlowDefinition,
     FlowRun,
+    FlowRunRuntimeAllocation,
     GateEvaluation,
     HumanAction,
     NodeAsset,
@@ -189,7 +190,7 @@ def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
     assert "url" not in target
 
 
-def flow_payload(asset_id, name="需求到方案"):
+def flow_payload(asset_id, name="需求到方案", *, environment_version_id=None):
     gates = [
         {
             "stage": "START",
@@ -225,7 +226,7 @@ def flow_payload(asset_id, name="需求到方案"):
             },
         },
     ]
-    return {
+    payload = {
         "name": name,
         "description": "同一资产放置两次，映射显式产物",
         "lark_root_folder_url": "https://example.feishu.cn/drive/folder/flow-root",
@@ -264,15 +265,23 @@ def flow_payload(asset_id, name="需求到方案"):
             }
         ],
     }
+    if environment_version_id is not None:
+        payload["environment_version_id"] = environment_version_id
+    return payload
 
 
 def create_flow(client, asset_id):
-    response = client.post("/api/v1/flows", json=flow_payload(asset_id))
+    response = client.post(
+        "/api/v1/flows",
+        json=flow_payload(asset_id, environment_version_id=client.environment_version_id),
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
 
-def test_flow_run_can_start_empty_and_activate_any_node_later(client, skill_capability):
+def test_flow_run_can_start_empty_and_activate_any_node_later(
+    client, skill_capability, db_session_factory, settings
+):
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
 
@@ -287,6 +296,17 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(client, skill_capa
     assert run["artifacts"] == []
     assert run["lark_folder_token"] is None
     assert run["lark_folder_url"] is None
+    with db_session_factory() as db:
+        allocation = db.scalar(
+            select(FlowRunRuntimeAllocation).where(
+                FlowRunRuntimeAllocation.flow_run_id == run["id"]
+            )
+        )
+        assert allocation is not None
+        capabilities = settings.workspace_root / allocation.relative_root / "capabilities"
+        # The provider mount is read-only; the control plane parent remains
+        # writable so rootless bind mounts can publish and roll back bundles.
+        assert capabilities.stat().st_mode & 0o777 == 0o700
     activated = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
         json={"artifact_ids": {}},
@@ -352,71 +372,75 @@ def test_flow_run_rejects_ready_version_of_deleted_environment(
     client, db_session_factory, skill_capability
 ):
     asset = create_asset(client, skill_capability, name="软删环境运行节点")
-    flow = create_flow(client, asset["id"])
-    environment = client.post(
-        "/api/v1/terminal-environments",
-        json={
-            "name": "已删除环境不可创建运行",
-            "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
-        },
-    ).json()
     with db_session_factory() as db:
+        environment = TerminalEnvironment(
+            name="已删除环境不可创建运行",
+            description="",
+            base_image="flowweave-openhands-runtime:1",
+            base_image_digest="sha256:" + "5" * 64,
+        )
+        db.add(environment)
+        db.flush()
         version = EnvironmentVersion(
-            environment_id=environment["id"],
+            environment_id=environment.id,
             version_no=1,
             state="READY",
+            base_image_reference=environment.base_image,
+            base_image_digest=environment.base_image_digest,
             image_reference="flowweave/environment-deleted-run:v1",
             image_digest="sha256:" + "6" * 64,
+            manifest_json={},
         )
         db.add(version)
         db.flush()
         version_id = version.id
-        db.delete(db.get(TerminalEnvironment, environment["id"]))
+        db.delete(environment)
         db.commit()
 
     response = client.post(
-        f"/api/v1/flows/{flow['id']}/runs",
-        json={"environment_version_id": version_id},
+        "/api/v1/flows",
+        json=flow_payload(asset["id"], environment_version_id=version_id),
     )
 
-    assert response.status_code == 404, response.text
-    assert response.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "FLOW_ENVIRONMENT_VERSION_INVALID"
 
 
 def test_flow_run_rejects_ready_environment_without_runtime_provenance(
     client, db_session_factory, skill_capability
 ):
     asset = create_asset(client, skill_capability, name="不兼容环境运行节点")
-    flow = create_flow(client, asset["id"])
-    environment = client.post(
-        "/api/v1/terminal-environments",
-        json={
-            "name": "旧环境不可创建运行",
-            "description": "",
-            "base_image": "flowweave-openhands-runtime:1",
-        },
-    ).json()
     with db_session_factory() as db:
+        environment = TerminalEnvironment(
+            name="旧环境不可创建运行",
+            description="",
+            base_image="flowweave-openhands-runtime:1",
+            base_image_digest="sha256:" + "7" * 64,
+        )
+        db.add(environment)
+        db.flush()
         version = EnvironmentVersion(
-            environment_id=environment["id"],
+            environment_id=environment.id,
             version_no=1,
             state="READY",
+            base_image_reference=environment.base_image,
+            base_image_digest=environment.base_image_digest,
             image_reference="flowweave/environment-legacy-run:v1",
             image_digest="sha256:" + "7" * 64,
             manifest_json={"schema_version": 1},
         )
         db.add(version)
         db.commit()
+        environment_id = environment.id
         version_id = version.id
 
-    listed = client.get(f"/api/v1/terminal-environments/{environment['id']}").json()["versions"][0]
+    listed = client.get(f"/api/v1/terminal-environments/{environment_id}").json()["versions"][0]
     assert listed["runtime_compatible"] is False
     assert listed["runtime_incompatibility_reason"]
 
     response = client.post(
-        f"/api/v1/flows/{flow['id']}/runs",
-        json={"environment_version_id": version_id},
+        "/api/v1/flows",
+        json=flow_payload(asset["id"], environment_version_id=version_id),
     )
 
     assert response.status_code == 409, response.text
@@ -483,6 +507,7 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
         "/api/v1/flows",
         json={
             "name": "分支与汇聚流程",
+            "environment_version_id": client.environment_version_id,
             "lark_root_folder_url": "https://example.feishu.cn/drive/folder/branch-root",
             "nodes": [
                 {"instance_key": "source_a", "node_asset_id": source["id"]},
@@ -598,7 +623,14 @@ def test_flow_name_conflict_is_explicit_and_deleted_name_can_be_reused(
     asset = create_asset(client, skill_capability, "流程重名节点")
     original = create_flow(client, asset["id"])
 
-    duplicate = client.post("/api/v1/flows", json=flow_payload(asset["id"], name=original["name"]))
+    duplicate = client.post(
+        "/api/v1/flows",
+        json=flow_payload(
+            asset["id"],
+            name=original["name"],
+            environment_version_id=client.environment_version_id,
+        ),
+    )
     assert duplicate.status_code == 409, duplicate.text
     assert duplicate.json()["error"]["code"] == "FLOW_NAME_CONFLICT"
     assert "流程名称" in duplicate.json()["error"]["message"]
@@ -607,7 +639,14 @@ def test_flow_name_conflict_is_explicit_and_deleted_name_can_be_reused(
     with db_session_factory() as db:
         assert db.get(FlowDefinition, original["id"]) is None
 
-    recreated = client.post("/api/v1/flows", json=flow_payload(asset["id"], name=original["name"]))
+    recreated = client.post(
+        "/api/v1/flows",
+        json=flow_payload(
+            asset["id"],
+            name=original["name"],
+            environment_version_id=client.environment_version_id,
+        ),
+    )
     assert recreated.status_code == 201, recreated.text
 
 
@@ -1228,7 +1267,7 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     )
 
     # Edit definition, then sync creates v2 without changing existing attempts.
-    changed = flow_payload(asset["id"])
+    changed = flow_payload(asset["id"], environment_version_id=client.environment_version_id)
     changed["row_version"] = flow["row_version"]
     changed["description"] = "同步后的流程定义"
     updated = client.put(f"/api/v1/flows/{flow['id']}", json=changed)
@@ -1469,7 +1508,7 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
         )
 
 
-def test_hard_delete_is_not_blocked_when_runtime_cleanup_is_unavailable(
+def test_hard_delete_uses_flow_run_runtime_lifecycle_not_attempt_cancel(
     client, skill_capability, db_session_factory, monkeypatch
 ):
     asset = create_asset(client, skill_capability, "运行时清理容错节点")
@@ -1500,8 +1539,7 @@ def test_hard_delete_is_not_blocked_when_runtime_cleanup_is_unavailable(
     deleted = client.delete(f"/api/v1/flow-runs/{run['id']}")
 
     assert deleted.status_code == 204, deleted.text
-    assert len(cleanup_calls) == 1
-    assert cleanup_calls[0].conversation_id == "unavailable-runtime-conversation"
+    assert cleanup_calls == []
     assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
 
 

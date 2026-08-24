@@ -30,14 +30,32 @@ DEFAULT_CONTEXT_POLICY_KEY = "flowweave-default-context"
 
 
 def assert_native_subagent_schema(connection_url: str) -> None:
-    """The native projection must not retain the private delegation protocol."""
+    """Legacy projections are archived and the active locator stays minimal."""
 
     with psycopg.connect(connection_url) as connection:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+            )
+        }
+        assert {
+            "agent_conversations",
+            "runtime_subagent_tasks",
+            "runtime_subagent_task_usage",
+        }.isdisjoint(tables)
+        assert {
+            "archived_agent_conversations",
+            "archived_runtime_subagent_tasks",
+            "archived_runtime_subagent_task_usage",
+            "flow_run_conversation_bindings",
+        } <= tables
         task_columns = {
             str(row[0])
             for row in connection.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'runtime_subagent_tasks'"
+                "WHERE table_schema = 'public' "
+                "AND table_name = 'archived_runtime_subagent_tasks'"
             )
         }
         assert "action_event_id" in task_columns
@@ -49,7 +67,7 @@ def assert_native_subagent_schema(connection_url: str) -> None:
             for row in connection.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema = 'public' "
-                "AND table_name = 'runtime_subagent_task_usage'"
+                "AND table_name = 'archived_runtime_subagent_task_usage'"
             )
         }
         assert {
@@ -68,7 +86,7 @@ def assert_native_subagent_schema(connection_url: str) -> None:
             str(row[0])
             for row in connection.execute(
                 "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
-                "AND tablename = 'runtime_subagent_task_usage'"
+                "AND tablename = 'archived_runtime_subagent_task_usage'"
             )
         }
         assert {
@@ -80,7 +98,8 @@ def assert_native_subagent_schema(connection_url: str) -> None:
             str(row[0])
             for row in connection.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'agent_conversations'"
+                "WHERE table_schema = 'public' "
+                "AND table_name = 'archived_agent_conversations'"
             )
         }
         assert (
@@ -91,6 +110,23 @@ def assert_native_subagent_schema(connection_url: str) -> None:
             }
             & conversation_columns
         )
+        locator_columns = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' "
+                "AND table_name = 'flow_run_conversation_bindings'"
+            )
+        }
+        assert locator_columns == {
+            "id",
+            "flow_run_id",
+            "runtime_session_id",
+            "openhands_conversation_id",
+            "display_label",
+            "created_at",
+            "last_connected_at",
+        }
 
 
 def insert_legacy_capability_snapshot(connection_url: str) -> None:

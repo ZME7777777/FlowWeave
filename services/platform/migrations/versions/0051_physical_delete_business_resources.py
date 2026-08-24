@@ -4,6 +4,9 @@ Revision ID: 0051_physical_delete
 Revises: 0050_remove_node_environment
 """
 
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -343,9 +346,12 @@ def downgrade() -> None:
     )
     # Reuse the historical revision's full trigger contract so downgrade really
     # restores the former tombstone behavior instead of leaving no protection.
-    from importlib import import_module
-
-    retention = import_module("migrations.versions.0044_memory_source_retention")
+    retention_path = Path(__file__).with_name("0044_memory_source_retention.py")
+    retention_spec = spec_from_file_location("flowweave_migration_0044", retention_path)
+    if retention_spec is None or retention_spec.loader is None:
+        raise RuntimeError("Could not load the 0044 retention trigger contract")
+    retention = module_from_spec(retention_spec)
+    retention_spec.loader.exec_module(retention)
     op.execute(retention._GOVERNANCE_TRIGGER_SQL)
     op.execute(
         "CREATE TRIGGER trg_memory_source_version_immutable "

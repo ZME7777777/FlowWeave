@@ -10,9 +10,8 @@ from sqlalchemy import func, select, text
 from flowweave.modules.sandboxes.application.service import (
     ReconcileReport,
     _owner_is_active,
-    create_temporary_runtime,
     create_setup_sandbox,
-    delete_sandbox_now,
+    create_temporary_runtime,
     reconcile_managed_sandboxes,
     request_delete_durable,
     touch_runtime,
@@ -110,6 +109,7 @@ def _runtime_resource(workspace_relative: str = "nodes/node-1") -> ManagedSandbo
         hard_expires_at=now + timedelta(hours=1),
         next_reconcile_at=now,
     )
+
 
 def test_provider_refuses_to_delete_a_name_owned_by_another_resource(settings, monkeypatch):
     provider = DockerSandboxProvider(_docker_settings(settings))
@@ -337,7 +337,7 @@ def test_setup_ledger_survives_outer_rollback_as_delete_intent(
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, item: _observation(item),
+        lambda self, item, **_kwargs: _observation(item),
     )
 
     with settings_context(configured), db_session_factory() as db:
@@ -347,6 +347,8 @@ def test_setup_ledger_survives_outer_rollback_as_delete_intent(
             owner_id="setup-that-rolls-back",
             environment_id="environment-1",
             image="runtime:locked",
+            base_image_reference="python@sha256:" + "1" * 64,
+            base_image_digest="sha256:" + "1" * 64,
             base_version_id=None,
             base_version_no=None,
             hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -397,9 +399,7 @@ def test_owned_delete_requires_matching_resource_and_manager_scope(monkeypatch):
     assert [command[1] for command in commands] == ["inspect"]
 
 
-def test_runtime_bind_mount_uses_explicit_host_root_without_source_container(
-    settings, tmp_path
-):
+def test_runtime_bind_mount_uses_explicit_host_root_without_source_container(settings, tmp_path):
     (tmp_path / "nodes/node-1").mkdir(parents=True)
     (tmp_path / ".managed-assets/nodes/node-1").mkdir(parents=True)
     provider = DockerSandboxProvider(
@@ -655,21 +655,22 @@ def test_managed_sandbox_commands_bound_docker_logs(settings, monkeypatch):
     assert command[command.index("--storage-opt") + 1] == "size=4g"
 
 
-def test_setup_base_tag_is_resolved_to_immutable_image_id_for_launch(settings, monkeypatch):
-    configured = _docker_settings(
-        settings, terminal_environment_base_image="flowweave/setup:approved"
-    )
+def test_setup_base_digest_is_verified_for_launch(settings, monkeypatch):
+    configured = _docker_settings(settings)
     provider = DockerSandboxProvider(configured)
     resource = _resource()
     resource.id = "12345678-1234-4234-9234-123456789abc"
     resource.created_at = datetime.now(UTC)
-    resource.image_reference = configured.terminal_environment_base_image
+    immutable_id = "sha256:" + "b" * 64
+    base_reference = "flowweave/setup@" + immutable_id
+    resource.image_reference = immutable_id
     resource.spec_json = {
         "environment_id": "environment-1",
         "base_version_id": None,
         "base_version_no": None,
+        "base_image_reference": base_reference,
+        "base_image_digest": immutable_id,
     }
-    immutable_id = "sha256:" + "b" * 64
     inspected: list[list[str]] = []
 
     def inspect_image(command: list[str], **_kwargs):
@@ -689,27 +690,27 @@ def test_setup_base_tag_is_resolved_to_immutable_image_id_for_launch(settings, m
             "docker",
             "image",
             "inspect",
-            "flowweave/setup:approved",
+            immutable_id,
             "--format",
             "{{json .}}",
         ]
     ]
     assert command[-4] == immutable_id
-    assert command[-4] != resource.image_reference
     assert f"flowweave.image-reference={resource.image_reference}" in command
 
 
 def test_setup_base_image_inspection_fails_closed_without_immutable_id(settings, monkeypatch):
-    configured = _docker_settings(
-        settings, terminal_environment_base_image="flowweave/setup:approved"
-    )
+    configured = _docker_settings(settings)
     provider = DockerSandboxProvider(configured)
     resource = _resource()
-    resource.image_reference = configured.terminal_environment_base_image
+    immutable_id = "sha256:" + "b" * 64
+    resource.image_reference = immutable_id
     resource.spec_json = {
         "environment_id": "environment-1",
         "base_version_id": None,
         "base_version_no": None,
+        "base_image_reference": "flowweave/setup@" + immutable_id,
+        "base_image_digest": immutable_id,
     }
     monkeypatch.setattr(
         provider,
@@ -820,7 +821,7 @@ def test_reconciler_recreates_a_missing_expected_resource(
     created: list[str] = []
     monkeypatch.setattr(DockerSandboxProvider, "inspect", lambda self, _name: None)
 
-    def ensure_running(self, item):
+    def ensure_running(self, item, **_kwargs):
         del self
         created.append(item.id)
         return _observation(item)
@@ -850,8 +851,8 @@ def test_reconciler_does_not_recreate_a_missing_bound_runtime(
     with db_session_factory() as db:
         resource = ManagedSandbox(
             kind="AGENT_RUNTIME",
-            owner_type="TEST_OWNER",
-            owner_id="attempt-bound",
+            owner_type="FLOW_RUN",
+            owner_id="11111111-1111-4111-8111-111111111111",
             backend="docker",
             backend_resource_name="fw-sbx-bound-runtime",
             observed_state="RUNNING",
@@ -869,7 +870,7 @@ def test_reconciler_does_not_recreate_a_missing_bound_runtime(
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, item: recreated.append(item.id) or _observation(item),
+        lambda self, item, **_kwargs: recreated.append(item.id) or _observation(item),
     )
     monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
 
@@ -926,7 +927,7 @@ def test_reconciler_deletes_auxiliary_resources_when_container_is_already_missin
 def test_runtime_reallocation_increments_generation(settings, db_session_factory, monkeypatch):
     configured = _docker_settings(settings)
 
-    def ensure_running(self, item):
+    def ensure_running(self, item, **_kwargs):
         del self
         return _observation(item)
 
@@ -979,7 +980,7 @@ async def test_durable_runtime_control_writes_survive_async_caller_rollback(
     with db_session_factory() as db:
         resource = ManagedSandbox(
             kind="AGENT_RUNTIME",
-            owner_type="FLOW_RUN",
+            owner_type="CAPABILITY_VALIDATION",
             owner_id="attempt-durable-control",
             backend="docker",
             backend_resource_name="fw-sbx-durable-control",
@@ -1000,10 +1001,11 @@ async def test_durable_runtime_control_writes_survive_async_caller_rollback(
             await outer.run_sync(lambda db: touch_runtime(db, resource_id))
             await outer.rollback()
 
-        with db_session_factory() as db:
-            touched = db.get(ManagedSandbox, resource_id)
-            assert touched is not None
-            assert touched.idle_expires_at is None
+            with db_session_factory() as db:
+                touched = db.get(ManagedSandbox, resource_id)
+                assert touched is not None
+                assert touched.idle_expires_at is not None
+                assert touched.idle_expires_at > touched.last_activity_at
             first_activity = touched.last_activity_at
             touched.last_activity_at = now - timedelta(minutes=5)
             db.commit()
@@ -1012,10 +1014,11 @@ async def test_durable_runtime_control_writes_survive_async_caller_rollback(
             await outer.run_sync(lambda db: touch_runtime(db, resource_id))
             await outer.rollback()
 
-        with db_session_factory() as db:
-            touched = db.get(ManagedSandbox, resource_id)
-            assert touched is not None
-            assert touched.idle_expires_at is None
+            with db_session_factory() as db:
+                touched = db.get(ManagedSandbox, resource_id)
+                assert touched is not None
+                assert touched.idle_expires_at is not None
+                assert touched.idle_expires_at > touched.last_activity_at
             assert touched.last_activity_at > first_activity
 
         async with container.database.session() as outer:
@@ -1069,9 +1072,7 @@ def test_reconciler_deletes_idle_runtime_before_hard_limit(
     assert deleted == [resource_id]
 
 
-def test_reconciler_drains_legacy_attempt_runtime_owner(
-    settings, db_session_factory, monkeypatch
-):
+def test_reconciler_drains_legacy_attempt_runtime_owner(settings, db_session_factory, monkeypatch):
     configured = _docker_settings(settings)
     now = datetime.now(UTC)
     with db_session_factory() as db:
@@ -1422,7 +1423,7 @@ def test_reconciler_performs_docker_io_outside_database_transaction(
     monkeypatch.setattr(
         DockerSandboxProvider,
         "ensure_running",
-        lambda self, item: _observation(item),
+        lambda self, item, **_kwargs: _observation(item),
     )
     monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
 
@@ -1447,7 +1448,7 @@ def test_concurrent_delete_wins_over_in_flight_running_observation(
 
     monkeypatch.setattr(DockerSandboxProvider, "inspect", lambda self, _name: None)
 
-    def ensure_running_after_delete(self, item):
+    def ensure_running_after_delete(self, item, **_kwargs):
         del self
         with db_session_factory() as request_db:
             request_delete_durable(request_db, item.id)

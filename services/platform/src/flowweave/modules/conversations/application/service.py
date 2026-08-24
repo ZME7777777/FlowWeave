@@ -59,9 +59,7 @@ def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
     return item
 
 
-def _attempt_context(
-    db: Session, attempt: NodeAttempt
-) -> tuple[NodeRun, FlowRun, RunSnapshot]:
+def _attempt_context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, FlowRun, RunSnapshot]:
     node_run = db.get(NodeRun, attempt.node_run_id)
     snapshot = db.get(RunSnapshot, attempt.snapshot_id)
     if node_run is None:
@@ -74,12 +72,8 @@ def _attempt_context(
     return node_run, run, snapshot
 
 
-def _binding(
-    db: Session, binding_id: str, *, lock: bool = False
-) -> FlowRunConversationBinding:
-    query = select(FlowRunConversationBinding).where(
-        FlowRunConversationBinding.id == binding_id
-    )
+def _binding(db: Session, binding_id: str, *, lock: bool = False) -> FlowRunConversationBinding:
+    query = select(FlowRunConversationBinding).where(FlowRunConversationBinding.id == binding_id)
     if lock:
         query = query.with_for_update()
     item = db.scalar(query)
@@ -140,9 +134,7 @@ def get_conversation(db: Session, binding_id: str) -> dict[str, Any]:
     return _binding_dict(item)
 
 
-def get_flow_run_conversation(
-    db: Session, flow_run_id: str, binding_id: str
-) -> dict[str, Any]:
+def get_flow_run_conversation(db: Session, flow_run_id: str, binding_id: str) -> dict[str, Any]:
     item = _binding_for_run(db, flow_run_id, binding_id)
     item.last_connected_at = now()
     db.flush()
@@ -212,9 +204,7 @@ def create_conversation(
     The only durable content-plane fact is the returned OpenHands identity.
     """
 
-    existing = db.scalar(
-        select(HumanAction).where(HumanAction.idempotency_key == idempotency_key)
-    )
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
     if existing is not None:
         binding_id = str((existing.payload_json or {}).get("binding_id") or "")
         if binding_id:
@@ -239,9 +229,7 @@ def create_conversation(
         )
     )
     if int(count or 0) >= get_settings().conversation_limit_per_flow_run:
-        raise DomainError(
-            "CONVERSATION_LIMIT_REACHED", "FlowRun conversation limit reached", 422
-        )
+        raise DomainError("CONVERSATION_LIMIT_REACHED", "FlowRun conversation limit reached", 422)
     if (
         not run.environment_version_id
         or not snapshot.environment_version_id
@@ -468,9 +456,7 @@ def read_flow_run_conversation_events(
     *,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    batch = get_runtime().read_events(
-        _flow_run_handle(db, flow_run_id, binding_id, cursor=cursor)
-    )
+    batch = get_runtime().read_events(_flow_run_handle(db, flow_run_id, binding_id, cursor=cursor))
     return _event_batch_dict(batch)
 
 
@@ -494,9 +480,7 @@ def send_question(
 ) -> dict[str, Any]:
     """Send a formal OpenHands user message and store audit metadata only."""
 
-    existing = db.scalar(
-        select(HumanAction).where(HumanAction.idempotency_key == idempotency_key)
-    )
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
     if existing is not None:
         return {"accepted": True, "idempotent": True}
     item = _binding(db, binding_id, lock=True)
@@ -567,9 +551,7 @@ def stop_conversation(db: Session, binding_id: str) -> dict[str, Any]:
     return {"accepted": True}
 
 
-def stop_flow_run_conversation(
-    db: Session, flow_run_id: str, binding_id: str
-) -> dict[str, Any]:
+def stop_flow_run_conversation(db: Session, flow_run_id: str, binding_id: str) -> dict[str, Any]:
     get_runtime().cancel(_flow_run_handle(db, flow_run_id, binding_id))
     return {"accepted": True}
 

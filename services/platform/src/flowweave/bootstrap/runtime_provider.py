@@ -149,9 +149,10 @@ class RuntimeProviderResourceWrite(_SandboxResourceBase):
             )
         if has_allocation != (self.owner_type == "FLOW_RUN"):
             raise ValueError("FlowRun Runtime allocation owner is invalid")
-        if self.runtime_secret_key is not None and len(
-            self.runtime_secret_key.get_secret_value()
-        ) < 32:
+        if (
+            self.runtime_secret_key is not None
+            and len(self.runtime_secret_key.get_secret_value()) < 32
+        ):
             raise ValueError("runtime_secret_key is too short")
         return self
 
@@ -696,7 +697,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"deleted": True}
 
     @app.post("/v1/sandboxes/drain")
-    async def drain(payload: SandboxDeleteWrite) -> dict[str, bool]:
+    async def _drain(payload: SandboxDeleteWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
         result = DockerSandboxProvider(configured).drain_expected(
             payload.resource_name, str(payload.resource_id)
@@ -723,13 +724,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             environment_id=str(payload.environment_id),
             version_id=str(payload.version_id),
             version_no=payload.version_no,
-            base_image_reference=payload.base_image_reference,
-            base_image_digest=payload.base_image_digest,
         )
         return {"deleted": True}
 
     @app.post("/v1/environments/resolve-base-image")
-    async def resolve_base_image(payload: ResolveBaseImageWrite) -> dict[str, str]:
+    async def _resolve_base_image(payload: ResolveBaseImageWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
         reference, digest = environments_docker.resolve_base_image(payload.reference)
         return {"reference": reference, "digest": digest}
@@ -763,6 +762,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             environment_id=str(payload.environment_id),
             version_id=str(payload.version_id),
             version_no=payload.version_no,
+            base_image_reference=payload.base_image_reference,
+            base_image_digest=payload.base_image_digest,
         )
         return {"reference": image.reference, "digest": image.digest, "manifest": image.manifest}
 
@@ -1001,8 +1002,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ensure,
         inspect,
         delete,
+        _drain,
         list_sandboxes,
         remove_image,
+        _resolve_base_image,
         remove_credentials,
         remove_legacy,
         publish,
