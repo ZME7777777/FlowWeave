@@ -3,6 +3,7 @@ import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from flowweave.shared.models import (
     EnvironmentVersion,
     FlowDefinition,
     FlowRun,
+    FlowRunRuntime,
     FlowRunRuntimeAllocation,
     GateEvaluation,
     HumanAction,
@@ -119,6 +121,7 @@ def test_confirm_start_persists_explicit_model_selection(client):
     started = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": client.environment_version_id,
             "flow_node_key": "design_a",
             "artifacts": [
                 {
@@ -165,6 +168,7 @@ def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
     started = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": client.environment_version_id,
             "flow_node_key": "design_a",
             "artifacts": [
                 {
@@ -279,15 +283,72 @@ def create_flow(client, asset_id):
     return response.json()
 
 
-def test_flow_run_can_start_empty_and_activate_any_node_later(
-    client, skill_capability, db_session_factory, settings
+def test_flow_template_does_not_bind_environment_and_each_run_freezes_its_selection(
+    client, skill_capability, db_session_factory
 ):
+    asset = create_asset(client, skill_capability, "多运行环境节点")
+    flow = create_flow(client, asset["id"])
+    assert "environment_version_id" not in flow
+
+    missing = client.post(f"/api/v1/flows/{flow['id']}/runs", json={})
+    assert missing.status_code == 422
+
+    with db_session_factory() as db:
+        first = db.get(EnvironmentVersion, client.environment_version_id)
+        assert first is not None
+        environment = TerminalEnvironment(
+            name="second-run-environment",
+            description="",
+            base_image="python:3.13",
+            base_image_digest="sha256:" + "3" * 64,
+        )
+        db.add(environment)
+        db.flush()
+        second = EnvironmentVersion(
+            environment_id=environment.id,
+            version_no=1,
+            state="READY",
+            base_image_reference="python@sha256:" + "3" * 64,
+            base_image_digest="sha256:" + "3" * 64,
+            image_reference="flowweave/environment-second:v1",
+            image_digest="sha256:" + "4" * 64,
+            manifest_json=deepcopy(first.manifest_json),
+        )
+        second.manifest_json["image_id"] = second.image_digest
+        second.manifest_json["build"]["runtime_image_digest"] = second.image_digest
+        db.add(second)
+        db.commit()
+        second_id = second.id
+
+    first_run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    second_run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": second_id},
+    )
+    assert first_run.status_code == 201, first_run.text
+    assert second_run.status_code == 201, second_run.text
+    assert first_run.json()["environment_version_id"] == client.environment_version_id
+    assert second_run.json()["environment_version_id"] == second_id
+
+
+def test_flow_run_can_start_empty_and_activate_any_node_later(
+    client, skill_capability, db_session_factory, settings, monkeypatch
+):
+    from flowweave.modules.conversations.application import locator
+    from flowweave.modules.conversations.application import service as conversation_service
+
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
 
     created = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
-        json={"name": "空任务运行"},
+        json={
+            "name": "空任务运行",
+            "environment_version_id": client.environment_version_id,
+        },
     )
 
     assert created.status_code == 201, created.text
@@ -296,6 +357,39 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     assert run["artifacts"] == []
     assert run["lark_folder_token"] is None
     assert run["lark_folder_url"] is None
+    with db_session_factory() as db:
+        runtime_session_id = db.scalar(
+            select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
+        )
+    monkeypatch.setattr(
+        conversation_service.sandboxes,
+        "active_flow_run_runtime_connection",
+        lambda _db, *, flow_run_id: SimpleNamespace(
+            runtime_session_id=runtime_session_id,
+            flow_run_id=flow_run_id,
+            managed_runtime_id="mock-runtime",
+            resource_name="mock-runtime",
+            generation=1,
+        ),
+    )
+    monkeypatch.setattr(
+        locator.sandboxes,
+        "active_flow_run_runtime_connection",
+        lambda _db, *, flow_run_id: SimpleNamespace(
+            runtime_session_id=runtime_session_id,
+            flow_run_id=flow_run_id,
+            managed_runtime_id="mock-runtime",
+            resource_name="mock-runtime",
+            generation=1,
+        ),
+    )
+    conversation = client.post(
+        f"/api/v1/flow-runs/{run['id']}/conversations",
+        json={"title": "首个会话"},
+        headers={"Idempotency-Key": "empty-run-first-conversation"},
+    )
+    assert conversation.status_code == 201, conversation.text
+    assert conversation.json()["flow_run_id"] == run["id"]
     with db_session_factory() as db:
         allocation = db.scalar(
             select(FlowRunRuntimeAllocation).where(
@@ -322,7 +416,10 @@ def test_human_can_start_same_node_as_independent_runs(client, skill_capability)
     flow = create_flow(client, asset["id"])
     run = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
-        json={"name": "重复人工启动"},
+        json={
+            "name": "重复人工启动",
+            "environment_version_id": client.environment_version_id,
+        },
     ).json()
     artifact = client.post(
         f"/api/v1/flow-runs/{run['id']}/artifacts",
@@ -397,13 +494,17 @@ def test_flow_run_rejects_ready_version_of_deleted_environment(
         db.delete(environment)
         db.commit()
 
-    response = client.post(
+    saved = client.post(
         "/api/v1/flows",
         json=flow_payload(asset["id"], environment_version_id=version_id),
     )
-
+    assert saved.status_code == 201, saved.text
+    response = client.post(
+        f"/api/v1/flows/{saved.json()['id']}/runs",
+        json={"environment_version_id": version_id},
+    )
     assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "FLOW_ENVIRONMENT_VERSION_INVALID"
+    assert response.json()["error"]["code"] == "RUN_ENVIRONMENT_VERSION_INVALID"
 
 
 def test_flow_run_rejects_ready_environment_without_runtime_provenance(
@@ -438,11 +539,15 @@ def test_flow_run_rejects_ready_environment_without_runtime_provenance(
     assert listed["runtime_compatible"] is False
     assert listed["runtime_incompatibility_reason"]
 
-    response = client.post(
+    saved = client.post(
         "/api/v1/flows",
         json=flow_payload(asset["id"], environment_version_id=version_id),
     )
-
+    assert saved.status_code == 201, saved.text
+    response = client.post(
+        f"/api/v1/flows/{saved.json()['id']}/runs",
+        json={"environment_version_id": version_id},
+    )
     assert response.status_code == 409, response.text
     assert response.json()["error"]["code"] == "ENVIRONMENT_RUNTIME_INCOMPATIBLE"
 
@@ -544,7 +649,10 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
     )
     assert created_flow.status_code == 201, created_flow.text
     flow = created_flow.json()
-    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
 
     source_attempts = {}
     for node_key in ("source_a", "source_b"):
@@ -655,7 +763,10 @@ def test_flow_hard_delete_is_blocked_until_runs_are_deleted(
 ):
     asset = create_asset(client, skill_capability, "有关联运行流程节点")
     flow = create_flow(client, asset["id"])
-    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
 
     blocked = client.delete(f"/api/v1/flows/{flow['id']}")
     assert blocked.status_code == 409, blocked.text
@@ -1198,6 +1309,7 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     started = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": client.environment_version_id,
             "name": "Run #验收",
             "flow_node_key": "design_a",
             "artifacts": [
@@ -1314,7 +1426,10 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
 def test_any_node_can_start_without_upstream_completion(client, skill_capability):
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
-    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
     manual = client.post(
         f"/api/v1/flow-runs/{run['id']}/artifacts",
         json={
@@ -1336,8 +1451,14 @@ def test_any_node_can_start_without_upstream_completion(client, skill_capability
 def test_node_input_bindings_reject_unknown_ports_and_other_run_artifacts(client, skill_capability):
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
-    first_run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
-    second_run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    first_run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    second_run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
     artifact = client.post(
         f"/api/v1/flow-runs/{first_run['id']}/artifacts",
         json={
@@ -1367,7 +1488,10 @@ def test_node_input_bindings_reject_unknown_ports_and_other_run_artifacts(client
 def test_lark_artifact_content_redirects_to_external_document(client, skill_capability):
     asset = create_asset(client, skill_capability, "产物内容节点")
     flow = create_flow(client, asset["id"])
-    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
     external = client.post(
         f"/api/v1/flow-runs/{run['id']}/artifacts",
         json={
@@ -1385,7 +1509,10 @@ def test_lark_artifact_content_redirects_to_external_document(client, skill_capa
 def test_human_artifact_can_be_named_and_removed_until_bound(client, skill_capability):
     asset = create_asset(client, skill_capability, "人工文档管理节点")
     flow = create_flow(client, asset["id"])
-    run = client.post(f"/api/v1/flows/{flow['id']}/runs", json={}).json()
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
     first = client.post(
         f"/api/v1/flow-runs/{run['id']}/artifacts",
         json={
@@ -1426,6 +1553,7 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
     started = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": client.environment_version_id,
             "name": "待删除运行",
             "flow_node_key": "design_a",
             "artifacts": [
@@ -1515,7 +1643,10 @@ def test_hard_delete_uses_flow_run_runtime_lifecycle_not_attempt_cancel(
     flow = create_flow(client, asset["id"])
     run = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
-        json={"flow_node_key": "design_a"},
+        json={
+            "flow_node_key": "design_a",
+            "environment_version_id": client.environment_version_id,
+        },
     ).json()
     attempt = run["node_runs"][0]["attempts"][0]
     cancelled = client.post(f"/api/v1/flow-runs/{run['id']}/cancel")
@@ -1552,7 +1683,10 @@ def test_failed_runtime_cancel_is_visible_and_can_be_retried(
     flow = create_flow(client, asset["id"])
     run = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
-        json={"flow_node_key": "design_a"},
+        json={
+            "flow_node_key": "design_a",
+            "environment_version_id": client.environment_version_id,
+        },
     ).json()
     attempt = run["node_runs"][0]["attempts"][0]
     cancelled = client.post(f"/api/v1/flow-runs/{run['id']}/cancel").json()

@@ -26,8 +26,9 @@ FlowWeave 后续采用以下唯一生产拓扑：
    类型、Loader 和事件生命周期原生加载与执行。OpenHands 原生 ambient Plugin 发现允许保留。
 7. Sandbox Controller 收缩并更名为 Runtime Provider。它仍负责物理容器和宿主机资源生命周期，但
    不管理 Conversation 或任何 Agent 功能。
-8. 不提供默认 Environment Version。流程发布和运行都必须绑定用户创建、验证通过且 digest 锁定的
-   自定义 Environment Version。
+8. 不提供默认 Environment Version。流程模板不绑定运行环境；每次创建 FlowRun 时必须由用户选择一个
+   已验证且 digest 锁定的自定义 Environment Version，并由该 Run 及其 Snapshot 冻结。由同一流程模板
+   创建的不同 FlowRun 可以使用不同的基础镜像。
 
 ## 2. OpenHands 能力事实与架构选择
 
@@ -79,6 +80,10 @@ FlowRun 宿主机持久根目录（不随容器删除）
 
 稳定对象是 FlowRun Runtime Session 和上述持久目录；容器 ID、IP、端口、进程 ID、临时 API key 和
 generation 都不是 Conversation 身份。FlowWeave 的 API 不向客户端暴露可绕过授权的物理容器地址。
+创建 FlowRun 后由 Worker 主体预置首个 generation；API 只在 Session 激活后调用 OpenHands 正式会话
+接口。Runtime Provider 按 manager scope 和显式角色标签把 API/Worker 接入该 Run 的专属网络：API
+代理已授权的会话交互，Worker 执行创建、替换和恢复任务；二者都不持有 Docker Socket，Provider 也不
+接入 Runtime 网络。
 
 ## 4. 强制自定义 Environment Version
 
@@ -87,9 +92,11 @@ generation 都不是 Conversation 身份。FlowWeave 的 API 不向客户端暴�
 - Environment 由用户显式创建；Environment Version 是追加式、不可变且 digest 锁定的发布物。
 - 新建 Environment 只收集名称和说明。首次 Setup Session 由平台选择并冻结内部启动镜像；
   该镜像只是建造配置终端的种子，不是用户 Environment Version，也不能被 Flow 绑定。
-- Flow/Flow Snapshot 必须显式绑定一个 `READY` Environment Version。一个 FlowRun 内所有 Conversation
-  使用该 Run 冻结的同一版本，不允许节点在运行时切换环境。
-- 未绑定、仍在构建、验证失败、已退役、digest 漂移或目标平台不兼容时，流程不得发布或启动。
+- Flow Definition 不保存 Environment Version。创建 FlowRun 的命令必须显式选择一个 `READY`
+  Environment Version，Run 与其每个 Snapshot 冻结同一版本；一个 FlowRun 内所有 Conversation 使用
+  该 Run 冻结的同一版本，不允许节点在运行时切换环境。
+- 未选择、仍在构建、验证失败、已退役、digest 漂移或目标平台不兼容时，FlowRun 不得启动；这些条件
+  不阻止流程模板独立保存和复用。
 - 删除默认 Environment、隐式平台镜像选择和共享 Agent Server fallback。历史数据不通过猜测补默认值。
 
 ### 4.2 OpenHands 原生打包链
@@ -324,8 +331,8 @@ created_at / last_connected_at
 
 ## 11. 迁移原则
 
-1. 先建立 Flow 级 Environment Version 强制绑定和 Runtime Image 发布门禁；没有 READY 自定义镜像时
-   fail closed。
+1. 在 FlowRun 创建边界建立 Environment Version 强制选择和 Runtime Image 发布门禁；没有 READY
+   自定义镜像时 fail closed，Flow Definition 不持有该引用。
 2. 再建立 FlowRun 持久目录、Runtime Session/generation 和 Runtime Provider 路径。
 3. 新创建的 FlowRun 只走新路径；共享 Agent Server fallback 同时禁止，避免双真相。
 4. 已有运行中的旧 FlowRun/Conversation 不做在线无损搬迁，因为当前平台消息投影、tmpfs Workspace 和

@@ -280,6 +280,7 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
     run_response = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {

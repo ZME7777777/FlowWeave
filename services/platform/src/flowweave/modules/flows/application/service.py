@@ -9,10 +9,6 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.environments.public import (
-    lock_referenceable_version,
-    validate_runtime_manifest,
-)
 from flowweave.modules.flows.domain.rules import validate_flow
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -94,7 +90,6 @@ def flow_dict(db: Session, item: FlowDefinition) -> dict[str, Any]:
         "id": item.id,
         "name": item.name,
         "description": item.description,
-        "environment_version_id": item.environment_version_id,
         "default_entry_key": item.default_entry_key,
         "lark_root_folder_url": item.lark_root_folder_url,
         "row_version": item.row_version,
@@ -152,15 +147,6 @@ def validate_saved_flow(db: Session, flow_id: str) -> dict[str, Any]:
 
 
 def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> dict[str, Any]:
-    environment = lock_referenceable_version(db, payload.environment_version_id)
-    if environment is None:
-        raise DomainError(
-            "FLOW_ENVIRONMENT_VERSION_INVALID",
-            "The Flow must bind an immutable READY Environment Version",
-            422,
-            {"environment_version_id": payload.environment_version_id},
-        )
-    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     ports = _ports(db, {x.node_asset_id for x in payload.nodes}, lock_assets=True)
     validate_flow(payload.model_dump(), ports)
     duplicate_query = select(FlowDefinition).where(FlowDefinition.name == payload.name)
@@ -192,7 +178,6 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
         item = FlowDefinition(
             name=payload.name,
             description=payload.description,
-            environment_version_id=environment.id,
             default_entry_key=payload.default_entry_key,
             lark_root_folder_url=payload.lark_root_folder_url,
         )
@@ -200,7 +185,6 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
         db.flush()
     item.name = payload.name
     item.description = payload.description
-    item.environment_version_id = environment.id
     item.default_entry_key = payload.default_entry_key
     item.lark_root_folder_url = payload.lark_root_folder_url
     by_key: dict[str, FlowNode] = {}

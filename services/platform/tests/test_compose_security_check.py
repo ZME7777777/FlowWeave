@@ -49,6 +49,10 @@ def _document() -> dict[str, Any]:
             },
             "api": {
                 "user": "10001:10001",
+                "labels": {
+                    "flowweave.runtime-client": "true",
+                    "flowweave.runtime-client-role": "api",
+                },
                 "ports": [{"host_ip": "127.0.0.1", "published": "8080", "target": 8080}],
                 "networks": {"default": None, "docker-control": None},
                 "environment": {
@@ -91,11 +95,8 @@ def _attach_untrusted_service(document: dict[str, Any]) -> None:
     document["services"]["runtime"] = {"networks": {"docker-control": None}}
 
 
-def _copy_runtime_client_identity(document: dict[str, Any]) -> None:
-    document["services"]["api"]["labels"] = {
-        "flowweave.runtime-client": "true",
-        "flowweave.runtime-client-role": "worker",
-    }
+def _drift_api_runtime_client_identity(document: dict[str, Any]) -> None:
+    document["services"]["api"]["labels"]["flowweave.runtime-client-role"] = "worker"
 
 
 def _make_controller_privileged(document: dict[str, Any]) -> None:
@@ -145,7 +146,7 @@ def _publish_api_on_all_interfaces(document: dict[str, Any]) -> None:
     (
         (_leak_socket, "only runtime-provider may mount Docker Socket"),
         (_attach_untrusted_service, "only runtime-provider, api, and worker"),
-        (_copy_runtime_client_identity, "only worker may carry Runtime client labels"),
+        (_drift_api_runtime_client_identity, "api Runtime client role label is missing"),
         (_make_controller_privileged, "must not run privileged"),
         (_run_worker_as_root, "worker must run explicitly as uid/gid 10001"),
         (_use_local_worker_control, "worker must use remote Docker control mode"),

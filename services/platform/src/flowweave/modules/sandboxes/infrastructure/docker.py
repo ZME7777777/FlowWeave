@@ -611,21 +611,24 @@ chmod 0700 "$target"
         return data
 
     def _trusted_runtime_clients(self) -> list[str]:
-        identifiers = self._run(
-            [
-                self.settings.docker_binary,
-                "ps",
-                "--quiet",
-                "--filter",
-                "label=flowweave.runtime-client=true",
-                "--filter",
-                "label=flowweave.runtime-client-role=worker",
-                "--filter",
-                f"label=flowweave.manager-scope={self.settings.sandbox_manager_scope}",
-            ],
-            timeout=30,
-        ).splitlines()
-        clients = [item.strip() for item in identifiers if item.strip()]
+        clients: list[str] = []
+        for role in ("api", "worker"):
+            identifiers = self._run(
+                [
+                    self.settings.docker_binary,
+                    "ps",
+                    "--quiet",
+                    "--filter",
+                    "label=flowweave.runtime-client=true",
+                    "--filter",
+                    f"label=flowweave.runtime-client-role={role}",
+                    "--filter",
+                    f"label=flowweave.manager-scope={self.settings.sandbox_manager_scope}",
+                ],
+                timeout=30,
+            ).splitlines()
+            clients.extend(item.strip() for item in identifiers if item.strip())
+        clients = list(dict.fromkeys(clients))
         if not clients:
             raise DomainError(
                 "SANDBOX_RUNTIME_CLIENT_UNAVAILABLE",
@@ -1036,7 +1039,10 @@ chmod 0700 "$target"
             "state/conversations": 0o700,
             "state/bash-events": 0o700,
             "state/persistence": 0o700,
-            "capabilities": 0o555,
+            # The control-plane root stays owner-writable so immutable digest
+            # bundles can be published after a FlowRun Runtime starts. Runtime
+            # access is read-only at the bind-mount boundary.
+            "capabilities": 0o700,
         }
         try:
             root_metadata = validation_allocation_root.lstat()

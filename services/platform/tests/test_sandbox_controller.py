@@ -219,6 +219,31 @@ def test_controller_enforces_principal_operation_boundaries(settings, monkeypatc
     assert touched == []
 
 
+@pytest.mark.parametrize("headers", (_api_headers(), _headers()))
+def test_controller_allows_owned_runtime_delete_for_api_and_worker(settings, monkeypatch, headers):
+    deleted: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "delete_expected",
+        lambda self, resource_name, resource_id: deleted.append((resource_name, resource_id)),
+    )
+    resource_name = "fw-sbx-run-12345678-1234567890abcdef1234567890abcdef"
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/sandboxes/delete",
+            headers=headers,
+            json={
+                "manager_scope": _SCOPE,
+                "resource_name": resource_name,
+                "resource_id": _RESOURCE_ID,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert deleted == [(resource_name, _RESOURCE_ID)]
+
+
 def test_only_worker_can_remove_environment_credentials(settings, monkeypatch):
     removed: list[str] = []
     monkeypatch.setattr(
@@ -286,7 +311,6 @@ def test_controller_resolves_platform_setup_image_tag(settings, monkeypatch):
     ("path", "allowed_role"),
     (
         ("/v1/sandboxes/inspect", "worker"),
-        ("/v1/sandboxes/delete", "worker"),
         ("/v1/sandboxes/list", "worker"),
         ("/v1/environments/remove-image", "worker"),
         ("/v1/environments/resolve-base-image", "api"),

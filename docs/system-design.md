@@ -489,7 +489,7 @@ flowchart LR
 ```
 
 - Docker Socket 等价于宿主管理权限，仅 Controller 持有。Controller 不持有数据库 DSN、模型 API Key、OAuth Token 或业务 Artifact。
-- API key A 与 Worker key B 必须不同且至少 32 字符。路由按主体 fail-closed 授权：API 只做 Setup/终端/发布，Worker 只做 Runtime/Gate/构建/回收。
+- API key A 与 Worker key B 必须不同且至少 32 字符。路由按主体 fail-closed 授权：API 负责 Setup/终端/发布及用户授权的 FlowRun Runtime 永久删除，Worker 负责 Runtime 创建/替换、Gate、构建和回收。
 - Controller 只在 internal 网络，不发布宿主端口；请求体有上限，scope 必须匹配。
 - API/Worker/Controller 使用非 root 用户；Controller 自身只读根、删除 capabilities、启用 no-new-privileges 和 PID 限制。
 - Gate/Builder/Runtime 视为不可信执行环境，使用镜像白名单、资源上限、只读根/临时盘、数值 UID/GID 和网络隔离。

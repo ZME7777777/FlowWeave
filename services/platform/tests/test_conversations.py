@@ -44,7 +44,6 @@ def _runtime_context(db: Session) -> tuple[str, str]:
         description="",
         default_entry_key=None,
         lark_root_folder_url="",
-        environment_version_id=version.id,
     )
     db.add_all((version, flow))
     db.flush()

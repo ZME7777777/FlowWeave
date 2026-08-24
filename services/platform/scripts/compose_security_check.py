@@ -65,6 +65,7 @@ def check_document(document: dict[str, Any]) -> None:
     controller = mapping(services["runtime-provider"], "runtime-provider")
     api = mapping(services["api"], "api")
     worker = mapping(services["worker"], "worker")
+    api_labels = mapping(api.get("labels", {}), "api labels")
     worker_labels = mapping(worker.get("labels", {}), "worker labels")
 
     for name, raw_service in services.items():
@@ -110,17 +111,21 @@ def check_document(document: dict[str, Any]) -> None:
     for name, client in (("api", api), ("worker", worker)):
         if str(client.get("user")) != "10001:10001":
             fail(f"{name} must run explicitly as uid/gid 10001")
+    if api_labels.get("flowweave.runtime-client") != "true":
+        fail("api must be explicitly marked as a Runtime network client")
+    if api_labels.get("flowweave.runtime-client-role") != "api":
+        fail("api Runtime client role label is missing")
     if worker_labels.get("flowweave.runtime-client") != "true":
         fail("worker must be explicitly marked as a Runtime network client")
     if worker_labels.get("flowweave.runtime-client-role") != "worker":
         fail("worker Runtime client role label is missing")
     for name, raw_service in services.items():
-        if str(name) == "worker":
+        if str(name) in {"api", "worker"}:
             continue
         service = mapping(raw_service, str(name))
         labels = mapping(service.get("labels", {}), f"{name} labels")
         if "flowweave.runtime-client" in labels or "flowweave.runtime-client-role" in labels:
-            fail("only worker may carry Runtime client labels")
+            fail("only api and worker may carry Runtime client labels")
 
     if str(controller.get("user")) != "10001:10001":
         fail("runtime-provider must run explicitly as uid/gid 10001")

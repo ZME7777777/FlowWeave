@@ -905,10 +905,17 @@
             "type": "array"
           },
           "environment_version_id": {
-            "maxLength": 36,
-            "minLength": 1,
-            "title": "Environment Version Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Version Id"
           },
           "lark_root_folder_url": {
             "minLength": 1,
@@ -950,7 +957,6 @@
         },
         "required": [
           "name",
-          "environment_version_id",
           "lark_root_folder_url",
           "nodes"
         ],
@@ -2080,6 +2086,12 @@
             "title": "Artifacts",
             "type": "array"
           },
+          "environment_version_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Environment Version Id",
+            "type": "string"
+          },
           "flow_node_key": {
             "anyOf": [
               {
@@ -2110,6 +2122,9 @@
             "title": "Name"
           }
         },
+        "required": [
+          "environment_version_id"
+        ],
         "title": "RunStart",
         "type": "object"
       },

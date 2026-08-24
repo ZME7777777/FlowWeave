@@ -279,6 +279,9 @@ export function WorkbenchPage() {
       qc.setQueryData<FlowRun>(['flow-run', selectedRunId], current => current ? { ...current, node_runs: current.node_runs.map(item => item.id === nodeRun.id ? { ...item, attempts: [...item.attempts.map(existing => existing.id === attempt?.id ? { ...existing, state: 'REJECTED' as const } : existing), nextAttempt] } : item) } : current);
       selectExecution(nodeRun.id, nextAttempt.id);
     }
+    if ((kind === 'complete' || kind === 'cancel') && result && typeof result === 'object' && 'node_runs' in result) {
+      qc.setQueryData(['flow-run', selectedRunId], result as FlowRun);
+    }
     if (kind === 'sync' && result && typeof result === 'object' && 'node_runs' in result) {
       qc.setQueryData(['flow-run', selectedRunId], result as FlowRun);
     }

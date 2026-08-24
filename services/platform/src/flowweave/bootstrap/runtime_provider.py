@@ -566,7 +566,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/sandboxes/ensure": frozenset({"api", "worker"}),
                 "/v1/sandboxes/inspect": frozenset({"worker"}),
                 "/v1/sandboxes/drain": frozenset({"worker"}),
-                "/v1/sandboxes/delete": frozenset({"worker"}),
+                # API performs the user-authorized, synchronous physical cleanup
+                # required before a FlowRun row can be permanently deleted.
+                # The handler still verifies resource id, scope, and labels.
+                "/v1/sandboxes/delete": frozenset({"api", "worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
                 "/v1/environments/resolve-base-image": frozenset({"api"}),

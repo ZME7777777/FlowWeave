@@ -746,18 +746,33 @@ def test_runtime_network_mode_rejects_unknown_value(settings):
         ).validate_production_secrets()
 
 
-def test_runtime_clients_require_worker_role_and_current_scope(settings, monkeypatch):
+def test_runtime_clients_require_api_or_worker_role_and_current_scope(settings, monkeypatch):
     provider = DockerSandboxProvider(_docker_settings(settings))
     commands: list[list[str]] = []
 
     def fake_run(command: list[str], **_kwargs):
         commands.append(command)
-        return "worker-container-id\n"
+        return (
+            "api-container-id\n"
+            if "label=flowweave.runtime-client-role=api" in command
+            else "worker-container-id\n"
+        )
 
     monkeypatch.setattr(provider, "_run", fake_run)
 
-    assert provider._trusted_runtime_clients() == ["worker-container-id"]
+    assert provider._trusted_runtime_clients() == ["api-container-id", "worker-container-id"]
     assert commands == [
+        [
+            "docker",
+            "ps",
+            "--quiet",
+            "--filter",
+            "label=flowweave.runtime-client=true",
+            "--filter",
+            "label=flowweave.runtime-client-role=api",
+            "--filter",
+            "label=flowweave.manager-scope=test-scope",
+        ],
         [
             "docker",
             "ps",
@@ -768,7 +783,7 @@ def test_runtime_clients_require_worker_role_and_current_scope(settings, monkeyp
             "label=flowweave.runtime-client-role=worker",
             "--filter",
             "label=flowweave.manager-scope=test-scope",
-        ]
+        ],
     ]
 
 

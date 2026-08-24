@@ -19,7 +19,6 @@ from flowweave.shared.models import (
     CapabilityValidation,
     EnvironmentSetupSession,
     EnvironmentVersion,
-    FlowDefinition,
     FlowRun,
     MCPOAuthSecretReference,
     RunSnapshot,
@@ -526,7 +525,6 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
     )
     version_ids = [version.id for version in versions]
     run_references: dict[str, int] = {}
-    flow_references: dict[str, int] = {}
     snapshot_references: dict[str, int] = {}
     if version_ids:
         run_references = {
@@ -535,15 +533,6 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
                 select(FlowRun.environment_version_id, func.count(FlowRun.id))
                 .where(FlowRun.environment_version_id.in_(version_ids))
                 .group_by(FlowRun.environment_version_id)
-            )
-            if version_id is not None
-        }
-        flow_references = {
-            version_id: int(count)
-            for version_id, count in db.execute(
-                select(FlowDefinition.environment_version_id, func.count(FlowDefinition.id))
-                .where(FlowDefinition.environment_version_id.in_(version_ids))
-                .group_by(FlowDefinition.environment_version_id)
             )
             if version_id is not None
         }
@@ -565,7 +554,7 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
             _version_dict(
                 version,
                 run_reference_count=run_references.get(version.id, 0),
-                flow_reference_count=flow_references.get(version.id, 0),
+                flow_reference_count=0,
                 snapshot_reference_count=snapshot_references.get(version.id, 0),
             )
             for version in versions
@@ -1065,14 +1054,7 @@ def delete_environment_version(db: Session, environment_id: str, version_id: str
         )
         or 0
     )
-    flow_reference_count = int(
-        db.scalar(
-            select(func.count(FlowDefinition.id)).where(
-                FlowDefinition.environment_version_id == version.id
-            )
-        )
-        or 0
-    )
+    flow_reference_count = 0
     snapshot_reference_count = int(
         db.scalar(
             select(func.count(RunSnapshot.id)).where(
@@ -1197,16 +1179,13 @@ def delete_environment(db: Session, environment_id: str) -> None:
     run_reference = db.scalar(
         select(FlowRun.id).where(FlowRun.environment_version_id.in_(version_ids))
     )
-    flow_reference = db.scalar(
-        select(FlowDefinition.id).where(FlowDefinition.environment_version_id.in_(version_ids))
-    )
     snapshot_reference = db.scalar(
         select(RunSnapshot.id).where(RunSnapshot.environment_version_id.in_(version_ids))
     )
-    if run_reference or flow_reference or snapshot_reference:
+    if run_reference or snapshot_reference:
         raise DomainError(
             "ENVIRONMENT_IN_USE",
-            "The terminal environment is referenced by a Flow, Snapshot, or FlowRun",
+            "The terminal environment is referenced by a Snapshot or FlowRun",
             409,
         )
     active_sessions = list(

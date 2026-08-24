@@ -83,11 +83,9 @@ async function createFlow(request: APIRequestContext, assetId: string, name: str
     { stage: 'START', position: 0, gate_type: 'JAVASCRIPT', enabled: true, timeout_seconds: 30, config: { code: "return {decision: 'PASS', summary: '开始门禁通过', reasons: [], evidence: [], details: {}};" } },
     { stage: 'END', position: 0, gate_type: 'PYTHON', enabled: true, timeout_seconds: 30, config: { code: "result = {'decision': 'PASS', 'summary': '结束门禁通过', 'reasons': [], 'evidence': [], 'details': {}}" } },
   ];
-  const environmentVersionId = await readyEnvironmentVersionId(request);
   return post(request, '/flows', {
     name,
     description: '同一资产重复放置并显式映射产物',
-    environment_version_id: environmentVersionId,
     lark_root_folder_url: 'https://example.feishu.cn/drive/folder/e2e-flow-root',
     default_entry_key: 'design_a',
     nodes: [
@@ -188,7 +186,6 @@ test('terminal environment creation keeps the setup image internal', async ({ pa
 });
 
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
-  const environmentVersionId = await readyEnvironmentVersionId(page.request);
   await login(page);
 
   const providerName = `UI模型服务-${suffix}`;
@@ -322,7 +319,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await expect(canvas.locator('.react-flow__node')).toHaveCount(2);
   await page.getByLabel('流程名称').fill(`UI流程-${suffix}`);
   await page.getByLabel('飞书 Wiki 根节点').fill('https://example.feishu.cn/wiki/e2e-ui-root');
-  await page.getByLabel('运行环境版本').selectOption(environmentVersionId);
+  await expect(page.getByLabel('运行环境版本')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '保存流程' })).toBeEnabled();
   const flowSaved = page.waitForResponse(response => response.url().endsWith('/api/v1/flows') && response.request().method() === 'POST');
   await page.getByRole('button', { name: '保存流程' }).click();
@@ -341,9 +338,15 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await runGroup.getByRole('button', { name: '启动', exact: true }).click();
   const dialog = page.locator('form.start-run-modal');
   await dialog.getByLabel('运行名称').fill(`运行验收-${suffix}`);
+  await dialog.getByLabel('本次运行环境版本').selectOption(await readyEnvironmentVersionId(request));
   const createdRunResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/flows/${flow.id}/runs`) && response.request().method() === 'POST');
-  await dialog.getByRole('button', { name: '创建运行', exact: true }).click();
+  await dialog.getByRole('button', { name: '启动并进入会话', exact: true }).click();
   const createdRun = await (await createdRunResponse).json();
+  await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toBeVisible();
+  await expect(page.locator('.conversation-list button')).toHaveCount(1);
+  await page.getByRole('button', { name: '新建会话' }).click();
+  await expect(page.locator('.conversation-list button')).toHaveCount(2);
+  await page.getByRole('button', { name: '返回运行详情' }).click();
   await expect(page.getByText('点击任意节点，在右侧配置输入并开始一次独立执行', { exact: true })).toBeVisible();
   await expect(page.locator('.action-panel')).toHaveCount(0);
   const graphNodes = page.locator('.run-graph .react-flow__node');
@@ -389,7 +392,6 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
     data: {
       name: flow.name,
       description: '运行中发布的新流程配置',
-      environment_version_id: flow.environment_version_id,
       lark_root_folder_url: flow.lark_root_folder_url,
       default_entry_key: flow.default_entry_key,
       row_version: flow.row_version,
@@ -471,7 +473,10 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
 test('cancelled run becomes read-only and can be permanently deleted', async ({ page, request }) => {
   const asset = await createAsset(request, `终态资产-${suffix}`);
   const flow = await createFlow(request, asset.id, `终态流程-${suffix}`);
-  const started = await post(request, `/flows/${flow.id}/runs`, { name: `终态运行-${suffix}` });
+  const started = await post(request, `/flows/${flow.id}/runs`, {
+    name: `终态运行-${suffix}`,
+    environment_version_id: await readyEnvironmentVersionId(request),
+  });
   await post(request, `/flow-runs/${started.id}/nodes/design_a/runs`, { artifact_ids: {} });
   await post(request, `/flow-runs/${started.id}/nodes/design_b/runs`, { artifact_ids: {} });
 
@@ -541,9 +546,9 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   const bulkFlowA = await createFlow(request, flowAsset.id, `${marker}-流程-批量-A`);
   const bulkFlowB = await createFlow(request, flowAsset.id, `${marker}-流程-批量-B`);
   const runs = await Promise.all([
-    post(request, `/flows/${singleFlow.id}/runs`, { name: `${marker}-运行-单删` }),
-    post(request, `/flows/${bulkFlowA.id}/runs`, { name: `${marker}-运行-批量-A` }),
-    post(request, `/flows/${bulkFlowB.id}/runs`, { name: `${marker}-运行-批量-B` }),
+    post(request, `/flows/${singleFlow.id}/runs`, { name: `${marker}-运行-单删`, environment_version_id: await readyEnvironmentVersionId(request) }),
+    post(request, `/flows/${bulkFlowA.id}/runs`, { name: `${marker}-运行-批量-A`, environment_version_id: await readyEnvironmentVersionId(request) }),
+    post(request, `/flows/${bulkFlowB.id}/runs`, { name: `${marker}-运行-批量-B`, environment_version_id: await readyEnvironmentVersionId(request) }),
   ]);
 
   await login(page);

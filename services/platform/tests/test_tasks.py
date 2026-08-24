@@ -414,6 +414,7 @@ def test_worker_executes_readiness_gates_and_runtime_tasks(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -498,6 +499,7 @@ def _prepare_starting_attempt(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -860,6 +862,7 @@ def test_start_runtime_consumes_frozen_runtime_agent_spec_tool_policy(
     started = worker_client.post(
         f"/api/v1/flows/{flow.json()['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -1092,7 +1095,10 @@ def test_node_accepts_enabled_memory_with_governed_source(
         },
     )
     assert flow.status_code == 201, flow.text
-    started = worker_client.post(f"/api/v1/flows/{flow.json()['id']}/runs", json={})
+    started = worker_client.post(
+        f"/api/v1/flows/{flow.json()['id']}/runs",
+        json={"environment_version_id": worker_client.environment_version_id},
+    )
     assert started.status_code == 201, started.text
 
     from flowweave.shared.models import MemorySourceVersionReference
@@ -1441,6 +1447,7 @@ def test_cancelled_run_stops_started_runtime_through_worker(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -1506,6 +1513,7 @@ def test_cancel_attempt_stops_only_current_node_runtime(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -1585,6 +1593,7 @@ def test_worker_rolls_back_business_result_when_task_success_is_fenced(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -1663,6 +1672,7 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -1821,6 +1831,7 @@ def test_worker_runtime_io_runs_without_database_transaction(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {
@@ -1948,6 +1959,7 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
     started = worker_client.post(
         f"/api/v1/flows/{flow['id']}/runs",
         json={
+            "environment_version_id": worker_client.environment_version_id,
             "flow_node_key": "design",
             "artifacts": [
                 {

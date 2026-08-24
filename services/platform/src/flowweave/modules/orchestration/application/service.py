@@ -1417,20 +1417,13 @@ def start_flow(
     payload: RunStart,
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
-    if not flow.environment_version_id:
-        raise DomainError(
-            "FLOW_ENVIRONMENT_REQUIRED",
-            "This historical Flow has no Environment Version; bind a READY version before running",
-            409,
-            {"flow_id": flow.id},
-        )
-    environment = lock_referenceable_version(db, flow.environment_version_id)
+    environment = lock_referenceable_version(db, payload.environment_version_id)
     if environment is None:
         raise DomainError(
-            "FLOW_ENVIRONMENT_VERSION_INVALID",
-            "The Flow Environment Version is not READY",
-            409,
-            {"environment_version_id": flow.environment_version_id},
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The selected FlowRun Environment Version is not READY",
+            422,
+            {"environment_version_id": payload.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
@@ -1473,6 +1466,15 @@ def start_flow(
         runtime_image_digest=environment.image_digest,
         workspace_allocation=runtime_allocation,
     )
+    if get_settings().runtime_adapter != "mock":
+        task = enqueue(
+            db,
+            task_type="PROVISION_FLOW_RUN_RUNTIME",
+            aggregate_type="FLOW_RUN",
+            aggregate_id=run.id,
+            idempotency_key=f"provision-flow-run-runtime:{run.id}",
+        )
+        task.max_attempts = max(task.max_attempts, 20)
     hold_snapshot_memory_references(
         db,
         snapshot_id=snapshot.id,
@@ -1503,6 +1505,50 @@ def start_flow(
         )
     finish(db)
     return run_detail(db, run.id)
+
+
+def process_provision_flow_run_runtime(
+    db: Session,
+    run_id: str,
+    lease: Lease,
+    *,
+    commit: bool = True,
+) -> None:
+    """Provision a FlowRun Agent Server through the Worker controller principal."""
+
+    run = _run(db, run_id)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        _finish_transaction(db, commit)
+        return
+    if not run.environment_version_id:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED",
+            "The FlowRun must freeze an Environment Version before Runtime provisioning",
+            409,
+            {"flow_run_id": run.id},
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The frozen FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost before Runtime provisioning")
+    sandboxes.ensure_flow_run_runtime(
+        db,
+        flow_run_id=run.id,
+        image=environment.image_digest,
+        environment_id=environment.environment_id,
+        environment_version_id=environment.id,
+        environment_version_no=environment.version_no,
+    )
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost during Runtime provisioning")
+    _finish_transaction(db, commit)
 
 
 def start_node_run(

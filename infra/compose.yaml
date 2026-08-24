@@ -138,6 +138,10 @@ services:
     environment:
       <<: [*platform-env, *docker-client-env]
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
+    labels:
+      flowweave.runtime-client: "true"
+      flowweave.runtime-client-role: "api"
+      flowweave.manager-scope: "${SANDBOX_MANAGER_SCOPE:-flowweave-local}"
     ports: ["${FLOWWEAVE_BIND_ADDRESS:-127.0.0.1}:8080:8080"]
     volumes:
       - artifacts:/data/artifacts

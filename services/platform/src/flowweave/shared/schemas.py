@@ -352,7 +352,9 @@ def _empty_port_mappings() -> list[PortMappingWrite]:
 class FlowWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
-    environment_version_id: str = Field(min_length=1, max_length=36)
+    # Accepted only so pre-FR-15 clients can save a template while rolling out.
+    # Flow Definitions never persist or use this legacy Runtime selection.
+    environment_version_id: str | None = Field(default=None, min_length=1, max_length=36)
     default_entry_key: str | None = None
     lark_root_folder_url: str = Field(min_length=1)
     row_version: int | None = None
@@ -394,6 +396,7 @@ def _empty_artifacts() -> list[ArtifactWrite]:
 
 class RunStart(ApiModel):
     name: str | None = None
+    environment_version_id: str = Field(min_length=1, max_length=36)
     # Backward-compatible command shape. New clients omit these fields and
     # create an empty run before activating a node explicitly.
     flow_node_key: str | None = None

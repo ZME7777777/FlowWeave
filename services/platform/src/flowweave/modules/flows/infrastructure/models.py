@@ -27,11 +27,6 @@ class FlowDefinition(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     default_entry_key: Mapped[str | None] = mapped_column(String(100))
     lark_root_folder_url: Mapped[str] = mapped_column(Text)
-    # Nullable only for historical rows. Every new/updated Flow is required by
-    # the application boundary to bind a READY immutable Environment Version.
-    environment_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("environment_versions.id", ondelete="RESTRICT"), index=True
-    )
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

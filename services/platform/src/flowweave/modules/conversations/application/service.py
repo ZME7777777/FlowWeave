@@ -31,7 +31,7 @@ from flowweave.runtime.request import (
     frozen_memory_policy,
     resolve_runtime_selection,
 )
-from flowweave.runtime.workspace import materialize_runtime_memory
+from flowweave.runtime.workspace import attempt_workspace_path, materialize_runtime_memory
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -192,36 +192,28 @@ def _request_bindings(
     return result
 
 
-def create_conversation(
+def _create_native_conversation(
     db: Session,
-    attempt_id: str,
-    payload: ConversationCreateWrite,
+    *,
+    run: FlowRun,
+    snapshot: RunSnapshot,
+    node: dict[str, Any],
+    workspace_ref: str,
+    bindings: list[dict[str, Any]],
+    title: str | None,
+    model_name: str | None,
+    reasoning_effort: str | None,
     idempotency_key: str,
+    binding_id: str,
+    node_run_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create one OpenHands-native Conversation in the FlowRun Runtime.
-
-    No platform Conversation row is created before or after the Runtime call.
-    The only durable content-plane fact is the returned OpenHands identity.
-    """
-
-    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
-    if existing is not None:
-        binding_id = str((existing.payload_json or {}).get("binding_id") or "")
-        if binding_id:
-            return get_conversation(db, binding_id)
-        raise conflict("conversation creation outcome is unavailable")
-
-    attempt = _attempt(db, attempt_id)
-    node_run, run, snapshot = _attempt_context(db, attempt)
-    locked_run = db.scalar(select(FlowRun).where(FlowRun.id == run.id).with_for_update())
-    if locked_run is None:
-        raise not_found("flow_run", run.id)
-    run = locked_run
-    if attempt.state_version != payload.expected_attempt_state_version:
-        raise conflict(
-            "attempt was modified",
-            expected=payload.expected_attempt_state_version,
-            actual=attempt.state_version,
+    if run.state in {"COMPLETED", "CANCELLED"}:
+        raise DomainError(
+            "FLOW_RUN_TERMINAL",
+            "A completed or cancelled FlowRun cannot create Conversations",
+            409,
+            {"flow_run_id": run.id, "state": run.state},
         )
     count = db.scalar(
         select(func.count(FlowRunConversationBinding.id)).where(
@@ -249,18 +241,8 @@ def create_conversation(
             {"environment_version_id": run.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-    node = runtime_node(
-        definition=snapshot.definition_json,
-        manifest=snapshot.runtime_manifest_json or {},
-        expected_hash=snapshot.runtime_manifest_hash,
-        snapshot_id=snapshot.id,
-        instance_key=node_run.flow_node_snapshot_key,
-    )
-    model_name, reasoning_effort = resolve_runtime_selection(
-        db, node, payload.model_name, payload.reasoning_effort
-    )
+    model_name, reasoning_effort = resolve_runtime_selection(db, node, model_name, reasoning_effort)
     memory_enabled, source_refs = frozen_memory_policy(node, runtime_scope="CONVERSATION")
-    request_owner_id = str(uuid4())
     if memory_enabled:
         materials = resolve_snapshot_memory(
             db,
@@ -275,18 +257,18 @@ def create_conversation(
             materialize_runtime_memory(
                 flow_run_id=run.id,
                 manifest_digest=snapshot.runtime_manifest_hash,
-                workspace_ref=attempt.workspace_ref or "",
+                workspace_ref=workspace_ref,
                 materials=materials,
             )
     request = build_runtime_request(
         db,
         flow_run_id=run.id,
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
-        attempt_id=request_owner_id,
+        attempt_id=binding_id,
         execution_key=f"flow-run:{run.id}:conversation:create",
         node=node,
-        bindings=_request_bindings(db, attempt, node),
-        workspace_ref=attempt.workspace_ref or "",
+        bindings=bindings,
+        workspace_ref=workspace_ref,
         interaction_mode="COLLABORATION",
         model_name=model_name,
         reasoning_effort=reasoning_effort,
@@ -296,33 +278,26 @@ def create_conversation(
         environment_version_no=environment.version_no,
         memory_materialized=memory_enabled,
     )
-    allocation = sandboxes.ensure_flow_run_runtime(
-        db,
-        flow_run_id=run.id,
-        image=request.environment_image,
-        environment_id=request.environment_id,
-        environment_version_id=request.environment_version_id,
-        environment_version_no=request.environment_version_no,
-    )
+    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
     request = replace(
         request,
-        runtime_sandbox_id=allocation.id,
-        runtime_resource_name=allocation.resource_name,
-        runtime_base_url=allocation.base_url,
+        runtime_sandbox_id=connection.managed_runtime_id,
+        runtime_resource_name=connection.resource_name,
+        runtime_base_url=f"http://{connection.resource_name}:8000",
     )
     handle = get_runtime().create_conversation(request)
     item = bind_openhands_conversation(
         db,
         flow_run_id=run.id,
         openhands_conversation_id=handle.conversation_id,
-        display_label=payload.title,
-        binding_id=request_owner_id,
+        display_label=title,
+        binding_id=binding_id,
     )
     db.add(
         HumanAction(
             flow_run_id=run.id,
-            node_run_id=node_run.id,
-            attempt_id=attempt.id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
             action_type="CREATE_FLOW_RUN_CONVERSATION",
             idempotency_key=idempotency_key,
             payload_json={"binding_id": item.id},
@@ -330,6 +305,62 @@ def create_conversation(
     )
     finish(db)
     return _binding_dict(item)
+
+
+def create_conversation(
+    db: Session,
+    attempt_id: str,
+    payload: ConversationCreateWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Create one OpenHands-native Conversation in the FlowRun Runtime.
+
+    No platform Conversation row is created before or after the Runtime call.
+    The only durable content-plane fact is the returned OpenHands identity.
+    """
+
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        binding_id = str((existing.payload_json or {}).get("binding_id") or "")
+        if binding_id:
+            return get_conversation(db, binding_id)
+        raise conflict("conversation creation outcome is unavailable")
+
+    attempt = _attempt(db, attempt_id)
+    node_run, run, snapshot = _attempt_context(db, attempt)
+    current_run = db.get(FlowRun, run.id)
+    if current_run is None:
+        raise not_found("flow_run", run.id)
+    run = current_run
+    if attempt.state_version != payload.expected_attempt_state_version:
+        raise conflict(
+            "attempt was modified",
+            expected=payload.expected_attempt_state_version,
+            actual=attempt.state_version,
+        )
+    node = runtime_node(
+        definition=snapshot.definition_json,
+        manifest=snapshot.runtime_manifest_json or {},
+        expected_hash=snapshot.runtime_manifest_hash,
+        snapshot_id=snapshot.id,
+        instance_key=node_run.flow_node_snapshot_key,
+    )
+    request_owner_id = str(uuid4())
+    return _create_native_conversation(
+        db,
+        run=run,
+        snapshot=snapshot,
+        node=node,
+        workspace_ref=attempt.workspace_ref or "",
+        bindings=_request_bindings(db, attempt, node),
+        title=payload.title,
+        model_name=payload.model_name,
+        reasoning_effort=payload.reasoning_effort,
+        idempotency_key=idempotency_key,
+        binding_id=request_owner_id,
+        node_run_id=node_run.id,
+        attempt_id=attempt.id,
+    )
 
 
 def create_flow_run_conversation(
@@ -344,7 +375,14 @@ def create_flow_run_conversation(
     internal execution context used to compile the frozen OpenHands request.
     """
 
-    if db.get(FlowRun, flow_run_id) is None:
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        binding_id = str((existing.payload_json or {}).get("binding_id") or "")
+        if binding_id:
+            return get_conversation(db, binding_id)
+        raise conflict("conversation creation outcome is unavailable")
+    run = db.get(FlowRun, flow_run_id)
+    if run is None:
         raise not_found("flow_run", flow_run_id)
     if sandboxes.runtime_overview(db, flow_run_id)["rerun_required"]:
         raise DomainError(
@@ -360,23 +398,63 @@ def create_flow_run_conversation(
         .order_by(NodeRun.sequence_no.desc(), NodeAttempt.attempt_no.desc())
         .limit(1)
     )
-    if attempt is None:
+    if attempt is not None:
+        return create_conversation(
+            db,
+            attempt.id,
+            ConversationCreateWrite(
+                title=payload.title,
+                expected_attempt_state_version=attempt.state_version,
+                model_name=payload.model_name,
+                reasoning_effort=payload.reasoning_effort,
+            ),
+            idempotency_key,
+        )
+    snapshot = db.get(RunSnapshot, run.active_snapshot_id) if run.active_snapshot_id else None
+    if snapshot is None:
+        raise DomainError("SNAPSHOT_INVALID", "FlowRun Snapshot is unavailable", 409)
+    nodes = cast(list[dict[str, Any]], snapshot.definition_json.get("nodes") or [])
+    default_key = str(snapshot.definition_json.get("default_entry_key") or "")
+    selected = next(
+        (item for item in nodes if str(item.get("instance_key") or "") == default_key),
+        nodes[0] if nodes else None,
+    )
+    if selected is None:
         raise DomainError(
             "FLOW_RUN_CONVERSATION_CONTEXT_REQUIRED",
-            "The FlowRun must have an execution context before creating a Conversation",
+            "The FlowRun Snapshot has no node context for a Conversation",
             409,
             {"flow_run_id": flow_run_id},
         )
-    return create_conversation(
+    node = runtime_node(
+        definition=snapshot.definition_json,
+        manifest=snapshot.runtime_manifest_json or {},
+        expected_hash=snapshot.runtime_manifest_hash,
+        snapshot_id=snapshot.id,
+        instance_key=str(selected["instance_key"]),
+    )
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    binding_id = str(uuid4())
+    workspace_ref = str(
+        attempt_workspace_path(
+            asset_id=str(asset.get("id") or ""),
+            run_id=run.id,
+            node_run_id=f"conversation-{binding_id}",
+            attempt_no=1,
+        )
+    )
+    return _create_native_conversation(
         db,
-        attempt.id,
-        ConversationCreateWrite(
-            title=payload.title,
-            expected_attempt_state_version=attempt.state_version,
-            model_name=payload.model_name,
-            reasoning_effort=payload.reasoning_effort,
-        ),
-        idempotency_key,
+        run=run,
+        snapshot=snapshot,
+        node=node,
+        workspace_ref=workspace_ref,
+        bindings=[],
+        title=payload.title,
+        model_name=payload.model_name,
+        reasoning_effort=payload.reasoning_effort,
+        idempotency_key=idempotency_key,
+        binding_id=binding_id,
     )
 
 
@@ -537,6 +615,16 @@ def send_flow_run_question(
     actor: str | None,
 ) -> dict[str, Any]:
     _binding_for_run(db, flow_run_id, binding_id)
+    run = db.get(FlowRun, flow_run_id)
+    if run is None:
+        raise not_found("flow_run", flow_run_id)
+    if run.state in {"COMPLETED", "CANCELLED"}:
+        raise DomainError(
+            "FLOW_RUN_TERMINAL",
+            "A completed or cancelled FlowRun cannot accept new questions",
+            409,
+            {"flow_run_id": flow_run_id, "state": run.state},
+        )
     return send_question(db, binding_id, payload, idempotency_key, actor)
 
 

@@ -30,7 +30,6 @@ import type {
   ModelProvider,
   NodeAsset,
   NodeDirectory,
-  TerminalEnvironment,
 } from '../types';
 
 type FlowNodeData = {
@@ -258,14 +257,12 @@ export function FlowsPage() {
   const { data: directories = [] } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
   const { data: flows = [] } = useQuery({ queryKey: ['flows'], queryFn: api.flows });
   const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: api.providers });
-  const { data: environments = [] } = useQuery({ queryKey: ['terminal-environments'], queryFn: api.terminalEnvironments });
   const [selected, setSelected] = useState<FlowDefinition>();
   const [isNew, setIsNew] = useState(false);
   const [selectedNode, setSelectedNode] = useState<string>();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [larkRootFolderUrl, setLarkRootFolderUrl] = useState('');
-  const [environmentVersionId, setEnvironmentVersionId] = useState('');
   const [entry, setEntry] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -289,7 +286,6 @@ export function FlowsPage() {
     setName(selected?.name ?? '');
     setDescription(selected?.description ?? '');
     setLarkRootFolderUrl(selected?.lark_root_folder_url ?? '');
-    setEnvironmentVersionId(selected?.environment_version_id ?? '');
     setEntry(selected?.default_entry_key ?? '');
     setSelectedNode(undefined);
     setNotice('');
@@ -299,7 +295,6 @@ export function FlowsPage() {
   const payload = (): FlowWrite => ({
     name,
     description,
-    environment_version_id: environmentVersionId,
     lark_root_folder_url: larkRootFolderUrl,
     default_entry_key: entry || null,
     row_version: selected?.row_version,
@@ -463,7 +458,6 @@ export function FlowsPage() {
     setPortMappings([]);
     setName('新流程');
     setDescription('');
-    setEnvironmentVersionId('');
     setLarkRootFolderUrl('');
     setEntry('');
     setError('');
@@ -494,9 +488,6 @@ export function FlowsPage() {
     ]);
     setDeletingFlows(false);
   };
-  const readyEnvironmentVersions = useMemo(() => environments.flatMap((environment: TerminalEnvironment) =>
-    environment.versions.filter(version => version.state === 'READY' && version.runtime_compatible && Boolean(version.image_digest)).map(version => ({ environment, version })),
-  ), [environments]);
   const filteredAssets = useMemo(() => assets.filter(asset => `${asset.name} ${asset.description}`.toLowerCase().includes(assetSearch.toLowerCase())), [assets, assetSearch]);
   const groupedAssets = useMemo(() => {
     const groups = new Map<string, NodeAsset[]>();
@@ -512,7 +503,7 @@ export function FlowsPage() {
     <div className="flow-product-layout">
       <aside className="flow-library" data-testid="flow-library"><h3>流程</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索流程" placeholder="搜索流程" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><div className="flow-list-actions"><button type="button" className="secondary" disabled={!filteredFlows.length || deletingFlows} onClick={toggleVisibleFlows}><CheckSquare size={13}/>{allVisibleFlowsSelected ? '取消全选' : '全选'}</button><button type="button" className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={13}/>{deletingFlows ? '删除中' : `删除 (${selectedFlowIds.size})`}</button><button type="button" className="flow-create-action" aria-label="新建流程" onClick={startNewFlow}><Plus size={13}/>新建</button></div><div className="flow-definition-list">{filteredFlows.map(flow => <div className={`flow-definition-row ${selected?.id === flow.id ? 'active' : ''}`} key={flow.id}><label className="resource-check"><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-select" onClick={() => { setSelected(flow); setIsNew(false); }}>{flow.name}</button><button type="button" className="flow-definition-delete" aria-label={`删除流程 ${flow.name}`} title="删除流程" onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={13}/></button></div>)}</div>{!filteredFlows.length && <div className="flow-list-empty">没有匹配流程</div>}<h3>节点资产目录</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索节点资产" placeholder="搜索当前资产库" value={assetSearch} onChange={event => setAssetSearch(event.target.value)}/></label>{groupedAssets.map(([directory, items]) => <section className="flow-asset-group" key={directory}><h4>{directory}</h4>{items.map(asset => <button draggable key={asset.id} aria-label={asset.name} title="拖入画布或点击添加" onDragStart={event => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/flowweave-node-asset', asset.id); }} onClick={() => addAsset(asset)}><span className="flow-library-icon">{asset.icon_value.slice(0, 2).toUpperCase()}</span><span><b>{asset.name}</b><small>{asset.inputs.length} 输入 · {asset.outputs.length} 输出</small></span></button>)}</section>)}</aside>
       <main className="flow-designer" data-testid="flow-designer" data-link-mode={linkMode} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropAsset}>
-        <div className="designer-toolbar"><input aria-label="流程名称" value={name} placeholder="流程名称" onChange={event => setName(event.target.value)}/><input aria-label="流程说明" value={description} placeholder="说明" onChange={event => setDescription(event.target.value)}/><select required aria-label="运行环境版本" value={environmentVersionId} onChange={event => setEnvironmentVersionId(event.target.value)}><option value="">选择运行环境</option>{readyEnvironmentVersions.map(({ environment, version }) => <option key={version.id} value={version.id}>{environment.name} · v{version.version_no}</option>)}</select><input required type="url" pattern="https://.*/wiki/[^/]+.*" aria-label="飞书 Wiki 根节点" value={larkRootFolderUrl} placeholder="飞书 Wiki 根节点 URL" title="请输入 https://.../wiki/... 格式的飞书 Wiki 节点链接" onChange={event => setLarkRootFolderUrl(event.target.value)}/><select aria-label="默认入口" value={entry} onChange={event => setEntry(event.target.value)}><option value="">无默认入口</option>{nodes.map(item => <option key={item.id} value={item.id}>{item.data.label}</option>)}</select><div className="flow-link-mode" aria-label="连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><button className="secondary" aria-label="自动布局" onClick={() => { setNodes(old => autoLayout(old, directionEdges)); window.setTimeout(() => void flowInstance?.fitView({ padding: 0.2 }), 0); }}><LayoutDashboard size={14}/>自动布局</button><button className="primary" onClick={() => save.mutate()} disabled={!name.trim() || !environmentVersionId || !larkRootFolderUrl.trim() || !nodes.length}><Save size={14}/>保存流程</button></div>
+        <div className="designer-toolbar"><input aria-label="流程名称" value={name} placeholder="流程名称" onChange={event => setName(event.target.value)}/><input aria-label="流程说明" value={description} placeholder="说明" onChange={event => setDescription(event.target.value)}/><input required type="url" pattern="https://.*/wiki/[^/]+.*" aria-label="飞书 Wiki 根节点" value={larkRootFolderUrl} placeholder="飞书 Wiki 根节点 URL" title="请输入 https://.../wiki/... 格式的飞书 Wiki 节点链接" onChange={event => setLarkRootFolderUrl(event.target.value)}/><select aria-label="默认入口" value={entry} onChange={event => setEntry(event.target.value)}><option value="">无默认入口</option>{nodes.map(item => <option key={item.id} value={item.id}>{item.data.label}</option>)}</select><div className="flow-link-mode" aria-label="连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><button className="secondary" aria-label="自动布局" onClick={() => { setNodes(old => autoLayout(old, directionEdges)); window.setTimeout(() => void flowInstance?.fitView({ padding: 0.2 }), 0); }}><LayoutDashboard size={14}/>自动布局</button><button className="primary" onClick={() => save.mutate()} disabled={!name.trim() || !larkRootFolderUrl.trim() || !nodes.length}><Save size={14}/>保存流程</button></div>
         {error && <div className="canvas-error">{error}</div>}{notice && <div className="canvas-notice" role="status">{notice}</div>}
         <ReactFlow nodeTypes={nodeTypes} nodes={nodes.map(item => ({ ...item, data: { ...item.data, linkMode, onDelete: removeNode }, className: item.id === entry ? 'start-flow-node' : '' }))} edges={displayEdges} onInit={setFlowInstance} onNodesChange={onNodesChange} onEdgesChange={changeEdges} onConnect={connect} onNodeClick={(_, node) => setSelectedNode(node.id)} fitView><Background/><Controls/></ReactFlow>
         <small className="canvas-help"><GitBranch size={12}/>{linkMode === 'flow' ? '流程走向模式：连接节点两侧主端点；端口映射显示为灰色。' : '产物流转模式：连接具体输出与输入端口；节点走向显示为灰色。'}</small>

@@ -33,6 +33,12 @@ def _start_runtime(db: Session, aggregate_id: str, _payload: dict[str, Any], lea
     orchestration.process_start_runtime(db, aggregate_id, lease, commit=False)
 
 
+def _provision_flow_run_runtime(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    orchestration.process_provision_flow_run_runtime(db, aggregate_id, lease, commit=False)
+
+
 def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
     orchestration.process_poll_runtime(
         db,
@@ -148,6 +154,7 @@ HANDLERS: dict[str, Handler] = {
     "EVALUATE_READINESS": _readiness,
     "RUN_GATE_POLICY": _gates,
     "START_RUNTIME": _start_runtime,
+    "PROVISION_FLOW_RUN_RUNTIME": _provision_flow_run_runtime,
     "POLL_RUNTIME": _poll_runtime,
     "WAIT_RUNTIME_WAKEUP": _wait_runtime_wakeup,
     "RESUME_RUNTIME": _resume_runtime,

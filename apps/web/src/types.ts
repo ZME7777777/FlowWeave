@@ -198,14 +198,12 @@ export interface FlowPortMapping {
 }
 export interface FlowDefinition {
   id: string; name: string; description: string; default_entry_key?: string | null;
-  environment_version_id?: string | null;
   lark_root_folder_url: string;
   row_version: number; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
   created_at: string; updated_at: string;
 }
 export interface FlowWrite {
   name: string; description: string; default_entry_key?: string | null;
-  environment_version_id: string;
   lark_root_folder_url: string;
   row_version?: number | null; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
 }
