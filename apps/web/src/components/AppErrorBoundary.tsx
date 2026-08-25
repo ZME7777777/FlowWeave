@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCw, RotateCcw } from 'lucide-react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 
 interface Props { children: ReactNode }
@@ -17,19 +17,14 @@ export class AppErrorBoundary extends Component<Props, State> {
 
   private reload = () => window.location.reload();
 
-  private reset = () => {
-    try { window.localStorage.removeItem('flowweave-workbench'); } catch { /* storage unavailable */ }
-    window.location.reload();
-  };
-
   render() {
     if (!this.state.error) return this.props.children;
     return <main className="app-recovery" role="alert">
       <AlertTriangle size={30}/>
       <h1>页面加载失败</h1>
-      <p>可能是页面版本更新后保留了不兼容的浏览器状态。你无需进入 Chrome 设置，可直接在这里恢复。</p>
+      <p>页面遇到未预期异常。重新加载会使用最新页面代码和安全的导航上下文。</p>
       <details><summary>错误信息</summary><code>{this.state.error.message}</code></details>
-      <div><button className="secondary" onClick={this.reload}><RefreshCw size={14}/>重新加载</button><button className="primary" onClick={this.reset}><RotateCcw size={14}/>重置页面状态</button></div>
+      <div><button className="primary" onClick={this.reload}><RefreshCw size={14}/>重新加载</button></div>
     </main>;
   }
 }

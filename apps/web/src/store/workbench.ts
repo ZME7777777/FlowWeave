@@ -3,7 +3,7 @@ import { createJSONStorage, persist, type StateStorage } from 'zustand/middlewar
 import type { ViewName } from '../types';
 
 const STORAGE_KEY = 'flowweave-workbench';
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'models', 'flows', 'runs', 'workbench', 'agent-chat']);
 
 interface WorkbenchState {
@@ -27,20 +27,16 @@ type PersistedWorkbenchState = Pick<
   'view' | 'selectedRunId' | 'selectedNodeRunId' | 'selectedAttemptId' | 'selectedConversationId'
 >;
 
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
 function sanitizePersistedState(value: unknown): PersistedWorkbenchState {
   const state = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const view = typeof state.view === 'string' && VIEWS.has(state.view as ViewName)
+    ? state.view as ViewName
+    : 'nodes';
   return {
-    view: typeof state.view === 'string' && VIEWS.has(state.view as ViewName)
-      ? state.view as ViewName
-      : 'nodes',
-    selectedRunId: optionalString(state.selectedRunId),
-    selectedNodeRunId: optionalString(state.selectedNodeRunId),
-    selectedAttemptId: optionalString(state.selectedAttemptId),
-    selectedConversationId: optionalString(state.selectedConversationId),
+    // Run, Attempt and Conversation IDs are transient. Persisting them made a
+    // browser refresh reopen deleted or obsolete Runtime contexts after a
+    // deploy. Return to the Run list instead of restoring those deep links.
+    view: view === 'workbench' || view === 'agent-chat' ? 'runs' : view,
   };
 }
 
@@ -86,8 +82,8 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       name: STORAGE_KEY,
       version: STORAGE_VERSION,
       storage: createJSONStorage<PersistedWorkbenchState>(() => safeLocalStorage),
-      partialize: ({ view, selectedRunId, selectedNodeRunId, selectedAttemptId, selectedConversationId }) => ({
-        view, selectedRunId, selectedNodeRunId, selectedAttemptId, selectedConversationId,
+      partialize: ({ view }) => ({
+        view: view === 'workbench' || view === 'agent-chat' ? 'runs' : view,
       }),
       migrate: persisted => sanitizePersistedState(persisted),
       merge: (persisted, current) => ({ ...current, ...sanitizePersistedState(persisted) }),

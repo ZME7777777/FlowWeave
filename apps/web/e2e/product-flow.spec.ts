@@ -543,9 +543,29 @@ test('corrupt and legacy browser state recover without a blank page', async ({ p
   await expect.poll(() => page.evaluate(() => {
     const raw = localStorage.getItem('flowweave-workbench');
     return raw ? JSON.parse(raw).version : undefined;
-  })).toBe(2);
+  })).toBe(3);
   const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('flowweave-workbench') ?? '{}'));
   expect(persisted.state).toEqual({ view: 'nodes' });
+
+  await page.evaluate(() => localStorage.setItem('flowweave-workbench', JSON.stringify({
+    version: 2,
+    state: {
+      view: 'agent-chat',
+      selectedRunId: 'deleted-run',
+      selectedNodeRunId: 'deleted-node-run',
+      selectedAttemptId: 'deleted-attempt',
+      selectedConversationId: 'deleted-conversation',
+    },
+  })));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '流程运行', exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const raw = localStorage.getItem('flowweave-workbench');
+    return raw ? JSON.parse(raw).state : undefined;
+  })).toEqual({ view: 'runs' });
+
+  await page.getByRole('button', { name: '流程编排' }).click();
+  await expect(page.getByTestId('flow-designer')).toBeVisible();
   expect(pageErrors).toEqual([]);
 });
 

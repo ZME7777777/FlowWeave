@@ -46,6 +46,27 @@ type FlowNodeData = {
 
 const defaultGates = (): GatePolicy[] => [];
 const nodeTypes = { flowAsset: FlowAssetNode };
+const emptyNodeAssets: NodeAsset[] = [];
+const emptyNodeDirectories: NodeDirectory[] = [];
+const emptyFlows: FlowDefinition[] = [];
+const emptyModelProviders: ModelProvider[] = [];
+
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+function ioFields(value: unknown): NodeAsset['inputs'] {
+  return asArray<NodeAsset['inputs'][number]>(value).filter(field =>
+    field && typeof field.field_key === 'string' && typeof field.data_type === 'string',
+  );
+}
+
+function gatePolicies(value: unknown): GatePolicy[] {
+  return asArray<GatePolicy>(value).filter(gate =>
+    gate && (gate.stage === 'START' || gate.stage === 'END')
+      && typeof gate.position === 'number' && typeof gate.config === 'object' && gate.config !== null,
+  );
+}
 
 function validLarkWikiUrl(value: string): boolean {
   try {
@@ -73,14 +94,17 @@ function flowSaveError(reason: Error): string {
 }
 
 function FlowAssetNode({ id, data, selected }: NodeProps<Node<FlowNodeData>>) {
-  const startCount = data.gates.filter(item => item.stage === 'START').length;
-  const endCount = data.gates.filter(item => item.stage === 'END').length;
+  const nodeGates = gatePolicies(data.gates);
+  const inputs = ioFields(data.inputs);
+  const outputs = ioFields(data.outputs);
+  const startCount = nodeGates.filter(item => item.stage === 'START').length;
+  const endCount = nodeGates.filter(item => item.stage === 'END').length;
   return <article className={`flow-asset-node ${selected ? 'selected' : ''}`}>
     <Handle id="flow-target" className="flow-direction-handle" type="target" position={Position.Left} isConnectable={data.linkMode === 'flow'}/>
     <div className="flow-node-head"><span className="flow-node-kind">AGENT</span><button type="button" className="flow-node-delete nodrag nopan" aria-label={`删除节点 ${data.label}`} title="删除节点" onClick={event => { event.stopPropagation(); data.onDelete?.(id); }}><Trash2 size={13}/></button></div>
     <strong>{data.label}</strong>
     <small>标准端口来自节点资产</small>
-    <div className="flow-port-groups"><section><span>INPUTS</span>{data.inputs.map(field => <div className="flow-port-row flow-port-input" key={`input-${field.field_key}`}><Handle id={`input:${field.field_key}`} className="data-port-handle" type="target" position={Position.Left} isConnectable={data.linkMode === 'data'}/><b>{field.field_key}</b><small>{field.data_type}</small></div>)}</section><section><span>OUTPUTS</span>{data.outputs.map(field => <div className="flow-port-row flow-port-output" key={`output-${field.field_key}`}><b>{field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'data'}/></div>)}</section></div>
+    <div className="flow-port-groups"><section><span>INPUTS</span>{inputs.map(field => <div className="flow-port-row flow-port-input" key={`input-${field.field_key}`}><Handle id={`input:${field.field_key}`} className="data-port-handle" type="target" position={Position.Left} isConnectable={data.linkMode === 'data'}/><b>{field.field_key}</b><small>{field.data_type}</small></div>)}</section><section><span>OUTPUTS</span>{outputs.map(field => <div className="flow-port-row flow-port-output" key={`output-${field.field_key}`}><b>{field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'data'}/></div>)}</section></div>
     <div className="flow-node-gates"><span>START {startCount}</span><span>END {endCount}</span></div>
     <Handle id="flow-source" className="flow-direction-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'flow'}/>
   </article>;
@@ -91,9 +115,9 @@ function nodeData(asset: NodeAsset, alias = '', gates: GatePolicy[] = []): FlowN
     label: alias || asset.name,
     assetName: asset.name,
     assetId: asset.id,
-    inputs: asset.inputs,
-    outputs: asset.outputs,
-    gates,
+    inputs: ioFields(asset.inputs),
+    outputs: ioFields(asset.outputs),
+    gates: gatePolicies(gates),
     alias,
   };
 }
@@ -101,7 +125,9 @@ function nodeData(asset: NodeAsset, alias = '', gates: GatePolicy[] = []): FlowN
 function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNodeData>[], Edge[], Edge[]] {
   if (!flow) return [[], [], []];
   return [
-    flow.nodes.map(item => {
+    asArray<FlowDefinition['nodes'][number]>(flow.nodes).filter(item =>
+      item && typeof item.instance_key === 'string' && typeof item.node_asset_id === 'string',
+    ).map(item => {
       const asset = assets.find(candidate => candidate.id === item.node_asset_id);
       const fallback: NodeAsset = {
         id: item.node_asset_id,
@@ -120,11 +146,16 @@ function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNo
       return {
         id: item.instance_key,
         type: 'flowAsset',
-        position: { x: item.position_x, y: item.position_y },
-        data: nodeData(asset ?? fallback, item.alias ?? '', item.gates),
+        position: {
+          x: Number.isFinite(item.position_x) ? item.position_x : 0,
+          y: Number.isFinite(item.position_y) ? item.position_y : 0,
+        },
+        data: nodeData(asset ?? fallback, typeof item.alias === 'string' ? item.alias : '', gatePolicies(item.gates)),
       };
     }),
-    flow.edges.map(item => ({
+    asArray<FlowDefinition['edges'][number]>(flow.edges).filter(item =>
+      item && typeof item.source_instance_key === 'string' && typeof item.target_instance_key === 'string',
+    ).map(item => ({
       id: `flow:${item.id ?? randomId()}`,
       source: item.source_instance_key,
       target: item.target_instance_key,
@@ -133,7 +164,10 @@ function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNo
       type: 'smoothstep',
       className: 'flow-direction-edge',
     })),
-    flow.port_mappings.map(item => ({
+    asArray<FlowDefinition['port_mappings'][number]>(flow.port_mappings).filter(item =>
+      item && typeof item.source_instance_key === 'string' && typeof item.target_instance_key === 'string'
+        && typeof item.source_output_key === 'string' && typeof item.target_input_key === 'string',
+    ).map(item => ({
       id: `mapping:${item.id ?? randomId()}`,
       source: item.source_instance_key,
       sourceHandle: `output:${item.source_output_key}`,
@@ -213,12 +247,14 @@ function GateEditor({
 function directoryLabel(directoryId: string | null | undefined, directories: NodeDirectory[]): string {
   if (!directoryId) return '未分类';
   const names: string[] = [];
+  const visited = new Set<string>();
   let current = directories.find(item => item.id === directoryId);
-  while (current) {
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
     names.unshift(current.name);
     current = directories.find(item => item.id === current?.parent_id);
   }
-  return names.join(' / ');
+  return names.length ? names.join(' / ') : '未分类';
 }
 
 function autoLayout(nodes: Node<FlowNodeData>[], edges: Edge[]): Node<FlowNodeData>[] {
@@ -253,10 +289,10 @@ function autoLayout(nodes: Node<FlowNodeData>[], edges: Edge[]): Node<FlowNodeDa
 export function FlowsPage() {
   const dialog = useProductDialog();
   const qc = useQueryClient();
-  const { data: assets = [] } = useQuery({ queryKey: ['nodes'], queryFn: () => api.nodes() });
-  const { data: directories = [] } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
-  const { data: flows = [] } = useQuery({ queryKey: ['flows'], queryFn: api.flows });
-  const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: api.providers });
+  const { data: assets = emptyNodeAssets } = useQuery({ queryKey: ['nodes'], queryFn: () => api.nodes() });
+  const { data: directories = emptyNodeDirectories } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
+  const { data: flows = emptyFlows } = useQuery({ queryKey: ['flows'], queryFn: api.flows });
+  const { data: providers = emptyModelProviders } = useQuery({ queryKey: ['providers'], queryFn: api.providers });
   const [selected, setSelected] = useState<FlowDefinition>();
   const [isNew, setIsNew] = useState(false);
   const [selectedNode, setSelectedNode] = useState<string>();
@@ -488,7 +524,7 @@ export function FlowsPage() {
     ]);
     setDeletingFlows(false);
   };
-  const filteredAssets = useMemo(() => assets.filter(asset => `${asset.name} ${asset.description}`.toLowerCase().includes(assetSearch.toLowerCase())), [assets, assetSearch]);
+  const filteredAssets = useMemo(() => assets.filter(asset => `${asset.name ?? ''} ${asset.description ?? ''}`.toLowerCase().includes(assetSearch.toLowerCase())), [assets, assetSearch]);
   const groupedAssets = useMemo(() => {
     const groups = new Map<string, NodeAsset[]>();
     filteredAssets.forEach(asset => {
@@ -501,7 +537,7 @@ export function FlowsPage() {
   return <section className="page flow-page">
     <div className="page-head"><div><span className="eyebrow">FLOW DESIGN</span><h1>流程编排</h1><p>流程走向支持一对多和多对一；产物流转连接节点资产的具体输出端口与兼容输入端口。</p></div></div>
     <div className="flow-product-layout">
-      <aside className="flow-library" data-testid="flow-library"><h3>流程</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索流程" placeholder="搜索流程" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><div className="flow-list-actions"><button type="button" className="secondary" disabled={!filteredFlows.length || deletingFlows} onClick={toggleVisibleFlows}><CheckSquare size={13}/>{allVisibleFlowsSelected ? '取消全选' : '全选'}</button><button type="button" className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={13}/>{deletingFlows ? '删除中' : `删除 (${selectedFlowIds.size})`}</button><button type="button" className="flow-create-action" aria-label="新建流程" onClick={startNewFlow}><Plus size={13}/>新建</button></div><div className="flow-definition-list">{filteredFlows.map(flow => <div className={`flow-definition-row ${selected?.id === flow.id ? 'active' : ''}`} key={flow.id}><label className="resource-check"><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-select" onClick={() => { setSelected(flow); setIsNew(false); }}>{flow.name}</button><button type="button" className="flow-definition-delete" aria-label={`删除流程 ${flow.name}`} title="删除流程" onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={13}/></button></div>)}</div>{!filteredFlows.length && <div className="flow-list-empty">没有匹配流程</div>}<h3>节点资产目录</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索节点资产" placeholder="搜索当前资产库" value={assetSearch} onChange={event => setAssetSearch(event.target.value)}/></label>{groupedAssets.map(([directory, items]) => <section className="flow-asset-group" key={directory}><h4>{directory}</h4>{items.map(asset => <button draggable key={asset.id} aria-label={asset.name} title="拖入画布或点击添加" onDragStart={event => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/flowweave-node-asset', asset.id); }} onClick={() => addAsset(asset)}><span className="flow-library-icon">{asset.icon_value.slice(0, 2).toUpperCase()}</span><span><b>{asset.name}</b><small>{asset.inputs.length} 输入 · {asset.outputs.length} 输出</small></span></button>)}</section>)}</aside>
+      <aside className="flow-library" data-testid="flow-library"><h3>流程</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索流程" placeholder="搜索流程" value={flowSearch} onChange={event => setFlowSearch(event.target.value)}/></label><div className="flow-list-actions"><button type="button" className="secondary" disabled={!filteredFlows.length || deletingFlows} onClick={toggleVisibleFlows}><CheckSquare size={13}/>{allVisibleFlowsSelected ? '取消全选' : '全选'}</button><button type="button" className="danger" disabled={!selectedFlowIds.size || deletingFlows} onClick={() => void removeFlows([...selectedFlowIds], `选中的 ${selectedFlowIds.size} 个流程`)}><Trash2 size={13}/>{deletingFlows ? '删除中' : `删除 (${selectedFlowIds.size})`}</button><button type="button" className="flow-create-action" aria-label="新建流程" onClick={startNewFlow}><Plus size={13}/>新建</button></div><div className="flow-definition-list">{filteredFlows.map(flow => <div className={`flow-definition-row ${selected?.id === flow.id ? 'active' : ''}`} key={flow.id}><label className="resource-check"><input type="checkbox" aria-label={`选择流程 ${flow.name}`} checked={selectedFlowIds.has(flow.id)} onChange={() => toggleFlow(flow.id)}/></label><button className="flow-select" onClick={() => { setSelected(flow); setIsNew(false); }}>{flow.name}</button><button type="button" className="flow-definition-delete" aria-label={`删除流程 ${flow.name}`} title="删除流程" onClick={() => void removeFlows([flow.id], `流程“${flow.name}”`)}><Trash2 size={13}/></button></div>)}</div>{!filteredFlows.length && <div className="flow-list-empty">没有匹配流程</div>}<h3>节点资产目录</h3><label className="flow-library-search"><Search size={13}/><input aria-label="搜索节点资产" placeholder="搜索当前资产库" value={assetSearch} onChange={event => setAssetSearch(event.target.value)}/></label>{groupedAssets.map(([directory, items]) => <section className="flow-asset-group" key={directory}><h4>{directory}</h4>{items.map(asset => <button draggable key={asset.id} aria-label={asset.name} title="拖入画布或点击添加" onDragStart={event => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/flowweave-node-asset', asset.id); }} onClick={() => addAsset(asset)}><span className="flow-library-icon">{(asset.icon_value || 'AG').slice(0, 2).toUpperCase()}</span><span><b>{asset.name}</b><small>{ioFields(asset.inputs).length} 输入 · {ioFields(asset.outputs).length} 输出</small></span></button>)}</section>)}</aside>
       <main className="flow-designer" data-testid="flow-designer" data-link-mode={linkMode} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropAsset}>
         <div className="designer-toolbar"><input aria-label="流程名称" value={name} placeholder="流程名称" onChange={event => setName(event.target.value)}/><input aria-label="流程说明" value={description} placeholder="说明" onChange={event => setDescription(event.target.value)}/><input required type="url" pattern="https://.*/wiki/[^/]+.*" aria-label="飞书 Wiki 根节点" value={larkRootFolderUrl} placeholder="飞书 Wiki 根节点 URL" title="请输入 https://.../wiki/... 格式的飞书 Wiki 节点链接" onChange={event => setLarkRootFolderUrl(event.target.value)}/><select aria-label="默认入口" value={entry} onChange={event => setEntry(event.target.value)}><option value="">无默认入口</option>{nodes.map(item => <option key={item.id} value={item.id}>{item.data.label}</option>)}</select><div className="flow-link-mode" aria-label="连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><button className="secondary" aria-label="自动布局" onClick={() => { setNodes(old => autoLayout(old, directionEdges)); window.setTimeout(() => void flowInstance?.fitView({ padding: 0.2 }), 0); }}><LayoutDashboard size={14}/>自动布局</button><button className="primary" onClick={() => save.mutate()} disabled={!name.trim() || !larkRootFolderUrl.trim() || !nodes.length}><Save size={14}/>保存流程</button></div>
         {error && <div className="canvas-error">{error}</div>}{notice && <div className="canvas-notice" role="status">{notice}</div>}
