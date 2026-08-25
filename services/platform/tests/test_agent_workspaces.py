@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from flowweave.modules.agent_workspaces.application import conversations
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     process_agent_workspace_runtime,
@@ -13,10 +14,15 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntimeAllocation,
     AgentWorkspaceRuntimeGeneration,
 )
+from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
+from flowweave.runtime.base import RuntimeProvider
+from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.mock import MockRuntime
+from flowweave.shared.errors import DomainError
 from flowweave.shared.models import ManagedSandbox
 from flowweave.shared.settings import settings_context
 
@@ -100,3 +106,100 @@ def test_workspace_runtime_replaces_deleted_physical_generation(
         assert current.generation == 2
         assert runtime is not None and runtime.active_generation == 2
         assert [item.generation for item in generations] == [1, 2]
+
+
+def _ready_workspace_for_conversation(db):
+    workspace = ensure_default_agent_workspace(db)
+    provider = ModelProvider(
+        name=f"agent-workspace-provider-{workspace.id}",
+        base_url="https://models.example.test/v1",
+        connection_state="CONNECTED",
+    )
+    db.add(provider)
+    db.flush()
+    db.add(
+        ProviderModel(
+            provider_id=provider.id,
+            model_name="test-model",
+            enabled=True,
+            is_default=True,
+        )
+    )
+    workspace.default_model_provider_id = provider.id
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    assert runtime is not None
+    runtime.status = "ACTIVE"
+    runtime.active_generation = 1
+    db.add(
+        ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="AGENT_WORKSPACE",
+            owner_id=workspace.id,
+            backend_resource_name=f"agent-workspace-{workspace.id}",
+            image_reference=runtime.runtime_image_digest,
+            agent_workspace_allocation_id=runtime.workspace_allocation_id,
+            hard_expires_at=datetime.max.replace(tzinfo=UTC),
+            observed_state="READY",
+        )
+    )
+    db.flush()
+    return workspace
+
+
+def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_identity(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        first = conversations.create_conversation(db, workspace.id, "第一会话", "create-key")
+        replay = conversations.create_conversation(db, workspace.id, "ignored", "create-key")
+
+        assert replay == first
+        assert first["lifecycle"] == "ACTIVE"
+        assert first["display_title"] == "第一会话"
+        assert len(conversations.list_conversations(db, workspace.id)) == 1
+
+
+def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
+    settings, db_session_factory, monkeypatch
+):
+    class FailingRuntime(MockRuntime):
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            raise DomainError("EXECUTOR_UNAVAILABLE", "upstream unavailable", 503)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(FailingRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        try:
+            conversations.message(db, workspace.id, created["id"], "hello")
+        except DomainError as exc:
+            assert exc.code == "AGENT_MESSAGE_DELIVERY_AMBIGUOUS"
+            assert exc.status == 504
+        else:
+            raise AssertionError("message transport failure must not be retried")
+
+        conversations.delete_conversation(db, workspace.id, created["id"], "delete-key")
+        assert conversations.list_conversations(db, workspace.id) == []

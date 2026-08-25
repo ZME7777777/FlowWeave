@@ -1,0 +1,413 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Any
+from uuid import UUID, uuid4
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from flowweave.modules.agent_workspaces.infrastructure.models import (
+    AgentConversationBinding,
+    AgentConversationCommand,
+    AgentWorkspace,
+    AgentWorkspaceRuntime,
+)
+from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
+from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
+from flowweave.runtime.base import RuntimeAgentSpec, RuntimeHandle, RuntimeTool, StartAttemptRequest
+from flowweave.runtime.contract import agent_workspace_runtime_contract
+from flowweave.runtime.dependencies import get_runtime
+from flowweave.runtime.request import runtime_provider
+from flowweave.shared.database import now
+from flowweave.shared.errors import DomainError, not_found
+from flowweave.shared.settings import get_settings
+
+_TOOLS = (
+    RuntimeTool(name="terminal"),
+    RuntimeTool(name="file_editor"),
+    RuntimeTool(name="task_tracker"),
+)
+
+
+def _workspace(db: Session, workspace_id: str) -> AgentWorkspace:
+    item = db.get(AgentWorkspace, workspace_id)
+    if item is None:
+        raise not_found("agent_workspace", workspace_id)
+    return item
+
+
+def _binding(
+    db: Session, workspace_id: str, binding_id: str, *, lock: bool = False
+) -> AgentConversationBinding:
+    query = select(AgentConversationBinding).where(
+        AgentConversationBinding.id == binding_id,
+        AgentConversationBinding.workspace_id == workspace_id,
+    )
+    if lock:
+        query = query.with_for_update()
+    item = db.scalar(query)
+    if item is None or item.lifecycle == "DELETED":
+        raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+    return item
+
+
+def _dict(item: AgentConversationBinding) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "display_title": item.display_title,
+        "lifecycle": item.lifecycle,
+        "created_at": item.created_at.isoformat(),
+        "updated_at": item.updated_at.isoformat(),
+        "last_connected_at": item.last_connected_at.isoformat() if item.last_connected_at else None,
+    }
+
+
+def _workspace_dict(workspace: AgentWorkspace) -> dict[str, Any]:
+    return {
+        "id": workspace.id,
+        "display_name": workspace.display_name,
+        "default_model_provider_id": workspace.default_model_provider_id,
+        "desired_state": workspace.desired_state,
+        "updated_at": workspace.updated_at.isoformat(),
+    }
+
+
+def default_workspace(db: Session) -> dict[str, Any]:
+    workspace = db.scalar(
+        select(AgentWorkspace).where(AgentWorkspace.scope_key == "platform-default")
+    )
+    if workspace is None:
+        raise DomainError("AGENT_WORKSPACE_NOT_READY", "Agent 工作区正在初始化", 503)
+    return _workspace_dict(workspace)
+
+
+def get_workspace(db: Session, workspace_id: str) -> dict[str, Any]:
+    return _workspace_dict(_workspace(db, workspace_id))
+
+
+def update_workspace_settings(
+    db: Session, workspace_id: str, default_model_provider_id: str | None
+) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    if default_model_provider_id is None:
+        workspace.default_model_provider_id = None
+    else:
+        provider = db.get(ModelProvider, default_model_provider_id)
+        has_default_model = (
+            db.scalar(
+                select(ProviderModel.id).where(
+                    ProviderModel.provider_id == default_model_provider_id,
+                    ProviderModel.enabled.is_(True),
+                    ProviderModel.is_default.is_(True),
+                )
+            )
+            is not None
+        )
+        if provider is None or provider.connection_state != "CONNECTED" or not has_default_model:
+            raise DomainError(
+                "AGENT_MODEL_CONFIGURATION_INVALID",
+                "默认模型必须是已测试成功且存在启用默认模型的配置",
+                409,
+            )
+        workspace.default_model_provider_id = provider.id
+    workspace.updated_at = now()
+    db.flush()
+    return _workspace_dict(workspace)
+
+
+def runtime_status(db: Session, workspace_id: str) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    state = runtime.status if runtime is not None else "RECONNECTING"
+    return {
+        "state": "ACTIVE" if state == "ACTIVE" else "RECOVERING",
+        "write_available": state == "ACTIVE" and workspace.desired_state == "RUNNING",
+        "message": None if state == "ACTIVE" else "运行环境正在恢复，数据已保留",
+        "updated_at": (
+            runtime.updated_at if runtime is not None else workspace.updated_at
+        ).isoformat(),
+    }
+
+
+def _handle(
+    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
+) -> RuntimeHandle:
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
+        code = (
+            "AGENT_RUNTIME_DEGRADED"
+            if runtime and runtime.status == "DEGRADED"
+            else "AGENT_RUNTIME_RECOVERING"
+        )
+        raise DomainError(code, "Agent 运行环境正在恢复，数据已保留", 503)
+    sandbox = db.scalar(
+        select(ManagedSandbox).where(
+            ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+            ManagedSandbox.owner_id == workspace.id,
+            ManagedSandbox.generation == runtime.active_generation,
+            ManagedSandbox.desired_state == "RUNNING",
+        )
+    )
+    if sandbox is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    return RuntimeHandle(
+        job_id=f"agent-workspace:{workspace.id}",
+        conversation_id=binding.openhands_conversation_id,
+        runtime_resource_id=sandbox.id,
+        runtime_resource_name=sandbox.backend_resource_name,
+    )
+
+
+def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
+    _workspace(db, workspace_id)
+    return [
+        _dict(item)
+        for item in db.scalars(
+            select(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle != "DELETED",
+            )
+            .order_by(AgentConversationBinding.updated_at.desc())
+        )
+    ]
+
+
+def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id)
+    item.last_connected_at = now()
+    db.flush()
+    return _dict(item)
+
+
+def create_conversation(
+    db: Session, workspace_id: str, title: str | None, idempotency_key: str
+) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    existing = db.scalar(
+        select(AgentConversationBinding).where(
+            AgentConversationBinding.create_idempotency_key == idempotency_key
+        )
+    )
+    if existing is not None:
+        if existing.workspace_id != workspace.id:
+            raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话创建请求冲突", 409)
+        if existing.lifecycle == "ACTIVE":
+            return _dict(existing)
+        raise DomainError("AGENT_CONVERSATION_PROVISIONING", "会话仍在创建中", 409)
+    if not workspace.default_model_provider_id:
+        raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "请先选择已测试成功的模型配置", 409)
+    provider_record = db.get(ModelProvider, workspace.default_model_provider_id)
+    if provider_record is None or provider_record.connection_state != "CONNECTED":
+        raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "请先选择已测试成功的模型配置", 409)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    if runtime is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    conversation_id = str(uuid4())
+    binding = AgentConversationBinding(
+        workspace_id=workspace.id,
+        runtime_session_id=runtime.id,
+        openhands_conversation_id=conversation_id,
+        display_title=title.strip() if title and title.strip() else None,
+        create_idempotency_key=idempotency_key,
+    )
+    db.add(binding)
+    db.flush()
+    command = AgentConversationCommand(
+        workspace_id=workspace.id,
+        binding_id=binding.id,
+        command_type="CREATE",
+        idempotency_key=idempotency_key,
+        attempt_count=1,
+    )
+    db.add(command)
+    provider = runtime_provider(
+        db, {"asset": {"executor": {"model_provider_id": workspace.default_model_provider_id}}}
+    )
+    handle = _handle(db, workspace, binding)
+    request = StartAttemptRequest(
+        attempt_id=binding.id,
+        execution_key=f"agent-workspace:{workspace.id}:conversation:{binding.id}",
+        node={"asset": {"name": "Agent Workspace"}},
+        bindings=[],
+        workspace_ref="/runtime/workspace/project",
+        conversation_id=conversation_id,
+        agent_spec=RuntimeAgentSpec(
+            provider=provider,
+            tools=_TOOLS,
+            runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in _TOOLS)),
+        ),
+        environment_image=runtime.runtime_image_digest,
+        environment_id=workspace.id,
+        environment_version_id=workspace.id,
+        environment_version_no=1,
+        runtime_sandbox_id=handle.runtime_resource_id,
+        runtime_resource_name=handle.runtime_resource_name,
+        runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
+    )
+    try:
+        created = get_runtime().create_conversation(request)
+        if created.conversation_id != conversation_id:
+            raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
+        identity = get_runtime().reload_conversation(
+            replace(handle, conversation_id=conversation_id)
+        )
+        if identity.persistence_dir != f"/runtime/state/conversations/{UUID(conversation_id).hex}":
+            raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话持久化身份校验失败", 409)
+    except DomainError as exc:
+        binding.lifecycle = "FAILED"
+        command.state = "FAILED"
+        command.last_error_code = exc.code
+        command.failure_summary = "Conversation creation failed; inspect protected logs"
+        raise
+    binding.lifecycle = "ACTIVE"
+    command.state = "SUCCEEDED"
+    db.flush()
+    return _dict(binding)
+
+
+def patch_conversation(
+    db: Session, workspace_id: str, binding_id: str, title: str
+) -> dict[str, Any]:
+    clean_title = title.strip()
+    if not clean_title:
+        raise DomainError("AGENT_CONVERSATION_TITLE_REQUIRED", "会话标题不能为空", 422)
+    workspace = _workspace(db, workspace_id)
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    command = AgentConversationCommand(
+        workspace_id=workspace.id,
+        binding_id=item.id,
+        command_type="RENAME",
+        idempotency_key=f"rename-agent-conversation:{item.id}:{uuid4()}",
+        attempt_count=1,
+    )
+    db.add(command)
+    try:
+        get_runtime().rename_conversation(_handle(db, workspace, item), clean_title)
+    except DomainError as exc:
+        command.state = "FAILED"
+        command.last_error_code = exc.code
+        command.failure_summary = "Conversation rename failed; inspect protected logs"
+        raise
+    item.display_title = clean_title
+    item.updated_at = now()
+    command.state = "SUCCEEDED"
+    db.flush()
+    return _dict(item)
+
+
+def delete_conversation(
+    db: Session, workspace_id: str, binding_id: str, idempotency_key: str
+) -> None:
+    workspace = _workspace(db, workspace_id)
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    existing = db.scalar(
+        select(AgentConversationCommand).where(
+            AgentConversationCommand.idempotency_key == idempotency_key
+        )
+    )
+    if existing is not None:
+        if existing.workspace_id != workspace.id or existing.binding_id != item.id:
+            raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话删除请求冲突", 409)
+        if existing.state == "SUCCEEDED":
+            return
+        raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话删除仍在处理中", 409)
+    item.lifecycle = "DELETE_PENDING"
+    command = AgentConversationCommand(
+        workspace_id=workspace.id,
+        binding_id=item.id,
+        command_type="DELETE",
+        idempotency_key=idempotency_key,
+        attempt_count=1,
+    )
+    db.add(command)
+    try:
+        get_runtime().delete_conversation(_handle(db, workspace, item))
+    except DomainError as exc:
+        command.state = "FAILED"
+        command.last_error_code = exc.code
+        command.failure_summary = "Conversation deletion failed; inspect protected logs"
+        item.lifecycle = "ACTIVE"
+        raise
+    item.lifecycle = "DELETED"
+    item.deleted_at = now()
+    command.state = "SUCCEEDED"
+    db.flush()
+
+
+def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    batch = get_runtime().read_events(replace(handle, cursor=cursor))
+    return {
+        "events": [
+            {"id": event.cursor, "event_type": event.event_type, "payload": event.payload}
+            for event in batch.events
+        ],
+        "next_cursor": batch.cursor,
+    }
+
+
+def runtime_stream_details(
+    db: Session, workspace_id: str, binding_id: str
+) -> tuple[str | None, RuntimeHandle]:
+    workspace = _workspace(db, workspace_id)
+    return get_settings().runtime_adapter, _handle(
+        db, workspace, _binding(db, workspace_id, binding_id)
+    )
+
+
+def terminal_resource_details(db: Session, workspace_id: str) -> tuple[str, str]:
+    workspace = _workspace(db, workspace_id)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
+        raise DomainError("AGENT_TERMINAL_UNAVAILABLE", "Agent 运行环境正在恢复，无法连接终端", 503)
+    sandbox = db.scalar(
+        select(ManagedSandbox).where(
+            ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+            ManagedSandbox.owner_id == workspace.id,
+            ManagedSandbox.generation == runtime.active_generation,
+            ManagedSandbox.desired_state == "RUNNING",
+        )
+    )
+    if sandbox is None:
+        raise DomainError("AGENT_TERMINAL_UNAVAILABLE", "Agent 运行环境正在恢复，无法连接终端", 503)
+    return sandbox.backend_resource_name, sandbox.id
+
+
+def message(db: Session, workspace_id: str, binding_id: str, content: str) -> dict[str, Any]:
+    if not content.strip():
+        raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    workspace = _workspace(db, workspace_id)
+    try:
+        result = get_runtime().send_message(
+            _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True)),
+            content.strip(),
+        )
+    except DomainError as exc:
+        if exc.status >= 500:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
+            ) from exc
+        raise
+    return {"accepted": True, "cursor": result.cursor}
+
+
+def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
+    workspace = _workspace(db, workspace_id)
+    get_runtime().interrupt(_handle(db, workspace, _binding(db, workspace_id, binding_id)))
+
+
+def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    result = get_runtime().run(_handle(db, workspace, _binding(db, workspace_id, binding_id)))
+    return {"accepted": True, "cursor": result.cursor}

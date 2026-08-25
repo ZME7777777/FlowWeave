@@ -81,11 +81,17 @@ class MockRuntime:
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
             job_id=f"mock-job-{request.attempt_id}",
-            conversation_id=f"mock-conversation-{request.attempt_id}",
+            conversation_id=request.conversation_id or f"mock-conversation-{request.attempt_id}",
             cursor="1",
         )
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         return handle
+
+    def rename_conversation(self, handle: RuntimeHandle, title: str) -> None:
+        del handle, title
+
+    def delete_conversation(self, handle: RuntimeHandle) -> None:
+        self._results.pop(handle.job_id, None)
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
@@ -131,8 +137,12 @@ class MockRuntime:
     ) -> RuntimeConversationIdentity:
         identity = RuntimeConversationIdentity(
             conversation_id=handle.conversation_id,
-            workspace_working_dir="/mock/workspace",
-            persistence_dir="/mock/conversations",
+            workspace_working_dir="/runtime/workspace/project",
+            persistence_dir=(
+                f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
+                if handle.conversation_id.count("-") == 4
+                else "/mock/conversations"
+            ),
             event_id=handle.cursor,
             parent_id=None,
             action_id=None,

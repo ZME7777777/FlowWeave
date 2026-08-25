@@ -195,7 +195,7 @@ def _state(**values: object) -> dict[str, object]:
             "kind": "LocalWorkspace",
             "working_dir": "/runtime/workspace/project",
         },
-        "persistence_dir": "/runtime/state/conversations",
+        "persistence_dir": "/runtime/state/conversations/10000000000040008000000000000002",
         **values,
     }
 
@@ -755,7 +755,7 @@ def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
                     "kind": "LocalWorkspace",
                     "working_dir": "/runtime/workspace/project",
                 },
-                "persistence_dir": "/runtime/state/conversations",
+                "persistence_dir": "/runtime/state/conversations/10000000000040008000000000000006",
             }
         return {
             "items": [
@@ -2031,3 +2031,27 @@ def test_openhands_plugin_validation_rejects_loader_protocol_drift(openhands_set
         runtime.validate_plugin(_plugin_validation_request())
 
     assert raised.value.code == "RUNTIME_PROTOCOL_ERROR"
+
+
+def test_openhands_routes_agent_workspace_rename_and_delete(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = RuntimeHandle(
+        job_id="agent-workspace:workspace-1",
+        conversation_id="10000000-0000-4000-8000-000000000020",
+        runtime_resource_name="fw-sbx-agent-workspace-1",
+    )
+    requests: list[tuple[str, str, dict[str, object]]] = []
+
+    def request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, dict(kwargs)))
+        return {"success": True}
+
+    monkeypatch.setattr(runtime, "_request", request)
+    runtime.rename_conversation(handle, "Renamed")
+    runtime.delete_conversation(handle)
+
+    assert [(method, path) for method, path, _ in requests] == [
+        ("PATCH", "/api/conversations/10000000-0000-4000-8000-000000000020"),
+        ("DELETE", "/api/conversations/10000000-0000-4000-8000-000000000020"),
+    ]
+    assert requests[0][2]["json"] == {"title": "Renamed"}

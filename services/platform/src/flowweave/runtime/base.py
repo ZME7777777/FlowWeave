@@ -333,6 +333,7 @@ class StartAttemptRequest:
     node: dict[str, Any]
     bindings: list[dict[str, Any]]
     workspace_ref: str
+    conversation_id: str | None = None
     agent_spec: RuntimeAgentSpec = field(default_factory=RuntimeAgentSpec)
     node_workspace_ref: str = ""
     interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION"
@@ -535,6 +536,10 @@ class RuntimePort(Protocol):
     ) -> RuntimeMCPOAuthStatus: ...
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle: ...
+
+    def rename_conversation(self, handle: RuntimeHandle, title: str) -> None: ...
+
+    def delete_conversation(self, handle: RuntimeHandle) -> None: ...
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle: ...
 

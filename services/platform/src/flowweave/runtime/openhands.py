@@ -68,7 +68,11 @@ class OpenHandsRuntime:
 
     @staticmethod
     def _environment_route(job_id: str) -> tuple[str, bool] | None:
-        for prefix, disposable in (("env-exec:", True), ("env-chat:", False)):
+        for prefix, disposable in (
+            ("env-exec:", True),
+            ("env-chat:", False),
+            ("agent-workspace:", False),
+        ):
             if job_id.startswith(prefix):
                 container_name = job_id.removeprefix(prefix)
                 if container_name:
@@ -755,6 +759,8 @@ class OpenHandsRuntime:
         return str(self.openhands_workspace_root / relative)
 
     def _request_workspace_path(self, request: StartAttemptRequest) -> str:
+        if request.runtime_resource_name and request.workspace_ref == "/runtime/workspace/project":
+            return request.workspace_ref
         if (
             request.runtime_sandbox_id
             and request.node_workspace_ref.startswith("/runtime/workspace/project/")
@@ -971,6 +977,15 @@ class OpenHandsRuntime:
                 )
             },
         }
+        if request.conversation_id is not None:
+            try:
+                payload["conversation_id"] = str(UUID(request.conversation_id))
+            except ValueError as exc:
+                raise DomainError(
+                    "RUNTIME_CONVERSATION_ID_INVALID",
+                    "The requested Conversation identity is invalid",
+                    422,
+                ) from exc
         if spec.agent_profile is not None:
             # The immutable FlowWeave Profile has already been materialized in
             # the explicit Agent payload above.  Never send agent_profile_id:
@@ -1068,6 +1083,23 @@ class OpenHandsRuntime:
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
 
+    def rename_conversation(self, handle: RuntimeHandle, title: str) -> None:
+        self._request(
+            "PATCH",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={"title": title},
+        )
+
+    def delete_conversation(self, handle: RuntimeHandle) -> None:
+        self._request(
+            "DELETE",
+            f"/api/conversations/{handle.conversation_id}",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=True)
 
@@ -1151,7 +1183,10 @@ class OpenHandsRuntime:
                 409,
                 {"conversation_id": handle.conversation_id},
             )
-        if state.get("persistence_dir") != "/runtime/state/conversations":
+        expected_persistence = str(
+            PurePosixPath("/runtime/state/conversations") / UUID(handle.conversation_id).hex
+        )
+        if state.get("persistence_dir") != expected_persistence:
             raise DomainError(
                 "RUNTIME_PERSISTENCE_IDENTITY_DRIFT",
                 "The reloaded Conversation is not bound to external OpenHands state",

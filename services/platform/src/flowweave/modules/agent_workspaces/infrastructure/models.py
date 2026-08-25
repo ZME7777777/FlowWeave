@@ -31,6 +31,9 @@ class AgentWorkspace(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     scope_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(160), default="Agent 工作区")
+    default_model_provider_id: Mapped[str | None] = mapped_column(
+        ForeignKey("model_providers.id", ondelete="RESTRICT"), index=True
+    )
     desired_state: Mapped[str] = mapped_column(String(20), default="RUNNING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -143,8 +146,72 @@ class AgentWorkspaceRuntimeGeneration(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class AgentConversationBinding(Base):
+    __tablename__ = "agent_conversation_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "runtime_session_id",
+            "openhands_conversation_id",
+            name="uq_agent_conversation_runtime_id",
+        ),
+        UniqueConstraint("create_idempotency_key", name="uq_agent_conversation_create_key"),
+        CheckConstraint(
+            "lifecycle IN ('PROVISIONING', 'ACTIVE', 'DELETE_PENDING', 'DELETED', 'FAILED')",
+            name="ck_agent_conversation_lifecycle",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
+    )
+    runtime_session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_workspace_runtimes.id", ondelete="RESTRICT"), index=True
+    )
+    openhands_conversation_id: Mapped[str] = mapped_column(String(36))
+    display_title: Mapped[str | None] = mapped_column(String(240))
+    lifecycle: Mapped[str] = mapped_column(String(20), default="PROVISIONING", index=True)
+    create_idempotency_key: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentConversationCommand(Base):
+    __tablename__ = "agent_conversation_commands"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_agent_conversation_command_key"),
+        CheckConstraint(
+            "command_type IN ('CREATE', 'DELETE', 'RENAME')", name="ck_agent_command_type"
+        ),
+        CheckConstraint(
+            "state IN ('PENDING', 'SUCCEEDED', 'AMBIGUOUS', 'FAILED')",
+            name="ck_agent_command_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
+    )
+    binding_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversation_bindings.id", ondelete="RESTRICT"), index=True
+    )
+    command_type: Mapped[str] = mapped_column(String(20))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    state: Mapped[str] = mapped_column(String(20), default="PENDING")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 __all__ = (
     "AgentWorkspace",
+    "AgentConversationBinding",
+    "AgentConversationCommand",
     "AgentWorkspaceRuntime",
     "AgentWorkspaceRuntimeAllocation",
     "AgentWorkspaceRuntimeGeneration",

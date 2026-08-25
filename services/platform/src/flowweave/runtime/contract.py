@@ -88,6 +88,31 @@ def governed_runtime_contract(required_tools: tuple[str, ...]) -> RuntimeContrac
     )
 
 
+def agent_workspace_runtime_contract(required_tools: tuple[str, ...]) -> RuntimeContract:
+    """Contract for the standalone Workspace surface, separate from Flow snapshots."""
+
+    base = governed_runtime_contract(required_tools)
+    return RuntimeContract(
+        schema_version=4,
+        openhands_version=base.openhands_version,
+        source_commit=base.source_commit,
+        source_ref=base.source_ref,
+        package_versions=base.package_versions,
+        required_http_operations=tuple(
+            sorted(
+                set(base.required_http_operations)
+                | {
+                    ("PATCH", "/api/conversations/{conversation_id}"),
+                    ("DELETE", "/api/conversations/{conversation_id}"),
+                }
+            )
+        ),
+        required_start_fields=tuple(sorted(set(base.required_start_fields) | {"conversation_id"})),
+        required_server_capabilities=base.required_server_capabilities,
+        required_tools=base.required_tools,
+    )
+
+
 def runtime_contract_document(contract: RuntimeContract) -> dict[str, Any]:
     return {
         "schema_version": contract.schema_version,
