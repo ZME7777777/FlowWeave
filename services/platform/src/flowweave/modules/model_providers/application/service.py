@@ -123,6 +123,22 @@ def get_provider(db: Session, provider_id: str) -> ModelProvider:
     return item
 
 
+def has_connected_default_model(db: Session, provider_id: str) -> bool:
+    item = db.get(ModelProvider, provider_id)
+    if item is None or item.connection_state != "CONNECTED":
+        return False
+    return (
+        db.scalar(
+            select(ProviderModel.id).where(
+                ProviderModel.provider_id == provider_id,
+                ProviderModel.enabled.is_(True),
+                ProviderModel.is_default.is_(True),
+            )
+        )
+        is not None
+    )
+
+
 def require_codex_oauth_provider(db: Session, provider_id: str) -> None:
     item = get_provider(db, provider_id)
     if item.auth_type != "CODEX_OAUTH":

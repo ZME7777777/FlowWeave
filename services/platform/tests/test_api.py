@@ -1294,8 +1294,10 @@ async def test_codex_model_discovery_uses_account_headers_and_parses_slugs():
                 "models": [
                     {"slug": "gpt-5.6-sol"},
                     {"id": "gpt-5.4"},
+                    {"slug": "codex-auto-review"},
                     {"name": "gpt-5.5"},
                     {"slug": "gpt-5.6-sol"},
+                    {"slug": "future-codex-model"},
                     {"display_name": "ignored-without-id"},
                 ]
             },

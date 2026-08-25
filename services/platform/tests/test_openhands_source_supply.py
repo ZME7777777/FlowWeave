@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import tarfile
+import urllib.error
 from pathlib import Path
 from types import ModuleType
 
@@ -66,6 +67,33 @@ def test_source_fetch_rejects_archive_digest_mismatch(
         )
 
     assert not destination.exists()
+
+
+def test_source_fetch_retries_transient_download_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    attempts = 0
+
+    def _urlopen(*_args: object, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.URLError("transient failure")
+        return io.BytesIO(b"not-the-locked-archive")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", _urlopen)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="source archive digest mismatch"):
+        module.fetch_source(
+            SOURCE_LOCK,
+            tmp_path / "source",
+            tmp_path / "provenance.json",
+            [],
+        )
+
+    assert attempts == 2
 
 
 def test_source_archive_rejects_path_traversal(tmp_path: Path) -> None:

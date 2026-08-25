@@ -7,6 +7,7 @@ import pytest
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.runtime import openhands as openhands_module
+from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import (
     RuntimeAgentContext,
     RuntimeAgentDefinition,
@@ -724,12 +725,33 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
     assert llm["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert llm["api_key"] == "short-lived-access-token"
     assert llm["api_mode"] == "responses"
+    assert llm["model_canonical_name"] == "openai/codex-auto-review"
     assert llm["stream"] is True
     assert llm["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
     }
     assert llm["extra_headers"]["chatgpt-account-id"] == "account-123"
+
+
+def test_openhands_disables_autotitle_for_agent_workspace(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000004", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    request = replace(
+        _request(),
+        execution_key="agent-workspace:workspace-1:conversation:binding-1",
+    )
+    runtime.create_conversation(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["autotitle"] is False
 
 
 def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
@@ -2055,3 +2077,10 @@ def test_openhands_routes_agent_workspace_rename_and_delete(openhands_settings, 
         ("DELETE", "/api/conversations/10000000-0000-4000-8000-000000000020"),
     ]
     assert requests[0][2]["json"] == {"title": "Renamed"}
+    for _method, _path, request_kwargs in requests:
+        assert request_kwargs["base_url"] == "http://fw-sbx-agent-workspace-1:8000"
+        assert request_kwargs["session_api_key"] == derive_runtime_session_key(
+            openhands_settings.openhands_session_api_key,
+            openhands_settings.sandbox_manager_scope,
+            "fw-sbx-agent-workspace-1",
+        )

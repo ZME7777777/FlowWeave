@@ -16,6 +16,23 @@ CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_CLIENT_VERSION = "0.144.1"
 DEVICE_VERIFICATION_URL = f"{ISSUER}/codex/device"
 DEVICE_REDIRECT_URI = f"{ISSUER}/deviceauth/callback"
+# This mirrors ``OPENAI_CODEX_MODELS`` in the fixed OpenHands 1.42.0 source
+# baseline. The Codex account catalog can also expose product aliases such as
+# ``codex-auto-review``. LiteLLM 1.93.1 treats those aliases as lacking native
+# Responses streaming and silently makes a non-streaming request, which the
+# Codex endpoint rejects. Only expose IDs that the fixed Agent Runtime can
+# execute through its formal streaming Responses path.
+_OPENHANDS_CODEX_MODELS = frozenset(
+    {
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.5",
+        "gpt-5.6",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +98,7 @@ async def discover_codex_model_profiles(
                 if value:
                     model_name = value
                     break
-            if not model_name:
+            if model_name not in _OPENHANDS_CODEX_MODELS:
                 continue
             efforts: list[str] = []
             raw_levels: object = model.get("supported_reasoning_levels")

@@ -80,6 +80,19 @@ class OpenHandsRuntime:
         return None
 
     def _base_url_for_handle(self, handle: RuntimeHandle) -> str:
+        if handle.job_id.startswith("agent-workspace:"):
+            # The Agent Workspace is an independent, durable Runtime.  Its
+            # job ID identifies the logical Workspace, never the currently
+            # active container.  Always route through the generation-scoped
+            # managed resource returned by the locator.
+            if not handle.runtime_resource_name:
+                raise DomainError(
+                    "RUNTIME_ROUTE_REQUIRED",
+                    "The Agent Workspace Conversation has no active Runtime resource",
+                    409,
+                    {"conversation_id": handle.conversation_id},
+                )
+            return f"http://{handle.runtime_resource_name}:8000"
         route = self._environment_route(handle.job_id)
         if route is None:
             raise DomainError(
@@ -102,6 +115,8 @@ class OpenHandsRuntime:
         )
 
     def _session_key_for_handle(self, handle: RuntimeHandle) -> str:
+        if handle.job_id.startswith("agent-workspace:"):
+            return self._session_key_for_resource(handle.runtime_resource_name)
         route = self._environment_route(handle.job_id)
         if route is None:
             raise DomainError(
@@ -702,6 +717,13 @@ class OpenHandsRuntime:
             llm.update(
                 {
                     "api_mode": "responses",
+                    # Preserve the Codex-specific capability identity for the
+                    # OpenHands/LiteLLM adapter while sending a catalog model
+                    # that LiteLLM knows supports native Responses streaming.
+                    # This formal OpenHands field prevents LiteLLM from
+                    # injecting OpenAI public-API-only output parameters into
+                    # the Codex OAuth request.
+                    "model_canonical_name": "openai/codex-auto-review",
                     "extra_headers": provider.extra_headers,
                     "litellm_extra_body": extra_body,
                     "stream": True,
@@ -986,6 +1008,14 @@ class OpenHandsRuntime:
                     "The requested Conversation identity is invalid",
                     422,
                 ) from exc
+        if request.execution_key.startswith("agent-workspace:"):
+            # Agent Workspace owns the optional display label in its durable
+            # binding.  Do not make a second, hidden LLM call merely to derive
+            # an OpenHands title: the Codex subscription endpoint requires
+            # streaming while upstream title generation intentionally runs
+            # non-streaming.  This is the documented OpenHands `autotitle`
+            # field, not a prompt or protocol workaround.
+            payload["autotitle"] = False
         if spec.agent_profile is not None:
             # The immutable FlowWeave Profile has already been materialized in
             # the explicit Agent payload above.  Never send agent_profile_id:

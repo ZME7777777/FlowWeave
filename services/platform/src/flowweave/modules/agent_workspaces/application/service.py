@@ -18,13 +18,13 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntimeGeneration,
     AgentWorkspaceRuntimeSecretReference,
 )
-from flowweave.modules.environments.infrastructure.docker import resolve_setup_image
-from flowweave.modules.sandboxes.infrastructure.docker import DockerSandboxProvider, backend_name
-from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
-from flowweave.modules.tasks.application.service import enqueue
+from flowweave.modules.environments.public import resolve_setup_image
+from flowweave.modules.sandboxes.public import DockerSandboxProvider, ManagedSandbox, backend_name
+from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.credentials_crypto import decrypt_secret, encrypt_secret
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
+from flowweave.shared.models import TaskState
 from flowweave.shared.settings import get_settings
 
 _SCOPE_KEY = "platform-default"
@@ -267,11 +267,11 @@ def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
         .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
         .with_for_update()
     )
+    if get_settings().runtime_adapter == "mock":
+        digest = "sha256:" + "0" * 64
+    else:
+        _reference, digest = resolve_setup_image(get_settings().agent_workspace_runtime_image)
     if runtime is None:
-        if get_settings().runtime_adapter == "mock":
-            digest = "sha256:" + "0" * 64
-        else:
-            _reference, digest = resolve_setup_image(get_settings().agent_workspace_runtime_image)
         if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
             raise DomainError(
                 "AGENT_WORKSPACE_RUNTIME_IMAGE_INVALID",
@@ -292,6 +292,29 @@ def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
             "The Agent Workspace Runtime is bound to a different storage allocation",
             409,
         )
+    elif runtime.runtime_image_digest != digest and not (
+        runtime.active_generation is not None
+        and db.scalar(
+            select(ManagedSandbox.id).where(
+                ManagedSandbox.kind == "AGENT_RUNTIME",
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace.id,
+                ManagedSandbox.generation == runtime.active_generation,
+                ManagedSandbox.desired_state == "RUNNING",
+            )
+        )
+        is not None
+    ):
+        # Only an active managed resource may still own an OpenHands writer
+        # lease. If there is none (including after a no-cache deployment has
+        # removed the prior local image), pin the platform's current Runtime
+        # image before the desired-state recovery creates N+1. External
+        # Workspace, Conversation and Secret state remain unchanged.
+        runtime.runtime_image_digest = digest
+        runtime.status = "STARTING"
+        runtime.failure_code = None
+        runtime.failure_summary = None
+        runtime.row_version += 1
     if get_settings().runtime_adapter != "mock" and workspace.desired_state == "RUNNING":
         task = enqueue(
             db,
@@ -301,6 +324,23 @@ def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
             idempotency_key=f"provision-agent-workspace-runtime:{workspace.id}",
         )
         task.max_attempts = max(task.max_attempts, 20)
+        has_active_resource = runtime.active_generation is not None and db.scalar(
+            select(ManagedSandbox.id).where(
+                ManagedSandbox.kind == "AGENT_RUNTIME",
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace.id,
+                ManagedSandbox.generation == runtime.active_generation,
+                ManagedSandbox.desired_state == "RUNNING",
+            )
+        )
+        if task.state == TaskState.DEAD and not has_active_resource:
+            # Bootstrap is desired state, not a one-shot provisioning command.
+            # A fresh deployment can make a previously unavailable immutable
+            # image available, provided no active resource remains writable.
+            task.state = TaskState.RETRY
+            task.attempts = 0
+            task.available_at = datetime.now(UTC)
+            task.last_error = None
     return workspace
 
 
@@ -400,7 +440,6 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
                 "port": 8000,
                 "agent_workspace_id": workspace.id,
                 "runtime_allocation_id": allocation.id,
-                "agent_workspace_allocation_id": allocation.id,
                 "runtime_allocation_relative": allocation.relative_root,
                 "runtime_secret_reference_id": allocation.secret_reference_id,
             },

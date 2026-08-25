@@ -8,6 +8,8 @@ import json
 import shutil
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -18,6 +20,7 @@ REQUIRED_PACKAGES = (
     "openhands-tools",
     "openhands-workspace",
 )
+DOWNLOAD_ATTEMPTS = 5
 
 
 def _sha256(path: Path) -> str:
@@ -85,6 +88,21 @@ def _safe_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
     return members
 
 
+def _download_archive(url: str, destination: Path) -> None:
+    """Download a pinned archive with bounded retry for transient transport failures."""
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310
+                with destination.open("wb") as stream:
+                    shutil.copyfileobj(response, stream)
+            return
+        except urllib.error.URLError:
+            destination.unlink(missing_ok=True)
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            time.sleep(attempt)
+
+
 def fetch_source(
     lock_path: Path, destination: Path, provenance_path: Path, overlays: list[Path]
 ) -> None:
@@ -94,9 +112,7 @@ def fetch_source(
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="flowweave-openhands-source-") as temporary:
         archive_path = Path(temporary) / "source.tar.gz"
-        with urllib.request.urlopen(lock["archive_url"], timeout=120) as response:  # noqa: S310
-            with archive_path.open("wb") as stream:
-                shutil.copyfileobj(response, stream)
+        _download_archive(lock["archive_url"], archive_path)
         actual_digest = _sha256(archive_path)
         if actual_digest != lock["archive_sha256"]:
             raise RuntimeError(

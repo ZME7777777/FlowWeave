@@ -22,6 +22,7 @@ from flowweave.modules.environments.infrastructure.docker import (
     open_managed_terminal,
     open_terminal,
     resize_terminal,
+    resolve_setup_image,
 )
 
 __all__ = (
@@ -39,6 +40,7 @@ __all__ = (
     "publish_setup_session",
     "read_environment",
     "recover_environment_cleanup_tasks",
+    "resolve_setup_image",
     "resize_terminal",
     "save_environment",
     "setup_sandbox_owner_is_active",

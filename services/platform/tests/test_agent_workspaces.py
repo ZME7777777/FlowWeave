@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
 from flowweave.modules.agent_workspaces.application import conversations
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
@@ -23,7 +24,7 @@ from flowweave.runtime.base import RuntimeProvider
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import ManagedSandbox
+from flowweave.shared.models import BackgroundTask, ManagedSandbox, TaskState
 from flowweave.shared.settings import settings_context
 
 
@@ -47,6 +48,41 @@ def test_default_agent_workspace_has_external_storage_and_no_flow_owner(
         assert (settings.workspace_root / allocation.relative_root / "state/conversations").is_dir()
         assert runtime.runtime_image_digest == "sha256:" + "0" * 64
         db.commit()
+
+
+def test_unavailable_workspace_runtime_refreshes_missing_deployment_image(
+    settings, db_session_factory, monkeypatch
+):
+    configured = settings.model_copy(update={"runtime_adapter": "openhands"})
+    first_digest = "sha256:" + "1" * 64
+    replacement_digest = "sha256:" + "2" * 64
+    monkeypatch.setattr(
+        "flowweave.modules.agent_workspaces.application.service.resolve_setup_image",
+        lambda _reference: ("image", first_digest),
+    )
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        assert runtime is not None and runtime.runtime_image_digest == first_digest
+        monkeypatch.setattr(
+            "flowweave.modules.agent_workspaces.application.service.resolve_setup_image",
+            lambda _reference: ("image", replacement_digest),
+        )
+        runtime.active_generation = 1
+        runtime.status = "RECONNECTING"
+        ensure_default_agent_workspace(db)
+        assert runtime.runtime_image_digest == replacement_digest
+        task = db.scalar(select(BackgroundTask).where(BackgroundTask.aggregate_id == workspace.id))
+        assert task is not None
+        task.state = TaskState.DEAD
+        task.attempts = task.max_attempts
+        task.last_error = "previous deployment image was unavailable"
+        ensure_default_agent_workspace(db)
+        assert task.state == TaskState.RETRY
+        assert task.attempts == 0
+        assert task.last_error is None
 
 
 def test_workspace_runtime_replaces_deleted_physical_generation(
@@ -106,6 +142,46 @@ def test_workspace_runtime_replaces_deleted_physical_generation(
         assert current.generation == 2
         assert runtime is not None and runtime.active_generation == 2
         assert [item.generation for item in generations] == [1, 2]
+
+
+def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
+    settings, db_session_factory, monkeypatch
+):
+    configured = settings.model_copy(update={"terminal_environment_backend": "docker"})
+    captured: list[ManagedSandbox] = []
+
+    def ensure_running(_self, resource, *, runtime_secret_key):
+        captured.append(resource)
+        assert runtime_secret_key is not None
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="agent-workspace-container",
+            state="READY",
+            labels={},
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        process_agent_workspace_runtime(db, workspace.id)
+        assert len(captured) == 1
+        resource = captured[0]
+        payload = RuntimeProviderResourceWrite.model_validate(
+            {
+                "manager_scope": configured.sandbox_manager_scope,
+                "id": resource.id,
+                "kind": resource.kind,
+                "owner_type": resource.owner_type,
+                "owner_id": resource.owner_id,
+                "backend_resource_name": resource.backend_resource_name,
+                "image_reference": resource.image_reference,
+                "spec": resource.spec_json,
+                "created_at": resource.created_at,
+                "runtime_secret_key": "x" * 32,
+            }
+        )
+        assert str(payload.spec.runtime_allocation_id) == resource.agent_workspace_allocation_id
 
 
 def _ready_workspace_for_conversation(db):

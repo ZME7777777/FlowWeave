@@ -650,7 +650,7 @@ def _owner_is_active(
     if resource.owner_type == "FLOW_RUN":
         return True
     if resource.owner_type == "AGENT_WORKSPACE":
-        from flowweave.modules.agent_workspaces.application.service import (
+        from flowweave.modules.agent_workspaces.public import (
             agent_workspace_owner_is_active,
         )
 
@@ -862,7 +862,7 @@ def _apply_reconcile_outcome(
                     reason=current.last_error_code or "RUNTIME_HEALTH_FAILED",
                 )
         elif errors and current.kind == "AGENT_RUNTIME" and current.owner_type == "AGENT_WORKSPACE":
-            from flowweave.modules.agent_workspaces.application.service import (
+            from flowweave.modules.agent_workspaces.public import (
                 mark_agent_workspace_runtime_lost,
             )
 
@@ -965,7 +965,7 @@ def reconcile_managed_sandboxes(db: Session) -> ReconcileReport:
                             )
                             secret_db.commit()
                     elif snapshot.agent_workspace_allocation_id is not None:
-                        from flowweave.modules.agent_workspaces.application.service import (
+                        from flowweave.modules.agent_workspaces.public import (
                             resolve_agent_workspace_runtime_secret,
                         )
 

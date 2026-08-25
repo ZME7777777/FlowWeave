@@ -13,8 +13,8 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
     AgentWorkspaceRuntime,
 )
-from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
-from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
+from flowweave.modules.model_providers.public import has_connected_default_model
+from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.runtime.base import RuntimeAgentSpec, RuntimeHandle, RuntimeTool, StartAttemptRequest
 from flowweave.runtime.contract import agent_workspace_runtime_contract
 from flowweave.runtime.dependencies import get_runtime
@@ -93,24 +93,13 @@ def update_workspace_settings(
     if default_model_provider_id is None:
         workspace.default_model_provider_id = None
     else:
-        provider = db.get(ModelProvider, default_model_provider_id)
-        has_default_model = (
-            db.scalar(
-                select(ProviderModel.id).where(
-                    ProviderModel.provider_id == default_model_provider_id,
-                    ProviderModel.enabled.is_(True),
-                    ProviderModel.is_default.is_(True),
-                )
-            )
-            is not None
-        )
-        if provider is None or provider.connection_state != "CONNECTED" or not has_default_model:
+        if not has_connected_default_model(db, default_model_provider_id):
             raise DomainError(
                 "AGENT_MODEL_CONFIGURATION_INVALID",
                 "默认模型必须是已测试成功且存在启用默认模型的配置",
                 409,
             )
-        workspace.default_model_provider_id = provider.id
+        workspace.default_model_provider_id = default_model_provider_id
     workspace.updated_at = now()
     db.flush()
     return _workspace_dict(workspace)
@@ -202,8 +191,7 @@ def create_conversation(
         raise DomainError("AGENT_CONVERSATION_PROVISIONING", "会话仍在创建中", 409)
     if not workspace.default_model_provider_id:
         raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "请先选择已测试成功的模型配置", 409)
-    provider_record = db.get(ModelProvider, workspace.default_model_provider_id)
-    if provider_record is None or provider_record.connection_state != "CONNECTED":
+    if not has_connected_default_model(db, workspace.default_model_provider_id):
         raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "请先选择已测试成功的模型配置", 409)
     runtime = db.scalar(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)

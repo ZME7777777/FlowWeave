@@ -49,14 +49,19 @@ from flowweave.modules.sandboxes.application.service import (
     sandbox_snapshot,
     touch_runtime,
 )
+from flowweave.modules.sandboxes.infrastructure.docker import DockerSandboxProvider, backend_name
+from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 
 __all__ = (
     "ActiveRuntimeConnection",
+    "DockerSandboxProvider",
+    "ManagedSandbox",
     "ReconcileReport",
     "RuntimeProviderAllocation",
     "RuntimeSessionFence",
     "RuntimeStorageAllocation",
     "allocate_flow_run_runtime",
+    "backend_name",
     "active_flow_run_runtime_connection",
     "assert_active_runtime_fence",
     "capability_materialization_lock",
