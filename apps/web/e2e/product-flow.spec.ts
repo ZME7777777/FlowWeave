@@ -185,6 +185,71 @@ test('terminal environment creation keeps the setup image internal', async ({ pa
   });
 });
 
+test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
+  let configured = false;
+  const conversations: Array<Record<string, unknown>> = [];
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const workspace = {
+      id: 'agent-workspace-1', display_name: 'Agent 工作区',
+      default_model_provider_id: configured ? 'provider-1' : null,
+      desired_state: 'RUNNING', updated_at: new Date().toISOString(),
+    };
+    if (path.endsWith('/default')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(workspace) });
+      return;
+    }
+    if (path.endsWith('/runtime')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
+      return;
+    }
+    if (path.endsWith('/settings') && request.method() === 'PATCH') {
+      configured = true;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...workspace, default_model_provider_id: 'provider-1' }) });
+      return;
+    }
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversations) });
+      return;
+    }
+    if (path.endsWith('/conversations') && request.method() === 'POST') {
+      const created = {
+        id: 'agent-conversation-1', display_title: null, lifecycle: 'ACTIVE',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
+      };
+      conversations.splice(0, 0, created);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      return;
+    }
+    if (path.endsWith('/events')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [], next_cursor: null }) });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'provider-1', name: '已测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'gpt-test', enabled: true, is_default: true }],
+    }]),
+  }));
+  await login(page);
+  await page.getByRole('button', { name: 'Agent 会话' }).click();
+  await expect(page).toHaveURL(/\/agent$/);
+  await expect(page.getByText('先选择已测试成功的模型配置')).toBeVisible();
+  await page.getByLabel('Agent 默认模型配置').selectOption('provider-1');
+  await page.getByRole('button', { name: '设为默认' }).click();
+  await expect(page.getByRole('button', { name: '新建会话' }).first()).toBeEnabled();
+  await page.getByRole('button', { name: '新建会话' }).first().click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
+  await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
+  await page.reload();
+  await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
+  await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
+});
+
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
   await login(page);
 

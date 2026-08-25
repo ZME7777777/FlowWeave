@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-chat';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-chat' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -327,6 +327,27 @@ export interface OpenHandsConversationEventBatch {
   events: OpenHandsConversationEvent[];
   next_cursor?: string | null;
   result?: { status?: string; final_message?: string | null; error?: string | null } | null;
+}
+export interface AgentWorkspace {
+  id: string;
+  display_name: string;
+  default_model_provider_id?: string | null;
+  desired_state: 'RUNNING' | 'MAINTENANCE';
+  updated_at: string;
+}
+export interface AgentWorkspaceRuntime {
+  state: 'ACTIVE' | 'RECOVERING';
+  write_available: boolean;
+  message?: string | null;
+  updated_at: string;
+}
+export interface AgentConversation {
+  id: string;
+  display_title?: string | null;
+  lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
+  created_at: string;
+  updated_at: string;
+  last_connected_at?: string | null;
 }
 export interface FlowRunRuntimeGeneration {
   generation: number;

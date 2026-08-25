@@ -3,8 +3,8 @@ import { createJSONStorage, persist, type StateStorage } from 'zustand/middlewar
 import type { ViewName } from '../types';
 
 const STORAGE_KEY = 'flowweave-workbench';
-const STORAGE_VERSION = 3;
-const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'models', 'flows', 'runs', 'workbench', 'agent-chat']);
+const STORAGE_VERSION = 4;
+const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'models', 'flows', 'runs', 'workbench', 'agent-chat', 'agent-workbench']);
 
 interface WorkbenchState {
   view: ViewName;
@@ -36,7 +36,7 @@ function sanitizePersistedState(value: unknown): PersistedWorkbenchState {
     // Run, Attempt and Conversation IDs are transient. Persisting them made a
     // browser refresh reopen deleted or obsolete Runtime contexts after a
     // deploy. Return to the Run list instead of restoring those deep links.
-    view: view === 'workbench' || view === 'agent-chat' ? 'runs' : view,
+    view: view === 'workbench' || view === 'agent-chat' || view === 'agent-workbench' ? 'runs' : view,
   };
 }
 
@@ -83,7 +83,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       version: STORAGE_VERSION,
       storage: createJSONStorage<PersistedWorkbenchState>(() => safeLocalStorage),
       partialize: ({ view }) => ({
-        view: view === 'workbench' || view === 'agent-chat' ? 'runs' : view,
+        view: view === 'workbench' || view === 'agent-chat' || view === 'agent-workbench' ? 'runs' : view,
       }),
       migrate: persisted => sanitizePersistedState(persisted),
       merge: (persisted, current) => ({ ...current, ...sanitizePersistedState(persisted) }),

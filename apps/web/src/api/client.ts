@@ -1,7 +1,7 @@
 import type {
   AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  AgentConversation, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -99,6 +99,26 @@ const json = (method: string, body?: unknown, idempotent = false): RequestInit =
 });
 
 export const api = {
+  defaultAgentWorkspace: () => request<AgentWorkspace>('/agent-workspaces/default'),
+  agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
+  updateAgentWorkspaceSettings: (id: string, default_model_provider_id: string | null) =>
+    request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}/settings`, json('PATCH', { default_model_provider_id })),
+  agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
+  agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
+  createAgentConversation: (workspaceId: string, title?: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { title }, true)),
+  updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
+  deleteAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+  agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string) =>
+    request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+  sendAgentMessage: (workspaceId: string, bindingId: string, content: string) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content })),
+  interruptAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
+  resumeAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/resume`, json('POST')),
   directories: () => request<NodeDirectory[]>('/node-directories'),
   createDirectory: (body: { name: string; parent_id?: string | null; position?: number }) =>
     request<NodeDirectory>('/node-directories', json('POST', body)),
@@ -304,6 +324,66 @@ export function subscribeToConversationStream(
     };
   };
 
+  connect();
+  return () => {
+    disposed = true;
+    if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+    socket?.close(1000, 'Conversation changed');
+    onStatus?.('disabled');
+  };
+}
+
+export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, columns = 80): string {
+  const base = API_BASE || window.location.origin;
+  const url = new URL(`${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/terminal`, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('rows', String(rows));
+  url.searchParams.set('columns', String(columns));
+  return url.toString();
+}
+
+export function agentWorkspaceStreamUrl(workspaceId: string, bindingId: string): string {
+  const base = API_BASE || window.location.origin;
+  const url = new URL(`${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/stream`, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
+export function subscribeToAgentWorkspaceStream(
+  workspaceId: string,
+  bindingId: string,
+  onEvent: (event: AgentStreamEvent) => void,
+  onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
+): () => void {
+  let disposed = false;
+  let socket: WebSocket | undefined;
+  let reconnectTimer: number | undefined;
+  let reconnectAttempt = 0;
+  const reconnectDelays = [1000, 2000, 5000, 10_000, 30_000];
+
+  const connect = () => {
+    if (disposed) return;
+    onStatus?.(reconnectAttempt ? 'recovering' : 'connecting');
+    socket = new WebSocket(agentWorkspaceStreamUrl(workspaceId, bindingId));
+    socket.onopen = () => { reconnectAttempt = 0; onStatus?.('live'); };
+    socket.onmessage = message => {
+      try {
+        const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
+        if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content });
+        else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
+      } catch {
+        // The REST event source is authoritative; ignore an invalid live frame.
+      }
+    };
+    socket.onclose = event => {
+      socket = undefined;
+      if (disposed || event.code === 4409) { onStatus?.('disabled'); return; }
+      onStatus?.('recovering');
+      const delay = reconnectDelays[Math.min(reconnectAttempt, reconnectDelays.length - 1)];
+      reconnectAttempt += 1;
+      reconnectTimer = window.setTimeout(connect, delay);
+    };
+  };
   connect();
   return () => {
     disposed = true;
