@@ -75,15 +75,16 @@ class RuntimeProviderSpec(_StrictModel):
         pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
     )
     port: Literal[8000]
-    environment_id: UUID
-    environment_version_id: UUID
-    environment_version_no: int = Field(ge=1)
+    environment_id: UUID | None = None
+    environment_version_id: UUID | None = None
+    environment_version_no: int | None = Field(default=None, ge=1)
     flow_run_id: UUID | None = None
+    agent_workspace_id: UUID | None = None
     runtime_allocation_id: UUID | None = None
     runtime_allocation_relative: str | None = Field(
         default=None,
         max_length=500,
-        pattern=r"^\.flow-run-runtimes/[0-9a-f]{32}/[0-9a-f-]{36}$",
+        pattern=r"^\.(?:flow-run-runtimes/[0-9a-f]{32}/[0-9a-f-]{36}|agent-workspaces/platform-default)$",
     )
     runtime_secret_reference_id: UUID | None = None
 
@@ -99,19 +100,36 @@ class RuntimeProviderSpec(_StrictModel):
     @model_validator(mode="after")
     def validate_workspace_contract(self):
         allocation_fields = (
-            self.flow_run_id,
             self.runtime_allocation_id,
             self.runtime_allocation_relative,
             self.runtime_secret_reference_id,
         )
-        if any(value is not None for value in allocation_fields) and not all(
-            value is not None for value in allocation_fields
-        ):
+        if self.flow_run_id is not None and self.agent_workspace_id is not None:
+            raise ValueError("FlowRun and Agent Workspace Runtime contracts are mutually exclusive")
+        if self.flow_run_id is not None and not all(allocation_fields):
             raise ValueError("FlowRun Runtime allocation fields must be provided together")
-        if (self.flow_run_id is not None) == (self.workspace_relative is not None):
+        if self.agent_workspace_id is not None and not all(allocation_fields):
+            raise ValueError("Agent Workspace Runtime allocation fields must be provided together")
+        if (
+            self.flow_run_id is None
+            and self.agent_workspace_id is None
+            and any(value is not None for value in allocation_fields)
+        ):
+            raise ValueError("Persistent Runtime allocation requires an explicit owner")
+        persistent_runtime = self.flow_run_id is not None or self.agent_workspace_id is not None
+        if persistent_runtime == (self.workspace_relative is not None):
             raise ValueError(
-                "FlowRun and temporary Runtime workspace contracts are mutually exclusive"
+                "Persistent and temporary Runtime workspace contracts are mutually exclusive"
             )
+        if self.agent_workspace_id is not None:
+            if self.environment_id is not None or self.environment_version_id is not None:
+                raise ValueError("Agent Workspace Runtime must not reference an Environment")
+        elif (
+            self.environment_id is None
+            or self.environment_version_id is None
+            or self.environment_version_no is None
+        ):
+            raise ValueError("Runtime environment identity is required")
         return self
 
 
@@ -133,6 +151,7 @@ class RuntimeProviderResourceWrite(_SandboxResourceBase):
     kind: Literal["AGENT_RUNTIME"]
     owner_type: Literal[
         "FLOW_RUN",
+        "AGENT_WORKSPACE",
         "CAPABILITY_VALIDATION",
         "MCP_OAUTH_AUTHORIZATION",
     ]
@@ -145,10 +164,10 @@ class RuntimeProviderResourceWrite(_SandboxResourceBase):
         has_allocation = self.spec.runtime_allocation_relative is not None
         if has_allocation != (self.runtime_secret_key is not None):
             raise ValueError(
-                "runtime_secret_key must be injected exactly for FlowRun Runtime allocations"
+                "runtime_secret_key must be injected exactly for persistent Runtime allocations"
             )
-        if has_allocation != (self.owner_type == "FLOW_RUN"):
-            raise ValueError("FlowRun Runtime allocation owner is invalid")
+        if has_allocation != (self.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}):
+            raise ValueError("Persistent Runtime allocation owner is invalid")
         if (
             self.runtime_secret_key is not None
             and len(self.runtime_secret_key.get_secret_value()) < 32
@@ -505,6 +524,14 @@ def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
         runtime_allocation_id=(
             str(payload.spec.runtime_allocation_id)
             if isinstance(payload, RuntimeProviderResourceWrite)
+            and payload.owner_type == "FLOW_RUN"
+            and payload.spec.runtime_allocation_id is not None
+            else None
+        ),
+        agent_workspace_allocation_id=(
+            str(payload.spec.runtime_allocation_id)
+            if isinstance(payload, RuntimeProviderResourceWrite)
+            and payload.owner_type == "AGENT_WORKSPACE"
             and payload.spec.runtime_allocation_id is not None
             else None
         ),
@@ -572,7 +599,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/sandboxes/delete": frozenset({"api", "worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
-                "/v1/environments/resolve-base-image": frozenset({"api"}),
+                # Worker resolves the platform-owned Agent Workspace image at
+                # bootstrap; both roles still receive only digest provenance.
+                "/v1/environments/resolve-base-image": frozenset({"api", "worker"}),
                 "/v1/environments/remove-credentials": frozenset({"worker"}),
                 # Both principals can encounter pre-ledger setup resources
                 # during the bounded migration compatibility period. The

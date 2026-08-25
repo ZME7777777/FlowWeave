@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
 from flowweave.modules.environments.public import (
     expire_setup_sessions,
     recover_environment_cleanup_tasks,
@@ -143,6 +144,9 @@ class TaskWorker:
                             mark_uow_owned(db),
                             recover_environment_cleanup_tasks(db, commit=False),
                         )[1]
+                    )
+                    await session.run_sync(
+                        lambda db: (mark_uow_owned(db), ensure_default_agent_workspace(db))[1]
                     )
                     await session.commit()
                 except BaseException:

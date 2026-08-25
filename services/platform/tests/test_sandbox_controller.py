@@ -66,6 +66,29 @@ def _ensure_payload(**updates: object) -> dict[str, object]:
     return payload
 
 
+def _agent_workspace_runtime_payload() -> dict[str, object]:
+    return {
+        "manager_scope": _SCOPE,
+        "id": _RESOURCE_ID,
+        "kind": "AGENT_RUNTIME",
+        "owner_type": "AGENT_WORKSPACE",
+        "owner_id": _OWNER_ID,
+        "backend_resource_name": backend_name(
+            _RESOURCE_ID, owner_type="AGENT_WORKSPACE", owner_id=_OWNER_ID
+        ),
+        "image_reference": "sha256:" + "a" * 64,
+        "runtime_secret_key": "x" * 32,
+        "spec": {
+            "agent_workspace_id": _OWNER_ID,
+            "runtime_allocation_id": _ENVIRONMENT_ID,
+            "runtime_allocation_relative": ".agent-workspaces/platform-default",
+            "runtime_secret_reference_id": _ENVIRONMENT_VERSION_ID,
+            "port": 8000,
+        },
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def test_controller_rejects_unauthenticated_control_request(settings, monkeypatch):
     touched: list[bool] = []
     monkeypatch.setattr(
@@ -80,6 +103,34 @@ def test_controller_rejects_unauthenticated_control_request(settings, monkeypatc
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "CONTROLLER_UNAUTHORIZED"
     assert touched == []
+
+
+def test_controller_accepts_persistent_agent_workspace_runtime(settings, monkeypatch):
+    received: list[tuple[str, str, str | None]] = []
+
+    def ensure_running(_self, resource, *, runtime_secret_key=None):
+        received.append(
+            (resource.owner_type, resource.agent_workspace_allocation_id, runtime_secret_key)
+        )
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="agent-workspace-container",
+            state="READY",
+            labels={},
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/sandboxes/ensure",
+            headers=_headers(),
+            json=_agent_workspace_runtime_payload(),
+        )
+
+    assert response.status_code == 200, response.text
+    assert received == [("AGENT_WORKSPACE", _ENVIRONMENT_ID, "x" * 32)]
 
 
 def test_controller_rejects_wrong_scope_before_docker(settings, monkeypatch):
@@ -313,7 +364,6 @@ def test_controller_resolves_platform_setup_image_tag(settings, monkeypatch):
         ("/v1/sandboxes/inspect", "worker"),
         ("/v1/sandboxes/list", "worker"),
         ("/v1/environments/remove-image", "worker"),
-        ("/v1/environments/resolve-base-image", "api"),
         ("/v1/environments/publish", "api"),
         ("/v1/gates/execute", "worker"),
         ("/v1/dependencies/build", "worker"),

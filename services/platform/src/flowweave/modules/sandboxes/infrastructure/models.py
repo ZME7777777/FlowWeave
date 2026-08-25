@@ -211,6 +211,9 @@ class ManagedSandbox(Base):
     runtime_allocation_id: Mapped[str | None] = mapped_column(
         ForeignKey("flow_run_runtime_allocations.id", ondelete="RESTRICT"), index=True
     )
+    agent_workspace_allocation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_workspace_runtime_allocations.id", ondelete="RESTRICT"), index=True
+    )
     spec_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     idle_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

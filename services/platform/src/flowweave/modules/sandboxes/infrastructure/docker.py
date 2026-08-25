@@ -403,6 +403,16 @@ chmod 0700 "$target"
             )
         actual_digest, labels = self._inspect_image(expected_digest)
 
+        if resource.kind == "AGENT_RUNTIME" and resource.owner_type == "AGENT_WORKSPACE":
+            if actual_digest != expected_digest:
+                raise DomainError(
+                    "SANDBOX_IMAGE_UNTRUSTED",
+                    "The default Agent Workspace Runtime image content digest drifted",
+                    409,
+                    {"image_reference": expected_digest},
+                )
+            return actual_digest
+
         if resource.kind == "AGENT_RUNTIME":
             version_id = str(spec.get("environment_version_id") or "")
             version_no = str(spec.get("environment_version_no") or "")
@@ -493,9 +503,18 @@ chmod 0700 "$target"
             return existing
 
         self._ensure_runtime_network(resource)
-        home_volume = self._ensure_environment_credential_volume(
-            str((resource.spec_json or {}).get("environment_id") or "")
+        runtime_home_id = str(
+            (resource.spec_json or {}).get("agent_workspace_id")
+            or (resource.spec_json or {}).get("environment_id")
+            or ""
         )
+        if not runtime_home_id:
+            raise DomainError(
+                "SANDBOX_SPEC_INVALID",
+                "The sandbox Runtime home identity is missing",
+                422,
+            )
+        home_volume = self._ensure_environment_credential_volume(runtime_home_id)
         self._prepare_environment_home(
             home_volume, verified_image_reference=verified_image_reference
         )
@@ -798,13 +817,16 @@ chmod 0700 "$target"
             )
         command = self._common_run_command(resource)
         environment_id = str((resource.spec_json or {}).get("environment_id") or "")
-        if not environment_id:
+        runtime_home_id = str(
+            (resource.spec_json or {}).get("agent_workspace_id") or environment_id
+        )
+        if not runtime_home_id:
             raise DomainError(
                 "SANDBOX_SPEC_INVALID",
-                "The sandbox environment identity is missing",
+                "The sandbox Runtime home identity is missing",
                 422,
             )
-        credential_volume = self._ensure_environment_credential_volume(environment_id)
+        credential_volume = self._ensure_environment_credential_volume(runtime_home_id)
         if resource.kind == "ENVIRONMENT_SETUP":
             command.extend(
                 [
@@ -839,17 +861,17 @@ chmod 0700 "$target"
             self.settings.sandbox_manager_scope,
             resource.backend_resource_name,
         )
-        persistent_flow_run = resource.owner_type == "FLOW_RUN"
+        persistent_runtime = resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}
         runtime_tmpfs = [
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
         ]
         runtime_environment: list[str] = []
-        if persistent_flow_run:
+        if persistent_runtime:
             if runtime_secret_key is None or len(runtime_secret_key) < 32:
                 raise DomainError(
                     "RUNTIME_SECRET_REFERENCE_INVALID",
-                    "The FlowRun Runtime Secret Reference is unavailable",
+                    "The persistent Runtime Secret Reference is unavailable",
                     409,
                 )
             runtime_environment = [
@@ -935,7 +957,7 @@ chmod 0700 "$target"
         }:
             raise DomainError(
                 "RUNTIME_PROVIDER_OWNER_INVALID",
-                "Only FlowRun or explicit temporary owners may start an Agent Runtime",
+                "Only persistent or explicit temporary owners may start an Agent Runtime",
                 422,
                 {"owner_type": resource.owner_type, "owner_id": resource.owner_id},
             )
@@ -1014,21 +1036,32 @@ chmod 0700 "$target"
         spec = resource.spec_json or {}
         relative_raw = str(spec.get("runtime_allocation_relative") or "")
         flow_run_id = str(spec.get("flow_run_id") or "")
-        runtime_allocation_id = str(spec.get("runtime_allocation_id") or "")
+        agent_workspace_id = str(spec.get("agent_workspace_id") or "")
+        runtime_allocation_id = str(
+            spec.get("runtime_allocation_id") or spec.get("agent_workspace_allocation_id") or ""
+        )
         relative = PurePosixPath(relative_raw)
+        is_flow_run = (
+            resource.owner_type == "FLOW_RUN"
+            and resource.owner_id == flow_run_id
+            and len(relative.parts) == 3
+            and relative.parts[0] == ".flow-run-runtimes"
+            and relative.parts[-1] == flow_run_id
+        )
+        is_agent_workspace = (
+            resource.owner_type == "AGENT_WORKSPACE"
+            and resource.owner_id == agent_workspace_id
+            and relative == PurePosixPath(".agent-workspaces/platform-default")
+        )
         if (
-            resource.owner_type != "FLOW_RUN"
-            or resource.owner_id != flow_run_id
+            not (is_flow_run or is_agent_workspace)
             or relative.is_absolute()
-            or len(relative.parts) != 3
-            or relative.parts[0] != ".flow-run-runtimes"
-            or relative.parts[-1] != flow_run_id
             or not re.fullmatch(r"[0-9a-f-]{36}", runtime_allocation_id)
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise DomainError(
                 "SANDBOX_WORKSPACE_INVALID",
-                "The FlowRun Runtime allocation path is invalid",
+                "The persistent Runtime allocation path is invalid",
                 422,
             )
         source_root, validation_root = self._workspace_source_roots()
@@ -1072,7 +1105,7 @@ chmod 0700 "$target"
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise DomainError(
                 "SANDBOX_WORKSPACE_SOURCE_INVALID",
-                "The FlowRun Runtime host directories failed integrity validation",
+                "The persistent Runtime host directories failed integrity validation",
                 409,
             ) from exc
         specifications = [
@@ -1620,6 +1653,7 @@ def backend_name(
         return f"fw-sbx-{resource_key}"
     owner_kind = {
         "FLOW_RUN": "run",
+        "AGENT_WORKSPACE": "agent",
         "SETUP_SESSION": "setup",
         "CAPABILITY_VALIDATION": "probe",
         "MCP_OAUTH_AUTHORIZATION": "oauth",

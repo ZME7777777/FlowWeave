@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     terminal_environment_backend: str = "disabled"
     terminal_environment_setup_image: str = "flowweave-openhands-runtime:1"
     openhands_runtime_builder_image: str = "flowweave-openhands-runtime:1"
+    # The independent Agent Workspace resolves this platform-owned reference
+    # to a digest at bootstrap, then Runtime generations use only that digest.
+    agent_workspace_runtime_image: str = "flowweave-openhands-runtime:1"
     terminal_environment_session_ttl_seconds: int = Field(default=14_400, ge=300, le=86_400)
     terminal_environment_cleanup_seconds: int = Field(default=30, ge=5, le=3600)
     sandbox_manager_scope: str = "flowweave-local"

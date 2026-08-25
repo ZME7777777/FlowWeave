@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_workspaces.application.service import process_agent_workspace_runtime
 from flowweave.modules.catalog.public import (
     build_capability_dependencies,
     cleanup_capability_import,
@@ -37,6 +38,12 @@ def _provision_flow_run_runtime(
     db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
 ) -> None:
     orchestration.process_provision_flow_run_runtime(db, aggregate_id, lease, commit=False)
+
+
+def _provision_agent_workspace_runtime(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    process_agent_workspace_runtime(db, aggregate_id)
 
 
 def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
@@ -155,6 +162,7 @@ HANDLERS: dict[str, Handler] = {
     "RUN_GATE_POLICY": _gates,
     "START_RUNTIME": _start_runtime,
     "PROVISION_FLOW_RUN_RUNTIME": _provision_flow_run_runtime,
+    "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
     "POLL_RUNTIME": _poll_runtime,
     "WAIT_RUNTIME_WAKEUP": _wait_runtime_wakeup,
     "RESUME_RUNTIME": _resume_runtime,

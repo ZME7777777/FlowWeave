@@ -3,6 +3,13 @@
 New code imports mappings from each module's ``infrastructure.models``.
 """
 
+from flowweave.modules.agent_workspaces.infrastructure.models import (
+    AgentWorkspace,
+    AgentWorkspaceRuntime,
+    AgentWorkspaceRuntimeAllocation,
+    AgentWorkspaceRuntimeGeneration,
+    AgentWorkspaceRuntimeSecretReference,
+)
 from flowweave.modules.catalog.infrastructure.models import (
     CapabilityBlob,
     CapabilityCollection,
@@ -71,6 +78,11 @@ from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunSta
 
 __all__ = (
     "ArtifactVersion",
+    "AgentWorkspace",
+    "AgentWorkspaceRuntime",
+    "AgentWorkspaceRuntimeAllocation",
+    "AgentWorkspaceRuntimeGeneration",
+    "AgentWorkspaceRuntimeSecretReference",
     "AttemptInputBinding",
     "AttemptState",
     "BackgroundTask",

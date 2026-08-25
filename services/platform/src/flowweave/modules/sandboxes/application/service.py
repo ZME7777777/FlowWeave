@@ -83,7 +83,7 @@ def _control_engine(db: Session) -> Engine:
 
 
 def _renew_runtime_lease(resource: ManagedSandbox, *, now: datetime) -> None:
-    if resource.owner_type == "FLOW_RUN":
+    if resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}:
         resource.last_activity_at = now
         resource.idle_expires_at = None
         return
@@ -508,7 +508,7 @@ def request_delete_durable(db: Session, sandbox_id: str | None) -> None:
         resource = control_db.get(ManagedSandbox, sandbox_id)
         if resource is None:
             return
-        if resource.owner_type == "FLOW_RUN":
+        if resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}:
             # Attempt/Conversation cleanup cannot stop Run-owned compute. The
             # explicit FlowRun deletion path uses delete_sandbox_now instead.
             return
@@ -558,7 +558,7 @@ def request_delete(db: Session, sandbox_id: str) -> None:
     resource = db.get(ManagedSandbox, sandbox_id)
     if resource is None:
         return
-    if resource.owner_type == "FLOW_RUN":
+    if resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}:
         return
     resource.desired_state = "DELETED"
     resource.next_reconcile_at = datetime.now(UTC)
@@ -649,6 +649,12 @@ def _owner_is_active(
         )
     if resource.owner_type == "FLOW_RUN":
         return True
+    if resource.owner_type == "AGENT_WORKSPACE":
+        from flowweave.modules.agent_workspaces.application.service import (
+            agent_workspace_owner_is_active,
+        )
+
+        return agent_workspace_owner_is_active(db, resource.owner_id)
     if resource.owner_type in {"ATTEMPT", "CONVERSATION"}:
         # These are legacy pre-FR-03 ownership modes. New code cannot create
         # them; reconciliation only drains and deletes any remaining resource.
@@ -699,13 +705,16 @@ def _claim_reconcile_batch(
             owner_inactive = not owner_active
             idle_expired = (
                 resource.kind == "AGENT_RUNTIME"
-                and resource.owner_type != "FLOW_RUN"
+                and resource.owner_type not in {"FLOW_RUN", "AGENT_WORKSPACE"}
                 and resource.idle_expires_at is not None
                 and resource.idle_expires_at <= now
             )
             # Temporary compute retains an absolute safety boundary. FlowRun
             # compute follows the explicit Run lifecycle instead of a wall clock.
-            hard_expired = resource.owner_type != "FLOW_RUN" and resource.hard_expires_at <= now
+            hard_expired = (
+                resource.owner_type not in {"FLOW_RUN", "AGENT_WORKSPACE"}
+                and resource.hard_expires_at <= now
+            )
             if (hard_expired or idle_expired or owner_inactive) and (
                 resource.desired_state != "DELETED"
             ):
@@ -743,7 +752,7 @@ def _perform_reconcile(
         if (
             observation is None
             and resource.kind == "AGENT_RUNTIME"
-            and resource.owner_type == "FLOW_RUN"
+            and resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}
         ):
             return _ReconcileOutcome("RUNTIME_LOST")
         observation = provider.ensure_running(resource, runtime_secret_key=runtime_secret_key)
@@ -852,6 +861,12 @@ def _apply_reconcile_outcome(
                     failed_generation=current.generation,
                     reason=current.last_error_code or "RUNTIME_HEALTH_FAILED",
                 )
+        elif errors and current.kind == "AGENT_RUNTIME" and current.owner_type == "AGENT_WORKSPACE":
+            from flowweave.modules.agent_workspaces.application.service import (
+                mark_agent_workspace_runtime_lost,
+            )
+
+            mark_agent_workspace_runtime_lost(control_db, current.owner_id, current.id)
         control_db.commit()
     return deleted, errors
 
@@ -947,6 +962,16 @@ def reconcile_managed_sandboxes(db: Session) -> ReconcileReport:
                         with Session(bind=connection) as secret_db:
                             runtime_secret_key = resolve_runtime_secret(
                                 secret_db, snapshot.runtime_allocation_id
+                            )
+                            secret_db.commit()
+                    elif snapshot.agent_workspace_allocation_id is not None:
+                        from flowweave.modules.agent_workspaces.application.service import (
+                            resolve_agent_workspace_runtime_secret,
+                        )
+
+                        with Session(bind=connection) as secret_db:
+                            runtime_secret_key = resolve_agent_workspace_runtime_secret(
+                                secret_db, snapshot.agent_workspace_allocation_id
                             )
                             secret_db.commit()
                     outcome = _perform_reconcile(
