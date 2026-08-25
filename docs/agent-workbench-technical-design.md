@@ -233,7 +233,9 @@ created_at / updated_at
 ~~~
 
 默认 Runtime 不依赖模型配置即可启动。没有默认模型时，工作台可查看历史，但创建首个 Conversation 前必须
-让用户选择一个已测试成功的模型配置并显式设为工作台默认，不能猜测“最近一个”或隐藏 fallback。
+让用户选择一个已测试成功的模型配置并显式设为工作台默认，不能猜测“最近一个”或隐藏 fallback。模型
+选择器必须在工作台常驻可见，允许用户从“大模型配置”中所有已测试成功且有启用默认模型的供应商切换；
+切换只影响后续新建 Conversation，既有 Conversation 保持其创建时由 OpenHands 冻结的模型配置。
 
 ### 8.2 `agent_workspace_runtime_secret_references`
 
@@ -590,6 +592,8 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
 
 - Runtime ACTIVE 且无会话：显示“新建会话开始协作”。
 - 无默认模型：显示模型选择/配置引导，不阻塞历史列表。
+- 已配置模型：在工作台标题栏持续展示“新会话模型配置”选择器；用户可切换或清空选择，不能把
+  Codex OAuth 或任何其他供应商隐式视为默认值。
 - Runtime 恢复中：历史列表可读；消息区说明“数据已保留，运行环境恢复后加载消息”；输入和终端禁用。
 - 当前 Conversation ACTIVE：REST 补齐历史后建立 WS，输入可用。
 - Agent 执行中：显示停止按钮和正式 Tool 活动；不把全部原始 JSON 默认展开。
