@@ -212,8 +212,8 @@ export const api = {
   completeRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/complete`, json('POST', undefined, true)),
   cancelRun: (runId: string) => request<FlowRun>(`/flow-runs/${runId}/cancel`, json('POST', undefined, true)),
   conversations: (runId: string) => request<FlowRunConversation[]>(`/flow-runs/${runId}/conversations`),
-  createConversation: (runId: string, title?: string, runtime?: { model_name?: string; reasoning_effort?: string }) =>
-    request<FlowRunConversation>(`/flow-runs/${runId}/conversations`, json('POST', { title, ...runtime }, true)),
+  createConversation: (runId: string, nodeAttemptId: string, title?: string, runtime?: { model_name?: string; reasoning_effort?: string }) =>
+    request<FlowRunConversation>(`/flow-runs/${runId}/conversations`, json('POST', { node_attempt_id: nodeAttemptId, title, ...runtime }, true)),
   conversation: (runId: string, conversationId: string) =>
     request<FlowRunConversation>(`/flow-runs/${runId}/conversations/${conversationId}`),
   conversationEvents: (runId: string, conversationId: string, cursor?: string) =>

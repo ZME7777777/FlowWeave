@@ -1,6 +1,6 @@
-import { AlertTriangle, ArrowLeft, Bot, CircleDot, LoaderCircle, Plus, Send, Square, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Bot, CircleDot, Send, Square, UserRound } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import '../agent-chat.css';
 import { api, subscribeToConversationStream } from '../api/client';
@@ -39,15 +39,12 @@ function EventTimeline({ events }: { events: OpenHandsConversationEvent[] }) {
   })}</div>;
 }
 
-function ConversationRail({ conversations, selectedId, disabled, creating, onSelect, onCreate }: {
+function ConversationRail({ conversations, selectedId, onSelect }: {
   conversations: FlowRunConversation[];
   selectedId?: string;
-  disabled: boolean;
-  creating: boolean;
   onSelect: (id: string) => void;
-  onCreate: () => void;
 }) {
-  return <aside className="conversation-rail"><header><div><span className="eyebrow">FLOWRUN CONVERSATIONS</span><b>会话</b></div><button type="button" disabled={disabled} onClick={onCreate} aria-label={creating ? '正在创建会话' : '新建会话'}>{creating ? <LoaderCircle size={15}/> : <Plus size={15}/>}</button></header><div className="conversation-list">{conversations.map((item, index) => <button key={item.id} className={item.id === selectedId ? 'active' : ''} onClick={() => onSelect(item.id)}><span><b>{item.display_label || `会话 ${index + 1}`}</b><small>最近连接 {new Date(item.last_connected_at).toLocaleString()}</small></span><CircleDot size={12}/></button>)}</div>{!conversations.length && <div className="empty compact">{creating ? 'Runtime 正在启动并创建首个会话…' : '此 FlowRun 尚无会话。'}</div>}</aside>;
+  return <aside className="conversation-rail"><header><div><span className="eyebrow">FLOWRUN CONVERSATIONS</span><b>会话</b></div></header><div className="conversation-list">{conversations.map((item, index) => <button key={item.id} className={item.id === selectedId ? 'active' : ''} onClick={() => onSelect(item.id)}><span><b>{item.display_label || `会话 ${index + 1}`}</b><small>最近连接 {new Date(item.last_connected_at).toLocaleString()}</small></span><CircleDot size={12}/></button>)}</div>{!conversations.length && <div className="empty compact">此 FlowRun 尚无会话，请返回运行详情选择节点并启动。</div>}</aside>;
 }
 
 export function AgentChatPage() {
@@ -56,7 +53,6 @@ export function AgentChatPage() {
   const [draft, setDraft] = useState('');
   const [streamStatus, setStreamStatus] = useState<'connecting' | 'live' | 'recovering' | 'disabled'>('disabled');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const autoCreateRunId = useRef<string | undefined>(undefined);
   const runQuery = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId) });
   const runtimeQuery = useQuery({ queryKey: ['flow-run-runtime', selectedRunId], queryFn: () => api.runtimeOverview(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 2000 });
   const conversationsQuery = useQuery({ queryKey: ['flow-run-conversations', selectedRunId], queryFn: () => api.conversations(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 4000 });
@@ -86,24 +82,6 @@ export function AgentChatPage() {
     }
     return subscribeToConversationStream(selectedRunId, selectedId, refresh, setStreamStatus);
   }, [refresh, runtimeQuery.data?.write_available, selectedId, selectedRunId]);
-  const create = useMutation({
-    mutationFn: () => api.createConversation(selectedRunId!, `会话 ${conversations.length + 1}`),
-    onSuccess: item => { selectConversation(item.id); refresh(); },
-  });
-  useEffect(() => {
-    if (
-      !selectedRunId
-      || !conversationsQuery.isSuccess
-      || conversations.length
-      || runtimeQuery.data?.rerun_required
-      || !runtimeQuery.data?.write_available
-      || runQuery.data?.state === 'COMPLETED'
-      || runQuery.data?.state === 'CANCELLED'
-      || autoCreateRunId.current === selectedRunId
-    ) return;
-    autoCreateRunId.current = selectedRunId;
-    create.mutate();
-  }, [conversations.length, conversationsQuery.isSuccess, create, runQuery.data?.state, runtimeQuery.data?.rerun_required, runtimeQuery.data?.write_available, selectedRunId]);
   const send = useMutation({
     mutationFn: () => api.sendConversationQuestion(selectedRunId!, selected!.id, draft.trim()),
     onSuccess: () => { setDraft(''); refresh(); },
@@ -114,14 +92,11 @@ export function AgentChatPage() {
   const run = runQuery.data;
   const runtime = runtimeQuery.data;
   const archived = runtime.rerun_required;
-  const runAllowsConversations = !archived && run.state !== 'COMPLETED' && run.state !== 'CANCELLED';
-  const canCreate = runAllowsConversations && runtime.write_available;
-  const runtimeStarting = runAllowsConversations && !conversations.length && !runtime.write_available && runtime.connection_state === 'STARTING';
   const canWrite = Boolean(selected && runtime.write_available && !runtime.read_only && run.state !== 'COMPLETED' && run.state !== 'CANCELLED');
   return <section className="agent-chat-page"><div className="conversation-topbar"><button onClick={returnToWorkbench}><ArrowLeft size={15}/>返回运行详情</button><div><span>{run.name}</span><b>FlowRun 会话工作台</b></div><span className={`conversation-status ${runtime.connection_state.toLowerCase()}`}>{CONNECTION_LABELS[runtime.connection_state] ?? runtime.connection_state}</span></div>
-    <div className={`agent-chat-layout ${sidebarCollapsed ? 'runtime-sidebar-collapsed' : ''}`}><ConversationRail conversations={conversations} selectedId={selected?.id} disabled={!canCreate || create.isPending} creating={create.isPending || runtimeStarting} onSelect={selectConversation} onCreate={() => create.mutate()}/><main className="conversation-workspace"><header><div><span className="eyebrow">OPENHANDS NATIVE EVENTS</span><h1>{selected?.display_label || '会话、提问与回复'}</h1></div>{runtime.active_generation && <span>generation {runtime.active_generation}</span>}</header>
-      {archived ? <div className="read-only-composer"><b>历史运行数据不兼容</b><span>该 Run 没有新的 FlowRun Runtime Session，不能恢复旧平台会话。请从流程定义显式重跑。</span><button className="secondary" onClick={returnToWorkbench}>返回并重跑</button></div> : selected ? <EventTimeline events={eventsQuery.data?.events ?? []}/> : <div className="empty conversation-empty">{create.isPending || runtimeStarting ? <LoaderCircle size={28}/> : <Bot size={28}/>}<b>{runtimeStarting ? '正在启动 Runtime' : create.isPending ? '正在创建首个会话' : '新建会话'}</b><span>{runtimeStarting || create.isPending ? 'Runtime 首次启动可能需要数秒，完成后会自动进入会话。' : '同一 FlowRun 的所有会话共享一个 Runtime 和 Workspace。'}</span></div>}
+    <div className={`agent-chat-layout ${sidebarCollapsed ? 'runtime-sidebar-collapsed' : ''}`}><ConversationRail conversations={conversations} selectedId={selected?.id} onSelect={selectConversation}/><main className="conversation-workspace"><header><div><span className="eyebrow">OPENHANDS NATIVE EVENTS</span><h1>{selected?.display_label || '会话、提问与回复'}</h1></div>{runtime.active_generation && <span>generation {runtime.active_generation}</span>}</header>
+      {archived ? <div className="read-only-composer"><b>历史运行数据不兼容</b><span>该 Run 没有新的 FlowRun Runtime Session，不能恢复旧平台会话。请从流程定义显式重跑。</span><button className="secondary" onClick={returnToWorkbench}>返回并重跑</button></div> : selected ? <EventTimeline events={eventsQuery.data?.events ?? []}/> : <div className="empty conversation-empty"><Bot size={28}/><b>尚未启动节点会话</b><span>返回运行详情，选择一个节点并点击“启动节点会话”。Runtime 预置不会自动创建会话。</span><button className="secondary" onClick={returnToWorkbench}>返回选择节点</button></div>}
       {selected && !archived && <div className="message-composer"><textarea aria-label="发送问题" value={draft} maxLength={20000} placeholder={runtime.connection_state === 'RECONNECTING' ? 'Runtime 正在重新连接，恢复后可继续提问。' : runtime.connection_state === 'DEGRADED' ? 'Runtime 已降级，请先查看运维诊断。' : '输入问题，Enter 发送；OpenHands user/assistant role 只保留在线路层。'} disabled={!canWrite} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && draft.trim() && canWrite) { event.preventDefault(); send.mutate(); } }}/><div className="composer-actions"><span>{runtime.connection_state === 'READY' ? '消息直接写入 OpenHands 原生事件树' : CONNECTION_LABELS[runtime.connection_state]}</span><div>{canWrite && <button type="button" className="agent-stop-button" aria-label="停止当前 Agent" disabled={stop.isPending} onClick={() => stop.mutate()}><Square size={11} fill="currentColor"/></button>}<button className="primary" disabled={!canWrite || !draft.trim() || send.isPending} onClick={() => send.mutate()}><Send size={15}/>发送问题</button></div></div></div>}
-      {(create.error || send.error || stop.error || eventsQuery.error || conversationsQuery.error || runtimeQuery.error) && <p className="conversation-error"><AlertTriangle size={14}/>{(create.error || send.error || stop.error || eventsQuery.error || conversationsQuery.error || runtimeQuery.error)?.message}</p>}
+      {(send.error || stop.error || eventsQuery.error || conversationsQuery.error || runtimeQuery.error) && <p className="conversation-error"><AlertTriangle size={14}/>{(send.error || stop.error || eventsQuery.error || conversationsQuery.error || runtimeQuery.error)?.message}</p>}
     </main><AgentRuntimeSidebar runId={selectedRunId} conversation={selected} runtime={runtime} collapsed={sidebarCollapsed} onCollapsedChange={setSidebarCollapsed} governance={<RuntimeGovernancePanel runId={selectedRunId} runtime={runtime} streamStatus={streamStatus} onRefresh={refresh}/>}><div className="context-panel"><section><span className="eyebrow">FLOWRUN</span><h3>{run.name}</h3><dl><dt>Runtime Session</dt><dd>{runtime.runtime_session_id ? runtime.runtime_session_id.slice(0, 8) : '尚未分配'}</dd><dt>Environment Version</dt><dd>{run.environment_version_id || '历史数据未绑定'}</dd><dt>会话数量</dt><dd>{conversations.length}</dd></dl></section><section><h3>事实边界</h3><p>FlowWeave 只保存 locator、授权与审计；消息、事件树、HEAD、状态和 cursor 均由 OpenHands 持有。</p></section></div></AgentRuntimeSidebar></div></section>;
 }

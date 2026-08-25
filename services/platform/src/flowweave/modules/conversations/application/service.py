@@ -31,7 +31,7 @@ from flowweave.runtime.request import (
     frozen_memory_policy,
     resolve_runtime_selection,
 )
-from flowweave.runtime.workspace import attempt_workspace_path, materialize_runtime_memory
+from flowweave.runtime.workspace import materialize_runtime_memory
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -369,11 +369,7 @@ def create_flow_run_conversation(
     payload: FlowRunConversationCreateWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """Create a Conversation from the FlowRun's latest execution context.
-
-    The public client selects a FlowRun, not an Attempt owner.  Attempts remain
-    internal execution context used to compile the frozen OpenHands request.
-    """
+    """Create a Conversation only from an explicitly selected node Attempt."""
 
     existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
     if existing is not None:
@@ -391,70 +387,39 @@ def create_flow_run_conversation(
             409,
             {"flow_run_id": flow_run_id},
         )
-    attempt = db.scalar(
-        select(NodeAttempt)
-        .join(NodeRun, NodeRun.id == NodeAttempt.node_run_id)
-        .where(NodeRun.flow_run_id == flow_run_id)
-        .order_by(NodeRun.sequence_no.desc(), NodeAttempt.attempt_no.desc())
-        .limit(1)
-    )
-    if attempt is not None:
-        return create_conversation(
-            db,
-            attempt.id,
-            ConversationCreateWrite(
-                title=payload.title,
-                expected_attempt_state_version=attempt.state_version,
-                model_name=payload.model_name,
-                reasoning_effort=payload.reasoning_effort,
-            ),
-            idempotency_key,
-        )
-    snapshot = db.get(RunSnapshot, run.active_snapshot_id) if run.active_snapshot_id else None
-    if snapshot is None:
-        raise DomainError("SNAPSHOT_INVALID", "FlowRun Snapshot is unavailable", 409)
-    nodes = cast(list[dict[str, Any]], snapshot.definition_json.get("nodes") or [])
-    default_key = str(snapshot.definition_json.get("default_entry_key") or "")
-    selected = next(
-        (item for item in nodes if str(item.get("instance_key") or "") == default_key),
-        nodes[0] if nodes else None,
-    )
-    if selected is None:
+    attempt = db.get(NodeAttempt, payload.node_attempt_id)
+    if attempt is None:
         raise DomainError(
-            "FLOW_RUN_CONVERSATION_CONTEXT_REQUIRED",
-            "The FlowRun Snapshot has no node context for a Conversation",
+            "NODE_CONVERSATION_CONTEXT_REQUIRED",
+            "Select and start a FlowRun node before creating a Conversation",
+            422,
+            {"flow_run_id": flow_run_id, "node_attempt_id": payload.node_attempt_id},
+        )
+    node_run = db.get(NodeRun, attempt.node_run_id)
+    if node_run is None or node_run.flow_run_id != flow_run_id:
+        raise DomainError(
+            "NODE_CONVERSATION_CONTEXT_MISMATCH",
+            "The selected node Attempt does not belong to this FlowRun",
             409,
-            {"flow_run_id": flow_run_id},
+            {"flow_run_id": flow_run_id, "node_attempt_id": payload.node_attempt_id},
         )
-    node = runtime_node(
-        definition=snapshot.definition_json,
-        manifest=snapshot.runtime_manifest_json or {},
-        expected_hash=snapshot.runtime_manifest_hash,
-        snapshot_id=snapshot.id,
-        instance_key=str(selected["instance_key"]),
-    )
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    binding_id = str(uuid4())
-    workspace_ref = str(
-        attempt_workspace_path(
-            asset_id=str(asset.get("id") or ""),
-            run_id=run.id,
-            node_run_id=f"conversation-{binding_id}",
-            attempt_no=1,
+    if attempt.state != "WAITING_START_CONFIRMATION":
+        raise DomainError(
+            "NODE_CONVERSATION_NOT_READY",
+            "The selected node is not ready to start a Conversation",
+            409,
+            {"node_attempt_id": attempt.id, "state": attempt.state},
         )
-    )
-    return _create_native_conversation(
+    return create_conversation(
         db,
-        run=run,
-        snapshot=snapshot,
-        node=node,
-        workspace_ref=workspace_ref,
-        bindings=[],
-        title=payload.title,
-        model_name=payload.model_name,
-        reasoning_effort=payload.reasoning_effort,
-        idempotency_key=idempotency_key,
-        binding_id=binding_id,
+        attempt.id,
+        ConversationCreateWrite(
+            title=payload.title,
+            expected_attempt_state_version=attempt.state_version,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
+        ),
+        idempotency_key,
     )
 
 

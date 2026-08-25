@@ -850,6 +850,12 @@
             ],
             "title": "Model Name"
           },
+          "node_attempt_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Node Attempt Id",
+            "type": "string"
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -875,6 +881,9 @@
             "title": "Title"
           }
         },
+        "required": [
+          "node_attempt_id"
+        ],
         "title": "FlowRunConversationCreateWrite",
         "type": "object"
       },

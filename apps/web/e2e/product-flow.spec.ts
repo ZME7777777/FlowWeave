@@ -340,14 +340,18 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await dialog.getByLabel('运行名称').fill(`运行验收-${suffix}`);
   await dialog.getByLabel('本次运行环境版本').selectOption(await readyEnvironmentVersionId(request));
   const createdRunResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/flows/${flow.id}/runs`) && response.request().method() === 'POST');
-  await dialog.getByRole('button', { name: '启动并进入会话', exact: true }).click();
+  await dialog.getByRole('button', { name: '启动流程', exact: true }).click();
   const createdRun = await (await createdRunResponse).json();
-  await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toBeVisible();
-  await expect(page.locator('.conversation-list button')).toHaveCount(1);
-  await page.getByRole('button', { name: '新建会话' }).click();
-  await expect(page.locator('.conversation-list button')).toHaveCount(2);
-  await page.getByRole('button', { name: '返回运行详情' }).click();
   await expect(page.getByText('点击任意节点，在右侧配置输入并开始一次独立执行', { exact: true })).toBeVisible();
+  await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toHaveCount(0);
+  await expect.poll(async () => {
+    const response = await request.get(`${apiBase}/api/v1/flow-runs/${createdRun.id}/conversations`);
+    return (await response.json()).length;
+  }).toBe(0);
+  await expect.poll(async () => {
+    const response = await request.get(`${apiBase}/api/v1/flow-runs/${createdRun.id}/runtime`);
+    return (await response.json()).connection_state;
+  }, { timeout: 60_000 }).toBe('READY');
   await expect(page.locator('.action-panel')).toHaveCount(0);
   const graphNodes = page.locator('.run-graph .react-flow__node');
   await graphNodes.filter({ hasText: '首轮方案' }).click();
@@ -364,9 +368,17 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await nodeConsole.getByRole('button', { name: '保存到产物池' }).click();
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`需求文档-${suffix}`);
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
-  await nodeConsole.getByRole('button', { name: '开始第 1 次执行' }).click();
+  await nodeConsole.getByRole('button', { name: '启动节点会话' }).click();
+
+  await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toBeVisible();
+  await expect(page.locator('.conversation-list button')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '新建会话' })).toHaveCount(0);
+  await page.getByRole('button', { name: '返回运行详情' }).click();
 
   const attemptControl = page.locator('.attempt-control');
+  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
+  await attemptControl.getByText('发送启动提示词', { exact: true }).click();
+  await attemptControl.getByRole('button', { name: '确认启动' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
   await graphNodes.filter({ hasText: '首轮方案' }).click();
   await expect(page.locator('.run-graph .run-graph-node.snapshot-selected')).toHaveCount(1);
@@ -432,6 +444,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await attemptControl.getByRole('button', { name: '创建新的独立执行' }).click();
   await expect(nodeConsole).toContainText('已有执行记录');
   await nodeConsole.getByLabel('节点输入 prd').selectOption({ index: 1 });
+  await nodeConsole.getByText('发送启动提示词', { exact: true }).click();
   await nodeConsole.getByRole('button', { name: '开始第 2 次执行' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
   await expect(page.locator('.timeline button')).toHaveCount(2);

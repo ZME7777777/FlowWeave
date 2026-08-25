@@ -383,10 +383,35 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
             generation=1,
         ),
     )
-    conversation = client.post(
+    assert client.get(f"/api/v1/flow-runs/{run['id']}/conversations").json() == []
+    missing_node = client.post(
         f"/api/v1/flow-runs/{run['id']}/conversations",
         json={"title": "首个会话"},
         headers={"Idempotency-Key": "empty-run-first-conversation"},
+    )
+    assert missing_node.status_code == 422, missing_node.text
+    errors = missing_node.json()["error"]["details"]["errors"]
+    assert errors[0]["loc"][-1] == "node_attempt_id"
+    artifact = client.post(
+        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.feishu.cn/docx/selected-node-input",
+        },
+    ).json()
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
+        json={"artifact_ids": {"prd": artifact["id"]}},
+    )
+    assert activated.status_code == 201, activated.text
+    node_run = activated.json()
+    attempt = node_run["attempts"][0]
+    assert attempt["state"] == "WAITING_START_CONFIRMATION"
+    conversation = client.post(
+        f"/api/v1/flow-runs/{run['id']}/conversations",
+        json={"title": "首个会话", "node_attempt_id": attempt["id"]},
+        headers={"Idempotency-Key": "selected-node-first-conversation"},
     )
     assert conversation.status_code == 201, conversation.text
     assert conversation.json()["flow_run_id"] == run["id"]
@@ -401,14 +426,7 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
         # The provider mount is read-only; the control plane parent remains
         # writable so rootless bind mounts can publish and roll back bundles.
         assert capabilities.stat().st_mode & 0o777 == 0o700
-    activated = client.post(
-        f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
-        json={"artifact_ids": {}},
-    )
-    assert activated.status_code == 201, activated.text
-    node_run = activated.json()
     assert node_run["flow_node_snapshot_key"] == "design_b"
-    assert node_run["attempts"][0]["state"] == "WAITING_INPUT"
 
 
 def test_human_can_start_same_node_as_independent_runs(client, skill_capability):

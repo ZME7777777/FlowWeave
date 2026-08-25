@@ -32,6 +32,6 @@ export function StartRunDialog({ flow, environments, onStart, onClose }: Props) 
     <header><div><span className="eyebrow">CREATE FLOW RUN</span><h2>创建运行 · {flow.name}</h2><p>为本次运行选择基础镜像；同一流程模板的不同运行可以选择不同环境。</p></div><button type="button" className="start-run-close" aria-label="关闭创建运行弹窗" title="关闭" onClick={onClose}><X size={18}/></button></header>
     <label>运行名称<input value={name} placeholder={`${flow.name} · 新运行`} onChange={event => setName(event.target.value)}/></label>
     <label>运行环境（基础镜像）<select required aria-label="本次运行环境版本" value={environmentVersionId} onChange={event => setEnvironmentVersionId(event.target.value)}><option value="">请选择运行环境</option>{environments.flatMap(environment => environment.versions.filter(version => version.state === 'READY' && version.runtime_compatible && Boolean(version.image_digest)).map(version => <option key={version.id} value={version.id}>{environment.name} · v{version.version_no}</option>))}</select></label>
-    {error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !environmentVersionId}>{busy ? '正在启动 Runtime…' : '启动并进入会话'}</button></footer>
+    {error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !environmentVersionId}>{busy ? '正在创建运行…' : '启动流程'}</button></footer>
   </form></div>;
 }

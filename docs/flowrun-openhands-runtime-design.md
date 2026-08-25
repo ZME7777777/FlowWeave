@@ -85,6 +85,11 @@ generation 都不是 Conversation 身份。FlowWeave 的 API 不向客户端暴�
 代理已授权的会话交互，Worker 执行创建、替换和恢复任务；二者都不持有 Docker Socket，Provider 也不
 接入 Runtime 网络。
 
+预置 generation 只是为该 FlowRun 静默准备计算环境并绑定持久 Workspace，不创建 Conversation，也不
+改变客户端页面。用户继续停留在流程运行界面；只有选中一个节点、建立该节点 Attempt 并显式执行
+“启动节点会话”后，API 才使用该 Attempt 的冻结 Snapshot、输入绑定和工作目录创建 OpenHands 原生
+Conversation，并进入会话页面。服务端不得在缺少节点上下文时回退到默认入口或最近一次 Attempt。
+
 ## 4. 强制自定义 Environment Version
 
 ### 4.1 产品约束
@@ -221,6 +226,10 @@ Conversation 内容模型。
 Node/Attempt 可以保存 `openhands_conversation_id` 作为执行引用和 Artifact lineage，但它们不拥有、
 创建一种特殊 Conversation，也不能在删除 Node/Attempt 时级联删除 OpenHands Conversation。一个
 Conversation 可被 FlowRun 中多次执行引用；是否新建或复用由显式流程动作决定。
+
+公开创建会话命令必须携带当前 FlowRun 中显式选择的节点 Attempt 上下文，且该 Attempt 已通过输入与
+开始门禁、正处于可启动状态。FlowRun 创建、Runtime Ready、进入会话路由或会话列表为空都不是创建
+Conversation 的触发器。
 
 ### 7.3 提问与回复
 

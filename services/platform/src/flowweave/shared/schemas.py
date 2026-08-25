@@ -657,6 +657,7 @@ class ConversationCreateWrite(ApiModel):
 
 
 class FlowRunConversationCreateWrite(ApiModel):
+    node_attempt_id: str = Field(min_length=1, max_length=36)
     title: str | None = Field(default=None, max_length=160)
     model_name: str | None = Field(default=None, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
