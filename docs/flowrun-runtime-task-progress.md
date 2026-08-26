@@ -384,6 +384,15 @@ Agent 正文直接渲染，无头像或身份标签；已安全投影的思考�
 Codex/ChatGPT 风格的悬停编辑、无双边框自动增高输入区和会话内配置菜单。不得写入平台消息、事件、HEAD、
 上下文或推理副本；不修改 OpenHands 或 FlowRun 语义。
 
+### FR-27 Agent 工作台最新回复导航提示 — DONE
+
+依赖：`FR-26`。
+
+目标：在独立 Agent 工作台会话流中提供纯浏览器端的最新回复导航控件。Agent 正在生成时，控件显示低干扰的
+动态三点提示；本轮结束后切换为向下箭头。两种状态点击均平滑定位到当前会话的最新内容，且用户上滚阅读历史
+时不被每一个 WebSocket delta 强制拉回底部。该控件不得写入或重解释 OpenHands Conversation、事件、HEAD
+或运行状态，也不改变 FlowRun 会话。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -429,3 +438,4 @@ Codex/ChatGPT 风格的悬停编辑、无双边框自动增高输入区和会话
 | 2026-08-26 | FR-24 | Web ESLint/typecheck/build；独立 Vite 上 Agent 工作台定向 Playwright；`git diff --check`、Alembic head 与任务状态核对 | PASS：新增可复用的会话呈现 Surface，正式 OpenHands 消息、工作过程和工具活动不再渲染为空 `STATE {}`；WebSocket `delta` 只存在于浏览器内存的临时可见回复，`message_complete` 后回读正式事件。模型配置移入左侧会话栏，仍只影响后续新会话。定向浏览器用例覆盖配置切换、工具活动、空状态过滤、回复呈现和 URL 刷新恢复；未修改 Runtime、OpenHands 或 FlowRun 持久化契约。唯一 head 为 `0060_agent_conversations`；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-25 | Agent Workspace/OpenHands 定向 pytest（68 passed）；Ruff/Pyright；Web lint/typecheck/build；独立 Vite 上 Agent 工作台 Playwright；Alembic head、`git diff --check` 与任务状态核对 | PASS：新建 binding 先进入本地查询缓存再导航，避免旧列表竞态覆盖 URL。运行中的会话支持暂停、继续和浏览器内顺序排队；服务端以 OpenHands 正式 execution status 阻止并发 send。最后一条用户消息始终可编辑；运行时编辑自动暂停，随后使用正式 `navigate(parent_id)` 和新 user event 重新驱动，活动视图按 OpenHands HEAD 分支读取，旧回答不再出现在当前对话。页面收口为无身份标签的问答、右侧用户气泡、折叠工作过程及紧凑 composer；唯一 head 为 `0060_agent_conversations`，无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-26 | Agent Workspace/OpenHands 定向 pytest（69 passed）；受影响 Python Ruff/Pyright；Web ESLint/typecheck/build；`git diff --check` 与任务状态核对 | PASS：附件经 OpenHands 正式 file upload 写入外置共享工作区，图片同时作为原生 ImageContent 传入，普通文件路径作为消息上下文；会话内模型和思考强度使用正式 switch_llm；上下文只展示原生累计 usage 与已声明窗口，不伪造当前 token 百分比。新会话使用原生 LLM summarizing condenser，Condensation 事件在对话流中呈现；新增定向回归覆盖附件、图片、原生上下文和模型切换。无 CURRENT、READY 或下一切片。 |
+| 2026-08-26 | FR-27 | Web ESLint/typecheck/build；独立源码 Vite 服务上的 Agent Workspace 定向 Playwright；`git diff --check` 与任务状态核对 | PASS：会话流在首次进入或新一轮开始时定位最新内容，但流式 delta 不再强制拉回用户；生成中显示动态三点，完成后显示向下箭头，二者均可平滑跳转至最新回复。未改动 OpenHands、会话事件或 FlowRun。无 CURRENT、READY 或下一切片。 |

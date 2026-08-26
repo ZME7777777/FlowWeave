@@ -1,4 +1,4 @@
-import { ChevronRight, CircleAlert, LoaderCircle, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, CircleAlert, LoaderCircle, Wrench } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
@@ -90,10 +90,23 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
   onRewrite?: (eventId: string, content: string) => void;
 }) {
   const tail = useRef<HTMLDivElement>(null);
+  const initialPositioned = useRef(false);
+  const wasGenerating = useRef(isGenerating);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const turns = useMemo(() => turnsFor(events.map(itemFor).filter((item): item is Item => Boolean(item))), [events]);
-  useEffect(() => { tail.current?.scrollIntoView({ block: 'end', behavior: 'smooth' }); }, [turns.length, liveText]);
+  const scrollToLatest = (behavior: ScrollBehavior = 'smooth') => {
+    tail.current?.scrollIntoView({ block: 'end', behavior });
+  };
+  useEffect(() => {
+    if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
+      initialPositioned.current = true;
+      scrollToLatest('auto');
+    } else if (!wasGenerating.current && isGenerating) {
+      scrollToLatest('smooth');
+    }
+    wasGenerating.current = isGenerating;
+  }, [isGenerating, liveText, turns.length]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   return <section className="conversation-surface" aria-live="polite">
@@ -111,5 +124,14 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
     })}
     {turns.length === 0 && (liveText || isGenerating) && <AgentReply content={liveText} streaming/>}
     <div ref={tail}/>
+    <button
+      type="button"
+      className={`conversation-jump-latest${isGenerating ? ' generating' : ''}`}
+      aria-label={isGenerating ? '跳转到正在生成的最新回复' : '跳转到最新回复'}
+      title={isGenerating ? '查看正在生成的最新回复' : '查看最新回复'}
+      onClick={() => scrollToLatest()}
+    >
+      {isGenerating ? <span className="conversation-jump-dots" aria-hidden="true"><i/><i/><i/></span> : <ChevronDown size={19}/>}
+    </button>
   </section>;
 }
