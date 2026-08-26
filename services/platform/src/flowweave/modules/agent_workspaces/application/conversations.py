@@ -333,7 +333,7 @@ def delete_conversation(
 def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
-    batch = get_runtime().read_events(replace(handle, cursor=cursor))
+    batch = get_runtime().read_active_events(replace(handle, cursor=cursor))
     return {
         "events": [
             {"id": event.cursor, "event_type": event.event_type, "payload": event.payload}
@@ -376,11 +376,15 @@ def message(db: Session, workspace_id: str, binding_id: str, content: str) -> di
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     workspace = _workspace(db, workspace_id)
-    try:
-        result = get_runtime().send_message(
-            _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True)),
-            content.strip(),
+    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
+    if not get_runtime().can_accept_input(handle):
+        raise DomainError(
+            "AGENT_CONVERSATION_BUSY",
+            "Agent 正在处理上一条消息或停止请求，请稍候",
+            409,
         )
+    try:
+        result = get_runtime().send_message(handle, content.strip())
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -392,7 +396,56 @@ def message(db: Session, workspace_id: str, binding_id: str, content: str) -> di
 
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     workspace = _workspace(db, workspace_id)
-    get_runtime().interrupt(_handle(db, workspace, _binding(db, workspace_id, binding_id)))
+    get_runtime().interrupt(
+        _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
+    )
+
+
+def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str, bool]:
+    workspace = _workspace(db, workspace_id)
+    ready = get_runtime().can_accept_input(
+        _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    )
+    return {"ready": ready}
+
+
+def rewrite_message(
+    db: Session, workspace_id: str, binding_id: str, event_id: str, content: str
+) -> dict[str, Any]:
+    if not content.strip():
+        raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    workspace = _workspace(db, workspace_id)
+    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
+    batch = runtime.read_active_events(handle)
+    user_events = [
+        event
+        for event in batch.events
+        if event.event_type == "MESSAGE"
+        and str(event.payload.get("source") or "").lower() in {"user", "human"}
+    ]
+    target = next((event for event in user_events if event.cursor == event_id), None)
+    if target is None or not user_events or user_events[-1].cursor != event_id:
+        raise DomainError(
+            "AGENT_MESSAGE_REWRITE_UNAVAILABLE",
+            "只能编辑当前活动分支中最近发送的消息",
+            409,
+        )
+    parent_id = target.payload.get("parent_id")
+    if parent_id is not None and not isinstance(parent_id, str):
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
+    runtime.navigate(handle, parent_id)
+    try:
+        result = runtime.send_message(handle, content.strip())
+    except DomainError as exc:
+        if exc.status >= 500:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "重新发送结果不确定，请先刷新会话", 504
+            ) from exc
+        raise
+    return {"accepted": True, "cursor": result.cursor}
 
 
 def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:

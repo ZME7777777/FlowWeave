@@ -115,8 +115,12 @@ export const api = {
     request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content })),
+  rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content })),
   interruptAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
+  agentConversationInputReadiness: (workspaceId: string, bindingId: string) =>
+    request<{ ready: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/input-readiness`),
   resumeAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/resume`, json('POST')),
   directories: () => request<NodeDirectory[]>('/node-directories'),

@@ -178,11 +178,20 @@ class MockRuntime:
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         return self._results.get(handle.job_id, RuntimeResult(status="FAILED", error="UNKNOWN_JOB"))
 
+    def read_active_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
+        return self.read_events(handle)
+
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
 
     def interrupt(self, handle: RuntimeHandle) -> None:
         del handle
+
+    def can_accept_input(self, handle: RuntimeHandle) -> bool:
+        return self._results.get(handle.job_id, RuntimeResult(status="IDLE")).status != "RUNNING"
+
+    def navigate(self, handle: RuntimeHandle, event_id: str | None) -> None:
+        del handle, event_id
 
     def run(self, handle: RuntimeHandle) -> RuntimeResult:
         result = RuntimeResult(status="RUNNING", cursor=handle.cursor)

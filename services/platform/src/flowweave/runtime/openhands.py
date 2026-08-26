@@ -1518,6 +1518,9 @@ class OpenHandsRuntime:
             "source": item.get("source"),
             "content": cls._event_text(item),
         }
+        parent_id = cls._formal_identity(item.get("parent_id"), field="parent_id", required=False)
+        if parent_id is not None:
+            payload["parent_id"] = parent_id
         critic_result = cls._critic_result(item)
         if critic_result is not None:
             payload["critic_result"] = critic_result
@@ -1984,6 +1987,62 @@ class OpenHandsRuntime:
             events=events,
             cursor=cursor,
             result=self._result_from_events(handle.conversation_id, items, cursor),
+            task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
+            usage=self._usage_snapshots(state),
+        )
+
+    def read_active_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
+        """Read only the native HEAD branch without hiding or deleting old events."""
+
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        items, cursor = self._events(
+            handle.conversation_id,
+            None,
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        state = self._conversation_state(handle)
+        leaf_event_id = self._formal_identity(
+            state.get("leaf_event_id"), field="leaf_event_id", required=False
+        )
+        by_id = {self._event_identity(item)[0]: item for item in items}
+        active_ids: set[str] = set()
+        active_event_id = leaf_event_id
+        while active_event_id is not None:
+            active_item = by_id.get(active_event_id)
+            if active_item is None:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_MISMATCH",
+                    "The active OpenHands event branch is incomplete",
+                    409,
+                    {"conversation_id": handle.conversation_id, "event_id": active_event_id},
+                )
+            if active_event_id in active_ids:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "The active OpenHands event branch is cyclic",
+                    502,
+                    {"conversation_id": handle.conversation_id, "event_id": active_event_id},
+                )
+            active_ids.add(active_event_id)
+            active_event_id = self._formal_identity(
+                active_item.get("parent_id"), field="parent_id", required=False
+            )
+        active_items = [item for item in items if self._event_identity(item)[0] in active_ids]
+        events = tuple(
+            RuntimeEvent(
+                cursor=self._event_identity(item)[0],
+                event_type=self._event_type(item),
+                payload=self._event_payload(item),
+            )
+            for item in active_items
+        )
+        state_cursor = str(state.get("leaf_event_id") or cursor or handle.cursor or "") or None
+        return RuntimeEventBatch(
+            events=events,
+            cursor=cursor,
+            result=self._result_from_events(handle.conversation_id, active_items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
             usage=self._usage_snapshots(state),
         )
@@ -2513,6 +2572,33 @@ class OpenHandsRuntime:
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
             json={},
+        )
+
+    def can_accept_input(self, handle: RuntimeHandle) -> bool:
+        """Read the native execution state before allowing another user turn.
+
+        This is deliberately a transient OpenHands read rather than a
+        FlowWeave conversation state projection.  Interrupt is asynchronous,
+        so an accepted interrupt request alone must not unlock a second send.
+        """
+
+        state = self._conversation_state(handle)
+        status = str(state.get("execution_status") or "").lower()
+        return status not in {
+            "starting",
+            "running",
+            "executing",
+            "stopping",
+            "waiting_for_confirmation",
+        }
+
+    def navigate(self, handle: RuntimeHandle, event_id: str | None) -> None:
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/navigate",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={"event_id": event_id},
         )
 
     def run(self, handle: RuntimeHandle) -> RuntimeResult:

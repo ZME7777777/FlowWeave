@@ -176,6 +176,33 @@ async def agent_interrupt(workspace_id: str, binding_id: str, db: Db) -> dict[st
     return {"accepted": True}
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/input-readiness")
+async def agent_input_readiness(workspace_id: str, binding_id: str, db: Db) -> dict[str, bool]:
+    return await run_sync(
+        db,
+        lambda session: conversations.input_readiness(session, workspace_id, binding_id),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages/{event_id}/rerun",
+    status_code=202,
+)
+async def agent_rerun_edited_message(
+    workspace_id: str,
+    binding_id: str,
+    event_id: str,
+    payload: AgentMessageWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.rewrite_message(
+            session, workspace_id, binding_id, event_id, payload.content
+        ),
+    )
+
+
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/resume", status_code=202)
 async def agent_resume(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(

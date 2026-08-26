@@ -256,6 +256,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
+  await expect(page.getByText('工作过程')).toBeVisible();
+  await expect(page.getByText('BashAction')).toBeHidden();
+  await page.getByText('工作过程').click();
   await expect(page.getByText('BashAction')).toBeVisible();
   await expect(page.getByText('STATE')).not.toBeVisible();
   await page.getByLabel('Agent 新会话模型配置').selectOption('provider-2');

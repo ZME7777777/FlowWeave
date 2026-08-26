@@ -1065,6 +1065,45 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
     ]
 
 
+def test_openhands_reads_only_the_native_active_head_branch(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "user-1",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "first"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "old-answer",
+                        "parent_id": "user-1",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "old"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "new-answer",
+                        "parent_id": "user-1",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "new"},
+                    },
+                ]
+            },
+            _state(leaf_event_id="new-answer"),
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+
+    batch = runtime.read_active_events(_handle())
+
+    assert [event.cursor for event in batch.events] == ["user-1", "new-answer"]
+    assert [event.payload["content"] for event in batch.events] == ["first", "new"]
+
+
 def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
     openhands_settings, monkeypatch
 ):

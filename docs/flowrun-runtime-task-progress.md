@@ -357,6 +357,19 @@ Playwright 和 Web 质量检查；不新建 Runtime、不切换既有 Conversati
 供应商隐藏的原始推理；仅展示已由 OpenHands 事件安全投影的活动摘要。将“新会话模型配置”从标题栏迁入
 左侧会话栏，仍只影响后续会话。不得修改 Runtime、OpenHands、FlowRun 或 Conversation 持久化契约。
 
+### FR-25 Agent 工作台会话状态机与 Codex 交互收口 — DONE
+
+依赖：`FR-24`。
+
+目标：修复新建会话 URL 被旧缓存列表重定向覆盖的问题；将停止/继续收口为 OpenHands 原生 pause/run
+控制，运行时允许将新输入暂存于浏览器队列并在当前轮完成后顺序投递，后端仍以当前正式 execution status
+拒绝任何绕过队列的并发发送。最后一条用户消息始终可编辑并重新发送：服务端按正式 event id/parent_id
+将 OpenHands HEAD navigate 到该消息之前，再发送编辑内容触发重新思考；旧分支保留在 OpenHands append-only
+日志中但不再作为活动对话呈现。一级 Agent 工作台重做为 Codex 风格的简洁问答：用户消息仅右侧气泡，
+Agent 正文直接渲染，无头像或身份标签；已安全投影的思考和工具活动在完成后归组折叠于最终回复下方、
+执行中保持展开；输入区采用紧凑圆角 composer 和明确的发送/暂停/继续状态。不得持久化平台会话状态、
+消息或推理，且不迁移 FlowRun 节点会话页面。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -400,3 +413,4 @@ Playwright 和 Web 质量检查；不新建 Runtime、不切换既有 Conversati
 | 2026-08-25 | FR-22 | 全量 API Ruff/Pyright/pytest；Web lint/typecheck/build 与 10 个 Playwright 场景；迁移 0060 往返；Compose 安全；固定 OpenHands provenance/contract/smoke；Sandbox smoke；全无缓存 `make rebuild-deploy`；真实 Codex OAuth 会话、Runtime 替换后原会话 reload | PASS：Ruff/ Pyright 通过，迁移 head/current 均为 `0060_agent_conversations`，Web 和 Compose 门禁通过，固定 OpenHands `1.42.0` 契约与 Sandbox smoke 通过。Codex OAuth catalog 仅同步固定 OpenHands 可原生流式执行的模型；`model_canonical_name=openai/codex-auto-review` 保持 Responses 流式请求且避免 Codex 端点不支持的 `max_output_tokens`。无缓存全量重建部署后，默认 Agent Runtime 以新 generation 恢复外置 Workspace 与原 Conversation/Event，真实新会话精确返回 `FR22_FINAL_DEPLOY_OK`。所有服务健康；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-25 | FR-23 | 独立 Vite 服务上的 Agent 工作台模型切换定向 Playwright；Web ESLint/typecheck/build；`git diff --check`；任务状态核对 | PASS：标题栏常驻“新会话模型配置”，仅显示已连接且有启用默认模型的供应商；用户可显式设置、切换或清空，未再隐式选择 Codex OAuth 或任何 fallback。定向浏览器测试覆盖从首个配置切换至第二个配置，并确认既有会话 URL 保持不变；不新建 Runtime、不重启或换模既有 Conversation。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-24 | Web ESLint/typecheck/build；独立 Vite 上 Agent 工作台定向 Playwright；`git diff --check`、Alembic head 与任务状态核对 | PASS：新增可复用的会话呈现 Surface，正式 OpenHands 消息、工作过程和工具活动不再渲染为空 `STATE {}`；WebSocket `delta` 只存在于浏览器内存的临时可见回复，`message_complete` 后回读正式事件。模型配置移入左侧会话栏，仍只影响后续新会话。定向浏览器用例覆盖配置切换、工具活动、空状态过滤、回复呈现和 URL 刷新恢复；未修改 Runtime、OpenHands 或 FlowRun 持久化契约。唯一 head 为 `0060_agent_conversations`；无 `CURRENT`、`READY` 或下一切片。 |
+| 2026-08-26 | FR-25 | Agent Workspace/OpenHands 定向 pytest（68 passed）；Ruff/Pyright；Web lint/typecheck/build；独立 Vite 上 Agent 工作台 Playwright；Alembic head、`git diff --check` 与任务状态核对 | PASS：新建 binding 先进入本地查询缓存再导航，避免旧列表竞态覆盖 URL。运行中的会话支持暂停、继续和浏览器内顺序排队；服务端以 OpenHands 正式 execution status 阻止并发 send。最后一条用户消息始终可编辑；运行时编辑自动暂停，随后使用正式 `navigate(parent_id)` 和新 user event 重新驱动，活动视图按 OpenHands HEAD 分支读取，旧回答不再出现在当前对话。页面收口为无身份标签的问答、右侧用户气泡、折叠工作过程及紧凑 composer；唯一 head 为 `0060_agent_conversations`，无 `CURRENT`、`READY` 或下一切片。 |

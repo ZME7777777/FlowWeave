@@ -601,13 +601,25 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
 - `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程卡片显示；空 `STATE` 与
   未承载用户价值的协议帧不显示。不得显示供应商的隐藏原始推理，仅渲染 OpenHands 已安全投影的内容。
 - Agent 执行中：显示停止按钮和正式 Tool 活动；不把全部原始 JSON 默认展开。
+- 暂停按钮只表示“已向 OpenHands 请求暂停”，此时 composer 进入 `pausing`。页面通过 OpenHands 当前正式
+  execution status 的瞬态读取确认会话已暂停后显示“继续”；继续调用 OpenHands 正式 run。执行期间可把新
+  输入放进浏览器内存队列，在当前轮完成后依次发送；平台不保存一份执行状态、消息或队列，也不在网络不确定
+  窗口自动重发。服务端仍拒绝任何绕过该队列的并发 OpenHands send。
+- 当前活动分支的最后一条用户消息始终可编辑。运行中提交编辑时，页面先自动暂停；暂停确认或会话已经
+  停止后，服务端只接受正式 user event id，并以其正式 parent_id 调用 OpenHands navigate、再发送编辑内容
+  运行。旧事件分支仍由 OpenHands 保存但不在当前活动会话中渲染，新的回复与工作过程取代旧分支；不得以
+  隐藏前端消息伪造该行为。
+- 对话视觉采用简洁问答：用户消息仅以右侧气泡呈现，Agent 最终回复直接渲染在正文流中；不显示头像、
+  “你”或“Agent”身份标签。每轮由已安全投影的 `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT`、`ERROR` 组成
+  工作过程，回复完成后收在该最终回复下的折叠组，执行中保持展开。
 - 非瞬态错误：停止请求风暴，显示错误码、request ID、重试或返回列表。
 - 浏览器刷新：恢复同一 binding；binding 不存在时回 `/agent`，不进入全局异常页。
 
 ### 14.4 新建会话体验
 
 点击“新建会话”直接创建，不弹出 Flow、节点、镜像或 Runtime 表单。默认模型已经配置时只需一次点击；
-创建成功进入空会话，首条消息发送后使用 OpenHands 正式标题生成或截断标题，并同步 display title 投影。
+创建成功先将服务端返回的 binding 写入本地查询缓存，再进入该 binding 的稳定 URL；不得由尚未刷新的旧列表
+把页面重定向回先前会话。首条消息发送后使用 OpenHands 正式标题生成或截断标题，并同步 display title 投影。
 
 ## 15. 一致性和恢复对账
 

@@ -317,6 +317,7 @@ export interface OpenHandsConversationEvent {
   payload: {
     source_type?: string;
     source?: string | null;
+    parent_id?: string | null;
     content?: string;
     event_name?: string;
     details?: Record<string, unknown>;
@@ -341,6 +342,8 @@ export interface AgentWorkspaceRuntime {
   message?: string | null;
   updated_at: string;
 }
+
+export interface AgentConversationInputReadiness { ready: boolean }
 export interface AgentConversation {
   id: string;
   display_title?: string | null;

@@ -20,7 +20,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
-from flowweave.runtime.base import RuntimeProvider
+from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch, RuntimeProvider
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.errors import DomainError
@@ -279,3 +279,105 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
 
         conversations.delete_conversation(db, workspace.id, created["id"], "delete-key")
         assert conversations.list_conversations(db, workspace.id) == []
+
+
+def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
+    settings, db_session_factory, monkeypatch
+):
+    class SerialRuntime(MockRuntime):
+        ready = True
+        sent: list[str] = []
+
+        def can_accept_input(self, handle):
+            del handle
+            return self.ready
+
+        def send_message(self, handle, content, image_urls=()):
+            del image_urls
+            assert self.ready
+            self.sent.append(content)
+            self.ready = False
+            return super().send_message(handle, content)
+
+        def interrupt(self, handle):
+            del handle
+            self.ready = False
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    runtime = SerialRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        conversations.message(db, workspace.id, created["id"], "first")
+        conversations.interrupt(db, workspace.id, created["id"])
+
+        try:
+            conversations.message(db, workspace.id, created["id"], "second")
+        except DomainError as exc:
+            assert exc.code == "AGENT_CONVERSATION_BUSY"
+            assert exc.status == 409
+        else:
+            raise AssertionError("a second message cannot be sent before interrupt settles")
+        assert runtime.sent == ["first"]
+        assert conversations.input_readiness(db, workspace.id, created["id"]) == {"ready": False}
+
+        runtime.ready = True
+        conversations.message(db, workspace.id, created["id"], "second")
+        assert runtime.sent == ["first", "second"]
+
+
+def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(
+    settings, db_session_factory, monkeypatch
+):
+    class RewriteRuntime(MockRuntime):
+        calls: list[tuple[str, str | None]] = []
+
+        def read_events(self, handle):
+            del handle
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="user-event",
+                        event_type="MESSAGE",
+                        payload={"source": "user", "content": "before", "parent_id": "root-event"},
+                    ),
+                )
+            )
+
+        def navigate(self, handle, event_id):
+            del handle
+            self.calls.append(("navigate", event_id))
+
+        def send_message(self, handle, content, image_urls=()):
+            del image_urls
+            self.calls.append(("send", content))
+            return super().send_message(handle, content)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    runtime = RewriteRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        result = conversations.rewrite_message(
+            db, workspace.id, created["id"], "user-event", "after"
+        )
+        assert result["accepted"] is True
+        assert runtime.calls == [("navigate", "root-event"), ("send", "after")]
