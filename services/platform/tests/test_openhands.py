@@ -984,6 +984,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
                     {
                         "kind": "MessageEvent",
                         "id": "11",
+                        "timestamp": "2026-08-26T10:00:01+00:00",
                         "source": "agent",
                         "llm_message": {
                             "role": "assistant",
@@ -993,6 +994,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
                     {
                         "kind": "ActionEvent",
                         "id": "12",
+                        "timestamp": "2026-08-26T10:00:02+00:00",
                         "source": "agent",
                         "action": {"kind": "ThinkAction", "thought": "search"},
                     },
@@ -1041,6 +1043,8 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
     assert running.events[2].payload["source_type"] == "FutureEvent"
     assert running.events[1].payload["event_name"] == "ThinkAction"
     assert running.events[1].payload["content"] == "search"
+    assert running.events[0].payload["timestamp"] == "2026-08-26T10:00:01+00:00"
+    assert running.events[1].payload["timestamp"] == "2026-08-26T10:00:02+00:00"
     assert running.cursor == "13"
     assert running.result is None
     assert terminal.cursor == "14"
@@ -1337,6 +1341,7 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
         {
             "kind": "ActionEvent",
             "id": "tool-1",
+            "timestamp": "2026-08-26T10:00:03+00:00",
             "action": {"kind": "TerminalAction", "command": "pwd", "api_key": "must-not-leak"},
         }
     ) == (
@@ -1349,6 +1354,7 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
                     "source_type": "ActionEvent",
                     "source": None,
                     "content": "",
+                    "timestamp": "2026-08-26T10:00:03+00:00",
                     "event_name": "TerminalAction",
                     "details": {"command": "pwd", "api_key": "[redacted]"},
                 },
@@ -1413,6 +1419,7 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
         yield {
             "kind": "MessageEvent",
             "id": "assistant-1",
+            "timestamp": "2026-08-26T10:00:04+00:00",
             "source": "agent",
             "llm_message": {"role": "assistant", "content": "已完成"},
         }
@@ -1434,7 +1441,12 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
             "event": {
                 "id": "assistant-1",
                 "event_type": "MESSAGE",
-                "payload": {"source_type": "MessageEvent", "source": "agent", "content": "已完成"},
+                "payload": {
+                    "source_type": "MessageEvent",
+                    "source": "agent",
+                    "content": "已完成",
+                    "timestamp": "2026-08-26T10:00:04+00:00",
+                },
             },
         },
         {"type": "message_complete"},
@@ -1841,6 +1853,7 @@ def test_openhands_projects_native_conversation_error_details():
     event = {
         "kind": "ConversationErrorEvent",
         "id": "error-1",
+        "timestamp": "2026-08-26T10:00:05+00:00",
         "source": "environment",
         "parent_id": "user-1",
         "code": "LLMRateLimitError",
@@ -1853,6 +1866,7 @@ def test_openhands_projects_native_conversation_error_details():
         "source_type": "ConversationErrorEvent",
         "source": "environment",
         "content": "The usage limit has been reached",
+        "timestamp": "2026-08-26T10:00:05+00:00",
         "parent_id": "user-1",
         "event_name": "ConversationErrorEvent",
         "error_code": "LLMRateLimitError",

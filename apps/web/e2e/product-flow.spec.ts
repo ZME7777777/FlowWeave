@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page, type WebSocketRoute } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 const apiBase = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
@@ -187,11 +187,13 @@ test('terminal environment creation keeps the setup image internal', async ({ pa
 
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
   let modelIsResponding = false;
+  let agentStream: WebSocketRoute | undefined;
   let sentMessages = 0;
   let sentProvider: string | null = null;
   let confirmationPending = false;
   let confirmationDecision: Record<string, unknown> | null = null;
   const conversations: Array<Record<string, unknown>> = [];
+  await page.routeWebSocket('**/agent-workspaces/**/stream', stream => { agentStream = stream; });
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -260,11 +262,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/events')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求' } }] : conversations.length ? [
-          { id: 'state-empty', event_type: 'STATE', payload: { parent_id: '__root__' } },
-          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'state-empty', event_name: 'BashAction', details: { command: 'pwd' } } },
-          { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'tool-request', event_name: 'BashObservation', content: '/workspace' } },
-          { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'tool-result', content: '工作区已就绪。' } },
+        events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date().toISOString() } }] : conversations.length ? [
+          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
+          { id: 'thought', event_type: 'THOUGHT', payload: { parent_id: 'user-request', content: '我先检查当前工作目录。', timestamp: '2026-08-26T10:00:01Z' } },
+          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'thought', event_name: 'BashAction', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
+          { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'tool-request', event_name: 'BashObservation', content: '/workspace', timestamp: '2026-08-26T10:00:03Z' } },
+          { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'tool-result', timestamp: '2026-08-26T10:00:04Z' } },
+          { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'state-empty', content: '工作区已就绪。', timestamp: '2026-08-26T10:02:19Z' } },
+          { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答', timestamp: '2026-08-26T10:03:00Z' } },
+          { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。', timestamp: '2026-08-26T10:03:02Z' } },
+          { id: 'failure-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'direct-reply', content: '触发失败', timestamp: '2026-08-26T10:04:00Z' } },
+          { id: 'failure-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'failure-user', content: '模型服务暂时不可用。', error_code: 'ModelUnavailable', timestamp: '2026-08-26T10:04:03Z' } },
         ] : [], next_cursor: null,
       }) });
       return;
@@ -308,13 +316,36 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
+  const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
+  const completedProcess = completedTurn.locator('.conversation-activity-group');
+  await expect(completedProcess).toHaveJSProperty('open', false);
+  await expect(completedProcess.getByText('耗时 2分钟19秒')).toBeVisible();
+  await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
+  await expect.poll(() => completedTurn.evaluate(turn => {
+    const process = turn.querySelector('.conversation-activity-group');
+    const reply = turn.querySelector('.conversation-message.assistant');
+    return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
+  await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
+  const directTurn = page.locator('.conversation-turn').filter({ hasText: '直接回复完成。' });
+  await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
+  await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);
+  const failureTurn = page.locator('.conversation-turn').filter({ hasText: '本轮没有生成回复' });
+  await expect(failureTurn.locator('.conversation-activity-group').getByText('耗时 3秒')).toBeVisible();
+  await expect(failureTurn.locator('.conversation-message.assistant')).toHaveCount(0);
+  await expect.poll(() => failureTurn.evaluate(turn => {
+    const process = turn.querySelector('.conversation-activity-group');
+    const failure = turn.querySelector('.conversation-failure');
+    return Boolean(process && failure && (process.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
   await page.getByRole('button', { name: '压缩上下文' }).click();
-  await page.getByRole('button', { name: '从此处分叉会话' }).click();
+  await page.getByRole('button', { name: '从此处分叉会话' }).last().click();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 未命名会话 1' })).toBeVisible();
-  await expect(page.getByText('工作过程')).toBeVisible();
+  await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(page.getByText('BashAction')).toBeHidden();
-  await page.getByText('工作过程').click();
+  await page.getByText('耗时 2分钟19秒').click();
+  await expect(page.getByText('我先检查当前工作目录。')).toBeVisible();
   await expect(page.getByText('工具调用已完成')).toBeVisible();
   await expect(page.getByText('BashAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
@@ -326,6 +357,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentProvider).toBe('provider-2');
+  const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
+  await expect(activeProcess).toHaveJSProperty('open', true);
+  await expect(activeProcess.getByText(/正在处理 · 已耗时 \d+秒/)).toBeVisible();
+  await expect.poll(() => Boolean(agentStream)).toBe(true);
+  agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
+  await expect(activeProcess.getByText('正在核对上下文。')).toBeVisible();
+  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '正在核对上下文。' })).toHaveCount(0);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-thought', event_type: 'THOUGHT', payload: { parent_id: 'running-user', content: '已完成初步分析。', timestamp: new Date().toISOString() } },
+  }));
+  await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
+  await expect(activeProcess.getByText('正在核对上下文。')).toHaveCount(0);
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();

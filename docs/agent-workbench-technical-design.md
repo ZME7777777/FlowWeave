@@ -603,10 +603,13 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   其他供应商隐式视为默认值。该卡片不属于当前会话，也不改变已创建 Conversation 的冻结模型。
 - Runtime 恢复中：历史列表可读；消息区说明“数据已保留，运行环境恢复后加载消息”；输入和终端禁用。
 - 当前 Conversation ACTIVE：REST 补齐历史后建立 WS，输入可用。
-- Agent 回复的可见正文由 WebSocket `delta` 直接逐段渲染为临时回复，`message_complete` 后立即由
-  OpenHands 正式事件重新读取并替换；浏览器临时文本不写入 FlowWeave 数据库或本地持久状态。
+- WebSocket `delta` 在正式 assistant `MessageEvent` 到达前作为当前轮工作过程中的临时模型输出逐段展示；
+  正式消息到达后清除临时文本，并只在过程区下方渲染一次最终回复。浏览器临时文本不写入 FlowWeave
+  数据库或本地持久状态。
 - `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程卡片显示；空 `STATE` 与
   未承载用户价值的协议帧不显示。不得显示供应商的隐藏原始推理，仅渲染 OpenHands 已安全投影的内容。
+- REST 与实时安全投影保留 OpenHands 正式事件 `timestamp`。完成轮次按正式 user 到 assistant/error 的
+  墙钟时间显示耗时，运行中可在正式时间回读前使用浏览器请求开始时间计时；缺失或非法时间不猜测。
 - Agent 执行中：显示停止按钮和正式 Tool 活动；不把全部原始 JSON 默认展开。
 - 暂停按钮只表示“已向 OpenHands 请求暂停”，此时 composer 进入 `pausing`。页面通过 OpenHands 当前正式
   execution status 的瞬态读取确认会话已暂停后显示“继续”；继续调用 OpenHands 正式 run。执行期间可把新
@@ -617,8 +620,10 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   运行。旧事件分支仍由 OpenHands 保存但不在当前活动会话中渲染，新的回复与工作过程取代旧分支；不得以
   隐藏前端消息伪造该行为。
 - 对话视觉采用简洁问答：用户消息仅以右侧气泡呈现，Agent 最终回复直接渲染在正文流中；不显示头像、
-  “你”或“Agent”身份标签。每轮由已安全投影的 `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT`、`ERROR` 组成
-  工作过程，回复完成后收在该最终回复下的折叠组，执行中保持展开。
+  “你”或“Agent”身份标签。每轮固定按“用户消息 → 工作过程 → 最终回复或失败结果”排列；安全投影的
+  流式文本、`THOUGHT`、`TOOL_CALL`、`TOOL_RESULT`、Condensation 与 `ERROR` 均进入工作过程。执行中
+  过程区保持展开并实时计时，完成后默认折叠并显示耗时；没有中间条目的直接回复只显示耗时摘要，不生成
+  空白详情区域。
 - 非瞬态错误：停止请求风暴，显示错误码、request ID、重试或返回列表。
 - 浏览器刷新：恢复同一 binding；binding 不存在时回 `/agent`，不进入全局异常页。
 

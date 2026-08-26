@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CircleAlert, GitFork, LoaderCircle, Pencil, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, CircleAlert, GitFork, LoaderCircle, Pencil, Sparkles, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
@@ -94,6 +94,9 @@ function workspacePath(value: string): string {
 }
 
 function activityPresentation(item: Item): { title: string; status: string; command?: string; path?: string; thought?: string } {
+  if (item.kind === 'condensation') {
+    return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
+  }
   if (item.kind === 'thought') {
     return { title: '正在分析', status: '分析中', thought: item.content.slice(0, 2_000) || undefined };
   }
@@ -123,13 +126,57 @@ function activityPresentation(item: Item): { title: string; status: string; comm
   return { title: completed ? '工具调用已完成' : '正在使用工具', status: completed ? '已完成' : '调用工具' };
 }
 
-function ActivityGroup({ items, active }: { items: Item[]; active: boolean }) {
-  if (!items.length) return null;
-  return <details className="conversation-activity-group" open={active}>
-    <summary><ChevronRight size={14}/><span>{active ? '正在处理' : '工作过程'}</span><small>{items.length} 项</small>{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</summary>
+function eventTime(item?: Item): number | undefined {
+  const raw = item?.event.payload.timestamp;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  const value = Date.parse(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function formatDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  if (hours) return `${hours}小时${minutes ? `${minutes}分钟` : ''}${remainder ? `${remainder}秒` : ''}`;
+  if (minutes) return `${minutes}分钟${remainder ? `${remainder}秒` : ''}`;
+  return `${remainder}秒`;
+}
+
+function useElapsedSeconds(startedAt: number | undefined, finishedAt: number | undefined, active: boolean): number | undefined {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || startedAt === undefined) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active, startedAt]);
+  if (startedAt === undefined) return undefined;
+  return Math.max(0, ((finishedAt ?? now) - startedAt) / 1000);
+}
+
+function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting, requestSubmitting }: {
+  items: Item[];
+  active: boolean;
+  liveText?: string;
+  startedAt?: number;
+  finishedAt?: number;
+  waiting?: boolean;
+  requestSubmitting?: boolean;
+}) {
+  const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
+  const itemCount = items.length + (liveText ? 1 : 0);
+  const label = active
+    ? `正在处理${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
+    : elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
+  const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
+  const hasDetails = itemCount > 0 || waiting;
+  if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
+  return <details className="conversation-activity-group" open={active} onToggle={event => { if (active && !event.currentTarget.open) event.currentTarget.open = true; }}>
+    <summary>{summary}</summary>
     <div className="conversation-activity-list">
       {items.map(item => {
-        const Icon = item.kind === 'error' ? CircleAlert : Wrench;
+        const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
         const presentation = activityPresentation(item);
         return <article className={`conversation-activity-row ${item.kind}`} key={item.event.id}>
           <Icon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small>
@@ -139,12 +186,14 @@ function ActivityGroup({ items, active }: { items: Item[]; active: boolean }) {
           </div>
         </article>;
       })}
+      {liveText && <article className="conversation-activity-row live-text"><Sparkles size={14}/><div><b>正在生成回复</b><small>模型输出</small><ReactMarkdown>{liveText}</ReactMarkdown></div></article>}
+      {waiting && <ResponseWait startedAt={startedAt} submitting={Boolean(requestSubmitting)}/>}
     </div>
   </details>;
 }
 
-function AgentReply({ content, streaming = false, onFork }: { content: string; streaming?: boolean; onFork?: () => void }) {
-  return <article className={`conversation-message assistant${streaming ? ' streaming' : ''}`}>
+function AgentReply({ content, onFork }: { content: string; onFork?: () => void }) {
+  return <article className="conversation-message assistant">
     {content ? <ReactMarkdown>{content}</ReactMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
     {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
   </article>;
@@ -231,24 +280,19 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   return <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={updateScrollPosition}>
     {turns.map((turn, index) => {
       const isCurrent = index === turns.length - 1 && isGenerating;
-      const condensations = turn.activity.filter(item => item.kind === 'condensation');
       const failures = turn.activity.filter(item => item.kind === 'error');
-      const activity = turn.activity.filter(item => item.kind !== 'condensation' && item.kind !== 'error');
-      const waitingForProgress = isCurrent && !turn.assistant && !liveText && !activity.length && !failures.length;
+      const processItems = turn.activity;
+      const waitingForProgress = isCurrent && !turn.assistant && !liveText && !processItems.length;
+      const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
+      const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
       return <section className="conversation-turn" key={turn.id}>
         {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</article>)}
-        {condensations.map(item => <div className="conversation-condensation" key={item.event.id}><span>↻</span>{item.title}</div>)}
+        <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
         {turn.assistant && <AgentReply content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
         {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
-        {activity.length > 0 && <ActivityGroup items={activity} active={isCurrent && !turn.assistant}/>}
-        {isCurrent && !turn.assistant && (waitingForProgress
-          ? <ResponseWait startedAt={requestStartedAt} submitting={requestSubmitting}/>
-          : <AgentReply content={liveText} streaming/>)}
       </section>;
     })}
-    {turns.length === 0 && (liveText || isGenerating) && (liveText
-      ? <AgentReply content={liveText} streaming/>
-      : <ResponseWait startedAt={requestStartedAt} submitting={requestSubmitting}/>)}
+    {turns.length === 0 && (liveText || isGenerating) && <ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} waiting={!liveText} requestSubmitting={requestSubmitting}/>}
     <div ref={tail}/>
     {showJumpToLatest && <button
       type="button"

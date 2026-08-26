@@ -1531,6 +1531,9 @@ class OpenHandsRuntime:
             "source": item.get("source"),
             "content": cls._event_text(item),
         }
+        timestamp = item.get("timestamp")
+        if isinstance(timestamp, str) and timestamp:
+            payload["timestamp"] = timestamp[:80]
         parent_id = cls._formal_identity(item.get("parent_id"), field="parent_id", required=False)
         if parent_id is not None:
             payload["parent_id"] = parent_id

@@ -319,6 +319,7 @@ export interface OpenHandsConversationEvent {
     source?: string | null;
     parent_id?: string | null;
     content?: string;
+    timestamp?: string;
     event_name?: string;
     details?: Record<string, unknown>;
     [key: string]: unknown;

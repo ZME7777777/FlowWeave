@@ -185,7 +185,10 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   }, [queryClient, selected?.id, workspace]);
   const onStreamEvent = useCallback((event: { type: 'delta' | 'event' | 'message_complete'; content?: string; event?: OpenHandsConversationEvent }) => {
     if (event.type === 'delta' && event.content) setLiveText(value => value + event.content);
-    if (event.type === 'event' && event.event) setLiveEvents(current => mergeConversationEvents(current, [event.event!]));
+    if (event.type === 'event' && event.event) {
+      setLiveEvents(current => mergeConversationEvents(current, [event.event!]));
+      if (['THOUGHT', 'TOOL_CALL', 'MESSAGE', 'ERROR'].includes(event.event.event_type)) setLiveText('');
+    }
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events
     // associated with activeTurnEventId are the authoritative terminal signal.
