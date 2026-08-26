@@ -223,7 +223,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/events')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [], next_cursor: null }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        events: conversations.length ? [
+          { id: 'state-empty', event_type: 'STATE', payload: {} },
+          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { event_name: 'BashAction', details: { command: 'pwd' } } },
+          { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { event_name: 'BashObservation', content: '/workspace' } },
+          { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', content: '工作区已就绪。' } },
+        ] : [], next_cursor: null,
+      }) });
       return;
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
@@ -242,14 +249,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.getByText('先选择已测试成功的模型配置')).toBeVisible();
   await page.getByLabel('Agent 新会话模型配置').selectOption('provider-1');
-  await page.getByRole('button', { name: '切换配置' }).click();
+  await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.getByRole('button', { name: '新建会话' }).first()).toBeEnabled();
   await expect(page.getByLabel('Agent 新会话模型配置')).toHaveValue('provider-1');
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
+  await expect(page.getByText('工作区已就绪。')).toBeVisible();
+  await expect(page.getByText('BashAction')).toBeVisible();
+  await expect(page.getByText('STATE')).not.toBeVisible();
   await page.getByLabel('Agent 新会话模型配置').selectOption('provider-2');
-  await page.getByRole('button', { name: '切换配置' }).click();
+  await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.getByLabel('Agent 新会话模型配置')).toHaveValue('provider-2');
   await expect(page.getByText('仅影响后续新会话')).toBeVisible();
   await page.reload();

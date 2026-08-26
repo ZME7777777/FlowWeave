@@ -592,10 +592,14 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
 
 - Runtime ACTIVE 且无会话：显示“新建会话开始协作”。
 - 无默认模型：显示模型选择/配置引导，不阻塞历史列表。
-- 已配置模型：在工作台标题栏持续展示“新会话模型配置”选择器；用户可切换或清空选择，不能把
-  Codex OAuth 或任何其他供应商隐式视为默认值。
+- 左侧会话栏底部持续展示“新会话模型配置”卡片；用户可切换或清空选择，不能把 Codex OAuth 或任何
+  其他供应商隐式视为默认值。该卡片不属于当前会话，也不改变已创建 Conversation 的冻结模型。
 - Runtime 恢复中：历史列表可读；消息区说明“数据已保留，运行环境恢复后加载消息”；输入和终端禁用。
 - 当前 Conversation ACTIVE：REST 补齐历史后建立 WS，输入可用。
+- Agent 回复的可见正文由 WebSocket `delta` 直接逐段渲染为临时回复，`message_complete` 后立即由
+  OpenHands 正式事件重新读取并替换；浏览器临时文本不写入 FlowWeave 数据库或本地持久状态。
+- `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程卡片显示；空 `STATE` 与
+  未承载用户价值的协议帧不显示。不得显示供应商的隐藏原始推理，仅渲染 OpenHands 已安全投影的内容。
 - Agent 执行中：显示停止按钮和正式 Tool 活动；不把全部原始 JSON 默认展开。
 - 非瞬态错误：停止请求风暴，显示错误码、request ID、重试或返回列表。
 - 浏览器刷新：恢复同一 binding；binding 不存在时回 `/agent`，不进入全局异常页。
