@@ -421,6 +421,16 @@ Codex/ChatGPT 风格的悬停编辑、无双边框自动增高输入区和会话
 的用户消息，也不屏蔽 OpenHands 已返回的真实模型错误。页面应能读取并渲染正式 ERROR 事件，而不是显示空白
 会话与误导性的“处理中”提示。
 
+### FR-31 Agent 工作台实时事件中继与最新回复导航修复 — DONE
+
+依赖：`FR-30`。
+
+目标：修复 Runtime Provider 事件中继每次仅转发一个 OpenHands WebSocket 帧便退出、导致状态帧抢占 token
+delta 或完成消息，从而出现“发送下一条才看到上一条回复”的问题。中继必须在同一已授权连接中持续转发正式
+OpenHands 事件，直到客户端断开或上游关闭；FlowWeave 仍只安全投影可见文本 delta 和完成通知，不持久化或
+泄露原始推理。Agent 工作台的“跳到最新回复”控件仅在用户离开会话底部时显示；生成中显示动态提示，完成后
+显示向下箭头，处于底部时不显示。不得修改 OpenHands 源码、模拟流式输出或改写 Conversation/Event/HEAD。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -437,6 +447,7 @@ Codex/ChatGPT 风格的悬停编辑、无双边框自动增高输入区和会话
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-26 | FR-31 | Runtime Provider 定向事件流测试；Web typecheck/lint；`git diff --check` | PASS：Provider 保持同一条经所有权校验的 OpenHands WebSocket，连续转发状态、delta 与完成帧，不再在首个状态帧后断开；Agent 工作台仅从正式可见 delta 渲染流式文本。最新回复控件仅在用户离开底部时出现；完成后为向下箭头。模型/思考程度应用动作改用勾选语义，当前窗口上下文提供真实统计浮层；未知窗口上限明确不估算。 |
 | 2026-08-21 | FR-00 | 固定 OpenHands 源码取证；`git status`；`alembic heads`；任务状态、引用和 whitespace 检查 | PASS：新架构与独立任务主线已冻结；分支 `feat/refactor`；唯一 head `0051_physical_delete`；无 `CURRENT`，仅 FR-01 为 `READY` |
 | 2026-08-21 | 全阶段验证策略 | 文档规则一致性与 `git diff --check` | PASS：FR-01–FR-11 仅做受影响代码语法/解析/编译检查；所有业务、迁移、协议、安全、恢复、容器和 E2E 验证统一推迟到 FR-12 |
 | 2026-08-21 | FR-01 | 受影响 Python `py_compile`；受影响 Web 文件定向 TypeScript 编译；Compose YAML 解析；`alembic heads`；任务状态唯一性；`git diff --check` | PASS：Flow 强制绑定用户创建的 READY Environment Version，Run/Snapshot 冻结同一版本；历史空绑定运行与会话入口 fail closed；用户 base image 与最终 Runtime Image 均按 digest 冻结，发布调用固定 OpenHands `docker.build` 并保存 provenance。静态 head 为 `0052_flow_environment`；未运行数据库、镜像构建、业务测试或服务/容器验证，统一留待 FR-12 |

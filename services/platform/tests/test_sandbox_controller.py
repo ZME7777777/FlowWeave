@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -573,6 +574,7 @@ def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, 
         assert conversation_id == "conversation-1"
         assert timeout_seconds == 10.0
         yield b'{"kind":"StreamingDeltaEvent","content":"hello"}\n'
+        yield b'{"kind":"MessageEvent","source":"agent"}\n'
 
     monkeypatch.setattr(controller_module, "inspect_owned_container", inspect_owned)
     monkeypatch.setattr(controller_module, "_runtime_event_stream", stream)
@@ -588,10 +590,10 @@ def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, 
         denied = client.post("/v1/runtimes/events", headers=_headers(), json=payload)
 
     assert response.status_code == 200
-    assert response.json() == {
-        "kind": "StreamingDeltaEvent",
-        "content": "hello",
-    }
+    assert [json.loads(line) for line in response.text.splitlines()] == [
+        {"kind": "StreamingDeltaEvent", "content": "hello"},
+        {"kind": "MessageEvent", "source": "agent"},
+    ]
     assert verification["resource_id"] == _RESOURCE_ID
     assert verification["manager_scope"] == _SCOPE
     assert verification["kind"] == "agent-runtime"

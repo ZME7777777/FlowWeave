@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, CircleAlert, GitFork, LoaderCircle, Wrench } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
 import './conversation-surface.css';
@@ -91,27 +91,42 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
 }) {
+  const surface = useRef<HTMLElement>(null);
   const tail = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
+  const followLatest = useRef(true);
   const wasGenerating = useRef(isGenerating);
+  const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const turns = useMemo(() => turnsFor(events.map(itemFor).filter((item): item is Item => Boolean(item))), [events]);
-  const scrollToLatest = (behavior: ScrollBehavior = 'smooth') => {
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    followLatest.current = true;
+    setIsAtLatest(true);
     tail.current?.scrollIntoView({ block: 'end', behavior });
-  };
+  }, []);
+  const updateScrollPosition = useCallback(() => {
+    const element = surface.current;
+    if (!element) return;
+    const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
+    followLatest.current = atLatest;
+    setIsAtLatest(atLatest);
+  }, []);
   useEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
       scrollToLatest('auto');
     } else if (!wasGenerating.current && isGenerating) {
       scrollToLatest('smooth');
+    } else if (followLatest.current) {
+      scrollToLatest('auto');
     }
     wasGenerating.current = isGenerating;
-  }, [isGenerating, liveText, turns.length]);
+  }, [isGenerating, liveText, scrollToLatest, turns.length]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
-  return <section className="conversation-surface" aria-live="polite">
+  const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
+  return <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={updateScrollPosition}>
     {turns.map((turn, index) => {
       const isCurrent = index === turns.length - 1 && isGenerating;
       const condensations = turn.activity.filter(item => item.kind === 'condensation');
@@ -126,14 +141,18 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
     })}
     {turns.length === 0 && (liveText || isGenerating) && <AgentReply content={liveText} streaming/>}
     <div ref={tail}/>
-    <button
+    {showJumpToLatest && <button
       type="button"
       className={`conversation-jump-latest${isGenerating ? ' generating' : ''}`}
       aria-label={isGenerating ? '跳转到正在生成的最新回复' : '跳转到最新回复'}
       title={isGenerating ? '查看正在生成的最新回复' : '查看最新回复'}
       onClick={() => scrollToLatest()}
     >
-      {isGenerating ? <span className="conversation-jump-dots" aria-hidden="true"><i/><i/><i/></span> : <ChevronDown size={19}/>}
-    </button>
+      {isGenerating ? (
+        <span className="conversation-jump-dots" aria-hidden="true"><i/><i/><i/></span>
+      ) : (
+        <ChevronDown size={19}/>
+      )}
+    </button>}
   </section>;
 }

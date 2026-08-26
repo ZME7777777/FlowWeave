@@ -405,6 +405,7 @@ import os
 import sys
 
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 
 async def main():
@@ -427,12 +428,15 @@ async def main():
             "type": "auth",
             "session_api_key": os.environ["SESSION_API_KEY"],
         }))
-        try:
-            frame = await asyncio.wait_for(upstream.recv(), timeout=timeout_seconds)
-        except TimeoutError:
-            return
-        if isinstance(frame, str):
-            print(frame, flush=True)
+        while True:
+            try:
+                frame = await asyncio.wait_for(upstream.recv(), timeout=timeout_seconds)
+            except TimeoutError:
+                continue
+            except ConnectionClosed:
+                return
+            if isinstance(frame, str):
+                print(frame, flush=True)
 
 
 asyncio.run(main())

@@ -220,8 +220,8 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const contextLabel = contextQuery.data?.used_tokens != null && contextQuery.data.window_tokens != null
     ? `上下文 ${contextQuery.data.used_tokens.toLocaleString()} / ${contextQuery.data.window_tokens.toLocaleString()} tokens`
     : contextQuery.data?.cumulative_tokens != null
-      ? `累计 ${contextQuery.data.cumulative_tokens.toLocaleString()} tokens · 上下文由模型管理`
-      : '上下文由 OpenHands 管理';
+      ? '当前窗口上下文'
+      : '当前窗口上下文';
 
   return <main className="agent-workbench-page">
     <aside className="agent-workbench-rail">
