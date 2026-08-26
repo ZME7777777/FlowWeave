@@ -315,21 +315,25 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             del handle
             self.switched = provider
 
-    monkeypatch.setattr(
-        conversations,
-        "runtime_provider",
-        lambda _db, _asset, model_name=None, reasoning_effort=None: RuntimeProvider(
-            provider_id="provider",
+    resolved_provider_ids: list[str] = []
+
+    def resolve_provider(_db, asset, model_name=None, reasoning_effort=None):
+        provider_id = asset["asset"]["executor"]["model_provider_id"]
+        resolved_provider_ids.append(provider_id)
+        return RuntimeProvider(
+            provider_id=provider_id,
             base_url="https://models.example.test/v1",
             model=model_name or "test-model",
             api_key="x",
             reasoning_effort=reasoning_effort,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(conversations, "runtime_provider", resolve_provider)
     runtime = NativeWorkspaceRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
         created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        assert created["model_provider_id"] == workspace.default_model_provider_id
         attachment = conversations.upload_attachment(
             db,
             workspace.id,
@@ -362,12 +366,32 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "model_name": "test-model",
             "reasoning_effort": "medium",
         }
+        # Changing the workspace default must not allow an existing
+        # conversation to cross provider boundaries.
+        original_provider_id = workspace.default_model_provider_id
+        replacement_provider = ModelProvider(
+            name=f"replacement-provider-{workspace.id}",
+            base_url="https://replacement.example.test/v1",
+            connection_state="CONNECTED",
+        )
+        db.add(replacement_provider)
+        db.flush()
+        db.add(
+            ProviderModel(
+                provider_id=replacement_provider.id,
+                model_name="replacement-model",
+                enabled=True,
+                is_default=True,
+            )
+        )
+        workspace.default_model_provider_id = replacement_provider.id
         conversations.switch_conversation_model(
-            db, workspace.id, created["id"], "provider", "test-model-2", "high"
+            db, workspace.id, created["id"], "test-model-2", "high"
         )
         assert runtime.switched is not None
         assert runtime.switched.model == "test-model-2"
         assert runtime.switched.reasoning_effort == "high"
+        assert resolved_provider_ids[-1] == original_provider_id
 
 
 def test_agent_workspace_forks_at_native_event_and_condenses_manually(
@@ -422,6 +446,7 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         )
         assert fork["lifecycle"] == "ACTIVE"
         assert fork["display_title"] == "Fork · 源会话"
+        assert fork["model_provider_id"] == source["model_provider_id"]
         assert runtime.fork_call == ("assistant-event", "assistant-event")
         assert conversations.fork_conversation(
             db, workspace.id, source["id"], "assistant-event", None, "fork-key"

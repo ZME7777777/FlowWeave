@@ -168,6 +168,12 @@ class AgentConversationBinding(Base):
     runtime_session_id: Mapped[str] = mapped_column(
         ForeignKey("agent_workspace_runtimes.id", ondelete="RESTRICT"), index=True
     )
+    # This is frozen when the native OpenHands conversation is created.  It is
+    # intentionally nullable for pre-FR-29 bindings: their original provider
+    # was not persisted and must not be guessed during migration.
+    model_provider_id: Mapped[str | None] = mapped_column(
+        ForeignKey("model_providers.id", ondelete="RESTRICT"), index=True
+    )
     openhands_conversation_id: Mapped[str] = mapped_column(String(36))
     display_title: Mapped[str | None] = mapped_column(String(240))
     lifecycle: Mapped[str] = mapped_column(String(20), default="PROVISIONING", index=True)

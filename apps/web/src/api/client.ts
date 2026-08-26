@@ -125,8 +125,8 @@ export const api = {
   },
   agentConversationContext: (workspaceId: string, bindingId: string) =>
     request<AgentConversationContext>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/context`),
-  switchAgentConversationModel: (workspaceId: string, bindingId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
-    request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
+  switchAgentConversationModel: (workspaceId: string, bindingId: string, model_name: string, reasoning_effort: string | null) =>
+    request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/model`, json('POST', { model_name, reasoning_effort })),
   condenseAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/condense`, json('POST')),
   forkAgentConversation: (workspaceId: string, bindingId: string, event_id: string) =>

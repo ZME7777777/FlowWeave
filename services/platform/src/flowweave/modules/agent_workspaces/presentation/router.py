@@ -63,7 +63,6 @@ class AgentMessageWrite(_Write):
 
 
 class AgentConversationModelWrite(_Write):
-    model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
 
@@ -241,7 +240,6 @@ async def agent_conversation_model(
             session,
             workspace_id,
             binding_id,
-            payload.model_provider_id,
             payload.model_name,
             payload.reasoning_effort,
         ),

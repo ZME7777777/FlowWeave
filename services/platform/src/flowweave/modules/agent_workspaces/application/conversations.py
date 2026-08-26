@@ -64,6 +64,7 @@ def _dict(item: AgentConversationBinding) -> dict[str, Any]:
     return {
         "id": item.id,
         "display_title": item.display_title,
+        "model_provider_id": item.model_provider_id,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -210,6 +211,7 @@ def create_conversation(
     binding = AgentConversationBinding(
         workspace_id=workspace.id,
         runtime_session_id=runtime.id,
+        model_provider_id=workspace.default_model_provider_id,
         openhands_conversation_id=conversation_id,
         display_title=title.strip() if title and title.strip() else None,
         create_idempotency_key=idempotency_key,
@@ -482,18 +484,24 @@ def switch_conversation_model(
     db: Session,
     workspace_id: str,
     binding_id: str,
-    provider_id: str,
     model_name: str,
     reasoning_effort: str | None,
 ) -> dict[str, str | None]:
     workspace = _workspace(db, workspace_id)
-    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    binding = _binding(db, workspace_id, binding_id)
+    if binding.model_provider_id is None:
+        raise DomainError(
+            "AGENT_CONVERSATION_PROVIDER_REQUIRED",
+            "此历史会话未记录模型供应商，无法安全切换模型；请新建会话",
+            409,
+        )
+    handle = _handle(db, workspace, binding)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后切换模型", 409)
     provider = runtime_provider(
         db,
-        {"asset": {"executor": {"model_provider_id": provider_id}}},
+        {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
         model_name=model_name,
         reasoning_effort=reasoning_effort,
     )
@@ -547,6 +555,7 @@ def fork_conversation(
     target = AgentConversationBinding(
         workspace_id=workspace.id,
         runtime_session_id=source.runtime_session_id,
+        model_provider_id=source.model_provider_id,
         openhands_conversation_id=target_id,
         display_title=clean_title,
         create_idempotency_key=idempotency_key,

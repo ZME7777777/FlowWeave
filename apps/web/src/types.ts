@@ -354,6 +354,7 @@ export interface AgentConversationContext {
 export interface AgentConversation {
   id: string;
   display_title?: string | null;
+  model_provider_id?: string | null;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;

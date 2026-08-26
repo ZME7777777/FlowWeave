@@ -301,6 +301,7 @@ UNIQUE(runtime_session_id, generation)
 id UUID PK                                      -- 前端和公开 API 使用
 workspace_id FK
 runtime_session_id FK
+model_provider_id FK NULL                     -- 创建时冻结；历史未知时保持 NULL
 openhands_conversation_id UUID
 display_title VARCHAR NULL                      -- 离线列表投影
 lifecycle PROVISIONING | ACTIVE | DELETE_PENDING | DELETED | FAILED
@@ -481,6 +482,12 @@ Agent Runtime 启动不依赖模型配置。创建 Conversation 时必须满足�
 2. 模型配置为启用状态且最近一次连接测试成功；
 3. Secret 在服务端调用边界解密，不进入数据库普通列、日志、前端或 Conversation display metadata；
 4. 后端编译为 OpenHands 正式 LLM/Agent 请求。
+
+创建成功后，binding 必须记录本次使用的 `model_provider_id`，该供应商在会话生命周期内不可变。会话内
+`switch_llm` 只能从这一供应商的已启用模型中选择；公开请求不得携带可改变供应商的字段。迁移前没有
+可审计 provider identity 的历史 binding 保持 `NULL`，不得依据当前 Workspace 默认值猜测回填或静默改写
+OpenHands 状态；它们可以继续读取和发送，但模型切换必须明确拒绝，用户可新建一个带明确供应商的会话。
+由原生 fork 创建的会话继承源 binding 的冻结供应商。
 
 没有默认模型时，页面保留导航和历史列表，在空白区提示“先选择已测试成功的模型配置”，并链接现有模型
 配置页面。禁止自动选最近创建的模型或回退到环境变量中的隐藏模型。
