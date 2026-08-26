@@ -83,6 +83,16 @@ function AgentReply({ content, streaming = false, onFork }: { content: string; s
   </article>;
 }
 
+function ConversationFailure({ item }: { item: Item }) {
+  const code = typeof item.event.payload.error_code === 'string' ? item.event.payload.error_code : '';
+  const content = code === 'LLMRateLimitError'
+    ? '模型服务拒绝了这次请求：当前配置的账户可用额度已用尽。请选择有可用额度的模型配置后，编辑并重新思考此消息。'
+    : item.content || 'OpenHands 未能完成这一轮，请检查模型配置后重试。';
+  return <article className="conversation-failure" role="status">
+    <CircleAlert size={15}/><div><b>本轮没有生成回复</b><p>{content}</p>{code && <small>{code}</small>}</div>
+  </article>;
+}
+
 export function ConversationSurface({ events, liveText, isGenerating, rewritePending = false, onRewrite, onFork }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
@@ -130,11 +140,13 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
     {turns.map((turn, index) => {
       const isCurrent = index === turns.length - 1 && isGenerating;
       const condensations = turn.activity.filter(item => item.kind === 'condensation');
-      const activity = turn.activity.filter(item => item.kind !== 'condensation');
+      const failures = turn.activity.filter(item => item.kind === 'error');
+      const activity = turn.activity.filter(item => item.kind !== 'condensation' && item.kind !== 'error');
       return <section className="conversation-turn" key={turn.id}>
         {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}>编辑并重新思考</button>}</article>)}
         {condensations.map(item => <div className="conversation-condensation" key={item.event.id}><span>↻</span>{item.title}</div>)}
         {turn.assistant && <AgentReply content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
+        {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
         {activity.length > 0 && <ActivityGroup items={activity} active={isCurrent && !turn.assistant}/>}
         {isCurrent && !turn.assistant && <AgentReply content={liveText} streaming/>}
       </section>;

@@ -57,6 +57,11 @@ def _empty_attachment_references() -> list[AgentAttachmentReference]:
 
 class AgentMessageWrite(_Write):
     content: str = Field(min_length=1, max_length=200_000)
+    # Model selection is intentionally deferred until this user turn.  The
+    # browser can therefore let a user prepare the next turn without mutating
+    # an idle Conversation merely by opening a select control.
+    model_name: str | None = Field(default=None, min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
@@ -197,7 +202,9 @@ async def agent_message(
         db,
         lambda session: conversations.message(
             session, workspace_id, binding_id, payload.content,
-            tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
+            attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
         ),
     )
 

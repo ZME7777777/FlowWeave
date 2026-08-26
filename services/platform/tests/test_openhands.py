@@ -1798,6 +1798,29 @@ def test_openhands_normalizes_condensation_request_and_completion():
     }
 
 
+def test_openhands_projects_native_conversation_error_details():
+    event = {
+        "kind": "ConversationErrorEvent",
+        "id": "error-1",
+        "source": "environment",
+        "parent_id": "user-1",
+        "code": "LLMRateLimitError",
+        "detail": "The usage limit has been reached",
+        "classification": {"kind": "rate_limit", "retryable": True, "user_action": "retry"},
+    }
+
+    assert OpenHandsRuntime._event_type(event) == "ERROR"
+    assert OpenHandsRuntime._event_payload(event) == {
+        "source_type": "ConversationErrorEvent",
+        "source": "environment",
+        "content": "The usage limit has been reached",
+        "parent_id": "user-1",
+        "event_name": "ConversationErrorEvent",
+        "error_code": "LLMRateLimitError",
+        "classification": {"kind": "rate_limit", "retryable": True, "user_action": "retry"},
+    }
+
+
 def test_openhands_projects_native_task_tool_lifecycle_without_fabricating_child_api():
     requested = {
         "kind": "ActionEvent",

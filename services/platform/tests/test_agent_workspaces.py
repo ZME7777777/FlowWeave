@@ -359,6 +359,17 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             f"- /runtime/workspace/project/uploads/{'a' * 32}-diagram.png",
             ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
         )
+        conversations.message(
+            db,
+            workspace.id,
+            created["id"],
+            "切换后发送",
+            model_name="test-model-2",
+            reasoning_effort="high",
+        )
+        assert runtime.switched is not None
+        assert runtime.switched.model == "test-model-2"
+        assert runtime.switched.reasoning_effort == "high"
         assert conversations.conversation_context(db, workspace.id, created["id"]) == {
             "used_tokens": None,
             "window_tokens": 128_000,

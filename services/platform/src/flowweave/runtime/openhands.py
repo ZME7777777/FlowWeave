@@ -56,6 +56,10 @@ from flowweave.shared.infrastructure.docker_controller import (
 
 
 class OpenHandsRuntime:
+    # LiteLLM's fixed catalog reports this limit for the model used by the
+    # Codex OAuth integration.  Keep the value narrow and explicit: unknown
+    # provider models remain unknown rather than receiving a guessed window.
+    _DECLARED_CONTEXT_WINDOWS = {"openai/gpt-5.6-sol": 922_000}
     """OpenHands Agent Server adapter backed by the node's configured model provider."""
 
     def __init__(self, settings: Settings) -> None:
@@ -704,12 +708,15 @@ class OpenHandsRuntime:
         return model if "/" in model else f"openai/{model}"
 
     def _llm_payload(self, provider: RuntimeProvider) -> dict[str, Any]:
+        model = self._model_name(provider.model)
         llm: dict[str, Any] = {
-            "model": self._model_name(provider.model),
+            "model": model,
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "usage_id": f"flowweave:{provider.provider_id}",
         }
+        if (window := self._DECLARED_CONTEXT_WINDOWS.get(model)) is not None:
+            llm["max_input_tokens"] = window
         if provider.auth_type == "CODEX_OAUTH":
             extra_body: dict[str, Any] = {"store": False}
             if provider.reasoning_effort:
@@ -1328,6 +1335,12 @@ class OpenHandsRuntime:
     @classmethod
     def _event_text(cls, item: dict[str, Any]) -> str:
         kind = str(item.get("kind") or "")
+        if kind == "ConversationErrorEvent":
+            # This is the formal OpenHands top-level failure event.  It is not
+            # a model response, but suppressing its detail leaves a completed
+            # failed turn indistinguishable from a missing response.
+            detail = item.get("detail")
+            return detail[:20_000] if isinstance(detail, str) else ""
         if kind == "MessageEvent":
             message = item.get("llm_message")
             if isinstance(message, dict):
@@ -1541,6 +1554,14 @@ class OpenHandsRuntime:
                     "llm_response_id": item.get("llm_response_id"),
                 }
             )
+        elif kind == "ConversationErrorEvent":
+            payload["event_name"] = kind
+            code = item.get("code")
+            if isinstance(code, str):
+                payload["error_code"] = code[:200]
+            classification = item.get("classification")
+            if isinstance(classification, dict):
+                payload["classification"] = cls._safe_event_detail(classification)
         raw_detail = (
             item.get("action")
             if kind == "ActionEvent"
@@ -2607,6 +2628,10 @@ class OpenHandsRuntime:
             and raw_window > 0
             else None
         )
+        if window is None:
+            model = llm.get("model")
+            if isinstance(model, str):
+                window = self._DECLARED_CONTEXT_WINDOWS.get(model)
         cumulative = 0
         found = False
         for usage in self._usage_snapshots(state):

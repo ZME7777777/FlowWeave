@@ -393,6 +393,9 @@ def message(
     binding_id: str,
     content: str,
     attachments: tuple[dict[str, str], ...] = (),
+    *,
+    model_name: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
@@ -403,7 +406,8 @@ def message(
     ):
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
     workspace = _workspace(db, workspace_id)
-    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    handle = _handle(db, workspace, binding)
     if not get_runtime().can_accept_input(handle):
         raise DomainError(
             "AGENT_CONVERSATION_BUSY",
@@ -411,6 +415,23 @@ def message(
             409,
         )
     try:
+        # A Conversation remains bound to its creation provider.  If the user
+        # has picked a different model, apply the formal OpenHands switch only
+        # immediately before the next user event is created.
+        if model_name is not None:
+            if binding.model_provider_id is None:
+                raise DomainError(
+                    "AGENT_CONVERSATION_PROVIDER_REQUIRED",
+                    "此历史会话未记录模型供应商，无法安全切换模型；请新建会话",
+                    409,
+                )
+            provider = runtime_provider(
+                db,
+                {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+                model_name=model_name,
+                reasoning_effort=reasoning_effort,
+            )
+            get_runtime().switch_model(handle, provider)
         paths = tuple(item["path"] for item in attachments)
         image_urls = tuple(
             item["image_data_url"] for item in attachments if "image_data_url" in item
