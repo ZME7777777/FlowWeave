@@ -2292,8 +2292,7 @@ class OpenHandsRuntime:
                 resource_id=handle.runtime_resource_id,
                 conversation_id=handle.conversation_id,
             ):
-                visible = self._visible_stream_event(cast(dict[str, object], event))
-                if visible is not None:
+                for visible in self._visible_stream_event(cast(dict[str, object], event)):
                     yield visible
             return
 
@@ -2327,8 +2326,7 @@ class OpenHandsRuntime:
                 if not isinstance(value, dict):
                     continue
                 event = cast(dict[str, object], value)
-                visible = self._visible_stream_event(event)
-                if visible is not None:
+                for visible in self._visible_stream_event(event):
                     yield visible
 
     def _wait_for_wakeup_frame(
@@ -2494,25 +2492,51 @@ class OpenHandsRuntime:
             events=events,
         )
 
-    @staticmethod
-    def _visible_stream_event(event: dict[str, object]) -> dict[str, Any] | None:
-        """Map an OpenHands frame to the public stream without exposing reasoning."""
+    @classmethod
+    def _visible_stream_event(cls, event: dict[str, object]) -> tuple[dict[str, Any], ...]:
+        """Project only user-visible, formal events into a transient browser stream.
+
+        The browser owns this short-lived projection.  REST event reads remain the
+        recovery source after a refresh, and provider-private reasoning fields are
+        never included in the stream.
+        """
 
         kind = str(event.get("kind") or "")
         if kind == "StreamingDeltaEvent":
             content = event.get("content")
             return (
-                {"type": "delta", "content": content}
+                ({"type": "delta", "content": content},)
                 if isinstance(content, str) and content
-                else None
+                else ()
             )
-        if kind != "MessageEvent":
-            return None
-        raw_message = event.get("llm_message")
-        message = cast(dict[str, object], raw_message) if isinstance(raw_message, dict) else {}
-        role = str(message.get("role") or "").lower()
-        source = str(event.get("source") or "").lower()
-        return {"type": "message_complete"} if role == "assistant" or source == "agent" else None
+
+        if kind not in {
+            "ActionEvent",
+            "ObservationEvent",
+            "CondensationRequest",
+            "Condensation",
+            "ConversationErrorEvent",
+            "MessageEvent",
+        }:
+            return ()
+
+        if kind == "MessageEvent":
+            raw_message = event.get("llm_message")
+            message = cast(dict[str, object], raw_message) if isinstance(raw_message, dict) else {}
+            if str(message.get("role") or "").lower() != "assistant":
+                return ()
+
+        raw = cast(dict[str, Any], event)
+        event_id = cls._event_identity(raw)[0]
+        projected = {
+            "id": event_id,
+            "event_type": cls._event_type(raw),
+            "payload": cls._event_payload(raw),
+        }
+        frames: tuple[dict[str, Any], ...] = ({"type": "event", "event": projected},)
+        if kind in {"MessageEvent", "ConversationErrorEvent"}:
+            return (*frames, {"type": "message_complete"})
+        return frames
 
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         base_url = self._base_url_for_handle(handle)
@@ -2616,16 +2640,13 @@ class OpenHandsRuntime:
         agent = cast(object, state.get("agent"))
         llm = (
             cast(dict[str, Any], cast(dict[str, Any], agent).get("llm"))
-            if isinstance(agent, dict)
-            and isinstance(cast(dict[str, Any], agent).get("llm"), dict)
+            if isinstance(agent, dict) and isinstance(cast(dict[str, Any], agent).get("llm"), dict)
             else {}
         )
         raw_window = llm.get("max_input_tokens")
         window = (
             raw_window
-            if isinstance(raw_window, int)
-            and not isinstance(raw_window, bool)
-            and raw_window > 0
+            if isinstance(raw_window, int) and not isinstance(raw_window, bool) and raw_window > 0
             else None
         )
         if window is None:

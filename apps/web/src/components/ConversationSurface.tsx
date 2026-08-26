@@ -57,18 +57,57 @@ function turnsFor(items: Item[]): Turn[] {
   return turns;
 }
 
+function detailText(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, 500) : '';
+}
+
+function workspacePath(value: string): string {
+  return value.replace(/^\/runtime\/workspace\/project\/?/, '工作区/');
+}
+
+function activityPresentation(item: Item): { title: string; status: string; command?: string; path?: string; thought?: string } {
+  if (item.kind === 'thought') {
+    return { title: '正在分析', status: '分析中', thought: item.content.slice(0, 2_000) || undefined };
+  }
+  if (item.kind === 'error') return { title: '执行遇到问题', status: '失败' };
+  const details = item.event.payload.details ?? {};
+  const eventName = String(item.event.payload.event_name ?? '');
+  const path = detailText(details.path) || detailText(details.file_path) || detailText(details.filename);
+  const command = detailText(details.command);
+  const completed = item.event.event_type === 'TOOL_RESULT';
+  if (eventName === 'TerminalAction') return { title: '正在运行命令', status: '调用工具', command };
+  if (eventName === 'TerminalObservation') return { title: '命令已执行', status: completed ? '已完成' : '处理中' };
+  if (eventName === 'FileEditorAction') {
+    const operation = command.toLowerCase();
+    const title = operation === 'view' ? '正在读取文件'
+      : ['create', 'write'].includes(operation) ? '正在创建文件'
+        : ['str_replace', 'insert', 'append', 'undo_edit'].includes(operation) ? '正在编辑文件'
+          : '正在处理文件';
+    return { title, status: '调用工具', path: path ? workspacePath(path) : undefined };
+  }
+  if (eventName === 'FileEditorObservation') return { title: '文件操作已完成', status: completed ? '已完成' : '处理中', path: path ? workspacePath(path) : undefined };
+  if (eventName === 'InvokeSkillAction') return { title: '正在使用已启用技能', status: '调用技能' };
+  if (eventName === 'InvokeSkillObservation') return { title: '技能调用已完成', status: completed ? '已完成' : '处理中' };
+  if (eventName.includes('Browser')) return { title: completed ? '浏览器操作已完成' : '正在操作浏览器', status: completed ? '已完成' : '调用工具' };
+  if (eventName.includes('MCP')) return { title: completed ? '工具调用已完成' : '正在调用已启用工具', status: completed ? '已完成' : '调用工具' };
+  if (eventName === 'TaskAction') return { title: '正在处理子任务', status: '处理中' };
+  if (eventName === 'TaskObservation') return { title: '子任务已完成', status: completed ? '已完成' : '处理中' };
+  return { title: completed ? '工具调用已完成' : '正在使用工具', status: completed ? '已完成' : '调用工具' };
+}
+
 function ActivityGroup({ items, active }: { items: Item[]; active: boolean }) {
   if (!items.length) return null;
   return <details className="conversation-activity-group" open={active}>
     <summary><ChevronRight size={14}/><span>{active ? '正在处理' : '工作过程'}</span><small>{items.length} 项</small>{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</summary>
     <div className="conversation-activity-list">
       {items.map(item => {
-        const isResult = item.event.event_type === 'TOOL_RESULT';
         const Icon = item.kind === 'error' ? CircleAlert : Wrench;
+        const presentation = activityPresentation(item);
         return <article className={`conversation-activity-row ${item.kind}`} key={item.event.id}>
-          <Icon size={14}/><div><b>{item.title}</b><small>{item.kind === 'error' ? '失败' : isResult ? '已完成' : item.kind === 'thought' ? '分析中' : '调用工具'}</small>
-            {item.content && <ReactMarkdown>{item.content}</ReactMarkdown>}
-            {item.event.payload.details && <pre>{JSON.stringify(item.event.payload.details, null, 2)}</pre>}
+          <Icon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small>
+            {presentation.thought && <ReactMarkdown>{presentation.thought}</ReactMarkdown>}
+            {presentation.command && <code className="conversation-activity-command">{presentation.command}</code>}
+            {presentation.path && <code className="conversation-activity-path">{presentation.path}</code>}
           </div>
         </article>;
       })}

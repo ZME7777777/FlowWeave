@@ -441,6 +441,18 @@ OpenHands 事件，直到客户端断开或上游关闭；FlowWeave 仍只安全
 同一条正式 user event。上下文区域显示 OpenHands 持久累计 token 使用与已声明的窗口容量；只对固定模型
 目录已明确声明的容量显示数值，其他模型保持“容量未返回”，不得伪造实时窗口占用百分比。
 
+### FR-33 Agent 工作台实时过程投影与友好工具呈现 — DONE
+
+依赖：`FR-32`。
+
+目标：修复发送后 OpenHands 尚未切入执行态时，浏览器以短暂 `ready` 响应错误结束本轮渲染，导致正式事件只能
+在刷新后才显示的问题。会话必须持续处于生成态，直到收到同一轮正式 assistant/error 终止事件；暂停路径仍以
+原生 readiness 确认。实时通道除安全可见正文 delta 外，还要在浏览器内存中转发并合并 OpenHands 已安全投影的
+Thought、Tool Action/Observation、Condensation 与错误事件，REST 事件继续是刷新恢复的唯一事实源。用户界面不
+显示 `TerminalAction`、`FileEditorAction` 或原始 JSON，而是按正式事件语义显示简洁的分析、查看/编辑文件、运行
+命令、浏览器操作、Skill/MCP 调用及完成状态；运行中展开、完成后折叠。不得保存前端临时事件、伪造思考内容、
+传输供应商隐藏推理或修改 OpenHands 源码/FlowRun 契约。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -457,6 +469,7 @@ OpenHands 事件，直到客户端断开或上游关闭；FlowWeave 仍只安全
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-26 | FR-33 | OpenHands 实时流定向 pytest（3 passed）；受影响 Python Ruff；Web typecheck/lint；`git diff --check` 与任务状态核对 | PASS：浏览器不再在刚发送消息时依据短暂的 native `ready` 提前结束本轮；只有正式 assistant/error 终止事件或 REST 读回的同轮终态才结束。实时流连续投影安全 delta、Thought、Tool Action/Observation、Condensation、错误和完成事件，仅存在浏览器内存，刷新仍从 REST/OpenHands 读取。Agent 工作台把 Terminal/File Editor/Browser/Skill/MCP/Task 正式事件展示为可读动作、必要命令或工作区路径，不展示 OpenHands 类名或原始 JSON；运行中展开、完成后折叠。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-32 | Agent Workspace/OpenHands 定向 pytest（5 passed）；受影响 Python Ruff；Web typecheck/lint；`git diff --check` | PASS：`ConversationErrorEvent.code/detail/classification` 由 OpenHands 正式事件安全投影，工作台将 rate limit 呈现为可操作的失败卡片，不再把失败轮次伪装成无回复。模型和思考程度不再有“应用”按钮或即时网络写入；它们随下次 `messages` 请求原生切换并发送。已为固定 Codex `openai/gpt-5.6-sol` 目录声明 922,000-token 窗口，累计 usage 与未知容量的语义分别清晰呈现，不估算当前 View 占用。 |
 | 2026-08-26 | FR-31 | Runtime Provider 定向事件流测试；Web typecheck/lint；`git diff --check` | PASS：Provider 保持同一条经所有权校验的 OpenHands WebSocket，连续转发状态、delta 与完成帧，不再在首个状态帧后断开；Agent 工作台仅从正式可见 delta 渲染流式文本。最新回复控件仅在用户离开底部时出现；完成后为向下箭头。模型/思考程度应用动作改用勾选语义，当前窗口上下文提供真实统计浮层；未知窗口上限明确不估算。 |
 | 2026-08-21 | FR-00 | 固定 OpenHands 源码取证；`git status`；`alembic heads`；任务状态、引用和 whitespace 检查 | PASS：新架构与独立任务主线已冻结；分支 `feat/refactor`；唯一 head `0051_physical_delete`；无 `CURRENT`，仅 FR-01 为 `READY` |

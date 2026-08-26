@@ -1,7 +1,7 @@
 import type {
   AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -295,8 +295,9 @@ export function agentTerminalUrl(runId: string, conversationId: string, rows = 2
 }
 
 export interface AgentStreamEvent {
-  type: 'delta' | 'message_complete';
+  type: 'delta' | 'event' | 'message_complete';
   content?: string;
+  event?: OpenHandsConversationEvent;
 }
 
 export function agentStreamUrl(runId: string, conversationId: string): string {
@@ -390,6 +391,7 @@ export function subscribeToAgentWorkspaceStream(
       try {
         const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
         if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content });
+        else if (event.type === 'event' && event.event && typeof event.event.id === 'string') onEvent({ type: 'event', event: event.event });
         else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
       } catch {
         // The REST event source is authoritative; ignore an invalid live frame.

@@ -1314,21 +1314,45 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
             "content": "可见正文",
             "reasoning_content": "不得外泄的推理",
         }
-    ) == {"type": "delta", "content": "可见正文"}
+    ) == ({"type": "delta", "content": "可见正文"},)
+    assert (
+        OpenHandsRuntime._visible_stream_event(
+            {"kind": "StreamingDeltaEvent", "reasoning_content": "不得外泄的推理"}
+        )
+        == ()
+    )
     assert (
         OpenHandsRuntime._visible_stream_event(
             {
-                "kind": "StreamingDeltaEvent",
-                "reasoning_content": "不得外泄的推理",
+                "kind": "MessageEvent",
+                "id": "user-1",
+                "source": "user",
+                "llm_message": {"role": "user"},
             }
         )
-        is None
+        == ()
     )
-    assert OpenHandsRuntime._visible_stream_event({"kind": "MessageEvent", "source": "agent"}) == {
-        "type": "message_complete"
-    }
-    assert (
-        OpenHandsRuntime._visible_stream_event({"kind": "MessageEvent", "source": "user"}) is None
+    assert OpenHandsRuntime._visible_stream_event(
+        {
+            "kind": "ActionEvent",
+            "id": "tool-1",
+            "action": {"kind": "TerminalAction", "command": "pwd", "api_key": "must-not-leak"},
+        }
+    ) == (
+        {
+            "type": "event",
+            "event": {
+                "id": "tool-1",
+                "event_type": "TOOL_CALL",
+                "payload": {
+                    "source_type": "ActionEvent",
+                    "source": None,
+                    "content": "",
+                    "event_name": "TerminalAction",
+                    "details": {"command": "pwd", "api_key": "[redacted]"},
+                },
+            },
+        },
     )
 
 
@@ -1385,7 +1409,12 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
             "content": "可见正文",
             "reasoning_content": "隐藏推理",
         }
-        yield {"kind": "MessageEvent", "source": "agent"}
+        yield {
+            "kind": "MessageEvent",
+            "id": "assistant-1",
+            "source": "agent",
+            "llm_message": {"role": "assistant", "content": "已完成"},
+        }
 
     monkeypatch.setattr(DockerControllerClient, "stream_runtime_events", stream)
     handle = RuntimeHandle(
@@ -1399,6 +1428,14 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
 
     assert events == [
         {"type": "delta", "content": "可见正文"},
+        {
+            "type": "event",
+            "event": {
+                "id": "assistant-1",
+                "event_type": "MESSAGE",
+                "payload": {"source_type": "MessageEvent", "source": "agent", "content": "已完成"},
+            },
+        },
         {"type": "message_complete"},
     ]
     assert observed == {
