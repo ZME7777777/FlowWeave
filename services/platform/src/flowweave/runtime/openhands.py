@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from websockets.asyncio.client import connect
@@ -2555,6 +2555,77 @@ class OpenHandsRuntime:
             cursor_value = state.get("last_user_message_id") or handle.cursor
         cursor = str(cursor_value) if cursor_value else None
         return RuntimeResult(status="RUNNING", cursor=cursor)
+
+    def upload_workspace_file(
+        self, handle: RuntimeHandle, *, filename: str, content_type: str, content: bytes
+    ) -> str:
+        """Write an attachment via OpenHands' formal workspace file API."""
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename).strip("._") or "attachment"
+        target = f"/runtime/workspace/project/uploads/{uuid4().hex}-{safe_name[:180]}"
+        try:
+            with httpx.Client(timeout=30, follow_redirects=False) as client:
+                response = client.post(
+                    f"{self._base_url_for_handle(handle)}/api/file/upload",
+                    headers={"X-Session-API-Key": self._session_key_for_handle(handle)},
+                    params={"path": target},
+                    files={"file": (safe_name, content, content_type)},
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "OpenHands 工作区文件上传被拒绝",
+                503,
+                {"status_code": exc.response.status_code},
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件上传不可用", 503
+            ) from exc
+        return target
+
+    def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
+        """Expose only native totals and an explicitly configured window limit."""
+        state = self._conversation_state(handle)
+        agent = cast(object, state.get("agent"))
+        llm = (
+            cast(dict[str, Any], cast(dict[str, Any], agent).get("llm"))
+            if isinstance(agent, dict)
+            and isinstance(cast(dict[str, Any], agent).get("llm"), dict)
+            else {}
+        )
+        raw_window = llm.get("max_input_tokens")
+        window = (
+            raw_window
+            if isinstance(raw_window, int)
+            and not isinstance(raw_window, bool)
+            and raw_window > 0
+            else None
+        )
+        cumulative = 0
+        found = False
+        for usage in self._usage_snapshots(state):
+            cumulative += (
+                usage.prompt_tokens
+                + usage.completion_tokens
+                + usage.cache_read_tokens
+                + usage.cache_write_tokens
+                + usage.reasoning_tokens
+            )
+            found = True
+        # ConversationStats holds durable usage totals, not the current View token
+        # count. Returning None avoids presenting a fabricated context percentage.
+        return {
+            "used_tokens": None,
+            "window_tokens": window,
+            "cumulative_tokens": cumulative if found else None,
+            "model_name": llm.get("model") if isinstance(llm.get("model"), str) else None,
+            "reasoning_effort": (
+                llm.get("reasoning_effort")
+                if isinstance(llm.get("reasoning_effort"), str)
+                else None
+            ),
+        }
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         self._request(

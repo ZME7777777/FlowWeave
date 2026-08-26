@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import re
 from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
@@ -15,7 +17,13 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 )
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
-from flowweave.runtime.base import RuntimeAgentSpec, RuntimeHandle, RuntimeTool, StartAttemptRequest
+from flowweave.runtime.base import (
+    RuntimeAgentSpec,
+    RuntimeCondenser,
+    RuntimeHandle,
+    RuntimeTool,
+    StartAttemptRequest,
+)
 from flowweave.runtime.contract import agent_workspace_runtime_contract
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.request import runtime_provider
@@ -229,6 +237,11 @@ def create_conversation(
         conversation_id=conversation_id,
         agent_spec=RuntimeAgentSpec(
             provider=provider,
+            # This is the fixed OpenHands 1.42.0 summarizing condenser, not a
+            # FlowWeave summary loop.  It emits CondensationRequest/Condensation
+            # events that remain in the native conversation history.
+            condenser=RuntimeCondenser(kind="LLM_SUMMARIZING"),
+            condenser_provider=provider,
             tools=_TOOLS,
             runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in _TOOLS)),
         ),
@@ -372,9 +385,21 @@ def terminal_resource_details(db: Session, workspace_id: str) -> tuple[str, str]
     return sandbox.backend_resource_name, sandbox.id
 
 
-def message(db: Session, workspace_id: str, binding_id: str, content: str) -> dict[str, Any]:
+def message(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    content: str,
+    attachments: tuple[dict[str, str], ...] = (),
+) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    if len(attachments) > 10 or any(
+        _ATTACHMENT_PATH.fullmatch(item.get("path", "")) is None
+        or ("image_data_url" in item and not item["image_data_url"].startswith("data:image/"))
+        for item in attachments
+    ):
+        raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
     workspace = _workspace(db, workspace_id)
     handle = _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
     if not get_runtime().can_accept_input(handle):
@@ -384,7 +409,14 @@ def message(db: Session, workspace_id: str, binding_id: str, content: str) -> di
             409,
         )
     try:
-        result = get_runtime().send_message(handle, content.strip())
+        paths = tuple(item["path"] for item in attachments)
+        image_urls = tuple(
+            item["image_data_url"] for item in attachments if "image_data_url" in item
+        )
+        prompt = content.strip()
+        if paths:
+            prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(f"- {path}" for path in paths)
+        result = get_runtime().send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -392,6 +424,85 @@ def message(db: Session, workspace_id: str, binding_id: str, content: str) -> di
             ) from exc
         raise
     return {"accepted": True, "cursor": result.cursor}
+
+
+_ATTACHMENT_PATH = re.compile(
+    r"^/runtime/workspace/project/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}$"
+)
+
+
+def upload_attachment(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    filename: str,
+    content_type: str,
+    content: bytes,
+) -> dict[str, str | int | None]:
+    if not filename or len(filename) > 240 or "\x00" in filename:
+        raise DomainError("AGENT_ATTACHMENT_INVALID", "附件文件名无效", 422)
+    if not content or len(content) > 25 * 1024 * 1024:
+        raise DomainError("AGENT_ATTACHMENT_TOO_LARGE", "单个附件不能超过 25 MiB", 422)
+    mime_type = content_type.lower().strip() or "application/octet-stream"
+    if len(mime_type) > 200:
+        raise DomainError("AGENT_ATTACHMENT_INVALID", "附件类型无效", 422)
+    workspace = _workspace(db, workspace_id)
+    path = get_runtime().upload_workspace_file(
+        _handle(db, workspace, _binding(db, workspace_id, binding_id)),
+        filename=filename,
+        content_type=mime_type,
+        content=content,
+    )
+    if _ATTACHMENT_PATH.fullmatch(path) is None:
+        raise DomainError("RUNTIME_PROTOCOL_ERROR", "OpenHands 返回了无效附件路径", 502)
+    image_data_url = (
+        f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
+        if mime_type.startswith("image/")
+        else None
+    )
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "byte_size": len(content),
+        "path": path,
+        "image_data_url": image_data_url,
+    }
+
+
+def conversation_context(
+    db: Session, workspace_id: str, binding_id: str
+) -> dict[str, int | str | None]:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    return get_runtime().conversation_context(_handle(db, workspace, binding))
+
+
+def switch_conversation_model(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    provider_id: str,
+    model_name: str,
+    reasoning_effort: str | None,
+) -> dict[str, str | None]:
+    workspace = _workspace(db, workspace_id)
+    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后切换模型", 409)
+    provider = runtime_provider(
+        db,
+        {"asset": {"executor": {"model_provider_id": provider_id}}},
+        model_name=model_name,
+        reasoning_effort=reasoning_effort,
+    )
+    runtime.switch_model(handle, provider)
+    return {
+        "model_provider_id": provider.provider_id,
+        "model_name": provider.model,
+        "reasoning_effort": provider.reasoning_effort,
+    }
 
 
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:

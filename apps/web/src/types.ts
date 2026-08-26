@@ -344,6 +344,13 @@ export interface AgentWorkspaceRuntime {
 }
 
 export interface AgentConversationInputReadiness { ready: boolean }
+export interface AgentAttachment {
+  filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
+}
+export interface AgentConversationContext {
+  used_tokens?: number | null; window_tokens?: number | null; cumulative_tokens?: number | null;
+  model_name?: string | null; reasoning_effort?: string | null;
+}
 export interface AgentConversation {
   id: string;
   display_title?: string | null;

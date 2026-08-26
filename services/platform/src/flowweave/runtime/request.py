@@ -120,7 +120,6 @@ def resolve_runtime_selection(
             "The node executor must select a model provider before it can run",
             422,
         )
-    provider = get_provider(db, provider_id)
     selected_model = (requested_model or str(executor.get("model_name") or "")).strip()
     if selected_model:
         model = db.scalar(
@@ -147,7 +146,7 @@ def resolve_runtime_selection(
         )
     effort = (requested_reasoning_effort or "").strip() or None
     supported = list(model.supported_reasoning_efforts or [])
-    if effort and (provider.auth_type != "CODEX_OAUTH" or effort not in supported):
+    if effort and effort not in supported:
         raise DomainError(
             "REASONING_EFFORT_UNSUPPORTED",
             "The selected reasoning effort is not supported by this model",

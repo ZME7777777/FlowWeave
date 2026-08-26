@@ -370,6 +370,20 @@ Agent 正文直接渲染，无头像或身份标签；已安全投影的思考�
 执行中保持展开；输入区采用紧凑圆角 composer 和明确的发送/暂停/继续状态。不得持久化平台会话状态、
 消息或推理，且不迁移 FlowRun 节点会话页面。
 
+### FR-26 Agent 工作台真实附件、会话配置与上下文呈现 — DONE
+
+依赖：`FR-25`。
+
+目标：把 Agent 工作台输入区中的静态或误导性状态替换为固定 OpenHands 1.42.0 的正式能力。左侧 `+`
+通过正式 Workspace file upload 路由把文件写入外置共享工作区，FlowWeave 固定目标路径、文件名、大小与
+类型边界；图片同时按正式 `SendMessageRequest.content` 的 `ImageContent.image_urls` 传给模型，普通文件
+以真实工作区路径作为消息上下文。会话内模型和思考强度调用正式 `/{conversation_id}/switch_llm`；强度
+仅对模型配置明确声明支持的值开放。上下文信息只展示 OpenHands `ConversationInfo.stats` 与 LLM 已提供
+的窗口容量，不得编造比例。原生 `CondensationRequest` 与 `Condensation` 事件在对话流以低干扰状态呈现，
+且不由平台自行总结。最后一条消息的编辑/重跑继续只调用正式 `navigate` 与 `events`，前端改为
+Codex/ChatGPT 风格的悬停编辑、无双边框自动增高输入区和会话内配置菜单。不得写入平台消息、事件、HEAD、
+上下文或推理副本；不修改 OpenHands 或 FlowRun 语义。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -414,3 +428,4 @@ Agent 正文直接渲染，无头像或身份标签；已安全投影的思考�
 | 2026-08-25 | FR-23 | 独立 Vite 服务上的 Agent 工作台模型切换定向 Playwright；Web ESLint/typecheck/build；`git diff --check`；任务状态核对 | PASS：标题栏常驻“新会话模型配置”，仅显示已连接且有启用默认模型的供应商；用户可显式设置、切换或清空，未再隐式选择 Codex OAuth 或任何 fallback。定向浏览器测试覆盖从首个配置切换至第二个配置，并确认既有会话 URL 保持不变；不新建 Runtime、不重启或换模既有 Conversation。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-24 | Web ESLint/typecheck/build；独立 Vite 上 Agent 工作台定向 Playwright；`git diff --check`、Alembic head 与任务状态核对 | PASS：新增可复用的会话呈现 Surface，正式 OpenHands 消息、工作过程和工具活动不再渲染为空 `STATE {}`；WebSocket `delta` 只存在于浏览器内存的临时可见回复，`message_complete` 后回读正式事件。模型配置移入左侧会话栏，仍只影响后续新会话。定向浏览器用例覆盖配置切换、工具活动、空状态过滤、回复呈现和 URL 刷新恢复；未修改 Runtime、OpenHands 或 FlowRun 持久化契约。唯一 head 为 `0060_agent_conversations`；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-25 | Agent Workspace/OpenHands 定向 pytest（68 passed）；Ruff/Pyright；Web lint/typecheck/build；独立 Vite 上 Agent 工作台 Playwright；Alembic head、`git diff --check` 与任务状态核对 | PASS：新建 binding 先进入本地查询缓存再导航，避免旧列表竞态覆盖 URL。运行中的会话支持暂停、继续和浏览器内顺序排队；服务端以 OpenHands 正式 execution status 阻止并发 send。最后一条用户消息始终可编辑；运行时编辑自动暂停，随后使用正式 `navigate(parent_id)` 和新 user event 重新驱动，活动视图按 OpenHands HEAD 分支读取，旧回答不再出现在当前对话。页面收口为无身份标签的问答、右侧用户气泡、折叠工作过程及紧凑 composer；唯一 head 为 `0060_agent_conversations`，无 `CURRENT`、`READY` 或下一切片。 |
+| 2026-08-26 | FR-26 | Agent Workspace/OpenHands 定向 pytest（69 passed）；受影响 Python Ruff/Pyright；Web ESLint/typecheck/build；`git diff --check` 与任务状态核对 | PASS：附件经 OpenHands 正式 file upload 写入外置共享工作区，图片同时作为原生 ImageContent 传入，普通文件路径作为消息上下文；会话内模型和思考强度使用正式 switch_llm；上下文只展示原生累计 usage 与已声明窗口，不伪造当前 token 百分比。新会话使用原生 LLM summarizing condenser，Condensation 事件在对话流中呈现；新增定向回归覆盖附件、图片、原生上下文和模型切换。无 CURRENT、READY 或下一切片。 |

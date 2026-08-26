@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -28,6 +28,8 @@ function itemFor(event: OpenHandsConversationEvent): Item | undefined {
     return { event, kind: source === 'user' || source === 'human' ? 'user' : 'assistant', title: '', content };
   }
   if (event.event_type === 'THOUGHT') return { event, kind: 'thought', title: '分析', content };
+  if (event.event_type === 'CONDENSATION_REQUESTED') return { event, kind: 'condensation', title: '正在自动压缩上下文', content: '' };
+  if (event.event_type === 'CONDENSATION_COMPLETED') return { event, kind: 'condensation', title: '已自动压缩上下文', content: '' };
   if (event.event_type === 'TOOL_CALL') return { event, kind: 'tool', title: eventName, content };
   if (event.event_type === 'TOOL_RESULT') return { event, kind: 'tool', title: eventName, content };
   if (event.event_type === 'ERROR') return { event, kind: 'error', title: '执行遇到问题', content };
@@ -97,10 +99,13 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
   return <section className="conversation-surface" aria-live="polite">
     {turns.map((turn, index) => {
       const isCurrent = index === turns.length - 1 && isGenerating;
+      const condensations = turn.activity.filter(item => item.kind === 'condensation');
+      const activity = turn.activity.filter(item => item.kind !== 'condensation');
       return <section className="conversation-turn" key={turn.id}>
         {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}>编辑并重新思考</button>}</article>)}
+        {condensations.map(item => <div className="conversation-condensation" key={item.event.id}><span>↻</span>{item.title}</div>)}
         {turn.assistant && <AgentReply content={turn.assistant.content}/>}
-        {turn.activity.length > 0 && <ActivityGroup items={turn.activity} active={isCurrent && !turn.assistant}/>}
+        {activity.length > 0 && <ActivityGroup items={activity} active={isCurrent && !turn.assistant}/>}
         {isCurrent && !turn.assistant && <AgentReply content={liveText} streaming/>}
       </section>;
     })}

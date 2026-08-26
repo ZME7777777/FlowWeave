@@ -281,6 +281,90 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
+def test_agent_workspace_uses_native_attachments_context_and_model_switch(
+    settings, db_session_factory, monkeypatch
+):
+    class NativeWorkspaceRuntime(MockRuntime):
+        sent: tuple[str, tuple[str, ...]] | None = None
+        switched: RuntimeProvider | None = None
+
+        def upload_workspace_file(self, handle, *, filename, content_type, content):
+            del handle, content_type, content
+            return f"/runtime/workspace/project/uploads/{'a' * 32}-{filename}"
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent = (content, image_urls)
+            return super().send_message(handle, content, image_urls)
+
+        def conversation_context(self, handle):
+            del handle
+            return {
+                "used_tokens": None,
+                "window_tokens": 128_000,
+                "cumulative_tokens": 456,
+                "model_name": "test-model",
+                "reasoning_effort": "medium",
+            }
+
+        def switch_model(self, handle, provider):
+            del handle
+            self.switched = provider
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, _asset, model_name=None, reasoning_effort=None: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model=model_name or "test-model",
+            api_key="x",
+            reasoning_effort=reasoning_effort,
+        ),
+    )
+    runtime = NativeWorkspaceRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        attachment = conversations.upload_attachment(
+            db,
+            workspace.id,
+            created["id"],
+            filename="diagram.png",
+            content_type="image/png",
+            content=b"image-bytes",
+        )
+        conversations.message(
+            db,
+            workspace.id,
+            created["id"],
+            "请分析图片",
+            (
+                {
+                    "path": str(attachment["path"]),
+                    "image_data_url": str(attachment["image_data_url"]),
+                },
+            ),
+        )
+        assert runtime.sent == (
+            "请分析图片\n\n已上传到共享工作区的附件：\n"
+            f"- /runtime/workspace/project/uploads/{'a' * 32}-diagram.png",
+            ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
+        )
+        assert conversations.conversation_context(db, workspace.id, created["id"]) == {
+            "used_tokens": None,
+            "window_tokens": 128_000,
+            "cumulative_tokens": 456,
+            "model_name": "test-model",
+            "reasoning_effort": "medium",
+        }
+        conversations.switch_conversation_model(
+            db, workspace.id, created["id"], "provider", "test-model-2", "high"
+        )
+        assert runtime.switched is not None
+        assert runtime.switched.model == "test-model-2"
+        assert runtime.switched.reasoning_effort == "high"
+
+
 def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
     settings, db_session_factory, monkeypatch
 ):

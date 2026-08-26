@@ -5,7 +5,16 @@ import json
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Query,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
@@ -37,8 +46,26 @@ class AgentConversationPatchWrite(_Write):
     title: str = Field(min_length=1, max_length=200)
 
 
+class AgentAttachmentReference(_Write):
+    path: str = Field(min_length=1, max_length=300)
+    image_data_url: str | None = Field(default=None, max_length=35_000_000)
+
+
+def _empty_attachment_references() -> list[AgentAttachmentReference]:
+    return []
+
+
 class AgentMessageWrite(_Write):
     content: str = Field(min_length=1, max_length=200_000)
+    attachments: list[AgentAttachmentReference] = Field(
+        default_factory=_empty_attachment_references, max_length=10
+    )
+
+
+class AgentConversationModelWrite(_Write):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -164,7 +191,55 @@ async def agent_message(
     del idempotency_key
     return await run_sync(
         db,
-        lambda session: conversations.message(session, workspace_id, binding_id, payload.content),
+        lambda session: conversations.message(
+            session, workspace_id, binding_id, payload.content,
+            tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+        ),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments", status_code=201
+)
+async def agent_attachment(
+    workspace_id: str, binding_id: str, db: Db, file: Annotated[UploadFile, File()]
+) -> dict[str, Any]:
+    content = await file.read(25 * 1024 * 1024 + 1)
+    return await run_sync(
+        db,
+        lambda session: conversations.upload_attachment(
+            session,
+            workspace_id,
+            binding_id,
+            filename=file.filename or "attachment",
+            content_type=file.content_type or "application/octet-stream",
+            content=content,
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/context")
+async def agent_context(workspace_id: str, binding_id: str, db: Db) -> dict[str, int | str | None]:
+    return await run_sync(
+        db,
+        lambda session: conversations.conversation_context(session, workspace_id, binding_id),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/model")
+async def agent_conversation_model(
+    workspace_id: str, binding_id: str, payload: AgentConversationModelWrite, db: Db
+) -> dict[str, str | None]:
+    return await run_sync(
+        db,
+        lambda session: conversations.switch_conversation_model(
+            session,
+            workspace_id,
+            binding_id,
+            payload.model_provider_id,
+            payload.model_name,
+            payload.reasoning_effort,
+        ),
     )
 
 

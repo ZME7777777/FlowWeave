@@ -184,6 +184,22 @@ class MockRuntime:
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
 
+    def upload_workspace_file(
+        self, handle: RuntimeHandle, *, filename: str, content_type: str, content: bytes
+    ) -> str:
+        del handle, content_type, content
+        return f"/runtime/workspace/project/uploads/{filename}"
+
+    def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
+        del handle
+        return {
+            "used_tokens": None,
+            "window_tokens": None,
+            "cumulative_tokens": None,
+            "model_name": None,
+            "reasoning_effort": None,
+        }
+
     def interrupt(self, handle: RuntimeHandle) -> None:
         del handle
 

@@ -1,7 +1,7 @@
 import type {
   AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentConversation, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -113,8 +113,20 @@ export const api = {
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string) =>
     request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
-  sendAgentMessage: (workspaceId: string, bindingId: string, content: string) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content })),
+  sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = []) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments })),
+  uploadAgentAttachment: async (workspaceId: string, bindingId: string, file: File): Promise<AgentAttachment> => {
+    const body = new FormData(); body.append('file', file, file.name);
+    let response: Response;
+    try { response = await fetch(`${API_BASE}${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments`, { method: 'POST', body }); }
+    catch { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<AgentAttachment>;
+  },
+  agentConversationContext: (workspaceId: string, bindingId: string) =>
+    request<AgentConversationContext>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/context`),
+  switchAgentConversationModel: (workspaceId: string, bindingId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
+    request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content })),
   interruptAgentConversation: (workspaceId: string, bindingId: string) =>
