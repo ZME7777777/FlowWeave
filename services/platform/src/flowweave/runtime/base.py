@@ -319,7 +319,7 @@ class RuntimeAgentSpec:
     skills: tuple[RuntimeSkill, ...] = ()
     mcp_servers: tuple[RuntimeMCP, ...] = ()
     hook_config: dict[str, list[dict[str, Any]]] = field(default_factory=_empty_hook_config)
-    confirmation_policy: Literal["ALWAYS", "NEVER"] = "ALWAYS"
+    confirmation_policy: Literal["ALWAYS", "NEVER"] = "NEVER"
     condenser: RuntimeCondenser = field(default_factory=RuntimeCondenser)
     condenser_provider: RuntimeProvider | None = None
     critic: RuntimeCritic | None = None

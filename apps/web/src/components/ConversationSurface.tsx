@@ -150,6 +150,29 @@ function AgentReply({ content, streaming = false, onFork }: { content: string; s
   </article>;
 }
 
+function ResponseWait({ startedAt, submitting }: { startedAt?: number; submitting: boolean }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    if (!startedAt) { setElapsedSeconds(0); return; }
+    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  const delayed = elapsedSeconds >= 8;
+  const title = submitting
+    ? '正在提交消息…'
+    : delayed ? '仍在等待模型响应' : '消息已发送，正在等待模型响应';
+  const detail = submitting
+    ? '正在将请求交给 Agent。'
+    : delayed
+      ? `已等待 ${elapsedSeconds} 秒。模型服务排队、响应较慢或额度不足时，原因会显示在这里。`
+      : '收到首个文本或工具进度后，会在这里实时显示。';
+  return <article className={`conversation-response-wait${delayed ? ' delayed' : ''}`} role="status">
+    <LoaderCircle size={16}/><div><b>{title}</b><p>{detail}</p></div>
+  </article>;
+}
+
 function ConversationFailure({ item }: { item: Item }) {
   const code = typeof item.event.payload.error_code === 'string' ? item.event.payload.error_code : '';
   const content = code === 'LLMRateLimitError'
@@ -160,10 +183,12 @@ function ConversationFailure({ item }: { item: Item }) {
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, rewritePending = false, onRewrite, onFork }: {
+export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
+  requestStartedAt?: number;
+  requestSubmitting?: boolean;
   rewritePending?: boolean;
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
@@ -209,16 +234,21 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
       const condensations = turn.activity.filter(item => item.kind === 'condensation');
       const failures = turn.activity.filter(item => item.kind === 'error');
       const activity = turn.activity.filter(item => item.kind !== 'condensation' && item.kind !== 'error');
+      const waitingForProgress = isCurrent && !turn.assistant && !liveText && !activity.length && !failures.length;
       return <section className="conversation-turn" key={turn.id}>
         {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</article>)}
         {condensations.map(item => <div className="conversation-condensation" key={item.event.id}><span>↻</span>{item.title}</div>)}
         {turn.assistant && <AgentReply content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
         {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
         {activity.length > 0 && <ActivityGroup items={activity} active={isCurrent && !turn.assistant}/>}
-        {isCurrent && !turn.assistant && <AgentReply content={liveText} streaming/>}
+        {isCurrent && !turn.assistant && (waitingForProgress
+          ? <ResponseWait startedAt={requestStartedAt} submitting={requestSubmitting}/>
+          : <AgentReply content={liveText} streaming/>)}
       </section>;
     })}
-    {turns.length === 0 && (liveText || isGenerating) && <AgentReply content={liveText} streaming/>}
+    {turns.length === 0 && (liveText || isGenerating) && (liveText
+      ? <AgentReply content={liveText} streaming/>
+      : <ResponseWait startedAt={requestStartedAt} submitting={requestSubmitting}/>)}
     <div ref={tail}/>
     {showJumpToLatest && <button
       type="button"

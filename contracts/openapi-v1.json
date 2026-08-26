@@ -1,9 +1,71 @@
 {
   "components": {
     "schemas": {
+      "AgentAttachmentReference": {
+        "additionalProperties": false,
+        "properties": {
+          "image_data_url": {
+            "anyOf": [
+              {
+                "maxLength": 35000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Data Url"
+          },
+          "path": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "AgentAttachmentReference",
+        "type": "object"
+      },
+      "AgentConfirmationDecisionWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "accept": {
+            "title": "Accept",
+            "type": "boolean"
+          },
+          "expected_pending_digest": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Pending Digest",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_pending_digest",
+          "accept",
+          "reason"
+        ],
+        "title": "AgentConfirmationDecisionWrite",
+        "type": "object"
+      },
       "AgentConversationCreateWrite": {
         "additionalProperties": false,
         "properties": {
+          "model_provider_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Model Provider Id",
+            "type": "string"
+          },
           "title": {
             "anyOf": [
               {
@@ -17,7 +79,66 @@
             "title": "Title"
           }
         },
+        "required": [
+          "model_provider_id"
+        ],
         "title": "AgentConversationCreateWrite",
+        "type": "object"
+      },
+      "AgentConversationForkWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Event Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "title": "AgentConversationForkWrite",
+        "type": "object"
+      },
+      "AgentConversationModelWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "model_name": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Model Name",
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          }
+        },
+        "required": [
+          "model_name"
+        ],
+        "title": "AgentConversationModelWrite",
         "type": "object"
       },
       "AgentConversationPatchWrite": {
@@ -39,11 +160,57 @@
       "AgentMessageWrite": {
         "additionalProperties": false,
         "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/AgentAttachmentReference"
+            },
+            "maxItems": 10,
+            "title": "Attachments",
+            "type": "array"
+          },
           "content": {
             "maxLength": 200000,
             "minLength": 1,
             "title": "Content",
             "type": "string"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "model_provider_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Provider Id"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
           }
         },
         "required": [
@@ -360,6 +527,20 @@
         "title": "AttemptVersionWrite",
         "type": "object"
       },
+      "Body_agent_attachment_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_post": {
+        "properties": {
+          "file": {
+            "format": "binary",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_agent_attachment_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_post",
+        "type": "object"
+      },
       "CapabilityBulkDeleteWrite": {
         "additionalProperties": false,
         "properties": {
@@ -601,7 +782,7 @@
             "type": "integer"
           },
           "kind": {
-            "default": "NO_OP",
+            "default": "LLM_SUMMARIZING",
             "enum": [
               "NO_OP",
               "LLM_SUMMARIZING"
@@ -769,7 +950,7 @@
             "$ref": "#/components/schemas/CondenserWrite"
           },
           "confirmation_policy": {
-            "default": "ALWAYS",
+            "default": "NEVER",
             "enum": [
               "ALWAYS",
               "NEVER"
@@ -3000,6 +3181,178 @@
         "summary": "Patch Agent Conversation"
       }
     },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments": {
+      "post": {
+        "operationId": "agent_attachment_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_agent_attachment_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Agent Attachment Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Attachments Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Attachment"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/condense": {
+      "post": {
+        "operationId": "agent_condense_conversation_api_v1_agent_workspaces__workspace_id__conversations__binding_id__condense_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Agent Condense Conversation Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Condense Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Condense Conversation"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/context": {
+      "get": {
+        "operationId": "agent_context_api_v1_agent_workspaces__workspace_id__conversations__binding_id__context_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "title": "Response Agent Context Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Context Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Context"
+      }
+    },
     "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/events": {
       "get": {
         "operationId": "agent_events_api_v1_agent_workspaces__workspace_id__conversations__binding_id__events_get",
@@ -3065,6 +3418,134 @@
           }
         },
         "summary": "Agent Events"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/fork": {
+      "post": {
+        "operationId": "agent_fork_conversation_api_v1_agent_workspaces__workspace_id__conversations__binding_id__fork_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConversationForkWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Agent Fork Conversation Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Fork Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Fork Conversation"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/input-readiness": {
+      "get": {
+        "operationId": "agent_input_readiness_api_v1_agent_workspaces__workspace_id__conversations__binding_id__input_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Agent Input Readiness Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Input Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Input Readiness"
       }
     },
     "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/interrupt": {
@@ -3193,6 +3674,254 @@
           }
         },
         "summary": "Agent Message"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages/{event_id}/rerun": {
+      "post": {
+        "operationId": "agent_rerun_edited_message_api_v1_agent_workspaces__workspace_id__conversations__binding_id__messages__event_id__rerun_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMessageWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Agent Rerun Edited Message Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Messages  Event Id  Rerun Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Rerun Edited Message"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/model": {
+      "post": {
+        "operationId": "agent_conversation_model_api_v1_agent_workspaces__workspace_id__conversations__binding_id__model_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConversationModelWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "title": "Response Agent Conversation Model Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Model Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Conversation Model"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation": {
+      "get": {
+        "operationId": "agent_pending_confirmation_api_v1_agent_workspaces__workspace_id__conversations__binding_id__pending_confirmation_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Agent Pending Confirmation Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Pending Confirmation Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Pending Confirmation"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation/decision": {
+      "post": {
+        "operationId": "agent_confirmation_decision_api_v1_agent_workspaces__workspace_id__conversations__binding_id__pending_confirmation_decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConfirmationDecisionWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Agent Confirmation Decision Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Pending Confirmation Decision Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Confirmation Decision"
       }
     },
     "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/resume": {

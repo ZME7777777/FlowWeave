@@ -1257,7 +1257,7 @@ def test_start_runtime_rejects_profile_spec_drift_with_rehashed_manifest(
         manifest = deepcopy(snapshot.runtime_manifest_json)
         spec = manifest["nodes"]["design"]["agent_spec"]
         assert spec["agent_profile"]["capability_version_id"] == profile["capability_id"]
-        spec["confirmation_policy"] = "NEVER"
+        spec["budgets"]["max_iterations"] = 19
         snapshot.runtime_manifest_json = manifest
         snapshot.runtime_manifest_hash = hashlib.sha256(
             json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()

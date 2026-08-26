@@ -115,9 +115,9 @@ class NodeAttempt(Base):
     startup_prompt: Mapped[str | None] = mapped_column(Text)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
-    confirmation_policy: Mapped[str] = mapped_column(String(20), default="ALWAYS")
+    confirmation_policy: Mapped[str] = mapped_column(String(20), default="NEVER")
     condenser_config_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON, default=lambda: {"kind": "NO_OP"}
+        JSON, default=lambda: {"kind": "LLM_SUMMARIZING"}
     )
     output_targets_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(80))

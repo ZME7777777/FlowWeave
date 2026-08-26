@@ -1348,6 +1348,7 @@ def test_agent_profile_requires_complete_policy_refs_and_materializes_exactly(cl
         },
     )
     assert saved.status_code == 201, saved.text
+    assert saved.json()["executor"]["confirmation_policy"] == "NEVER"
     bound = {item["capability_type"]: item for item in saved.json()["capabilities"]}
     assert bound["AGENT_PROFILE"]["capability_id"] == profile["capability_id"]
     for field, capability_type in (
@@ -1362,7 +1363,7 @@ def test_agent_profile_requires_complete_policy_refs_and_materializes_exactly(cl
         "/api/v1/node-assets",
         json={
             "name": "profile executor mismatch",
-            "executor": {"confirmation_policy": "NEVER", "max_iterations": 100},
+            "executor": {"confirmation_policy": "NEVER", "max_iterations": 99},
             "capabilities": [profile],
         },
     )
@@ -1446,8 +1447,14 @@ def test_tool_policy_import_is_strict_and_node_binds_exactly_one_version(client)
             "capabilities": [_import_tool_policy(client, "mutating-policy", ["file_editor"])],
         },
     )
-    assert no_confirmation.status_code == 422, no_confirmation.text
-    assert no_confirmation.json()["error"]["code"] == "TOOL_POLICY_CONFIRMATION_REQUIRED"
+    assert no_confirmation.status_code == 201, no_confirmation.text
+    assert no_confirmation.json()["executor"]["confirmation_policy"] == "NEVER"
+    governed_policy = next(
+        item
+        for item in no_confirmation.json()["capabilities"]
+        if item["capability_type"] == "TOOL_POLICY"
+    )
+    assert governed_policy["normalized_config"]["confirmation_required_tools"] == ["file_editor"]
 
     terminal_only = _import_tool_policy(client, "terminal-only", ["terminal"])
     file_only = _import_tool_policy(client, "file-only", ["file_editor"])

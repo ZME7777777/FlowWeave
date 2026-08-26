@@ -24,6 +24,8 @@ from flowweave.runtime.base import (
     RuntimeConversationIdentity,
     RuntimeEvent,
     RuntimeEventBatch,
+    RuntimePendingAction,
+    RuntimePendingConfirmation,
     RuntimeProvider,
 )
 from flowweave.runtime.dependencies import runtime_context
@@ -232,6 +234,13 @@ def _ready_workspace_for_conversation(db):
 def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_identity(
     settings, db_session_factory, monkeypatch
 ):
+    class CapturingRuntime(MockRuntime):
+        request = None
+
+        def create_conversation(self, request):
+            self.request = request
+            return super().create_conversation(request)
+
     monkeypatch.setattr(
         conversations,
         "runtime_provider",
@@ -242,7 +251,8 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
             api_key="x",
         ),
     )
-    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+    runtime = CapturingRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
         first = conversations.create_conversation(
             db, workspace.id, "第一会话", workspace.default_model_provider_id, "create-key"
@@ -255,6 +265,10 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
         assert first["lifecycle"] == "ACTIVE"
         assert first["display_title"] == "第一会话"
         assert len(conversations.list_conversations(db, workspace.id)) == 1
+        assert runtime.request is not None
+        assert runtime.request.agent_spec.confirmation_policy == "NEVER"
+        assert runtime.request.agent_spec.condenser.kind == "LLM_SUMMARIZING"
+        assert runtime.request.agent_spec.condenser_provider is not None
 
 
 def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
@@ -544,6 +558,99 @@ def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
         runtime.ready = True
         conversations.message(db, workspace.id, created["id"], "second")
         assert runtime.sent == ["first", "second"]
+
+
+def test_agent_workspace_confirmation_uses_native_batch_digest(
+    settings, db_session_factory, monkeypatch
+):
+    class ConfirmationRuntime(MockRuntime):
+        decision: tuple[str, bool, str] | None = None
+
+        def get_pending_confirmation(self, handle):
+            del handle
+            return RuntimePendingConfirmation(
+                pending_actions_digest="batch-digest",
+                cursor="action-event",
+                actions=(
+                    RuntimePendingAction(
+                        action_id="action-event",
+                        tool_call_id="tool-call",
+                        tool_name="terminal",
+                        arguments={"command": "pwd"},
+                        security_risk="LOW",
+                        summary="查看工作目录",
+                        digest="action-digest",
+                    ),
+                ),
+            )
+
+        def respond_to_confirmation(self, handle, expected_pending_digest, accept, reason):
+            if expected_pending_digest != "batch-digest":
+                raise DomainError(
+                    "RUNTIME_CONFIRMATION_DRIFTED",
+                    "pending confirmation changed",
+                    409,
+                )
+            self.decision = (expected_pending_digest, accept, reason)
+            return super().respond_to_confirmation(handle, expected_pending_digest, accept, reason)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    runtime = ConfirmationRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
+        pending = conversations.pending_confirmation(db, workspace.id, created["id"])
+        assert pending == {
+            "pending": True,
+            "pending_actions_digest": "batch-digest",
+            "cursor": "action-event",
+            "actions": [
+                {
+                    "action_id": "action-event",
+                    "tool_call_id": "tool-call",
+                    "tool_name": "terminal",
+                    "arguments": {"command": "pwd"},
+                    "security_risk": "LOW",
+                    "summary": "查看工作目录",
+                    "digest": "action-digest",
+                }
+            ],
+        }
+        result = conversations.decide_confirmation(
+            db,
+            workspace.id,
+            created["id"],
+            expected_pending_digest="batch-digest",
+            accept=False,
+            reason=" 不需要执行 ",
+        )
+        assert result["accepted"] is True
+        assert runtime.decision == ("batch-digest", False, "不需要执行")
+        try:
+            conversations.decide_confirmation(
+                db,
+                workspace.id,
+                created["id"],
+                expected_pending_digest="stale-digest",
+                accept=True,
+                reason="批准",
+            )
+        except DomainError as exc:
+            assert exc.code == "RUNTIME_CONFIRMATION_DRIFTED"
+            assert exc.status == 409
+        else:
+            raise AssertionError("a stale confirmation digest must fail closed")
 
 
 def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(

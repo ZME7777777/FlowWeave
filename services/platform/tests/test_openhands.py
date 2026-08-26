@@ -275,7 +275,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "working_dir": "/workspaces/run-1/node-1/1",
     }
     assert payload["initial_message"]["run"] is True
-    assert payload["confirmation_policy"] == {"kind": "AlwaysConfirm"}
+    assert payload["confirmation_policy"] == {"kind": "NeverConfirm"}
     assert payload["agent"]["condenser"] == {"kind": "NoOpCondenser"}
     assert payload["agent"]["tool_concurrency_limit"] == 1
     initial_text = payload["initial_message"]["content"][0]["text"]
@@ -306,6 +306,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "base_url": "http://host.docker.internal:1234/v1",
         "api_key": "configured-secret",
         "usage_id": "flowweave:provider-1",
+        "max_input_tokens": 922000,
     }
     assert [tool["name"] for tool in payload["agent"]["tools"]] == [
         "terminal",
@@ -1720,6 +1721,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "base_url": "http://host.docker.internal:1234/v1",
             "api_key": "configured-secret",
             "usage_id": "condenser",
+            "max_input_tokens": 922000,
         },
         "max_size": 80,
         "max_tokens": 120_000,

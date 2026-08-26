@@ -189,6 +189,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let modelIsResponding = false;
   let sentMessages = 0;
   let sentProvider: string | null = null;
+  let confirmationPending = false;
+  let confirmationDecision: Record<string, unknown> | null = null;
   const conversations: Array<Record<string, unknown>> = [];
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
@@ -234,6 +236,28 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
       return;
     }
+    if (path.endsWith('/pending-confirmation') && request.method() === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(confirmationPending ? {
+          pending: true,
+          pending_actions_digest: 'batch-digest',
+          cursor: 'tool-request',
+          actions: [{
+            action_id: 'tool-request', tool_call_id: 'tool-call', tool_name: 'terminal',
+            arguments: { command: 'pwd' }, security_risk: 'LOW', summary: '查看工作目录', digest: 'action-digest',
+          }],
+        } : { pending: false }),
+      });
+      return;
+    }
+    if (path.endsWith('/pending-confirmation/decision') && request.method() === 'POST') {
+      confirmationDecision = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      confirmationPending = false;
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'tool-request' }) });
+      return;
+    }
     if (path.endsWith('/events')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求' } }] : conversations.length ? [
@@ -249,6 +273,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       sentProvider = JSON.parse(request.postData() ?? '{}').model_provider_id ?? null;
       sentMessages += 1;
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
+      return;
+    }
+    if (path.endsWith('/interrupt') && request.method() === 'POST') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true }) });
+      return;
+    }
+    if (path.endsWith('/input-readiness')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true }) });
+      return;
+    }
+    if (path.endsWith('/resume') && request.method() === 'POST') {
+      confirmationPending = true;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'running-user' }) });
       return;
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
@@ -286,11 +323,25 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('供应商将在下次发送时切换')).toBeVisible();
   modelIsResponding = true;
   await page.getByLabel('发送 Agent 消息').fill('第一条排队测试消息');
+  await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentProvider).toBe('provider-2');
-  await page.getByLabel('发送 Agent 消息').fill('第二条排队测试消息');
-  await page.getByRole('button', { name: '将消息加入队列' }).click();
-  await expect(page.getByText('已排队 1 条')).toBeVisible();
+  await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
+  await page.getByRole('button', { name: '暂停当前 Agent' }).click();
+  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
+  await page.getByRole('button', { name: '继续当前 Agent' }).click();
+  await expect(page.getByLabel('工具执行确认')).toBeVisible();
+  await expect(page.getByRole('button', { name: '等待工具确认' })).toBeDisabled();
+  await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
+  await expect(page.getByText('查看工作目录')).toBeVisible();
+  await page.getByLabel('工具确认理由').fill('测试中拒绝执行');
+  await page.getByRole('button', { name: '拒绝整批' }).click();
+  await expect.poll(() => confirmationDecision).toEqual({
+    expected_pending_digest: 'batch-digest', accept: false, reason: '测试中拒绝执行',
+  });
+  await expect(page.getByLabel('工具执行确认')).toHaveCount(0);
+  await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await expect(page.getByText('Agent 正在处理上一条消息或停止请求，请稍候')).toHaveCount(0);
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
@@ -362,8 +413,11 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByLabel('节点名称').fill(assetName);
   await editor.getByLabel('节点说明').fill('四步节点资产编辑器验收');
   await editor.getByRole('button', { name: '下一步' }).click();
-  await editor.getByLabel('模型服务').selectOption({ label: providerName });
+  await editor.getByLabel('模型服务', { exact: true }).selectOption({ label: providerName });
   await editor.getByLabel('模型', { exact: true }).selectOption('gpt-e2e');
+  await expect(editor.getByLabel('工具确认策略')).toBeDisabled();
+  await expect(editor.getByLabel('工具确认策略')).toHaveValue('NEVER');
+  await expect(editor.getByLabel('上下文压缩策略')).toHaveValue('LLM_SUMMARIZING');
   await editor.getByLabel('启动触发提示词').fill('读取输入并执行节点任务');
   await editor.getByRole('button', { name: '下一步' }).click();
   const selectedSkill = editor.getByLabel('选择能力 ui-product-skill').first();
@@ -382,7 +436,11 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   const card = page.getByTestId('node-card').filter({ hasText: assetName }).last();
   const saved = page.waitForResponse(response => response.url().endsWith('/api/v1/node-assets') && response.request().method() === 'POST');
   await editor.evaluate((form: HTMLFormElement) => form.requestSubmit());
-  expect((await saved).ok()).toBeTruthy();
+  const savedResponse = await saved;
+  expect(savedResponse.ok()).toBeTruthy();
+  const savedAsset = await savedResponse.json();
+  expect(savedAsset.executor.confirmation_policy).toBe('NEVER');
+  expect(savedAsset.executor.condenser.kind).toBe('LLM_SUMMARIZING');
   await expect(card).toBeVisible();
   await card.click();
   const detail = page.getByRole('dialog', { name: `节点详情 ${assetName}` });

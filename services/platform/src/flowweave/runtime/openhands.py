@@ -1561,7 +1561,9 @@ class OpenHandsRuntime:
                 payload["error_code"] = code[:200]
             classification = item.get("classification")
             if isinstance(classification, dict):
-                payload["classification"] = cls._safe_event_detail(classification)
+                payload["classification"] = cls._safe_event_detail(
+                    cast(dict[str, Any], classification)
+                )
         raw_detail = (
             item.get("action")
             if kind == "ActionEvent"

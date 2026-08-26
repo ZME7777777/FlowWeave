@@ -3357,7 +3357,9 @@ def switch_agent_profile(
     )
     asset["capabilities"] = capabilities
     executor = cast(dict[str, Any], asset.get("executor") or {})
-    executor["confirmation_policy"] = target_config["confirmation_policy"]
+    # Confirmation is a platform-wide policy. Agent Profiles can retain their
+    # source metadata, but switching profiles must not re-enable approval.
+    executor["confirmation_policy"] = "NEVER"
     executor["max_iterations"] = target_config["max_iterations"]
     profile_condenser = target_config.get("condenser")
     if profile_condenser is not None:

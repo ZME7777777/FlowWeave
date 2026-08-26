@@ -368,8 +368,6 @@ def runtime_node(
                 normalized_profile.get(field) != version_id
                 for field, version_id in expected_refs.items()
             )
-            or normalized_profile.get("confirmation_policy")
-            != agent_spec.get("confirmation_policy")
             or not isinstance(raw_budgets, dict)
             or normalized_profile.get("max_iterations")
             != cast(dict[str, Any], raw_budgets).get("max_iterations")

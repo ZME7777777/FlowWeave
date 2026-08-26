@@ -79,6 +79,12 @@ class AgentConversationForkWrite(_Write):
     title: str | None = Field(default=None, max_length=240)
 
 
+class AgentConfirmationDecisionWrite(_Write):
+    expected_pending_digest: str = Field(min_length=1, max_length=128)
+    accept: bool
+    reason: str = Field(min_length=1, max_length=2_000)
+
+
 def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
@@ -190,6 +196,37 @@ async def agent_events(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation")
+async def agent_pending_confirmation(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.pending_confirmation(session, workspace_id, binding_id),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation/decision",
+    status_code=202,
+)
+async def agent_confirmation_decision(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConfirmationDecisionWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.decide_confirmation(
+            session,
+            workspace_id,
+            binding_id,
+            expected_pending_digest=payload.expected_pending_digest,
+            accept=payload.accept,
+            reason=payload.reason,
+        ),
+    )
+
+
 @router.post(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages", status_code=202
 )
@@ -204,7 +241,10 @@ async def agent_message(
     return await run_sync(
         db,
         lambda session: conversations.message(
-            session, workspace_id, binding_id, payload.content,
+            session,
+            workspace_id,
+            binding_id,
+            payload.content,
             model_provider_id=payload.model_provider_id,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
@@ -260,17 +300,13 @@ async def agent_conversation_model(
 @router.post(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/condense", status_code=202
 )
-async def agent_condense_conversation(
-    workspace_id: str, binding_id: str, db: Db
-) -> dict[str, Any]:
+async def agent_condense_conversation(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: conversations.condense_conversation(session, workspace_id, binding_id)
     )
 
 
-@router.post(
-    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/fork", status_code=201
-)
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/fork", status_code=201)
 async def agent_fork_conversation(
     workspace_id: str,
     binding_id: str,

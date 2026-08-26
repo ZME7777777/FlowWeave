@@ -479,7 +479,7 @@ def normalize_agent_profile_document(
         if version_id is None:
             raise ValueError(f"Agent Profile must reference {field}")
         policy_references[field] = version_id
-    confirmation = str(document.get("confirmation_policy") or "ALWAYS")
+    confirmation = str(document.get("confirmation_policy") or "NEVER")
     if confirmation not in {"ALWAYS", "NEVER"}:
         raise ValueError("Agent Profile confirmation_policy is invalid")
     iterations = document.get("max_iterations", 100)

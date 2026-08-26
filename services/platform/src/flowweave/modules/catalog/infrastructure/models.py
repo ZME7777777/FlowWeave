@@ -103,9 +103,9 @@ class NodeExecutorConfig(Base):
     context_prompt: Mapped[str] = mapped_column(Text, default="")
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=900)
     max_iterations: Mapped[int] = mapped_column(Integer, default=100)
-    confirmation_policy: Mapped[str] = mapped_column(String(20), default="ALWAYS")
+    confirmation_policy: Mapped[str] = mapped_column(String(20), default="NEVER")
     condenser_config_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON, default=lambda: {"kind": "NO_OP"}
+        JSON, default=lambda: {"kind": "LLM_SUMMARIZING"}
     )
 
 

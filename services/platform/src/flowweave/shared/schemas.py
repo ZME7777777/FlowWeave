@@ -75,7 +75,7 @@ def _empty_io_fields() -> list[IOFieldWrite]:
 
 
 class CondenserWrite(ApiModel):
-    kind: Literal["NO_OP", "LLM_SUMMARIZING"] = "NO_OP"
+    kind: Literal["NO_OP", "LLM_SUMMARIZING"] = "LLM_SUMMARIZING"
     model_provider_id: str | None = None
     model_name: str | None = Field(default=None, max_length=240)
     max_size: int = Field(default=240, ge=20, le=10000)
@@ -103,7 +103,7 @@ class ExecutorWrite(ApiModel):
     context_prompt: str = ""
     timeout_seconds: int = Field(default=900, ge=1, le=86400)
     max_iterations: int = Field(default=100, ge=1, le=1000)
-    confirmation_policy: Literal["ALWAYS", "NEVER"] = "ALWAYS"
+    confirmation_policy: Literal["ALWAYS", "NEVER"] = "NEVER"
     condenser: CondenserWrite = Field(default_factory=CondenserWrite)
 
 

@@ -246,7 +246,8 @@ def _runtime_condenser(
     executor = cast(dict[str, Any], asset.get("executor") or {})
     provider_id = str(config.get("model_provider_id") or executor.get("model_provider_id") or "")
     model_name = str(config.get("model_name") or "") or None
-    if not provider_id:
+    settings = get_settings()
+    if not provider_id and settings.runtime_adapter != "mock":
         raise DomainError(
             "MODEL_PROVIDER_REQUIRED",
             "The condenser must select a model provider before it can run",
@@ -262,7 +263,7 @@ def _runtime_condenser(
     }
     provider = (
         runtime_provider(db, condenser_node, model_name)
-        if get_settings().runtime_adapter != "mock"
+        if settings.runtime_adapter != "mock"
         else None
     )
     return (
@@ -588,16 +589,6 @@ def build_runtime_request(
             "Runtime Agent Spec confirmation policy is invalid",
             409,
         )
-    confirmation_required_tools = cast(
-        list[str], normalized_tool_policy["confirmation_required_tools"]
-    )
-    if confirmation_required_tools and confirmation != "ALWAYS":
-        raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Agent Spec disables confirmation required by its Tool Policy",
-            409,
-            {"tools": confirmation_required_tools},
-        )
     raw_condenser_value = frozen_spec.get("condenser")
     if not isinstance(raw_condenser_value, dict):
         raise DomainError(
@@ -673,7 +664,6 @@ def build_runtime_request(
                 normalized_profile.get(field) != expected
                 for field, expected in expected_references.items()
             )
-            or normalized_profile.get("confirmation_policy") != confirmation
             or normalized_profile.get("max_iterations") != max_iterations
         ):
             raise DomainError(

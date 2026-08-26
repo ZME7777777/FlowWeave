@@ -245,6 +245,7 @@ def create_conversation(
         conversation_id=conversation_id,
         agent_spec=RuntimeAgentSpec(
             provider=provider,
+            confirmation_policy="NEVER",
             # This is the fixed OpenHands 1.42.0 summarizing condenser, not a
             # FlowWeave summary loop.  It emits CondensationRequest/Condensation
             # events that remain in the native conversation history.
@@ -362,6 +363,54 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
         ],
         "next_cursor": batch.cursor,
     }
+
+
+def pending_confirmation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    pending = get_runtime().get_pending_confirmation(
+        _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    )
+    if pending is None:
+        return {"pending": False}
+    return {
+        "pending": True,
+        "pending_actions_digest": pending.pending_actions_digest,
+        "cursor": pending.cursor,
+        "actions": [
+            {
+                "action_id": action.action_id,
+                "tool_call_id": action.tool_call_id,
+                "tool_name": action.tool_name,
+                "arguments": action.arguments,
+                "security_risk": action.security_risk,
+                "summary": action.summary,
+                "digest": action.digest,
+            }
+            for action in pending.actions
+        ],
+    }
+
+
+def decide_confirmation(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    expected_pending_digest: str,
+    accept: bool,
+    reason: str,
+) -> dict[str, Any]:
+    clean_reason = reason.strip()
+    if not clean_reason:
+        raise DomainError("AGENT_CONFIRMATION_REASON_REQUIRED", "请填写确认理由", 422)
+    workspace = _workspace(db, workspace_id)
+    result = get_runtime().respond_to_confirmation(
+        _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True)),
+        expected_pending_digest,
+        accept,
+        clean_reason,
+    )
+    return {"accepted": True, "cursor": result.cursor}
 
 
 def runtime_stream_details(

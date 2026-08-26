@@ -27,9 +27,9 @@ const emptyNode = (): NodeAssetWrite => ({
     context_prompt: '优先读取流程上游产物与人工输入，引用证据时标注来源。',
     timeout_seconds: 900,
     max_iterations: 100,
-    confirmation_policy: 'ALWAYS',
+    confirmation_policy: 'NEVER',
     condenser: {
-      kind: 'NO_OP', model_provider_id: null, model_name: null,
+      kind: 'LLM_SUMMARIZING', model_provider_id: null, model_name: null,
       max_size: 240, max_tokens: null, keep_first: 2, minimum_progress: 0.1,
       hard_context_reset_max_retries: 5, hard_context_reset_context_scaling: 0.8,
     },
@@ -67,7 +67,7 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       row_version: node.row_version,
       inputs: node.inputs.map(({ field_key, display_name, data_type, description, template_url }) => ({ field_key, display_name, data_type, description, template_url })),
       outputs: node.outputs.map(({ field_key, display_name, data_type, description, template_url }) => ({ field_key, display_name, data_type, description, template_url })),
-      executor: node.executor ?? emptyNode().executor,
+      executor: { ...(node.executor ?? emptyNode().executor), confirmation_policy: 'NEVER' },
       capabilities: node.capabilities.map(({ capability_id, capability_type, capability_key, normalized_config }) => ({ capability_id, capability_type, capability_key, normalized_config })),
     });
   }, [node]);
@@ -198,8 +198,8 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       <label className="wide">上下文提示词<textarea aria-label="上下文提示词" value={form.executor.context_prompt} onChange={e => setForm({ ...form, executor: { ...form.executor, context_prompt: e.target.value } })}/></label>
       <label>超时秒数<input type="number" min="1" value={form.executor.timeout_seconds} onChange={e => setForm({ ...form, executor: { ...form.executor, timeout_seconds: Number(e.target.value) } })}/></label>
       <label>最大迭代<input type="number" min="1" value={form.executor.max_iterations} onChange={e => setForm({ ...form, executor: { ...form.executor, max_iterations: Number(e.target.value) } })}/></label>
-      <label className="wide">工具确认策略<select aria-label="工具确认策略" value={form.executor.confirmation_policy} onChange={e => setForm({ ...form, executor: { ...form.executor, confirmation_policy: e.target.value as 'ALWAYS' | 'NEVER' } })}><option value="ALWAYS">每个 OpenHands 工具批次均需人工确认</option><option value="NEVER">无需人工确认</option></select><small>策略在 Attempt 启动时冻结；“每批次确认”使用 OpenHands 原生批次确认，不支持伪逐 Action 审批。</small></label>
-      <label className="wide">上下文压缩策略<select aria-label="上下文压缩策略" value={form.executor.condenser.kind} onChange={e => setForm({ ...form, executor: { ...form.executor, condenser: { ...form.executor.condenser, kind: e.target.value as 'NO_OP' | 'LLM_SUMMARIZING', model_provider_id: e.target.value === 'NO_OP' ? null : form.executor.condenser.model_provider_id, model_name: e.target.value === 'NO_OP' ? null : form.executor.condenser.model_name } } })}><option value="NO_OP">禁用（显式 NoOpCondenser）</option><option value="LLM_SUMMARIZING">LLM 摘要压缩</option></select><small>策略随 Run Snapshot 冻结；不会依赖 OpenHands 将来的默认值。</small></label>
+      <label className="wide">工具确认策略<select aria-label="工具确认策略" value="NEVER" disabled><option value="NEVER">无需人工确认</option></select><small>平台统一使用 OpenHands 原生 NeverConfirm；工具仍受白名单、容器隔离和网络策略约束。</small></label>
+      <label className="wide">上下文压缩策略<select aria-label="上下文压缩策略" value={form.executor.condenser.kind} onChange={e => setForm({ ...form, executor: { ...form.executor, condenser: { ...form.executor.condenser, kind: e.target.value as 'NO_OP' | 'LLM_SUMMARIZING', model_provider_id: e.target.value === 'NO_OP' ? null : form.executor.condenser.model_provider_id, model_name: e.target.value === 'NO_OP' ? null : form.executor.condenser.model_name } } })}><option value="LLM_SUMMARIZING">LLM 摘要压缩（默认开启）</option><option value="NO_OP">禁用（显式 NoOpCondenser）</option></select><small>新节点默认开启；策略随 Run Snapshot 冻结，不依赖 OpenHands 将来的默认值。</small></label>
       {form.executor.condenser.kind === 'LLM_SUMMARIZING' && <>
         <label>摘要模型服务<select aria-label="摘要模型服务" value={form.executor.condenser.model_provider_id ?? ''} onChange={e => setForm({ ...form, executor: { ...form.executor, condenser: { ...form.executor.condenser, model_provider_id: e.target.value || null, model_name: null } } })}><option value="">继承节点模型服务</option>{providers.filter(item => item.available_for_nodes).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label>摘要模型<select aria-label="摘要模型" value={form.executor.condenser.model_name ?? ''} onChange={e => setForm({ ...form, executor: { ...form.executor, condenser: { ...form.executor.condenser, model_name: e.target.value || null } } })}><option value="">服务默认</option>{condenserProvider?.models.filter(item => item.enabled).map(item => <option key={item.model_name}>{item.model_name}</option>)}</select></label>

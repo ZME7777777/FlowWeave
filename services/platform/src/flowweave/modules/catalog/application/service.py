@@ -135,7 +135,7 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
             "timeout_seconds": executor.timeout_seconds,
             "max_iterations": executor.max_iterations,
             "confirmation_policy": executor.confirmation_policy,
-            "condenser": executor.condenser_config_json or {"kind": "NO_OP"},
+            "condenser": executor.condenser_config_json or {"kind": "LLM_SUMMARIZING"},
         }
         if executor
         else None,
@@ -211,12 +211,6 @@ def _validate_executor(db: Session, payload: NodeAssetWrite) -> dict[str, Any]:
     if not executor.model_provider_id:
         if executor.model_name:
             raise DomainError("INVALID_COMMAND", "model_name requires model_provider_id", 400)
-        if condenser.kind == "LLM_SUMMARIZING" and not condenser.model_provider_id:
-            raise DomainError(
-                "INVALID_COMMAND",
-                "LLM summarizing condenser requires a model provider",
-                400,
-            )
     else:
         provider = db.get(ModelProvider, executor.model_provider_id)
         if not provider:
@@ -252,12 +246,11 @@ def _validate_executor(db: Session, payload: NodeAssetWrite) -> dict[str, Any]:
                 )
     condenser_provider_id = condenser.model_provider_id or executor.model_provider_id
     if condenser.kind == "LLM_SUMMARIZING":
+        # Nodes are mutable authoring assets and may be saved before a model is
+        # selected. Keep the summarizing policy frozen; execution still fails
+        # closed until either the condenser or executor resolves a provider.
         if not condenser_provider_id:
-            raise DomainError(
-                "INVALID_COMMAND",
-                "LLM summarizing condenser requires a model provider",
-                400,
-            )
+            return condenser.model_dump(mode="json")
         condenser_provider = db.get(ModelProvider, condenser_provider_id)
         if not condenser_provider:
             raise not_found("model_provider", condenser_provider_id)
@@ -303,10 +296,14 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
                     **field.model_dump(),
                 )
             )
-    executor_data = payload.executor.model_dump(exclude={"condenser"})
+    # Confirmation is a platform-wide execution policy. Keep accepting the
+    # legacy field for older clients, but never let a client opt a newly saved
+    # node back into per-tool approval.
+    executor_data = payload.executor.model_dump(exclude={"condenser", "confirmation_policy"})
     db.add(
         NodeExecutorConfig(
             node_asset_id=item.id,
+            confirmation_policy="NEVER",
             condenser_config_json=condenser_config,
             **executor_data,
         )
@@ -321,7 +318,6 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
     selected_policy_configs: dict[str, dict[str, Any]] = {}
     selected_mcp_names: set[str] = set()
     policy_tool_names: set[str] | None = None
-    policy_confirmation_required: set[str] = set()
     agent_definitions: list[dict[str, Any]] = []
     agent_definition_names: set[str] = set()
     for position, capability in enumerate(payload.capabilities):
@@ -433,9 +429,6 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
             policy_tool_names = {
                 str(entry["name"]) for entry in cast(list[dict[str, Any]], policy_config["tools"])
             }
-            policy_confirmation_required = set(
-                cast(list[str], policy_config["confirmation_required_tools"])
-            )
             selected_policy_configs["TOOL_POLICY"] = policy_config
         elif capability_type == "AGENT_DEFINITION":
             try:
@@ -575,9 +568,6 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
             str(entry["name"])
             for entry in normalize_tool_entries(policy.runtime_config().get("tools"))
         }
-        policy_confirmation_required = set(
-            cast(list[str], policy.runtime_config()["confirmation_required_tools"])
-        )
         selected_policy_configs["TOOL_POLICY"] = normalize_tool_policy_document(
             policy.version.normalized_config_json,
             fallback_key=policy.package.capability_key,
@@ -649,14 +639,10 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
                 422,
                 {"mismatches": mismatches},
             )
-        if (
-            profile_config["confirmation_policy"] != payload.executor.confirmation_policy
-            or profile_config["max_iterations"] != payload.executor.max_iterations
-        ):
+        if profile_config["max_iterations"] != payload.executor.max_iterations:
             raise DomainError(
                 "AGENT_PROFILE_EXECUTOR_MISMATCH",
-                "Agent Profile confirmation and iteration settings must be "
-                "materialized on the node executor",
+                "Agent Profile iteration settings must be materialized on the node executor",
                 422,
             )
         try:
@@ -675,13 +661,6 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
                 422,
                 {"reason": str(exc)},
             ) from exc
-    if policy_confirmation_required and payload.executor.confirmation_policy != "ALWAYS":
-        raise DomainError(
-            "TOOL_POLICY_CONFIRMATION_REQUIRED",
-            "Tool Policy requires native confirmation for mutating or control tools",
-            422,
-            {"tools": sorted(policy_confirmation_required)},
-        )
     if agent_definitions:
         if policy_tool_names is None or "task_tool_set" not in policy_tool_names:
             raise DomainError(

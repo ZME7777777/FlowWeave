@@ -70,6 +70,8 @@ def create_asset(client, skill, name="方案生成"):
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
+    assert response.json()["executor"]["confirmation_policy"] == "NEVER"
+    assert response.json()["executor"]["condenser"]["kind"] == "LLM_SUMMARIZING"
     capabilities = response.json()["capabilities"]
     assert {item["capability_type"]: item["capability_key"] for item in capabilities} == {
         "TOOL_POLICY": "flowweave-default-tools",

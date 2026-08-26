@@ -344,6 +344,14 @@ export interface AgentWorkspaceRuntime {
 }
 
 export interface AgentConversationInputReadiness { ready: boolean }
+export interface AgentPendingConfirmationAction {
+  action_id: string; tool_call_id: string; tool_name: string; arguments: Record<string, unknown>;
+  security_risk: string; summary: string; digest: string;
+}
+export interface AgentPendingConfirmation {
+  pending: boolean; pending_actions_digest?: string; cursor?: string | null;
+  actions?: AgentPendingConfirmationAction[];
+}
 export interface AgentAttachment {
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
 }
