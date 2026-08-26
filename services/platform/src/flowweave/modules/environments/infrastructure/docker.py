@@ -640,9 +640,38 @@ def open_managed_terminal(
                 503,
             ) from exc
         return ManagedTerminal(client=client, remote=remote)
-    immutable_id = resolve_setup_container(
-        resource_name, sandbox_id=resource_id, environment_id=environment_id or ""
-    )
+    if environment_id is not None:
+        immutable_id = resolve_setup_container(
+            resource_name, sandbox_id=resource_id, environment_id=environment_id
+        )
+    else:
+        try:
+            immutable_id = inspect_owned_container(
+                settings.docker_binary,
+                resource_name,
+                resource_id,
+                expected_manager_scope=settings.sandbox_manager_scope,
+                expected_kind="agent-runtime",
+                timeout=30,
+            )
+        except DockerOwnershipError as exc:
+            raise DomainError(
+                "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
+                "The Agent Runtime container is owned by another resource",
+                409,
+            ) from exc
+        except DockerControlError as exc:
+            raise DomainError(
+                "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+                "The Agent Runtime container could not be verified",
+                503,
+            ) from exc
+        if immutable_id is None:
+            raise DomainError(
+                "AGENT_TERMINAL_UNAVAILABLE",
+                "The Agent Runtime container no longer exists",
+                409,
+            )
     master, process = open_terminal(
         immutable_id, session_name=session_name, rows=rows, columns=columns
     )

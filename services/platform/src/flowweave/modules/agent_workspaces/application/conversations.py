@@ -184,7 +184,11 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
 
 
 def create_conversation(
-    db: Session, workspace_id: str, title: str | None, idempotency_key: str
+    db: Session,
+    workspace_id: str,
+    title: str | None,
+    model_provider_id: str | None,
+    idempotency_key: str,
 ) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     existing = db.scalar(
@@ -198,10 +202,12 @@ def create_conversation(
         if existing.lifecycle == "ACTIVE":
             return _dict(existing)
         raise DomainError("AGENT_CONVERSATION_PROVISIONING", "会话仍在创建中", 409)
-    if not workspace.default_model_provider_id:
-        raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "请先选择已测试成功的模型配置", 409)
-    if not has_connected_default_model(db, workspace.default_model_provider_id):
-        raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "请先选择已测试成功的模型配置", 409)
+    if not model_provider_id or not has_connected_default_model(db, model_provider_id):
+        raise DomainError(
+            "AGENT_MODEL_CONFIGURATION_REQUIRED",
+            "请选择已测试成功且存在启用默认模型的模型供应商",
+            409,
+        )
     runtime = db.scalar(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )
@@ -211,7 +217,7 @@ def create_conversation(
     binding = AgentConversationBinding(
         workspace_id=workspace.id,
         runtime_session_id=runtime.id,
-        model_provider_id=workspace.default_model_provider_id,
+        model_provider_id=model_provider_id,
         openhands_conversation_id=conversation_id,
         display_title=title.strip() if title and title.strip() else None,
         create_idempotency_key=idempotency_key,
@@ -227,7 +233,7 @@ def create_conversation(
     )
     db.add(command)
     provider = runtime_provider(
-        db, {"asset": {"executor": {"model_provider_id": workspace.default_model_provider_id}}}
+        db, {"asset": {"executor": {"model_provider_id": model_provider_id}}}
     )
     handle = _handle(db, workspace, binding)
     request = StartAttemptRequest(
@@ -394,6 +400,7 @@ def message(
     content: str,
     attachments: tuple[dict[str, str], ...] = (),
     *,
+    model_provider_id: str | None = None,
     model_name: str | None = None,
     reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
@@ -415,23 +422,32 @@ def message(
             409,
         )
     try:
-        # A Conversation remains bound to its creation provider.  If the user
-        # has picked a different model, apply the formal OpenHands switch only
-        # immediately before the next user event is created.
-        if model_name is not None:
-            if binding.model_provider_id is None:
-                raise DomainError(
-                    "AGENT_CONVERSATION_PROVIDER_REQUIRED",
-                    "此历史会话未记录模型供应商，无法安全切换模型；请新建会话",
-                    409,
-                )
+        # Provider/model selection is staged in the browser and committed only
+        # directly before this formal OpenHands user event.  A failed switch
+        # therefore cannot alter the persisted Conversation binding or send an
+        # event through a different provider by accident.
+        target_provider_id = model_provider_id or binding.model_provider_id
+        if not target_provider_id or not has_connected_default_model(db, target_provider_id):
+            raise DomainError(
+                "AGENT_MODEL_CONFIGURATION_REQUIRED",
+                "请选择已测试成功且存在启用默认模型的模型供应商",
+                409,
+            )
+        if (
+            target_provider_id != binding.model_provider_id
+            or model_name is not None
+            or reasoning_effort is not None
+        ):
             provider = runtime_provider(
                 db,
-                {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+                {"asset": {"executor": {"model_provider_id": target_provider_id}}},
                 model_name=model_name,
                 reasoning_effort=reasoning_effort,
             )
             get_runtime().switch_model(handle, provider)
+            binding.model_provider_id = target_provider_id
+            binding.updated_at = now()
+            db.flush()
         paths = tuple(item["path"] for item in attachments)
         image_urls = tuple(
             item["image_data_url"] for item in attachments if "image_data_url" in item

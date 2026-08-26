@@ -186,16 +186,15 @@ test('terminal environment creation keeps the setup image internal', async ({ pa
 });
 
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
-  let configuredProvider: string | null = null;
   let modelIsResponding = false;
   let sentMessages = 0;
+  let sentProvider: string | null = null;
   const conversations: Array<Record<string, unknown>> = [];
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const workspace = {
       id: 'agent-workspace-1', display_name: 'Agent 工作区',
-      default_model_provider_id: configuredProvider,
       desired_state: 'RUNNING', updated_at: new Date().toISOString(),
     };
     if (path.endsWith('/default')) {
@@ -206,18 +205,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
       return;
     }
-    if (path.endsWith('/settings') && request.method() === 'PATCH') {
-      configuredProvider = JSON.parse(request.postData() ?? '{}').default_model_provider_id ?? null;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...workspace, default_model_provider_id: configuredProvider }) });
-      return;
-    }
     if (path.endsWith('/conversations') && request.method() === 'GET') {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversations) });
       return;
     }
     if (path.endsWith('/conversations') && request.method() === 'POST') {
+      const modelProviderId = JSON.parse(request.postData() ?? '{}').model_provider_id;
       const created = {
         id: 'agent-conversation-1', display_title: null, lifecycle: 'ACTIVE',
+        model_provider_id: modelProviderId,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
       conversations.splice(0, 0, created);
@@ -231,6 +227,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/fork') && request.method() === 'POST') {
       const created = {
         id: 'agent-conversation-fork-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
+        model_provider_id: 'provider-1',
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
       conversations.splice(0, 0, created);
@@ -249,6 +246,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/messages') && request.method() === 'POST') {
+      sentProvider = JSON.parse(request.postData() ?? '{}').model_provider_id ?? null;
       sentMessages += 1;
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
@@ -267,11 +265,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   await expect(page).toHaveURL(/\/agent$/);
-  await expect(page.getByText('先选择已测试成功的模型配置')).toBeVisible();
-  await page.getByLabel('Agent 新会话模型配置').selectOption('provider-1');
-  await page.getByRole('button', { name: '保存配置' }).click();
+  await expect(page.getByLabel('新会话供应商')).toHaveValue('provider-1');
   await expect(page.getByRole('button', { name: '新建会话' }).first()).toBeEnabled();
-  await expect(page.getByLabel('Agent 新会话模型配置')).toHaveValue('provider-1');
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
@@ -286,13 +281,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('工具调用已完成')).toBeVisible();
   await expect(page.getByText('BashAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
-  await page.getByLabel('Agent 新会话模型配置').selectOption('provider-2');
-  await page.getByRole('button', { name: '保存配置' }).click();
-  await expect(page.getByLabel('Agent 新会话模型配置')).toHaveValue('provider-2');
-  await expect(page.getByText('仅影响后续新会话')).toBeVisible();
+  await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
+  await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-2');
+  await expect(page.getByText('供应商将在下次发送时切换')).toBeVisible();
   modelIsResponding = true;
   await page.getByLabel('发送 Agent 消息').fill('第一条排队测试消息');
   await page.getByRole('button', { name: '发送消息' }).click();
+  await expect.poll(() => sentProvider).toBe('provider-2');
   await page.getByLabel('发送 Agent 消息').fill('第二条排队测试消息');
   await page.getByRole('button', { name: '将消息加入队列' }).click();
   await expect(page.getByText('已排队 1 条')).toBeVisible();

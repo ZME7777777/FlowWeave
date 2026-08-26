@@ -40,6 +40,7 @@ class AgentWorkspaceSettingsWrite(_Write):
 
 class AgentConversationCreateWrite(_Write):
     title: str | None = Field(default=None, max_length=240)
+    model_provider_id: str = Field(min_length=1, max_length=36)
 
 
 class AgentConversationPatchWrite(_Write):
@@ -61,6 +62,7 @@ class AgentMessageWrite(_Write):
     # browser can therefore let a user prepare the next turn without mutating
     # an idle Conversation merely by opening a select control.
     model_name: str | None = Field(default=None, min_length=1, max_length=240)
+    model_provider_id: str | None = Field(default=None, min_length=1, max_length=36)
     reasoning_effort: str | None = Field(default=None, max_length=30)
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
@@ -128,6 +130,7 @@ async def create_agent_conversation(
             session,
             workspace_id,
             payload.title,
+            payload.model_provider_id,
             _key(idempotency_key, "create-agent-conversation", workspace_id),
         ),
     )
@@ -202,6 +205,7 @@ async def agent_message(
         db,
         lambda session: conversations.message(
             session, workspace_id, binding_id, payload.content,
+            model_provider_id=payload.model_provider_id,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),

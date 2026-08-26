@@ -244,8 +244,12 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
     )
     with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
         workspace = _ready_workspace_for_conversation(db)
-        first = conversations.create_conversation(db, workspace.id, "第一会话", "create-key")
-        replay = conversations.create_conversation(db, workspace.id, "ignored", "create-key")
+        first = conversations.create_conversation(
+            db, workspace.id, "第一会话", workspace.default_model_provider_id, "create-key"
+        )
+        replay = conversations.create_conversation(
+            db, workspace.id, "ignored", workspace.default_model_provider_id, "create-key"
+        )
 
         assert replay == first
         assert first["lifecycle"] == "ACTIVE"
@@ -273,7 +277,9 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
     )
     with settings_context(settings), db_session_factory() as db, runtime_context(FailingRuntime()):
         workspace = _ready_workspace_for_conversation(db)
-        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
         try:
             conversations.message(db, workspace.id, created["id"], "hello")
         except DomainError as exc:
@@ -332,7 +338,9 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
     runtime = NativeWorkspaceRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
-        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
         assert created["model_provider_id"] == workspace.default_model_provider_id
         attachment = conversations.upload_attachment(
             db,
@@ -377,8 +385,9 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "model_name": "test-model",
             "reasoning_effort": "medium",
         }
-        # Changing the workspace default must not allow an existing
-        # conversation to cross provider boundaries.
+        # A provider is bound to the individual Conversation.  Staging a new
+        # provider is committed atomically with its next formal user message,
+        # not through the workspace's legacy default field.
         original_provider_id = workspace.default_model_provider_id
         replacement_provider = ModelProvider(
             name=f"replacement-provider-{workspace.id}",
@@ -395,14 +404,22 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
                 is_default=True,
             )
         )
-        workspace.default_model_provider_id = replacement_provider.id
-        conversations.switch_conversation_model(
-            db, workspace.id, created["id"], "test-model-2", "high"
+        workspace.default_model_provider_id = original_provider_id
+        conversations.message(
+            db,
+            workspace.id,
+            created["id"],
+            "切换供应商后发送",
+            model_provider_id=replacement_provider.id,
+            model_name="replacement-model",
         )
         assert runtime.switched is not None
-        assert runtime.switched.model == "test-model-2"
-        assert runtime.switched.reasoning_effort == "high"
-        assert resolved_provider_ids[-1] == original_provider_id
+        assert runtime.switched.model == "replacement-model"
+        assert resolved_provider_ids[-1] == replacement_provider.id
+        assert (
+            conversations.get_conversation(db, workspace.id, created["id"])["model_provider_id"]
+            == replacement_provider.id
+        )
 
 
 def test_agent_workspace_forks_at_native_event_and_condenses_manually(
@@ -451,7 +468,9 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     runtime = ForkRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
-        source = conversations.create_conversation(db, workspace.id, "源会话", "create-key")
+        source = conversations.create_conversation(
+            db, workspace.id, "源会话", workspace.default_model_provider_id, "create-key"
+        )
         fork = conversations.fork_conversation(
             db, workspace.id, source["id"], "assistant-event", None, "fork-key"
         )
@@ -459,9 +478,12 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         assert fork["display_title"] == "Fork · 源会话"
         assert fork["model_provider_id"] == source["model_provider_id"]
         assert runtime.fork_call == ("assistant-event", "assistant-event")
-        assert conversations.fork_conversation(
-            db, workspace.id, source["id"], "assistant-event", None, "fork-key"
-        ) == fork
+        assert (
+            conversations.fork_conversation(
+                db, workspace.id, source["id"], "assistant-event", None, "fork-key"
+            )
+            == fork
+        )
         assert len(conversations.list_conversations(db, workspace.id)) == 2
         condensed = conversations.condense_conversation(db, workspace.id, source["id"])
         assert condensed["accepted"] is True
@@ -503,7 +525,9 @@ def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
     runtime = SerialRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
-        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
         conversations.message(db, workspace.id, created["id"], "first")
         conversations.interrupt(db, workspace.id, created["id"])
 
@@ -562,7 +586,9 @@ def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(
     runtime = RewriteRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
-        created = conversations.create_conversation(db, workspace.id, None, "create-key")
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
         result = conversations.rewrite_message(
             db, workspace.id, created["id"], "user-event", "after"
         )

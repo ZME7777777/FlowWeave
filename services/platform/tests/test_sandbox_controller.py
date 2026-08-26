@@ -600,6 +600,60 @@ def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, 
     assert denied.status_code == 403
 
 
+def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, monkeypatch):
+    verification: dict[str, object] = {}
+
+    def inspect_owned(
+        docker_binary,
+        resource_name,
+        resource_id,
+        *,
+        expected_manager_scope,
+        expected_kind=None,
+        timeout,
+    ):
+        verification.update(
+            {
+                "resource_name": resource_name,
+                "resource_id": resource_id,
+                "manager_scope": expected_manager_scope,
+                "kind": expected_kind,
+                "timeout": timeout,
+            }
+        )
+        return "immutable-agent-runtime-container"
+
+    monkeypatch.setattr(controller_module, "inspect_owned_container", inspect_owned)
+    monkeypatch.setattr(
+        controller_module._TerminalManager,
+        "start",
+        lambda _self, container_id, session_name, rows, columns: (
+            f"terminal:{container_id}:{session_name}:{rows}:{columns}"
+        ),
+    )
+    payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": "fw-sbx-agent-12345678123442349234123456789abc",
+        "resource_id": _RESOURCE_ID,
+        "session_name": "agent-workspace",
+        "rows": 30,
+        "columns": 120,
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/terminals/start", headers=_api_headers(), json=payload)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["terminal_id"].startswith("terminal:immutable-agent-runtime-container")
+    assert verification == {
+        "resource_name": payload["resource_name"],
+        "resource_id": _RESOURCE_ID,
+        "manager_scope": _SCOPE,
+        "kind": "agent-runtime",
+        "timeout": 30,
+    }
+
+
 def test_controller_plugin_validation_is_fixed_owned_and_path_scoped(settings, monkeypatch):
     validation_id = "33333333-3333-4333-8333-333333333333"
     calls: list[dict[str, str]] = []

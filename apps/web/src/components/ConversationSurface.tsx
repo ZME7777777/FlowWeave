@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CircleAlert, GitFork, LoaderCircle, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, CircleAlert, GitFork, LoaderCircle, Pencil, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
@@ -38,10 +38,38 @@ function itemFor(event: OpenHandsConversationEvent): Item | undefined {
   return content ? { event, kind: 'thought', title: eventName, content } : undefined;
 }
 
+function orderedItems(items: Item[]): Item[] {
+  // REST and live frames can arrive in a different order.  Event identity is
+  // authoritative: preserve the stable API order between unrelated events,
+  // but always render a parent before its descendants.
+  const byId = new Map(items.map(item => [item.event.id, item]));
+  const children = new Map<string, Item[]>();
+  const roots: Item[] = [];
+  for (const item of items) {
+    const parentId = item.event.payload.parent_id;
+    if (parentId && byId.has(parentId)) {
+      const bucket = children.get(parentId) ?? [];
+      bucket.push(item);
+      children.set(parentId, bucket);
+    } else roots.push(item);
+  }
+  const output: Item[] = [];
+  const seen = new Set<string>();
+  const visit = (item: Item) => {
+    if (seen.has(item.event.id)) return;
+    seen.add(item.event.id);
+    output.push(item);
+    for (const child of children.get(item.event.id) ?? []) visit(child);
+  };
+  for (const item of roots) visit(item);
+  for (const item of items) visit(item);
+  return output;
+}
+
 function turnsFor(items: Item[]): Turn[] {
   const turns: Turn[] = [];
   let current: Turn | undefined;
-  for (const item of items) {
+  for (const item of orderedItems(items)) {
     if (item.kind === 'user') {
       current = { id: item.event.id, user: item, activity: [] };
       turns.push(current);
@@ -182,7 +210,7 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
       const failures = turn.activity.filter(item => item.kind === 'error');
       const activity = turn.activity.filter(item => item.kind !== 'condensation' && item.kind !== 'error');
       return <section className="conversation-turn" key={turn.id}>
-        {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}>编辑并重新思考</button>}</article>)}
+        {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</article>)}
         {condensations.map(item => <div className="conversation-condensation" key={item.event.id}><span>↻</span>{item.title}</div>)}
         {turn.assistant && <AgentReply content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
         {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}

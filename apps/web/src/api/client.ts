@@ -105,16 +105,16 @@ export const api = {
     request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}/settings`, json('PATCH', { default_model_provider_id })),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
-  createAgentConversation: (workspaceId: string, title?: string) =>
-    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { title }, true)),
+  createAgentConversation: (workspaceId: string, model_provider_id: string, title?: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { title, model_provider_id }, true)),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string) =>
     request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
-  sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], model_name?: string, reasoning_effort?: string | null) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments, ...(model_name ? { model_name, reasoning_effort } : {}) })),
+  sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], model_provider_id?: string, model_name?: string, reasoning_effort?: string | null) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments, ...(model_provider_id ? { model_provider_id } : {}), ...(model_name ? { model_name, reasoning_effort } : {}) })),
   uploadAgentAttachment: async (workspaceId: string, bindingId: string, file: File): Promise<AgentAttachment> => {
     const body = new FormData(); body.append('file', file, file.name);
     let response: Response;

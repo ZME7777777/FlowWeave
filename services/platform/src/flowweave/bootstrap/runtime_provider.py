@@ -287,7 +287,8 @@ class MarketplaceCatalogWrite(PluginResolveWrite):
     pass
 
 
-class TerminalStartWrite(ResolveContainerWrite):
+class TerminalStartWrite(SandboxDeleteWrite):
+    environment_id: UUID | None = None
     session_name: str | None = Field(default=None, max_length=64)
     rows: int = Field(default=24, ge=2, le=200)
     columns: int = Field(default=80, ge=20, le=400)
@@ -988,11 +989,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/terminals/start")
     async def terminal_start(payload: TerminalStartWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
-        container_id = environments_docker.resolve_setup_container(
-            payload.resource_name,
-            sandbox_id=str(payload.resource_id),
-            environment_id=str(payload.environment_id),
-        )
+        # Setup terminals and Agent Workspace terminals use different managed
+        # container kinds.  The latter deliberately have no environment_id.
+        # Resolve them through the same ownership ledger, never by container
+        # name alone.
+        if payload.environment_id is not None:
+            container_id = environments_docker.resolve_setup_container(
+                payload.resource_name,
+                sandbox_id=str(payload.resource_id),
+                environment_id=str(payload.environment_id),
+            )
+        else:
+            try:
+                container_id = inspect_owned_container(
+                    configured.docker_binary,
+                    payload.resource_name,
+                    str(payload.resource_id),
+                    expected_manager_scope=configured.sandbox_manager_scope,
+                    expected_kind="agent-runtime",
+                    timeout=30,
+                )
+            except DockerOwnershipError as exc:
+                raise DomainError(
+                    "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
+                    "The Agent Runtime container is owned by another resource",
+                    409,
+                ) from exc
+            except DockerControlError as exc:
+                raise DomainError(
+                    "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+                    "The Agent Runtime container could not be verified",
+                    503,
+                ) from exc
+            if container_id is None:
+                raise DomainError(
+                    "AGENT_TERMINAL_UNAVAILABLE",
+                    "The Agent Runtime container no longer exists",
+                    409,
+                )
         return {
             "terminal_id": terminals.start(
                 container_id, payload.session_name, payload.rows, payload.columns

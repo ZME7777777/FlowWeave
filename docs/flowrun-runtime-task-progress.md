@@ -464,6 +464,19 @@ Thought、Tool Action/Observation、Condensation 与错误事件，REST 事件�
 队列仅存在于当前浏览器会话；刷新前未投递项明确丢弃，不写入 FlowWeave 或 OpenHands。不得改写 OpenHands
 并发输入约束、伪造已发送消息或修改 FlowRun。
 
+### FR-35 Agent 工作台会话绑定与终端可靠性 — DONE
+
+依赖：`FR-34`。
+
+目标：会话流按 OpenHands 正式 `parent_id` 拓扑渲染，确保 user event 先于其所有后代 assistant/activity
+呈现；最后一条 user 消息的编辑入口为气泡外独立图标。每个 Conversation 明确显示其当前生效的模型供应商，
+新建会话在创建时显式选择供应商，不再写入或依赖 Workspace 全局默认配置；已有 Conversation 可以在下一次
+发送时原生切换到任一已测试成功的供应商及其启用模型，成功后更新该会话的受审计绑定。模型/思考选择器只显示
+当前有效值一次，不制造重复的空占位选项。修复 Agent Workspace 常驻 Runtime 终端被误按 Environment Setup
+容器校验、导致 Runtime Provider 返回 422 的问题；终端必须使用同一受 owner/fence 校验的 `agent-runtime`
+容器连接，不得把容器地址、Docker socket 或未校验的资源暴露给浏览器。不得修改 OpenHands 源码、持久化消息、
+事件、HEAD 或另建按会话容器。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -480,6 +493,7 @@ Thought、Tool Action/Observation、Condensation 与错误事件，REST 事件�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-26 | FR-35 | Agent Workspace 与 Runtime Provider 定向 pytest（46 passed）；Web lint/typecheck/production build；隔离本地源码 Playwright；`git diff --check` 与任务状态核对 | PASS：会话流按正式 `parent_id` 稳定拓扑排序，实时与 REST 合并时 parent 必定先于后代渲染；最后 user 消息的编辑入口为气泡外图标。新建会话显式冻结所选已连接供应商；会话内供应商、模型和思考程度只在下一条原生消息发送边界切换，OpenHands `switch_model` 成功后才更新该会话绑定，不再依赖 Workspace 全局默认模型。选择器不重复展示当前模型或思考程度。常驻 Agent Runtime 终端在本地与 Runtime Provider 远程控制器路径均按 `agent-runtime` kind、owner 和 scope 校验后打开，不再要求 Environment Setup 的 `environment_id`，从而消除 422。 |
 | 2026-08-26 | FR-34 | Agent 工作台定向 Playwright（本地源码 Vite）；Web typecheck/lint；`git diff --check` 与任务状态核对 | PASS：运行中输入保留文本、附件、模型和思考选择并在浏览器内排队；若原生接口因短暂状态差异返回 `AGENT_CONVERSATION_BUSY`，输入改入队而非显示错误。队列通过正式 input-readiness 顺序投递，刷新前未投递内容不持久化。当前轮只会在正式事件树中属于该 user event 后代的 assistant/error 终态结束，历史回复或无关联的完成帧不会使新轮提前结束。 |
 | 2026-08-26 | FR-33 | OpenHands 实时流定向 pytest（3 passed）；受影响 Python Ruff；Web typecheck/lint；`git diff --check` 与任务状态核对 | PASS：浏览器不再在刚发送消息时依据短暂的 native `ready` 提前结束本轮；只有正式 assistant/error 终止事件或 REST 读回的同轮终态才结束。实时流连续投影安全 delta、Thought、Tool Action/Observation、Condensation、错误和完成事件，仅存在浏览器内存，刷新仍从 REST/OpenHands 读取。Agent 工作台把 Terminal/File Editor/Browser/Skill/MCP/Task 正式事件展示为可读动作、必要命令或工作区路径，不展示 OpenHands 类名或原始 JSON；运行中展开、完成后折叠。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-32 | Agent Workspace/OpenHands 定向 pytest（5 passed）；受影响 Python Ruff；Web typecheck/lint；`git diff --check` | PASS：`ConversationErrorEvent.code/detail/classification` 由 OpenHands 正式事件安全投影，工作台将 rate limit 呈现为可操作的失败卡片，不再把失败轮次伪装成无回复。模型和思考程度不再有“应用”按钮或即时网络写入；它们随下次 `messages` 请求原生切换并发送。已为固定 Codex `openai/gpt-5.6-sol` 目录声明 922,000-token 窗口，累计 usage 与未知容量的语义分别清晰呈现，不估算当前 View 占用。 |
