@@ -453,6 +453,17 @@ Thought、Tool Action/Observation、Condensation 与错误事件，REST 事件�
 命令、浏览器操作、Skill/MCP 调用及完成状态；运行中展开、完成后折叠。不得保存前端临时事件、伪造思考内容、
 传输供应商隐藏推理或修改 OpenHands 源码/FlowRun 契约。
 
+### FR-34 Agent 工作台可靠排队发送 — DONE
+
+依赖：`FR-33`。
+
+目标：当用户在当前轮回复尚未完成时发送下一条消息，浏览器必须保留原始文本、附件与下次发送生效的模型选择，
+显示为排队并在 OpenHands 原生会话可接收输入后按顺序投递；不能显示“Agent 正在处理”错误。即使浏览器的实时
+状态与 Runtime 短暂不同、首次投递收到正式 `AGENT_CONVERSATION_BUSY`，也要转为本地排队并从 readiness 恢复，
+而非丢弃输入或向用户报错。当前轮完成必须关联到本轮正式 user event，不能因历史已完成回复提前清空运行状态。
+队列仅存在于当前浏览器会话；刷新前未投递项明确丢弃，不写入 FlowWeave 或 OpenHands。不得改写 OpenHands
+并发输入约束、伪造已发送消息或修改 FlowRun。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -469,6 +480,7 @@ Thought、Tool Action/Observation、Condensation 与错误事件，REST 事件�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-26 | FR-34 | Agent 工作台定向 Playwright（本地源码 Vite）；Web typecheck/lint；`git diff --check` 与任务状态核对 | PASS：运行中输入保留文本、附件、模型和思考选择并在浏览器内排队；若原生接口因短暂状态差异返回 `AGENT_CONVERSATION_BUSY`，输入改入队而非显示错误。队列通过正式 input-readiness 顺序投递，刷新前未投递内容不持久化。当前轮只会在正式事件树中属于该 user event 后代的 assistant/error 终态结束，历史回复或无关联的完成帧不会使新轮提前结束。 |
 | 2026-08-26 | FR-33 | OpenHands 实时流定向 pytest（3 passed）；受影响 Python Ruff；Web typecheck/lint；`git diff --check` 与任务状态核对 | PASS：浏览器不再在刚发送消息时依据短暂的 native `ready` 提前结束本轮；只有正式 assistant/error 终止事件或 REST 读回的同轮终态才结束。实时流连续投影安全 delta、Thought、Tool Action/Observation、Condensation、错误和完成事件，仅存在浏览器内存，刷新仍从 REST/OpenHands 读取。Agent 工作台把 Terminal/File Editor/Browser/Skill/MCP/Task 正式事件展示为可读动作、必要命令或工作区路径，不展示 OpenHands 类名或原始 JSON；运行中展开、完成后折叠。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-32 | Agent Workspace/OpenHands 定向 pytest（5 passed）；受影响 Python Ruff；Web typecheck/lint；`git diff --check` | PASS：`ConversationErrorEvent.code/detail/classification` 由 OpenHands 正式事件安全投影，工作台将 rate limit 呈现为可操作的失败卡片，不再把失败轮次伪装成无回复。模型和思考程度不再有“应用”按钮或即时网络写入；它们随下次 `messages` 请求原生切换并发送。已为固定 Codex `openai/gpt-5.6-sol` 目录声明 922,000-token 窗口，累计 usage 与未知容量的语义分别清晰呈现，不估算当前 View 占用。 |
 | 2026-08-26 | FR-31 | Runtime Provider 定向事件流测试；Web typecheck/lint；`git diff --check` | PASS：Provider 保持同一条经所有权校验的 OpenHands WebSocket，连续转发状态、delta 与完成帧，不再在首个状态帧后断开；Agent 工作台仅从正式可见 delta 渲染流式文本。最新回复控件仅在用户离开底部时出现；完成后为向下箭头。模型/思考程度应用动作改用勾选语义，当前窗口上下文提供真实统计浮层；未知窗口上限明确不估算。 |
