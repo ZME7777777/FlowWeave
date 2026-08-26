@@ -1074,6 +1074,7 @@ def test_openhands_reads_only_the_native_active_head_branch(openhands_settings, 
                     {
                         "kind": "MessageEvent",
                         "id": "user-1",
+                        "parent_id": "__root__",
                         "source": "user",
                         "llm_message": {"role": "user", "content": "first"},
                     },

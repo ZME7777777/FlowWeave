@@ -412,6 +412,15 @@ Codex/ChatGPT 风格的悬停编辑、无双边框自动增高输入区和会话
 账户或其他配置标识。历史会话若缺少可审计的供应商绑定，不猜测回填或静默改写 OpenHands 状态，而是保留
 读取与继续能力并禁用模型切换；用户可新建会话使用明确供应商。分叉会话继承源会话的冻结供应商。
 
+### FR-30 Agent 工作台根事件分支读取修复 — DONE
+
+依赖：`FR-29`。
+
+目标：修复 OpenHands 正式事件树以 `parent_id = "__root__"` 结束时，被 FlowWeave 误判为“活动分支不完整”
+并返回 409 的问题。该修复只把 `__root__` 识别为树的合法终止符，不按时间或文本重建分支、不重发已接收
+的用户消息，也不屏蔽 OpenHands 已返回的真实模型错误。页面应能读取并渲染正式 ERROR 事件，而不是显示空白
+会话与误导性的“处理中”提示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -460,3 +469,4 @@ Codex/ChatGPT 风格的悬停编辑、无双边框自动增高输入区和会话
 | 2026-08-26 | FR-27 | Web ESLint/typecheck/build；独立源码 Vite 服务上的 Agent Workspace 定向 Playwright；`git diff --check` 与任务状态核对 | PASS：会话流在首次进入或新一轮开始时定位最新内容，但流式 delta 不再强制拉回用户；生成中显示动态三点，完成后显示向下箭头，二者均可平滑跳转至最新回复。未改动 OpenHands、会话事件或 FlowRun。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-28 | Agent Workspace/OpenHands 定向 pytest（70 passed）；Ruff、Pyright；Web ESLint/typecheck/build；Alembic head 与 `git diff --check` | PASS：完成回复可从其正式 event identity 原生 fork 为独立 Conversation，持久化新的最小 locator 与审计命令，重放相同幂等键返回同一 binding；手动压缩只调用原生 condense，完成情况继续由 Condensation 事件渲染。运行中会话拒绝这两项控制操作；新增 0061 migration 允许 FORK 审计类型。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-29 | Agent Workspace 定向 pytest（10 passed）；受影响 Python Ruff/Pyright；Web ESLint/typecheck/build；本地 Alembic head、`git diff --check` 与任务状态核对 | PASS：新建会话与原生 fork 都冻结 `model_provider_id`；会话内模型切换 API 不再接受供应商参数，并只按 binding 的冻结供应商构造正式 `switch_llm`。前端下拉仅显示该供应商的模型名称。没有可审计供应商身份的历史 binding 不被猜测回填，继续可读写但模型切换被明确拒绝；新增 0062 迁移。无 CURRENT、READY 或下一切片。 |
+| 2026-08-26 | FR-30 | OpenHands active-head 定向 pytest（1 passed）；受影响 Python Ruff/Pyright；`git diff --check` 与任务状态核对 | PASS：`parent_id = "__root__"` 被识别为固定 OpenHands 事件树的合法终点，不再作为缺失 event 查找。正式 ERROR 事件可返回至页面；不重发消息、不改写事件树或掩盖上游模型错误。无 CURRENT、READY 或下一切片。 |

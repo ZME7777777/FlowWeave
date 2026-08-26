@@ -2026,9 +2026,14 @@ class OpenHandsRuntime:
                     {"conversation_id": handle.conversation_id, "event_id": active_event_id},
                 )
             active_ids.add(active_event_id)
-            active_event_id = self._formal_identity(
+            parent_id = self._formal_identity(
                 active_item.get("parent_id"), field="parent_id", required=False
             )
+            # OpenHands uses the formal ``__root__`` sentinel for the first
+            # event in a tree. It is not itself an event returned by
+            # /events/search, so it terminates traversal rather than proving
+            # the branch is incomplete.
+            active_event_id = None if parent_id == "__root__" else parent_id
         active_items = [item for item in items if self._event_identity(item)[0] in active_ids]
         events = tuple(
             RuntimeEvent(
