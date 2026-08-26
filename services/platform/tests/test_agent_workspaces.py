@@ -20,7 +20,12 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
-from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch, RuntimeProvider
+from flowweave.runtime.base import (
+    RuntimeConversationIdentity,
+    RuntimeEvent,
+    RuntimeEventBatch,
+    RuntimeProvider,
+)
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.errors import DomainError
@@ -363,6 +368,68 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         assert runtime.switched is not None
         assert runtime.switched.model == "test-model-2"
         assert runtime.switched.reasoning_effort == "high"
+
+
+def test_agent_workspace_forks_at_native_event_and_condenses_manually(
+    settings, db_session_factory, monkeypatch
+):
+    class ForkRuntime(MockRuntime):
+        fork_call: tuple[str | None, str] | None = None
+        condensed = False
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            return RuntimeConversationIdentity(
+                conversation_id=handle.conversation_id,
+                workspace_working_dir="/runtime/workspace/project",
+                persistence_dir=(
+                    f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
+                ),
+                event_id="assistant-event",
+                parent_id=None,
+                action_id=None,
+                tool_call_id=None,
+            )
+
+        def fork_conversation(self, handle, **kwargs):
+            self.fork_call = (kwargs["from_event_id"], kwargs["expected_source_leaf_event_id"])
+            return super().fork_conversation(handle, **kwargs)
+
+        def condense(self, handle):
+            self.condensed = True
+            return super().condense(handle)
+
+        def can_accept_input(self, handle):
+            del handle
+            return True
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    runtime = ForkRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        source = conversations.create_conversation(db, workspace.id, "源会话", "create-key")
+        fork = conversations.fork_conversation(
+            db, workspace.id, source["id"], "assistant-event", None, "fork-key"
+        )
+        assert fork["lifecycle"] == "ACTIVE"
+        assert fork["display_title"] == "Fork · 源会话"
+        assert runtime.fork_call == ("assistant-event", "assistant-event")
+        assert conversations.fork_conversation(
+            db, workspace.id, source["id"], "assistant-event", None, "fork-key"
+        ) == fork
+        assert len(conversations.list_conversations(db, workspace.id)) == 2
+        condensed = conversations.condense_conversation(db, workspace.id, source["id"])
+        assert condensed["accepted"] is True
+        assert runtime.condensed is True
 
 
 def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(

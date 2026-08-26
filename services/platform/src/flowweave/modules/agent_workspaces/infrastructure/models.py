@@ -183,7 +183,7 @@ class AgentConversationCommand(Base):
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_agent_conversation_command_key"),
         CheckConstraint(
-            "command_type IN ('CREATE', 'DELETE', 'RENAME')", name="ck_agent_command_type"
+            "command_type IN ('CREATE', 'DELETE', 'RENAME', 'FORK')", name="ck_agent_command_type"
         ),
         CheckConstraint(
             "state IN ('PENDING', 'SUCCEEDED', 'AMBIGUOUS', 'FAILED')",

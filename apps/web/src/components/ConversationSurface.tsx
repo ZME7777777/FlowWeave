@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CircleAlert, LoaderCircle, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, CircleAlert, GitFork, LoaderCircle, Wrench } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
@@ -76,18 +76,20 @@ function ActivityGroup({ items, active }: { items: Item[]; active: boolean }) {
   </details>;
 }
 
-function AgentReply({ content, streaming = false }: { content: string; streaming?: boolean }) {
+function AgentReply({ content, streaming = false, onFork }: { content: string; streaming?: boolean; onFork?: () => void }) {
   return <article className={`conversation-message assistant${streaming ? ' streaming' : ''}`}>
     {content ? <ReactMarkdown>{content}</ReactMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
+    {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, rewritePending = false, onRewrite }: {
+export function ConversationSurface({ events, liveText, isGenerating, rewritePending = false, onRewrite, onFork }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
   rewritePending?: boolean;
   onRewrite?: (eventId: string, content: string) => void;
+  onFork?: (eventId: string) => void;
 }) {
   const tail = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
@@ -117,7 +119,7 @@ export function ConversationSurface({ events, liveText, isGenerating, rewritePen
       return <section className="conversation-turn" key={turn.id}>
         {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}>编辑并重新思考</button>}</article>)}
         {condensations.map(item => <div className="conversation-condensation" key={item.event.id}><span>↻</span>{item.title}</div>)}
-        {turn.assistant && <AgentReply content={turn.assistant.content}/>}
+        {turn.assistant && <AgentReply content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
         {activity.length > 0 && <ActivityGroup items={activity} active={isCurrent && !turn.assistant}/>}
         {isCurrent && !turn.assistant && <AgentReply content={liveText} streaming/>}
       </section>;

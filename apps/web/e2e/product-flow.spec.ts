@@ -222,6 +222,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
       return;
     }
+    if (path.endsWith('/condense') && request.method() === 'POST') {
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true }) });
+      return;
+    }
+    if (path.endsWith('/fork') && request.method() === 'POST') {
+      const created = {
+        id: 'agent-conversation-fork-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
+      };
+      conversations.splice(0, 0, created);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      return;
+    }
     if (path.endsWith('/events')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: conversations.length ? [
@@ -258,6 +271,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await expect(page.getByRole('button', { name: '跳转到最新回复' })).toBeVisible();
   await page.getByRole('button', { name: '跳转到最新回复' }).click();
+  await page.getByRole('button', { name: '压缩上下文' }).click();
+  await page.getByRole('button', { name: '从此处分叉会话' }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
+  await expect(page.getByRole('heading', { name: 'Fork · 未命名会话 1' })).toBeVisible();
   await expect(page.getByText('工作过程')).toBeVisible();
   await expect(page.getByText('BashAction')).toBeHidden();
   await page.getByText('工作过程').click();

@@ -68,6 +68,11 @@ class AgentConversationModelWrite(_Write):
     reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
+class AgentConversationForkWrite(_Write):
+    event_id: str = Field(min_length=1, max_length=200)
+    title: str | None = Field(default=None, max_length=240)
+
+
 def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
@@ -239,6 +244,40 @@ async def agent_conversation_model(
             payload.model_provider_id,
             payload.model_name,
             payload.reasoning_effort,
+        ),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/condense", status_code=202
+)
+async def agent_condense_conversation(
+    workspace_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: conversations.condense_conversation(session, workspace_id, binding_id)
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/fork", status_code=201
+)
+async def agent_fork_conversation(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationForkWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.fork_conversation(
+            session,
+            workspace_id,
+            binding_id,
+            payload.event_id,
+            payload.title,
+            _key(idempotency_key, "fork-agent-conversation", binding_id),
         ),
     )
 

@@ -505,6 +505,92 @@ def switch_conversation_model(
     }
 
 
+def condense_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
+    if not get_runtime().can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
+    result = get_runtime().condense(handle)
+    return {"accepted": True, "cursor": result.cursor}
+
+
+def fork_conversation(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    event_id: str,
+    title: str | None,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    source = _binding(db, workspace_id, binding_id, lock=True)
+    existing = db.scalar(
+        select(AgentConversationBinding).where(
+            AgentConversationBinding.create_idempotency_key == idempotency_key
+        )
+    )
+    if existing is not None:
+        if existing.workspace_id != workspace.id:
+            raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话分叉请求冲突", 409)
+        if existing.lifecycle == "ACTIVE":
+            return _dict(existing)
+        raise DomainError("AGENT_CONVERSATION_PROVISIONING", "分叉会话仍在创建中", 409)
+    runtime = get_runtime()
+    source_handle = _handle(db, workspace, source)
+    if not runtime.can_accept_input(source_handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后分叉会话", 409)
+    source_identity = runtime.reload_conversation(source_handle)
+    if not source_identity.event_id:
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)
+    clean_title = (title or "").strip()[:240] or f"Fork · {source.display_title or '会话'}"
+    target_id = str(uuid4())
+    target = AgentConversationBinding(
+        workspace_id=workspace.id,
+        runtime_session_id=source.runtime_session_id,
+        openhands_conversation_id=target_id,
+        display_title=clean_title,
+        create_idempotency_key=idempotency_key,
+    )
+    db.add(target)
+    db.flush()
+    command = AgentConversationCommand(
+        workspace_id=workspace.id,
+        binding_id=target.id,
+        command_type="FORK",
+        idempotency_key=idempotency_key,
+        attempt_count=1,
+    )
+    db.add(command)
+    try:
+        result = runtime.fork_conversation(
+            source_handle,
+            target_conversation_id=target_id,
+            title=clean_title,
+            from_event_id=event_id,
+            expected_source_leaf_event_id=source_identity.event_id,
+            reset_metrics=True,
+        )
+        if (
+            result.handle.conversation_id != target_id
+            or result.source_conversation_id != source.openhands_conversation_id
+            or result.source_event_id != event_id
+        ):
+            raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "会话分叉身份校验失败", 409)
+        identity = runtime.reload_conversation(result.handle)
+        if identity.persistence_dir != f"/runtime/state/conversations/{UUID(target_id).hex}":
+            raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "分叉会话持久化身份校验失败", 409)
+    except DomainError as exc:
+        target.lifecycle = "FAILED"
+        command.state = "FAILED"
+        command.last_error_code = exc.code
+        command.failure_summary = "Conversation fork failed; inspect protected logs"
+        raise
+    target.lifecycle = "ACTIVE"
+    command.state = "SUCCEEDED"
+    db.flush()
+    return _dict(target)
+
+
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     workspace = _workspace(db, workspace_id)
     get_runtime().interrupt(
