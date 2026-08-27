@@ -120,12 +120,32 @@ function WorkspaceTerminal({ workspaceId }: { workspaceId: string }) {
     let socket: WebSocket | null = null;
     let disposed = false;
     let reconnectTimer: number | undefined;
+    let resizeFrame: number | undefined;
     let attempts = 0;
+    let connectionStarted = false;
     const reconnectDelays = [1000, 2000, 5000, 10_000, 30_000];
     const resize = () => {
-      if (element.clientWidth < 160 || element.clientHeight < 100) return;
-      try { fit.fit(); } catch { return; }
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', rows: terminal.rows, columns: terminal.cols }));
+      if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = undefined;
+        if (disposed || element.clientWidth < 160 || element.clientHeight < 100) return;
+        let dimensions: { cols: number; rows: number } | undefined;
+        try { dimensions = fit.proposeDimensions(); } catch { return; }
+        // The drawer can report a transient zero-width layout while its grid
+        // transition is opening. Never create or resize the PTY from that size.
+        if (!dimensions || dimensions.cols < 20 || dimensions.rows < 2) return;
+        const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+        if (terminal.cols !== dimensions.cols || terminal.rows !== dimensions.rows) {
+          terminal.resize(dimensions.cols, dimensions.rows);
+          if (wasAtBottom) terminal.scrollToBottom();
+        }
+        if (!connectionStarted) {
+          connectionStarted = true;
+          connect();
+          return;
+        }
+        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', rows: dimensions.rows, columns: dimensions.cols }));
+      });
     };
     const connect = () => {
       if (disposed) return;
@@ -135,7 +155,12 @@ function WorkspaceTerminal({ workspaceId }: { workspaceId: string }) {
       socket = current;
       current.binaryType = 'arraybuffer';
       current.onopen = () => { attempts = 0; setState('connected'); setDetail('已连接共享工作区'); resize(); terminal.focus(); };
-      current.onmessage = event => terminal.write(typeof event.data === 'string' ? event.data : new Uint8Array(event.data));
+      current.onmessage = event => {
+        const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+        terminal.write(typeof event.data === 'string' ? event.data : new Uint8Array(event.data), () => {
+          if (wasAtBottom) terminal.scrollToBottom();
+        });
+      };
       current.onclose = event => {
         if (socket === current) socket = null;
         if (disposed || event.code === 1000) return;
@@ -145,11 +170,25 @@ function WorkspaceTerminal({ workspaceId }: { workspaceId: string }) {
         reconnectTimer = window.setTimeout(connect, delay);
       };
     };
-    connect();
     const input = terminal.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); });
     const observer = new ResizeObserver(resize);
     observer.observe(element);
-    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); observer.disconnect(); input.dispose(); socket?.close(1000); terminal.dispose(); };
+    const wheel = (event: WheelEvent) => {
+      // Keep wheel input in xterm's scrollback. Capturing and stopping the
+      // event prevents an application mouse-reporting mode from sending an
+      // escape sequence to the shell, which would otherwise change history.
+      const delta = event.deltaY || event.deltaX;
+      if (delta) {
+        const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 1 : 24;
+        terminal.scrollLines(Math.sign(delta) * Math.max(1, Math.round(Math.abs(delta) / unit)));
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    element.addEventListener('wheel', wheel, { capture: true, passive: false });
+    resize();
+    void document.fonts?.ready.then(resize);
+    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); observer.disconnect(); element.removeEventListener('wheel', wheel, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
   }, [workspaceId]);
 
   return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;

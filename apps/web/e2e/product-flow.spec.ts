@@ -190,6 +190,8 @@ test('terminal environment creation keeps the setup image internal', async ({ pa
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
   let modelIsResponding = false;
   let agentStream: WebSocketRoute | undefined;
+  let terminalSocket: WebSocketRoute | undefined;
+  const terminalInputs: string[] = [];
   let sentMessages = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -201,6 +203,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let contextAvailable = false;
   const conversations: Array<Record<string, unknown>> = [];
   await page.routeWebSocket('**/agent-workspaces/**/stream', stream => { agentStream = stream; });
+  await page.routeWebSocket('**/agent-workspaces/**/terminal*', socket => {
+    terminalSocket = socket;
+    socket.onMessage(message => {
+      try {
+        const payload = JSON.parse(String(message)) as { type?: string; data?: string };
+        if (payload.type === 'input' && payload.data) terminalInputs.push(payload.data);
+      } catch { /* resize/input frames are asserted through the collected input list. */ }
+    });
+  });
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -366,6 +377,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
+  await page.getByRole('button', { name: '打开工作区终端' }).click();
+  await expect(page.locator('.agent-workspace-terminal')).toBeVisible();
+  await expect.poll(() => Boolean(terminalSocket)).toBe(true);
+  terminalSocket!.send(`${Array.from({ length: 80 }, (_, index) => `output-${index + 1}`).join('\r\n')}\r\n`);
+  const viewport = page.locator('.agent-workspace-terminal .xterm-viewport');
+  await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop < 3)).toBe(true);
+  const bottomScrollTop = await viewport.evaluate(node => node.scrollTop);
+  await viewport.dispatchEvent('wheel', { deltaY: -120, deltaMode: 0 });
+  await expect.poll(() => viewport.evaluate((node, previous) => node.scrollTop < previous, bottomScrollTop)).toBe(true);
+  await viewport.dispatchEvent('wheel', { deltaY: 120, deltaMode: 0 });
+  await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop < 3)).toBe(true);
+  expect(terminalInputs).toEqual([]);
   await expect(page.locator('.agent-context-progress')).toHaveCount(0);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;
