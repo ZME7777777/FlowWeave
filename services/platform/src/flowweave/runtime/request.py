@@ -215,6 +215,7 @@ def runtime_provider(
         base_url=selected.base_url,
         model=selected.model,
         api_key=api_key,
+        reasoning_effort=selected_effort,
     )
 
 

@@ -989,6 +989,50 @@ def _create_model_provider(client, name: str) -> dict:
     return response.json()
 
 
+def test_api_key_runtime_provider_preserves_reasoning_effort(client, db_session_factory, settings):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "推理强度运行时供应商",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "secret-key",
+            "models": [
+                {
+                    "model_name": "gpt-reasoning",
+                    "enabled": True,
+                    "is_default": True,
+                }
+            ],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+
+    from flowweave.runtime.request import runtime_provider
+    from flowweave.shared.models import ProviderModel
+    from flowweave.shared.settings import settings_context
+
+    node = {
+        "asset": {
+            "executor": {
+                "model_provider_id": provider.json()["id"],
+            }
+        }
+    }
+    with settings_context(settings), db_session_factory() as db:
+        model = db.scalar(
+            select(ProviderModel).where(
+                ProviderModel.provider_id == provider.json()["id"],
+                ProviderModel.model_name == "gpt-reasoning",
+            )
+        )
+        assert model is not None
+        model.supported_reasoning_efforts = ["medium", "high"]
+        db.commit()
+        selected = runtime_provider(db, node, "gpt-reasoning", "high")
+
+    assert selected.reasoning_effort == "high"
+
+
 def test_model_provider_single_and_bulk_delete(client):
     first = _create_model_provider(client, "待单删模型服务")
     second = _create_model_provider(client, "待批删模型服务 A")
