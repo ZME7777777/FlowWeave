@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, GitFork, LoaderCircle, Pencil, Sparkles, Wrench } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileText, GitFork, LoaderCircle, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
@@ -18,6 +18,13 @@ interface Turn {
   user?: Item;
   assistant?: Item;
   activity: Item[];
+}
+
+interface ActivityEntry {
+  id: string;
+  item: Item;
+  action?: Item;
+  results: Item[];
 }
 
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
@@ -102,11 +109,68 @@ function detailText(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 500) : '';
 }
 
+function detailContent(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, 12_000) : '';
+}
+
 function workspacePath(value: string): string {
   return value.replace(/^\/runtime\/workspace\/project\/?/, '工作区/');
 }
 
-function activityPresentation(item: Item): { title: string; status: string; command?: string; path?: string; thought?: string } {
+function compactCommand(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length > 110 ? `${compact.slice(0, 107)}...` : compact;
+}
+
+function groupedActivities(items: Item[]): ActivityEntry[] {
+  const entries: ActivityEntry[] = [];
+  const actionsById = new Map<string, ActivityEntry>();
+  const actionsByToolCall = new Map<string, ActivityEntry>();
+  for (const item of items) {
+    if (item.kind !== 'tool' || item.event.event_type !== 'TOOL_CALL') continue;
+    const entry = { id: item.event.id, item, action: item, results: [] } satisfies ActivityEntry;
+    actionsById.set(item.event.id, entry);
+    const toolCallId = detailText(item.event.payload.tool_call_id);
+    if (toolCallId) actionsByToolCall.set(toolCallId, entry);
+  }
+  const emitted = new Set<ActivityEntry>();
+  for (const item of items) {
+    if (item.kind === 'tool' && item.event.event_type === 'TOOL_CALL') {
+      const entry = actionsById.get(item.event.id)!;
+      if (!emitted.has(entry)) { entries.push(entry); emitted.add(entry); }
+      continue;
+    }
+    if (item.kind === 'tool' && item.event.event_type === 'TOOL_RESULT') {
+      const actionId = detailText(item.event.payload.action_id);
+      const toolCallId = detailText(item.event.payload.tool_call_id);
+      const entry = (actionId ? actionsById.get(actionId) : undefined)
+        ?? (toolCallId ? actionsByToolCall.get(toolCallId) : undefined);
+      if (entry) {
+        entry.results.push(item);
+        if (!emitted.has(entry)) { entries.push(entry); emitted.add(entry); }
+        continue;
+      }
+    }
+    entries.push({ id: item.event.id, item, results: item.event.event_type === 'TOOL_RESULT' ? [item] : [] });
+  }
+  return entries;
+}
+
+interface ActivityPresentation {
+  title: string;
+  status: string;
+  thought?: string;
+  command?: string;
+  path?: string;
+  operation?: string;
+  output?: string;
+  exitCode?: string;
+  actionDetails?: Record<string, unknown>;
+  resultDetails?: Record<string, unknown>;
+}
+
+function activityPresentation(entry: ActivityEntry): ActivityPresentation {
+  const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') {
     return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
   }
@@ -115,29 +179,45 @@ function activityPresentation(item: Item): { title: string; status: string; comm
   }
   if (item.kind === 'error') return { title: '执行遇到问题', status: '失败' };
   const details = item.event.payload.details ?? {};
+  const result = entry.results.at(-1);
+  const resultDetails = result?.event.payload.details ?? {};
   const eventName = String(item.event.payload.event_name ?? '');
-  const path = detailText(details.path) || detailText(details.file_path) || detailText(details.filename);
-  const command = detailText(details.command);
-  const completed = item.event.event_type === 'TOOL_RESULT';
-  const thought = !completed && item.content ? item.content.slice(0, 2_000) : undefined;
-  const summary = !completed ? detailText(item.event.payload.summary) : '';
+  const resultName = String(result?.event.payload.event_name ?? '');
+  const path = detailText(details.path) || detailText(resultDetails.path) || detailText(details.file_path) || detailText(details.filename);
+  const command = detailContent(details.command) || detailContent(resultDetails.command);
+  const completed = entry.results.length > 0 || item.event.event_type === 'TOOL_RESULT';
+  const failed = Boolean(resultDetails.is_error) || (typeof resultDetails.exit_code === 'number' && resultDetails.exit_code !== 0);
+  const thought = entry.action?.content ? entry.action.content.slice(0, 2_000) : undefined;
+  const summary = detailText(entry.action?.event.payload.summary);
   const actionTitle = (fallback: string) => summary || fallback;
-  if (eventName === 'TerminalAction') return { title: actionTitle('正在运行命令'), status: '终端', command, thought };
-  if (eventName === 'TerminalObservation') return { title: '命令已执行', status: completed ? '已完成' : '处理中' };
-  if (eventName === 'FileEditorAction') {
-    const operation = command.toLowerCase();
-    const title = operation === 'view' ? '正在读取文件'
-      : ['create', 'write'].includes(operation) ? '正在创建文件'
-        : ['str_replace', 'insert', 'append', 'undo_edit'].includes(operation) ? '正在编辑文件'
-          : '正在处理文件';
-    return { title: actionTitle(title), status: '文件编辑器', path: path ? workspacePath(path) : undefined, thought };
+  const output = entry.results.map(value => detailContent(value.content)).filter(Boolean).join('\n\n').slice(0, 12_000) || undefined;
+  const exitCode = typeof resultDetails.exit_code === 'number' ? String(resultDetails.exit_code) : undefined;
+  if (eventName === 'TerminalAction' || eventName === 'TerminalObservation' || resultName === 'TerminalObservation') {
+    const verb = failed ? '运行失败' : completed ? '已运行' : '正在运行';
+    return {
+      title: command ? `${verb} ${compactCommand(command)}` : actionTitle(completed ? '命令已执行' : '正在运行命令'),
+      status: failed ? '终端 · 失败' : completed ? '终端 · 已完成' : '终端',
+      command, thought, output, exitCode, actionDetails: details, resultDetails,
+    };
   }
-  if (eventName === 'FileEditorObservation') return { title: '文件操作已完成', status: completed ? '已完成' : '处理中', path: path ? workspacePath(path) : undefined };
+  if (eventName === 'FileEditorAction' || eventName === 'FileEditorObservation' || resultName === 'FileEditorObservation') {
+    const operation = command.toLowerCase();
+    const verb = operation === 'view' ? (failed ? '读取失败' : completed ? '已读取' : '正在读取')
+      : ['create', 'write'].includes(operation) ? (failed ? '创建失败' : completed ? '已创建' : '正在创建')
+        : operation === 'undo_edit' ? (failed ? '撤销失败' : completed ? '已撤销编辑' : '正在撤销编辑')
+          : ['str_replace', 'insert', 'append'].includes(operation) ? (failed ? '编辑失败' : completed ? '已编辑' : '正在编辑')
+            : failed ? '文件操作失败' : completed ? '已完成文件操作' : '正在处理文件';
+    const displayPath = path ? workspacePath(path) : '';
+    return {
+      title: displayPath ? `${verb} ${displayPath}` : actionTitle(verb),
+      status: failed ? '文件编辑器 · 失败' : completed ? '文件编辑器 · 已完成' : '文件编辑器',
+      path: displayPath || undefined, operation: command || undefined, thought, output, actionDetails: details, resultDetails,
+    };
+  }
   if (eventName === 'TaskTrackerAction') {
     return {
-      title: actionTitle(command === 'plan' ? '正在更新任务列表' : '正在查看任务列表'),
-      status: '任务跟踪',
-      thought,
+      title: completed ? (command === 'plan' ? '任务列表已更新' : '任务列表已读取') : actionTitle(command === 'plan' ? '正在更新任务列表' : '正在查看任务列表'),
+      status: completed ? '任务跟踪 · 已完成' : '任务跟踪', thought, output, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'TaskTrackerObservation') {
@@ -146,18 +226,54 @@ function activityPresentation(item: Item): { title: string; status: string; comm
       status: completed ? '任务跟踪 · 已完成' : '任务跟踪',
     };
   }
-  if (eventName === 'InvokeSkillAction') return { title: actionTitle('正在使用已启用技能'), status: '技能', thought };
+  if (eventName === 'InvokeSkillAction') return { title: completed ? `${actionTitle('技能调用')} · 已完成` : actionTitle('正在使用已启用技能'), status: completed ? '技能 · 已完成' : '技能', thought, output, actionDetails: details, resultDetails };
   if (eventName === 'InvokeSkillObservation') return { title: '技能调用已完成', status: completed ? '已完成' : '处理中' };
-  if (eventName.includes('Browser')) return { title: completed ? '浏览器操作已完成' : actionTitle('正在操作浏览器'), status: completed ? '浏览器 · 已完成' : '浏览器', thought };
-  if (eventName.includes('MCP')) return { title: completed ? 'MCP 工具调用已完成' : actionTitle('正在调用 MCP 工具'), status: completed ? 'MCP · 已完成' : 'MCP', thought };
-  if (eventName === 'TaskAction') return { title: actionTitle('正在处理子任务'), status: '子任务', thought };
+  if (eventName.includes('Browser')) return { title: completed ? `${actionTitle('浏览器操作')} · 已完成` : actionTitle('正在操作浏览器'), status: completed ? '浏览器 · 已完成' : '浏览器', thought, output, actionDetails: details, resultDetails };
+  if (eventName.includes('MCP')) return { title: completed ? `${actionTitle('MCP 工具调用')} · 已完成` : actionTitle('正在调用 MCP 工具'), status: completed ? 'MCP · 已完成' : 'MCP', thought, output, actionDetails: details, resultDetails };
+  if (eventName === 'TaskAction') return { title: completed ? `${actionTitle('子任务')} · 已完成` : actionTitle('正在处理子任务'), status: completed ? '子任务 · 已完成' : '子任务', thought, output, actionDetails: details, resultDetails };
   if (eventName === 'TaskObservation') return { title: '子任务已完成', status: completed ? '已完成' : '处理中' };
   const toolName = eventName.replace(/(?:Action|Observation)$/, '') || '工具';
   return {
-    title: completed ? `${toolName} 已完成` : actionTitle(`正在使用 ${toolName}`),
+    title: completed ? `${actionTitle(toolName)} · 已完成` : actionTitle(`正在使用 ${toolName}`),
     status: completed ? '工具 · 已完成' : '工具',
-    thought,
+    thought, output, actionDetails: details, resultDetails,
   };
+}
+
+function displayDetails(details: Record<string, unknown>): string {
+  const visible = Object.fromEntries(Object.entries(details).filter(([key]) => !['content', 'old_content', 'new_content'].includes(key)));
+  return Object.keys(visible).length ? JSON.stringify(visible, null, 2).slice(0, 12_000) : '';
+}
+
+function ToolDetailPanel({ presentation, eventName }: { presentation: ActivityPresentation; eventName: string }) {
+  const details = presentation.actionDetails ?? {};
+  const resultDetails = presentation.resultDetails ?? {};
+  const isTerminal = eventName.includes('Terminal');
+  const isFile = eventName.includes('FileEditor');
+  const structured = displayDetails(details);
+  const structuredResult = displayDetails(resultDetails);
+  const fileText = detailContent(details.file_text);
+  const oldText = detailContent(details.old_str);
+  const newText = detailContent(details.new_str);
+  const hasDetail = Boolean(presentation.command || presentation.output || structured || structuredResult || fileText || oldText || newText);
+  if (!hasDetail) return null;
+  return <div className="conversation-tool-detail-panel">
+      <b>{isTerminal ? 'Shell' : isFile ? '文件操作' : '工具调用'}</b>
+      {isTerminal && presentation.command && <pre><code>{`$ ${presentation.command}`}</code></pre>}
+      {isFile && <dl>
+        {presentation.operation && <><dt>操作</dt><dd>{presentation.operation}</dd></>}
+        {presentation.path && <><dt>路径</dt><dd>{presentation.path}</dd></>}
+        {Array.isArray(details.view_range) && <><dt>行范围</dt><dd>{details.view_range.join(' - ')}</dd></>}
+        {typeof details.insert_line === 'number' && <><dt>插入行</dt><dd>{details.insert_line}</dd></>}
+      </dl>}
+      {fileText && <><small>写入内容</small><pre><code>{fileText}</code></pre></>}
+      {oldText && <><small>替换前</small><pre><code>{oldText}</code></pre></>}
+      {newText && <><small>替换后</small><pre><code>{newText}</code></pre></>}
+      {!isTerminal && !isFile && structured && <><small>原始操作</small><pre><code>{structured}</code></pre></>}
+      {presentation.output && <><small>执行结果</small><pre><code>{presentation.output}</code></pre></>}
+      {!isTerminal && !isFile && structuredResult && <><small>结果信息</small><pre><code>{structuredResult}</code></pre></>}
+      {presentation.exitCode && <small>退出码 {presentation.exitCode}</small>}
+    </div>;
 }
 
 function eventTime(item?: Item): number | undefined {
@@ -247,7 +363,8 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
   requestSubmitting?: boolean;
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
-  const itemCount = items.length + (liveText ? 1 : 0);
+  const entries = groupedActivities(items);
+  const itemCount = entries.length + (liveText ? 1 : 0);
   const label = active
     ? `正在处理${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
     : elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
@@ -257,14 +374,23 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
   return <details className="conversation-activity-group" open={active} onToggle={event => { if (active && !event.currentTarget.open) event.currentTarget.open = true; }}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {items.map(item => {
+      {entries.map(entry => {
+        const item = entry.action ?? entry.item;
         const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
-        const presentation = activityPresentation(item);
-        return <article className={`conversation-activity-row ${item.kind}`} key={`${item.event.id}:${item.kind}:${item.content}`}>
-          <Icon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small>
+        const eventName = String(item.event.payload.event_name ?? '');
+        const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
+        const presentation = activityPresentation(entry);
+        const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName}/> : null;
+        if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
+          {presentation.thought && <article className="conversation-activity-row thought"><Sparkles size={14}/><div><ReactMarkdown>{presentation.thought}</ReactMarkdown></div></article>}
+          <details className="conversation-activity-row tool conversation-tool-detail">
+            <summary><ToolIcon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
+            {toolDetail}
+          </details>
+        </div>;
+        return <article className={`conversation-activity-row ${item.kind}`} key={entry.id}>
+          <ToolIcon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small>
             {presentation.thought && <ReactMarkdown>{presentation.thought}</ReactMarkdown>}
-            {presentation.command && <code className="conversation-activity-command">{presentation.command}</code>}
-            {presentation.path && <code className="conversation-activity-path">{presentation.path}</code>}
           </div>
         </article>;
       })}

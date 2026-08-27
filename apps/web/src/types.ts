@@ -318,6 +318,9 @@ export interface OpenHandsConversationEvent {
     source_type?: string;
     source?: string | null;
     parent_id?: string | null;
+    action_id?: string;
+    tool_call_id?: string;
+    tool_name?: string;
     content?: string;
     thought?: string;
     summary?: string;

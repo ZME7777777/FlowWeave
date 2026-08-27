@@ -683,6 +683,23 @@ task，将其重置为 `RETRY` 并清零尝试计数，且不能被已成功的�
 验收：Agent Workspace 定向 pytest 覆盖残留不健康资源和旧 task 遮蔽；受影响 Python `py_compile`、
 `git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
+### FR-51 Agent 会话工具操作详情与正式结果关联 — DONE
+
+依赖：`FR-50`。
+
+目标：将 Agent 工作过程中的工具事件从笼统的“文件操作已完成/命令已执行”改为可核对的具体操作。
+平台安全投影补齐固定 OpenHands 正式 `action_id`、`tool_call_id` 与 `tool_name`，前端只按这些身份把
+Action 与 Observation 合并为一条工具记录，不按相邻顺序或文本猜测。折叠标题直接说明操作、对象与状态，
+例如“已读取 工作区/src/a.ts”“已编辑 工作区/src/b.ts”“已运行 git status”；每条记录附带默认折叠的
+详情，Shell 显示原命令、退出码和安全投影输出，File Editor 显示命令、路径、行范围或变更片段，其他工具
+显示脱敏后的正式输入与结果。工作过程整体的运行时展开、完成后折叠语义保持不变；不得展示隐藏 reasoning、
+Secret、未经安全投影的原始事件或宿主机实现信息，不修改 OpenHands、数据库或事件持久化协议。
+
+验收：平台投影定向 pytest 覆盖 REST/实时一致的正式关联字段及敏感字段剔除；Agent 工作台定向 Playwright
+覆盖 Action/Observation 正式合并、明确文件/命令标题、工具详情默认折叠及展开后的原始操作与结果；Web
+lint/typecheck/production build、API/Web 重建部署、真实历史会话复验、`git diff --check`、Alembic head 与
+任务状态唯一性通过；本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -699,6 +716,7 @@ task，将其重置为 `RETRY` 并清零尝试计数，且不能被已成功的�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-51 | 平台 OpenHands 投影 Ruff/Pyright/pytest（62 passed）；Web lint/typecheck/production build；源码与部署后 Agent 工作台定向 Playwright（各 1 passed）；API/Web 镜像重建与强制替换；真实历史会话 API 与 Browser 复验；HTTP health、Alembic head、任务状态唯一性与 `git diff --check` | PASS：平台 REST/实时共用的安全投影补齐正式 `action_id`、`tool_call_id`、`tool_name`，真实历史事件证明 Observation 仅按正式身份关联 Action，不误用 `parent_id`。工具折叠标题明确显示运行、读取、编辑或失败动作与对象，整行带箭头且详情默认折叠；展开显示安全投影后的原命令、文件参数、结构化结果、输出和退出码，不再出现笼统“文件操作已完成”。API/Web 已重建并部署，API 健康、Web 返回 200，真实会话 25 条工具详情默认全部关闭。首次及重试的无缓存 API 构建均因 Debian 镜像源持续 502/连接失败而无法下载 `gcc-12`、`binutils-aarch64-linux-gnu`、`libdpkg-perl`；随后复用仓库已验证基础层缓存完成当前 API/Web 源码打包和强制替换，不将无缓存构建误记为成功。唯一 head/current 为 `0065_agent_model_selection`；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-49 | 固定 OpenHands 1.42.0 `ActionEvent` 源码取证；平台 OpenHands 投影 Ruff/Pyright/pytest（62 passed）；Web lint/typecheck/production build；部署后生产 Web 上 Agent 工作台定向 Playwright（1 passed）；API/Web 无缓存镜像构建与强制重建；HTTP health、Alembic head、任务状态唯一性与 `git diff --check` | PASS：平台从正式事件顶层投影安全可见 `thought/summary`，隐藏 reasoning 字段继续剔除；普通 Tool Action commentary 原子接替流式 delta，工具标题显示正式 summary；同一 `FinishAction` 的 thought 位于工作过程、message 仅生成一份最终回复。长回复完成后定位到回复开头，独立悬浮的跳转控件可真正滚到底并消失。API 健康、Web 返回 200，唯一 head 为 `0065_agent_model_selection`。真实历史会话事件复验未伪造为通过：既有 Agent Runtime 的恢复任务此前因 Docker 后端不可用耗尽 20 次重试并进入 `DEAD`，当前 events/context 接口返回 503；该独立运行时恢复故障不由本切片改写数据库规避。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-50 | Agent Workspace 定向 pytest（2 passed）；受影响 Python `py_compile`；`git diff --check`；Alembic head 与任务状态唯一性核对 | PASS：Agent Runtime 仅把真实 `READY` 且有后端 ID 的 generation 视为健康；残留 `RUNNING/ERROR` 资源不再阻塞 `DEAD` task 恢复。启动自愈与 Worker 周期维护均扫描最新 `DEAD` provision/recovery task，旧成功 task 不会遮蔽恢复；任务重置为 `RETRY` 后可在后端恢复时重新领取，Conversation/events/context 数据保持原生持久化。未修改数据库迁移、OpenHands 或 FlowRun 协议；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-47 | Web lint/typecheck/production build；Agent 工作台定向 Playwright（1 passed）；桌面与 390px 窄视口浏览器布局检查；最终合并 Web 镜像构建部署与页面复核；`git diff --check`；Alembic head 与任务状态唯一性 | PASS：输入区模型摘要同时显示当前模型和中文思考程度，桌面与窄视口均保持思考程度可见且不与发送按钮重叠；选择后立即更新并在刷新后恢复。实际部署显示 `gpt-5.6-sol 高`，Web 返回 200、API ready，唯一 head 为 `0065_agent_model_selection`；无 `CURRENT`、`READY` 或下一切片。 |

@@ -1558,6 +1558,22 @@ class OpenHandsRuntime:
             summary = item.get("summary")
             if isinstance(summary, str) and summary:
                 payload["summary"] = summary[:2_000]
+        if kind in {"ActionEvent", "ObservationEvent"}:
+            action_id = cls._formal_identity(
+                item.get("id") if kind == "ActionEvent" else item.get("action_id"),
+                field="action_id",
+                required=False,
+            )
+            tool_call_id = cls._formal_identity(
+                item.get("tool_call_id"), field="tool_call_id", required=False
+            )
+            if action_id is not None:
+                payload["action_id"] = action_id
+            if tool_call_id is not None:
+                payload["tool_call_id"] = tool_call_id
+            tool_name = item.get("tool_name")
+            if isinstance(tool_name, str) and tool_name:
+                payload["tool_name"] = tool_name[:200]
         parent_id = cls._formal_identity(item.get("parent_id"), field="parent_id", required=False)
         if parent_id is not None:
             payload["parent_id"] = parent_id

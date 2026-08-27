@@ -633,6 +633,12 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   正式 `command=view/plan` 显示“查看任务列表”或“更新任务列表”，其他工具也显示可识别名称。空 `STATE`
   与未承载用户价值的协议帧不显示；`reasoning_content`、thinking blocks、Responses reasoning item 等隐藏推理
   不得进入安全投影。
+- 工具 Action 与 Observation 必须使用 OpenHands 正式 `action_id`、`tool_call_id` 关联为同一条活动，不得以
+  `parent_id`、相邻顺序、工具名称或文本猜测；`parent_id` 只负责事件树拓扑。折叠态标题直接说明动作、对象
+  和状态，例如“已读取 工作区/src/a.ts”“已编辑 工作区/src/b.ts”“已运行 git status”。每条工具活动内部
+  记录整行带箭头并可点击展开默认折叠的详情区，只展示平台安全投影后的原始操作信息：Terminal 命令、退出码和输出，File Editor
+  命令、路径、行范围或变更片段，以及其他工具的脱敏输入和结果。不得把未经安全投影的原始事件、隐藏推理、
+  Secret、Runtime 物理路径或内部观察文件位置透传到浏览器。
 - REST 与实时安全投影保留 OpenHands 正式事件 `timestamp`。完成轮次按正式 user 到 assistant/error 的
   墙钟时间显示耗时，运行中可在正式时间回读前使用浏览器请求开始时间计时；缺失或非法时间不猜测。
 - Agent 执行中：显示停止按钮和正式 Tool 活动；不把全部原始 JSON 默认展开。
