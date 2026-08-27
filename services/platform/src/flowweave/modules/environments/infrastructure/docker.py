@@ -31,6 +31,7 @@ _IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _DIGEST_LOCKED_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,430}@sha256:[0-9a-f]{64}$")
 _SAFE_NAME = re.compile(r"[^a-z0-9_.-]+")
 _TERMINAL_PROMPT = r"flowweave@\h:\w\$ "
+_AGENT_PROJECT_ROOT = "/runtime/workspace/project"
 _TERMINAL_SHELL_SCRIPT = (
     "exec 3<<<'PS1=" + _TERMINAL_PROMPT + "'; exec bash --noprofile --rcfile /dev/fd/3 -i"
 )
@@ -466,6 +467,7 @@ def open_terminal(
     container_id: str,
     *,
     session_name: str | None = None,
+    working_dir: str | None = None,
     rows: int = 24,
     columns: int = 80,
 ) -> tuple[int, subprocess.Popen[bytes]]:
@@ -508,16 +510,24 @@ def open_terminal(
         # valid size before docker exec starts instead of relying on a later
         # browser resize event.
         resize_terminal(master, rows, columns)
+        command = [
+            get_settings().docker_binary,
+            "exec",
+            "-it",
+            "-e",
+            "TERM=xterm-256color",
+        ]
+        if working_dir is not None:
+            if not working_dir.startswith("/") or ".." in working_dir.split("/"):
+                raise DomainError(
+                    "ENVIRONMENT_TERMINAL_WORKDIR_INVALID",
+                    "The terminal working directory is invalid",
+                    422,
+                )
+            command.extend(["--workdir", working_dir])
+        command.extend([container_id, *shell_command])
         process = subprocess.Popen(
-            [
-                get_settings().docker_binary,
-                "exec",
-                "-it",
-                "-e",
-                "TERM=xterm-256color",
-                container_id,
-                *shell_command,
-            ],
+            command,
             stdin=slave,
             stdout=slave,
             stderr=slave,
@@ -673,7 +683,11 @@ def open_managed_terminal(
                 409,
             )
     master, process = open_terminal(
-        immutable_id, session_name=session_name, rows=rows, columns=columns
+        immutable_id,
+        session_name=session_name,
+        working_dir=None if environment_id is not None else _AGENT_PROJECT_ROOT,
+        rows=rows,
+        columns=columns,
     )
     return ManagedTerminal(master=master, process=process)
 

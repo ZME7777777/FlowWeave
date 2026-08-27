@@ -212,6 +212,11 @@ OH_PERSISTENCE_DIR=/runtime/state/persistence
 OH_SECRET_KEY=<调用边界注入的稳定 Secret>
 ~~~
 
+`/runtime/workspace/project` 是面向用户和 Agent 的逻辑项目根目录，而不是要求把所有文件平铺在该
+目录。Agent 可以按需求或功能创建任意子目录；所有需要保留的代码、配置、文档和用户产物必须在该根目录
+或其子目录内。平台不向用户暴露宿主机路径、Docker mount 或容器生命周期细节。Agent 工作台终端的初始
+工作目录也固定为这个项目根；用户之后主动 `cd` 到项目内其他目录的行为保持不受限制。
+
 创建容器前必须检查真实目录、owner、权限、符号链接、相对根前缀和宿主机/Provider 视图配对。不得把上述
 路径放入 tmpfs，也不得用容器 inspect 猜测宿主机路径。
 

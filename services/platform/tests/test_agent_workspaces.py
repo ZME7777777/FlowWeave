@@ -270,6 +270,14 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
         assert runtime.request.agent_spec.confirmation_policy == "NEVER"
         assert runtime.request.agent_spec.condenser.kind == "LLM_SUMMARIZING"
         assert runtime.request.agent_spec.condenser_provider is not None
+        assert runtime.request.workspace_ref == "/runtime/workspace/project"
+        assert runtime.request.agent_spec.agent_context.system_message_suffix == (
+            "当前会话的项目根目录是 /runtime/workspace/project。\n"
+            "所有需要保留的代码、配置、文档和用户产物必须写入该目录或其子目录。\n"
+            "可按需求或功能自行创建子目录；优先使用相对于项目根的路径。\n"
+            "不要将用户项目文件写入项目根以外的位置，例如 /runtime 的其他目录、/tmp 或 HOME。\n"
+            "不要向用户解释宿主机路径、Docker 挂载或容器实现细节；对用户而言，这就是项目根目录。"
+        )
 
 
 def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(

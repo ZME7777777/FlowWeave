@@ -627,8 +627,8 @@ def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, m
     monkeypatch.setattr(
         controller_module._TerminalManager,
         "start",
-        lambda _self, container_id, session_name, rows, columns: (
-            f"terminal:{container_id}:{session_name}:{rows}:{columns}"
+        lambda _self, container_id, session_name, rows, columns, *, working_dir=None: (
+            f"terminal:{container_id}:{session_name}:{rows}:{columns}:{working_dir}"
         ),
     )
     payload = {
@@ -645,6 +645,7 @@ def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, m
 
     assert response.status_code == 200, response.text
     assert response.json()["terminal_id"].startswith("terminal:immutable-agent-runtime-container")
+    assert response.json()["terminal_id"].endswith(":/runtime/workspace/project")
     assert verification == {
         "resource_name": payload["resource_name"],
         "resource_id": _RESOURCE_ID,

@@ -345,9 +345,21 @@ class _TerminalManager:
         self.idle_seconds = idle_seconds
         self.attachments: dict[str, _TerminalAttachment] = {}
 
-    def start(self, container_id: str, session_name: str | None, rows: int, columns: int) -> str:
+    def start(
+        self,
+        container_id: str,
+        session_name: str | None,
+        rows: int,
+        columns: int,
+        *,
+        working_dir: str | None = None,
+    ) -> str:
         master, process = environments_docker.open_terminal(
-            container_id, session_name=session_name, rows=rows, columns=columns
+            container_id,
+            session_name=session_name,
+            working_dir=working_dir,
+            rows=rows,
+            columns=columns,
         )
         os.set_blocking(master, False)
         terminal_id = secrets.token_hex(24)
@@ -1029,7 +1041,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
         return {
             "terminal_id": terminals.start(
-                container_id, payload.session_name, payload.rows, payload.columns
+                container_id,
+                payload.session_name,
+                payload.rows,
+                payload.columns,
+                working_dir=(
+                    None if payload.environment_id is not None else "/runtime/workspace/project"
+                ),
             )
         }
 

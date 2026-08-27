@@ -1277,6 +1277,45 @@ def test_terminal_opens_bash(monkeypatch):
     ]
 
 
+def test_agent_runtime_terminal_starts_in_persistent_project_root(monkeypatch):
+    from flowweave.modules.environments.infrastructure import docker
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(docker, "require_backend", lambda: None)
+    monkeypatch.setattr(
+        docker,
+        "get_settings",
+        lambda: SimpleNamespace(docker_binary="docker", sandbox_manager_scope="test-scope"),
+    )
+    monkeypatch.setattr(docker, "controller_is_remote", lambda _settings: False)
+    monkeypatch.setattr(
+        docker, "inspect_owned_container", lambda *_args, **_kwargs: "agent-container-id"
+    )
+    monkeypatch.setattr(
+        docker,
+        "open_terminal",
+        lambda container_id, **kwargs: calls.append({"container_id": container_id, **kwargs})
+        or (10, object()),
+    )
+
+    opened = docker.open_managed_terminal(
+        "agent-runtime",
+        resource_id="resource-id",
+        session_name="agent-workspace",
+    )
+
+    assert opened.master == 10
+    assert calls == [
+        {
+            "container_id": "agent-container-id",
+            "session_name": "agent-workspace",
+            "working_dir": "/runtime/workspace/project",
+            "rows": 24,
+            "columns": 80,
+        }
+    ]
+
+
 def test_terminal_can_attach_to_persistent_tmux_session(monkeypatch):
     from flowweave.modules.environments.infrastructure import docker
 

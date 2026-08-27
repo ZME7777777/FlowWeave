@@ -18,6 +18,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.runtime.base import (
+    RuntimeAgentContext,
     RuntimeAgentSpec,
     RuntimeCondenser,
     RuntimeHandle,
@@ -36,6 +37,17 @@ _TOOLS = (
     RuntimeTool(name="terminal"),
     RuntimeTool(name="file_editor"),
     RuntimeTool(name="task_tracker"),
+)
+
+_PROJECT_ROOT = "/runtime/workspace/project"
+_PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
+    (
+        "当前会话的项目根目录是 /runtime/workspace/project。",
+        "所有需要保留的代码、配置、文档和用户产物必须写入该目录或其子目录。",
+        "可按需求或功能自行创建子目录；优先使用相对于项目根的路径。",
+        "不要将用户项目文件写入项目根以外的位置，例如 /runtime 的其他目录、/tmp 或 HOME。",
+        "不要向用户解释宿主机路径、Docker 挂载或容器实现细节；对用户而言，这就是项目根目录。",
+    )
 )
 
 
@@ -244,11 +256,12 @@ def create_conversation(
         execution_key=f"agent-workspace:{workspace.id}:conversation:{binding.id}",
         node={"asset": {"name": "Agent Workspace"}},
         bindings=[],
-        workspace_ref="/runtime/workspace/project",
+        workspace_ref=_PROJECT_ROOT,
         conversation_id=conversation_id,
         agent_spec=RuntimeAgentSpec(
             provider=provider,
             confirmation_policy="NEVER",
+            agent_context=RuntimeAgentContext(system_message_suffix=_PROJECT_ROOT_SYSTEM_CONTEXT),
             # This is the fixed OpenHands 1.42.0 summarizing condenser, not a
             # FlowWeave summary loop.  It emits CondensationRequest/Condensation
             # events that remain in the native conversation history.
