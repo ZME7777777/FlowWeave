@@ -327,6 +327,50 @@ def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConne
     )
 
 
+@dataclass(frozen=True, slots=True)
+class TitleProviderSnapshot:
+    """Credentials for one isolated, non-OpenHands title request."""
+
+    base_url: str
+    headers: dict[str, str]
+    model: str
+    protocol: str
+
+
+def title_provider_snapshot(
+    db: Session, provider_id: str, model_name: str
+) -> TitleProviderSnapshot:
+    """Resolve a title-only request without exposing stored credentials in a task.
+
+    API-key providers use OpenAI-compatible chat completions. Codex OAuth uses
+    its native Responses endpoint with a freshly obtained OAuth credential.
+    Neither route reaches the OpenHands Agent Server or a Conversation.
+    """
+
+    item = get_provider(db, provider_id)
+    model = model_name.strip()
+    if not model:
+        raise ValueError("title provider model is required")
+    if item.auth_type == "CODEX_OAUTH":
+        credentials = codex_runtime_credentials(db, provider_id)
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {credentials.access_token}",
+            "originator": "codex_cli_rs",
+            "OpenAI-Beta": "responses=experimental",
+            "User-Agent": "FlowWeave/title-metadata",
+        }
+        if credentials.account_id:
+            headers["chatgpt-account-id"] = credentials.account_id
+        return TitleProviderSnapshot(CODEX_BASE_URL, headers, model, "RESPONSES")
+    if item.auth_type != "API_KEY" or not item.encrypted_api_key:
+        raise ValueError("title provider credentials are unavailable")
+    return TitleProviderSnapshot(
+        item.base_url.rstrip("/"), provider_auth_headers(item), model, "CHAT_COMPLETIONS"
+    )
+
+
 def preview_provider_connection_snapshot(
     db: Session, payload: ModelProviderDiscoveryWrite
 ) -> ProviderConnectionSnapshot:

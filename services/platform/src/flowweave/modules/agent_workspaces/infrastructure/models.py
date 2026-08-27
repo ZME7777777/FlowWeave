@@ -235,6 +235,11 @@ class AgentConversationBinding(Base):
             "lifecycle IN ('PROVISIONING', 'ACTIVE', 'DELETE_PENDING', 'DELETED', 'FAILED')",
             name="ck_agent_conversation_lifecycle",
         ),
+        CheckConstraint(
+            "title_state IN ('PENDING', 'GENERATED', 'MANUAL', 'FALLBACK')",
+            name="ck_agent_conversation_title_state",
+        ),
+        CheckConstraint("title_generation >= 1", name="ck_agent_conversation_title_generation"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -269,6 +274,11 @@ class AgentConversationBinding(Base):
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
     openhands_conversation_id: Mapped[str] = mapped_column(String(36))
     display_title: Mapped[str | None] = mapped_column(String(240))
+    # Title is FlowWeave-only display metadata.  It is deliberately separate
+    # from the native OpenHands Conversation title so automatic generation can
+    # never add an OpenHands event or mutate its context.
+    title_state: Mapped[str] = mapped_column(String(20), default="FALLBACK")
+    title_generation: Mapped[int] = mapped_column(Integer, default=1)
     lifecycle: Mapped[str] = mapped_column(String(20), default="PROVISIONING", index=True)
     create_idempotency_key: Mapped[str] = mapped_column(String(200))
     # The formal OpenHands ID of the first accepted user MessageEvent. It is

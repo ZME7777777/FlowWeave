@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
-from flowweave.modules.agent_workspaces.application import conversations, work_directories
+from flowweave.modules.agent_workspaces.application import conversations, titles, work_directories
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     process_agent_workspace_runtime,
@@ -23,10 +23,12 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntimeGeneration,
 )
 from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
+from flowweave.modules.model_providers.public import TitleProviderSnapshot
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
+from flowweave.modules.tasks.public import Lease
 from flowweave.runtime.base import (
     RuntimeConversationIdentity,
     RuntimeEvent,
@@ -619,7 +621,188 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
             first["conversation"]["work_directory_version_id"] == directory["current_version"]["id"]
         )
         assert first["conversation"]["working_directory"] == "/runtime/workspace/project/backend"
+        assert first["conversation"]["display_title"] == "实现接口"
+        assert first["conversation"]["title_state"] == "PENDING"
+        title_task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert title_task is not None
+        assert title_task.aggregate_id == first["conversation"]["id"]
+        assert title_task.payload_json["first_message"] == "实现接口"
         assert len(conversations.list_conversations(db, workspace.id)) == 1
+
+
+def _title_task_lease(task: BackgroundTask) -> Lease:
+    task.state = TaskState.RUNNING
+    task.lease_owner = "title-test-worker"
+    task.lease_generation = 1
+    task.lease_until = datetime.max.replace(tzinfo=UTC)
+    return Lease(task.id, task.lease_owner, task.lease_generation)
+
+
+def test_agent_workspace_title_task_uses_independent_provider_and_redacts_seed(
+    settings, db_session_factory, monkeypatch
+):
+    class BootstrapRuntime(MockRuntime):
+        sent = 0
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            self.sent += 1
+            return RuntimeResult(status="RUNNING", cursor="first-user-event")
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    monkeypatch.setattr(
+        titles,
+        "title_provider_snapshot",
+        lambda *_args: TitleProviderSnapshot(
+            "https://titles.example.test/v1",
+            {"Authorization": "Bearer x"},
+            "title-model",
+            "CHAT_COMPLETIONS",
+        ),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        titles,
+        "generate_title",
+        lambda _snapshot, prompt: calls.append(prompt) or "实现 Agent 工作区文件映射",
+    )
+    runtime = BootstrapRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="请实现 Agent 工作区的文件映射，并支持 IDEA 连接。",
+            idempotency_key="title-task-001",
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert task is not None
+        titles.process_agent_conversation_title(
+            db, created["conversation"]["id"], task.payload_json, _title_task_lease(task)
+        )
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+        assert binding.display_title == "实现 Agent 工作区文件映射"
+        assert binding.title_state == "GENERATED"
+        assert calls == ["请实现 Agent 工作区的文件映射，并支持 IDEA 连接。"]
+        assert runtime.sent == 1
+        assert task.payload_json == {"title_generation": 1}
+
+
+def test_agent_workspace_manual_title_wins_over_late_title_task(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    called = False
+
+    def unexpected_title(*_args):
+        nonlocal called
+        called = True
+        return "自动标题"
+
+    monkeypatch.setattr(titles, "generate_title", unexpected_title)
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="自动标题不应该覆盖手动名称",
+            idempotency_key="title-task-manual",
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert task is not None
+        renamed = conversations.patch_conversation(
+            db, workspace.id, created["conversation"]["id"], "我的手动会话名"
+        )
+        assert renamed["title_state"] == "MANUAL"
+        titles.process_agent_conversation_title(
+            db, created["conversation"]["id"], task.payload_json, _title_task_lease(task)
+        )
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+        assert binding.display_title == "我的手动会话名"
+        assert binding.title_state == "MANUAL"
+        assert binding.title_generation == 2
+        assert called is False
+        assert task.payload_json == {"title_generation": 1}
+
+
+def test_agent_workspace_title_task_falls_back_to_normalized_first_sentence(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    monkeypatch.setattr(
+        titles,
+        "title_provider_snapshot",
+        lambda *_args: (_ for _ in ()).throw(ValueError("offline")),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="  修复会话标题生成的失败兜底。\n后续补充信息  ",
+            idempotency_key="title-task-fallback",
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert task is not None
+        titles.process_agent_conversation_title(
+            db, created["conversation"]["id"], task.payload_json, _title_task_lease(task)
+        )
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+        assert binding.display_title == "修复会话标题生成的失败兜底。"
+        assert binding.title_state == "FALLBACK"
+        assert "未命名会话" not in binding.display_title
 
 
 def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversation(

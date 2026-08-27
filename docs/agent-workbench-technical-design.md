@@ -313,6 +313,8 @@ model_name VARCHAR NULL                       -- 用户确认后立即保存的�
 reasoning_effort VARCHAR NULL                  -- 用户确认后立即保存的会话推理强度
 openhands_conversation_id UUID
 display_title VARCHAR NULL                      -- 离线列表投影
+title_state PENDING | GENERATED | MANUAL | FALLBACK
+title_generation INT >= 1                       -- 手动改名递增，用作自动标题 CAS 栅栏
 lifecycle PROVISIONING | ACTIVE | DELETE_PENDING | DELETED | FAILED
 create_idempotency_key VARCHAR UNIQUE
 initial_user_event_id VARCHAR NULL             -- 首条正式 user MessageEvent 的 OpenHands ID
@@ -696,8 +698,13 @@ OpenHands Conversation、投递唯一正式 user event，拿到正式事件 ID �
 
 OpenHands 1.42.0 的发送接口没有客户端幂等键；网络结果不确定时，平台只按正式 user `MessageEvent` ID 及
 `parent_id` 对账，绝不根据文本、事件顺序或名称猜测、更不会重复投递。明确失败会调用正式 delete 清理隐藏
-空会话；无法确认的投递保持不可见，等待同一 bootstrap 键继续对账。标题生成不写入 Conversation 事件，留给
-独立元数据任务处理。
+空会话；无法确认的投递保持不可见，等待同一 bootstrap 键继续对账。首条正式 user event 接受后，平台立即以
+首个非空行的规范化文本写入本地兜底标题并标记 `PENDING`，然后投递一次性标题元数据任务。该任务通过独立的
+供应商请求生成短标题：API Key 供应商使用 OpenAI-compatible Chat Completions，Codex OAuth 使用其正式
+Responses 端点；它不调用 OpenHands Runtime、不会写入 Conversation Event，也不会改变 HEAD 或上下文。
+任务完成后立即清除其临时首条文本种子。用户双击标题改名会把本地状态设为 `MANUAL` 并递增
+`title_generation`，延迟任务只可在 generation 与 `PENDING` 同时匹配时 CAS 写入，因此永不覆盖手动名称。
+供应商不可用或响应无效时保留规范化首句并标记 `FALLBACK`；列表不得回退为“未命名会话 N”。
 
 ## 15. 一致性和恢复对账
 

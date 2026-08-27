@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_workspaces.application.titles import process_agent_conversation_title
 from flowweave.modules.agent_workspaces.public import process_agent_workspace_runtime
 from flowweave.modules.catalog.public import (
     build_capability_dependencies,
@@ -44,6 +45,12 @@ def _provision_agent_workspace_runtime(
     db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
 ) -> None:
     process_agent_workspace_runtime(db, aggregate_id)
+
+
+def _generate_agent_conversation_title(
+    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
+) -> None:
+    process_agent_conversation_title(db, aggregate_id, payload, lease)
 
 
 def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
@@ -163,6 +170,7 @@ HANDLERS: dict[str, Handler] = {
     "START_RUNTIME": _start_runtime,
     "PROVISION_FLOW_RUN_RUNTIME": _provision_flow_run_runtime,
     "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
+    "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,
     "POLL_RUNTIME": _poll_runtime,
     "WAIT_RUNTIME_WAKEUP": _wait_runtime_wakeup,
     "RESUME_RUNTIME": _resume_runtime,

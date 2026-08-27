@@ -18,6 +18,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 )
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
+from flowweave.modules.tasks.application.service import enqueue
 from flowweave.runtime.base import (
     RuntimeAgentContext,
     RuntimeAgentSpec,
@@ -78,6 +79,7 @@ def _dict(item: AgentConversationBinding) -> dict[str, Any]:
     return {
         "id": item.id,
         "display_title": item.display_title,
+        "title_state": item.title_state,
         "model_provider_id": item.model_provider_id,
         "model_name": item.model_name,
         "reasoning_effort": item.reasoning_effort,
@@ -379,6 +381,56 @@ def _bootstrap_result(binding: AgentConversationBinding) -> dict[str, Any]:
     }
 
 
+def normalized_first_sentence(content: str) -> str:
+    """A useful local title while the independent metadata task is pending."""
+
+    first_line = next((line for line in content.splitlines() if line.strip()), "")
+    normalized = " ".join(first_line.split())
+    return normalized[:80] or "新会话"
+
+
+def _enqueue_title_task(db: Session, binding: AgentConversationBinding, first_message: str) -> None:
+    if not binding.model_provider_id or not binding.model_name:
+        return
+    enqueue(
+        db,
+        task_type="GENERATE_AGENT_CONVERSATION_TITLE",
+        aggregate_type="AGENT_CONVERSATION",
+        aggregate_id=binding.id,
+        idempotency_key=(
+            f"generate-agent-conversation-title:{binding.id}:{binding.title_generation}"
+        ),
+        payload={
+            "title_generation": binding.title_generation,
+            "model_provider_id": binding.model_provider_id,
+            "model_name": binding.model_name,
+            # This transient seed is redacted by the handler after its single
+            # use. It is not an Agent Conversation/event projection.
+            "first_message": " ".join(first_message.split())[:4000],
+            "fallback_title": binding.display_title,
+        },
+    )
+
+
+def _activate_bootstrapped_conversation(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    initial_event_id: str,
+    first_message: str,
+) -> dict[str, Any]:
+    binding.initial_user_event_id = initial_event_id
+    binding.display_title = normalized_first_sentence(first_message)
+    binding.title_state = "PENDING"
+    binding.lifecycle = "ACTIVE"
+    binding.updated_at = now()
+    command.state = "SUCCEEDED"
+    command.updated_at = binding.updated_at
+    _enqueue_title_task(db, binding, first_message)
+    db.commit()
+    return _bootstrap_result(binding)
+
+
 def _bootstrap_command(
     db: Session, workspace_id: str, idempotency_key: str
 ) -> tuple[AgentConversationBinding | None, AgentConversationCommand | None]:
@@ -448,13 +500,7 @@ def bootstrap_conversation(
                 previous_event_id=binding.bootstrap_parent_event_id,
             )
             if reconciled is not None:
-                binding.initial_user_event_id = reconciled
-                binding.lifecycle = "ACTIVE"
-                binding.updated_at = now()
-                command.state = "SUCCEEDED"
-                command.updated_at = binding.updated_at
-                db.commit()
-                return _bootstrap_result(binding)
+                return _activate_bootstrapped_conversation(db, binding, command, reconciled, prompt)
             raise DomainError(
                 "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
                 "首条消息发送结果仍不确定，请稍后刷新后继续对账",
@@ -564,13 +610,7 @@ def bootstrap_conversation(
             except DomainError:
                 reconciled = None
             if reconciled is not None:
-                binding.initial_user_event_id = reconciled
-                binding.lifecycle = "ACTIVE"
-                binding.updated_at = now()
-                command.state = "SUCCEEDED"
-                command.updated_at = binding.updated_at
-                db.commit()
-                return _bootstrap_result(binding)
+                return _activate_bootstrapped_conversation(db, binding, command, reconciled, prompt)
             command.state = "AMBIGUOUS"
             command.last_error_code = exc.code
             command.failure_summary = (
@@ -600,13 +640,7 @@ def bootstrap_conversation(
             504,
             {"binding_id": binding.id},
         )
-    binding.initial_user_event_id = initial_event_id
-    binding.lifecycle = "ACTIVE"
-    binding.updated_at = now()
-    command.state = "SUCCEEDED"
-    command.updated_at = binding.updated_at
-    db.commit()
-    return _bootstrap_result(binding)
+    return _activate_bootstrapped_conversation(db, binding, command, initial_event_id, prompt)
 
 
 def patch_conversation(
@@ -633,6 +667,8 @@ def patch_conversation(
         command.failure_summary = "Conversation rename failed; inspect protected logs"
         raise
     item.display_title = clean_title
+    item.title_state = "MANUAL"
+    item.title_generation += 1
     item.updated_at = now()
     command.state = "SUCCEEDED"
     db.flush()
