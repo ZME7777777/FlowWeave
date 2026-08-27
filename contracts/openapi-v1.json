@@ -334,6 +334,47 @@
         "title": "AgentProfileSwitchWrite",
         "type": "object"
       },
+      "AgentStreamingMigrationWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "model_name": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "model_provider_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Model Provider Id",
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          }
+        },
+        "required": [
+          "model_provider_id"
+        ],
+        "title": "AgentStreamingMigrationWrite",
+        "type": "object"
+      },
       "AgentWorkspaceSettingsWrite": {
         "additionalProperties": false,
         "properties": {
@@ -3972,6 +4013,82 @@
           }
         },
         "summary": "Agent Resume"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/streaming-migration": {
+      "post": {
+        "operationId": "agent_streaming_migration_api_v1_agent_workspaces__workspace_id__conversations__binding_id__streaming_migration_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentStreamingMigrationWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Agent Streaming Migration Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Streaming Migration Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Streaming Migration"
       }
     },
     "/api/v1/agent-workspaces/{workspace_id}/runtime": {

@@ -79,6 +79,12 @@ class AgentConversationForkWrite(_Write):
     title: str | None = Field(default=None, max_length=240)
 
 
+class AgentStreamingMigrationWrite(_Write):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str | None = Field(default=None, min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+
+
 class AgentConfirmationDecisionWrite(_Write):
     expected_pending_digest: str = Field(min_length=1, max_length=128)
     accept: bool
@@ -293,6 +299,31 @@ async def agent_conversation_model(
             binding_id,
             payload.model_name,
             payload.reasoning_effort,
+        ),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/streaming-migration",
+    status_code=201,
+)
+async def agent_streaming_migration(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentStreamingMigrationWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.migrate_streaming_conversation(
+            session,
+            workspace_id,
+            binding_id,
+            payload.model_provider_id,
+            payload.model_name,
+            payload.reasoning_effort,
+            _key(idempotency_key, "migrate-agent-streaming", binding_id),
         ),
     )
 

@@ -192,6 +192,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let agentStream: WebSocketRoute | undefined;
   let sentMessages = 0;
   let sentProvider: string | null = null;
+  let sentBinding: string | null = null;
+  let streamingMigrations = 0;
+  let streamingMigrationPayload: Record<string, unknown> | null = null;
   let confirmationPending = false;
   let confirmationDecision: Record<string, unknown> | null = null;
   let contextAvailable = false;
@@ -221,6 +224,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       const created = {
         id: 'agent-conversation-1', display_title: null, lifecycle: 'ACTIVE',
         model_provider_id: modelProviderId,
+        streaming_callback_ready: true,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
       conversations.splice(0, 0, created);
@@ -235,6 +239,20 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       const created = {
         id: 'agent-conversation-fork-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
         model_provider_id: 'provider-1',
+        streaming_callback_ready: false,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
+      };
+      conversations.splice(0, 0, created);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      return;
+    }
+    if (path.endsWith('/streaming-migration') && request.method() === 'POST') {
+      streamingMigrations += 1;
+      streamingMigrationPayload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      const created = {
+        id: 'agent-conversation-streaming-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
+        model_provider_id: streamingMigrationPayload.model_provider_id,
+        streaming_callback_ready: true,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
       conversations.splice(0, 0, created);
@@ -297,6 +315,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/messages') && request.method() === 'POST') {
       sentProvider = JSON.parse(request.postData() ?? '{}').model_provider_id ?? null;
+      sentBinding = path.match(/\/conversations\/([^/]+)\/messages$/)?.[1] ?? null;
       sentMessages += 1;
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
@@ -425,7 +444,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.fill('第一条排队测试消息');
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await composer.press('Enter');
+  await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
+  await expect.poll(() => streamingMigrations).toBe(1);
+  await expect.poll(() => streamingMigrationPayload).toEqual({
+    model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: null,
+  });
   await expect.poll(() => sentProvider).toBe('provider-2');
+  await expect.poll(() => sentBinding).toBe('agent-conversation-streaming-1');
+  await expect.poll(() => sentMessages).toBe(1);
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess.getByText(/正在处理 · 已耗时 1[2-9]秒/)).toBeVisible();
@@ -466,7 +492,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('实时任务已经完成。')).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await page.reload();
-  await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
+  await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 未命名会话 1' })).toBeVisible();
 });
 

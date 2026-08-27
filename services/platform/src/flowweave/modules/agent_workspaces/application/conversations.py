@@ -21,6 +21,7 @@ from flowweave.runtime.base import (
     RuntimeAgentSpec,
     RuntimeCondenser,
     RuntimeHandle,
+    RuntimeProvider,
     RuntimeTool,
     StartAttemptRequest,
 )
@@ -65,6 +66,7 @@ def _dict(item: AgentConversationBinding) -> dict[str, Any]:
         "id": item.id,
         "display_title": item.display_title,
         "model_provider_id": item.model_provider_id,
+        "streaming_callback_ready": item.streaming_callback_ready,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -218,6 +220,7 @@ def create_conversation(
         workspace_id=workspace.id,
         runtime_session_id=runtime.id,
         model_provider_id=model_provider_id,
+        streaming_callback_ready=True,
         openhands_conversation_id=conversation_id,
         display_title=title.strip() if title and title.strip() else None,
         create_idempotency_key=idempotency_key,
@@ -463,6 +466,13 @@ def message(
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
+    if not binding.streaming_callback_ready:
+        raise DomainError(
+            "AGENT_STREAMING_MIGRATION_REQUIRED",
+            "此历史会话需要先迁移到流式会话后才能继续发送",
+            409,
+            {"binding_id": binding.id},
+        )
     handle = _handle(db, workspace, binding)
     if not get_runtime().can_accept_input(handle):
         raise DomainError(
@@ -624,13 +634,17 @@ def condense_conversation(db: Session, workspace_id: str, binding_id: str) -> di
     return {"accepted": True, "cursor": result.cursor}
 
 
-def fork_conversation(
+def _fork_conversation(
     db: Session,
     workspace_id: str,
     binding_id: str,
-    event_id: str,
+    event_id: str | None,
     title: str | None,
     idempotency_key: str,
+    *,
+    migration_provider_id: str | None = None,
+    migration_model_name: str | None = None,
+    migration_reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     source = _binding(db, workspace_id, binding_id, lock=True)
@@ -645,6 +659,12 @@ def fork_conversation(
         if existing.lifecycle == "ACTIVE":
             return _dict(existing)
         raise DomainError("AGENT_CONVERSATION_PROVISIONING", "分叉会话仍在创建中", 409)
+    if migration_provider_id is not None and source.streaming_callback_ready:
+        raise DomainError(
+            "AGENT_STREAMING_MIGRATION_NOT_REQUIRED",
+            "当前会话已经支持流式模型切换",
+            409,
+        )
     runtime = get_runtime()
     source_handle = _handle(db, workspace, source)
     if not runtime.can_accept_input(source_handle):
@@ -652,14 +672,49 @@ def fork_conversation(
     source_identity = runtime.reload_conversation(source_handle)
     if not source_identity.event_id:
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)
-    clean_title = (title or "").strip()[:240] or f"Fork · {source.display_title or '会话'}"
+    target_provider_id = source.model_provider_id
+    streaming_callback_ready = source.streaming_callback_ready
+    if migration_provider_id is not None:
+        if not has_connected_default_model(db, migration_provider_id):
+            raise DomainError(
+                "AGENT_MODEL_CONFIGURATION_REQUIRED",
+                "请选择已测试成功且存在启用默认模型的模型供应商",
+                409,
+            )
+        provider: RuntimeProvider = runtime_provider(
+            db,
+            {"asset": {"executor": {"model_provider_id": migration_provider_id}}},
+            model_name=migration_model_name,
+            reasoning_effort=migration_reasoning_effort,
+        )
+        try:
+            runtime.switch_model(source_handle, provider)
+        except DomainError as exc:
+            raise DomainError(
+                "AGENT_STREAMING_MIGRATION_FAILED",
+                "无法为历史会话准备流式模型，请稍后重试",
+                503,
+                {"model_provider_id": migration_provider_id},
+            ) from exc
+        target_provider_id = provider.provider_id
+        streaming_callback_ready = True
+        event_id = source_identity.event_id
+    if event_id is None:
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)
+    if migration_provider_id is not None:
+        display_title = source.display_title
+        runtime_title = source.display_title or "未命名会话"
+    else:
+        runtime_title = (title or "").strip()[:240] or f"Fork · {source.display_title or '会话'}"
+        display_title = runtime_title
     target_id = str(uuid4())
     target = AgentConversationBinding(
         workspace_id=workspace.id,
         runtime_session_id=source.runtime_session_id,
-        model_provider_id=source.model_provider_id,
+        model_provider_id=target_provider_id,
+        streaming_callback_ready=streaming_callback_ready,
         openhands_conversation_id=target_id,
-        display_title=clean_title,
+        display_title=display_title,
         create_idempotency_key=idempotency_key,
     )
     db.add(target)
@@ -676,7 +731,7 @@ def fork_conversation(
         result = runtime.fork_conversation(
             source_handle,
             target_conversation_id=target_id,
-            title=clean_title,
+            title=runtime_title,
             from_event_id=event_id,
             expected_source_leaf_event_id=source_identity.event_id,
             reset_metrics=True,
@@ -690,6 +745,14 @@ def fork_conversation(
         identity = runtime.reload_conversation(result.handle)
         if identity.persistence_dir != f"/runtime/state/conversations/{UUID(target_id).hex}":
             raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "分叉会话持久化身份校验失败", 409)
+        if migration_provider_id is not None:
+            active_provider_id = runtime.conversation_context(result.handle).get("provider_id")
+            if active_provider_id != target_provider_id:
+                raise DomainError(
+                    "RUNTIME_FORK_IDENTITY_DRIFT",
+                    "流式迁移后的模型供应商身份校验失败",
+                    409,
+                )
     except DomainError as exc:
         target.lifecycle = "FAILED"
         command.state = "FAILED"
@@ -700,6 +763,39 @@ def fork_conversation(
     command.state = "SUCCEEDED"
     db.flush()
     return _dict(target)
+
+
+def fork_conversation(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    event_id: str,
+    title: str | None,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    return _fork_conversation(db, workspace_id, binding_id, event_id, title, idempotency_key)
+
+
+def migrate_streaming_conversation(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    model_provider_id: str,
+    model_name: str | None,
+    reasoning_effort: str | None,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    return _fork_conversation(
+        db,
+        workspace_id,
+        binding_id,
+        None,
+        None,
+        idempotency_key,
+        migration_provider_id=model_provider_id,
+        migration_model_name=model_name,
+        migration_reasoning_effort=reasoning_effort,
+    )
 
 
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:

@@ -648,6 +648,11 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   Service 在创建时绑定 token callback；后续原生 `switch_llm` 切换到 Codex OAuth 等强制流式供应商时
   复用该 callback，不会被 SDK 降级为非流式请求。FlowWeave 继续自行刷新并传入 OAuth 令牌，不把它伪装成
   OpenHands 本地凭据存储拥有的 subscription credential。
+- binding 显式记录 Event Service 创建时是否已经具备上述流式 callback。迁移前的历史 binding 一律
+  fail-closed，不能因当前 LLM 已显示 `stream=true` 就猜测 callback 存在。用户下一次发送时，平台先对源
+  Conversation 调用正式 `switch_llm` 应用当前选择，再从正式 HEAD 调用原生 fork；新 Conversation 的
+  Event Service 由该流式 LLM 重新创建并绑定 callback。Web 先切换到新 binding URL，再只向新 binding
+  发送一次原消息；迁移失败不向源事件树追加 user event，也不按供应商错误文本触发迁移。
 - Composer 的 Enter 快捷发送必须先排除浏览器正式 IME composition 状态及兼容性的 `keyCode=229`；中文
   输入法确认候选期间只完成文本输入，不发送消息，组合完成后的独立 Enter 才发送，Shift+Enter 保持换行。
 - 上下文进度只读取当前 LLM `usage_id` 对应的 OpenHands 正式 stats bucket：`per_turn_token` 是当前轮

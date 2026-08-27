@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -174,6 +175,10 @@ class AgentConversationBinding(Base):
     model_provider_id: Mapped[str | None] = mapped_column(
         ForeignKey("model_providers.id", ondelete="RESTRICT"), index=True
     )
+    # True only when the Event Service was created from an LLM with stream=True,
+    # which makes OpenHands 1.42.0 attach its formal token callback. Historical
+    # rows are migrated as False because switch_llm cannot add that callback.
+    streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
     openhands_conversation_id: Mapped[str] = mapped_column(String(36))
     display_title: Mapped[str | None] = mapped_column(String(240))
     lifecycle: Mapped[str] = mapped_column(String(20), default="PROVISIONING", index=True)

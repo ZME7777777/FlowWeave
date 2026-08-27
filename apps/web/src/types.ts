@@ -365,6 +365,7 @@ export interface AgentConversation {
   id: string;
   display_title?: string | null;
   model_provider_id?: string | null;
+  streaming_callback_ready: boolean;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;

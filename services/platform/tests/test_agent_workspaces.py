@@ -11,6 +11,7 @@ from flowweave.modules.agent_workspaces.application.service import (
     process_agent_workspace_runtime,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
+    AgentConversationBinding,
     AgentWorkspaceRuntime,
     AgentWorkspaceRuntimeAllocation,
     AgentWorkspaceRuntimeGeneration,
@@ -566,12 +567,16 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         source = conversations.create_conversation(
             db, workspace.id, "源会话", workspace.default_model_provider_id, "create-key"
         )
+        source_binding = db.get(AgentConversationBinding, source["id"])
+        assert source_binding is not None
+        source_binding.streaming_callback_ready = False
         fork = conversations.fork_conversation(
             db, workspace.id, source["id"], "assistant-event", None, "fork-key"
         )
         assert fork["lifecycle"] == "ACTIVE"
         assert fork["display_title"] == "Fork · 源会话"
         assert fork["model_provider_id"] == source["model_provider_id"]
+        assert fork["streaming_callback_ready"] is False
         assert runtime.fork_call == ("assistant-event", "assistant-event")
         assert (
             conversations.fork_conversation(
@@ -583,6 +588,177 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         condensed = conversations.condense_conversation(db, workspace.id, source["id"])
         assert condensed["accepted"] is True
         assert runtime.condensed is True
+
+
+def test_agent_workspace_migrates_historical_streaming_callback_before_send(
+    settings, db_session_factory, monkeypatch
+):
+    class StreamingMigrationRuntime(MockRuntime):
+        active_provider_id: str | None = None
+        calls: list[str] = []
+        sent: list[str] = []
+        fail_switch = False
+        fail_fork = False
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            return RuntimeConversationIdentity(
+                conversation_id=handle.conversation_id,
+                workspace_working_dir="/runtime/workspace/project",
+                persistence_dir=(
+                    f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
+                ),
+                event_id="assistant-event",
+                parent_id=None,
+                action_id=None,
+                tool_call_id=None,
+            )
+
+        def can_accept_input(self, handle):
+            del handle
+            return True
+
+        def switch_model(self, handle, provider):
+            del handle
+            self.calls.append(f"switch:{provider.provider_id}")
+            if self.fail_switch:
+                raise DomainError("EXECUTOR_UNAVAILABLE", "switch failed", 503)
+            self.active_provider_id = provider.provider_id
+
+        def fork_conversation(self, handle, **kwargs):
+            self.calls.append(f"fork:{kwargs['from_event_id']}")
+            if self.fail_fork:
+                raise DomainError("EXECUTOR_UNAVAILABLE", "fork failed", 503)
+            return super().fork_conversation(handle, **kwargs)
+
+        def conversation_context(self, handle):
+            del handle
+            return {
+                "used_tokens": None,
+                "window_tokens": None,
+                "cumulative_tokens": None,
+                "provider_id": self.active_provider_id,
+                "model_name": "streaming-model",
+                "reasoning_effort": "high",
+            }
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent.append(content)
+            return super().send_message(handle, content, image_urls)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, model_name=None, reasoning_effort=None: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=model_name or "test-model",
+            api_key="x",
+            reasoning_effort=reasoning_effort,
+        ),
+    )
+    runtime = StreamingMigrationRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        source = conversations.create_conversation(
+            db, workspace.id, "历史会话", workspace.default_model_provider_id, "create-key"
+        )
+        assert source["streaming_callback_ready"] is True
+        source_binding = db.get(AgentConversationBinding, source["id"])
+        assert source_binding is not None
+        source_binding.streaming_callback_ready = False
+        db.flush()
+
+        try:
+            conversations.message(db, workspace.id, source["id"], "不得写入旧会话")
+        except DomainError as exc:
+            assert exc.code == "AGENT_STREAMING_MIGRATION_REQUIRED"
+        else:
+            raise AssertionError("historical binding must be migrated before a user event")
+        assert runtime.sent == []
+
+        provider_id = str(workspace.default_model_provider_id)
+        migrated = conversations.migrate_streaming_conversation(
+            db,
+            workspace.id,
+            source["id"],
+            provider_id,
+            "streaming-model",
+            "high",
+            "migration-key",
+        )
+        assert migrated["streaming_callback_ready"] is True
+        assert migrated["model_provider_id"] == provider_id
+        assert migrated["display_title"] == source["display_title"]
+        assert runtime.calls == [f"switch:{provider_id}", "fork:assistant-event"]
+
+        replay = conversations.migrate_streaming_conversation(
+            db,
+            workspace.id,
+            source["id"],
+            provider_id,
+            "ignored-model",
+            None,
+            "migration-key",
+        )
+        assert replay["id"] == migrated["id"]
+        assert runtime.calls == [f"switch:{provider_id}", "fork:assistant-event"]
+
+        conversations.message(db, workspace.id, migrated["id"], "只发送一次")
+        assert runtime.sent == ["只发送一次"]
+
+        failed_source = conversations.create_conversation(
+            db, workspace.id, "失败源", workspace.default_model_provider_id, "failed-source"
+        )
+        failed_binding = db.get(AgentConversationBinding, failed_source["id"])
+        assert failed_binding is not None
+        failed_binding.streaming_callback_ready = False
+        runtime.fail_switch = True
+        try:
+            conversations.migrate_streaming_conversation(
+                db,
+                workspace.id,
+                failed_source["id"],
+                provider_id,
+                "streaming-model",
+                None,
+                "failed-migration",
+            )
+        except DomainError as exc:
+            assert exc.code == "AGENT_STREAMING_MIGRATION_FAILED"
+        else:
+            raise AssertionError("failed switch must stop before native fork")
+        assert runtime.sent == ["只发送一次"]
+        assert runtime.calls[-1] == f"switch:{provider_id}"
+
+        fork_failed_source = conversations.create_conversation(
+            db,
+            workspace.id,
+            "分叉失败源",
+            workspace.default_model_provider_id,
+            "fork-failed-source",
+        )
+        fork_failed_binding = db.get(AgentConversationBinding, fork_failed_source["id"])
+        assert fork_failed_binding is not None
+        fork_failed_binding.streaming_callback_ready = False
+        runtime.fail_switch = False
+        runtime.fail_fork = True
+        try:
+            conversations.migrate_streaming_conversation(
+                db,
+                workspace.id,
+                fork_failed_source["id"],
+                provider_id,
+                "streaming-model",
+                None,
+                "fork-failed-migration",
+            )
+        except DomainError as exc:
+            assert exc.code == "EXECUTOR_UNAVAILABLE"
+        else:
+            raise AssertionError("failed native fork must not create a migrated user turn")
+        assert runtime.sent == ["只发送一次"]
+        assert runtime.calls[-2:] == [f"switch:{provider_id}", "fork:assistant-event"]
 
 
 def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
