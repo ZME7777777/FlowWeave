@@ -18,7 +18,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
-from flowweave.modules.agent_workspaces.application import conversations
+from flowweave.modules.agent_workspaces.application import conversations, work_directories
 from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
@@ -36,6 +36,21 @@ class _Write(BaseModel):
 
 class AgentWorkspaceSettingsWrite(_Write):
     default_model_provider_id: str | None = Field(default=None, max_length=36)
+
+
+AgentWorkDirectoryPathWrite = Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class AgentWorkDirectoryCreateWrite(_Write):
+    display_name: str = Field(min_length=1, max_length=160)
+    selected_paths: list[AgentWorkDirectoryPathWrite] = Field(min_length=1, max_length=20)
+
+
+class AgentWorkDirectoryPatchWrite(_Write):
+    display_name: str | None = Field(default=None, min_length=1, max_length=160)
+    selected_paths: list[AgentWorkDirectoryPathWrite] | None = Field(
+        default=None, min_length=1, max_length=20
+    )
 
 
 class AgentConversationCreateWrite(_Write):
@@ -115,6 +130,80 @@ async def patch_agent_workspace_settings(
 @router.get("/agent-workspaces/{workspace_id}/runtime")
 async def get_agent_workspace_runtime(workspace_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: conversations.runtime_status(session, workspace_id))
+
+
+@router.get("/agent-workspaces/{workspace_id}/work-directories")
+async def list_agent_work_directories(workspace_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: work_directories.list_work_directories(session, workspace_id)
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/work-directories", status_code=201)
+async def create_agent_work_directory(
+    workspace_id: str, payload: AgentWorkDirectoryCreateWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: work_directories.create_work_directory(
+            session,
+            workspace_id,
+            payload.display_name,
+            tuple(payload.selected_paths),
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}")
+async def get_agent_work_directory(
+    workspace_id: str, work_directory_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: work_directories.get_work_directory(
+            session, workspace_id, work_directory_id
+        ),
+    )
+
+
+@router.patch("/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}")
+async def patch_agent_work_directory(
+    workspace_id: str,
+    work_directory_id: str,
+    payload: AgentWorkDirectoryPatchWrite,
+    db: Db,
+) -> dict[str, Any]:
+    if payload.display_name is None and payload.selected_paths is None:
+        raise DomainError("AGENT_WORK_DIRECTORY_PATCH_EMPTY", "工作目录修改内容不能为空", 422)
+    return await run_sync(
+        db,
+        lambda session: work_directories.update_work_directory(
+            session,
+            workspace_id,
+            work_directory_id,
+            display_name=payload.display_name,
+            selected_paths=(
+                tuple(payload.selected_paths) if payload.selected_paths is not None else None
+            ),
+        ),
+    )
+
+
+@router.delete(
+    "/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}",
+    status_code=204,
+    response_class=Response,
+)
+async def delete_agent_work_directory(
+    workspace_id: str, work_directory_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: work_directories.archive_work_directory(
+            session, workspace_id, work_directory_id
+        ),
+    )
+    return Response(status_code=204)
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations")

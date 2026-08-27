@@ -344,6 +344,72 @@
         "title": "AgentStreamingMigrationWrite",
         "type": "object"
       },
+      "AgentWorkDirectoryCreateWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "selected_paths": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Selected Paths",
+            "type": "array"
+          }
+        },
+        "required": [
+          "display_name",
+          "selected_paths"
+        ],
+        "title": "AgentWorkDirectoryCreateWrite",
+        "type": "object"
+      },
+      "AgentWorkDirectoryPatchWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "selected_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 500,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Paths"
+          }
+        },
+        "title": "AgentWorkDirectoryPatchWrite",
+        "type": "object"
+      },
       "AgentWorkspaceSettingsWrite": {
         "additionalProperties": false,
         "properties": {
@@ -4150,6 +4216,243 @@
           }
         },
         "summary": "Patch Agent Workspace Settings"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/work-directories": {
+      "get": {
+        "operationId": "list_agent_work_directories_api_v1_agent_workspaces__workspace_id__work_directories_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Agent Work Directories Api V1 Agent Workspaces  Workspace Id  Work Directories Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agent Work Directories"
+      },
+      "post": {
+        "operationId": "create_agent_work_directory_api_v1_agent_workspaces__workspace_id__work_directories_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentWorkDirectoryCreateWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Agent Work Directory Api V1 Agent Workspaces  Workspace Id  Work Directories Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent Work Directory"
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}": {
+      "delete": {
+        "operationId": "delete_agent_work_directory_api_v1_agent_workspaces__workspace_id__work_directories__work_directory_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "work_directory_id",
+            "required": true,
+            "schema": {
+              "title": "Work Directory Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent Work Directory"
+      },
+      "get": {
+        "operationId": "get_agent_work_directory_api_v1_agent_workspaces__workspace_id__work_directories__work_directory_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "work_directory_id",
+            "required": true,
+            "schema": {
+              "title": "Work Directory Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Agent Work Directory Api V1 Agent Workspaces  Workspace Id  Work Directories  Work Directory Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Work Directory"
+      },
+      "patch": {
+        "operationId": "patch_agent_work_directory_api_v1_agent_workspaces__workspace_id__work_directories__work_directory_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "work_directory_id",
+            "required": true,
+            "schema": {
+              "title": "Work Directory Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentWorkDirectoryPatchWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Agent Work Directory Api V1 Agent Workspaces  Workspace Id  Work Directories  Work Directory Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Agent Work Directory"
       }
     },
     "/api/v1/artifact-versions/{artifact_id}/content": {

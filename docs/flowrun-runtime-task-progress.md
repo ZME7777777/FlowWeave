@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：无
+> 下一可执行切片：`FR-53`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -700,6 +700,63 @@ Secret、未经安全投影的原始事件或宿主机实现信息，不修改 O
 lint/typecheck/production build、API/Web 重建部署、真实历史会话复验、`git diff --check`、Alembic head 与
 任务状态唯一性通过；本切片使用独立 Git commit。
 
+### FR-52 Agent Workspace 工作目录模型与安全 API — DONE
+
+依赖：`FR-51`。
+
+目标：在默认 Agent Workspace 的持久项目根 `/runtime/workspace/project` 下建立一等“工作目录”上下文。
+一个工作目录可选择一个或多个项目根子目录；单目录版本的 OpenHands 工作目录为该子目录，多目录版本的
+OpenHands 工作目录为共同项目根，所选路径只作为产品分组与导航范围，不伪装成 OpenHands 多 Workspace 或
+安全隔离。根工作区保持隐式上下文，不创建默认项目记录。新增不可变版本和路径明细，工作目录修改时追加
+版本，使后续 Conversation 能冻结原版本。公开 CRUD API 只接受相对普通目录，拒绝绝对路径、`..`、反斜杠、
+符号链接、非目录、重复路径和父子路径同时选择；归档保留版本供历史引用。不得创建 Conversation、调用模型、
+修改 OpenHands 或 FlowRun。
+
+验收：新增 migration upgrade/downgrade；Agent Workspace 定向测试覆盖根上下文、单/多目录、版本追加、
+归档与路径拒绝；平台 Ruff/Pyright/定向 pytest、OpenAPI、`git diff --check`、Alembic head 与任务状态唯一性
+通过；本切片使用独立 Git commit。
+
+### FR-53 Agent 会话首条消息原子创建 — READY
+
+依赖：`FR-52`。
+
+目标：新建会话仅在浏览器内形成绑定根工作区或工作目录版本的草稿；首条消息时通过幂等 bootstrap 命令创建
+OpenHands Conversation、投递唯一正式 user event 并激活 binding。发送前不写数据库、不出现在列表、不产生
+稳定会话 URL；明确失败清理隐藏空会话，不确定投递按正式事件身份对账且不得重发。Conversation 冻结工作目录
+版本及最终 working directory，根会话的版本引用保持 NULL。
+
+### FR-54 Agent 会话一次性标题元数据任务 — PENDING
+
+依赖：`FR-53`。
+
+目标：首条正式 user event 被接受后启动一次性标题元数据任务；使用独立供应商调用，只更新展示标题和生成
+状态，不向 OpenHands Conversation 写事件或污染上下文。手动双击改名以 CAS 阻止延迟自动标题覆盖，失败时
+使用首句规范化标题，不生成带序号的未命名会话。
+
+### FR-55 Agent 工作台工作目录分组与内存草稿 — PENDING
+
+依赖：`FR-54`。
+
+目标：左侧顶层“新建会话”绑定根工作区并与所有工作目录平级；每个工作目录提供独立新建入口并在其下展示
+已激活会话。所有新建入口只打开浏览器内草稿，发送前左侧无临时会话项、无持久化；首条消息 bootstrap 成功
+后才插入标题生成中的正式会话并导航。刷新或离开未发送草稿时直接丢弃。
+
+### FR-56 Agent Workspace 右侧工作区与文件/IDE 信息 — PENDING
+
+依赖：`FR-55`。
+
+目标：实现默认收缩的右侧工作区摘要及概览、文件、终端多 Tab；展示当前根/工作目录范围、各 Git 仓库、
+会话输入附件和 IDEA/Gateway 连接信息。文件第一版只读并按授权范围列树、预览和下载；终端复用现有 Runtime，
+以 Conversation 冻结 working directory 启动。标题栏移除编辑/缩放按钮，保留双击标题修改。
+
+### FR-57 工作目录与懒创建会话完整门禁 — PENDING
+
+依赖：`FR-52`–`FR-56`。
+
+目标：集中完成迁移矩阵、静态检查、平台/Web 测试、OpenAPI、Compose 安全、真实 Runtime/OpenHands、根与
+单/多目录会话、草稿刷新丢弃、首条消息幂等、标题隔离、文件/终端/IDE 和部署后 E2E；确认多目录只表达产品
+范围而非权限隔离，既有根工作区 Conversation 保持可读写且不猜测迁移。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -716,6 +773,7 @@ lint/typecheck/production build、API/Web 重建部署、真实历史会话复�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-52 | 0066 隔离 PostgreSQL upgrade/downgrade/upgrade；Agent Workspace 定向 pytest（25 passed，其中工作目录 11 项）；受影响 Python Ruff、平台 Pyright（0 errors）；OpenAPI 基线；Alembic head、任务状态唯一性与 `git diff --check` | PASS：默认根工作区保持 `/runtime/workspace/project` 隐式上下文且不创建默认记录；工作目录可选择一至多个普通子目录，单目录映射该目录，多目录按 OpenHands 1.42.0 单一 working directory 契约回落项目根，仅表达产品分组与导航范围。路径版本不可变，改选追加版本、改名不追加、归档保留历史；公开 CRUD 拒绝绝对路径、`..`、反斜杠、超长路径、重复、父子重叠、缺失、文件和任一层符号链接。未创建 Conversation、调用模型、修改 OpenHands 或 FlowRun。唯一 head 为 `0066_agent_work_directories`；无 `CURRENT`，FR-53 为下一可执行切片。 |
 | 2026-08-27 | FR-51 | 平台 OpenHands 投影 Ruff/Pyright/pytest（62 passed）；Web lint/typecheck/production build；源码与部署后 Agent 工作台定向 Playwright（各 1 passed）；API/Web 镜像重建与强制替换；真实历史会话 API 与 Browser 复验；HTTP health、Alembic head、任务状态唯一性与 `git diff --check` | PASS：平台 REST/实时共用的安全投影补齐正式 `action_id`、`tool_call_id`、`tool_name`，真实历史事件证明 Observation 仅按正式身份关联 Action，不误用 `parent_id`。工具折叠标题明确显示运行、读取、编辑或失败动作与对象，整行带箭头且详情默认折叠；展开显示安全投影后的原命令、文件参数、结构化结果、输出和退出码，不再出现笼统“文件操作已完成”。API/Web 已重建并部署，API 健康、Web 返回 200，真实会话 25 条工具详情默认全部关闭。首次及重试的无缓存 API 构建均因 Debian 镜像源持续 502/连接失败而无法下载 `gcc-12`、`binutils-aarch64-linux-gnu`、`libdpkg-perl`；随后复用仓库已验证基础层缓存完成当前 API/Web 源码打包和强制替换，不将无缓存构建误记为成功。唯一 head/current 为 `0065_agent_model_selection`；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-49 | 固定 OpenHands 1.42.0 `ActionEvent` 源码取证；平台 OpenHands 投影 Ruff/Pyright/pytest（62 passed）；Web lint/typecheck/production build；部署后生产 Web 上 Agent 工作台定向 Playwright（1 passed）；API/Web 无缓存镜像构建与强制重建；HTTP health、Alembic head、任务状态唯一性与 `git diff --check` | PASS：平台从正式事件顶层投影安全可见 `thought/summary`，隐藏 reasoning 字段继续剔除；普通 Tool Action commentary 原子接替流式 delta，工具标题显示正式 summary；同一 `FinishAction` 的 thought 位于工作过程、message 仅生成一份最终回复。长回复完成后定位到回复开头，独立悬浮的跳转控件可真正滚到底并消失。API 健康、Web 返回 200，唯一 head 为 `0065_agent_model_selection`。真实历史会话事件复验未伪造为通过：既有 Agent Runtime 的恢复任务此前因 Docker 后端不可用耗尽 20 次重试并进入 `DEAD`，当前 events/context 接口返回 503；该独立运行时恢复故障不由本切片改写数据库规避。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-50 | Agent Workspace 定向 pytest（2 passed）；受影响 Python `py_compile`；`git diff --check`；Alembic head 与任务状态唯一性核对 | PASS：Agent Runtime 仅把真实 `READY` 且有后端 ID 的 generation 视为健康；残留 `RUNNING/ERROR` 资源不再阻塞 `DEAD` task 恢复。启动自愈与 Worker 周期维护均扫描最新 `DEAD` provision/recovery task，旧成功 task 不会遮蔽恢复；任务重置为 `RETRY` 后可在后端恢复时重新领取，Conversation/events/context 数据保持原生持久化。未修改数据库迁移、OpenHands 或 FlowRun 协议；无 `CURRENT`、`READY` 或下一切片。 |

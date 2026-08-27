@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
-from flowweave.modules.agent_workspaces.application import conversations
+from flowweave.modules.agent_workspaces.application import conversations, work_directories
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     process_agent_workspace_runtime,
@@ -13,6 +14,9 @@ from flowweave.modules.agent_workspaces.application.service import (
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
+    AgentWorkDirectory,
+    AgentWorkDirectoryPath,
+    AgentWorkDirectoryVersion,
     AgentWorkspaceRuntime,
     AgentWorkspaceRuntimeAllocation,
     AgentWorkspaceRuntimeGeneration,
@@ -35,6 +39,186 @@ from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import BackgroundTask, ManagedSandbox, TaskState
 from flowweave.shared.settings import settings_context
+
+
+def _agent_project_root(settings, db, workspace):
+    allocation = db.scalar(
+        select(AgentWorkspaceRuntimeAllocation).where(
+            AgentWorkspaceRuntimeAllocation.workspace_id == workspace.id
+        )
+    )
+    assert allocation is not None
+    return settings.workspace_root / allocation.relative_root / "workspace/project"
+
+
+def test_agent_work_directory_root_is_implicit_and_versions_are_immutable(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        project_root = _agent_project_root(settings, db, workspace)
+        (project_root / "service-a").mkdir()
+        (project_root / "service-b").mkdir()
+        (project_root / "service-c").mkdir()
+
+        initial = work_directories.list_work_directories(db, workspace.id)
+        assert initial == {
+            "root": {
+                "kind": "ROOT",
+                "display_name": "根工作区",
+                "working_directory": "/runtime/workspace/project",
+            },
+            "items": [],
+        }
+        assert db.scalar(select(AgentWorkDirectory.id)) is None
+
+        created = work_directories.create_work_directory(
+            db, workspace.id, "后端服务", ("service-a",)
+        )
+        directory_id = created["id"]
+        first_version_id = created["current_version"]["id"]
+        assert created["current_version"] == {
+            "id": first_version_id,
+            "version": 1,
+            "selected_paths": ["service-a"],
+            "working_directory": "/runtime/workspace/project/service-a",
+        }
+
+        multiple = work_directories.create_work_directory(
+            db, workspace.id, "跨服务", ("service-b", "service-c")
+        )
+        assert multiple["current_version"]["selected_paths"] == ["service-b", "service-c"]
+        assert multiple["current_version"]["working_directory"] == "/runtime/workspace/project"
+
+        updated = work_directories.update_work_directory(
+            db,
+            workspace.id,
+            directory_id,
+            display_name=None,
+            selected_paths=("service-b", "service-c"),
+        )
+        second_version_id = updated["current_version"]["id"]
+        assert updated["current_version"]["version"] == 2
+        assert updated["current_version"]["working_directory"] == "/runtime/workspace/project"
+        assert second_version_id != first_version_id
+
+        renamed = work_directories.update_work_directory(
+            db,
+            workspace.id,
+            directory_id,
+            display_name="核心后端",
+            selected_paths=None,
+        )
+        assert renamed["display_name"] == "核心后端"
+        assert renamed["current_version"]["version"] == 2
+        versions = list(
+            db.scalars(
+                select(AgentWorkDirectoryVersion)
+                .where(AgentWorkDirectoryVersion.work_directory_id == directory_id)
+                .order_by(AgentWorkDirectoryVersion.version)
+            )
+        )
+        assert [(item.id, item.version, item.working_path) for item in versions] == [
+            (first_version_id, 1, "service-a"),
+            (second_version_id, 2, "."),
+        ]
+        assert list(
+            db.scalars(
+                select(AgentWorkDirectoryPath.relative_path)
+                .where(AgentWorkDirectoryPath.version_id == first_version_id)
+                .order_by(AgentWorkDirectoryPath.position)
+            )
+        ) == ["service-a"]
+
+        work_directories.archive_work_directory(db, workspace.id, directory_id)
+        active = work_directories.list_work_directories(db, workspace.id)
+        assert [item["id"] for item in active["items"]] == [multiple["id"]]
+        archived = work_directories.get_work_directory(db, workspace.id, directory_id)
+        assert archived["state"] == "ARCHIVED"
+        assert archived["current_version"]["id"] == second_version_id
+
+
+@pytest.mark.parametrize(
+    ("selected_paths", "error_code"),
+    [
+        (("/absolute",), "AGENT_WORK_DIRECTORY_PATH_INVALID"),
+        (("../escape",), "AGENT_WORK_DIRECTORY_PATH_INVALID"),
+        (("ordinary\\child",), "AGENT_WORK_DIRECTORY_PATH_INVALID"),
+        (("a" * 501,), "AGENT_WORK_DIRECTORY_PATH_INVALID"),
+        (("ordinary", "ordinary"), "AGENT_WORK_DIRECTORY_PATH_DUPLICATE"),
+        (("parent", "parent/child"), "AGENT_WORK_DIRECTORY_PATH_OVERLAP"),
+        (("missing",), "AGENT_WORK_DIRECTORY_PATH_NOT_FOUND"),
+        (("file.txt",), "AGENT_WORK_DIRECTORY_PATH_NOT_DIRECTORY"),
+        (("link",), "AGENT_WORK_DIRECTORY_PATH_NOT_DIRECTORY"),
+    ],
+)
+def test_agent_work_directory_rejects_unsafe_or_invalid_paths(
+    settings, db_session_factory, selected_paths, error_code
+):
+    with settings_context(settings), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        project_root = _agent_project_root(settings, db, workspace)
+        (project_root / "ordinary").mkdir()
+        (project_root / "parent/child").mkdir(parents=True)
+        (project_root / "file.txt").write_text("not a directory")
+        (project_root / "link").symlink_to(project_root / "ordinary", target_is_directory=True)
+
+        with pytest.raises(DomainError) as raised:
+            work_directories.create_work_directory(db, workspace.id, "不安全目录", selected_paths)
+        assert raised.value.code == error_code
+        assert raised.value.status == 422
+
+
+def test_agent_work_directory_http_crud_and_empty_patch(client, settings, db_session_factory):
+    with settings_context(settings), db_session_factory() as db:
+        ensure_default_agent_workspace(db)
+        db.commit()
+
+    workspace_response = client.get("/api/v1/agent-workspaces/default")
+    assert workspace_response.status_code == 200
+    workspace_id = workspace_response.json()["id"]
+    project_root = settings.workspace_root / ".agent-workspaces/platform-default/workspace/project"
+    (project_root / "web").mkdir()
+
+    listed = client.get(f"/api/v1/agent-workspaces/{workspace_id}/work-directories")
+    assert listed.status_code == 200
+    assert listed.json()["root"]["working_directory"] == "/runtime/workspace/project"
+    assert listed.json()["items"] == []
+
+    created = client.post(
+        f"/api/v1/agent-workspaces/{workspace_id}/work-directories",
+        json={"display_name": "Web", "selected_paths": ["web"]},
+    )
+    assert created.status_code == 201, created.text
+    work_directory_id = created.json()["id"]
+
+    empty_patch = client.patch(
+        f"/api/v1/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}",
+        json={},
+    )
+    assert empty_patch.status_code == 422
+    assert empty_patch.json()["error"]["code"] == "AGENT_WORK_DIRECTORY_PATCH_EMPTY"
+
+    renamed = client.patch(
+        f"/api/v1/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}",
+        json={"display_name": "Web 前端"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["display_name"] == "Web 前端"
+
+    fetched = client.get(
+        f"/api/v1/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}"
+    )
+    assert fetched.status_code == 200
+    assert fetched.json()["current_version"]["selected_paths"] == ["web"]
+
+    archived = client.delete(
+        f"/api/v1/agent-workspaces/{workspace_id}/work-directories/{work_directory_id}"
+    )
+    assert archived.status_code == 204
+    listed = client.get(f"/api/v1/agent-workspaces/{workspace_id}/work-directories")
+    assert listed.status_code == 200
+    assert listed.json()["items"] == []
 
 
 def test_default_agent_workspace_has_external_storage_and_no_flow_owner(

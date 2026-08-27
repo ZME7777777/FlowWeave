@@ -147,6 +147,76 @@ class AgentWorkspaceRuntimeGeneration(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class AgentWorkDirectory(Base):
+    """A named product grouping over one or more project-root subdirectories."""
+
+    __tablename__ = "agent_work_directories"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "display_name", name="uq_agent_work_directory_workspace_name"
+        ),
+        CheckConstraint("state IN ('ACTIVE', 'ARCHIVED')", name="ck_agent_work_directory_state"),
+        CheckConstraint("current_version >= 1", name="ck_agent_work_directory_current_version"),
+        CheckConstraint("row_version >= 1", name="ck_agent_work_directory_row_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
+    )
+    display_name: Mapped[str] = mapped_column(String(160))
+    state: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    current_version: Mapped[int] = mapped_column(Integer, default=1)
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentWorkDirectoryVersion(Base):
+    """An immutable path selection that future Conversations can freeze."""
+
+    __tablename__ = "agent_work_directory_versions"
+    __table_args__ = (
+        UniqueConstraint("work_directory_id", "version", name="uq_agent_work_directory_version"),
+        CheckConstraint("version >= 1", name="ck_agent_work_directory_version_number"),
+        CheckConstraint(
+            "working_path = '.' OR (working_path <> '' AND working_path NOT LIKE '/%')",
+            name="ck_agent_work_directory_working_path",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    work_directory_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_work_directories.id", ondelete="RESTRICT"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    working_path: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AgentWorkDirectoryPath(Base):
+    __tablename__ = "agent_work_directory_paths"
+    __table_args__ = (
+        UniqueConstraint(
+            "version_id", "relative_path", name="uq_agent_work_directory_version_path"
+        ),
+        UniqueConstraint("version_id", "position", name="uq_agent_work_directory_version_position"),
+        CheckConstraint("position >= 0", name="ck_agent_work_directory_path_position"),
+        CheckConstraint(
+            "relative_path <> '' AND relative_path NOT LIKE '/%'",
+            name="ck_agent_work_directory_relative_path",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_work_directory_versions.id", ondelete="RESTRICT"), index=True
+    )
+    relative_path: Mapped[str] = mapped_column(String(500))
+    position: Mapped[int] = mapped_column(Integer)
+
+
 class AgentConversationBinding(Base):
     __tablename__ = "agent_conversation_bindings"
     __table_args__ = (
@@ -229,6 +299,9 @@ __all__ = (
     "AgentWorkspace",
     "AgentConversationBinding",
     "AgentConversationCommand",
+    "AgentWorkDirectory",
+    "AgentWorkDirectoryPath",
+    "AgentWorkDirectoryVersion",
     "AgentWorkspaceRuntime",
     "AgentWorkspaceRuntimeAllocation",
     "AgentWorkspaceRuntimeGeneration",
