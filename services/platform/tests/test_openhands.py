@@ -1807,6 +1807,62 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
     assert len(usage.digest) == 64
 
 
+def test_openhands_conversation_context_reads_the_active_native_usage_bucket(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: _state(
+            agent={
+                "llm": {
+                    "model": "openai/gpt-5.6-luna",
+                    "usage_id": "flowweave:provider-1",
+                }
+            },
+            stats={
+                "usage_to_metrics": {
+                    "condenser": {
+                        "model_name": "openai/gpt-5.6-luna",
+                        "accumulated_cost": 0.0,
+                        "accumulated_token_usage": {
+                            "prompt_tokens": 999,
+                            "completion_tokens": 0,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "context_window": 20_000,
+                            "per_turn_token": 999,
+                        },
+                    },
+                    "flowweave:provider-1": {
+                        "model_name": "openai/gpt-5.6-luna",
+                        "accumulated_cost": 0.1,
+                        "accumulated_token_usage": {
+                            "prompt_tokens": 12_654,
+                            "completion_tokens": 62,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "context_window": 922_000,
+                            "per_turn_token": 6_380,
+                        },
+                    },
+                }
+            },
+        ),
+    )
+
+    assert runtime.conversation_context(_handle()) == {
+        "used_tokens": 6_380,
+        "window_tokens": 922_000,
+        "cumulative_tokens": 13_715,
+        "model_name": "openai/gpt-5.6-luna",
+        "reasoning_effort": None,
+    }
+
+
 @pytest.mark.parametrize(
     "metrics",
     [

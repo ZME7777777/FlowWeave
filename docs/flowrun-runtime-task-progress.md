@@ -513,6 +513,19 @@ Runtime 边界。另取证实际停滞会话的正式事件和受保护日志，
 验收：Web lint/typecheck/build、非 UTC 浏览器时区下的 Agent 工作台定向 Playwright、部署后真实页面检查、
 `git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
+### FR-39 Agent 会话 Codex 式输入区与上下文进度 — DONE
+
+依赖：`FR-38`。
+
+目标：将顶层 Agent 工作台输入区收口为紧凑的 Codex 式圆角 composer；会话供应商、模型和推理强度使用同一
+轻量浮层，且所有选择继续只在下一条正式消息发送时生效。OpenHands stats 必须仅按当前 LLM `usage_id`
+匹配正式 bucket，读取 `per_turn_token` 与 `context_window`，不得混入 condenser 或子任务用量。只有这两个
+正数同时存在时，输入区才显示对应进度图标和紧凑 `k`/`m` 数值；读取中、缺失、非法或只有累计 token 的统计
+一律不渲染上下文占位。不得估算 token、持久化浏览器状态、修改 OpenHands、Runtime、FlowRun 或 API 契约。
+
+验收：Agent 工作台定向 Playwright 覆盖可用和缺失上下文、模型浮层与发送；Web lint/typecheck/build、
+`git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -529,6 +542,7 @@ Runtime 边界。另取证实际停滞会话的正式事件和受保护日志，
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-39 | OpenHands 适配器定向 pytest（62 passed）；Web lint/typecheck/production build；独立源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；迁移 head、任务状态唯一性、`git diff --check`；Compose 共享平台与 Web 重建部署、健康检查和真实 `/context` API | PASS：Composer 的模型设置改为轻量浮层；无正式当前上下文数据时不渲染占位，数据存在时显示环形图。适配器只从活跃 LLM `usage_id` 的正式 OpenHands bucket 读取 `per_turn_token/context_window`，不会把 condenser 的用量混入当前上下文。真实 `openai/gpt-5.6-luna` 会话恢复后返回 `used_tokens=6380`、`window_tokens=922000`，页面将显示 `6.4k / 922k`；922k 是供应商报告的真实窗口，不会伪造成 256k 或 1m。无缓存构建曾三次被 Debian 临时 502 阻断，随后使用同一锁定依赖的本地构建缓存成功生成新代码镜像并部署；API、Postgres、Runtime Provider、Worker 与 Web 健康，唯一 Alembic head 仍为 `0063_autonomous_defaults`。未修改 OpenHands、数据库迁移、持久化或 FlowRun/Runtime 边界。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-38 | Web lint/typecheck/production build；Asia/Shanghai 浏览器时区下使用 OpenHands 无时区 timestamp 的 Agent 工作台定向 Playwright（1 passed）；部署后真实故障会话页面、Compose 健康、运行镜像、Alembic head、任务状态唯一性与 `git diff --check` | PASS：OpenHands `1.42.0` 在 UTC Runtime 中生成的无时区 ISO-8601 timestamp 仅在耗时计算边界按 UTC 解释，显式 `Z`/offset 保持原语义；运行中耗时不再叠加浏览器 8 小时时区偏移，等待详情统一显示格式化时长。真实“你是谁”会话恢复为正式 user 到 error 的 `15分钟9秒`，OpenHands 五次重试后因供应商 `kiro-go行情号池` 的模型端点 `192.168.91.58:6699` 不可达而终止为 `LLMServiceUnavailableError`，期间没有产生隐藏分析或最终回复。Web 镜像已重建并重新部署，运行镜像为 `sha256:989d28e63a3a90bfd3f261491b394248a9b3f53dee674101eb3a24c4d9778080`；API、Postgres、Runtime Provider、Worker 与 Web 已恢复，健康检查通过。唯一 head 仍为 `0063_autonomous_defaults`；未修改 OpenHands、Runtime、数据库迁移或持久化边界。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-37 | OpenHands 全量适配器测试（61 passed）与定向时间戳投影回归（4 passed）；Ruff/Pyright；Web lint/typecheck/production build；隔离源码 Agent 工作台 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：REST 与实时安全投影保留 OpenHands 正式 timestamp；每轮固定按用户消息、工作过程、最终回复或失败结果排列。运行中过程区展开、实时计时并承载可见 delta/Thought/工具/压缩/错误，正式 assistant Message 到达后只在过程区下方显示一次最终回复；完成轮次按正式 user 到 assistant/error 的墙钟时间自动折叠并显示耗时，直接回复不生成空白详情。唯一 head 仍为 `0063_autonomous_defaults`；未修改 OpenHands、数据库迁移、FlowRun 或 Runtime 边界。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-36 | 平台全量 pytest（449 passed）与定向回归（173 passed）；Ruff/Pyright；Web lint/typecheck/build；OpenAPI 基线；0063 PostgreSQL downgrade/upgrade；部署后 Agent 工作台与节点编辑器 Playwright；Compose 服务健康与真实 Agent Runtime 探针；`git diff --check` | PASS：新建 Agent Conversation 显式使用 OpenHands `NeverConfirm` 和原生 `LLMSummarizingCondenser`；平台统一把新保存节点冻结为免确认，29 个既有可变节点迁移为 `NEVER + LLM_SUMMARIZING`，2 个历史 Attempt 与 2 个 Snapshot 摘要往返不变。发送、暂停、继续及等待确认收口为同一按钮；无首个文本或工具事件时显示可计时等待状态，历史确认批次仍可原生处理。API、Postgres、Runtime Provider、Worker 与 Web 已重新部署，唯一 head 为 `0063_autonomous_defaults`。真实 `pwd` 探针全程 `pending=false`，模型在产生 Tool Action 前因 OpenAI Plus `usage_limit_reached` 终止，因此未执行命令；该外部额度限制与确认策略无关，验收会话已删除。Runtime 白名单、容器、网络、宿主机及 Docker 权限边界未放宽。无 `CURRENT`、`READY` 或下一切片。 |

@@ -194,6 +194,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let sentProvider: string | null = null;
   let confirmationPending = false;
   let confirmationDecision: Record<string, unknown> | null = null;
+  let contextAvailable = false;
   const conversations: Array<Record<string, unknown>> = [];
   await page.routeWebSocket('**/agent-workspaces/**/stream', stream => { agentStream = stream; });
   await page.route('**/api/v1/agent-workspaces/**', async route => {
@@ -262,6 +263,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'tool-request' }) });
       return;
     }
+    if (path.endsWith('/context')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(contextAvailable ? {
+        used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716,
+        model_name: 'gpt-test', reasoning_effort: 'high',
+      } : {
+        used_tokens: null, window_tokens: null, cumulative_tokens: 12_716,
+        model_name: 'gpt-test', reasoning_effort: 'high',
+      }) });
+      return;
+    }
     if (path.endsWith('/events')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : conversations.length ? [
@@ -318,6 +329,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
+  await expect(page.locator('.agent-context-progress')).toHaveCount(0);
+  await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
+  contextAvailable = true;
+  await page.reload();
+  await expect(page.locator('.agent-context-progress')).toHaveText('6.4k / 922k');
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('.conversation-activity-group');
   await expect(completedProcess).toHaveJSProperty('open', false);
@@ -352,6 +368,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('BashAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
+  await page.getByLabel('打开模型与推理设置').click();
   await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-2');
   await expect(page.getByText('供应商将在下次发送时切换')).toBeVisible();
   modelIsResponding = true;

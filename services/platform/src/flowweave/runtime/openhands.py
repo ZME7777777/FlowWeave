@@ -2159,6 +2159,8 @@ class OpenHandsRuntime:
                     cache_read_tokens=counter("cache_read_tokens"),
                     cache_write_tokens=counter("cache_write_tokens"),
                     reasoning_tokens=counter("reasoning_tokens"),
+                    context_window=counter("context_window"),
+                    per_turn_tokens=counter("per_turn_token"),
                 )
             )
         return tuple(snapshots)
@@ -2640,7 +2642,7 @@ class OpenHandsRuntime:
         return target
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
-        """Expose only native totals and an explicitly configured window limit."""
+        """Expose the current LLM's formal OpenHands context usage snapshot."""
         state = self._conversation_state(handle)
         agent = cast(object, state.get("agent"))
         llm = (
@@ -2648,12 +2650,23 @@ class OpenHandsRuntime:
             if isinstance(agent, dict) and isinstance(cast(dict[str, Any], agent).get("llm"), dict)
             else {}
         )
+        usage_id = llm.get("usage_id")
+        active_usage = next(
+            (
+                usage
+                for usage in self._usage_snapshots(state)
+                if isinstance(usage_id, str) and usage.usage_id == usage_id
+            ),
+            None,
+        )
         raw_window = llm.get("max_input_tokens")
         window = (
             raw_window
             if isinstance(raw_window, int) and not isinstance(raw_window, bool) and raw_window > 0
             else None
         )
+        if active_usage is not None and active_usage.context_window > 0:
+            window = active_usage.context_window
         if window is None:
             model = llm.get("model")
             if isinstance(model, str):
@@ -2669,10 +2682,15 @@ class OpenHandsRuntime:
                 + usage.reasoning_tokens
             )
             found = True
-        # ConversationStats holds durable usage totals, not the current View token
-        # count. Returning None avoids presenting a fabricated context percentage.
+        # OpenHands' formally named ``per_turn_token`` is the latest completed
+        # LLM request's current View usage.  It is not an accumulated total and
+        # is only taken from this Conversation's active LLM usage bucket.
         return {
-            "used_tokens": None,
+            "used_tokens": (
+                active_usage.per_turn_tokens
+                if active_usage is not None and active_usage.per_turn_tokens > 0
+                else None
+            ),
             "window_tokens": window,
             "cumulative_tokens": cumulative if found else None,
             "model_name": llm.get("model") if isinstance(llm.get("model"), str) else None,

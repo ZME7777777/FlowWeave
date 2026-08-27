@@ -624,6 +624,13 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   流式文本、`THOUGHT`、`TOOL_CALL`、`TOOL_RESULT`、Condensation 与 `ERROR` 均进入工作过程。执行中
   过程区保持展开并实时计时，完成后默认折叠并显示耗时；没有中间条目的直接回复只显示耗时摘要，不生成
   空白详情区域。
+- Composer 采用紧凑圆角样式，当前会话的供应商、模型和（仅在模型明确支持时的）推理强度归入同一轻量
+  浮层，全部只在下一条正式消息发送时生效。浮层在输入被禁用（例如等待工具确认）时自动收起，避免遮挡
+  当前动作。
+- 上下文进度只读取当前 LLM `usage_id` 对应的 OpenHands 正式 stats bucket：`per_turn_token` 是当前轮
+  View 用量，`context_window` 是供应商报告的窗口容量；不得混入 condenser 或子任务的 bucket。仅当两者
+  都是正整数时显示环形图和紧凑 `k`/`m` 标签（如 `6.4k / 922k`、`256k`、`1m`）；缺失、非法或只有累计
+  usage 时完全不显示上下文控件，不估算或伪造窗口。
 - 非瞬态错误：停止请求风暴，显示错误码、request ID、重试或返回列表。
 - 浏览器刷新：恢复同一 binding；binding 不存在时回 `/agent`，不进入全局异常页。
 

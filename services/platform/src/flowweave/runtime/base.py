@@ -477,6 +477,8 @@ class RuntimeUsageSnapshot:
     cache_read_tokens: int
     cache_write_tokens: int
     reasoning_tokens: int
+    context_window: int
+    per_turn_tokens: int
 
 
 @dataclass(frozen=True, slots=True)

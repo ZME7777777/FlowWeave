@@ -2,11 +2,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Check, ChevronRight, CircleDot, LoaderCircle, Minimize2, PanelRightOpen, Pencil, Play, Plus, Send, Settings2, ShieldAlert, Square, Terminal, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, Check, ChevronDown, ChevronRight, CircleDot, LoaderCircle, Minimize2, PanelRightOpen, Pencil, Play, Plus, Send, Settings2, ShieldAlert, Square, Terminal, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ApiError, agentWorkspaceTerminalUrl, api, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, OpenHandsConversationEvent } from '../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
 import './agent-workbench.css';
 import './agent-workbench-layout.css';
 
@@ -18,6 +18,34 @@ interface QueuedMessage {
   providerId?: string;
   modelName?: string;
   effort?: string | null;
+}
+
+function ComposerModelMenu({
+  providers, providerId, modelName, models, efforts, effort, disabled, onProviderChange, onModelChange, onEffortChange,
+}: {
+  providers: ModelProvider[]; providerId: string; modelName: string; models: ProviderModel[]; efforts: string[];
+  effort: string; disabled: boolean; onProviderChange: (value: string) => void; onModelChange: (value: string) => void;
+  onEffortChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+  return <details className="agent-composer-model-menu" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary aria-label="打开模型与推理设置"><span>{modelName || '选择模型'}</span><ChevronDown size={14}/></summary>
+    <section className="agent-composer-model-popover">
+      <label><span>供应商</span><select aria-label="会话供应商" value={providerId} disabled={disabled} onChange={event => onProviderChange(event.target.value)}><option value="" disabled>选择供应商</option>{providers.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><ChevronRight size={14}/></label>
+      <label><span>模型</span><select aria-label="会话模型" value={modelName} disabled={disabled || !providerId} onChange={event => onModelChange(event.target.value)}>{modelName && !models.some(model => model.model_name === modelName) && <option value={modelName} disabled>{modelName}</option>}{models.map(model => <option key={model.model_name} value={model.model_name}>{model.model_name}</option>)}</select><ChevronRight size={14}/></label>
+      {efforts.length > 0 && <label><span>推理强度</span><select aria-label="思考程度" value={effort} disabled={disabled || !providerId} onChange={event => onEffortChange(event.target.value)}>{[effort, ...efforts].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index).map(value => <option key={value} value={value}>{value}</option>)}</select><ChevronRight size={14}/></label>}
+      <details className="agent-composer-model-advanced"><summary><span>高级</span><ChevronDown size={12}/></summary><p>模型和推理强度会在下一条消息发送时生效。</p></details>
+    </section>
+  </details>;
+}
+
+function compactTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 ? 1 : 0)}m`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value % 1_000 ? 1 : 0)}k`;
+  return String(value);
 }
 
 function bindingIdFromLocation(): string | undefined {
@@ -310,11 +338,23 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     ?? conversationProviderInfo?.models.find(model => model.enabled && model.is_default);
   const availableConversationModels = conversationProviderInfo?.models.filter(model => model.enabled) ?? [];
   const supportedEfforts = conversationModel?.supported_reasoning_efforts ?? [];
-  const contextLabel = contextQuery.data?.window_tokens != null
-    ? `上下文窗口 ${contextQuery.data.window_tokens.toLocaleString()} tokens · 已用 ${contextQuery.data.used_tokens?.toLocaleString() ?? '未知'}${contextQuery.data.cumulative_tokens != null ? ` · 累计 ${contextQuery.data.cumulative_tokens.toLocaleString()}` : ''}`
-    : contextQuery.data?.cumulative_tokens != null
-      ? `上下文窗口容量未返回 · 累计 ${contextQuery.data.cumulative_tokens.toLocaleString()} tokens`
-      : '上下文用量正在从 OpenHands 读取';
+  const contextProgress = contextQuery.data
+    && typeof contextQuery.data.used_tokens === 'number' && contextQuery.data.used_tokens > 0
+    && typeof contextQuery.data.window_tokens === 'number' && contextQuery.data.window_tokens > 0
+    ? {
+      used: contextQuery.data.used_tokens,
+      window: contextQuery.data.window_tokens,
+      usedLabel: compactTokenCount(contextQuery.data.used_tokens),
+      windowLabel: compactTokenCount(contextQuery.data.window_tokens),
+      percentage: Math.min(100, Math.round((contextQuery.data.used_tokens / contextQuery.data.window_tokens) * 100)),
+    }
+    : undefined;
+  const composerStatus = pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+  const composerNote = [
+    selected && conversationProviderId !== selected.model_provider_id ? '供应商将在下次发送时切换' : '',
+    conversationModelName ? `${conversationModelName} 将在下次发送时生效` : '',
+    queuedMessages.length > 0 ? `已排队 ${queuedMessages.length} 条` : '',
+  ].filter(Boolean).join(' · ');
   const visibleError = (create.error || rename.error || remove.error || upload.error || condense.error || fork.error || interrupt.error || resume.error || rewrite.error || decideConfirmation.error || confirmationQuery.error || eventsQuery.error)
     ?? (send.error instanceof ApiError && send.error.code === 'AGENT_CONVERSATION_BUSY' ? null : send.error);
   const composerActionLabel = pendingConfirmation ? '等待工具确认' : turnState === 'idle'
@@ -345,7 +385,24 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) rename.mutate(); if (event.key === 'Escape') setEditing(false); }}/><button className="primary" disabled={!title.trim() || rename.isPending} onClick={() => rename.mutate()}>保存</button></div> : <h2>{selected ? conversationName(selected, conversations.indexOf(selected)) : '开始一个新的会话'}</h2>}{selected && <small className="agent-session-provider">当前供应商：{boundProviderInfo?.name ?? '未配置'}</small>}</div><div className="agent-header-actions">{selected && <><button type="button" aria-label="压缩上下文" title="压缩上下文" disabled={!canWrite || isGenerating || condense.isPending} onClick={() => condense.mutate()}><Minimize2 size={14}/></button><button type="button" aria-label="重命名会话" onClick={() => setEditing(true)}><Pencil size={14}/></button><button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button></>}<button type="button" aria-label={drawerOpen ? '关闭工作区抽屉' : '打开工作区终端'} className={drawerOpen ? 'active' : ''} disabled={!runtime?.write_available} onClick={() => setDrawerOpen(value => !value)}><Terminal size={15}/></button></div></header>
       {runtime?.state === 'RECOVERING' ? <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '会话列表和标题已保留，恢复后可继续使用。'}</span></div></section> : selected ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={requestRewrite} onFork={eventId => fork.mutate(eventId)}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canCreate || create.isPending} onClick={() => create.mutate()}><Plus size={15}/>新建会话</button></div>}
-      {selected && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>{pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}<textarea aria-label="发送 Agent 消息" value={draft} maxLength={200_000} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…'} disabled={!canWrite || Boolean(pendingConfirmation) || turnState === 'pausing' || turnState === 'resuming'} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); enqueueDraft(); } }}/>{attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}>{item.filename}<button aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}<footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { for (const file of Array.from(event.target.files ?? [])) upload.mutate(file); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canWrite || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button><span title={contextLabel}>{pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : contextLabel}{conversationProviderId !== selected.model_provider_id && ' · 供应商将在下次发送时切换'}{conversationModelName && ` · ${conversationModelName} 将在下次发送时生效`}{queuedMessages.length > 0 && ` · 已排队 ${queuedMessages.length} 条`}</span></div><div className="agent-composer-actions"><select aria-label="会话供应商" value={conversationProviderId} disabled={!canWrite || Boolean(pendingConfirmation)} onChange={event => { const providerId = event.target.value; setConversationProviderId(providerId); const provider = connectedProviders.find(item => item.id === providerId); setConversationModelName(provider?.models.find(model => model.enabled && model.is_default)?.model_name ?? ''); setReasoningEffort(null); }}><option value="" disabled>选择供应商</option>{connectedProviders.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="会话模型" value={activeConversationModelName} disabled={!canWrite || Boolean(pendingConfirmation) || !conversationProviderId} title="模型与供应商会在下次发送时原生切换" onChange={event => { setConversationModelName(event.target.value); setReasoningEffort(null); }}>{activeConversationModelName && !availableConversationModels.some(model => model.model_name === activeConversationModelName) && <option value={activeConversationModelName} disabled>{activeConversationModelName}</option>}{availableConversationModels.map(model => <option key={model.model_name} value={model.model_name}>{model.model_name}</option>)}</select>{supportedEfforts.length > 0 && <select aria-label="思考程度" value={reasoningEffort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || Boolean(pendingConfirmation) || !conversationProviderId} onChange={event => setReasoningEffort(event.target.value || null)}>{[reasoningEffort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort, ...supportedEfforts].filter((effort, index, all): effort is string => Boolean(effort) && all.indexOf(effort) === index).map(effort => <option key={effort} value={effort}>{effort}</option>)}</select>}<button type="button" className={`agent-send${turnState === 'paused' || turnState === 'resuming' ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : turnState === 'idle' ? <Send size={16}/> : turnState === 'paused' || turnState === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button></div></footer></div>}
+      {selected && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
+        {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
+        <textarea aria-label="发送 Agent 消息" value={draft} maxLength={200_000} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…'} disabled={!canWrite || Boolean(pendingConfirmation) || turnState === 'pausing' || turnState === 'resuming'} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); enqueueDraft(); } }}/>
+        {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}>{item.filename}<button aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
+        <footer>
+          <div className="agent-composer-context">
+            <input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { for (const file of Array.from(event.target.files ?? [])) upload.mutate(file); event.currentTarget.value = ''; }}/>
+            <button type="button" aria-label="添加附件" disabled={!canWrite || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button>
+            {contextProgress && <span className="agent-context-progress" title={`当前上下文 ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()} tokens`} aria-label={`上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span>}
+            {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
+            {composerNote && <span className="agent-composer-note">{composerNote}</span>}
+          </div>
+          <div className="agent-composer-actions">
+            <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || Boolean(pendingConfirmation)} onProviderChange={providerId => { setConversationProviderId(providerId); const provider = connectedProviders.find(item => item.id === providerId); setConversationModelName(provider?.models.find(model => model.enabled && model.is_default)?.model_name ?? ''); setReasoningEffort(null); }} onModelChange={model => { setConversationModelName(model); setReasoningEffort(null); }} onEffortChange={effort => setReasoningEffort(effort || null)}/>
+            <button type="button" className={`agent-send${turnState === 'paused' || turnState === 'resuming' ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : turnState === 'idle' ? <Send size={16}/> : turnState === 'paused' || turnState === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
+          </div>
+        </footer>
+      </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
     <aside className={`agent-workspace-drawer ${drawerOpen ? 'open' : ''}`}><header><div><span className="eyebrow">WORKSPACE</span><b>共享工作区终端</b></div><button type="button" aria-label="关闭终端抽屉" onClick={() => setDrawerOpen(false)}><X size={16}/></button></header>{drawerOpen ? <WorkspaceTerminal workspaceId={workspace.id}/> : <div className="agent-drawer-empty"><PanelRightOpen size={20}/><span>打开终端即可查看和操作 Agent 使用的共享工作区。</span></div>}</aside>
