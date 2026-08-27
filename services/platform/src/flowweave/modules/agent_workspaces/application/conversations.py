@@ -13,6 +13,7 @@ from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCommand,
+    AgentWorkDirectoryVersion,
     AgentWorkspace,
     AgentWorkspaceRuntime,
 )
@@ -75,7 +76,16 @@ def _binding(
     return item
 
 
-def _dict(item: AgentConversationBinding) -> dict[str, Any]:
+def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
+    work_directory_id = (
+        db.scalar(
+            select(AgentWorkDirectoryVersion.work_directory_id).where(
+                AgentWorkDirectoryVersion.id == item.work_directory_version_id
+            )
+        )
+        if item.work_directory_version_id
+        else None
+    )
     return {
         "id": item.id,
         "display_title": item.display_title,
@@ -84,6 +94,7 @@ def _dict(item: AgentConversationBinding) -> dict[str, Any]:
         "model_name": item.model_name,
         "reasoning_effort": item.reasoning_effort,
         "work_directory_version_id": item.work_directory_version_id,
+        "work_directory_id": work_directory_id,
         "working_directory": item.working_directory,
         "streaming_callback_ready": item.streaming_callback_ready,
         "lifecycle": item.lifecycle,
@@ -185,7 +196,7 @@ def _handle(
 def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
     _workspace(db, workspace_id)
     return [
-        _dict(item)
+        _dict(db, item)
         for item in db.scalars(
             select(AgentConversationBinding)
             .where(
@@ -201,7 +212,7 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
     item = _binding(db, workspace_id, binding_id)
     item.last_connected_at = now()
     db.flush()
-    return _dict(item)
+    return _dict(db, item)
 
 
 def _system_context(working_directory: str) -> str:
@@ -306,7 +317,7 @@ def create_conversation(
         if existing.workspace_id != workspace.id:
             raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话创建请求冲突", 409)
         if existing.lifecycle == "ACTIVE":
-            return _dict(existing)
+            return _dict(db, existing)
         raise DomainError("AGENT_CONVERSATION_PROVISIONING", "会话仍在创建中", 409)
     if not model_provider_id or not has_connected_default_model(db, model_provider_id):
         raise DomainError(
@@ -356,7 +367,7 @@ def create_conversation(
     binding.lifecycle = "ACTIVE"
     command.state = "SUCCEEDED"
     db.flush()
-    return _dict(binding)
+    return _dict(db, binding)
 
 
 def _initial_user_event_id(handle: RuntimeHandle, previous_event_id: str | None) -> str | None:
@@ -373,9 +384,9 @@ def _initial_user_event_id(handle: RuntimeHandle, previous_event_id: str | None)
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _bootstrap_result(binding: AgentConversationBinding) -> dict[str, Any]:
+def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[str, Any]:
     return {
-        "conversation": _dict(binding),
+        "conversation": _dict(db, binding),
         "accepted": True,
         "cursor": binding.initial_user_event_id,
     }
@@ -428,7 +439,7 @@ def _activate_bootstrapped_conversation(
     command.updated_at = binding.updated_at
     _enqueue_title_task(db, binding, first_message)
     db.commit()
-    return _bootstrap_result(binding)
+    return _bootstrap_result(db, binding)
 
 
 def _bootstrap_command(
@@ -493,7 +504,7 @@ def bootstrap_conversation(
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
     if binding is not None and command is not None:
         if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
-            return _bootstrap_result(binding)
+            return _bootstrap_result(db, binding)
         if command.state == "AMBIGUOUS":
             reconciled = _initial_user_event_id(
                 _handle(db, workspace, binding),
@@ -672,7 +683,7 @@ def patch_conversation(
     item.updated_at = now()
     command.state = "SUCCEEDED"
     db.flush()
-    return _dict(item)
+    return _dict(db, item)
 
 
 def delete_conversation(
@@ -1005,7 +1016,7 @@ def _fork_conversation(
         if existing.workspace_id != workspace.id:
             raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话分叉请求冲突", 409)
         if existing.lifecycle == "ACTIVE":
-            return _dict(existing)
+            return _dict(db, existing)
         raise DomainError("AGENT_CONVERSATION_PROVISIONING", "分叉会话仍在创建中", 409)
     if migration_provider_id is not None and source.streaming_callback_ready:
         raise DomainError(
@@ -1116,7 +1127,7 @@ def _fork_conversation(
     target.lifecycle = "ACTIVE"
     command.state = "SUCCEEDED"
     db.flush()
-    return _dict(target)
+    return _dict(db, target)
 
 
 def fork_conversation(

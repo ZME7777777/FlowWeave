@@ -369,14 +369,33 @@ export interface AgentConversationContext {
 export interface AgentConversation {
   id: string;
   display_title?: string | null;
+  title_state?: 'PENDING' | 'GENERATED' | 'MANUAL' | 'FALLBACK';
   model_provider_id?: string | null;
   model_name?: string | null;
   reasoning_effort?: string | null;
+  work_directory_id?: string | null;
+  work_directory_version_id?: string | null;
+  working_directory?: string | null;
   streaming_callback_ready: boolean;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;
   last_connected_at?: string | null;
+}
+export interface AgentWorkDirectory {
+  id: string;
+  display_name: string;
+  state: 'ACTIVE' | 'ARCHIVED';
+  current_version: {
+    id: string;
+    version: number;
+    selected_paths: string[];
+    working_directory: string;
+  };
+}
+export interface AgentWorkDirectoryList {
+  root: { kind: 'ROOT'; display_name: string; working_directory: string };
+  items: AgentWorkDirectory[];
 }
 export interface FlowRunRuntimeGeneration {
   generation: number;

@@ -620,6 +620,7 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert (
             first["conversation"]["work_directory_version_id"] == directory["current_version"]["id"]
         )
+        assert first["conversation"]["work_directory_id"] == directory["id"]
         assert first["conversation"]["working_directory"] == "/runtime/workspace/project/backend"
         assert first["conversation"]["display_title"] == "实现接口"
         assert first["conversation"]["title_state"] == "PENDING"
@@ -631,6 +632,8 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert title_task is not None
         assert title_task.aggregate_id == first["conversation"]["id"]
         assert title_task.payload_json["first_message"] == "实现接口"
+        listed = conversations.list_conversations(db, workspace.id)
+        assert listed[0]["work_directory_id"] == directory["id"]
         assert len(conversations.list_conversations(db, workspace.id)) == 1
 
 

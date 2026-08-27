@@ -1,7 +1,7 @@
 import type {
   AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -104,9 +104,10 @@ export const api = {
   updateAgentWorkspaceSettings: (id: string, default_model_provider_id: string | null) =>
     request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}/settings`, json('PATCH', { default_model_provider_id })),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
+  agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
   agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
-  createAgentConversation: (workspaceId: string, model_provider_id: string, title?: string) =>
-    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { title, model_provider_id }, true)),
+  bootstrapAgentConversation: (workspaceId: string, model_provider_id: string, content: string, work_directory_id?: string) =>
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { model_provider_id, content, work_directory_id }, true)),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>

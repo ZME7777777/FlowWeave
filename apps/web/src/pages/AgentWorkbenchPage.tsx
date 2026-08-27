@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Check, ChevronDown, ChevronRight, CircleDot, LoaderCircle, Minimize2, PanelRightOpen, Pencil, Play, Plus, Send, Settings2, ShieldAlert, Square, Terminal, Trash2, X } from 'lucide-react';
+import { Bot, Check, ChevronDown, ChevronRight, CircleDot, Folder, LoaderCircle, Minimize2, PanelRightOpen, Pencil, Play, Plus, Send, Settings2, ShieldAlert, Square, Terminal, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ApiError, agentWorkspaceTerminalUrl, api, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
@@ -17,6 +17,7 @@ interface QueuedMessage {
   items: AgentAttachment[];
 }
 interface BoundQueuedMessage extends QueuedMessage { bindingId: string; }
+interface ConversationDraft { workDirectoryId?: string; displayName: string; }
 
 function ComposerModelMenu({
   providers, providerId, modelName, models, efforts, effort, disabled, onProviderChange, onModelChange, onEffortChange,
@@ -82,8 +83,8 @@ function bindingIdFromLocation(): string | undefined {
   return match ? decodeURIComponent(match[1]) : undefined;
 }
 
-function conversationName(conversation: AgentConversation, index: number) {
-  return conversation.display_title || `未命名会话 ${index + 1}`;
+function conversationName(conversation: AgentConversation) {
+  return conversation.display_title || '新会话';
 }
 
 function mergeConversationEvents(
@@ -216,12 +217,14 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
   const [pendingCreatedId, setPendingCreatedId] = useState<string>();
   const [pendingMigratedSend, setPendingMigratedSend] = useState<BoundQueuedMessage>();
+  const [conversationDraft, setConversationDraft] = useState<ConversationDraft>();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const selectedBindingId = bindingIdFromLocation();
   const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultAgentWorkspace, retry: false });
   const workspace = workspaceQuery.data;
   const runtimeQuery = useQuery({ queryKey: ['agent-workspace-runtime', workspace?.id], queryFn: () => api.agentWorkspaceRuntime(workspace!.id), enabled: Boolean(workspace), refetchInterval: result => result.state.data?.state === 'RECOVERING' ? 5000 : false });
   const conversationsQuery = useQuery({ queryKey: ['agent-conversations', workspace?.id], queryFn: () => api.agentConversations(workspace!.id), enabled: Boolean(workspace) });
+  const workDirectoriesQuery = useQuery({ queryKey: ['agent-work-directories', workspace?.id], queryFn: () => api.agentWorkDirectories(workspace!.id), enabled: Boolean(workspace) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace) });
   const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const selected = useMemo(() => conversations.find(item => item.id === selectedBindingId), [conversations, selectedBindingId]);
@@ -230,6 +233,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
   const canCreate = Boolean(runtimeWritable && newConversationProviderId);
   const canWrite = Boolean(runtimeWritable && selected);
+  const canBootstrap = Boolean(runtimeWritable && conversationDraft && newConversationProviderId);
   const isGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventsQuery = useQuery({
     queryKey: ['agent-conversation-events', workspace?.id, selected?.id], queryFn: () => api.agentConversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
@@ -289,9 +293,9 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   }, [refresh]);
 
   useEffect(() => {
-    if (!selectedBindingId && conversations.length) onNavigate(`/agent/conversations/${encodeURIComponent(conversations[0].id)}`, true);
+    if (!conversationDraft && !selectedBindingId && conversations.length) onNavigate(`/agent/conversations/${encodeURIComponent(conversations[0].id)}`, true);
     if (selectedBindingId && conversations.length && !selected && pendingCreatedId !== selectedBindingId && !conversationsQuery.isFetching) onNavigate('/agent', true);
-  }, [conversations, conversationsQuery.isFetching, onNavigate, pendingCreatedId, selected, selectedBindingId]);
+  }, [conversationDraft, conversations, conversationsQuery.isFetching, onNavigate, pendingCreatedId, selected, selectedBindingId]);
   useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribeToAgentWorkspaceStream(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useEffect(() => { setEditing(false); setTitle(selected?.display_title ?? ''); setLiveText(''); setLiveEvents([]); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); }, [selected?.display_title, selected?.id]);
@@ -319,13 +323,20 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     }
   }, [activeTurnEventId, displayedEvents, refresh, turnState]);
 
-  const create = useMutation({ mutationFn: () => api.createAgentConversation(workspace!.id, newConversationProviderId), onSuccess: value => {
+  const bootstrap = useMutation({ mutationFn: (message: QueuedMessage) => api.bootstrapAgentConversation(
+    workspace!.id,
+    newConversationProviderId,
+    message.content,
+    conversationDraft?.workDirectoryId,
+  ), onSuccess: value => {
     if (!workspace) return;
-    setPendingCreatedId(value.id);
-    queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
+    const conversation = value.conversation;
+    setPendingCreatedId(conversation.id);
+    setConversationDraft(undefined);
+    queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [conversation, ...(current ?? []).filter(item => item.id !== conversation.id)]);
     void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
-    onNavigate(`/agent/conversations/${encodeURIComponent(value.id)}`);
-  } });
+    onNavigate(`/agent/conversations/${encodeURIComponent(conversation.id)}`);
+  }, onError: (_error, message) => { setDraft(message.content); setAttachments(message.items); } });
   const rename = useMutation({ mutationFn: () => api.updateAgentConversation(workspace!.id, selected!.id, title.trim()), onSuccess: () => { setEditing(false); refresh(); } });
   const remove = useMutation({ mutationFn: () => api.deleteAgentConversation(workspace!.id, selected!.id), onSuccess: () => { setDrawerOpen(false); onNavigate('/agent', true); refresh(); } });
   const persistModel = useMutation({
@@ -421,18 +432,33 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     }
     if (turnState === 'idle' || turnState === 'paused') rewrite.mutate({ eventId, content });
   }, [interrupt, rewrite, turnState]);
+  const openConversationDraft = useCallback((next: ConversationDraft) => {
+    setConversationDraft(next);
+    setDraft('');
+    setAttachments([]);
+    setLiveText('');
+    setLiveEvents([]);
+    setTurnState('idle');
+    onNavigate('/agent');
+  }, [onNavigate]);
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
-    if (!content || !canWrite || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
+    if (!content || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
     setDraft('');
     const message = { content, items: attachments };
     setAttachments([]);
+    if (conversationDraft) {
+      if (canBootstrap && !bootstrap.isPending) bootstrap.mutate(message);
+      else { setDraft(content); setAttachments(attachments); }
+      return;
+    }
+    if (!canWrite) { setDraft(content); setAttachments(attachments); return; }
     if (turnState === 'idle') {
       if (selected?.streaming_callback_ready) send.mutate({ ...message, bindingId: selected.id });
       else migrateStreaming.mutate(message);
     }
     else setQueuedMessages(items => [...items, message]);
-  }, [attachments, canWrite, draft, migrateStreaming, pendingMigratedSend, selected, send, turnState]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, conversationDraft, draft, migrateStreaming, pendingMigratedSend, selected, send, turnState]);
   useEffect(() => {
     if (turnState !== 'idle' || !queuedMessages.length || send.isPending || migrateStreaming.isPending || pendingMigratedSend) return;
     const [next, ...rest] = queuedMessages;
@@ -448,6 +474,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   if (workspaceQuery.isLoading) return <main className="agent-workbench-loading">正在打开 Agent 工作台…</main>;
   if (workspaceQuery.error || !workspace) return <main className="agent-workbench-loading"><b>Agent 工作台正在初始化</b><span>默认运行环境准备完成后，会话列表会自动出现。</span></main>;
   const providerLabel = (item: typeof connectedProviders[number]) => `${item.name} · ${item.models.find(model => model.enabled && model.is_default)?.model_name}`;
+  const draftProviderInfo = connectedProviders.find(item => item.id === newConversationProviderId);
   const conversationProviderInfo = connectedProviders.find(item => item.id === conversationProviderId);
   const boundProviderInfo = connectedProviders.find(item => item.id === selected?.model_provider_id);
   const activeConversationModelName = conversationModelName
@@ -472,17 +499,18 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     : undefined;
   const composerStatus = persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = queuedMessages.length > 0 ? `已排队 ${queuedMessages.length} 条` : '';
-  const visibleError = (create.error || rename.error || remove.error || upload.error || condense.error || fork.error || persistModel.error || migrateStreaming.error || interrupt.error || resume.error || rewrite.error || decideConfirmation.error || confirmationQuery.error || eventsQuery.error)
+  const visibleError = (bootstrap.error || rename.error || remove.error || upload.error || condense.error || fork.error || persistModel.error || migrateStreaming.error || interrupt.error || resume.error || rewrite.error || decideConfirmation.error || confirmationQuery.error || eventsQuery.error)
     ?? (send.error instanceof ApiError && send.error.code === 'AGENT_CONVERSATION_BUSY' ? null : send.error);
-  const composerActionLabel = migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'idle'
+  const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'idle'
     ? '发送消息'
     : turnState === 'running'
       ? '暂停当前 Agent'
       : turnState === 'paused'
         ? '继续当前 Agent'
         : turnState === 'pausing' ? '正在暂停 Agent' : '正在继续 Agent';
-  const composerActionDisabled = !canWrite
+  const composerActionDisabled = !(canWrite || canBootstrap)
     || Boolean(pendingConfirmation)
+    || bootstrap.isPending
     || migrateStreaming.isPending
     || Boolean(pendingMigratedSend)
     || (turnState === 'idle' && (!draft.trim() || send.isPending))
@@ -493,31 +521,57 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     else if (turnState === 'running') interrupt.mutate();
     else if (turnState === 'paused') resume.mutate();
   };
+  const workDirectories = workDirectoriesQuery.data?.items ?? [];
+  const activeWorkDirectoryIds = new Set(workDirectories.map(item => item.id));
+  const rootConversations = conversations.filter(item => !item.work_directory_id);
+  const archivedDirectoryConversations = conversations.filter(item => {
+    const workDirectoryId = item.work_directory_id;
+    return workDirectoryId ? !activeWorkDirectoryIds.has(workDirectoryId) : false;
+  });
+  const conversationsForDirectory = (workDirectoryId: string) => conversations.filter(
+    item => item.work_directory_id === workDirectoryId,
+  );
+  const selectConversation = (bindingId: string) => {
+    setConversationDraft(undefined);
+    onNavigate(`/agent/conversations/${encodeURIComponent(bindingId)}`);
+  };
 
   return <main className="agent-workbench-page">
     <aside className="agent-workbench-rail">
-      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h1>Agent 会话</h1></div><button className="primary" disabled={!canCreate || create.isPending} onClick={() => create.mutate()}><Plus size={15}/>{create.isPending ? '创建中…' : '新建会话'}</button></header>
-      <div className="agent-workbench-list">{conversations.map((item, index) => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => onNavigate(`/agent/conversations/${encodeURIComponent(item.id)}`)}><CircleDot size={13}/><span><b>{conversationName(item, index)}</b><small>{item.lifecycle === 'ACTIVE' ? '可继续会话' : '正在处理'}</small></span><ChevronRight size={13}/></button>)}</div>
-      {!conversations.length && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{connectedProviders.length ? '选择供应商后新建一个会话开始协作。' : '请先完成至少一个模型供应商的连接测试。'}</span></div>}
+      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h1>Agent 会话</h1></div><button className="primary" disabled={!canCreate} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></header>
+      <div className="agent-workbench-list">
+        <section className="agent-workspace-group">
+          <header><div><Folder size={14}/><span>根工作区</span></div><button type="button" aria-label="在根工作区中新建会话" disabled={!canCreate} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={13}/></button></header>
+          {rootConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
+        </section>
+        {workDirectories.map(directory => <section key={directory.id} className="agent-workspace-group">
+          <header><div><Folder size={14}/><span>{directory.display_name}</span></div><button type="button" aria-label={`在${directory.display_name}中新建会话`} disabled={!canCreate} onClick={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })}><Plus size={13}/></button></header>
+          {conversationsForDirectory(directory.id).map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
+        </section>)}
+        {archivedDirectoryConversations.length > 0 && <section className="agent-workspace-group">
+          <header><div><Folder size={14}/><span>已归档工作目录</span></div></header>
+          {archivedDirectoryConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>保留的历史会话</small></span><ChevronRight size={13}/></button>)}
+        </section>}
+      </div>
+      {!conversations.length && !conversationDraft && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{connectedProviders.length ? '选择工作目录后新建会话开始协作。' : '请先完成至少一个模型供应商的连接测试。'}</span></div>}
       <section className="agent-workbench-model-card"><header><Settings2 size={14}/><b>新会话供应商</b></header>{connectedProviders.length ? <select aria-label="新会话供应商" value={newConversationProviderId} onChange={event => setNewConversationProviderId(event.target.value)}>{connectedProviders.map(item => <option key={item.id} value={item.id}>{providerLabel(item)}</option>)}</select> : <button className="secondary" onClick={onOpenModels}>前往模型配置</button>}<small>仅用于本次创建，不会修改其他会话。</small></section>
     </aside>
     <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) rename.mutate(); if (event.key === 'Escape') setEditing(false); }}/><button className="primary" disabled={!title.trim() || rename.isPending} onClick={() => rename.mutate()}>保存</button></div> : <h2>{selected ? conversationName(selected, conversations.indexOf(selected)) : '开始一个新的会话'}</h2>}{selected && <small className="agent-session-provider">当前供应商：{boundProviderInfo?.name ?? '未配置'}</small>}</div><div className="agent-header-actions">{selected && <><button type="button" aria-label="压缩上下文" title="压缩上下文" disabled={!canWrite || isGenerating || condense.isPending} onClick={() => condense.mutate()}><Minimize2 size={14}/></button><button type="button" aria-label="重命名会话" onClick={() => setEditing(true)}><Pencil size={14}/></button><button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button></>}<button type="button" aria-label={drawerOpen ? '关闭工作区抽屉' : '打开工作区终端'} className={drawerOpen ? 'active' : ''} disabled={!runtime?.write_available} onClick={() => setDrawerOpen(value => !value)}><Terminal size={15}/></button></div></header>
-      {runtime?.state === 'RECOVERING' ? <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '会话列表和标题已保留，恢复后可继续使用。'}</span></div></section> : selected ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={requestRewrite} onFork={eventId => fork.mutate(eventId)}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canCreate || create.isPending} onClick={() => create.mutate()}><Plus size={15}/>新建会话</button></div>}
-      {selected && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
+      <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) rename.mutate(); if (event.key === 'Escape') setEditing(false); }}/><button className="primary" disabled={!title.trim() || rename.isPending} onClick={() => rename.mutate()}>保存</button></div> : <h2>{selected ? conversationName(selected) : conversationDraft ? `在${conversationDraft.displayName}中开始新会话` : '开始一个新的会话'}</h2>}{selected && <small className="agent-session-provider">当前供应商：{boundProviderInfo?.name ?? '未配置'}</small>}{conversationDraft && <small className="agent-session-provider">草稿仅保留在当前浏览器，发送后才会创建会话。</small>}</div><div className="agent-header-actions">{selected && <><button type="button" aria-label="压缩上下文" title="压缩上下文" disabled={!canWrite || isGenerating || condense.isPending} onClick={() => condense.mutate()}><Minimize2 size={14}/></button><button type="button" aria-label="重命名会话" onClick={() => setEditing(true)}><Pencil size={14}/></button><button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button></>}<button type="button" aria-label={drawerOpen ? '关闭工作区抽屉' : '打开工作区终端'} className={drawerOpen ? 'active' : ''} disabled={!runtime?.write_available} onClick={() => setDrawerOpen(value => !value)}><Terminal size={15}/></button></div></header>
+      {runtime?.state === 'RECOVERING' ? <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '会话列表和标题已保留，恢复后可继续使用。'}</span></div></section> : selected ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={requestRewrite} onFork={eventId => fork.mutate(eventId)}/> : conversationDraft ? <div className="agent-workbench-empty"><Bot size={32}/><b>新会话草稿</b><span>发送第一条消息后，才会创建会话并出现在左侧列表。</span></div> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canCreate} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></div>}
+      {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
-        <textarea aria-label="发送 Agent 消息" value={draft} maxLength={200_000} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…'} disabled={!canWrite || Boolean(pendingConfirmation) || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (isImeComposition(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); enqueueDraft(); } }}/>
+        <textarea aria-label="发送 Agent 消息" value={draft} maxLength={200_000} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : conversationDraft ? '输入第一条消息以创建会话…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…'} disabled={!(canWrite || canBootstrap) || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (isImeComposition(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); enqueueDraft(); } }}/>
         {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}>{item.filename}<button aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
-            <input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { for (const file of Array.from(event.target.files ?? [])) upload.mutate(file); event.currentTarget.value = ''; }}/>
-            <button type="button" aria-label="添加附件" disabled={!canWrite || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button>
+            {selected && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { for (const file of Array.from(event.target.files ?? [])) upload.mutate(file); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canWrite || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
             {contextProgress && <span className="agent-context-progress" title={`当前上下文 ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()} tokens`} aria-label={`上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span>}
             {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}
           </div>
           <div className="agent-composer-actions">
-            <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected?.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || isGenerating || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort: nextEffort }); }}/>
+            {selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || isGenerating || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort: nextEffort }); }}/> : <span className="agent-draft-model">{draftProviderInfo ? providerLabel(draftProviderInfo) : '选择供应商'}</span>}
             <button type="button" className={`agent-send${turnState === 'paused' || turnState === 'resuming' ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : turnState === 'idle' ? <Send size={16}/> : turnState === 'paused' || turnState === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
           </div>
         </footer>

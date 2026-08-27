@@ -200,6 +200,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let persistedModelSelection: Record<string, unknown> | null = null;
   let confirmationPending = false;
   let confirmationDecision: Record<string, unknown> | null = null;
+  let bootstrapRequests = 0;
+  let bootstrapWorkDirectory: string | null = null;
   let contextAvailable = false;
   const longFinalReply = Array.from(
     { length: 90 },
@@ -231,21 +233,34 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
       return;
     }
+    if (path.endsWith('/work-directories')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' },
+        items: [{
+          id: 'directory-backend', display_name: '后端服务', state: 'ACTIVE',
+          current_version: { id: 'directory-backend-v1', version: 1, selected_paths: ['backend'], working_directory: '/runtime/workspace/project/backend' },
+        }],
+      }) });
+      return;
+    }
     if (path.endsWith('/conversations') && request.method() === 'GET') {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversations) });
       return;
     }
     if (path.endsWith('/conversations') && request.method() === 'POST') {
-      const modelProviderId = JSON.parse(request.postData() ?? '{}').model_provider_id;
+      bootstrapRequests += 1;
+      const payload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      const modelProviderId = payload.model_provider_id;
+      bootstrapWorkDirectory = typeof payload.work_directory_id === 'string' ? payload.work_directory_id : null;
       const created = {
-        id: 'agent-conversation-1', display_title: null, lifecycle: 'ACTIVE',
+        id: 'agent-conversation-1', display_title: '检查工作目录', title_state: 'PENDING', lifecycle: 'ACTIVE',
         model_provider_id: modelProviderId,
         model_name: 'gpt-test', reasoning_effort: null,
         streaming_callback_ready: true,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
       conversations.splice(0, 0, created);
-      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ conversation: created, accepted: true, cursor: 'user-request' }) });
       return;
     }
     if (path.endsWith('/condense') && request.method() === 'POST') {
@@ -254,7 +269,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/fork') && request.method() === 'POST') {
       const created = {
-        id: 'agent-conversation-fork-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
+        id: 'agent-conversation-fork-1', display_title: 'Fork · 检查工作目录', lifecycle: 'ACTIVE',
         model_provider_id: 'provider-1',
         model_name: 'gpt-test', reasoning_effort: null,
         streaming_callback_ready: false,
@@ -268,7 +283,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       streamingMigrations += 1;
       streamingMigrationPayload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
       const created = {
-        id: 'agent-conversation-streaming-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
+        id: 'agent-conversation-streaming-1', display_title: 'Fork · 检查工作目录', lifecycle: 'ACTIVE',
         model_provider_id: streamingMigrationPayload.model_provider_id,
         model_name: streamingMigrationPayload.model_name,
         reasoning_effort: streamingMigrationPayload.reasoning_effort,
@@ -378,9 +393,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.getByLabel('新会话供应商')).toHaveValue('provider-1');
   await expect(page.getByRole('button', { name: '新建会话' }).first()).toBeEnabled();
+  await expect(page.getByText('后端服务', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '在后端服务中新建会话' }).click();
+  await expect(page.getByRole('heading', { name: '在后端服务中开始新会话' })).toBeVisible();
+  expect(bootstrapRequests).toBe(0);
   await page.getByRole('button', { name: '新建会话' }).first().click();
+  await expect(page).toHaveURL(/\/agent$/);
+  await expect(page.getByText('新会话草稿', { exact: true })).toBeVisible();
+  expect(bootstrapRequests).toBe(0);
+  await expect(page.getByRole('button', { name: '检查工作目录' })).toHaveCount(0);
+  await page.getByLabel('发送 Agent 消息').fill('检查工作目录');
+  await page.getByLabel('发送消息').click();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
-  await expect(page.getByRole('heading', { name: '未命名会话 1' })).toBeVisible();
+  expect(bootstrapRequests).toBe(1);
+  expect(bootstrapWorkDirectory).toBeNull();
+  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await page.getByRole('button', { name: '打开工作区终端' }).click();
   await expect(page.locator('.agent-workspace-terminal')).toBeVisible();
@@ -495,7 +522,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '压缩上下文' }).click();
   await page.getByRole('button', { name: '从此处分叉会话' }).last().click();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
-  await expect(page.getByRole('heading', { name: 'Fork · 未命名会话 1' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
   await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(page.getByText('TerminalAction')).toBeHidden();
   await page.getByText('耗时 2分钟19秒').click();
@@ -508,7 +535,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-test高');
   await page.getByLabel('打开模型与推理设置').click();
   await expect(page.locator('.agent-composer-model-popover')).toBeVisible();
-  await page.getByRole('heading', { name: 'Fork · 未命名会话 1' }).click();
+  await page.getByRole('heading', { name: 'Fork · 检查工作目录' }).click();
   await expect(page.locator('.agent-composer-model-popover')).toBeHidden();
   await page.getByLabel('打开模型与推理设置').click();
   await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-2');
@@ -611,7 +638,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
-  await expect(page.getByRole('heading', { name: 'Fork · 未命名会话 1' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
 });
 
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
