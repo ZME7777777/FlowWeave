@@ -20,75 +20,80 @@ interface Turn {
   activity: Item[];
 }
 
-function itemFor(event: OpenHandsConversationEvent): Item | undefined {
+function itemsFor(event: OpenHandsConversationEvent): Item[] {
   const content = typeof event.payload.content === 'string' ? event.payload.content : '';
+  const thought = typeof event.payload.thought === 'string' ? event.payload.thought : '';
   const eventName = String(event.payload.event_name || event.event_type);
   if (event.event_type === 'MESSAGE') {
     const source = String(event.payload.source ?? '').toLowerCase();
-    return { event, kind: source === 'user' || source === 'human' ? 'user' : 'assistant', title: '', content };
+    return [{ event, kind: source === 'user' || source === 'human' ? 'user' : 'assistant', title: '', content }];
   }
-  if (event.event_type === 'THOUGHT') return { event, kind: 'thought', title: '分析', content };
-  if (event.event_type === 'CONDENSATION_REQUESTED') return { event, kind: 'condensation', title: '正在自动压缩上下文', content: '' };
-  if (event.event_type === 'CONDENSATION_COMPLETED') return { event, kind: 'condensation', title: '已自动压缩上下文', content: '' };
-  if (event.event_type === 'TOOL_CALL') return { event, kind: 'tool', title: eventName, content };
-  if (event.event_type === 'TOOL_RESULT') return { event, kind: 'tool', title: eventName, content };
-  if (event.event_type === 'ERROR') return { event, kind: 'error', title: '执行遇到问题', content };
+  if (event.event_type === 'THOUGHT') return [{ event, kind: 'thought', title: '分析', content: thought || content }];
+  if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '正在自动压缩上下文', content: '' }];
+  if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '已自动压缩上下文', content: '' }];
+  if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
+  if (event.event_type === 'TOOL_RESULT') return [{ event, kind: 'tool', title: eventName, content }];
+  if (event.event_type === 'ERROR') return [{ event, kind: 'error', title: '执行遇到问题', content }];
   if (event.event_type === 'COMPLETED') {
     // OpenHands has two formal final-response paths: an assistant MessageEvent
-    // and FinishAction.message. FinishObservation only confirms execution and
-    // must not create a duplicate final reply.
-    return eventName === 'FinishAction' && content
-      ? { event, kind: 'assistant', title: '', content }
-      : undefined;
+    // and FinishAction.message. A FinishAction may also carry top-level
+    // commentary, so expand that one formal event into process + final UI rows.
+    if (eventName !== 'FinishAction') return [];
+    return [
+      ...(thought ? [{ event, kind: 'thought' as const, title: '分析', content: thought }] : []),
+      ...(content ? [{ event, kind: 'assistant' as const, title: '', content }] : []),
+    ];
   }
   // STATE is transport progress rather than conversation content. Other empty
   // protocol frames are similarly excluded from the product transcript.
-  return content ? { event, kind: 'thought', title: eventName, content } : undefined;
+  return content ? [{ event, kind: 'thought', title: eventName, content }] : [];
 }
 
-function orderedItems(items: Item[]): Item[] {
+function orderedEvents(events: OpenHandsConversationEvent[]): OpenHandsConversationEvent[] {
   // REST and live frames can arrive in a different order.  Event identity is
   // authoritative: preserve the stable API order between unrelated events,
   // but always render a parent before its descendants.
-  const byId = new Map(items.map(item => [item.event.id, item]));
-  const children = new Map<string, Item[]>();
-  const roots: Item[] = [];
-  for (const item of items) {
-    const parentId = item.event.payload.parent_id;
+  const byId = new Map(events.map(event => [event.id, event]));
+  const children = new Map<string, OpenHandsConversationEvent[]>();
+  const roots: OpenHandsConversationEvent[] = [];
+  for (const event of events) {
+    const parentId = event.payload.parent_id;
     if (parentId && byId.has(parentId)) {
       const bucket = children.get(parentId) ?? [];
-      bucket.push(item);
+      bucket.push(event);
       children.set(parentId, bucket);
-    } else roots.push(item);
+    } else roots.push(event);
   }
-  const output: Item[] = [];
+  const output: OpenHandsConversationEvent[] = [];
   const seen = new Set<string>();
-  const visit = (item: Item) => {
-    if (seen.has(item.event.id)) return;
-    seen.add(item.event.id);
-    output.push(item);
-    for (const child of children.get(item.event.id) ?? []) visit(child);
+  const visit = (event: OpenHandsConversationEvent) => {
+    if (seen.has(event.id)) return;
+    seen.add(event.id);
+    output.push(event);
+    for (const child of children.get(event.id) ?? []) visit(child);
   };
-  for (const item of roots) visit(item);
-  for (const item of items) visit(item);
+  for (const event of roots) visit(event);
+  for (const event of events) visit(event);
   return output;
 }
 
-function turnsFor(items: Item[]): Turn[] {
+function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
   let current: Turn | undefined;
-  for (const item of orderedItems(items)) {
-    if (item.kind === 'user') {
-      current = { id: item.event.id, user: item, activity: [] };
-      turns.push(current);
-      continue;
+  for (const event of orderedEvents(events)) {
+    for (const item of itemsFor(event)) {
+      if (item.kind === 'user') {
+        current = { id: item.event.id, user: item, activity: [] };
+        turns.push(current);
+        continue;
+      }
+      if (!current) {
+        current = { id: item.event.id, activity: [] };
+        turns.push(current);
+      }
+      if (item.kind === 'assistant') current.assistant = item;
+      else current.activity.push(item);
     }
-    if (!current) {
-      current = { id: item.event.id, activity: [] };
-      turns.push(current);
-    }
-    if (item.kind === 'assistant') current.assistant = item;
-    else current.activity.push(item);
   }
   return turns;
 }
@@ -115,7 +120,9 @@ function activityPresentation(item: Item): { title: string; status: string; comm
   const command = detailText(details.command);
   const completed = item.event.event_type === 'TOOL_RESULT';
   const thought = !completed && item.content ? item.content.slice(0, 2_000) : undefined;
-  if (eventName === 'TerminalAction') return { title: '正在运行命令', status: '终端', command, thought };
+  const summary = !completed ? detailText(item.event.payload.summary) : '';
+  const actionTitle = (fallback: string) => summary || fallback;
+  if (eventName === 'TerminalAction') return { title: actionTitle('正在运行命令'), status: '终端', command, thought };
   if (eventName === 'TerminalObservation') return { title: '命令已执行', status: completed ? '已完成' : '处理中' };
   if (eventName === 'FileEditorAction') {
     const operation = command.toLowerCase();
@@ -123,12 +130,12 @@ function activityPresentation(item: Item): { title: string; status: string; comm
       : ['create', 'write'].includes(operation) ? '正在创建文件'
         : ['str_replace', 'insert', 'append', 'undo_edit'].includes(operation) ? '正在编辑文件'
           : '正在处理文件';
-    return { title, status: '文件编辑器', path: path ? workspacePath(path) : undefined, thought };
+    return { title: actionTitle(title), status: '文件编辑器', path: path ? workspacePath(path) : undefined, thought };
   }
   if (eventName === 'FileEditorObservation') return { title: '文件操作已完成', status: completed ? '已完成' : '处理中', path: path ? workspacePath(path) : undefined };
   if (eventName === 'TaskTrackerAction') {
     return {
-      title: command === 'plan' ? '正在更新任务列表' : '正在查看任务列表',
+      title: actionTitle(command === 'plan' ? '正在更新任务列表' : '正在查看任务列表'),
       status: '任务跟踪',
       thought,
     };
@@ -139,15 +146,15 @@ function activityPresentation(item: Item): { title: string; status: string; comm
       status: completed ? '任务跟踪 · 已完成' : '任务跟踪',
     };
   }
-  if (eventName === 'InvokeSkillAction') return { title: '正在使用已启用技能', status: '技能', thought };
+  if (eventName === 'InvokeSkillAction') return { title: actionTitle('正在使用已启用技能'), status: '技能', thought };
   if (eventName === 'InvokeSkillObservation') return { title: '技能调用已完成', status: completed ? '已完成' : '处理中' };
-  if (eventName.includes('Browser')) return { title: completed ? '浏览器操作已完成' : '正在操作浏览器', status: completed ? '浏览器 · 已完成' : '浏览器', thought };
-  if (eventName.includes('MCP')) return { title: completed ? 'MCP 工具调用已完成' : '正在调用 MCP 工具', status: completed ? 'MCP · 已完成' : 'MCP', thought };
-  if (eventName === 'TaskAction') return { title: '正在处理子任务', status: '子任务', thought };
+  if (eventName.includes('Browser')) return { title: completed ? '浏览器操作已完成' : actionTitle('正在操作浏览器'), status: completed ? '浏览器 · 已完成' : '浏览器', thought };
+  if (eventName.includes('MCP')) return { title: completed ? 'MCP 工具调用已完成' : actionTitle('正在调用 MCP 工具'), status: completed ? 'MCP · 已完成' : 'MCP', thought };
+  if (eventName === 'TaskAction') return { title: actionTitle('正在处理子任务'), status: '子任务', thought };
   if (eventName === 'TaskObservation') return { title: '子任务已完成', status: completed ? '已完成' : '处理中' };
   const toolName = eventName.replace(/(?:Action|Observation)$/, '') || '工具';
   return {
-    title: completed ? `${toolName} 已完成` : `正在使用 ${toolName}`,
+    title: completed ? `${toolName} 已完成` : actionTitle(`正在使用 ${toolName}`),
     status: completed ? '工具 · 已完成' : '工具',
     thought,
   };
@@ -253,7 +260,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
       {items.map(item => {
         const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
         const presentation = activityPresentation(item);
-        return <article className={`conversation-activity-row ${item.kind}`} key={item.event.id}>
+        return <article className={`conversation-activity-row ${item.kind}`} key={`${item.event.id}:${item.kind}:${item.content}`}>
           <Icon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small>
             {presentation.thought && <ReactMarkdown>{presentation.thought}</ReactMarkdown>}
             {presentation.command && <code className="conversation-activity-command">{presentation.command}</code>}
@@ -267,8 +274,8 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
   </details>;
 }
 
-function AgentReply({ content, onFork }: { content: string; onFork?: () => void }) {
-  return <article className="conversation-message assistant">
+function AgentReply({ eventId, content, onFork }: { eventId: string; content: string; onFork?: () => void }) {
+  return <article className="conversation-message assistant" data-turn-terminal="true" data-event-id={eventId}>
     {content ? <ReactMarkdown>{content}</ReactMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
     {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
   </article>;
@@ -302,7 +309,7 @@ function ConversationFailure({ item }: { item: Item }) {
   const content = code === 'LLMRateLimitError'
     ? '模型服务拒绝了这次请求：当前配置的账户可用额度已用尽。请选择有可用额度的模型配置后，编辑并重新思考此消息。'
     : item.content || 'OpenHands 未能完成这一轮，请检查模型配置后重试。';
-  return <article className="conversation-failure" role="status">
+  return <article className="conversation-failure" data-turn-terminal="true" data-event-id={item.event.id} role="status">
     <CircleAlert size={15}/><div><b>本轮没有生成回复</b><p>{content}</p>{code && <small>{code}</small>}</div>
   </article>;
 }
@@ -318,7 +325,6 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   onFork?: (eventId: string) => void;
 }) {
   const surface = useRef<HTMLElement>(null);
-  const tail = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
   const followLatest = useRef(true);
   const wasGenerating = useRef(isGenerating);
@@ -327,11 +333,12 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
-  const turns = useMemo(() => turnsFor(events.map(itemFor).filter((item): item is Item => Boolean(item))), [events]);
+  const turns = useMemo(() => turnsFor(events), [events]);
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
     followLatest.current = true;
     setIsAtLatest(true);
-    tail.current?.scrollIntoView({ block: 'end', behavior });
+    const element = surface.current;
+    element?.scrollTo({ top: element.scrollHeight, behavior });
   }, []);
   const updateScrollPosition = useCallback(() => {
     const element = surface.current;
@@ -340,17 +347,27 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     followLatest.current = atLatest;
     setIsAtLatest(atLatest);
   }, []);
+  const scrollToTerminalStart = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const terminals = surface.current?.querySelectorAll<HTMLElement>('[data-turn-terminal="true"]');
+    const terminal = terminals?.[terminals.length - 1];
+    if (!terminal) return scrollToLatest(behavior);
+    terminal.scrollIntoView({ block: 'start', behavior });
+    window.requestAnimationFrame(updateScrollPosition);
+  }, [scrollToLatest, updateScrollPosition]);
+  const currentHasTerminal = isGenerating && Boolean(turns.at(-1)?.assistant || turns.at(-1)?.activity.some(item => item.kind === 'error'));
   useEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
       scrollToLatest('auto');
     } else if (!wasGenerating.current && isGenerating) {
       scrollToLatest('smooth');
-    } else if (followLatest.current) {
+    } else if (wasGenerating.current && !isGenerating && followLatest.current) {
+      scrollToTerminalStart('auto');
+    } else if (followLatest.current && !currentHasTerminal) {
       scrollToLatest('auto');
     }
     wasGenerating.current = isGenerating;
-  }, [isGenerating, liveText, scrollToLatest, turns.length]);
+  }, [currentHasTerminal, isGenerating, liveText, scrollToLatest, scrollToTerminalStart, turns.length]);
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
   }, []);
@@ -378,23 +395,24 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
-  return <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={updateScrollPosition}>
-    {turns.map((turn, index) => {
-      const isCurrent = index === turns.length - 1 && isGenerating;
-      const failures = turn.activity.filter(item => item.kind === 'error');
-      const processItems = turn.activity;
-      const waitingForProgress = isCurrent && !turn.assistant && !liveText && !processItems.length;
-      const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
-      const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
-      return <section className="conversation-turn" key={turn.id}>
-        {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
-        <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
-        {turn.assistant && <AgentReply content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
-        {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
-      </section>;
-    })}
-    {turns.length === 0 && (liveText || isGenerating) && <ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} waiting={!liveText} requestSubmitting={requestSubmitting}/>}
-    <div ref={tail}/>
+  return <div className="conversation-surface-shell">
+    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={updateScrollPosition}>
+      {turns.map((turn, index) => {
+        const isCurrent = index === turns.length - 1 && isGenerating;
+        const failures = turn.activity.filter(item => item.kind === 'error');
+        const processItems = turn.activity;
+        const waitingForProgress = isCurrent && !turn.assistant && !liveText && !processItems.length;
+        const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
+        const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
+        return <section className="conversation-turn" key={turn.id}>
+          {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
+          <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
+          {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
+          {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
+        </section>;
+      })}
+      {turns.length === 0 && (liveText || isGenerating) && <ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} waiting={!liveText} requestSubmitting={requestSubmitting}/>}
+    </section>
     {showJumpToLatest && <button
       type="button"
       className={`conversation-jump-latest${isGenerating ? ' generating' : ''}`}
@@ -408,5 +426,5 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         <ChevronDown size={19}/>
       )}
     </button>}
-  </section>;
+  </div>;
 }

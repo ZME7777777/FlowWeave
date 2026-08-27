@@ -1363,8 +1363,11 @@ class OpenHandsRuntime:
             action = item.get("action")
             if isinstance(action, dict):
                 action_item = cast(dict[str, object], action)
-                value = action_item.get("message") or action_item.get("thought")
-                return cls._text_content(value)
+                if str(action_item.get("kind") or "") == "FinishAction":
+                    return cls._text_content(action_item.get("message"))
+            # ActionEvent owns visible commentary at the event level. The
+            # nested action contains tool arguments, not the model thought.
+            return cls._text_content(item.get("thought"))
         if kind == "ObservationEvent":
             observation = item.get("observation")
             if isinstance(observation, dict):
@@ -1548,6 +1551,13 @@ class OpenHandsRuntime:
         timestamp = item.get("timestamp")
         if isinstance(timestamp, str) and timestamp:
             payload["timestamp"] = timestamp[:80]
+        if kind == "ActionEvent":
+            thought = cls._text_content(item.get("thought"))[:20_000]
+            if thought:
+                payload["thought"] = thought
+            summary = item.get("summary")
+            if isinstance(summary, str) and summary:
+                payload["summary"] = summary[:2_000]
         parent_id = cls._formal_identity(item.get("parent_id"), field="parent_id", required=False)
         if parent_id is not None:
             payload["parent_id"] = parent_id

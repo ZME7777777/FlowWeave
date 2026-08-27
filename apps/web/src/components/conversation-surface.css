@@ -1,4 +1,5 @@
-.conversation-surface{min-height:0;overflow:auto;padding:34px clamp(22px,6vw,110px) 26px;background:#fff}
+.conversation-surface-shell{position:relative;min-height:0;overflow:hidden;background:#fff}
+.conversation-surface{height:100%;min-height:0;overflow:auto;padding:34px clamp(22px,6vw,110px) 26px;background:#fff}
 .conversation-surface>*{width:min(780px,100%);margin-left:auto;margin-right:auto}
 .conversation-surface-empty{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--muted);text-align:center}
 .conversation-surface-empty b{color:var(--ink);font-size:14px}
@@ -52,7 +53,7 @@
 .conversation-message-fork{display:flex;align-items:center;gap:4px;margin:9px 0 -1px;padding:3px 0;border:0;background:transparent;color:#78837c;font-size:11px;opacity:0;transition:color .16s,opacity .16s}
 .conversation-message.assistant:hover .conversation-message-fork,.conversation-message-fork:focus-visible{opacity:1}
 .conversation-message-fork:hover{color:#356e4a}
-.conversation-jump-latest{position:sticky;bottom:14px;z-index:2;display:grid;place-items:center;width:34px;height:34px;margin:8px auto 0;border:1px solid #e1e5e2;border-radius:50%;background:color-mix(in srgb,#fff 92%,transparent);box-shadow:0 3px 12px #1c29170d;color:#3c4840;backdrop-filter:blur(8px);cursor:pointer}
+.conversation-jump-latest{position:absolute;bottom:14px;left:50%;z-index:2;display:grid;place-items:center;width:34px;height:34px;margin:0;border:1px solid #e1e5e2;border-radius:50%;background:color-mix(in srgb,#fff 92%,transparent);box-shadow:0 3px 12px #1c29170d;color:#3c4840;backdrop-filter:blur(8px);cursor:pointer;transform:translateX(-50%)}
 .conversation-jump-dots{display:flex;align-items:center;gap:3px;height:12px}
 .conversation-jump-dots i{width:4px;height:4px;border-radius:50%;background:#6d7a71;animation:conversation-jump-dot 1.05s ease-in-out infinite}
 .conversation-jump-dots i:nth-child(2){animation-delay:.14s}

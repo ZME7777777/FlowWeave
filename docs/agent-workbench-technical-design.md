@@ -625,8 +625,11 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   assistant `MessageEvent`，或 Agent 调用 finish tool 时的 `FinishAction.message`；任一路径到达后清除临时
   文本，并只在过程区下方渲染一次最终回复。`FinishObservation` 只确认工具执行，不生成第二份回复。浏览器
   临时文本不写入 FlowWeave 数据库或本地持久状态。
-- `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程显示；工具 `ActionEvent.thought`
-  中由模型明确返回的安全可见文本作为 commentary 展示，Observation 原始输出不默认展开。TaskTracker 按
+- `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程显示。固定 OpenHands 1.42.0
+  的 `ActionEvent.thought` 和 `ActionEvent.summary` 是事件顶层正式字段，不属于嵌套 `action` 参数；平台
+  分别安全投影为 `payload.thought` 和 `payload.summary`，并让普通 Tool Action 的兼容 `payload.content`
+  继续等于可见 thought。`FinishAction` 同一正式事件可同时携带顶层 thought 和 `action.message`，前端必须
+  将前者展开为工作过程、后者展开为唯一最终回复。Observation 原始输出不默认展开。TaskTracker 按
   正式 `command=view/plan` 显示“查看任务列表”或“更新任务列表”，其他工具也显示可识别名称。空 `STATE`
   与未承载用户价值的协议帧不显示；`reasoning_content`、thinking blocks、Responses reasoning item 等隐藏推理
   不得进入安全投影。
@@ -645,7 +648,8 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   “你”或“Agent”身份标签。每轮固定按“用户消息 → 工作过程 → 最终回复或失败结果”排列；安全投影的
   流式文本、`THOUGHT`、`TOOL_CALL`、`TOOL_RESULT`、Condensation 与 `ERROR` 均进入工作过程。执行中
   过程区保持展开并实时计时，完成后默认折叠并显示耗时；没有中间条目的直接回复只显示耗时摘要，不生成
-  空白详情区域。
+  空白详情区域。用户仍停留在最新位置时，长最终回复到达后将视口定位到该回复开头；“跳转到最新回复”
+  控件不得位于尾部锚点之后或以自身尺寸参与“是否到达最新”的判断。
 - 用户消息气泡旁提供快速复制，复制内容只取该正式 user event 的可见文本。浏览器原生复制若选区起始于
   用户消息但在动态会话流中跨入后续工作过程或回复，前端仅将该用户消息正文写入剪贴板；选区完全位于用户
   消息时保留用户实际选中的片段。此保护不拦截助手回复、代码块或工作过程的正常复制，也不改变 OpenHands

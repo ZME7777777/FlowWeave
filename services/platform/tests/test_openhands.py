@@ -1007,7 +1007,8 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
                         "id": "12",
                         "timestamp": "2026-08-26T10:00:02+00:00",
                         "source": "agent",
-                        "action": {"kind": "ThinkAction", "thought": "search"},
+                        "thought": [{"type": "text", "text": "search"}],
+                        "action": {"kind": "ThinkAction"},
                     },
                     {"kind": "FutureEvent", "id": "13", "source": "environment"},
                 ]
@@ -1196,7 +1197,8 @@ def test_openhands_rejects_missing_persisted_event_anchor(openhands_settings, mo
                         "kind": "ActionEvent",
                         "id": "cursor-1",
                         "source": "agent",
-                        "action": {"kind": "ThinkAction", "thought": "anchor"},
+                        "thought": [{"type": "text", "text": "anchor"}],
+                        "action": {"kind": "ThinkAction"},
                     },
                     {
                         "kind": "MessageEvent",
@@ -1353,11 +1355,14 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
             "kind": "ActionEvent",
             "id": "tool-1",
             "timestamp": "2026-08-26T10:00:03+00:00",
+            "thought": [{"type": "text", "text": "可见过程说明"}],
+            "summary": "检查当前工作目录",
+            "reasoning_content": "不得外泄的顶层推理",
+            "thinking_blocks": [{"thinking": "不得外泄的思考块"}],
+            "responses_reasoning_item": {"encrypted_content": "must-not-leak"},
             "action": {
                 "kind": "TerminalAction",
                 "command": "pwd",
-                "thought": "可见过程说明",
-                "reasoning_content": "不得外泄的推理",
                 "api_key": "must-not-leak",
             },
         }
@@ -1372,6 +1377,8 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
                     "source": None,
                     "content": "可见过程说明",
                     "timestamp": "2026-08-26T10:00:03+00:00",
+                    "thought": "可见过程说明",
+                    "summary": "检查当前工作目录",
                     "event_name": "TerminalAction",
                     "details": {"command": "pwd", "api_key": "[redacted]"},
                 },
@@ -1385,10 +1392,12 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
             "timestamp": "2026-08-26T10:00:04+00:00",
             "source": "agent",
             "parent_id": "tool-1",
+            "thought": [{"type": "text", "text": "我已完成核对，下面给出结论。"}],
+            "summary": "汇总最终结论",
+            "reasoning_content": "不得外泄的顶层推理",
             "action": {
                 "kind": "FinishAction",
                 "message": "正式最终回复",
-                "reasoning_content": "不得外泄的推理",
             },
         }
     ) == (
@@ -1402,6 +1411,8 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
                     "source": "agent",
                     "content": "正式最终回复",
                     "timestamp": "2026-08-26T10:00:04+00:00",
+                    "thought": "我已完成核对，下面给出结论。",
+                    "summary": "汇总最终结论",
                     "parent_id": "tool-1",
                     "event_name": "FinishAction",
                     "details": {},

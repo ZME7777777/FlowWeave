@@ -319,6 +319,8 @@ export interface OpenHandsConversationEvent {
     source?: string | null;
     parent_id?: string | null;
     content?: string;
+    thought?: string;
+    summary?: string;
     timestamp?: string;
     event_name?: string;
     details?: Record<string, unknown>;

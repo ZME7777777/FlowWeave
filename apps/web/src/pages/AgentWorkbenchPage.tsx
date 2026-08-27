@@ -272,7 +272,15 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     if (event.type === 'delta' && event.content) setLiveText(value => value + event.content);
     if (event.type === 'event' && event.event) {
       setLiveEvents(current => mergeConversationEvents(current, [event.event!]));
-      if (['THOUGHT', 'TOOL_CALL', 'MESSAGE', 'ERROR', 'COMPLETED'].includes(event.event.event_type)) setLiveText('');
+      const formalCommentary = typeof event.event.payload.thought === 'string'
+        ? event.event.payload.thought
+        : ['THOUGHT', 'TOOL_CALL'].includes(event.event.event_type) && typeof event.event.payload.content === 'string'
+          ? event.event.payload.content
+          : '';
+      // Replace a streamed commentary draft only when its formal ActionEvent
+      // projection arrives. Empty tool/status frames must not erase visible
+      // model output before OpenHands has persisted an equivalent event.
+      if (formalCommentary || ['MESSAGE', 'ERROR', 'COMPLETED'].includes(event.event.event_type)) setLiveText('');
     }
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events
