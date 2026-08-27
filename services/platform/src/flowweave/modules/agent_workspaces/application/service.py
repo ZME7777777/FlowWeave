@@ -24,7 +24,7 @@ from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.credentials_crypto import decrypt_secret, encrypt_secret
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import TaskState
+from flowweave.shared.models import BackgroundTask, TaskState
 from flowweave.shared.settings import get_settings
 
 _SCOPE_KEY = "platform-default"
@@ -202,6 +202,67 @@ def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspace
         raise
 
 
+def _has_healthy_active_resource(db: Session, workspace_id: str, generation: int | None) -> bool:
+    """Only a provider-confirmed resource may suppress bootstrap recovery."""
+
+    if generation is None:
+        return False
+    return (
+        db.scalar(
+            select(ManagedSandbox.id).where(
+                ManagedSandbox.kind == "AGENT_RUNTIME",
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace_id,
+                ManagedSandbox.generation == generation,
+                ManagedSandbox.desired_state == "RUNNING",
+                ManagedSandbox.observed_state == "READY",
+                ManagedSandbox.backend_resource_id != "",
+            )
+        )
+        is not None
+    )
+
+
+def _reset_dead_runtime_task(
+    db: Session, workspace: AgentWorkspace, runtime: AgentWorkspaceRuntime
+) -> bool:
+    task = db.scalar(
+        select(BackgroundTask)
+        .where(
+            BackgroundTask.task_type == "PROVISION_AGENT_WORKSPACE_RUNTIME",
+            BackgroundTask.aggregate_id == workspace.id,
+            BackgroundTask.state == TaskState.DEAD,
+        )
+        .order_by(BackgroundTask.updated_at.desc(), BackgroundTask.created_at.desc())
+        .with_for_update()
+    )
+    if task is None:
+        return False
+    if _has_healthy_active_resource(db, workspace.id, runtime.active_generation):
+        return False
+    task.state = TaskState.RETRY
+    task.attempts = 0
+    task.available_at = datetime.now(UTC)
+    task.lease_owner = None
+    task.lease_until = None
+    task.last_error = None
+    return True
+
+
+def recover_default_agent_workspace_runtime_task(db: Session) -> bool:
+    """Unstick an exhausted provision task without requiring a worker restart."""
+
+    workspace = db.scalar(select(AgentWorkspace).where(AgentWorkspace.scope_key == _SCOPE_KEY))
+    if workspace is None or workspace.desired_state != "RUNNING":
+        return False
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    if runtime is None:
+        return False
+    return _reset_dead_runtime_task(db, workspace, runtime)
+
+
 def runtime_allocation_for_agent_workspace(
     db: Session, workspace_id: str
 ) -> AgentWorkspaceRuntimeAllocation:
@@ -324,23 +385,10 @@ def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
             idempotency_key=f"provision-agent-workspace-runtime:{workspace.id}",
         )
         task.max_attempts = max(task.max_attempts, 20)
-        has_active_resource = runtime.active_generation is not None and db.scalar(
-            select(ManagedSandbox.id).where(
-                ManagedSandbox.kind == "AGENT_RUNTIME",
-                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
-                ManagedSandbox.owner_id == workspace.id,
-                ManagedSandbox.generation == runtime.active_generation,
-                ManagedSandbox.desired_state == "RUNNING",
-            )
-        )
-        if task.state == TaskState.DEAD and not has_active_resource:
-            # Bootstrap is desired state, not a one-shot provisioning command.
-            # A fresh deployment can make a previously unavailable immutable
-            # image available, provided no active resource remains writable.
-            task.state = TaskState.RETRY
-            task.attempts = 0
-            task.available_at = datetime.now(UTC)
-            task.last_error = None
+        # Bootstrap is desired state, not a one-shot provisioning command. A
+        # fresh deployment can make an unavailable image available, provided
+        # no active resource remains writable.
+        _reset_dead_runtime_task(db, workspace, runtime)
     return workspace
 
 
@@ -532,6 +580,7 @@ __all__ = (
     "ensure_default_agent_workspace",
     "mark_agent_workspace_runtime_lost",
     "process_agent_workspace_runtime",
+    "recover_default_agent_workspace_runtime_task",
     "resolve_agent_workspace_runtime_secret",
     "runtime_allocation_for_agent_workspace",
 )

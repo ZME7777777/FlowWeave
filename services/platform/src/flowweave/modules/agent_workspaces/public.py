@@ -5,6 +5,7 @@ from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     mark_agent_workspace_runtime_lost,
     process_agent_workspace_runtime,
+    recover_default_agent_workspace_runtime_task,
     resolve_agent_workspace_runtime_secret,
     runtime_allocation_for_agent_workspace,
 )
@@ -14,6 +15,7 @@ __all__ = (
     "ensure_default_agent_workspace",
     "mark_agent_workspace_runtime_lost",
     "process_agent_workspace_runtime",
+    "recover_default_agent_workspace_runtime_task",
     "resolve_agent_workspace_runtime_secret",
     "runtime_allocation_for_agent_workspace",
 )

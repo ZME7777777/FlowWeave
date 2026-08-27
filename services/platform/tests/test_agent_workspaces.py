@@ -9,6 +9,7 @@ from flowweave.modules.agent_workspaces.application import conversations
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     process_agent_workspace_runtime,
+    recover_default_agent_workspace_runtime_task,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
@@ -91,6 +92,62 @@ def test_unavailable_workspace_runtime_refreshes_missing_deployment_image(
         assert task.state == TaskState.RETRY
         assert task.attempts == 0
         assert task.last_error is None
+
+
+def test_dead_workspace_runtime_task_retries_when_resource_is_not_healthy(
+    settings, db_session_factory, monkeypatch
+):
+    configured = settings.model_copy(
+        update={"runtime_adapter": "openhands", "terminal_environment_backend": "docker"}
+    )
+    digest = "sha256:" + "3" * 64
+    monkeypatch.setattr(
+        "flowweave.modules.agent_workspaces.application.service.resolve_setup_image",
+        lambda _reference: ("image", digest),
+    )
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        task = db.scalar(select(BackgroundTask).where(BackgroundTask.aggregate_id == workspace.id))
+        assert runtime is not None and task is not None
+
+        runtime.active_generation = 1
+        runtime.status = "DEGRADED"
+        db.add(
+            ManagedSandbox(
+                kind="AGENT_RUNTIME",
+                owner_type="AGENT_WORKSPACE",
+                owner_id=workspace.id,
+                backend_resource_name=f"agent-workspace-{workspace.id}",
+                desired_state="RUNNING",
+                observed_state="ERROR",
+                generation=1,
+                image_reference=digest,
+                agent_workspace_allocation_id=runtime.workspace_allocation_id,
+                hard_expires_at=datetime.max.replace(tzinfo=UTC),
+            )
+        )
+        task.state = TaskState.SUCCEEDED
+        recovery_task = BackgroundTask(
+            task_type="PROVISION_AGENT_WORKSPACE_RUNTIME",
+            aggregate_type="AGENT_WORKSPACE",
+            aggregate_id=workspace.id,
+            idempotency_key=f"recover-agent-workspace-runtime:{workspace.id}:1",
+            state=TaskState.DEAD,
+            attempts=20,
+            max_attempts=20,
+            last_error="Docker backend unavailable",
+        )
+        db.add(recovery_task)
+        db.flush()
+
+        assert recover_default_agent_workspace_runtime_task(db) is True
+
+        assert recovery_task.state == TaskState.RETRY
+        assert recovery_task.attempts == 0
+        assert recovery_task.last_error is None
 
 
 def test_workspace_runtime_replaces_deleted_physical_generation(

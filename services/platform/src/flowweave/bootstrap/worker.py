@@ -10,7 +10,10 @@ from uuid import uuid4
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
-from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
+from flowweave.modules.agent_workspaces.application.service import (
+    ensure_default_agent_workspace,
+    recover_default_agent_workspace_runtime_task,
+)
 from flowweave.modules.environments.public import (
     expire_setup_sessions,
     recover_environment_cleanup_tasks,
@@ -248,6 +251,9 @@ class TaskWorker:
                     )
                     await session.run_sync(
                         lambda db: recover_environment_cleanup_tasks(db, commit=False)
+                    )
+                    await session.run_sync(
+                        lambda db: recover_default_agent_workspace_runtime_task(db)
                     )
                     # Publish maintenance intent before the reconciler opens its
                     # independent short control transactions.
