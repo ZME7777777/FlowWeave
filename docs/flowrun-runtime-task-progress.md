@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-47`
+> 下一可执行切片：无
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -628,7 +628,7 @@ Runtime Provider 权限、Workspace 持久化或 FlowRun 语义。
 WebSocket 写入方向键序列；Web lint/typecheck/build、相关终端单元或组件测试、`git diff --check`、Alembic
 head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
-### FR-47 Agent 会话模型摘要显示思考程度 — READY
+### FR-47 Agent 会话模型摘要显示思考程度 — DONE
 
 依赖：`FR-46`。
 
@@ -668,6 +668,7 @@ head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-47 | Web lint/typecheck/production build；Agent 工作台定向 Playwright（1 passed）；桌面与 390px 窄视口浏览器布局检查；最终合并 Web 镜像构建部署与页面复核；`git diff --check`；Alembic head 与任务状态唯一性 | PASS：输入区模型摘要同时显示当前模型和中文思考程度，桌面与窄视口均保持思考程度可见且不与发送按钮重叠；选择后立即更新并在刷新后恢复。实际部署显示 `gpt-5.6-sol 高`，Web 返回 200、API ready，唯一 head 为 `0065_agent_model_selection`；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-48 | 持久 tmux 脚本定向 pytest（1 passed）与 Python 语法检查；Agent 工作台定向 Playwright（1 passed，覆盖终端宿主/屏幕底边与 tmux SGR 滚轮报告）；Web lint/typecheck/build；`git diff --check`；Alembic head 与任务状态唯一性 | PASS：持久终端开启 tmux mouse，由 tmux 原生复制模式消费滚轮；前端不再捕获并吞掉 wheel，xterm 在 tmux 开启鼠标协议后把 SGR wheel report 通过现有终端输入通道发送，未生成 shell 上下方向键序列。抽屉标题、终端区域和 xterm 使用边框盒尺寸，终端内边距移至 FitAddon 可感知的 xterm 元素，屏幕底边和宿主底边均保持在抽屉内。唯一 head 为 `0065_agent_model_selection`；无 `CURRENT`，FR-47 为下一可执行切片。 |
 | 2026-08-27 | FR-46 | Agent 工作台定向 Playwright（终端抽屉打开、有效尺寸连接、连续输出贴底、滚轮 scrollback 与 WebSocket 输入隔离）；Web lint/typecheck/build；`git diff --check`；Alembic head 与任务状态唯一性 | PASS：Agent Workspace 终端等待抽屉布局稳定并使用 FitAddon 有效尺寸后才连接 PTY，ResizeObserver 按动画帧合并尺寸更新；连接和输出在用户处于底部时保持 scrollback 贴底，用户主动上滚时不被输出拉回。终端元素捕获 wheel 事件并调用 xterm scrollLines，阻止事件进入应用鼠标报告或 shell，回归验证滚轮未产生任何 input 方向键序列。未修改 OpenHands、PTY、Runtime Provider、Workspace 持久化或 FlowRun 语义；唯一 head 为 `0065_agent_model_selection`，无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-45 | 0065 隔离 PostgreSQL upgrade/downgrade/upgrade；Agent Workspace 定向 pytest（13 passed）；Ruff format/check；Pyright（0 errors）；Web lint/typecheck/production build；源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Conversation binding 持久化完整的供应商、模型和推理强度；用户选择时通过独立 API 立即应用并保存，刷新从 binding 恢复。消息 body 仅保留正文与附件，每次正式 user event 前重新应用已保存配置；历史非流式 binding 可先保存选择，再由原生流式 fork 继承并应用，普通 fork 同样继承完整配置。模型浮层点击外部区域会关闭且不吞掉原控件点击。唯一 head 为 `0065_agent_model_selection`；无 `CURRENT`，FR-46 为下一可执行切片。 |

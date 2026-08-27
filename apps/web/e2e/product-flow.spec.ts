@@ -365,7 +365,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     body: JSON.stringify([{
       id: 'provider-1', name: '已测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'gpt-test', enabled: true, is_default: true }],
     }, {
-      id: 'provider-2', name: '另一模型配置', connection_state: 'CONNECTED', models: [{ model_name: 'gpt-second', enabled: true, is_default: true }],
+      id: 'provider-2', name: '另一模型配置', connection_state: 'CONNECTED', models: [{ model_name: 'gpt-second', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
     }]),
   }));
   await login(page);
@@ -482,6 +482,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('TerminalAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
+  await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-test高');
   await page.getByLabel('打开模型与推理设置').click();
   await expect(page.locator('.agent-composer-model-popover')).toBeVisible();
   await page.getByRole('heading', { name: 'Fork · 未命名会话 1' }).click();
@@ -489,11 +490,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByLabel('打开模型与推理设置').click();
   await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-2');
   await expect.poll(() => persistedModelSelection).toEqual({
-    model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: null,
+    model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: 'high',
   });
+  await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-second高');
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
   await page.reload();
-  await expect(page.getByLabel('打开模型与推理设置')).toHaveText('gpt-second');
+  await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-second高');
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
   modelIsResponding = true;
   const composer = page.getByLabel('发送 Agent 消息');
@@ -507,7 +509,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect.poll(() => streamingMigrations).toBe(1);
   await expect.poll(() => streamingMigrationPayload).toEqual({
-    model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: null,
+    model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: 'high',
   });
   await expect.poll(() => sentBinding).toBe('agent-conversation-streaming-1');
   await expect.poll(() => sentMessages).toBe(1);

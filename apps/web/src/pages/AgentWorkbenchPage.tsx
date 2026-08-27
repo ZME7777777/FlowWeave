@@ -39,7 +39,7 @@ function ComposerModelMenu({
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
   }, [open]);
   return <details ref={menu} className="agent-composer-model-menu" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary aria-label="打开模型与推理设置"><span>{modelName || '选择模型'}</span><ChevronDown size={14}/></summary>
+    <summary aria-label="打开模型与推理设置"><span className="agent-composer-model-summary"><span>{modelName || '选择模型'}</span>{effort && <em>{reasoningEffortLabel(effort)}</em>}</span><ChevronDown size={14}/></summary>
     <section className="agent-composer-model-popover">
       <label><span>供应商</span><select aria-label="会话供应商" value={providerId} disabled={disabled} onChange={event => onProviderChange(event.target.value)}><option value="" disabled>选择供应商</option>{providers.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><ChevronRight size={14}/></label>
       <label><span>模型</span><select aria-label="会话模型" value={modelName} disabled={disabled || !providerId} onChange={event => onModelChange(event.target.value)}>{modelName && !models.some(model => model.model_name === modelName) && <option value={modelName} disabled>{modelName}</option>}{models.map(model => <option key={model.model_name} value={model.model_name}>{model.model_name}</option>)}</select><ChevronRight size={14}/></label>
@@ -47,6 +47,17 @@ function ComposerModelMenu({
       <details className="agent-composer-model-advanced"><summary><span>高级</span><ChevronDown size={12}/></summary><p>选择后立即保存并应用到当前会话。</p></details>
     </section>
   </details>;
+}
+
+function reasoningEffortLabel(value: string): string {
+  return {
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '很高',
+    max: '最高',
+    ultra: '极高',
+  }[value] ?? value;
 }
 
 function compactTokenCount(value: number): string {
