@@ -245,11 +245,12 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
     monkeypatch.setattr(
         conversations,
         "runtime_provider",
-        lambda *_args, **_kwargs: RuntimeProvider(
-            provider_id="provider",
+        lambda _db, asset, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
             base_url="https://models.example.test/v1",
-            model="test-model",
+            model=_kwargs.get("model_name") or "test-model",
             api_key="x",
+            reasoning_effort=_kwargs.get("reasoning_effort"),
         ),
     )
     runtime = CapturingRuntime()
@@ -291,11 +292,12 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
     monkeypatch.setattr(
         conversations,
         "runtime_provider",
-        lambda *_args, **_kwargs: RuntimeProvider(
-            provider_id="provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
             base_url="https://models.example.test/v1",
-            model="test-model",
+            model=kwargs.get("model_name") or "test-model",
             api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
         ),
     )
     with settings_context(settings), db_session_factory() as db, runtime_context(FailingRuntime()):
@@ -365,6 +367,8 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             db, workspace.id, None, workspace.default_model_provider_id, "create-key"
         )
         assert created["model_provider_id"] == workspace.default_model_provider_id
+        assert created["model_name"] == "test-model"
+        assert created["reasoning_effort"] is None
         attachment = conversations.upload_attachment(
             db,
             workspace.id,
@@ -390,17 +394,23 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             f"- /runtime/workspace/project/uploads/{'a' * 32}-diagram.png",
             ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
         )
-        conversations.message(
+        selected = conversations.switch_conversation_model(
             db,
             workspace.id,
             created["id"],
-            "切换后发送",
-            model_name="test-model-2",
-            reasoning_effort="high",
+            str(workspace.default_model_provider_id),
+            "test-model-2",
+            "high",
         )
+        assert selected == {
+            "model_provider_id": workspace.default_model_provider_id,
+            "model_name": "test-model-2",
+            "reasoning_effort": "high",
+        }
         assert runtime.switched is not None
         assert runtime.switched.model == "test-model-2"
         assert runtime.switched.reasoning_effort == "high"
+        conversations.message(db, workspace.id, created["id"], "切换后发送")
         assert conversations.conversation_context(db, workspace.id, created["id"]) == {
             "used_tokens": None,
             "window_tokens": 128_000,
@@ -408,9 +418,8 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "model_name": "test-model",
             "reasoning_effort": "medium",
         }
-        # A provider is bound to the individual Conversation.  Staging a new
-        # provider is committed atomically with its next formal user message,
-        # not through the workspace's legacy default field.
+        # Selecting a provider/model is persisted immediately on the individual
+        # Conversation and sending only re-applies that saved selection.
         original_provider_id = workspace.default_model_provider_id
         replacement_provider = ModelProvider(
             name=f"replacement-provider-{workspace.id}",
@@ -428,13 +437,13 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             )
         )
         workspace.default_model_provider_id = original_provider_id
-        conversations.message(
+        conversations.switch_conversation_model(
             db,
             workspace.id,
             created["id"],
-            "切换供应商后发送",
-            model_provider_id=replacement_provider.id,
-            model_name="replacement-model",
+            replacement_provider.id,
+            "replacement-model",
+            None,
         )
         assert runtime.switched is not None
         assert runtime.switched.model == "replacement-model"
@@ -443,22 +452,23 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             conversations.get_conversation(db, workspace.id, created["id"])["model_provider_id"]
             == replacement_provider.id
         )
+        assert conversations.get_conversation(db, workspace.id, created["id"])["model_name"] == (
+            "replacement-model"
+        )
+        conversations.message(db, workspace.id, created["id"], "切换供应商后发送")
 
 
-def test_agent_workspace_reapplies_bound_provider_after_runtime_reload_before_send(
+def test_agent_workspace_reapplies_persisted_model_after_runtime_reload_before_send(
     settings, db_session_factory, monkeypatch
 ):
     class RebindingRuntime(MockRuntime):
         active_provider_id = "provider-from-persisted-create"
-        switched: list[str] = []
+        switched: list[tuple[str, str]] = []
         sent: list[str] = []
         fail_switch = False
-        fail_context = False
 
         def conversation_context(self, handle):
             del handle
-            if self.fail_context:
-                raise DomainError("EXECUTOR_UNAVAILABLE", "context failed", 503)
             return {
                 "used_tokens": None,
                 "window_tokens": None,
@@ -473,7 +483,7 @@ def test_agent_workspace_reapplies_bound_provider_after_runtime_reload_before_se
             if self.fail_switch:
                 raise DomainError("EXECUTOR_UNAVAILABLE", "switch failed", 503)
             self.active_provider_id = provider.provider_id
-            self.switched.append(provider.provider_id)
+            self.switched.append((provider.provider_id, provider.model))
 
         def send_message(self, handle, content, image_urls=()):
             self.sent.append(content)
@@ -482,10 +492,10 @@ def test_agent_workspace_reapplies_bound_provider_after_runtime_reload_before_se
     monkeypatch.setattr(
         conversations,
         "runtime_provider",
-        lambda _db, asset, **_kwargs: RuntimeProvider(
+        lambda _db, asset, model_name=None, **_kwargs: RuntimeProvider(
             provider_id=asset["asset"]["executor"]["model_provider_id"],
             base_url="https://models.example.test/v1",
-            model="bound-model",
+            model=model_name or "bound-model",
             api_key="x",
         ),
     )
@@ -496,25 +506,20 @@ def test_agent_workspace_reapplies_bound_provider_after_runtime_reload_before_se
             db, workspace.id, None, workspace.default_model_provider_id, "create-key"
         )
         bound_provider_id = str(created["model_provider_id"])
+        conversations.switch_conversation_model(
+            db, workspace.id, created["id"], bound_provider_id, "selected-model", None
+        )
+        assert conversations.get_conversation(db, workspace.id, created["id"])["model_name"] == (
+            "selected-model"
+        )
+        runtime.switched.clear()
 
         conversations.message(db, workspace.id, created["id"], "reload 后发送")
 
-        assert runtime.switched == [bound_provider_id]
-        assert runtime.sent == ["reload 后发送"]
-
-        runtime.fail_switch = False
-        runtime.fail_context = True
-        try:
-            conversations.message(db, workspace.id, created["id"], "仍不得发送")
-        except DomainError as exc:
-            assert exc.code == "AGENT_MODEL_REBIND_FAILED"
-            assert exc.status == 503
-        else:
-            raise AssertionError("provider identity read failure must stop the user event")
+        assert runtime.switched == [(bound_provider_id, "selected-model")]
         assert runtime.sent == ["reload 后发送"]
 
         runtime.active_provider_id = "provider-from-persisted-create"
-        runtime.fail_context = False
         runtime.fail_switch = True
         try:
             conversations.message(db, workspace.id, created["id"], "不得发送")
@@ -562,11 +567,12 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     monkeypatch.setattr(
         conversations,
         "runtime_provider",
-        lambda *_args, **_kwargs: RuntimeProvider(
-            provider_id="provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
             base_url="https://models.example.test/v1",
-            model="test-model",
+            model=kwargs.get("model_name") or "test-model",
             api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
         ),
     )
     runtime = ForkRuntime()
@@ -577,6 +583,14 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         )
         source_binding = db.get(AgentConversationBinding, source["id"])
         assert source_binding is not None
+        conversations.switch_conversation_model(
+            db,
+            workspace.id,
+            source["id"],
+            str(workspace.default_model_provider_id),
+            "fork-model",
+            "high",
+        )
         source_binding.streaming_callback_ready = False
         fork = conversations.fork_conversation(
             db, workspace.id, source["id"], "assistant-event", None, "fork-key"
@@ -584,6 +598,8 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         assert fork["lifecycle"] == "ACTIVE"
         assert fork["display_title"] == "Fork · 源会话"
         assert fork["model_provider_id"] == source["model_provider_id"]
+        assert fork["model_name"] == "fork-model"
+        assert fork["reasoning_effort"] == "high"
         assert fork["streaming_callback_ready"] is False
         assert runtime.fork_call == ("assistant-event", "assistant-event")
         assert (
@@ -677,6 +693,22 @@ def test_agent_workspace_migrates_historical_streaming_callback_before_send(
         source_binding.streaming_callback_ready = False
         db.flush()
 
+        provider_id = str(workspace.default_model_provider_id)
+        selected = conversations.switch_conversation_model(
+            db,
+            workspace.id,
+            source["id"],
+            provider_id,
+            "streaming-model",
+            "high",
+        )
+        assert selected == {
+            "model_provider_id": provider_id,
+            "model_name": "streaming-model",
+            "reasoning_effort": "high",
+        }
+        assert runtime.calls == []
+
         try:
             conversations.message(db, workspace.id, source["id"], "不得写入旧会话")
         except DomainError as exc:
@@ -685,7 +717,6 @@ def test_agent_workspace_migrates_historical_streaming_callback_before_send(
             raise AssertionError("historical binding must be migrated before a user event")
         assert runtime.sent == []
 
-        provider_id = str(workspace.default_model_provider_id)
         migrated = conversations.migrate_streaming_conversation(
             db,
             workspace.id,

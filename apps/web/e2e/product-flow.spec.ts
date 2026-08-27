@@ -195,6 +195,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let sentBinding: string | null = null;
   let streamingMigrations = 0;
   let streamingMigrationPayload: Record<string, unknown> | null = null;
+  let persistedModelSelection: Record<string, unknown> | null = null;
   let confirmationPending = false;
   let confirmationDecision: Record<string, unknown> | null = null;
   let contextAvailable = false;
@@ -224,6 +225,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       const created = {
         id: 'agent-conversation-1', display_title: null, lifecycle: 'ACTIVE',
         model_provider_id: modelProviderId,
+        model_name: 'gpt-test', reasoning_effort: null,
         streaming_callback_ready: true,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
@@ -239,6 +241,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       const created = {
         id: 'agent-conversation-fork-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
         model_provider_id: 'provider-1',
+        model_name: 'gpt-test', reasoning_effort: null,
         streaming_callback_ready: false,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
@@ -252,6 +255,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       const created = {
         id: 'agent-conversation-streaming-1', display_title: 'Fork · 未命名会话 1', lifecycle: 'ACTIVE',
         model_provider_id: streamingMigrationPayload.model_provider_id,
+        model_name: streamingMigrationPayload.model_name,
+        reasoning_effort: streamingMigrationPayload.reasoning_effort,
         streaming_callback_ready: true,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
@@ -289,6 +294,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         used_tokens: null, window_tokens: null, cumulative_tokens: 12_716,
         model_name: 'gpt-test', reasoning_effort: 'high',
       }) });
+      return;
+    }
+    if (path.endsWith('/model') && request.method() === 'POST') {
+      persistedModelSelection = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      const bindingId = path.match(/\/conversations\/([^/]+)\/model$/)?.[1];
+      const binding = conversations.find(item => item.id === bindingId);
+      if (binding) Object.assign(binding, persistedModelSelection, { updated_at: new Date().toISOString() });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(persistedModelSelection) });
       return;
     }
     if (path.endsWith('/events')) {
@@ -433,8 +446,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
   await page.getByLabel('打开模型与推理设置').click();
+  await expect(page.locator('.agent-composer-model-popover')).toBeVisible();
+  await page.getByRole('heading', { name: 'Fork · 未命名会话 1' }).click();
+  await expect(page.locator('.agent-composer-model-popover')).toBeHidden();
+  await page.getByLabel('打开模型与推理设置').click();
   await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-2');
-  await expect(page.getByText('供应商将在下次发送时切换')).toBeVisible();
+  await expect.poll(() => persistedModelSelection).toEqual({
+    model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: null,
+  });
+  await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel('打开模型与推理设置')).toHaveText('gpt-second');
+  await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
   modelIsResponding = true;
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('maven');
@@ -449,9 +472,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => streamingMigrationPayload).toEqual({
     model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: null,
   });
-  await expect.poll(() => sentProvider).toBe('provider-2');
   await expect.poll(() => sentBinding).toBe('agent-conversation-streaming-1');
   await expect.poll(() => sentMessages).toBe(1);
+  expect(sentProvider).toBeNull();
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess.getByText(/正在处理 · 已耗时 1[2-9]秒/)).toBeVisible();

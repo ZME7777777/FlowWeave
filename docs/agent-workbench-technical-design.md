@@ -307,6 +307,8 @@ id UUID PK                                      -- 前端和公开 API 使用
 workspace_id FK
 runtime_session_id FK
 model_provider_id FK NULL                     -- 创建时冻结；历史未知时保持 NULL
+model_name VARCHAR NULL                       -- 用户确认后立即保存的会话期望模型
+reasoning_effort VARCHAR NULL                  -- 用户确认后立即保存的会话推理强度
 openhands_conversation_id UUID
 display_title VARCHAR NULL                      -- 离线列表投影
 lifecycle PROVISIONING | ACTIVE | DELETE_PENDING | DELETED | FAILED
@@ -488,14 +490,14 @@ Agent Runtime 启动不依赖模型配置。创建 Conversation 时必须满足�
 3. Secret 在服务端调用边界解密，不进入数据库普通列、日志、前端或 Conversation display metadata；
 4. 后端编译为 OpenHands 正式 LLM/Agent 请求。
 
-创建成功后，binding 必须记录本次实际使用的 `model_provider_id`。用户可以在当前会话中暂存另一个已测试
-供应商或同供应商模型，并只在下一条正式 user event 发送前调用 OpenHands 正式 `switch_llm`；切换成功后
-binding 原子更新为本轮已审计供应商。固定 OpenHands `1.42.0` 的 `switch_llm` 只替换当前 Event Service 的
-活跃 LLM，不持久化替换值，Runtime reload 后正式 `agent.llm` 可能恢复为创建会话时的供应商。因此每次发送
-前必须以正式 `agent.llm.usage_id` 与 binding 对账；不一致时先重新应用 binding，失败则阻止 user event 并
-返回 `AGENT_MODEL_REBIND_FAILED`，不得静默使用旧供应商。迁移前没有可审计 provider identity 的历史
-binding 保持 `NULL`，不得依据 Workspace 默认值猜测回填；由原生 fork 创建的会话继承源 binding 的当前
-供应商。
+创建成功后，binding 必须记录本次实际使用的 `model_provider_id + model_name + reasoning_effort`。用户在
+当前会话选择另一个已测试供应商、模型或推理强度时，该选择即代表确认：平台必须先通过 OpenHands 正式
+`switch_llm` 应用到空闲会话，再原子更新 binding；选择失败则回滚页面显示并保留原绑定，不等待下一条消息
+才保存。固定 OpenHands `1.42.0` 的 `switch_llm` 只替换当前 Event Service 的活跃 LLM，不持久化替换值，
+Runtime reload 后正式 `agent.llm` 可能恢复为创建会话时的供应商。因此每次发送前必须重新应用 binding 中
+完整的供应商、模型和推理强度，失败则阻止 user event 并返回 `AGENT_MODEL_REBIND_FAILED`，不得静默使用
+旧配置。迁移前没有可审计选择的历史 binding 保持 `NULL`，不得依据 Workspace 默认值猜测回填；用户首次
+明确选择后建立持久绑定，由原生 fork 创建的会话继承源 binding 的当前完整模型选择。
 
 FlowWeave 通过 OpenHands 正式 LLM 字段把 Agent 工作台请求限制为 2 次尝试、2–4 秒指数退避和 60 秒
 单次超时。供应商额度耗尽或网关不可达时必须尽快形成正式 `ConversationErrorEvent`，避免 OpenHands SDK
@@ -554,6 +556,7 @@ DELETE /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}
 
 ~~~text
 GET  /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/events
+POST /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/model
 POST /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages
 POST /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/interrupt
 POST /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/resume
@@ -561,9 +564,10 @@ WS   /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/stream
 WS   /api/v1/agent-workspaces/{workspace_id}/terminal
 ~~~
 
-消息 body 使用产品字段 `content`、可选附件和下一轮模型选择，适配层转换为正式 `SendMessageRequest`。
-服务端每次写操作都重新从 Workspace Runtime Session 解析当前 active generation、校验 fence，并在发送前
-按 binding 对账 OpenHands 当前 LLM；binding 不保存物理 Runtime 或消息状态。
+消息 body 只使用产品字段 `content` 和可选附件，适配层转换为正式 `SendMessageRequest`。模型选择使用独立
+会话配置命令，在用户选择时立即持久化，消息发送不是配置保存触发器。服务端每次写操作都重新从 Workspace
+Runtime Session 解析当前 active generation、校验 fence，并在发送前重新应用 binding 的完整 LLM 配置；
+binding 不保存物理 Runtime 或消息状态。
 
 Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一 active generation，并固定 cwd 为
 `/runtime/workspace/project`。容器替换会断开终端进程，但新连接继续看到相同文件。
@@ -647,8 +651,9 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   消息时保留用户实际选中的片段。此保护不拦截助手回复、代码块或工作过程的正常复制，也不改变 OpenHands
   事件或平台持久化。
 - Composer 采用紧凑圆角样式，当前会话的供应商、模型和（仅在模型明确支持时的）推理强度归入同一轻量
-  浮层，全部只在下一条正式消息发送时生效。浮层在输入被禁用（例如等待工具确认）时自动收起，避免遮挡
-  当前动作。
+  浮层。任一选择都立即调用会话模型配置 API，并在成功后持久化为该 Conversation 的当前选择；刷新直接
+  从 binding 恢复，不依赖下一条消息或浏览器本地状态。会话执行中或等待确认时禁用选择；浮层在输入被禁用
+  或用户点击其外部区域时自动收起，且外部点击的原页面动作继续执行。
 - 顶层 Agent Conversation 的首个 LLM 即设置 OpenHands 正式 `stream=true`，使 Agent Server Event
   Service 在创建时绑定 token callback；后续原生 `switch_llm` 切换到 Codex OAuth 等强制流式供应商时
   复用该 callback，不会被 SDK 降级为非流式请求。FlowWeave 继续自行刷新并传入 OAuth 令牌，不把它伪装成

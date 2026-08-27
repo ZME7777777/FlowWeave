@@ -78,6 +78,8 @@ def _dict(item: AgentConversationBinding) -> dict[str, Any]:
         "id": item.id,
         "display_title": item.display_title,
         "model_provider_id": item.model_provider_id,
+        "model_name": item.model_name,
+        "reasoning_effort": item.reasoning_effort,
         "streaming_callback_ready": item.streaming_callback_ready,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
@@ -227,11 +229,16 @@ def create_conversation(
     )
     if runtime is None:
         raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    provider = runtime_provider(
+        db, {"asset": {"executor": {"model_provider_id": model_provider_id}}}
+    )
     conversation_id = str(uuid4())
     binding = AgentConversationBinding(
         workspace_id=workspace.id,
         runtime_session_id=runtime.id,
         model_provider_id=model_provider_id,
+        model_name=provider.model,
+        reasoning_effort=provider.reasoning_effort,
         streaming_callback_ready=True,
         openhands_conversation_id=conversation_id,
         display_title=title.strip() if title and title.strip() else None,
@@ -247,9 +254,6 @@ def create_conversation(
         attempt_count=1,
     )
     db.add(command)
-    provider = runtime_provider(
-        db, {"asset": {"executor": {"model_provider_id": model_provider_id}}}
-    )
     handle = _handle(db, workspace, binding)
     request = StartAttemptRequest(
         attempt_id=binding.id,
@@ -464,10 +468,6 @@ def message(
     binding_id: str,
     content: str,
     attachments: tuple[dict[str, str], ...] = (),
-    *,
-    model_provider_id: str | None = None,
-    model_name: str | None = None,
-    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
@@ -494,10 +494,10 @@ def message(
             409,
         )
     # OpenHands switch_llm changes the live Event Service but does not persist
-    # the replacement LLM. After a Runtime reload its formal agent.llm can
-    # therefore differ from the audited binding. Re-apply the binding before
-    # the user event whenever that formal usage identity has drifted.
-    target_provider_id = model_provider_id or binding.model_provider_id
+    # the replacement LLM. Re-apply the complete persisted binding before
+    # every user event so a Runtime reload cannot silently restore the model
+    # used when this Conversation was originally created.
+    target_provider_id = binding.model_provider_id
     if not target_provider_id or not has_connected_default_model(db, target_provider_id):
         raise DomainError(
             "AGENT_MODEL_CONFIGURATION_REQUIRED",
@@ -505,38 +505,21 @@ def message(
             409,
         )
     runtime = get_runtime()
+    provider = runtime_provider(
+        db,
+        {"asset": {"executor": {"model_provider_id": target_provider_id}}},
+        model_name=binding.model_name,
+        reasoning_effort=binding.reasoning_effort,
+    )
     try:
-        active_provider_id = runtime.conversation_context(handle).get("provider_id")
+        runtime.switch_model(handle, provider)
     except DomainError as exc:
         raise DomainError(
             "AGENT_MODEL_REBIND_FAILED",
-            "无法在发送前确认当前模型供应商，请新建会话或稍后重试",
+            "无法在发送前应用会话已保存的模型，请稍后重试",
             503,
             {"model_provider_id": target_provider_id},
         ) from exc
-    if (
-        active_provider_id != target_provider_id
-        or model_name is not None
-        or reasoning_effort is not None
-    ):
-        provider = runtime_provider(
-            db,
-            {"asset": {"executor": {"model_provider_id": target_provider_id}}},
-            model_name=model_name,
-            reasoning_effort=reasoning_effort,
-        )
-        try:
-            runtime.switch_model(handle, provider)
-        except DomainError as exc:
-            raise DomainError(
-                "AGENT_MODEL_REBIND_FAILED",
-                "无法在发送前确认当前模型供应商，请新建会话或稍后重试",
-                503,
-                {"model_provider_id": target_provider_id},
-            ) from exc
-        binding.model_provider_id = target_provider_id
-        binding.updated_at = now()
-        db.flush()
     paths = tuple(item["path"] for item in attachments)
     image_urls = tuple(item["image_data_url"] for item in attachments if "image_data_url" in item)
     prompt = content.strip()
@@ -609,15 +592,16 @@ def switch_conversation_model(
     db: Session,
     workspace_id: str,
     binding_id: str,
+    model_provider_id: str,
     model_name: str,
     reasoning_effort: str | None,
 ) -> dict[str, str | None]:
     workspace = _workspace(db, workspace_id)
-    binding = _binding(db, workspace_id, binding_id)
-    if binding.model_provider_id is None:
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    if not has_connected_default_model(db, model_provider_id):
         raise DomainError(
-            "AGENT_CONVERSATION_PROVIDER_REQUIRED",
-            "此历史会话未记录模型供应商，无法安全切换模型；请新建会话",
+            "AGENT_MODEL_CONFIGURATION_REQUIRED",
+            "请选择已测试成功且存在启用默认模型的模型供应商",
             409,
         )
     handle = _handle(db, workspace, binding)
@@ -626,11 +610,20 @@ def switch_conversation_model(
         raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后切换模型", 409)
     provider = runtime_provider(
         db,
-        {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+        {"asset": {"executor": {"model_provider_id": model_provider_id}}},
         model_name=model_name,
         reasoning_effort=reasoning_effort,
     )
-    runtime.switch_model(handle, provider)
+    # Historical Event Services without a streaming callback retain the
+    # selection now, then apply it through their mandatory native fork before
+    # the next user event. New conversations can switch immediately.
+    if binding.streaming_callback_ready:
+        runtime.switch_model(handle, provider)
+    binding.model_provider_id = provider.provider_id
+    binding.model_name = provider.model
+    binding.reasoning_effort = provider.reasoning_effort
+    binding.updated_at = now()
+    db.flush()
     return {
         "model_provider_id": provider.provider_id,
         "model_name": provider.model,
@@ -686,6 +679,8 @@ def _fork_conversation(
     if not source_identity.event_id:
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)
     target_provider_id = source.model_provider_id
+    target_model_name = source.model_name
+    target_reasoning_effort = source.reasoning_effort
     streaming_callback_ready = source.streaming_callback_ready
     if migration_provider_id is not None:
         if not has_connected_default_model(db, migration_provider_id):
@@ -710,6 +705,8 @@ def _fork_conversation(
                 {"model_provider_id": migration_provider_id},
             ) from exc
         target_provider_id = provider.provider_id
+        target_model_name = provider.model
+        target_reasoning_effort = provider.reasoning_effort
         streaming_callback_ready = True
         event_id = source_identity.event_id
     if event_id is None:
@@ -725,6 +722,8 @@ def _fork_conversation(
         workspace_id=workspace.id,
         runtime_session_id=source.runtime_session_id,
         model_provider_id=target_provider_id,
+        model_name=target_model_name,
+        reasoning_effort=target_reasoning_effort,
         streaming_callback_ready=streaming_callback_ready,
         openhands_conversation_id=target_id,
         display_title=display_title,

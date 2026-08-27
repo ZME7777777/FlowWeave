@@ -122,6 +122,12 @@
             "title": "Model Name",
             "type": "string"
           },
+          "model_provider_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Model Provider Id",
+            "type": "string"
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -136,6 +142,7 @@
           }
         },
         "required": [
+          "model_provider_id",
           "model_name"
         ],
         "title": "AgentConversationModelWrite",
@@ -173,44 +180,6 @@
             "minLength": 1,
             "title": "Content",
             "type": "string"
-          },
-          "model_name": {
-            "anyOf": [
-              {
-                "maxLength": 240,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Name"
-          },
-          "model_provider_id": {
-            "anyOf": [
-              {
-                "maxLength": 36,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Provider Id"
-          },
-          "reasoning_effort": {
-            "anyOf": [
-              {
-                "maxLength": 30,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reasoning Effort"
           }
         },
         "required": [

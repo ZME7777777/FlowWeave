@@ -175,6 +175,12 @@ class AgentConversationBinding(Base):
     model_provider_id: Mapped[str | None] = mapped_column(
         ForeignKey("model_providers.id", ondelete="RESTRICT"), index=True
     )
+    # The desired per-Conversation LLM selection is a FlowWeave control-plane
+    # fact because OpenHands 1.42.0 switch_llm does not persist replacements.
+    # Historical rows remain nullable rather than guessing from a provider's
+    # mutable default model.
+    model_name: Mapped[str | None] = mapped_column(String(240))
+    reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     # True only when the Event Service was created from an LLM with stream=True,
     # which makes OpenHands 1.42.0 attach its formal token callback. Historical
     # rows are migrated as False because switch_llm cannot add that callback.
