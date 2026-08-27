@@ -278,13 +278,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'thought', event_type: 'THOUGHT', payload: { parent_id: 'user-request', content: '我先检查当前工作目录。', timestamp: '2026-08-26T10:00:01Z' } },
-          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'thought', event_name: 'BashAction', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
-          { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'tool-request', event_name: 'BashObservation', content: '/workspace', timestamp: '2026-08-26T10:00:03Z' } },
+          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'thought', event_name: 'TerminalAction', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
+          { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'tool-request', event_name: 'TerminalObservation', content: '/workspace', timestamp: '2026-08-26T10:00:03Z' } },
           { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'tool-result', timestamp: '2026-08-26T10:00:04Z' } },
           { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'state-empty', content: '工作区已就绪。', timestamp: '2026-08-26T10:02:19Z' } },
           { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答', timestamp: '2026-08-26T10:03:00Z' } },
           { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。', timestamp: '2026-08-26T10:03:02Z' } },
-          { id: 'failure-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'direct-reply', content: '触发失败', timestamp: '2026-08-26T10:04:00Z' } },
+          { id: 'finish-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'direct-reply', content: '整理任务', timestamp: '2026-08-26T10:03:10Z' } },
+          { id: 'tracker-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'finish-user', event_name: 'TaskTrackerAction', content: '我先把执行步骤整理成任务列表。', details: { command: 'plan', task_list: [{ title: '检查构建', status: 'in_progress' }] }, timestamp: '2026-08-26T10:03:11Z' } },
+          { id: 'tracker-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'tracker-action', event_name: 'TaskTrackerObservation', details: { command: 'plan' }, timestamp: '2026-08-26T10:03:12Z' } },
+          { id: 'finish-action', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'tracker-result', event_name: 'FinishAction', content: '任务跟踪已完成。', timestamp: '2026-08-26T10:03:13Z' } },
+          { id: 'finish-observation', event_type: 'COMPLETED', payload: { source: 'environment', parent_id: 'finish-action', event_name: 'FinishObservation', content: '任务跟踪已完成。', timestamp: '2026-08-26T10:03:14Z' } },
+          { id: 'failure-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'finish-observation', content: '触发失败', timestamp: '2026-08-26T10:04:00Z' } },
           { id: 'failure-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'failure-user', content: '模型服务暂时不可用。', error_code: 'ModelUnavailable', timestamp: '2026-08-26T10:04:03Z' } },
         ] : [], next_cursor: null,
       }) });
@@ -379,6 +384,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const directTurn = page.locator('.conversation-turn').filter({ hasText: '直接回复完成。' });
   await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
   await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);
+  const finishTurn = page.locator('.conversation-turn').filter({ hasText: '任务跟踪已完成。' });
+  await expect(finishTurn.locator('.conversation-message.assistant')).toHaveCount(1);
+  await expect(finishTurn.getByText('耗时 3秒')).toBeVisible();
+  await finishTurn.getByText('耗时 3秒').click();
+  await expect(finishTurn.getByText('正在更新任务列表')).toBeVisible();
+  await expect(finishTurn.getByText('任务列表已更新')).toBeVisible();
+  await expect(finishTurn.getByText('任务跟踪', { exact: true })).toBeVisible();
+  await expect(finishTurn.getByText('我先把执行步骤整理成任务列表。')).toBeVisible();
+  await expect(finishTurn.getByText('任务跟踪已完成。')).toHaveCount(1);
   const failureTurn = page.locator('.conversation-turn').filter({ hasText: '本轮没有生成回复' });
   await expect(failureTurn.locator('.conversation-activity-group').getByText('耗时 3秒')).toBeVisible();
   await expect(failureTurn.locator('.conversation-message.assistant')).toHaveCount(0);
@@ -392,11 +406,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 未命名会话 1' })).toBeVisible();
   await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();
-  await expect(page.getByText('BashAction')).toBeHidden();
+  await expect(page.getByText('TerminalAction')).toBeHidden();
   await page.getByText('耗时 2分钟19秒').click();
   await expect(page.getByText('我先检查当前工作目录。')).toBeVisible();
-  await expect(page.getByText('工具调用已完成')).toBeVisible();
-  await expect(page.getByText('BashAction')).toHaveCount(0);
+  await expect(page.getByText('命令已执行')).toBeVisible();
+  await expect(page.getByText('TerminalAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
   await page.getByLabel('打开模型与推理设置').click();
@@ -444,6 +458,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('工具执行确认')).toHaveCount(0);
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await expect(page.getByText('Agent 正在处理上一条消息或停止请求，请稍候')).toHaveCount(0);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'live-thought', event_name: 'FinishAction', content: '实时任务已经完成。', timestamp: new Date().toISOString() } },
+  }));
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect(page.getByText('实时任务已经完成。')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 未命名会话 1' })).toBeVisible();

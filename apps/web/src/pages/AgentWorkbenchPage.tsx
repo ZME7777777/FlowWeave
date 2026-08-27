@@ -85,6 +85,7 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
   };
   return events.some(event => {
     const isTerminal = event.event_type === 'ERROR'
+      || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')
       || (event.event_type === 'MESSAGE' && !['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
     return isTerminal && descendsFromActiveUser(event);
   });
@@ -219,7 +220,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     if (event.type === 'delta' && event.content) setLiveText(value => value + event.content);
     if (event.type === 'event' && event.event) {
       setLiveEvents(current => mergeConversationEvents(current, [event.event!]));
-      if (['THOUGHT', 'TOOL_CALL', 'MESSAGE', 'ERROR'].includes(event.event.event_type)) setLiveText('');
+      if (['THOUGHT', 'TOOL_CALL', 'MESSAGE', 'ERROR', 'COMPLETED'].includes(event.event.event_type)) setLiveText('');
     }
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events

@@ -483,11 +483,18 @@ Agent Runtime 启动不依赖模型配置。创建 Conversation 时必须满足�
 3. Secret 在服务端调用边界解密，不进入数据库普通列、日志、前端或 Conversation display metadata；
 4. 后端编译为 OpenHands 正式 LLM/Agent 请求。
 
-创建成功后，binding 必须记录本次使用的 `model_provider_id`，该供应商在会话生命周期内不可变。会话内
-`switch_llm` 只能从这一供应商的已启用模型中选择；公开请求不得携带可改变供应商的字段。迁移前没有
-可审计 provider identity 的历史 binding 保持 `NULL`，不得依据当前 Workspace 默认值猜测回填或静默改写
-OpenHands 状态；它们可以继续读取和发送，但模型切换必须明确拒绝，用户可新建一个带明确供应商的会话。
-由原生 fork 创建的会话继承源 binding 的冻结供应商。
+创建成功后，binding 必须记录本次实际使用的 `model_provider_id`。用户可以在当前会话中暂存另一个已测试
+供应商或同供应商模型，并只在下一条正式 user event 发送前调用 OpenHands 正式 `switch_llm`；切换成功后
+binding 原子更新为本轮已审计供应商。固定 OpenHands `1.42.0` 的 `switch_llm` 只替换当前 Event Service 的
+活跃 LLM，不持久化替换值，Runtime reload 后正式 `agent.llm` 可能恢复为创建会话时的供应商。因此每次发送
+前必须以正式 `agent.llm.usage_id` 与 binding 对账；不一致时先重新应用 binding，失败则阻止 user event 并
+返回 `AGENT_MODEL_REBIND_FAILED`，不得静默使用旧供应商。迁移前没有可审计 provider identity 的历史
+binding 保持 `NULL`，不得依据 Workspace 默认值猜测回填；由原生 fork 创建的会话继承源 binding 的当前
+供应商。
+
+FlowWeave 通过 OpenHands 正式 LLM 字段把 Agent 工作台请求限制为 2 次尝试、2–4 秒指数退避和 60 秒
+单次超时。供应商额度耗尽或网关不可达时必须尽快形成正式 `ConversationErrorEvent`，避免 OpenHands SDK
+默认 5 次尝试、8–64 秒退避和 300 秒单次超时令简单问题长时间停留在无过程事件的运行态。
 
 没有默认模型时，页面保留导航和历史列表，在空白区提示“先选择已测试成功的模型配置”，并链接现有模型
 配置页面。禁止自动选最近创建的模型或回退到环境变量中的隐藏模型。
@@ -549,8 +556,9 @@ WS   /api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/stream
 WS   /api/v1/agent-workspaces/{workspace_id}/terminal
 ~~~
 
-消息 body 使用产品字段 `content` 和可选图片，适配层转换为正式 `SendMessageRequest`。服务端每次写操作都
-重新从 Workspace Runtime Session 解析当前 active generation，并校验 fence；binding 不保存物理 Runtime。
+消息 body 使用产品字段 `content`、可选附件和下一轮模型选择，适配层转换为正式 `SendMessageRequest`。
+服务端每次写操作都重新从 Workspace Runtime Session 解析当前 active generation、校验 fence，并在发送前
+按 binding 对账 OpenHands 当前 LLM；binding 不保存物理 Runtime 或消息状态。
 
 Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一 active generation，并固定 cwd 为
 `/runtime/workspace/project`。容器替换会断开终端进程，但新连接继续看到相同文件。
@@ -565,6 +573,7 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
 | `AGENT_CONVERSATION_PROVISIONING` | 409 | 展示创建中，不重复创建 |
 | `AGENT_CONVERSATION_NOT_FOUND` | 404 | 返回会话列表 |
 | `AGENT_CONVERSATION_IDENTITY_DRIFT` | 409 | 停止轮询，进入诊断状态 |
+| `AGENT_MODEL_REBIND_FAILED` | 503 | 不发送消息，提示新建会话或稍后重试 |
 | `AGENT_MESSAGE_DELIVERY_AMBIGUOUS` | 504 | 先刷新事件，不自动重发 |
 
 错误响应必须保留 `code`、可理解中文 message、脱敏 details 和 request ID。前端遇到非瞬态 4xx 后停止自动
@@ -603,11 +612,15 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   其他供应商隐式视为默认值。该卡片不属于当前会话，也不改变已创建 Conversation 的冻结模型。
 - Runtime 恢复中：历史列表可读；消息区说明“数据已保留，运行环境恢复后加载消息”；输入和终端禁用。
 - 当前 Conversation ACTIVE：REST 补齐历史后建立 WS，输入可用。
-- WebSocket `delta` 在正式 assistant `MessageEvent` 到达前作为当前轮工作过程中的临时模型输出逐段展示；
-  正式消息到达后清除临时文本，并只在过程区下方渲染一次最终回复。浏览器临时文本不写入 FlowWeave
-  数据库或本地持久状态。
-- `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程卡片显示；空 `STATE` 与
-  未承载用户价值的协议帧不显示。不得显示供应商的隐藏原始推理，仅渲染 OpenHands 已安全投影的内容。
+- WebSocket `delta` 作为当前轮工作过程中的临时模型输出逐段展示。OpenHands 的正式最终回复有两条路径：
+  assistant `MessageEvent`，或 Agent 调用 finish tool 时的 `FinishAction.message`；任一路径到达后清除临时
+  文本，并只在过程区下方渲染一次最终回复。`FinishObservation` 只确认工具执行，不生成第二份回复。浏览器
+  临时文本不写入 FlowWeave 数据库或本地持久状态。
+- `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程显示；工具 `ActionEvent.thought`
+  中由模型明确返回的安全可见文本作为 commentary 展示，Observation 原始输出不默认展开。TaskTracker 按
+  正式 `command=view/plan` 显示“查看任务列表”或“更新任务列表”，其他工具也显示可识别名称。空 `STATE`
+  与未承载用户价值的协议帧不显示；`reasoning_content`、thinking blocks、Responses reasoning item 等隐藏推理
+  不得进入安全投影。
 - REST 与实时安全投影保留 OpenHands 正式事件 `timestamp`。完成轮次按正式 user 到 assistant/error 的
   墙钟时间显示耗时，运行中可在正式时间回读前使用浏览器请求开始时间计时；缺失或非法时间不猜测。
 - Agent 执行中：显示停止按钮和正式 Tool 活动；不把全部原始 JSON 默认展开。
@@ -734,7 +747,8 @@ agent_workspace_terminal_connections
    `owner-type=AGENT_WORKSPACE` 的 READY Runtime 容器。
 2. 顶层存在 `Agent 会话` Tab，点击直接进入 `/agent`，不要求任何 Flow/节点/Run 上下文。
 3. 配置一个测试成功的模型为 Workspace 默认后，可直接新建 Conversation。
-4. 发送真实问题，收到 OpenHands assistant 事件；执行 Bash/File Tool 并在工作区生成可验证文件。
+4. 发送真实问题，收到 OpenHands assistant `MessageEvent` 或 `FinishAction.message` 最终回复；执行
+   Terminal/File Tool 并在工作区生成可验证文件。
 5. 新建第二个 Conversation，两个原生 conversation ID 不同，但 Runtime 容器数仍为 1。
 6. 终端 `pwd` 为 `/runtime/workspace/project`，可读取 Agent 创建的文件。
 7. 浏览器刷新后恢复相同 binding、完整事件和文件，不依赖 localStorage 深层 ID。

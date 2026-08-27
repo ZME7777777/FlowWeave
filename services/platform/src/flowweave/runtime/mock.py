@@ -196,6 +196,7 @@ class MockRuntime:
             "used_tokens": None,
             "window_tokens": None,
             "cumulative_tokens": None,
+            "provider_id": None,
             "model_name": None,
             "reasoning_effort": None,
         }

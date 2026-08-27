@@ -436,6 +436,87 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         )
 
 
+def test_agent_workspace_reapplies_bound_provider_after_runtime_reload_before_send(
+    settings, db_session_factory, monkeypatch
+):
+    class RebindingRuntime(MockRuntime):
+        active_provider_id = "provider-from-persisted-create"
+        switched: list[str] = []
+        sent: list[str] = []
+        fail_switch = False
+        fail_context = False
+
+        def conversation_context(self, handle):
+            del handle
+            if self.fail_context:
+                raise DomainError("EXECUTOR_UNAVAILABLE", "context failed", 503)
+            return {
+                "used_tokens": None,
+                "window_tokens": None,
+                "cumulative_tokens": None,
+                "provider_id": self.active_provider_id,
+                "model_name": "persisted-model",
+                "reasoning_effort": None,
+            }
+
+        def switch_model(self, handle, provider):
+            del handle
+            if self.fail_switch:
+                raise DomainError("EXECUTOR_UNAVAILABLE", "switch failed", 503)
+            self.active_provider_id = provider.provider_id
+            self.switched.append(provider.provider_id)
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent.append(content)
+            return super().send_message(handle, content, image_urls)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model="bound-model",
+            api_key="x",
+        ),
+    )
+    runtime = RebindingRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
+        bound_provider_id = str(created["model_provider_id"])
+
+        conversations.message(db, workspace.id, created["id"], "reload 后发送")
+
+        assert runtime.switched == [bound_provider_id]
+        assert runtime.sent == ["reload 后发送"]
+
+        runtime.fail_switch = False
+        runtime.fail_context = True
+        try:
+            conversations.message(db, workspace.id, created["id"], "仍不得发送")
+        except DomainError as exc:
+            assert exc.code == "AGENT_MODEL_REBIND_FAILED"
+            assert exc.status == 503
+        else:
+            raise AssertionError("provider identity read failure must stop the user event")
+        assert runtime.sent == ["reload 后发送"]
+
+        runtime.active_provider_id = "provider-from-persisted-create"
+        runtime.fail_context = False
+        runtime.fail_switch = True
+        try:
+            conversations.message(db, workspace.id, created["id"], "不得发送")
+        except DomainError as exc:
+            assert exc.code == "AGENT_MODEL_REBIND_FAILED"
+            assert exc.status == 503
+        else:
+            raise AssertionError("provider rebind failure must stop the user event")
+        assert runtime.sent == ["reload 后发送"]
+
+
 def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     settings, db_session_factory, monkeypatch
 ):

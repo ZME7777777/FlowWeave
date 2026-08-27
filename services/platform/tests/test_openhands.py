@@ -307,6 +307,11 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "api_key": "configured-secret",
         "usage_id": "flowweave:provider-1",
         "stream": True,
+        "num_retries": 2,
+        "retry_multiplier": 2.0,
+        "retry_min_wait": 2,
+        "retry_max_wait": 4,
+        "timeout": 60,
         "max_input_tokens": 922000,
     }
     assert [tool["name"] for tool in payload["agent"]["tools"]] == [
@@ -729,6 +734,11 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
     assert llm["api_mode"] == "responses"
     assert llm["model_canonical_name"] == "openai/codex-auto-review"
     assert llm["stream"] is True
+    assert llm["num_retries"] == 2
+    assert llm["retry_multiplier"] == 2.0
+    assert llm["retry_min_wait"] == 2
+    assert llm["retry_max_wait"] == 4
+    assert llm["timeout"] == 60
     assert llm["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
@@ -1343,7 +1353,13 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
             "kind": "ActionEvent",
             "id": "tool-1",
             "timestamp": "2026-08-26T10:00:03+00:00",
-            "action": {"kind": "TerminalAction", "command": "pwd", "api_key": "must-not-leak"},
+            "action": {
+                "kind": "TerminalAction",
+                "command": "pwd",
+                "thought": "可见过程说明",
+                "reasoning_content": "不得外泄的推理",
+                "api_key": "must-not-leak",
+            },
         }
     ) == (
         {
@@ -1354,13 +1370,45 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
                 "payload": {
                     "source_type": "ActionEvent",
                     "source": None,
-                    "content": "",
+                    "content": "可见过程说明",
                     "timestamp": "2026-08-26T10:00:03+00:00",
                     "event_name": "TerminalAction",
                     "details": {"command": "pwd", "api_key": "[redacted]"},
                 },
             },
         },
+    )
+    assert OpenHandsRuntime._visible_stream_event(
+        {
+            "kind": "ActionEvent",
+            "id": "finish-1",
+            "timestamp": "2026-08-26T10:00:04+00:00",
+            "source": "agent",
+            "parent_id": "tool-1",
+            "action": {
+                "kind": "FinishAction",
+                "message": "正式最终回复",
+                "reasoning_content": "不得外泄的推理",
+            },
+        }
+    ) == (
+        {
+            "type": "event",
+            "event": {
+                "id": "finish-1",
+                "event_type": "COMPLETED",
+                "payload": {
+                    "source_type": "ActionEvent",
+                    "source": "agent",
+                    "content": "正式最终回复",
+                    "timestamp": "2026-08-26T10:00:04+00:00",
+                    "parent_id": "tool-1",
+                    "event_name": "FinishAction",
+                    "details": {},
+                },
+            },
+        },
+        {"type": "message_complete"},
     )
 
 
@@ -1506,6 +1554,11 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert isinstance(payload, dict)
     assert payload["llm"]["model"] == "openai/gpt-5.6-sol"
     assert payload["llm"]["stream"] is True
+    assert payload["llm"]["num_retries"] == 2
+    assert payload["llm"]["retry_multiplier"] == 2.0
+    assert payload["llm"]["retry_min_wait"] == 2
+    assert payload["llm"]["retry_max_wait"] == 4
+    assert payload["llm"]["timeout"] == 60
     assert payload["llm"]["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
@@ -1736,6 +1789,11 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "api_key": "configured-secret",
             "usage_id": "condenser",
             "stream": True,
+            "num_retries": 2,
+            "retry_multiplier": 2.0,
+            "retry_min_wait": 2,
+            "retry_max_wait": 4,
+            "timeout": 60,
             "max_input_tokens": 922000,
         },
         "max_size": 80,
@@ -1861,6 +1919,7 @@ def test_openhands_conversation_context_reads_the_active_native_usage_bucket(
         "used_tokens": 6_380,
         "window_tokens": 922_000,
         "cumulative_tokens": 13_715,
+        "provider_id": "provider-1",
         "model_name": "openai/gpt-5.6-luna",
         "reasoning_effort": None,
     }

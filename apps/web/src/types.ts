@@ -358,6 +358,7 @@ export interface AgentAttachment {
 }
 export interface AgentConversationContext {
   used_tokens?: number | null; window_tokens?: number | null; cumulative_tokens?: number | null;
+  provider_id?: string | null;
   model_name?: string | null; reasoning_effort?: string | null;
 }
 export interface AgentConversation {

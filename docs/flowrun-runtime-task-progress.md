@@ -366,7 +366,7 @@ Playwright 和 Web 质量检查；不新建 Runtime、不切换既有 Conversati
 拒绝任何绕过队列的并发发送。最后一条用户消息始终可编辑并重新发送：服务端按正式 event id/parent_id
 将 OpenHands HEAD navigate 到该消息之前，再发送编辑内容触发重新思考；旧分支保留在 OpenHands append-only
 日志中但不再作为活动对话呈现。一级 Agent 工作台重做为 Codex 风格的简洁问答：用户消息仅右侧气泡，
-Agent 正文直接渲染，无头像或身份标签；已安全投影的思考和工具活动在完成后归组折叠于最终回复下方、
+Agent 正文直接渲染，无头像或身份标签；已安全投影的思考和工具活动在完成后归组折叠于最终回复上方、
 执行中保持展开；输入区采用紧凑圆角 composer 和明确的发送/暂停/继续状态。不得持久化平台会话状态、
 消息或推理，且不迁移 FlowRun 节点会话页面。
 
@@ -551,6 +551,24 @@ Playwright 覆盖 IME 确认候选不发送和后续独立 Enter 正常发送；
 验收：Agent 工作台定向 Playwright 覆盖快速复制、选区跨越时的剪贴板隔离与普通回复复制不受影响；Web
 lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
+### FR-42 Agent 会话正式终态、过程输出与供应商一致性 — DONE
+
+依赖：`FR-41`。
+
+目标：按固定 OpenHands `1.42.0` 正式契约同时识别 assistant `MessageEvent` 与
+`FinishAction.message` 两种 Agent 最终回复；实时流在正式 Finish 生命周期到达后结束当前轮，刷新后仍从
+同一正式事件恢复唯一最终回复。工具 `ActionEvent.thought` 中的安全可见模型文本必须进入工作过程，
+`TaskTrackerAction/Observation` 按正式 `command=view/plan` 显示具体“任务跟踪”动作，其他工具不得退化为
+无法识别的泛化文案。由于 OpenHands 正式 `switch_llm` 不持久化替换 LLM，每次发送正式 user event 前必须
+按 Conversation binding 重新应用当前供应商/模型；失败时阻止发送并明确报错，不得让 Runtime reload 后
+静默回退到创建会话时的旧供应商。通过 OpenHands 正式 LLM 重试与超时字段缩短额度耗尽、网关不可达等
+失败形成正式终态的等待时间。不得展示隐藏 reasoning、修改 OpenHands、持久化消息/事件或新增数据库字段。
+
+验收：固定 OpenHands `FinishAction`、response dispatch 与 `switch_llm` 源码取证；OpenHands 适配器和
+Agent Workspace 定向 pytest；Agent 工作台定向 Playwright 覆盖过程 commentary、任务跟踪名称、
+Finish 最终回复与完成态；定向测试覆盖正式 LLM 重试配置；Web lint/typecheck/production build、部署后真实
+会话探针、`git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -567,6 +585,7 @@ lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯一�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-42 | 固定 OpenHands `1.42.0` Finish、Event Service streaming、`switch_llm` 与 LLM retry 正式契约取证；OpenHands/Agent Workspace 定向 pytest（74 passed）与平台全量 pytest（451 passed）；Ruff/Pyright；Web lint/typecheck/production build；Agent 工作台定向 Playwright（1 passed）；Compose 镜像重建部署、真实原会话恢复与两个临时新会话探针；HTTP、API health、Alembic head、任务状态唯一性与 `git diff --check` | PASS：assistant `MessageEvent` 与 `FinishAction.message` 均成为工作过程下方的唯一最终回复，实时 Finish 正确结束本轮且 `FinishObservation` 不重复；安全可见 `ActionEvent.thought` 进入过程 commentary，TaskTracker 按 `view/plan` 显示具体动作，其他工具显示可识别名称，隐藏 reasoning 字段继续剔除。发送前以正式 `agent.llm.usage_id` 对账 binding，Runtime reload 后供应商漂移会先重绑定，失败则不发送 user event。正式 LLM 配置收紧为 2 次尝试、2–4 秒退避和 60 秒单次超时；额度耗尽探针立即形成 `LLMRateLimitError`，不再按 SDK 默认策略长时间无事件等待。原 Maven binding `0b333d3a-d7bf-4b8e-8831-eac0c48f6bc6` 按原 OpenHands Conversation 恢复，实际供应商与 binding 均为 `1476d1a7-fef5-44b2-9035-653e3eb75cf3`，历史 Finish 回复和最新正式错误终态均可读取。两个临时探针已删除。无缓存平台构建被 Debian 软件源安装错误中止，随后使用相同锁定依赖缓存成功重打包并部署；API、Postgres、Runtime Provider、Worker 与 Web 健康，Web 返回 200，唯一 head 为 `0063_autonomous_defaults`。未修改 OpenHands、数据库迁移、消息持久化或 FlowRun 边界；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-41 | Web lint/typecheck/production build；独立源码 Vite 上 Agent 工作台定向 Playwright（1 passed，覆盖快速复制、用户消息到后续回复的跨选区复制、助手回复正常复制）；Web Docker 镜像重建与替换；HTTP、API readiness、Alembic head、任务状态唯一性与 `git diff --check` | PASS：用户消息气泡的悬浮操作区增加快速复制按钮并以短暂勾选反馈成功。浏览器原生 copy 如 anchor 位于用户消息正文且 range 跨到后续工作过程或回复，剪贴板被限制为该用户 event 的正文；若 range 完全在用户消息中则保留实际选区，助手回复和其他内容不会被该处理器拦截。未修改 OpenHands event、平台持久化、Runtime 或 FlowRun 边界。Web 已重新构建部署，返回 200，API readiness 通过；唯一 Alembic head 为 `0063_autonomous_defaults`，无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-40 | 固定 OpenHands `1.42.0` Event Service、`switch_llm` 与 SDK streaming fallback 源码取证；OpenHands 适配器定向 pytest（62 passed）及 Ruff；Web lint/typecheck/production build；独立源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；共享平台与 Web 镜像重建部署；Compose、HTTP、Runtime generation、原 Conversation/event identity、Alembic head、任务状态唯一性与 `git diff --check` | PASS：报错由会话从普通供应商切换到强制流式的 Codex OAuth 触发，根因是该历史 Conversation 首个 LLM 为 `stream=false`，Event Service 创建时未绑定 token callback；后续 `switch_llm(stream=true)` 因没有 callback 被 SDK 降级为非流式，Codex 端点因此拒绝请求。所有新顶层 Conversation 从首个供应商开始即使用正式 `stream=true`，后续供应商切换复用已绑定回调；FlowWeave 仍自行托管 OAuth 凭据，未伪装成 OpenHands subscription。Composer 在 IME composition 或 `keyCode=229` 时忽略 Enter，候选确认不再发送，组合结束后的独立 Enter 正常发送。部署后 API/Runtime Provider 健康、Web 返回 200，Agent Runtime 恢复为 generation 10，原会话与正式事件均按原 ID 读回。固定版本的 `switch_llm` 不持久化新 LLM 且不重建 token callback，因此未篡改旧 Conversation 的 OpenHands state；该修复适用于新建 Conversation，既有 `stream=false` 会话切换 Codex 需新建会话。唯一 Alembic head 为 `0063_autonomous_defaults`；无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-39 | OpenHands 适配器定向 pytest（62 passed）；Web lint/typecheck/production build；独立源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；迁移 head、任务状态唯一性、`git diff --check`；Compose 共享平台与 Web 重建部署、健康检查和真实 `/context` API | PASS：Composer 的模型设置改为轻量浮层；无正式当前上下文数据时不渲染占位，数据存在时显示环形图。适配器只从活跃 LLM `usage_id` 的正式 OpenHands bucket 读取 `per_turn_token/context_window`，不会把 condenser 的用量混入当前上下文。真实 `openai/gpt-5.6-luna` 会话恢复后返回 `used_tokens=6380`、`window_tokens=922000`，页面将显示 `6.4k / 922k`；922k 是供应商报告的真实窗口，不会伪造成 256k 或 1m。无缓存构建曾三次被 Debian 临时 502 阻断，随后使用同一锁定依赖的本地构建缓存成功生成新代码镜像并部署；API、Postgres、Runtime Provider、Worker 与 Web 健康，唯一 Alembic head 仍为 `0063_autonomous_defaults`。未修改 OpenHands、数据库迁移、持久化或 FlowRun/Runtime 边界。无 `CURRENT`、`READY` 或下一切片。 |

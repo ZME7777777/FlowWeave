@@ -33,6 +33,14 @@ function itemFor(event: OpenHandsConversationEvent): Item | undefined {
   if (event.event_type === 'TOOL_CALL') return { event, kind: 'tool', title: eventName, content };
   if (event.event_type === 'TOOL_RESULT') return { event, kind: 'tool', title: eventName, content };
   if (event.event_type === 'ERROR') return { event, kind: 'error', title: '执行遇到问题', content };
+  if (event.event_type === 'COMPLETED') {
+    // OpenHands has two formal final-response paths: an assistant MessageEvent
+    // and FinishAction.message. FinishObservation only confirms execution and
+    // must not create a duplicate final reply.
+    return eventName === 'FinishAction' && content
+      ? { event, kind: 'assistant', title: '', content }
+      : undefined;
+  }
   // STATE is transport progress rather than conversation content. Other empty
   // protocol frames are similarly excluded from the product transcript.
   return content ? { event, kind: 'thought', title: eventName, content } : undefined;
@@ -106,7 +114,8 @@ function activityPresentation(item: Item): { title: string; status: string; comm
   const path = detailText(details.path) || detailText(details.file_path) || detailText(details.filename);
   const command = detailText(details.command);
   const completed = item.event.event_type === 'TOOL_RESULT';
-  if (eventName === 'TerminalAction') return { title: '正在运行命令', status: '调用工具', command };
+  const thought = !completed && item.content ? item.content.slice(0, 2_000) : undefined;
+  if (eventName === 'TerminalAction') return { title: '正在运行命令', status: '终端', command, thought };
   if (eventName === 'TerminalObservation') return { title: '命令已执行', status: completed ? '已完成' : '处理中' };
   if (eventName === 'FileEditorAction') {
     const operation = command.toLowerCase();
@@ -114,16 +123,34 @@ function activityPresentation(item: Item): { title: string; status: string; comm
       : ['create', 'write'].includes(operation) ? '正在创建文件'
         : ['str_replace', 'insert', 'append', 'undo_edit'].includes(operation) ? '正在编辑文件'
           : '正在处理文件';
-    return { title, status: '调用工具', path: path ? workspacePath(path) : undefined };
+    return { title, status: '文件编辑器', path: path ? workspacePath(path) : undefined, thought };
   }
   if (eventName === 'FileEditorObservation') return { title: '文件操作已完成', status: completed ? '已完成' : '处理中', path: path ? workspacePath(path) : undefined };
-  if (eventName === 'InvokeSkillAction') return { title: '正在使用已启用技能', status: '调用技能' };
+  if (eventName === 'TaskTrackerAction') {
+    return {
+      title: command === 'plan' ? '正在更新任务列表' : '正在查看任务列表',
+      status: '任务跟踪',
+      thought,
+    };
+  }
+  if (eventName === 'TaskTrackerObservation') {
+    return {
+      title: command === 'plan' ? '任务列表已更新' : '任务列表已读取',
+      status: completed ? '任务跟踪 · 已完成' : '任务跟踪',
+    };
+  }
+  if (eventName === 'InvokeSkillAction') return { title: '正在使用已启用技能', status: '技能', thought };
   if (eventName === 'InvokeSkillObservation') return { title: '技能调用已完成', status: completed ? '已完成' : '处理中' };
-  if (eventName.includes('Browser')) return { title: completed ? '浏览器操作已完成' : '正在操作浏览器', status: completed ? '已完成' : '调用工具' };
-  if (eventName.includes('MCP')) return { title: completed ? '工具调用已完成' : '正在调用已启用工具', status: completed ? '已完成' : '调用工具' };
-  if (eventName === 'TaskAction') return { title: '正在处理子任务', status: '处理中' };
+  if (eventName.includes('Browser')) return { title: completed ? '浏览器操作已完成' : '正在操作浏览器', status: completed ? '浏览器 · 已完成' : '浏览器', thought };
+  if (eventName.includes('MCP')) return { title: completed ? 'MCP 工具调用已完成' : '正在调用 MCP 工具', status: completed ? 'MCP · 已完成' : 'MCP', thought };
+  if (eventName === 'TaskAction') return { title: '正在处理子任务', status: '子任务', thought };
   if (eventName === 'TaskObservation') return { title: '子任务已完成', status: completed ? '已完成' : '处理中' };
-  return { title: completed ? '工具调用已完成' : '正在使用工具', status: completed ? '已完成' : '调用工具' };
+  const toolName = eventName.replace(/(?:Action|Observation)$/, '') || '工具';
+  return {
+    title: completed ? `${toolName} 已完成` : `正在使用 ${toolName}`,
+    status: completed ? '工具 · 已完成' : '工具',
+    thought,
+  };
 }
 
 function eventTime(item?: Item): number | undefined {

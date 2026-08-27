@@ -470,41 +470,57 @@ def message(
             "Agent 正在处理上一条消息或停止请求，请稍候",
             409,
         )
-    try:
-        # Provider/model selection is staged in the browser and committed only
-        # directly before this formal OpenHands user event.  A failed switch
-        # therefore cannot alter the persisted Conversation binding or send an
-        # event through a different provider by accident.
-        target_provider_id = model_provider_id or binding.model_provider_id
-        if not target_provider_id or not has_connected_default_model(db, target_provider_id):
-            raise DomainError(
-                "AGENT_MODEL_CONFIGURATION_REQUIRED",
-                "请选择已测试成功且存在启用默认模型的模型供应商",
-                409,
-            )
-        if (
-            target_provider_id != binding.model_provider_id
-            or model_name is not None
-            or reasoning_effort is not None
-        ):
-            provider = runtime_provider(
-                db,
-                {"asset": {"executor": {"model_provider_id": target_provider_id}}},
-                model_name=model_name,
-                reasoning_effort=reasoning_effort,
-            )
-            get_runtime().switch_model(handle, provider)
-            binding.model_provider_id = target_provider_id
-            binding.updated_at = now()
-            db.flush()
-        paths = tuple(item["path"] for item in attachments)
-        image_urls = tuple(
-            item["image_data_url"] for item in attachments if "image_data_url" in item
+    # OpenHands switch_llm changes the live Event Service but does not persist
+    # the replacement LLM. After a Runtime reload its formal agent.llm can
+    # therefore differ from the audited binding. Re-apply the binding before
+    # the user event whenever that formal usage identity has drifted.
+    target_provider_id = model_provider_id or binding.model_provider_id
+    if not target_provider_id or not has_connected_default_model(db, target_provider_id):
+        raise DomainError(
+            "AGENT_MODEL_CONFIGURATION_REQUIRED",
+            "请选择已测试成功且存在启用默认模型的模型供应商",
+            409,
         )
-        prompt = content.strip()
-        if paths:
-            prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(f"- {path}" for path in paths)
-        result = get_runtime().send_message(handle, prompt, image_urls)
+    runtime = get_runtime()
+    try:
+        active_provider_id = runtime.conversation_context(handle).get("provider_id")
+    except DomainError as exc:
+        raise DomainError(
+            "AGENT_MODEL_REBIND_FAILED",
+            "无法在发送前确认当前模型供应商，请新建会话或稍后重试",
+            503,
+            {"model_provider_id": target_provider_id},
+        ) from exc
+    if (
+        active_provider_id != target_provider_id
+        or model_name is not None
+        or reasoning_effort is not None
+    ):
+        provider = runtime_provider(
+            db,
+            {"asset": {"executor": {"model_provider_id": target_provider_id}}},
+            model_name=model_name,
+            reasoning_effort=reasoning_effort,
+        )
+        try:
+            runtime.switch_model(handle, provider)
+        except DomainError as exc:
+            raise DomainError(
+                "AGENT_MODEL_REBIND_FAILED",
+                "无法在发送前确认当前模型供应商，请新建会话或稍后重试",
+                503,
+                {"model_provider_id": target_provider_id},
+            ) from exc
+        binding.model_provider_id = target_provider_id
+        binding.updated_at = now()
+        db.flush()
+    paths = tuple(item["path"] for item in attachments)
+    image_urls = tuple(item["image_data_url"] for item in attachments if "image_data_url" in item)
+    prompt = content.strip()
+    if paths:
+        prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(f"- {path}" for path in paths)
+    try:
+        result = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(

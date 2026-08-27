@@ -720,6 +720,15 @@ class OpenHandsRuntime:
             # provider (notably Codex OAuth) does not inherit a callback-less
             # Conversation and get downgraded to a non-streaming request.
             "stream": True,
+            # The SDK defaults to five attempts, 8-64 second backoff, and a
+            # 300 second request timeout. Quota exhaustion and unreachable
+            # gateways would therefore leave a simple turn apparently idle
+            # for several minutes before emitting its formal error event.
+            "num_retries": 2,
+            "retry_multiplier": 2.0,
+            "retry_min_wait": 2,
+            "retry_max_wait": 4,
+            "timeout": 60,
         }
         if (window := self._DECLARED_CONTEXT_WINDOWS.get(model)) is not None:
             llm["max_input_tokens"] = window
@@ -1582,7 +1591,14 @@ class OpenHandsRuntime:
         if isinstance(raw_detail, dict):
             detail = cast(dict[str, Any], raw_detail)
             event_name = str(detail.get("kind") or kind)
-            private_detail_fields = {"kind", "message", "thought"}
+            private_detail_fields = {
+                "kind",
+                "message",
+                "thought",
+                "reasoning_content",
+                "thinking_blocks",
+                "responses_reasoning_item",
+            }
             if kind == "ActionEvent" and event_name == "TaskAction":
                 # A native Task prompt may contain credentials or private input.
                 # OpenHands owns that execution payload; FlowWeave persists only
@@ -2546,7 +2562,13 @@ class OpenHandsRuntime:
             "payload": cls._event_payload(raw),
         }
         frames: tuple[dict[str, Any], ...] = ({"type": "event", "event": projected},)
-        if kind in {"MessageEvent", "ConversationErrorEvent"}:
+        raw_action = event.get("action")
+        action_kind = (
+            str(cast(dict[str, object], raw_action).get("kind") or "")
+            if isinstance(raw_action, dict)
+            else ""
+        )
+        if kind in {"MessageEvent", "ConversationErrorEvent"} or action_kind == "FinishAction":
             return (*frames, {"type": "message_complete"})
         return frames
 
@@ -2656,6 +2678,13 @@ class OpenHandsRuntime:
             else {}
         )
         usage_id = llm.get("usage_id")
+        provider_id = (
+            usage_id.removeprefix("flowweave:")
+            if isinstance(usage_id, str)
+            and usage_id.startswith("flowweave:")
+            and usage_id != "flowweave:"
+            else None
+        )
         active_usage = next(
             (
                 usage
@@ -2698,6 +2727,7 @@ class OpenHandsRuntime:
             ),
             "window_tokens": window,
             "cumulative_tokens": cumulative if found else None,
+            "provider_id": provider_id,
             "model_name": llm.get("model") if isinstance(llm.get("model"), str) else None,
             "reasoning_effort": (
                 llm.get("reasoning_effort")
