@@ -336,6 +336,37 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-context-progress')).toHaveText('6.4k / 922k');
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('.conversation-activity-group');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await completedTurn.getByRole('button', { name: '复制消息' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('检查工作目录');
+  const crossedUserSelection = await completedTurn.evaluate(turn => {
+    const user = turn.querySelector<HTMLElement>('.conversation-message.user .conversation-message-content');
+    const reply = turn.querySelector<HTMLElement>('.conversation-message.assistant');
+    if (!user || !reply || !user.firstChild) throw new Error('Expected completed turn content');
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(user.firstChild, 0);
+    range.setEnd(reply, reply.childNodes.length);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() });
+    document.dispatchEvent(event);
+    return { copied: event.clipboardData?.getData('text/plain'), prevented: event.defaultPrevented };
+  });
+  expect(crossedUserSelection).toEqual({ copied: '检查工作目录', prevented: true });
+  const assistantSelection = await completedTurn.evaluate(turn => {
+    const reply = turn.querySelector<HTMLElement>('.conversation-message.assistant');
+    if (!reply) throw new Error('Expected assistant reply');
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(reply);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() });
+    document.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(assistantSelection).toBe(false);
   await expect(completedProcess).toHaveJSProperty('open', false);
   await expect(completedProcess.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');

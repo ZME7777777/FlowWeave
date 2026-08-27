@@ -11,9 +11,10 @@
 .conversation-message.assistant{max-width:100%;color:#222722}
 .conversation-message.assistant pre{max-width:100%;overflow:auto;border:1px solid #e5e8e5;border-radius:10px;background:#f7f8f7;padding:11px;font:11px/1.55 'DM Mono',ui-monospace,monospace}
 .conversation-message.assistant code{border-radius:4px;background:#f1f3f1;padding:1px 4px;font:12px 'DM Mono',ui-monospace,monospace}
-.conversation-message-rewrite{position:absolute;right:-30px;bottom:4px;display:grid;place-items:center;width:23px;height:23px;border:0;border-radius:6px;background:transparent;color:#738078;cursor:pointer;opacity:0;transition:opacity .16s,background .16s}
-.conversation-message.user:hover .conversation-message-rewrite,.conversation-message-rewrite:focus-visible{opacity:1}
-.conversation-message-rewrite:hover{background:#eef1ef;color:#33483a}
+.conversation-message-actions{position:absolute;right:-58px;bottom:4px;display:flex;gap:4px;opacity:0;transition:opacity .16s}
+.conversation-message-copy,.conversation-message-rewrite{display:grid;place-items:center;width:23px;height:23px;border:0;border-radius:6px;background:transparent;color:#738078;cursor:pointer;user-select:none;transition:background .16s,color .16s}
+.conversation-message.user:hover .conversation-message-actions,.conversation-message-actions:focus-within{opacity:1}
+.conversation-message-copy:hover,.conversation-message-rewrite:hover{background:#eef1ef;color:#33483a}
 .conversation-message-edit{display:block;width:min(78%,600px);padding:9px}
 .conversation-message-edit textarea{display:block;width:100%;min-height:72px;resize:vertical;border:0;background:transparent;font:inherit;outline:0}
 .conversation-message-edit footer{display:flex;justify-content:flex-end;gap:7px;margin-top:6px}
@@ -77,6 +78,6 @@
 .conversation-message{font-size:13px}
 .conversation-message.user{max-width:88%}
 .conversation-message-edit{width:88%}
-.conversation-message-rewrite{right:0;bottom:-28px}
+  .conversation-message-actions{right:0;bottom:-28px}
 .conversation-turn{margin-bottom:40px}
 }

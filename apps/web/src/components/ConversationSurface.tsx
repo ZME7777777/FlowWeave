@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CircleAlert, GitFork, LoaderCircle, Pencil, Sparkles, Wrench } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, GitFork, LoaderCircle, Pencil, Sparkles, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { OpenHandsConversationEvent } from '../types';
@@ -148,6 +148,49 @@ function formatDuration(totalSeconds: number): string {
   return `${remainder}秒`;
 }
 
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Some embedded or permission-restricted browsers still allow the
+      // user-gesture fallback below.
+    }
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('Clipboard is unavailable');
+}
+
+function elementForNode(node: Node | null): Element | null {
+  if (node instanceof Element) return node;
+  return node?.parentElement ?? null;
+}
+
+function isolatedUserSelection(selection: Selection): { content: HTMLElement; text: string } | undefined {
+  if (!selection.rangeCount) return undefined;
+  const anchor = elementForNode(selection.anchorNode);
+  const focus = elementForNode(selection.focusNode);
+  const content = anchor?.closest<HTMLElement>('.conversation-message.user .conversation-message-content');
+  if (!content || !focus) return undefined;
+  const range = selection.getRangeAt(0);
+  if (content.contains(range.startContainer) && content.contains(range.endContainer)) {
+    return { content, text: selection.toString() };
+  }
+  // A browser selection that starts in a user bubble may accidentally continue
+  // into the following turn as the surface updates. Keep the copy operation
+  // faithful to the message the user started selecting, not its descendants.
+  return { content, text: content.innerText };
+}
+
 function useElapsedSeconds(startedAt: number | undefined, finishedAt: number | undefined, active: boolean): number | undefined {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -252,9 +295,11 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const initialPositioned = useRef(false);
   const followLatest = useRef(true);
   const wasGenerating = useRef(isGenerating);
+  const copyResetTimer = useRef<number | undefined>(undefined);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
+  const [copiedEventId, setCopiedEventId] = useState<string>();
   const turns = useMemo(() => turnsFor(events.map(itemFor).filter((item): item is Item => Boolean(item))), [events]);
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
     followLatest.current = true;
@@ -279,6 +324,30 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     }
     wasGenerating.current = isGenerating;
   }, [isGenerating, liveText, scrollToLatest, turns.length]);
+  useEffect(() => () => {
+    if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
+  }, []);
+  useEffect(() => {
+    const onCopy = (event: ClipboardEvent) => {
+      const selection = window.getSelection();
+      if (!selection || !surface.current) return;
+      const isolated = isolatedUserSelection(selection);
+      if (!isolated || !surface.current.contains(isolated.content)) return;
+      event.preventDefault();
+      event.clipboardData?.setData('text/plain', isolated.text);
+    };
+    document.addEventListener('copy', onCopy);
+    return () => document.removeEventListener('copy', onCopy);
+  }, []);
+  const copyUserMessage = useCallback((eventId: string, content: string) => {
+    void copyText(content).then(() => {
+      setCopiedEventId(eventId);
+      if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = window.setTimeout(() => setCopiedEventId(current => current === eventId ? undefined : current), 1_500);
+    }).catch(() => {
+      // Native selection copy remains available when the browser rejects programmatic clipboard access.
+    });
+  }, []);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
@@ -291,7 +360,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
       const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
       const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
       return <section className="conversation-turn" key={turn.id}>
-        {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><ReactMarkdown>{turn.user.content}</ReactMarkdown>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</article>)}
+        {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
         <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
         {turn.assistant && <AgentReply content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
         {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
