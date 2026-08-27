@@ -2,11 +2,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, GitBranch, LoaderCircle, MonitorCog, PanelRightOpen, Play, Plus, Send, Settings2, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { Bot, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, LoaderCircle, MonitorCog, PanelRightOpen, Play, Plus, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, agentWorkspaceFileUrl, agentWorkspaceTerminalUrl, api, randomId, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
 import './agent-workbench.css';
 import './agent-workbench-layout.css';
 
@@ -45,7 +45,7 @@ function ComposerModelMenu({
       <label><span>供应商</span><select aria-label="会话供应商" value={providerId} disabled={disabled} onChange={event => onProviderChange(event.target.value)}><option value="" disabled>选择供应商</option>{providers.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><ChevronRight size={14}/></label>
       <label><span>模型</span><select aria-label="会话模型" value={modelName} disabled={disabled || !providerId} onChange={event => onModelChange(event.target.value)}>{modelName && !models.some(model => model.model_name === modelName) && <option value={modelName} disabled>{modelName}</option>}{models.map(model => <option key={model.model_name} value={model.model_name}>{model.model_name}</option>)}</select><ChevronRight size={14}/></label>
       {efforts.length > 0 && <label><span>推理强度</span><select aria-label="思考程度" value={effort} disabled={disabled || !providerId} onChange={event => onEffortChange(event.target.value)}>{[effort, ...efforts].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index).map(value => <option key={value} value={value}>{value}</option>)}</select><ChevronRight size={14}/></label>}
-      <details className="agent-composer-model-advanced"><summary><span>高级</span><ChevronDown size={12}/></summary><p>选择后立即保存并应用到当前会话。</p></details>
+      <details className="agent-composer-model-advanced"><summary><span>高级</span><ChevronDown size={12}/></summary><p>供应商、模型和推理强度仅作用于当前会话。</p></details>
     </section>
   </details>;
 }
@@ -266,6 +266,66 @@ function WorkspaceFileTree({ entries, root, selectedFile, onSelect }: { entries:
   return <div className="agent-file-tree" role="tree" aria-label="工作区目录树">{nodes.length ? renderNodes(nodes) : <p>当前目录没有可展示的文件。</p>}</div>;
 }
 
+function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
+  workspaceId: string;
+  onClose: () => void;
+  onCreated: (directory: AgentWorkDirectory) => void;
+}) {
+  const [displayName, setDisplayName] = useState('');
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const detailsQuery = useQuery({
+    queryKey: ['agent-workspace-create-directory', workspaceId],
+    queryFn: () => api.agentWorkspaceDetails(workspaceId),
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
+  const create = useMutation({
+    mutationFn: () => api.createAgentWorkDirectory(workspaceId, displayName.trim(), selectedPaths),
+    onSuccess: directory => {
+      onCreated(directory);
+      setDisplayName('');
+      setSelectedPaths([]);
+      onClose();
+    },
+  });
+  const details = detailsQuery.data;
+  const directories = (details?.files ?? [])
+    .filter(entry => entry.kind === 'directory')
+    .map(entry => ({ path: relativeWorkspacePath(entry.path, details!.root) }))
+    .filter(entry => entry.path !== '.' && !entry.path.startsWith('../') && !entry.path.startsWith('/'))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  const togglePath = (path: string) => {
+    setSelectedPaths(current => {
+      if (current.includes(path)) return current.filter(item => item !== path);
+      const next = [...current.filter(item => !item.startsWith(`${path}/`) && !path.startsWith(`${item}/`)), path];
+      return next.sort();
+    });
+    if (!displayName.trim()) setDisplayName(path.split('/').pop() || path);
+  };
+  const canSubmit = Boolean(displayName.trim() && selectedPaths.length && !create.isPending);
+  return <div className="agent-work-directory-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !create.isPending) onClose(); }}>
+    <section role="dialog" aria-modal="true" aria-labelledby="agent-work-directory-title" className="agent-work-directory-dialog">
+      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-work-directory-title">新增工作区</h2></div><button type="button" aria-label="关闭新增工作区" disabled={create.isPending} onClick={onClose}><X size={16}/></button></header>
+      <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} placeholder="例如：后端服务" onChange={event => setDisplayName(event.target.value)}/></label>
+      <section className="agent-work-directory-picker" aria-label="选择工作区目录">
+        <header><div><b>选择目录</b><span>从 /runtime/workspace/project 中选择一个或多个子目录</span></div><em>{selectedPaths.length}/20</em></header>
+        <div>
+          {detailsQuery.isLoading && <p>正在读取项目目录…</p>}
+          {detailsQuery.isError && <p className="error">{detailsQuery.error instanceof Error ? detailsQuery.error.message : '项目目录读取失败，请稍后重试。'}</p>}
+          {!detailsQuery.isLoading && !detailsQuery.isError && !directories.length && <p>项目根目录中还没有可选择的子目录。</p>}
+          {directories.map(directory => {
+            const checked = selectedPaths.includes(directory.path);
+            const depth = directory.path.split('/').length - 1;
+            return <label key={directory.path} style={{ '--directory-depth': depth } as CSSProperties}><input type="checkbox" checked={checked} disabled={!checked && selectedPaths.length >= 20} onChange={() => togglePath(directory.path)}/><Folder size={14}/><span>{directory.path}</span></label>;
+          })}
+        </div>
+      </section>
+      <p className="agent-work-directory-note">选择多个目录时，它们属于同一个逻辑工作区；Agent 仍复用当前唯一 Runtime 容器。</p>
+      {create.error && <p className="agent-work-directory-error">{create.error.message}</p>}
+      <footer><button type="button" className="secondary" disabled={create.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canSubmit} onClick={() => create.mutate()}>{create.isPending ? '正在创建…' : '创建工作区'}</button></footer>
+    </section>
+  </div>;
+}
+
 type WorkspaceToolTab =
   | { id: 'files'; kind: 'files' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
@@ -363,10 +423,10 @@ function WorkspaceDrawer({
     }
     updateScope(current => {
       const tabs = current.tabs.filter(candidate => candidate.id !== tab.id);
-      return { ...current, tabs, activeTabId: current.activeTabId === tab.id ? tabs.at(-1)?.id : current.activeTabId };
+      return { ...current, tabs, activeTabId: current.activeTabId === tab.id ? tabs[tabs.length - 1]?.id : current.activeTabId };
     });
   };
-  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!open || window.innerWidth <= 960) return;
     event.preventDefault();
     const startX = event.clientX;
@@ -403,7 +463,7 @@ function WorkspaceDrawer({
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <button type="button" key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''} onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : details?.runtime.container_id || '连接中…'}</span><i role="button" aria-label={`关闭${tab.kind === 'files' ? '文件' : `终端 ${details?.runtime.container_id || ''}`}页签`} aria-disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={event => { event.stopPropagation(); if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) void closeTab(tab); }}><X size={12}/></i></button>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={() => openFiles()}><FileCode2 size={13}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={13}/>终端</button></div></details><button type="button" aria-label="关闭工作区工具" onClick={onClose}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : details?.runtime.container_id || '连接中…'}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) void closeTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label="关闭工作区工具" onClick={onClose}><X size={16}/></button></div></header>
       {panelError && <p className="agent-workspace-panel-error">{panelError}</p>}
       {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
         {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`}>
@@ -447,6 +507,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const [pendingMigratedSend, setPendingMigratedSend] = useState<BoundQueuedMessage>();
   const [conversationDraft, setConversationDraft] = useState<ConversationDraft>();
   const [workspaceScopeMigration, setWorkspaceScopeMigration] = useState<string>();
+  const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const selectedBindingId = bindingIdFromLocation();
@@ -461,9 +522,10 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
-  const canCreate = Boolean(runtimeWritable && newConversationProviderId && newConversationModelName);
+  const canOpenConversation = runtimeWritable;
   const canWrite = Boolean(runtimeWritable && selected);
-  const canBootstrap = Boolean(runtimeWritable && conversationDraft && newConversationProviderId);
+  const canBootstrap = Boolean(runtimeWritable && conversationDraft && newConversationProviderId && newConversationModelName);
+  const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));
   const isGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventsQuery = useQuery({
     queryKey: ['agent-conversation-events', workspace?.id, selected?.id], queryFn: () => api.agentConversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
@@ -583,7 +645,12 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
     onNavigate(`/agent/conversations/${encodeURIComponent(conversation.id)}`);
   }, onError: (_error, message) => { setDraft(message.content); setAttachments(message.items); } });
-  const rename = useMutation({ mutationFn: () => api.updateAgentConversation(workspace!.id, selected!.id, title.trim()), onSuccess: () => { setEditing(false); refresh(); } });
+  const rename = useMutation({ mutationFn: () => api.updateAgentConversation(workspace!.id, selected!.id, title.trim()), onSuccess: conversation => {
+    queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace!.id], current => (current ?? []).map(item => item.id === conversation.id ? conversation : item));
+    setTitle(conversationName(conversation));
+    setEditing(false);
+    refresh();
+  } });
   const remove = useMutation({ mutationFn: () => api.deleteAgentConversation(workspace!.id, selected!.id), onSuccess: () => { setDrawerOpen(false); onNavigate('/agent', true); refresh(); } });
   const persistModel = useMutation({
     mutationFn: ({ providerId, modelName, effort }: { providerId: string; modelName: string; effort: string | null }) => api.switchAgentConversationModel(workspace!.id, selected!.id, providerId, modelName, effort),
@@ -681,7 +748,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     if (turnState === 'idle' || turnState === 'paused') rewrite.mutate({ eventId, content });
   }, [interrupt, rewrite, turnState]);
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
-    setConversationDraft({ ...next, id: crypto.randomUUID() });
+    setConversationDraft({ ...next, id: randomId() });
     setWorkspaceScopeMigration(undefined);
     setDraft('');
     setAttachments([]);
@@ -722,7 +789,6 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
 
   if (workspaceQuery.isLoading) return <main className="agent-workbench-loading">正在打开 Agent 工作台…</main>;
   if (workspaceQuery.error || !workspace) return <main className="agent-workbench-loading"><b>Agent 工作台正在初始化</b><span>默认运行环境准备完成后，会话列表会自动出现。</span></main>;
-  const providerLabel = (item: typeof connectedProviders[number]) => `${item.name} · ${item.models.find(model => model.enabled && model.is_default)?.model_name}`;
   const draftProviderInfo = connectedProviders.find(item => item.id === newConversationProviderId);
   const draftConversationModel = draftProviderInfo?.models.find(model => model.enabled && model.model_name === newConversationModelName)
     ?? draftProviderInfo?.models.find(model => model.enabled && model.is_default);
@@ -750,7 +816,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       percentage: Math.min(100, Math.round((contextQuery.data.used_tokens / contextQuery.data.window_tokens) * 100)),
     }
     : undefined;
-  const composerStatus = persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+  const composerStatus = conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = queuedMessages.length > 0 ? `已排队 ${queuedMessages.length} 条` : '';
   const visibleError = (bootstrap.error || rename.error || remove.error || upload.error || condense.error || fork.error || persistModel.error || migrateStreaming.error || interrupt.error || resume.error || rewrite.error || decideConfirmation.error || confirmationQuery.error || eventsQuery.error)
     ?? (send.error instanceof ApiError && send.error.code === 'AGENT_CONVERSATION_BUSY' ? null : send.error);
@@ -791,14 +857,14 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
 
   return <main className="agent-workbench-page">
     <aside className="agent-workbench-rail">
-      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h1>Agent 会话</h1></div><button className="primary" disabled={!canCreate} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></header>
+      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h1>Agent 会话</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button><button type="button" className="secondary" aria-label="新增工作区" onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button></div></header>
       <div className="agent-workbench-list">
         <section className="agent-workspace-group">
-          <header><div><Folder size={14}/><span>根工作区</span></div><button type="button" aria-label="在根工作区中新建会话" disabled={!canCreate} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={13}/></button></header>
+          <header><div><Folder size={14}/><span>根工作区</span></div><button type="button" aria-label="在根工作区中新建会话" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={13}/></button></header>
           {rootConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
         </section>
         {workDirectories.map(directory => <section key={directory.id} className="agent-workspace-group">
-          <header><div><Folder size={14}/><span>{directory.display_name}</span></div><button type="button" aria-label={`在${directory.display_name}中新建会话`} disabled={!canCreate} onClick={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })}><Plus size={13}/></button></header>
+          <header><div><Folder size={14}/><span>{directory.display_name}</span></div><button type="button" aria-label={`在${directory.display_name}中新建会话`} disabled={!canOpenConversation} onClick={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })}><Plus size={13}/></button></header>
           {conversationsForDirectory(directory.id).map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
         </section>)}
         {archivedDirectoryConversations.length > 0 && <section className="agent-workspace-group">
@@ -807,19 +873,18 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
         </section>}
       </div>
       {!conversations.length && !conversationDraft && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{connectedProviders.length ? '选择工作目录后新建会话开始协作。' : '请先完成至少一个模型供应商的连接测试。'}</span></div>}
-      <section className="agent-workbench-model-card"><header><Settings2 size={14}/><b>新会话供应商</b></header>{connectedProviders.length ? <select aria-label="新会话供应商" value={newConversationProviderId} onChange={event => setNewConversationProviderId(event.target.value)}>{connectedProviders.map(item => <option key={item.id} value={item.id}>{providerLabel(item)}</option>)}</select> : <button className="secondary" onClick={onOpenModels}>前往模型配置</button>}<small>仅用于本次创建，不会修改其他会话。</small></section>
     </aside>
     <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { setTitle(selected?.display_title ?? ''); setEditing(false); }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) rename.mutate(); if (event.key === 'Escape') { setTitle(selected?.display_title ?? ''); setEditing(false); } }}/></div> : <h2 title={selected ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected) return; setTitle(conversationName(selected)); setEditing(true); }}>{selected ? conversationName(selected) : conversationDraft ? `在${conversationDraft.displayName}中开始新会话` : '开始一个新的会话'}</h2>}{selected && <small className="agent-session-provider">当前供应商：{boundProviderInfo?.name ?? '未配置'}</small>}</div><div className="agent-header-actions">{selected && <button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button>}<button type="button" aria-label={drawerOpen ? '关闭工作区工具' : '打开工作区工具'} className={drawerOpen ? 'active' : ''} onClick={() => setDrawerOpen(value => !value)}><PanelRightOpen size={15}/></button></div></header>
+      <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : <h2 title={selected ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected) return; setTitle(conversationName(selected)); setEditing(true); }}>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</h2>}{(selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button>}<button type="button" aria-label={drawerOpen ? '关闭工作区工具' : '打开工作区工具'} className={drawerOpen ? 'active' : ''} onClick={() => setDrawerOpen(value => !value)}><PanelRightOpen size={15}/></button></div></header>
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
-      {selected ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={requestRewrite} onFork={eventId => fork.mutate(eventId)}/> : conversationDraft ? <div className="agent-workbench-empty"><Bot size={32}/><b>开始新的 Agent 会话</b><span>当前工作区、模型和附件会在发送第一条消息时一并绑定。</span></div> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canCreate} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></div>}
+      {selected ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={requestRewrite} onFork={eventId => fork.mutate(eventId)}/> : conversationDraft ? <div className="agent-workbench-empty"><Bot size={32}/><b>需要我帮你完成什么？</b><span>你可以直接发送问题，也可以先选择模型、添加附件或打开工作区工具。</span>{!connectedProviders.length && <button className="primary" onClick={onOpenModels}>配置模型供应商</button>}</div> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
-        <textarea aria-label="发送 Agent 消息" value={draft} maxLength={200_000} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…'} disabled={!(canWrite || canBootstrap) || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (isImeComposition(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); enqueueDraft(); } }}/>
+        <textarea aria-label="发送 Agent 消息" value={draft} maxLength={200_000} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (isImeComposition(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); enqueueDraft(); } }}/>
         {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}>{item.filename}<button aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
-            {(selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { for (const file of Array.from(event.target.files ?? [])) upload.mutate(file); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!(canWrite || canBootstrap) || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
+            {(selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { for (const file of Array.from(event.target.files ?? [])) upload.mutate(file); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
             {contextProgress && <span className="agent-context-progress" title={`当前上下文 ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()} tokens`} aria-label={`上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span>}
             {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}
@@ -833,5 +898,9 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
     <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected?.work_directory_id ?? conversationDraft?.workDirectoryId} attachments={attachments} runtimeAvailable={Boolean(runtime?.write_available)}/>
+    {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
+      queryClient.setQueryData<AgentWorkDirectoryList>(['agent-work-directories', workspace.id], current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
+      void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspace.id] });
+    }}/>}
   </main>;
 }

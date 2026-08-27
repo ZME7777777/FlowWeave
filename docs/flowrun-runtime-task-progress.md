@@ -761,6 +761,28 @@ OpenHands Conversation、投递唯一正式 user event 并激活 binding。发�
 Agent Workspace 定向 Playwright 已通过；Runtime 镜像恢复、会话恢复期间的工作区读取及右侧栏交互问题已
 修复并部署。用户完成部署后验收并明确确认本切片标记为 `DONE`。
 
+### FR-58 新会话完整能力与显式新增工作区 — DONE
+
+依赖：`FR-57`。
+
+目标：延迟创建只影响 Conversation 持久化时机，发送首条消息前的页面、模型供应商、模型、推理强度、
+附件、工作区摘要、文件和独立终端能力必须与正式会话一致，且界面不强调“草稿”概念。首条消息通过既有
+幂等 bootstrap 原子冻结当前工作目录、模型配置和附件，成功后才创建列表项和稳定 URL，并将发送前打开的
+工具状态迁移到正式 binding。左侧工作区分组提供明确的“新增工作区”按钮，复用既有工作目录创建契约，
+允许从 `/runtime/workspace/project` 下选择一个或多个合法子目录并创建可新建会话的工作区；不得因新增
+工作区、会话、文件或终端启动第二个 Agent Runtime 容器。同步收口 Codex 式会话列表、标题双击编辑、默认
+环境摘要、可调宽度工具区、单文件页签、多独立终端、目录树和显式关闭终端生命周期的产品回归。
+
+验收：实现完成后集中执行平台全量测试、Ruff/Pyright、Web lint/typecheck/production build、OpenAPI、
+PostgreSQL 迁移矩阵、Compose 安全、固定 OpenHands contract/smoke、Agent Workspace 定向 Playwright、
+部署后真实新增工作区与首条消息、附件、文件树、多终端隔离/关闭及单 Runtime 容器检查；最后核对唯一
+Alembic head、任务状态和 `git diff --check`。本切片使用独立 Git commit。
+
+完成：新会话在首条消息前已具备正式会话同款的模型、推理强度、附件、环境摘要、文件和多终端能力；
+显式新增工作区复用服务端目录校验并保持单一 Agent Runtime。工具页签状态在 bootstrap 后迁移到正式
+binding，终端显式关闭会调用服务端销毁接口；会话列表固定为紧凑两行。平台全量、迁移、OpenAPI、
+Compose、固定 OpenHands contract/smoke、Web 静态构建和 3 项部署后 Agent E2E 均已通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -777,6 +799,7 @@ Agent Workspace 定向 Playwright 已通过；Runtime 镜像恢复、会话恢�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-58 | Ruff format/check；Pyright strict；平台全量 pytest（479 passed）；OpenAPI 基线；PostgreSQL migration-check；Compose security；Web ESLint/typecheck/production build；固定 OpenHands `1.42.0` contract/smoke；源码与部署后 Agent Workspace 定向 Playwright（最终 3 passed）；镜像重建、API/Runtime Provider 健康、唯一 Alembic head 与 `git diff --check` | PASS：发送首条消息前可切换供应商、模型和推理强度，上传附件并使用文件树和多个独立终端；bootstrap 原子绑定工作目录、完整模型配置和附件后才创建 URL/列表项，发送前工具页签迁移到正式 binding。左栏可从项目根合法目录显式新增工作区，会话项固定为 38px 紧凑两行；关闭终端调用服务端销毁且不创建第二个 Agent Runtime。全仓 12 项浏览器套件曾有 7 项通过、5 项失败：FR-58 三项均通过；其余真实 Environment/Tool Catalog 场景因 E2E 遗留 Setup 容器将 API/Runtime Provider 拖入不健康状态而超时，服务重建恢复健康后未将这些无关场景伪记为通过。唯一 head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |
 | 2026-08-27 | FR-57（最终验收） | 已完成的迁移、静态检查、Web 构建、OpenAPI/架构、Compose、平台测试及定向 E2E；部署后 Runtime、历史会话和工作区恢复复验；用户验收 | PASS：Runtime 使用当前可用镜像恢复到可写 `ACTIVE` generation，历史会话独立加载，工作区概览和文件读取不再被 Runtime 恢复阻塞，右侧栏可正常打开并在失败时提供错误与重试。用户完成部署后验证并明确确认 FR-57 可以标记 `DONE`；无 `CURRENT` 或下一切片。 |
 | 2026-08-27 | FR-57（阻塞记录） | PostgreSQL Testcontainers migration-check；Compose security；Ruff format/check；Pyright strict；Web ESLint/typecheck/production build；OpenAPI 基线与跨模块 public façade 定向门禁；源码 Vite 上 Agent Workspace 定向 Playwright | 部分 PASS：migration-check、Compose security、Ruff、Pyright、Web 静态/构建、OpenAPI/边界门禁和 Agent Workspace E2E 通过。BLOCKED：Docker daemon socket 不存在，导致 407 个需要 Testcontainers 的平台用例在 fixture 初始化失败；同时无法运行固定 OpenHands image contract/smoke、真实 Runtime 与部署后 E2E。Docker 恢复后必须从完整平台 pytest、固定 image 合同/烟雾、真实根/单/多目录会话及部署后完整 E2E 继续；FR-57 不得标记 DONE。 |
 | 2026-08-27 | FR-56 | Agent Workspace 与 OpenHands 定向 pytest（98 passed）；受影响 Python Ruff；Web ESLint/typecheck；独立源码 Vite 上 Agent 工作台定向 Playwright（1 passed，覆盖概览、文件预览/下载、终端 Tab、根与草稿范围）；`git diff --check` | PASS：右侧抽屉默认收起，概览显示当前根/冻结工作目录、Git 仓库、待发送附件与不虚构凭据的 IDEA/Gateway 状态；文件树由 OpenHands 正式 archive/download API 提供，只读预览和下载均由服务端按 binding 冻结目录或仍为 ACTIVE 的草稿目录重新校验，拒绝越界、`.git`/`.openhands` 与目录下载。终端仅接收服务端解析的目录 ID，根/草稿/会话分别以有效目录或冻结 working directory 启动；该 `working_dir` 同时贯通本地 Docker 与远程 Controller。标题仅支持双击编辑，标题栏移除编辑与压缩按钮。唯一 head 保持 `0068_agent_title_metadata`；无 `CURRENT`，FR-57 为下一可执行切片。 |

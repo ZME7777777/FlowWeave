@@ -487,9 +487,7 @@ def test_workspace_runtime_recovery_refreshes_removed_image_digest(
     with settings_context(configured), db_session_factory() as db:
         workspace = ensure_default_agent_workspace(db)
         runtime = db.scalar(
-            select(AgentWorkspaceRuntime).where(
-                AgentWorkspaceRuntime.workspace_id == workspace.id
-            )
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
         )
         assert runtime is not None and runtime.runtime_image_digest == old_digest
         runtime.status = "RECONNECTING"
@@ -576,6 +574,7 @@ def _ready_workspace_for_conversation(db):
             owner_type="AGENT_WORKSPACE",
             owner_id=workspace.id,
             backend_resource_name=f"agent-workspace-{workspace.id}",
+            backend_resource_id=f"agent-workspace-container-{workspace.id}",
             image_reference=runtime.runtime_image_digest,
             agent_workspace_allocation_id=runtime.workspace_allocation_id,
             hard_expires_at=datetime.max.replace(tzinfo=UTC),
@@ -1176,7 +1175,11 @@ def test_agent_workspace_bootstrap_api_requires_idempotency_key(
 
     missing = client.post(
         f"/api/v1/agent-workspaces/{workspace_id}/conversations",
-        json={"model_provider_id": "missing", "content": "首条消息"},
+        json={
+            "model_provider_id": "missing",
+            "model_name": "test-model",
+            "content": "首条消息",
+        },
     )
     assert missing.status_code == 422
     assert missing.json()["error"]["code"] == "AGENT_BOOTSTRAP_IDEMPOTENCY_KEY_REQUIRED"
@@ -1186,6 +1189,7 @@ def test_agent_workspace_bootstrap_api_requires_idempotency_key(
         headers={"Idempotency-Key": "bootstrap-http-001"},
         json={
             "model_provider_id": workspace.default_model_provider_id,
+            "model_name": "test-model",
             "content": "首条消息",
         },
     )

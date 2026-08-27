@@ -13,13 +13,12 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_workspaces.application import service, work_directories
 from flowweave.modules.agent_workspaces.application.conversations import (
     terminal_container_details,
-    terminal_resource_details,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
     AgentWorkspace,
 )
-from flowweave.runtime.base import RuntimeHandle, RuntimeWorkspaceFile
+from flowweave.runtime.base import RuntimeWorkspaceFile
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.settings import get_settings
 
@@ -28,9 +27,7 @@ _MAX_INDEX_ENTRIES = 20_000
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 
 
-def terminal_session_name(
-    workspace_id: str, container_id: str, terminal_instance_id: str
-) -> str:
+def terminal_session_name(workspace_id: str, container_id: str, terminal_instance_id: str) -> str:
     """Derive a short opaque tmux identity from server-owned Runtime facts."""
 
     digest = sha256(f"{workspace_id}:{terminal_instance_id}".encode()).hexdigest()[:24]
@@ -47,16 +44,6 @@ def _workspace(db: Session, workspace_id: str) -> AgentWorkspace:
     if item is None:
         raise not_found("agent_workspace", workspace_id)
     return item
-
-
-def _runtime_handle(db: Session, workspace_id: str) -> RuntimeHandle:
-    resource_name, resource_id = terminal_resource_details(db, workspace_id)
-    return RuntimeHandle(
-        job_id=f"agent-workspace:{workspace_id}",
-        conversation_id="",
-        runtime_resource_id=resource_id,
-        runtime_resource_name=resource_name,
-    )
 
 
 def _project_root(db: Session, workspace_id: str) -> Path:
@@ -112,26 +99,20 @@ def _host_path(project_root: Path, runtime_path: str, *, require_file: bool) -> 
         or ".." in parsed.parts
         or any(part.startswith(".") for part in parsed.parts)
     ):
-        raise DomainError(
-            "AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422
-        )
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     relative = parsed.relative_to(PurePosixPath(_PROJECT_ROOT))
     candidate = project_root.joinpath(*relative.parts)
     try:
         metadata = candidate.lstat()
         resolved = candidate.resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
-        raise DomainError(
-            "AGENT_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404
-        ) from exc
+        raise DomainError("AGENT_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
     if (
         stat.S_ISLNK(metadata.st_mode)
         or not resolved.is_relative_to(project_root)
         or (require_file and not stat.S_ISREG(metadata.st_mode))
     ):
-        raise DomainError(
-            "AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422
-        )
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     return resolved
 
 
@@ -142,9 +123,7 @@ def _workspace_entries(project_root: Path, working_directory: str) -> list[dict[
         else _host_path(project_root, working_directory, require_file=False)
     )
     if not host_root.is_dir():
-        raise DomainError(
-            "AGENT_WORKSPACE_PATH_INVALID", "当前工作目录不存在", 409
-        )
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "当前工作目录不存在", 409)
     entries: list[dict[str, Any]] = []
     for current, directory_names, file_names in os.walk(host_root, followlinks=False):
         current_path = Path(current)
@@ -244,7 +223,7 @@ def details(
         db, workspace_id, work_directory_id, binding_id
     )
     project_root = _project_root(db, workspace_id)
-    repositories = []
+    repositories: list[dict[str, str]] = []
     host_working_directory = (
         project_root
         if working_directory == _PROJECT_ROOT
@@ -301,9 +280,7 @@ def download(
     try:
         size = host_path.stat().st_size
     except OSError as exc:
-        raise DomainError(
-            "AGENT_WORKSPACE_FILE_UNAVAILABLE", "文件暂时无法读取", 503
-        ) from exc
+        raise DomainError("AGENT_WORKSPACE_FILE_UNAVAILABLE", "文件暂时无法读取", 503) from exc
     if size > _MAX_FILE_BYTES:
         raise DomainError(
             "AGENT_WORKSPACE_FILE_TOO_LARGE",
@@ -314,9 +291,7 @@ def download(
     try:
         content = host_path.read_bytes()
     except OSError as exc:
-        raise DomainError(
-            "AGENT_WORKSPACE_FILE_UNAVAILABLE", "文件暂时无法读取", 503
-        ) from exc
+        raise DomainError("AGENT_WORKSPACE_FILE_UNAVAILABLE", "文件暂时无法读取", 503) from exc
     return RuntimeWorkspaceFile(
         filename=host_path.name,
         content_type=mimetypes.guess_type(host_path.name)[0] or "application/octet-stream",

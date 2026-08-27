@@ -250,10 +250,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         work_directory: null,
         files: [
           { path: '/runtime/workspace/project/README.md', kind: 'file', size: 128 },
+          { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/src', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 },
         ],
         repositories: [{ path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab' }],
+        runtime: { container_id: '2fae71c74c89' },
         ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '需要部署 Gateway', note: '部署方配置受保护入口后可连接。' } },
       }) });
       return;
@@ -410,15 +412,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   await expect(page).toHaveURL(/\/agent$/);
-  await expect(page.getByLabel('新会话供应商')).toHaveValue('provider-1');
   await expect(page.getByRole('button', { name: '新建会话' }).first()).toBeEnabled();
   await expect(page.getByText('后端服务', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '在后端服务中新建会话' }).click();
-  await expect(page.getByRole('heading', { name: '在后端服务中开始新会话' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-test');
   expect(bootstrapRequests).toBe(0);
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent$/);
-  await expect(page.getByText('新会话草稿', { exact: true })).toBeVisible();
+  await expect(page.getByText('需要我帮你完成什么？', { exact: true })).toBeVisible();
   expect(bootstrapRequests).toBe(0);
   await expect(page.getByRole('button', { name: '检查工作目录' })).toHaveCount(0);
   await page.getByLabel('发送 Agent 消息').fill('检查工作目录');
@@ -427,13 +429,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(bootstrapRequests).toBe(1);
   expect(bootstrapWorkDirectory).toBeNull();
   await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  const compactConversationItem = page.getByRole('button', { name: /检查工作目录/ }).first();
+  await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
-  await page.getByRole('button', { name: '打开工作区' }).click();
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '文件' }).click();
+  await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await page.getByText('README.md', { exact: true }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
+  await page.getByLabel('新增工作区工具').click();
   await page.getByRole('button', { name: '终端', exact: true }).click();
   await expect(page.locator('.agent-workspace-terminal')).toBeVisible();
   await expect.poll(() => Boolean(terminalSocket)).toBe(true);
@@ -665,6 +669,196 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
 });
 
+test('Agent new session keeps full capabilities and can create an explicit workspace', async ({ page }) => {
+  const directories: Array<Record<string, unknown>> = [];
+  const conversations: Array<Record<string, unknown>> = [];
+  const terminalInstanceIds: string[] = [];
+  const destroyedTerminalIds: string[] = [];
+  let bootstrapPayload: Record<string, unknown> | null = null;
+  let attachmentUploads = 0;
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.routeWebSocket('**/agent-workspaces/**/terminal*', socket => {
+    const terminalId = new URL(socket.url()).searchParams.get('terminal_instance_id');
+    if (terminalId) terminalInstanceIds.push(terminalId);
+    socket.send('$ ');
+  });
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/default')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        id: 'fr58-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString(),
+      }) });
+      return;
+    }
+    if (path.endsWith('/runtime')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString(),
+      }) });
+      return;
+    }
+    if (path.endsWith('/work-directories') && request.method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' },
+        items: directories,
+      }) });
+      return;
+    }
+    if (path.endsWith('/work-directories') && request.method() === 'POST') {
+      const payload = JSON.parse(request.postData() ?? '{}') as { display_name: string; selected_paths: string[] };
+      const directory = {
+        id: 'fr58-frontend', display_name: payload.display_name, state: 'ACTIVE',
+        current_version: {
+          id: 'fr58-frontend-v1', version: 1, selected_paths: payload.selected_paths,
+          working_directory: '/runtime/workspace/project/frontend',
+        },
+      };
+      directories.unshift(directory);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(directory) });
+      return;
+    }
+    if (path.endsWith('/workspace')) {
+      const scoped = url.searchParams.has('work_directory_id') || url.searchParams.has('binding_id');
+      const workingDirectory = scoped ? '/runtime/workspace/project/frontend' : '/runtime/workspace/project';
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        root: '/runtime/workspace/project', working_directory: workingDirectory,
+        work_directory: scoped ? directories[0] ?? null : null,
+        files: scoped ? [
+          { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
+          { path: '/runtime/workspace/project/frontend/src/app.ts', kind: 'file', size: 36 },
+        ] : [
+          { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
+          { path: '/runtime/workspace/project/frontend', kind: 'directory', size: 0 },
+          { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
+          { path: '/runtime/workspace/project/frontend/src/app.ts', kind: 'file', size: 36 },
+        ],
+        repositories: [{ path: workingDirectory, branch: 'main', head: 'abcdef123456' }],
+        runtime: { container_id: '2fae71c74c89' },
+        ide: { workspace_path: workingDirectory, gateway: { supported: true, status: '可连接', note: '使用受保护的 Gateway 入口连接。' } },
+      }) });
+      return;
+    }
+    if (path.endsWith('/workspace/file')) {
+      await route.fulfill({ status: 200, contentType: 'text/plain', body: 'export const app = true;\n' });
+      return;
+    }
+    if (path.endsWith('/attachments') && request.method() === 'POST') {
+      attachmentUploads += 1;
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({
+        filename: '需求.png', mime_type: 'image/png', byte_size: 4,
+        path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png',
+        image_data_url: 'data:image/png;base64,iVBORw==',
+      }) });
+      return;
+    }
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversations) });
+      return;
+    }
+    if (path.endsWith('/conversations') && request.method() === 'POST') {
+      bootstrapPayload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      const conversation = {
+        id: 'fr58-conversation', display_title: '实现前端工作区', title_state: 'PENDING', lifecycle: 'ACTIVE',
+        model_provider_id: bootstrapPayload.model_provider_id, model_name: bootstrapPayload.model_name,
+        reasoning_effort: bootstrapPayload.reasoning_effort, work_directory_id: 'fr58-frontend',
+        work_directory_version_id: 'fr58-frontend-v1', working_directory: '/runtime/workspace/project/frontend',
+        streaming_callback_ready: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      };
+      conversations.unshift(conversation);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ conversation, accepted: true, cursor: 'fr58-user' }) });
+      return;
+    }
+    if (path.endsWith('/events')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [], next_cursor: null }) });
+      return;
+    }
+    if (path.endsWith('/pending-confirmation')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+      return;
+    }
+    if (path.endsWith('/context')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: 'gpt-pro', reasoning_effort: 'low' }) });
+      return;
+    }
+    const terminalMatch = path.match(/\/terminals\/([^/]+)$/);
+    if (terminalMatch && request.method() === 'DELETE') {
+      destroyedTerminalIds.push(decodeURIComponent(terminalMatch[1]));
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'provider-default', name: '默认供应商', connection_state: 'CONNECTED',
+      models: [{ model_name: 'gpt-default', enabled: true, is_default: true }],
+    }, {
+      id: 'provider-pro', name: '专业供应商', connection_state: 'CONNECTED',
+      models: [{ model_name: 'gpt-pro', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
+    }]),
+  }));
+
+  await login(page);
+  await page.getByRole('button', { name: 'Agent 会话' }).click();
+  await page.getByRole('button', { name: '新增工作区', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: '新增工作区' });
+  await expect(creator).toBeVisible();
+  await creator.getByRole('checkbox', { name: 'frontend', exact: true }).check();
+  await creator.getByLabel('工作区名称').fill('前端工作区');
+  await creator.getByRole('button', { name: '创建工作区' }).click();
+  await expect(page.getByText('前端工作区', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: '在前端工作区中新建会话' }).click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByText('需要我帮你完成什么？', { exact: true })).toBeVisible();
+  await expect(page.getByText('草稿', { exact: true })).toHaveCount(0);
+  expect(conversations).toHaveLength(0);
+  expect(bootstrapPayload).toBeNull();
+
+  await page.getByLabel('打开模型与推理设置').click();
+  await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-pro');
+  await page.getByLabel('思考程度').selectOption('low');
+  await page.getByLabel('上传附件').setInputFiles({ name: '需求.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
+  await expect(page.getByText('需求.png', { exact: true })).toBeVisible();
+  expect(attachmentUploads).toBe(1);
+
+  await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
+  await expect(page.getByText('2fae71c74c89', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '新终端', exact: true }).click();
+  await page.getByLabel('新增工作区工具').click();
+  await page.getByRole('button', { name: '终端', exact: true }).click();
+  await expect.poll(() => new Set(terminalInstanceIds).size).toBe(2);
+  await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
+
+  await page.getByLabel('新增工作区工具').click();
+  await page.getByRole('button', { name: '文件', exact: true }).click();
+  await page.getByLabel('新增工作区工具').click();
+  await page.locator('.agent-workspace-tool-actions').getByRole('button', { name: '文件', exact: true }).click();
+  await expect(page.locator('.agent-workspace-tabs .agent-workspace-tab-select').filter({ hasText: '文件' })).toHaveCount(1);
+  await expect(page.getByText('app.ts', { exact: true })).toBeVisible();
+
+  await page.getByLabel('发送 Agent 消息').fill('实现前端工作区');
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/fr58-conversation$/);
+  expect(bootstrapPayload).toMatchObject({
+    model_provider_id: 'provider-pro', model_name: 'gpt-pro', reasoning_effort: 'low',
+    work_directory_id: 'fr58-frontend', content: '实现前端工作区',
+    attachments: [{ path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png', image_data_url: 'data:image/png;base64,iVBORw==' }],
+  });
+  await expect(page.getByText('前端工作区', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
+
+  page.once('dialog', dialog => void dialog.accept());
+  await page.getByRole('button', { name: '关闭终端 2fae71c74c89页签' }).first().click();
+  await expect.poll(() => destroyedTerminalIds.length).toBe(1);
+  expect([...new Set(terminalInstanceIds)]).toContain(destroyedTerminalIds[0]);
+  await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(1);
+});
+
 test('Agent workspace drawer remains available while Runtime is recovering', async ({ page }) => {
   const conversation = {
     id: 'recovering-conversation', workspace_id: 'recovering-workspace',
@@ -717,7 +911,8 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         root: '/runtime/workspace/project', working_directory: '/runtime/workspace/project',
         work_directory: null, files: [{ path: '/runtime/workspace/project/README.md', kind: 'file', size: 12 }],
-        repositories: [], ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '需要部署 Gateway', note: '恢复期间仍可查看文件。' } },
+        repositories: [], runtime: { container_id: null },
+        ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '需要部署 Gateway', note: '恢复期间仍可查看文件。' } },
       }) });
       return;
     }
@@ -728,15 +923,13 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
   await page.goto('/agent/conversations/recovering-conversation');
   await expect(page.getByText('这条历史消息必须保留可见')).toBeVisible();
   await expect(page.getByText('运行环境正在恢复', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '打开工作区' }).click();
-
   const workspaceDrawer = page.getByRole('complementary').filter({ hasText: 'WORKSPACE' });
-  await expect(workspaceDrawer.getByRole('button', { name: '关闭工作区抽屉' })).toBeVisible();
   await expect(
     workspaceDrawer.getByRole('article').filter({ hasText: '当前目录' }).getByRole('code'),
   ).toHaveText('/runtime/workspace/project');
-  await page.getByRole('button', { name: '终端', exact: true }).click();
-  await expect(page.getByText('概览和文件仍可使用；运行环境恢复后终端会自动可用。')).toBeVisible();
+  await expect(workspaceDrawer.getByRole('button', { name: '新终端', exact: true })).toBeDisabled();
+  await workspaceDrawer.getByRole('button', { name: '文件', exact: true }).click();
+  await expect(page.getByText('README.md', { exact: true })).toBeVisible();
 });
 
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
@@ -1104,7 +1297,7 @@ test('corrupt and legacy browser state recover without a blank page', async ({ p
   await expect.poll(() => page.evaluate(() => {
     const raw = localStorage.getItem('flowweave-workbench');
     return raw ? JSON.parse(raw).version : undefined;
-  })).toBe(3);
+  })).toBe(4);
   const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('flowweave-workbench') ?? '{}'));
   expect(persisted.state).toEqual({ view: 'nodes' });
 

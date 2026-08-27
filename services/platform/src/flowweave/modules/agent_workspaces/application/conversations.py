@@ -662,9 +662,7 @@ def bootstrap_conversation(
             504,
             {"binding_id": binding.id},
         )
-    return _activate_bootstrapped_conversation(
-        db, binding, command, initial_event_id, message_text
-    )
+    return _activate_bootstrapped_conversation(db, binding, command, initial_event_id, message_text)
 
 
 def patch_conversation(
@@ -921,14 +919,10 @@ def _message_payload(
     ):
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
     paths = tuple(item["path"] for item in attachments)
-    image_urls = tuple(
-        item["image_data_url"] for item in attachments if "image_data_url" in item
-    )
+    image_urls = tuple(item["image_data_url"] for item in attachments if "image_data_url" in item)
     prompt = content.strip()
     if paths:
-        prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(
-            f"- {path}" for path in paths
-        )
+        prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(f"- {path}" for path in paths)
     return prompt, image_urls
 
 

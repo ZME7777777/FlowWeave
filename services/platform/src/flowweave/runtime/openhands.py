@@ -2728,9 +2728,7 @@ class OpenHandsRuntime:
         encoded_archive_root = response.headers.get("X-Archive-Repo-Root")
         try:
             archive_root = (
-                unquote(encoded_archive_root, errors="strict")
-                if encoded_archive_root
-                else path
+                unquote(encoded_archive_root, errors="strict") if encoded_archive_root else path
             )
         except UnicodeDecodeError as exc:
             raise DomainError(

@@ -294,9 +294,7 @@ async def create_agent_conversation(
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
             content=payload.content,
-            attachments=tuple(
-                item.model_dump(exclude_none=True) for item in payload.attachments
-            ),
+            attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             idempotency_key=idempotency_key,
         ),
     )
@@ -697,9 +695,7 @@ async def agent_workspace_terminal(
         reset_settings(settings_token)
 
 
-@router.delete(
-    "/agent-workspaces/{workspace_id}/terminals/{terminal_instance_id}", status_code=204
-)
+@router.delete("/agent-workspaces/{workspace_id}/terminals/{terminal_instance_id}", status_code=204)
 async def close_agent_workspace_terminal(
     workspace_id: str,
     terminal_instance_id: str,
