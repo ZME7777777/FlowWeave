@@ -382,13 +382,27 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => Boolean(terminalSocket)).toBe(true);
   terminalSocket!.send(`${Array.from({ length: 80 }, (_, index) => `output-${index + 1}`).join('\r\n')}\r\n`);
   const viewport = page.locator('.agent-workspace-terminal .xterm-viewport');
+  const terminalLayout = await page.getByLabel('Agent 工作区终端').evaluate(host => {
+    const drawer = host.closest('.agent-workspace-drawer');
+    const screen = host.querySelector('.xterm-screen');
+    if (!drawer || !screen) throw new Error('Expected terminal drawer and screen');
+    const hostBox = host.getBoundingClientRect();
+    const drawerBox = drawer.getBoundingClientRect();
+    const screenBox = screen.getBoundingClientRect();
+    return {
+      hostBottom: hostBox.bottom,
+      drawerBottom: drawerBox.bottom,
+      screenBottom: screenBox.bottom,
+      hostContentBottom: hostBox.bottom - parseFloat(getComputedStyle(host).paddingBottom),
+    };
+  });
+  expect(terminalLayout.hostBottom).toBeLessThanOrEqual(terminalLayout.drawerBottom + 1);
+  expect(terminalLayout.screenBottom).toBeLessThanOrEqual(terminalLayout.hostContentBottom + 1);
   await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop < 3)).toBe(true);
-  const bottomScrollTop = await viewport.evaluate(node => node.scrollTop);
+  terminalSocket!.send('\u001b[?1000h\u001b[?1006h');
   await viewport.dispatchEvent('wheel', { deltaY: -120, deltaMode: 0 });
-  await expect.poll(() => viewport.evaluate((node, previous) => node.scrollTop < previous, bottomScrollTop)).toBe(true);
-  await viewport.dispatchEvent('wheel', { deltaY: 120, deltaMode: 0 });
-  await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop < 3)).toBe(true);
-  expect(terminalInputs).toEqual([]);
+  await expect.poll(() => terminalInputs.some(data => data.startsWith('\u001b[<64;') && data.endsWith('M'))).toBe(true);
+  expect(terminalInputs.some(data => data.includes('\u001b[A') || data.includes('\u001b[B'))).toBe(false);
   await expect(page.locator('.agent-context-progress')).toHaveCount(0);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：无
+> 下一可执行切片：`FR-47`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -628,6 +628,30 @@ Runtime Provider 权限、Workspace 持久化或 FlowRun 语义。
 WebSocket 写入方向键序列；Web lint/typecheck/build、相关终端单元或组件测试、`git diff --check`、Alembic
 head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
+### FR-47 Agent 会话模型摘要显示思考程度 — READY
+
+依赖：`FR-46`。
+
+目标：Agent 工作台输入区右下角的模型摘要同时显示当前模型与思考程度，并将已知思考程度显示为紧凑中文
+标签。长模型名或窄视口下模型名称可以省略，但思考程度必须保持可见；模型配置浮层、选择即持久化和发送行为
+保持不变。
+
+验收：Agent 工作台定向 Playwright 覆盖模型摘要初始值、选择后立即更新和刷新恢复；Web
+lint/typecheck/build、桌面与窄视口浏览器检查、`git diff --check`、Alembic head 与任务状态唯一性通过；
+本切片使用独立 Git commit。
+
+### FR-48 Agent Workspace tmux 滚屏与终端底部布局修复 — DONE
+
+依赖：`FR-46`。
+
+目标：修复持久 tmux 终端的鼠标滚轮交互和抽屉底部布局。滚轮应进入 tmux 原生复制模式滚动终端历史，
+不得被 shell 解释为方向键或切换命令历史；终端宿主按边框盒计算高度，连续输出和回车到达末行时最后一行
+保持完整可见。不得修改 OpenHands、PTY、Runtime Provider 权限、Workspace 持久化或 FlowRun 语义。
+
+验收：Agent 工作台定向 Playwright 覆盖终端宿主无垂直溢出、底部行可见和滚轮事件不产生 shell 输入；
+持久 tmux 脚本定向测试；Web lint/typecheck/build、受影响 Python 语法检查、`git diff --check`、Alembic
+head 与任务状态唯一性通过；本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -644,6 +668,7 @@ head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-48 | 持久 tmux 脚本定向 pytest（1 passed）与 Python 语法检查；Agent 工作台定向 Playwright（1 passed，覆盖终端宿主/屏幕底边与 tmux SGR 滚轮报告）；Web lint/typecheck/build；`git diff --check`；Alembic head 与任务状态唯一性 | PASS：持久终端开启 tmux mouse，由 tmux 原生复制模式消费滚轮；前端不再捕获并吞掉 wheel，xterm 在 tmux 开启鼠标协议后把 SGR wheel report 通过现有终端输入通道发送，未生成 shell 上下方向键序列。抽屉标题、终端区域和 xterm 使用边框盒尺寸，终端内边距移至 FitAddon 可感知的 xterm 元素，屏幕底边和宿主底边均保持在抽屉内。唯一 head 为 `0065_agent_model_selection`；无 `CURRENT`，FR-47 为下一可执行切片。 |
 | 2026-08-27 | FR-46 | Agent 工作台定向 Playwright（终端抽屉打开、有效尺寸连接、连续输出贴底、滚轮 scrollback 与 WebSocket 输入隔离）；Web lint/typecheck/build；`git diff --check`；Alembic head 与任务状态唯一性 | PASS：Agent Workspace 终端等待抽屉布局稳定并使用 FitAddon 有效尺寸后才连接 PTY，ResizeObserver 按动画帧合并尺寸更新；连接和输出在用户处于底部时保持 scrollback 贴底，用户主动上滚时不被输出拉回。终端元素捕获 wheel 事件并调用 xterm scrollLines，阻止事件进入应用鼠标报告或 shell，回归验证滚轮未产生任何 input 方向键序列。未修改 OpenHands、PTY、Runtime Provider、Workspace 持久化或 FlowRun 语义；唯一 head 为 `0065_agent_model_selection`，无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-27 | FR-45 | 0065 隔离 PostgreSQL upgrade/downgrade/upgrade；Agent Workspace 定向 pytest（13 passed）；Ruff format/check；Pyright（0 errors）；Web lint/typecheck/production build；源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Conversation binding 持久化完整的供应商、模型和推理强度；用户选择时通过独立 API 立即应用并保存，刷新从 binding 恢复。消息 body 仅保留正文与附件，每次正式 user event 前重新应用已保存配置；历史非流式 binding 可先保存选择，再由原生流式 fork 继承并应用，普通 fork 同样继承完整配置。模型浮层点击外部区域会关闭且不吞掉原控件点击。唯一 head 为 `0065_agent_model_selection`；无 `CURRENT`，FR-46 为下一可执行切片。 |
 | 2026-08-27 | FR-44 | Agent Workspace、Environment terminal 与 Runtime Provider controller 定向 pytest（80 passed）；Ruff format/check；Pyright（0 errors）；实际 Agent Runtime 项目目录可写探针；API 与 Runtime Provider 重建替换及健康检查；Alembic head、任务状态唯一性与 `git diff --check` | PASS：独立 Agent Workspace 的新 Conversation 通过 OpenHands 正式 `agent_context.system_message_suffix` 将 `/runtime/workspace/project` 定义为对用户透明的逻辑项目根。Agent 被要求将应保留的代码、配置、文档和用户产物保存于该目录或其自行创建的需求/功能子目录，不暴露宿主机与 Docker 细节。Agent 工作台终端无论通过 API 本地 Docker 调用还是 Runtime Provider 远程控制器，均在创建时以该目录作为初始工作目录；用户后续自行进入项目子目录的终端行为不受影响。API 和 Runtime Provider 已用新镜像替换并返回健康。未改变 OpenHands、FlowRun、宿主机挂载、HOME/凭据卷或数据库契约。 |

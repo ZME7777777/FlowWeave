@@ -1358,7 +1358,7 @@ def test_terminal_can_attach_to_persistent_tmux_session(monkeypatch):
                 'tmux new-session -d -x "$columns" -y "$rows" -s "$session" '
                 'bash -c "$shell_script" '
                 '|| tmux has-session -t "$session"; fi; '
-                'tmux set-option -t "$session" mouse off; '
+                'tmux set-option -t "$session" mouse on; '
                 'tmux set-option -t "$session" status off; '
                 'tmux resize-window -t "$session": -x "$columns" -y "$rows"; '
                 'exec tmux attach-session -t "$session"'

@@ -41,10 +41,9 @@ _TERMINAL_TMUX_SCRIPT = (
     'tmux new-session -d -x "$columns" -y "$rows" -s "$session" '
     'bash -c "$shell_script" '
     '|| tmux has-session -t "$session"; fi; '
-    # Let xterm own pointer selection so dragged text remains selected and can
-    # be copied after mouseup. tmux mouse mode would consume the drag and enter
-    # its transient copy-mode selection instead.
-    'tmux set-option -t "$session" mouse off; '
+    # Let tmux receive pointer input so wheel events enter its persistent
+    # copy-mode scrollback instead of being interpreted by the shell.
+    'tmux set-option -t "$session" mouse on; '
     'tmux set-option -t "$session" status off; '
     'tmux resize-window -t "$session": -x "$columns" -y "$rows"; '
     'exec tmux attach-session -t "$session"'

@@ -173,22 +173,9 @@ function WorkspaceTerminal({ workspaceId }: { workspaceId: string }) {
     const input = terminal.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); });
     const observer = new ResizeObserver(resize);
     observer.observe(element);
-    const wheel = (event: WheelEvent) => {
-      // Keep wheel input in xterm's scrollback. Capturing and stopping the
-      // event prevents an application mouse-reporting mode from sending an
-      // escape sequence to the shell, which would otherwise change history.
-      const delta = event.deltaY || event.deltaX;
-      if (delta) {
-        const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 1 : 24;
-        terminal.scrollLines(Math.sign(delta) * Math.max(1, Math.round(Math.abs(delta) / unit)));
-      }
-      event.preventDefault();
-      event.stopPropagation();
-    };
-    element.addEventListener('wheel', wheel, { capture: true, passive: false });
     resize();
     void document.fonts?.ready.then(resize);
-    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); observer.disconnect(); element.removeEventListener('wheel', wheel, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
+    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); observer.disconnect(); input.dispose(); socket?.close(1000); terminal.dispose(); };
   }, [workspaceId]);
 
   return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;
