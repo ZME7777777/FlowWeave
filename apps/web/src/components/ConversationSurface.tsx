@@ -129,7 +129,12 @@ function activityPresentation(item: Item): { title: string; status: string; comm
 function eventTime(item?: Item): number | undefined {
   const raw = item?.event.payload.timestamp;
   if (typeof raw !== 'string' || !raw) return undefined;
-  const value = Date.parse(raw);
+  // OpenHands 1.42.0 creates Event.timestamp with datetime.now().isoformat().
+  // The Runtime container runs in UTC, but that value has no timezone suffix.
+  // Browsers otherwise interpret it as local time and inflate an active turn by
+  // the local UTC offset. Preserve explicitly zoned timestamps as-is.
+  const normalized = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : `${raw}Z`;
+  const value = Date.parse(normalized);
   return Number.isFinite(value) ? value : undefined;
 }
 
@@ -215,7 +220,7 @@ function ResponseWait({ startedAt, submitting }: { startedAt?: number; submittin
   const detail = submitting
     ? '正在将请求交给 Agent。'
     : delayed
-      ? `已等待 ${elapsedSeconds} 秒。模型服务排队、响应较慢或额度不足时，原因会显示在这里。`
+      ? `已等待 ${formatDuration(elapsedSeconds)}。模型服务排队、响应较慢或额度不足时，原因会显示在这里。`
       : '收到首个文本或工具进度后，会在这里实时显示。';
   return <article className={`conversation-response-wait${delayed ? ' delayed' : ''}`} role="status">
     <LoaderCircle size={16}/><div><b>{title}</b><p>{detail}</p></div>

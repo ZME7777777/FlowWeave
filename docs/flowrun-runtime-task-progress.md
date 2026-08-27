@@ -501,6 +501,18 @@ OpenHands 正式事件 timestamp，使刷新后仍可按 user 到 assistant/erro
 验收：OpenHands 事件投影定向测试、Web lint/typecheck/build、Agent 工作台定向 Playwright、
 `git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
 
+### FR-38 Agent 会话 UTC 计时修正 — DONE
+
+依赖：`FR-37`。
+
+目标：按固定 OpenHands `1.42.0` 在 UTC Runtime 中生成的无时区 ISO-8601 Event timestamp 正确计算
+运行中耗时和模型等待时间，避免浏览器按本地时区解释后叠加 UTC offset；显式携带 `Z` 或 offset 的正式
+时间保持原语义。等待详情与工作过程摘要统一使用格式化时长。不得修改 OpenHands、事件原值、持久化或
+Runtime 边界。另取证实际停滞会话的正式事件和受保护日志，区分前端计时错误与模型供应商不可达。
+
+验收：Web lint/typecheck/build、非 UTC 浏览器时区下的 Agent 工作台定向 Playwright、部署后真实页面检查、
+`git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -517,6 +529,7 @@ OpenHands 正式事件 timestamp，使刷新后仍可按 user 到 assistant/erro
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-38 | Web lint/typecheck/production build；Asia/Shanghai 浏览器时区下使用 OpenHands 无时区 timestamp 的 Agent 工作台定向 Playwright（1 passed）；部署后真实故障会话页面、Compose 健康、运行镜像、Alembic head、任务状态唯一性与 `git diff --check` | PASS：OpenHands `1.42.0` 在 UTC Runtime 中生成的无时区 ISO-8601 timestamp 仅在耗时计算边界按 UTC 解释，显式 `Z`/offset 保持原语义；运行中耗时不再叠加浏览器 8 小时时区偏移，等待详情统一显示格式化时长。真实“你是谁”会话恢复为正式 user 到 error 的 `15分钟9秒`，OpenHands 五次重试后因供应商 `kiro-go行情号池` 的模型端点 `192.168.91.58:6699` 不可达而终止为 `LLMServiceUnavailableError`，期间没有产生隐藏分析或最终回复。Web 镜像已重建并重新部署，运行镜像为 `sha256:989d28e63a3a90bfd3f261491b394248a9b3f53dee674101eb3a24c4d9778080`；API、Postgres、Runtime Provider、Worker 与 Web 已恢复，健康检查通过。唯一 head 仍为 `0063_autonomous_defaults`；未修改 OpenHands、Runtime、数据库迁移或持久化边界。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-37 | OpenHands 全量适配器测试（61 passed）与定向时间戳投影回归（4 passed）；Ruff/Pyright；Web lint/typecheck/production build；隔离源码 Agent 工作台 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：REST 与实时安全投影保留 OpenHands 正式 timestamp；每轮固定按用户消息、工作过程、最终回复或失败结果排列。运行中过程区展开、实时计时并承载可见 delta/Thought/工具/压缩/错误，正式 assistant Message 到达后只在过程区下方显示一次最终回复；完成轮次按正式 user 到 assistant/error 的墙钟时间自动折叠并显示耗时，直接回复不生成空白详情。唯一 head 仍为 `0063_autonomous_defaults`；未修改 OpenHands、数据库迁移、FlowRun 或 Runtime 边界。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-36 | 平台全量 pytest（449 passed）与定向回归（173 passed）；Ruff/Pyright；Web lint/typecheck/build；OpenAPI 基线；0063 PostgreSQL downgrade/upgrade；部署后 Agent 工作台与节点编辑器 Playwright；Compose 服务健康与真实 Agent Runtime 探针；`git diff --check` | PASS：新建 Agent Conversation 显式使用 OpenHands `NeverConfirm` 和原生 `LLMSummarizingCondenser`；平台统一把新保存节点冻结为免确认，29 个既有可变节点迁移为 `NEVER + LLM_SUMMARIZING`，2 个历史 Attempt 与 2 个 Snapshot 摘要往返不变。发送、暂停、继续及等待确认收口为同一按钮；无首个文本或工具事件时显示可计时等待状态，历史确认批次仍可原生处理。API、Postgres、Runtime Provider、Worker 与 Web 已重新部署，唯一 head 为 `0063_autonomous_defaults`。真实 `pwd` 探针全程 `pending=false`，模型在产生 Tool Action 前因 OpenAI Plus `usage_limit_reached` 终止，因此未执行命令；该外部额度限制与确认策略无关，验收会话已删除。Runtime 白名单、容器、网络、宿主机及 Docker 权限边界未放宽。无 `CURRENT`、`READY` 或下一切片。 |
 | 2026-08-26 | FR-35 | Agent Workspace 与 Runtime Provider 定向 pytest（46 passed）；Web lint/typecheck/production build；隔离本地源码 Playwright；`git diff --check` 与任务状态核对 | PASS：会话流按正式 `parent_id` 稳定拓扑排序，实时与 REST 合并时 parent 必定先于后代渲染；最后 user 消息的编辑入口为气泡外图标。新建会话显式冻结所选已连接供应商；会话内供应商、模型和思考程度只在下一条原生消息发送边界切换，OpenHands `switch_model` 成功后才更新该会话绑定，不再依赖 Workspace 全局默认模型。选择器不重复展示当前模型或思考程度。常驻 Agent Runtime 终端在本地与 Runtime Provider 远程控制器路径均按 `agent-runtime` kind、owner 和 scope 校验后打开，不再要求 Environment Setup 的 `environment_id`，从而消除 422。 |

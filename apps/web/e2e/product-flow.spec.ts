@@ -1,6 +1,8 @@
 import { expect, test, type APIRequestContext, type Locator, type Page, type WebSocketRoute } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
+test.use({ timezoneId: 'Asia/Shanghai' });
+
 const apiBase = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
 const suffix = Date.now().toString(36);
 const skillArchive = Buffer.concat([
@@ -262,7 +264,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/events')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date().toISOString() } }] : conversations.length ? [
+        events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'thought', event_type: 'THOUGHT', payload: { parent_id: 'user-request', content: '我先检查当前工作目录。', timestamp: '2026-08-26T10:00:01Z' } },
           { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'thought', event_name: 'BashAction', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
@@ -359,7 +361,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => sentProvider).toBe('provider-2');
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveJSProperty('open', true);
-  await expect(activeProcess.getByText(/正在处理 · 已耗时 \d+秒/)).toBeVisible();
+  await expect(activeProcess.getByText(/正在处理 · 已耗时 1[2-9]秒/)).toBeVisible();
+  await expect(activeProcess.getByText(/正在处理 · 已耗时 .*小时/)).toHaveCount(0);
+  await expect(activeProcess.getByText(/已等待 1[2-9]秒。/)).toBeVisible();
   await expect.poll(() => Boolean(agentStream)).toBe(true);
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
   await expect(activeProcess.getByText('正在核对上下文。')).toBeVisible();
