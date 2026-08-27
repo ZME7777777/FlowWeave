@@ -242,6 +242,46 @@ def root_context() -> dict[str, Any]:
     }
 
 
+def conversation_context(
+    db: Session, workspace_id: str, work_directory_id: str | None
+) -> tuple[str | None, str]:
+    """Resolve and revalidate the context frozen by a lazy conversation bootstrap."""
+
+    _workspace(db, workspace_id)
+    if work_directory_id is None:
+        return None, _RUNTIME_PROJECT_ROOT.as_posix()
+    item = _directory(db, workspace_id, work_directory_id, lock=True)
+    if item.state != "ACTIVE":
+        raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
+    version = _version(db, item)
+    # A version was checked when saved, but the underlying project tree is
+    # mutable. Re-check it before handing the path to OpenHands.
+    _validate_paths(db, workspace_id, _path_values(db, version.id))
+    return version.id, _working_directory(version.working_path)
+
+
+def frozen_conversation_context(
+    db: Session, workspace_id: str, work_directory_version_id: str
+) -> str:
+    """Revalidate a previously frozen version without consulting mutable current state."""
+
+    _workspace(db, workspace_id)
+    version = db.scalar(
+        select(AgentWorkDirectoryVersion)
+        .join(
+            AgentWorkDirectory, AgentWorkDirectory.id == AgentWorkDirectoryVersion.work_directory_id
+        )
+        .where(
+            AgentWorkDirectoryVersion.id == work_directory_version_id,
+            AgentWorkDirectory.workspace_id == workspace_id,
+        )
+    )
+    if version is None:
+        raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
+    _validate_paths(db, workspace_id, _path_values(db, version.id))
+    return _working_directory(version.working_path)
+
+
 def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
     _workspace(db, workspace_id)
     items = db.scalars(
@@ -343,7 +383,9 @@ def archive_work_directory(db: Session, workspace_id: str, work_directory_id: st
 
 __all__ = (
     "archive_work_directory",
+    "conversation_context",
     "create_work_directory",
+    "frozen_conversation_context",
     "get_work_directory",
     "list_work_directories",
     "root_context",

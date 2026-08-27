@@ -189,6 +189,18 @@ def _handle(cursor: str | None = None) -> RuntimeHandle:
     )
 
 
+def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_settings):
+    runtime = OpenHandsRuntime(openhands_settings)
+    request = replace(
+        _request(),
+        workspace_ref="/runtime/workspace/project/backend",
+        runtime_sandbox_id="agent-runtime-1",
+        runtime_resource_name="agent-workspace-runtime",
+    )
+
+    assert runtime._request_workspace_path(request) == "/runtime/workspace/project/backend"
+
+
 def _state(**values: object) -> dict[str, object]:
     return {
         "id": "10000000-0000-4000-8000-000000000002",

@@ -14,6 +14,7 @@ from flowweave.modules.agent_workspaces.application.service import (
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationCommand,
     AgentWorkDirectory,
     AgentWorkDirectoryPath,
     AgentWorkDirectoryVersion,
@@ -33,6 +34,7 @@ from flowweave.runtime.base import (
     RuntimePendingAction,
     RuntimePendingConfirmation,
     RuntimeProvider,
+    RuntimeResult,
 )
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
@@ -520,6 +522,328 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
             "不要将用户项目文件写入项目根以外的位置，例如 /runtime 的其他目录、/tmp 或 HOME。\n"
             "不要向用户解释宿主机路径、Docker 挂载或容器实现细节；对用户而言，这就是项目根目录。"
         )
+
+
+def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_directory(
+    settings, db_session_factory, monkeypatch
+):
+    class BootstrapRuntime(MockRuntime):
+        request = None
+        sent: list[str] = []
+        created = 0
+        initial_sent = False
+
+        def create_conversation(self, request):
+            self.request = request
+            self.created += 1
+            return super().create_conversation(request)
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            assert self.request is not None
+            return RuntimeConversationIdentity(
+                conversation_id=handle.conversation_id,
+                workspace_working_dir=self.request.workspace_ref,
+                persistence_dir=(
+                    f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
+                ),
+                event_id=None,
+                parent_id=None,
+                action_id=None,
+                tool_call_id=None,
+            )
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, image_urls
+            self.sent.append(content)
+            self.initial_sent = True
+            return RuntimeResult(status="RUNNING", cursor="first-user-event")
+
+        def read_active_events(self, handle):
+            del handle
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="first-user-event",
+                        event_type="MESSAGE",
+                        payload={"source": "user", "parent_id": "__root__"},
+                    ),
+                )
+                if self.initial_sent
+                else ()
+            )
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = BootstrapRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, workspace)
+        (project_root / "backend").mkdir()
+        directory = work_directories.create_work_directory(db, workspace.id, "后端", ("backend",))
+        assert conversations.list_conversations(db, workspace.id) == []
+
+        first = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=directory["id"],
+            model_provider_id=workspace.default_model_provider_id,
+            content="实现接口",
+            idempotency_key="draft-001",
+        )
+        replay = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="不得重复发送",
+            idempotency_key="draft-001",
+        )
+
+        assert replay == first
+        assert runtime.created == 1
+        assert runtime.sent == ["实现接口"]
+        assert runtime.request is not None
+        assert runtime.request.workspace_ref == "/runtime/workspace/project/backend"
+        assert first["cursor"] == "first-user-event"
+        assert (
+            first["conversation"]["work_directory_version_id"] == directory["current_version"]["id"]
+        )
+        assert first["conversation"]["working_directory"] == "/runtime/workspace/project/backend"
+        assert len(conversations.list_conversations(db, workspace.id)) == 1
+
+
+def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversation(
+    settings, db_session_factory, monkeypatch
+):
+    class FailingBootstrapRuntime(MockRuntime):
+        deleted = 0
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            raise DomainError("AGENT_INPUT_REJECTED", "invalid first input", 422)
+
+        def delete_conversation(self, handle):
+            del handle
+            self.deleted += 1
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = FailingBootstrapRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        with pytest.raises(DomainError, match="invalid first input"):
+            conversations.bootstrap_conversation(
+                db,
+                workspace.id,
+                work_directory_id=None,
+                model_provider_id=workspace.default_model_provider_id,
+                content="会失败",
+                idempotency_key="draft-known-failure",
+            )
+        binding = db.scalar(select(AgentConversationBinding))
+        assert binding is not None and binding.lifecycle == "FAILED"
+        assert runtime.deleted == 1
+        assert conversations.list_conversations(db, workspace.id) == []
+
+
+def test_agent_workspace_bootstrap_ambiguous_delivery_never_resends(
+    settings, db_session_factory, monkeypatch
+):
+    class AmbiguousBootstrapRuntime(MockRuntime):
+        sent = 0
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            self.sent += 1
+            raise DomainError("EXECUTOR_UNAVAILABLE", "temporary network failure", 503)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = AmbiguousBootstrapRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        for content in ("首条消息", "不得重发"):
+            with pytest.raises(DomainError) as raised:
+                conversations.bootstrap_conversation(
+                    db,
+                    workspace.id,
+                    work_directory_id=None,
+                    model_provider_id=workspace.default_model_provider_id,
+                    content=content,
+                    idempotency_key="draft-ambiguous",
+                )
+            assert raised.value.code == "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS"
+        command = db.scalar(select(AgentConversationCommand))
+        assert command is not None and command.state == "AMBIGUOUS"
+        assert runtime.sent == 1
+        assert conversations.list_conversations(db, workspace.id) == []
+
+
+def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event_identity(
+    settings, db_session_factory, monkeypatch
+):
+    class ReconciledBootstrapRuntime(MockRuntime):
+        sent = 0
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            self.sent += 1
+            raise DomainError("EXECUTOR_UNAVAILABLE", "response lost", 503)
+
+        def read_active_events(self, handle):
+            del handle
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="native-first-user",
+                        event_type="MESSAGE",
+                        payload={"source": "user", "parent_id": "__root__"},
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = ReconciledBootstrapRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        result = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="首条消息",
+            idempotency_key="draft-reconciled",
+        )
+        assert result["cursor"] == "native-first-user"
+        assert result["conversation"]["lifecycle"] == "ACTIVE"
+        assert runtime.sent == 1
+
+
+def test_agent_workspace_bootstrap_retries_ambiguous_creation_with_original_uuid(
+    settings, db_session_factory, monkeypatch
+):
+    class CreationRetryRuntime(MockRuntime):
+        created = 0
+        sent = 0
+
+        def create_conversation(self, request):
+            self.created += 1
+            super().create_conversation(request)
+            raise DomainError("EXECUTOR_UNAVAILABLE", "create response lost", 503)
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent += 1
+            return super().send_message(handle, content, image_urls)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = CreationRetryRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        with pytest.raises(DomainError) as raised:
+            conversations.bootstrap_conversation(
+                db,
+                workspace.id,
+                work_directory_id=None,
+                model_provider_id=workspace.default_model_provider_id,
+                content="首条消息",
+                idempotency_key="draft-create-ambiguous",
+            )
+        assert raised.value.code == "AGENT_BOOTSTRAP_CREATION_AMBIGUOUS"
+
+        result = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="首条消息",
+            idempotency_key="draft-create-ambiguous",
+        )
+        assert result["conversation"]["lifecycle"] == "ACTIVE"
+        assert runtime.created == 1
+        assert runtime.sent == 1
+
+
+def test_agent_workspace_bootstrap_api_requires_idempotency_key(
+    client, settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db:
+        workspace = _ready_workspace_for_conversation(db)
+        db.commit()
+        workspace_id = workspace.id
+
+    missing = client.post(
+        f"/api/v1/agent-workspaces/{workspace_id}/conversations",
+        json={"model_provider_id": "missing", "content": "首条消息"},
+    )
+    assert missing.status_code == 422
+    assert missing.json()["error"]["code"] == "AGENT_BOOTSTRAP_IDEMPOTENCY_KEY_REQUIRED"
+
+    created = client.post(
+        f"/api/v1/agent-workspaces/{workspace_id}/conversations",
+        headers={"Idempotency-Key": "bootstrap-http-001"},
+        json={
+            "model_provider_id": workspace.default_model_provider_id,
+            "content": "首条消息",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["accepted"] is True
+    assert created.json()["conversation"]["lifecycle"] == "ACTIVE"
 
 
 def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(

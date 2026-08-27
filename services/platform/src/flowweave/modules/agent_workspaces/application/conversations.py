@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCommand,
@@ -80,6 +81,8 @@ def _dict(item: AgentConversationBinding) -> dict[str, Any]:
         "model_provider_id": item.model_provider_id,
         "model_name": item.model_name,
         "reasoning_effort": item.reasoning_effort,
+        "work_directory_version_id": item.work_directory_version_id,
+        "working_directory": item.working_directory,
         "streaming_callback_ready": item.streaming_callback_ready,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
@@ -185,7 +188,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             select(AgentConversationBinding)
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle != "DELETED",
+                AgentConversationBinding.lifecycle == "ACTIVE",
             )
             .order_by(AgentConversationBinding.updated_at.desc())
         )
@@ -197,6 +200,91 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
     item.last_connected_at = now()
     db.flush()
     return _dict(item)
+
+
+def _system_context(working_directory: str) -> str:
+    if working_directory == _PROJECT_ROOT:
+        return _PROJECT_ROOT_SYSTEM_CONTEXT
+    return _PROJECT_ROOT_SYSTEM_CONTEXT + (
+        f"\n本次会话的默认工作目录是 {working_directory}；"
+        "优先在该目录及其子目录内组织本次工作的文件。"
+    )
+
+
+def _create_native_conversation(
+    db: Session,
+    workspace: AgentWorkspace,
+    binding: AgentConversationBinding,
+    provider: RuntimeProvider,
+    working_directory: str,
+    *,
+    allow_existing: bool = False,
+) -> RuntimeHandle:
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    if runtime is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    handle = _handle(db, workspace, binding)
+    if allow_existing:
+        try:
+            identity = get_runtime().reload_conversation(handle)
+        except DomainError as exc:
+            if exc.status != 404:
+                raise
+        else:
+            if identity.persistence_dir != (
+                f"/runtime/state/conversations/{UUID(binding.openhands_conversation_id).hex}"
+            ):
+                raise DomainError(
+                    "AGENT_CONVERSATION_IDENTITY_DRIFT", "会话持久化身份校验失败", 409
+                )
+            if identity.workspace_working_dir != working_directory:
+                raise DomainError(
+                    "AGENT_WORK_DIRECTORY_IDENTITY_DRIFT", "会话工作目录校验失败", 409
+                )
+            return handle
+    request = StartAttemptRequest(
+        attempt_id=binding.id,
+        execution_key=f"agent-workspace:{workspace.id}:conversation:{binding.id}",
+        node={"asset": {"name": "Agent Workspace"}},
+        bindings=[],
+        workspace_ref=working_directory,
+        conversation_id=binding.openhands_conversation_id,
+        agent_spec=RuntimeAgentSpec(
+            provider=provider,
+            confirmation_policy="NEVER",
+            agent_context=RuntimeAgentContext(
+                system_message_suffix=_system_context(working_directory)
+            ),
+            # This is the fixed OpenHands 1.42.0 summarizing condenser, not a
+            # FlowWeave summary loop. It remains native Conversation history.
+            condenser=RuntimeCondenser(kind="LLM_SUMMARIZING"),
+            condenser_provider=provider,
+            tools=_TOOLS,
+            runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in _TOOLS)),
+        ),
+        environment_image=runtime.runtime_image_digest,
+        environment_id=workspace.id,
+        environment_version_id=workspace.id,
+        environment_version_no=1,
+        runtime_sandbox_id=handle.runtime_resource_id,
+        runtime_resource_name=handle.runtime_resource_name,
+        runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
+    )
+    created = get_runtime().create_conversation(request)
+    if created.conversation_id != binding.openhands_conversation_id:
+        raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
+    identity = get_runtime().reload_conversation(
+        replace(handle, conversation_id=binding.openhands_conversation_id)
+    )
+    if identity.persistence_dir != (
+        f"/runtime/state/conversations/{UUID(binding.openhands_conversation_id).hex}"
+    ):
+        raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话持久化身份校验失败", 409)
+    if identity.workspace_working_dir != working_directory:
+        raise DomainError("AGENT_WORK_DIRECTORY_IDENTITY_DRIFT", "会话工作目录校验失败", 409)
+    return replace(handle, conversation_id=binding.openhands_conversation_id)
 
 
 def create_conversation(
@@ -241,6 +329,7 @@ def create_conversation(
         reasoning_effort=provider.reasoning_effort,
         streaming_callback_ready=True,
         openhands_conversation_id=conversation_id,
+        working_directory=_PROJECT_ROOT,
         display_title=title.strip() if title and title.strip() else None,
         create_idempotency_key=idempotency_key,
     )
@@ -254,43 +343,8 @@ def create_conversation(
         attempt_count=1,
     )
     db.add(command)
-    handle = _handle(db, workspace, binding)
-    request = StartAttemptRequest(
-        attempt_id=binding.id,
-        execution_key=f"agent-workspace:{workspace.id}:conversation:{binding.id}",
-        node={"asset": {"name": "Agent Workspace"}},
-        bindings=[],
-        workspace_ref=_PROJECT_ROOT,
-        conversation_id=conversation_id,
-        agent_spec=RuntimeAgentSpec(
-            provider=provider,
-            confirmation_policy="NEVER",
-            agent_context=RuntimeAgentContext(system_message_suffix=_PROJECT_ROOT_SYSTEM_CONTEXT),
-            # This is the fixed OpenHands 1.42.0 summarizing condenser, not a
-            # FlowWeave summary loop.  It emits CondensationRequest/Condensation
-            # events that remain in the native conversation history.
-            condenser=RuntimeCondenser(kind="LLM_SUMMARIZING"),
-            condenser_provider=provider,
-            tools=_TOOLS,
-            runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in _TOOLS)),
-        ),
-        environment_image=runtime.runtime_image_digest,
-        environment_id=workspace.id,
-        environment_version_id=workspace.id,
-        environment_version_no=1,
-        runtime_sandbox_id=handle.runtime_resource_id,
-        runtime_resource_name=handle.runtime_resource_name,
-        runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
-    )
     try:
-        created = get_runtime().create_conversation(request)
-        if created.conversation_id != conversation_id:
-            raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
-        identity = get_runtime().reload_conversation(
-            replace(handle, conversation_id=conversation_id)
-        )
-        if identity.persistence_dir != f"/runtime/state/conversations/{UUID(conversation_id).hex}":
-            raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话持久化身份校验失败", 409)
+        _create_native_conversation(db, workspace, binding, provider, _PROJECT_ROOT)
     except DomainError as exc:
         binding.lifecycle = "FAILED"
         command.state = "FAILED"
@@ -301,6 +355,258 @@ def create_conversation(
     command.state = "SUCCEEDED"
     db.flush()
     return _dict(binding)
+
+
+def _initial_user_event_id(handle: RuntimeHandle, previous_event_id: str | None) -> str | None:
+    """Find a first user event exclusively through formal native identities."""
+
+    expected_parent_id = previous_event_id or "__root__"
+    candidates = [
+        event.cursor
+        for event in get_runtime().read_active_events(handle).events
+        if event.event_type == "MESSAGE"
+        and str(event.payload.get("source") or "").lower() in {"user", "human"}
+        and event.payload.get("parent_id") == expected_parent_id
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _bootstrap_result(binding: AgentConversationBinding) -> dict[str, Any]:
+    return {
+        "conversation": _dict(binding),
+        "accepted": True,
+        "cursor": binding.initial_user_event_id,
+    }
+
+
+def _bootstrap_command(
+    db: Session, workspace_id: str, idempotency_key: str
+) -> tuple[AgentConversationBinding | None, AgentConversationCommand | None]:
+    binding = db.scalar(
+        select(AgentConversationBinding)
+        .where(AgentConversationBinding.create_idempotency_key == idempotency_key)
+        .with_for_update()
+    )
+    if binding is None:
+        return None, None
+    if binding.workspace_id != workspace_id:
+        raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话创建请求冲突", 409)
+    command = db.scalar(
+        select(AgentConversationCommand)
+        .where(
+            AgentConversationCommand.binding_id == binding.id,
+            AgentConversationCommand.command_type == "CREATE",
+        )
+        .with_for_update()
+    )
+    if command is None:
+        raise DomainError("AGENT_CONVERSATION_BOOTSTRAP_INVALID", "会话创建命令数据不完整", 409)
+    return binding, command
+
+
+def _record_bootstrap_failure(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    error: DomainError,
+) -> None:
+    binding.lifecycle = "FAILED"
+    command.state = "FAILED"
+    command.last_error_code = error.code
+    command.failure_summary = "Conversation bootstrap failed; inspect protected logs"
+    db.commit()
+
+
+def bootstrap_conversation(
+    db: Session,
+    workspace_id: str,
+    *,
+    work_directory_id: str | None,
+    model_provider_id: str | None,
+    content: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Create a native conversation only while accepting its first user event.
+
+    A browser draft has no database representation. The first submission first
+    commits a private reservation keyed by the browser command ID, then creates
+    the original native UUID and submits exactly one user event. An ambiguous
+    submit is reconciled by native event IDs and parent IDs, never resent.
+    """
+
+    prompt = content.strip()
+    if not prompt:
+        raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    workspace = _workspace(db, workspace_id)
+    binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
+    if binding is not None and command is not None:
+        if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
+            return _bootstrap_result(binding)
+        if command.state == "AMBIGUOUS":
+            reconciled = _initial_user_event_id(
+                _handle(db, workspace, binding),
+                previous_event_id=binding.bootstrap_parent_event_id,
+            )
+            if reconciled is not None:
+                binding.initial_user_event_id = reconciled
+                binding.lifecycle = "ACTIVE"
+                binding.updated_at = now()
+                command.state = "SUCCEEDED"
+                command.updated_at = binding.updated_at
+                db.commit()
+                return _bootstrap_result(binding)
+            raise DomainError(
+                "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
+                "首条消息发送结果仍不确定，请稍后刷新后继续对账",
+                504,
+                {"binding_id": binding.id},
+            )
+        if command.state != "PENDING" or binding.lifecycle != "PROVISIONING":
+            raise DomainError("AGENT_CONVERSATION_PROVISIONING", "会话创建仍在处理中", 409)
+        command.attempt_count += 1
+        db.commit()
+    else:
+        if not model_provider_id or not has_connected_default_model(db, model_provider_id):
+            raise DomainError(
+                "AGENT_MODEL_CONFIGURATION_REQUIRED",
+                "请选择已测试成功且存在启用默认模型的模型供应商",
+                409,
+            )
+        version_id, working_directory = work_directories.conversation_context(
+            db, workspace.id, work_directory_id
+        )
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        if runtime is None:
+            raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+        provider = runtime_provider(
+            db, {"asset": {"executor": {"model_provider_id": model_provider_id}}}
+        )
+        binding = AgentConversationBinding(
+            workspace_id=workspace.id,
+            runtime_session_id=runtime.id,
+            work_directory_version_id=version_id,
+            working_directory=working_directory,
+            model_provider_id=model_provider_id,
+            model_name=provider.model,
+            reasoning_effort=provider.reasoning_effort,
+            streaming_callback_ready=True,
+            openhands_conversation_id=str(uuid4()),
+            create_idempotency_key=idempotency_key,
+        )
+        db.add(binding)
+        db.flush()
+        command = AgentConversationCommand(
+            workspace_id=workspace.id,
+            binding_id=binding.id,
+            command_type="CREATE",
+            idempotency_key=idempotency_key,
+            attempt_count=1,
+        )
+        db.add(command)
+        # This durable reservation serializes retries before an external
+        # OpenHands call and intentionally remains invisible to conversation
+        # lists until the first user MessageEvent is accepted.
+        db.commit()
+
+    assert binding is not None and command is not None
+    if not binding.model_provider_id or not binding.working_directory:
+        error = DomainError("AGENT_CONVERSATION_BOOTSTRAP_INVALID", "会话创建数据不完整", 409)
+        _record_bootstrap_failure(db, binding, command, error)
+        raise error
+    if binding.work_directory_version_id is not None:
+        frozen_working_directory = work_directories.frozen_conversation_context(
+            db, workspace.id, binding.work_directory_version_id
+        )
+        if frozen_working_directory != binding.working_directory:
+            error = DomainError(
+                "AGENT_WORK_DIRECTORY_IDENTITY_DRIFT", "会话冻结工作目录校验失败", 409
+            )
+            _record_bootstrap_failure(db, binding, command, error)
+            raise error
+    provider = runtime_provider(
+        db,
+        {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+        model_name=binding.model_name,
+        reasoning_effort=binding.reasoning_effort,
+    )
+    try:
+        handle = _create_native_conversation(
+            db,
+            workspace,
+            binding,
+            provider,
+            binding.working_directory,
+            allow_existing=command.attempt_count > 1,
+        )
+        previous_event_id = get_runtime().reload_conversation(handle).event_id
+        binding.bootstrap_parent_event_id = previous_event_id
+        db.commit()
+    except DomainError as exc:
+        if exc.status >= 500:
+            command.last_error_code = exc.code
+            command.failure_summary = "Conversation creation requires retry with the original UUID"
+            db.commit()
+            raise DomainError(
+                "AGENT_BOOTSTRAP_CREATION_AMBIGUOUS",
+                "会话创建结果不确定，请使用同一请求标识重试",
+                504,
+            ) from exc
+        _record_bootstrap_failure(db, binding, command, exc)
+        raise
+    try:
+        delivered = get_runtime().send_message(handle, prompt)
+    except DomainError as exc:
+        if exc.status >= 500:
+            try:
+                reconciled = _initial_user_event_id(handle, previous_event_id)
+            except DomainError:
+                reconciled = None
+            if reconciled is not None:
+                binding.initial_user_event_id = reconciled
+                binding.lifecycle = "ACTIVE"
+                binding.updated_at = now()
+                command.state = "SUCCEEDED"
+                command.updated_at = binding.updated_at
+                db.commit()
+                return _bootstrap_result(binding)
+            command.state = "AMBIGUOUS"
+            command.last_error_code = exc.code
+            command.failure_summary = (
+                "First user event delivery requires native identity reconciliation"
+            )
+            db.commit()
+            raise DomainError(
+                "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
+                "首条消息发送结果不确定，请稍后刷新后继续对账",
+                504,
+                {"binding_id": binding.id},
+            ) from exc
+        try:
+            get_runtime().delete_conversation(handle)
+        except DomainError:
+            pass
+        _record_bootstrap_failure(db, binding, command, exc)
+        raise
+    initial_event_id = delivered.cursor or _initial_user_event_id(handle, previous_event_id)
+    if initial_event_id is None:
+        command.state = "AMBIGUOUS"
+        command.failure_summary = "First user event ID was unavailable after accepted delivery"
+        db.commit()
+        raise DomainError(
+            "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
+            "首条消息发送结果不确定，请稍后刷新后继续对账",
+            504,
+            {"binding_id": binding.id},
+        )
+    binding.initial_user_event_id = initial_event_id
+    binding.lifecycle = "ACTIVE"
+    binding.updated_at = now()
+    command.state = "SUCCEEDED"
+    command.updated_at = binding.updated_at
+    db.commit()
+    return _bootstrap_result(binding)
 
 
 def patch_conversation(

@@ -227,6 +227,11 @@ class AgentConversationBinding(Base):
         ),
         UniqueConstraint("create_idempotency_key", name="uq_agent_conversation_create_key"),
         CheckConstraint(
+            "working_directory IS NULL OR working_directory = '/runtime/workspace/project' "
+            "OR working_directory LIKE '/runtime/workspace/project/%'",
+            name="ck_agent_conversation_working_directory",
+        ),
+        CheckConstraint(
             "lifecycle IN ('PROVISIONING', 'ACTIVE', 'DELETE_PENDING', 'DELETED', 'FAILED')",
             name="ck_agent_conversation_lifecycle",
         ),
@@ -239,6 +244,13 @@ class AgentConversationBinding(Base):
     runtime_session_id: Mapped[str] = mapped_column(
         ForeignKey("agent_workspace_runtimes.id", ondelete="RESTRICT"), index=True
     )
+    # New bindings freeze the selected work-directory version. Root-workspace
+    # conversations keep this NULL; historical bindings are intentionally not
+    # guessed during the migration.
+    work_directory_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_work_directory_versions.id", ondelete="RESTRICT"), index=True
+    )
+    working_directory: Mapped[str | None] = mapped_column(String(500))
     # This is frozen when the native OpenHands conversation is created.  It is
     # intentionally nullable for pre-FR-29 bindings: their original provider
     # was not persisted and must not be guessed during migration.
@@ -259,6 +271,10 @@ class AgentConversationBinding(Base):
     display_title: Mapped[str | None] = mapped_column(String(240))
     lifecycle: Mapped[str] = mapped_column(String(20), default="PROVISIONING", index=True)
     create_idempotency_key: Mapped[str] = mapped_column(String(200))
+    # The formal OpenHands ID of the first accepted user MessageEvent. It is
+    # persisted only for lazy-bootstrap bindings and is the retry truth.
+    bootstrap_parent_event_id: Mapped[str | None] = mapped_column(String(200))
+    initial_user_event_id: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -306,6 +306,8 @@ UNIQUE(runtime_session_id, generation)
 id UUID PK                                      -- 前端和公开 API 使用
 workspace_id FK
 runtime_session_id FK
+work_directory_version_id FK NULL              -- 新会话冻结选定工作目录版本；根工作区为 NULL
+working_directory VARCHAR NULL                 -- 新会话冻结的 OpenHands LocalWorkspace working_dir
 model_provider_id FK NULL                     -- 创建时冻结；历史未知时保持 NULL
 model_name VARCHAR NULL                       -- 用户确认后立即保存的会话期望模型
 reasoning_effort VARCHAR NULL                  -- 用户确认后立即保存的会话推理强度
@@ -313,6 +315,8 @@ openhands_conversation_id UUID
 display_title VARCHAR NULL                      -- 离线列表投影
 lifecycle PROVISIONING | ACTIVE | DELETE_PENDING | DELETED | FAILED
 create_idempotency_key VARCHAR UNIQUE
+initial_user_event_id VARCHAR NULL             -- 首条正式 user MessageEvent 的 OpenHands ID
+bootstrap_parent_event_id VARCHAR NULL          -- 投递前 HEAD；仅用于按正式 parent_id 重试对账
 created_at / updated_at / last_connected_at / deleted_at
 UNIQUE(runtime_session_id, openhands_conversation_id)
 ~~~
@@ -684,9 +688,16 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
 
 ### 14.4 新建会话体验
 
-点击“新建会话”直接创建，不弹出 Flow、节点、镜像或 Runtime 表单。默认模型已经配置时只需一次点击；
-创建成功先将服务端返回的 binding 写入本地查询缓存，再进入该 binding 的稳定 URL；不得由尚未刷新的旧列表
-把页面重定向回先前会话。首条消息发送后使用 OpenHands 正式标题生成或截断标题，并同步 display title 投影。
+点击“新建会话”只在浏览器内创建草稿，不弹出 Flow、节点、镜像或 Runtime 表单，也不请求创建 binding、
+Conversation 或稳定 URL。草稿可绑定隐式根工作区，或一个工作目录；工作目录在首条消息发送时解析并冻结其当前
+不可变版本。首条消息以浏览器生成的幂等键提交 bootstrap：平台先保留隐藏的命令记录，再以同一 UUID 创建
+OpenHands Conversation、投递唯一正式 user event，拿到正式事件 ID 后才激活 binding、写入查询缓存并进入
+稳定 URL。刷新或离开未发送草稿直接丢弃。
+
+OpenHands 1.42.0 的发送接口没有客户端幂等键；网络结果不确定时，平台只按正式 user `MessageEvent` ID 及
+`parent_id` 对账，绝不根据文本、事件顺序或名称猜测、更不会重复投递。明确失败会调用正式 delete 清理隐藏
+空会话；无法确认的投递保持不可见，等待同一 bootstrap 键继续对账。标题生成不写入 Conversation 事件，留给
+独立元数据任务处理。
 
 ## 15. 一致性和恢复对账
 

@@ -53,9 +53,10 @@ class AgentWorkDirectoryPatchWrite(_Write):
     )
 
 
-class AgentConversationCreateWrite(_Write):
-    title: str | None = Field(default=None, max_length=240)
+class AgentConversationBootstrapWrite(_Write):
     model_provider_id: str = Field(min_length=1, max_length=36)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+    content: str = Field(min_length=1, max_length=200_000)
 
 
 class AgentConversationPatchWrite(_Write):
@@ -216,18 +217,25 @@ async def list_agent_conversations(workspace_id: str, db: Db) -> list[dict[str, 
 @router.post("/agent-workspaces/{workspace_id}/conversations", status_code=201)
 async def create_agent_conversation(
     workspace_id: str,
-    payload: AgentConversationCreateWrite,
+    payload: AgentConversationBootstrapWrite,
     db: Db,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
+    if idempotency_key is None:
+        raise DomainError(
+            "AGENT_BOOTSTRAP_IDEMPOTENCY_KEY_REQUIRED",
+            "首条消息必须携带幂等请求标识",
+            422,
+        )
     return await run_sync(
         db,
-        lambda session: conversations.create_conversation(
+        lambda session: conversations.bootstrap_conversation(
             session,
             workspace_id,
-            payload.title,
-            payload.model_provider_id,
-            _key(idempotency_key, "create-agent-conversation", workspace_id),
+            work_directory_id=payload.work_directory_id,
+            model_provider_id=payload.model_provider_id,
+            content=payload.content,
+            idempotency_key=idempotency_key,
         ),
     )
 

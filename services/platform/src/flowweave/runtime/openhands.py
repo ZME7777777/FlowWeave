@@ -802,8 +802,19 @@ class OpenHandsRuntime:
         return str(self.openhands_workspace_root / relative)
 
     def _request_workspace_path(self, request: StartAttemptRequest) -> str:
-        if request.runtime_resource_name and request.workspace_ref == "/runtime/workspace/project":
-            return request.workspace_ref
+        if request.runtime_resource_name:
+            workspace = PurePosixPath(request.workspace_ref)
+            project_root = PurePosixPath("/runtime/workspace/project")
+            if (
+                workspace.is_absolute()
+                and ".." not in workspace.parts
+                and workspace.is_relative_to(project_root)
+            ):
+                # Agent Workspace conversations may freeze a selected project
+                # subdirectory. The running Agent Server sees the same mounted
+                # project root, so preserve that native absolute path instead
+                # of translating it through the host workspace root.
+                return request.workspace_ref
         if (
             request.runtime_sandbox_id
             and request.node_workspace_ref.startswith("/runtime/workspace/project/")

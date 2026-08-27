@@ -57,32 +57,40 @@
         "title": "AgentConfirmationDecisionWrite",
         "type": "object"
       },
-      "AgentConversationCreateWrite": {
+      "AgentConversationBootstrapWrite": {
         "additionalProperties": false,
         "properties": {
+          "content": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
           "model_provider_id": {
             "maxLength": 36,
             "minLength": 1,
             "title": "Model Provider Id",
             "type": "string"
           },
-          "title": {
+          "work_directory_id": {
             "anyOf": [
               {
-                "maxLength": 240,
+                "maxLength": 36,
+                "minLength": 1,
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Title"
+            "title": "Work Directory Id"
           }
         },
         "required": [
-          "model_provider_id"
+          "model_provider_id",
+          "content"
         ],
-        "title": "AgentConversationCreateWrite",
+        "title": "AgentConversationBootstrapWrite",
         "type": "object"
       },
       "AgentConversationForkWrite": {
@@ -3061,7 +3069,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AgentConversationCreateWrite"
+                "$ref": "#/components/schemas/AgentConversationBootstrapWrite"
               }
             }
           },
