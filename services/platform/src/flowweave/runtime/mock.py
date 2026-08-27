@@ -22,6 +22,9 @@ from flowweave.runtime.base import (
     RuntimeProvider,
     RuntimeResult,
     RuntimeWakeup,
+    RuntimeWorkspaceEntry,
+    RuntimeWorkspaceFile,
+    RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
 from flowweave.shared.errors import DomainError
@@ -189,6 +192,20 @@ class MockRuntime:
     ) -> str:
         del handle, content_type, content
         return f"/runtime/workspace/project/uploads/{filename}"
+
+    def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
+        del handle
+        return RuntimeWorkspaceSnapshot(
+            entries=(
+                RuntimeWorkspaceEntry(path=f"{path.rstrip('/')}/README.md", kind="file", size=128),
+                RuntimeWorkspaceEntry(path=f"{path.rstrip('/')}/src", kind="directory"),
+            ),
+            repositories=(),
+        )
+
+    def download_workspace_file(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceFile:
+        del handle
+        return RuntimeWorkspaceFile(path.rsplit("/", 1)[-1], "text/plain", b"mock workspace file\n")
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
         del handle

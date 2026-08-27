@@ -211,6 +211,7 @@ class DockerControllerClient:
         resource_id: str,
         environment_id: str | None,
         session_name: str | None,
+        working_dir: str | None = None,
         rows: int = 24,
         columns: int = 80,
     ) -> RemoteTerminal:
@@ -221,6 +222,7 @@ class DockerControllerClient:
                 "resource_id": resource_id,
                 "environment_id": environment_id,
                 "session_name": session_name,
+                "working_dir": working_dir,
                 "rows": rows,
                 "columns": columns,
             },
@@ -263,6 +265,23 @@ class DockerControllerClient:
             # Closing an attachment is best-effort. The controller also reaps
             # abandoned attachments after a bounded idle timeout.
             pass
+
+    def destroy_terminal_session(
+        self,
+        *,
+        resource_name: str,
+        resource_id: str,
+        session_name: str,
+    ) -> None:
+        self._request(
+            "/v1/terminals/destroy-session",
+            {
+                "resource_name": resource_name,
+                "resource_id": resource_id,
+                "session_name": session_name,
+            },
+            timeout=30,
+        )
 
     async def stream_runtime_events(
         self,

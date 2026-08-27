@@ -243,6 +243,25 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }) });
       return;
     }
+    if (path.endsWith('/workspace')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        root: '/runtime/workspace/project',
+        working_directory: '/runtime/workspace/project',
+        work_directory: null,
+        files: [
+          { path: '/runtime/workspace/project/README.md', kind: 'file', size: 128 },
+          { path: '/runtime/workspace/project/src', kind: 'directory', size: 0 },
+          { path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 },
+        ],
+        repositories: [{ path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab' }],
+        ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '需要部署 Gateway', note: '部署方配置受保护入口后可连接。' } },
+      }) });
+      return;
+    }
+    if (path.endsWith('/workspace/file')) {
+      await route.fulfill({ status: 200, contentType: 'text/plain', body: 'workspace file preview\n' });
+      return;
+    }
     if (path.endsWith('/conversations') && request.method() === 'GET') {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversations) });
       return;
@@ -409,7 +428,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(bootstrapWorkDirectory).toBeNull();
   await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
-  await page.getByRole('button', { name: '打开工作区终端' }).click();
+  await page.getByRole('button', { name: '打开工作区' }).click();
+  await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '文件' }).click();
+  await expect(page.getByText('README.md', { exact: true })).toBeVisible();
+  await page.getByText('README.md', { exact: true }).click();
+  await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '终端', exact: true }).click();
   await expect(page.locator('.agent-workspace-terminal')).toBeVisible();
   await expect.poll(() => Boolean(terminalSocket)).toBe(true);
   terminalSocket!.send(`${Array.from({ length: 80 }, (_, index) => `output-${index + 1}`).join('\r\n')}\r\n`);
@@ -519,7 +544,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     const failure = turn.querySelector('.conversation-failure');
     return Boolean(process && failure && (process.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
-  await page.getByRole('button', { name: '压缩上下文' }).click();
   await page.getByRole('button', { name: '从此处分叉会话' }).last().click();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
@@ -639,6 +663,80 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
+});
+
+test('Agent workspace drawer remains available while Runtime is recovering', async ({ page }) => {
+  const conversation = {
+    id: 'recovering-conversation', workspace_id: 'recovering-workspace',
+    external_conversation_id: 'external-recovering-conversation',
+    display_title: '保留的历史会话', title_state: 'READY', lifecycle: 'ACTIVE',
+    working_directory: '/runtime/workspace/project', work_directory_id: null,
+    model_provider_id: null, model_name: null, reasoning_effort: null,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/default')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        id: 'recovering-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString(),
+      }) });
+      return;
+    }
+    if (path.endsWith('/runtime')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        state: 'RECOVERING', write_available: false, message: '运行环境正在恢复，数据已保留', updated_at: new Date().toISOString(),
+      }) });
+      return;
+    }
+    if (path.endsWith('/conversations')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([conversation]) });
+      return;
+    }
+    if (path.endsWith('/events')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        events: [{ id: 'recovering-user-event', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '这条历史消息必须保留可见', timestamp: new Date().toISOString() } }],
+        head_id: 'recovering-user-event',
+      }) });
+      return;
+    }
+    if (path.endsWith('/context')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
+      return;
+    }
+    if (path.endsWith('/pending-confirmation')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+      return;
+    }
+    if (path.endsWith('/work-directories')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+      }) });
+      return;
+    }
+    if (path.endsWith('/workspace')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        root: '/runtime/workspace/project', working_directory: '/runtime/workspace/project',
+        work_directory: null, files: [{ path: '/runtime/workspace/project/README.md', kind: 'file', size: 12 }],
+        repositories: [], ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '需要部署 Gateway', note: '恢复期间仍可查看文件。' } },
+      }) });
+      return;
+    }
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'AGENT_RUNTIME_RECOVERING', message: '运行环境正在恢复' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+
+  await page.goto('/agent/conversations/recovering-conversation');
+  await expect(page.getByText('这条历史消息必须保留可见')).toBeVisible();
+  await expect(page.getByText('运行环境正在恢复', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '打开工作区' }).click();
+
+  const workspaceDrawer = page.getByRole('complementary').filter({ hasText: 'WORKSPACE' });
+  await expect(workspaceDrawer.getByRole('button', { name: '关闭工作区抽屉' })).toBeVisible();
+  await expect(
+    workspaceDrawer.getByRole('article').filter({ hasText: '当前目录' }).getByRole('code'),
+  ).toHaveText('/runtime/workspace/project');
+  await page.getByRole('button', { name: '终端', exact: true }).click();
+  await expect(page.getByText('概览和文件仍可使用；运行环境恢复后终端会自动可用。')).toBeVisible();
 });
 
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {

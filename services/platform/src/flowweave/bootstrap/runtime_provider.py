@@ -290,12 +290,31 @@ class MarketplaceCatalogWrite(PluginResolveWrite):
 class TerminalStartWrite(SandboxDeleteWrite):
     environment_id: UUID | None = None
     session_name: str | None = Field(default=None, max_length=64)
+    working_dir: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^/runtime/workspace/project(?:/[^/]+)*$",
+    )
     rows: int = Field(default=24, ge=2, le=200)
     columns: int = Field(default=80, ge=20, le=400)
+
+    @model_validator(mode="after")
+    def validate_working_dir(self) -> TerminalStartWrite:
+        if self.working_dir is not None and (
+            ".." in self.working_dir.split("/") or "\x00" in self.working_dir
+        ):
+            raise ValueError("working_dir must remain under the project root")
+        if self.environment_id is not None and self.working_dir is not None:
+            raise ValueError("setup terminals cannot set working_dir")
+        return self
 
 
 class TerminalIdWrite(ScopedRequest):
     terminal_id: str = Field(min_length=32, max_length=64)
+
+
+class TerminalSessionWrite(SandboxDeleteWrite):
+    session_name: str = Field(min_length=1, max_length=64)
 
 
 class TerminalWrite(TerminalIdWrite):
@@ -637,6 +656,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/terminals/write": frozenset({"api"}),
                 "/v1/terminals/resize": frozenset({"api"}),
                 "/v1/terminals/close": frozenset({"api"}),
+                "/v1/terminals/destroy-session": frozenset({"api"}),
             }
             if request.url.path != "/health" and role not in allowed_roles_by_path.get(
                 request.url.path, frozenset()
@@ -1046,7 +1066,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload.rows,
                 payload.columns,
                 working_dir=(
-                    None if payload.environment_id is not None else "/runtime/workspace/project"
+                    None
+                    if payload.environment_id is not None
+                    else payload.working_dir or "/runtime/workspace/project"
                 ),
             )
         }
@@ -1081,6 +1103,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         terminals.close(payload.terminal_id)
         return {"closed": True}
 
+    @app.post("/v1/terminals/destroy-session")
+    async def terminal_destroy_session(payload: TerminalSessionWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        try:
+            container_id = inspect_owned_container(
+                configured.docker_binary,
+                payload.resource_name,
+                str(payload.resource_id),
+                expected_manager_scope=configured.sandbox_manager_scope,
+                expected_kind="agent-runtime",
+                timeout=30,
+            )
+        except DockerOwnershipError as exc:
+            raise DomainError(
+                "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
+                "The Agent Runtime container is owned by another resource",
+                409,
+            ) from exc
+        except DockerControlError as exc:
+            raise DomainError(
+                "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+                "The Agent Runtime container could not be verified",
+                503,
+            ) from exc
+        if container_id is None:
+            raise DomainError(
+                "AGENT_TERMINAL_UNAVAILABLE",
+                "The Agent Runtime container no longer exists",
+                409,
+            )
+        environments_docker.destroy_terminal_session(container_id, payload.session_name)
+        return {"destroyed": True}
+
     # FastAPI retains these callables through the registered routes/handlers.
     # Explicitly access them so strict static analysis recognizes that use.
     _registered = (
@@ -1106,6 +1161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         terminal_write,
         terminal_resize,
         terminal_close,
+        terminal_destroy_session,
     )
     del _registered
     return app

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import re
+import tarfile
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -44,6 +46,9 @@ from flowweave.runtime.base import (
     RuntimeTaskUsageSnapshot,
     RuntimeUsageSnapshot,
     RuntimeWakeup,
+    RuntimeWorkspaceEntry,
+    RuntimeWorkspaceFile,
+    RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
 from flowweave.shared.errors import DomainError
@@ -2704,6 +2709,92 @@ class OpenHandsRuntime:
                 "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件上传不可用", 503
             ) from exc
         return target
+
+    def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_resource(handle.runtime_resource_name)
+        try:
+            with httpx.Client(timeout=45, follow_redirects=False) as client:
+                response = client.get(
+                    f"{base_url}/api/file/archive",
+                    headers={"X-Session-API-Key": session_api_key},
+                    params={"path": path, "format": "tar.gz", "use_default_excludes": "true"},
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件索引不可用", 503
+            ) from exc
+        encoded_archive_root = response.headers.get("X-Archive-Repo-Root")
+        try:
+            archive_root = (
+                unquote(encoded_archive_root, errors="strict")
+                if encoded_archive_root
+                else path
+            )
+        except UnicodeDecodeError as exc:
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件索引路径无效", 503
+            ) from exc
+        parsed_root = PurePosixPath(archive_root)
+        if (
+            not parsed_root.is_absolute()
+            or parsed_root.as_posix() != archive_root
+            or ".." in parsed_root.parts
+            or archive_root != path
+        ):
+            raise DomainError("EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件索引路径无效", 503)
+        entries: dict[str, RuntimeWorkspaceEntry] = {}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz") as archive:
+                for member in archive:
+                    parts = PurePosixPath(member.name).parts
+                    if len(parts) <= 1:
+                        continue
+                    relative = "/".join(parts[1:])
+                    relative_parts = PurePosixPath(relative).parts
+                    if not relative or any(
+                        part in {"", ".", ".."} or part.startswith(".") for part in relative_parts
+                    ):
+                        continue
+                    entry_path = f"{archive_root.rstrip('/')}/{relative}"
+                    kind = "directory" if member.isdir() else "file"
+                    entries[entry_path] = RuntimeWorkspaceEntry(entry_path, kind, member.size)
+                    for index in range(1, len(relative_parts)):
+                        parent = f"{archive_root.rstrip('/')}/{'/'.join(relative_parts[:index])}"
+                        entries.setdefault(parent, RuntimeWorkspaceEntry(parent, "directory"))
+        except (tarfile.TarError, OSError, ValueError) as exc:
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件索引格式无效", 503
+            ) from exc
+        repository = {
+            "path": archive_root,
+            "remote": response.headers.get("X-Archive-Repo-Remote", ""),
+            "branch": response.headers.get("X-Archive-Branch", ""),
+            "head": response.headers.get("X-Archive-Head-Commit", ""),
+        }
+        repositories = (repository,) if any(repository.values()) else ()
+        entries_by_path = tuple(sorted(entries.values(), key=lambda item: item.path.lower()))
+        return RuntimeWorkspaceSnapshot(entries_by_path, repositories)
+
+    def download_workspace_file(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceFile:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_resource(handle.runtime_resource_name)
+        try:
+            with httpx.Client(timeout=45, follow_redirects=False) as client:
+                response = client.get(
+                    f"{base_url}/api/file/download",
+                    headers={"X-Session-API-Key": session_api_key},
+                    params={"path": path},
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise DomainError("EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件不可用", 503) from exc
+        return RuntimeWorkspaceFile(
+            filename=Path(path).name,
+            content_type=response.headers.get("content-type", "application/octet-stream"),
+            content=response.content,
+        )
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
         """Expose the current LLM's formal OpenHands context usage snapshot."""

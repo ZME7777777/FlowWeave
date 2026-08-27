@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Annotated, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import (
     APIRouter,
@@ -18,7 +18,11 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
-from flowweave.modules.agent_workspaces.application import conversations, work_directories
+from flowweave.modules.agent_workspaces.application import (
+    conversations,
+    work_directories,
+    workspace,
+)
 from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
@@ -53,12 +57,6 @@ class AgentWorkDirectoryPatchWrite(_Write):
     )
 
 
-class AgentConversationBootstrapWrite(_Write):
-    model_provider_id: str = Field(min_length=1, max_length=36)
-    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
-    content: str = Field(min_length=1, max_length=200_000)
-
-
 class AgentConversationPatchWrite(_Write):
     title: str = Field(min_length=1, max_length=200)
 
@@ -70,6 +68,17 @@ class AgentAttachmentReference(_Write):
 
 def _empty_attachment_references() -> list[AgentAttachmentReference]:
     return []
+
+
+class AgentConversationBootstrapWrite(_Write):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+    content: str = Field(min_length=1, max_length=200_000)
+    attachments: list[AgentAttachmentReference] = Field(
+        default_factory=_empty_attachment_references, max_length=10
+    )
 
 
 class AgentMessageWrite(_Write):
@@ -100,6 +109,13 @@ class AgentConfirmationDecisionWrite(_Write):
     expected_pending_digest: str = Field(min_length=1, max_length=128)
     accept: bool
     reason: str = Field(min_length=1, max_length=2_000)
+
+
+def _terminal_instance_id(value: str | None) -> str:
+    try:
+        return str(UUID(value or ""))
+    except ValueError as exc:
+        raise DomainError("AGENT_TERMINAL_ID_INVALID", "终端实例标识无效", 422) from exc
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -137,6 +153,47 @@ async def get_agent_workspace_runtime(workspace_id: str, db: Db) -> dict[str, An
 async def list_agent_work_directories(workspace_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: work_directories.list_work_directories(session, workspace_id)
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace")
+async def get_agent_workspace_details(
+    workspace_id: str,
+    db: Db,
+    work_directory_id: str | None = Query(default=None),
+    binding_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.details(
+            session,
+            workspace_id,
+            work_directory_id=work_directory_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace/file")
+async def download_agent_workspace_file(
+    workspace_id: str,
+    db: Db,
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+    download: bool = Query(default=False),
+) -> Response:
+    item = await run_sync(
+        db,
+        lambda session: workspace.download(
+            session, workspace_id, path, binding_id, work_directory_id
+        ),
+    )
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=item.content,
+        media_type=item.content_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{item.filename}"'},
     )
 
 
@@ -234,7 +291,12 @@ async def create_agent_conversation(
             workspace_id,
             work_directory_id=payload.work_directory_id,
             model_provider_id=payload.model_provider_id,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
             content=payload.content,
+            attachments=tuple(
+                item.model_dump(exclude_none=True) for item in payload.attachments
+            ),
             idempotency_key=idempotency_key,
         ),
     )
@@ -364,6 +426,28 @@ async def agent_attachment(
             filename=file.filename or "attachment",
             content_type=file.content_type or "application/octet-stream",
             content=content,
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/attachments", status_code=201)
+async def agent_workspace_attachment(
+    workspace_id: str,
+    db: Db,
+    file: Annotated[UploadFile, File()],
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    content = await file.read(25 * 1024 * 1024 + 1)
+    return await run_sync(
+        db,
+        lambda session: conversations.upload_attachment(
+            session,
+            workspace_id,
+            None,
+            filename=file.filename or "attachment",
+            content_type=file.content_type or "application/octet-stream",
+            content=content,
+            work_directory_id=work_directory_id,
         ),
     )
 
@@ -535,22 +619,42 @@ async def agent_workspace_terminal(
             columns = max(20, min(int(websocket.query_params.get("columns", "80")), 400))
         except ValueError:
             rows, columns = 24, 80
+        try:
+            terminal_instance_id = _terminal_instance_id(
+                websocket.query_params.get("terminal_instance_id")
+            )
+        except DomainError as exc:
+            await websocket.close(code=4409, reason=exc.message)
+            return
         async with container.database.session() as db:
             try:
-                resource_name, runtime_id = await db.run_sync(
-                    lambda session: conversations.terminal_resource_details(session, workspace_id)
+                resource_name, runtime_id, working_directory, container_id = await db.run_sync(
+                    lambda session: workspace.terminal_details(
+                        session,
+                        workspace_id,
+                        work_directory_id=websocket.query_params.get("work_directory_id") or None,
+                        binding_id=websocket.query_params.get("binding_id") or None,
+                    )
                 )
             except DomainError as exc:
                 await websocket.close(code=4409, reason=exc.message)
                 return
-        terminal = await asyncio.to_thread(
-            environments.open_managed_terminal,
-            resource_name,
-            resource_id=runtime_id,
-            session_name=f"flowweave-agent-{workspace_id}",
-            rows=rows,
-            columns=columns,
+        session_name = workspace.terminal_session_name(
+            workspace_id, container_id, terminal_instance_id
         )
+        try:
+            terminal = await asyncio.to_thread(
+                environments.open_managed_terminal,
+                resource_name,
+                resource_id=runtime_id,
+                session_name=session_name,
+                working_dir=working_directory,
+                rows=rows,
+                columns=columns,
+            )
+        except DomainError as exc:
+            await websocket.close(code=4409, reason=exc.message)
+            return
         await websocket.accept()
 
         async def forward_output() -> None:
@@ -590,4 +694,38 @@ async def agent_workspace_terminal(
     finally:
         if terminal is not None:
             await asyncio.to_thread(terminal.close)
+        reset_settings(settings_token)
+
+
+@router.delete(
+    "/agent-workspaces/{workspace_id}/terminals/{terminal_instance_id}", status_code=204
+)
+async def close_agent_workspace_terminal(
+    workspace_id: str,
+    terminal_instance_id: str,
+    container: ContainerDep,
+    work_directory_id: str | None = Query(default=None),
+    binding_id: str | None = Query(default=None),
+) -> Response:
+    instance_id = _terminal_instance_id(terminal_instance_id)
+    settings_token = bind_settings(container.settings)
+    try:
+        async with container.database.session() as db:
+            resource_name, runtime_id, _, container_id = await db.run_sync(
+                lambda session: workspace.terminal_details(
+                    session,
+                    workspace_id,
+                    work_directory_id=work_directory_id,
+                    binding_id=binding_id,
+                )
+            )
+        session_name = workspace.terminal_session_name(workspace_id, container_id, instance_id)
+        await asyncio.to_thread(
+            environments.destroy_managed_terminal_session,
+            resource_name,
+            resource_id=runtime_id,
+            session_name=session_name,
+        )
+        return Response(status_code=204)
+    finally:
         reset_settings(settings_token)

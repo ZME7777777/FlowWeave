@@ -353,18 +353,8 @@ def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
             "The Agent Workspace Runtime is bound to a different storage allocation",
             409,
         )
-    elif runtime.runtime_image_digest != digest and not (
-        runtime.active_generation is not None
-        and db.scalar(
-            select(ManagedSandbox.id).where(
-                ManagedSandbox.kind == "AGENT_RUNTIME",
-                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
-                ManagedSandbox.owner_id == workspace.id,
-                ManagedSandbox.generation == runtime.active_generation,
-                ManagedSandbox.desired_state == "RUNNING",
-            )
-        )
-        is not None
+    elif runtime.runtime_image_digest != digest and not _has_healthy_active_resource(
+        db, workspace.id, runtime.active_generation
     ):
         # Only an active managed resource may still own an OpenHands writer
         # lease. If there is none (including after a no-cache deployment has
@@ -461,6 +451,26 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
         running = []
     resource = running[0] if running else None
     if resource is None:
+        # A deployment may replace the configured local image and remove the
+        # digest pinned by the failed generation. With no provider-confirmed
+        # writable resource, freeze the current platform image for N+1. The
+        # persistent workspace, conversation state and secret remain external.
+        if get_settings().runtime_adapter != "mock":
+            _reference, current_digest = resolve_setup_image(
+                get_settings().agent_workspace_runtime_image
+            )
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", current_digest) is None:
+                raise DomainError(
+                    "AGENT_WORKSPACE_RUNTIME_IMAGE_INVALID",
+                    "The default Agent Runtime image did not resolve to an immutable digest",
+                    409,
+                )
+            if runtime.runtime_image_digest != current_digest:
+                runtime.runtime_image_digest = current_digest
+                runtime.status = "STARTING"
+                runtime.failure_code = None
+                runtime.failure_summary = None
+                runtime.row_version += 1
         floor = int(
             db.scalar(
                 select(

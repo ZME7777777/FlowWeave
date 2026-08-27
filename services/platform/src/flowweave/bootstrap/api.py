@@ -38,6 +38,10 @@ def error_body(code: str, message: str, request_id: str, details: object = None)
     }
 
 
+def _request_id(request: Request) -> str:
+    return str(getattr(request.state, "request_id", "") or uuid4())
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     configured = settings or Settings()
     container = build_container(configured, role="api")
@@ -77,7 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise exc
         return JSONResponse(
             status_code=exc.status,
-            content=error_body(exc.code, exc.message, request.state.request_id, exc.details),
+            content=error_body(exc.code, exc.message, _request_id(request), exc.details),
         )
 
     async def validation_error(request: Request, exc: Exception) -> Response:
@@ -88,7 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content=error_body(
                 "INVALID_COMMAND",
                 "Request validation failed",
-                request.state.request_id,
+                _request_id(request),
                 {"errors": jsonable_encoder(exc.errors())},
             ),
         )
@@ -112,7 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content=error_body(
                 code,
                 message,
-                request.state.request_id,
+                _request_id(request),
             ),
         )
 

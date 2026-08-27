@@ -19,6 +19,7 @@ from flowweave.modules.environments.application.service import (
 )
 from flowweave.modules.environments.infrastructure.docker import (
     ManagedTerminal,
+    destroy_managed_terminal_session,
     open_managed_terminal,
     open_terminal,
     resize_terminal,
@@ -29,6 +30,7 @@ __all__ = (
     "ManagedTerminal",
     "create_setup_session",
     "delete_environment",
+    "destroy_managed_terminal_session",
     "expire_setup_sessions",
     "list_environments",
     "lock_referenceable_version",

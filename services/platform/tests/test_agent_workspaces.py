@@ -6,7 +6,12 @@ import pytest
 from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
-from flowweave.modules.agent_workspaces.application import conversations, titles, work_directories
+from flowweave.modules.agent_workspaces.application import (
+    conversations,
+    titles,
+    work_directories,
+    workspace,
+)
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     process_agent_workspace_runtime,
@@ -282,6 +287,55 @@ def test_unavailable_workspace_runtime_refreshes_missing_deployment_image(
         assert task.last_error is None
 
 
+def test_workspace_runtime_keeps_old_image_only_for_provider_confirmed_resource(
+    settings, db_session_factory, monkeypatch
+):
+    configured = settings.model_copy(
+        update={"runtime_adapter": "openhands", "terminal_environment_backend": "docker"}
+    )
+    old_digest = "sha256:" + "4" * 64
+    replacement_digest = "sha256:" + "5" * 64
+    monkeypatch.setattr(
+        "flowweave.modules.agent_workspaces.application.service.resolve_setup_image",
+        lambda _reference: ("image", old_digest),
+    )
+    with settings_context(configured), db_session_factory() as db:
+        workspace_item = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(
+                AgentWorkspaceRuntime.workspace_id == workspace_item.id
+            )
+        )
+        assert runtime is not None
+        runtime.active_generation = 1
+        runtime.status = "RECONNECTING"
+        db.add(
+            ManagedSandbox(
+                kind="AGENT_RUNTIME",
+                owner_type="AGENT_WORKSPACE",
+                owner_id=workspace_item.id,
+                backend_resource_name=f"agent-workspace-{workspace_item.id}",
+                desired_state="RUNNING",
+                observed_state="CREATING",
+                backend_resource_id="",
+                generation=1,
+                image_reference=old_digest,
+                agent_workspace_allocation_id=runtime.workspace_allocation_id,
+                hard_expires_at=datetime.max.replace(tzinfo=UTC),
+            )
+        )
+        db.flush()
+        monkeypatch.setattr(
+            "flowweave.modules.agent_workspaces.application.service.resolve_setup_image",
+            lambda _reference: ("image", replacement_digest),
+        )
+
+        ensure_default_agent_workspace(db)
+
+        assert runtime.runtime_image_digest == replacement_digest
+        assert runtime.status == "STARTING"
+
+
 def test_dead_workspace_runtime_task_retries_when_resource_is_not_healthy(
     settings, db_session_factory, monkeypatch
 ):
@@ -395,6 +449,61 @@ def test_workspace_runtime_replaces_deleted_physical_generation(
         assert current.generation == 2
         assert runtime is not None and runtime.active_generation == 2
         assert [item.generation for item in generations] == [1, 2]
+
+
+def test_workspace_runtime_recovery_refreshes_removed_image_digest(
+    settings, db_session_factory, monkeypatch
+):
+    old_digest = "sha256:" + "6" * 64
+    current_digest = "sha256:" + "7" * 64
+    configured = settings.model_copy(
+        update={
+            "runtime_adapter": "openhands",
+            "terminal_environment_backend": "docker",
+        }
+    )
+    resolved_digest = old_digest
+    captured: list[ManagedSandbox] = []
+
+    def resolve_image(_reference):
+        return "image", resolved_digest
+
+    def ensure_running(_self, resource, *, runtime_secret_key):
+        captured.append(resource)
+        assert runtime_secret_key is not None
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="replacement-container",
+            state="READY",
+            labels={},
+        )
+
+    monkeypatch.setattr(
+        "flowweave.modules.agent_workspaces.application.service.resolve_setup_image",
+        resolve_image,
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(
+                AgentWorkspaceRuntime.workspace_id == workspace.id
+            )
+        )
+        assert runtime is not None and runtime.runtime_image_digest == old_digest
+        runtime.status = "RECONNECTING"
+        runtime.active_generation = 13
+
+        resolved_digest = current_digest
+        process_agent_workspace_runtime(db, workspace.id)
+
+        assert len(captured) == 1
+        assert captured[0].generation == 1
+        assert captured[0].image_reference == current_digest
+        assert runtime.runtime_image_digest == current_digest
+        assert runtime.status == "ACTIVE"
+        assert runtime.active_generation == 1
 
 
 def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
@@ -524,6 +633,59 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
             "不要将用户项目文件写入项目根以外的位置，例如 /runtime 的其他目录、/tmp 或 HOME。\n"
             "不要向用户解释宿主机路径、Docker 挂载或容器实现细节；对用户而言，这就是项目根目录。"
         )
+
+
+def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        (project_root / "backend").mkdir()
+        (project_root / "backend/src").mkdir()
+        (project_root / "backend/README.md").write_bytes(b"mock workspace file\n")
+        directory = work_directories.create_work_directory(db, item.id, "后端", ("backend",))
+
+        details = workspace.details(db, item.id, work_directory_id=directory["id"])
+        assert details["working_directory"] == "/runtime/workspace/project/backend"
+        assert details["ide"]["gateway"]["supported"] is False
+        assert details["files"] == [
+            {
+                "path": "/runtime/workspace/project/backend/src",
+                "kind": "directory",
+                "size": 0,
+            },
+            {
+                "path": "/runtime/workspace/project/backend/README.md",
+                "kind": "file",
+                "size": 20,
+            },
+        ]
+        downloaded = workspace.download(
+            db,
+            item.id,
+            "/runtime/workspace/project/backend/README.md",
+            work_directory_id=directory["id"],
+        )
+        assert downloaded.content == b"mock workspace file\n"
+        with pytest.raises(DomainError, match="当前工作目录范围"):
+            workspace.download(
+                db,
+                item.id,
+                "/runtime/workspace/project/README.md",
+                work_directory_id=directory["id"],
+            )
+        resource_name, resource_id, working_directory, _ = workspace.terminal_details(
+            db, item.id, work_directory_id=directory["id"]
+        )
+        assert resource_name == f"agent-workspace-{item.id}"
+        assert resource_id
+        assert working_directory == "/runtime/workspace/project/backend"
+
+        work_directories.archive_work_directory(db, item.id, directory["id"])
+        with pytest.raises(DomainError) as raised:
+            workspace.details(db, item.id, work_directory_id=directory["id"])
+        assert raised.value.code == "AGENT_WORK_DIRECTORY_ARCHIVED"
 
 
 def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_directory(

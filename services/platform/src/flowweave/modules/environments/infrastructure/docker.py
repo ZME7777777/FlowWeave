@@ -538,6 +538,32 @@ def open_terminal(
     return master, process
 
 
+def destroy_terminal_session(container_id: str, session_name: str) -> None:
+    """Stop one exact persistent tmux session without affecting the Runtime."""
+
+    require_backend()
+    safe_session = _SAFE_NAME.sub("-", session_name.lower()).strip("-.")[:64]
+    if not safe_session:
+        raise DomainError(
+            "ENVIRONMENT_TERMINAL_SESSION_INVALID",
+            "The terminal session name is invalid",
+            422,
+        )
+    _run(
+        [
+            get_settings().docker_binary,
+            "exec",
+            container_id,
+            "bash",
+            "-c",
+            'tmux has-session -t "$1" 2>/dev/null && tmux kill-session -t "$1" || true',
+            "--",
+            safe_session,
+        ],
+        timeout=15,
+    )
+
+
 def resize_terminal(
     master: int,
     rows: int,
@@ -624,6 +650,7 @@ def open_managed_terminal(
     resource_id: str,
     environment_id: str | None = None,
     session_name: str | None = None,
+    working_dir: str | None = None,
     rows: int = 24,
     columns: int = 80,
 ) -> ManagedTerminal:
@@ -639,6 +666,7 @@ def open_managed_terminal(
                 resource_id=resource_id,
                 environment_id=environment_id,
                 session_name=session_name,
+                working_dir=working_dir,
                 rows=rows,
                 columns=columns,
             )
@@ -684,11 +712,65 @@ def open_managed_terminal(
     master, process = open_terminal(
         immutable_id,
         session_name=session_name,
-        working_dir=None if environment_id is not None else _AGENT_PROJECT_ROOT,
+        working_dir=(None if environment_id is not None else working_dir or _AGENT_PROJECT_ROOT),
         rows=rows,
         columns=columns,
     )
     return ManagedTerminal(master=master, process=process)
+
+
+def destroy_managed_terminal_session(
+    resource_name: str,
+    *,
+    resource_id: str,
+    session_name: str,
+) -> None:
+    """Destroy one owned Agent Runtime terminal session locally or remotely."""
+
+    settings = get_settings()
+    require_backend()
+    if controller_is_remote(settings):
+        try:
+            DockerControllerClient(settings).destroy_terminal_session(
+                resource_name=resource_name,
+                resource_id=resource_id,
+                session_name=session_name,
+            )
+        except DockerControllerError as exc:
+            raise DomainError(
+                "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+                "The Agent Runtime terminal could not be closed",
+                503,
+            ) from exc
+        return
+    try:
+        immutable_id = inspect_owned_container(
+            settings.docker_binary,
+            resource_name,
+            resource_id,
+            expected_manager_scope=settings.sandbox_manager_scope,
+            expected_kind="agent-runtime",
+            timeout=30,
+        )
+    except DockerOwnershipError as exc:
+        raise DomainError(
+            "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
+            "The Agent Runtime container is owned by another resource",
+            409,
+        ) from exc
+    except DockerControlError as exc:
+        raise DomainError(
+            "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+            "The Agent Runtime container could not be verified",
+            503,
+        ) from exc
+    if immutable_id is None:
+        raise DomainError(
+            "AGENT_TERMINAL_UNAVAILABLE",
+            "The Agent Runtime container no longer exists",
+            409,
+        )
+    destroy_terminal_session(immutable_id, session_name)
 
 
 def container_diff(container_id: str) -> list[str]:

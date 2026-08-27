@@ -397,6 +397,15 @@ export interface AgentWorkDirectoryList {
   root: { kind: 'ROOT'; display_name: string; working_directory: string };
   items: AgentWorkDirectory[];
 }
+export interface AgentWorkspaceDetails {
+  root: string;
+  working_directory: string;
+  work_directory?: AgentWorkDirectory | null;
+  files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
+  repositories: Array<{ path: string; remote?: string; branch?: string; head?: string }>;
+  runtime: { container_id?: string | null };
+  ide: { workspace_path: string; gateway: { supported: boolean; status: string; note: string } };
+}
 export interface FlowRunRuntimeGeneration {
   generation: number;
   state: 'PROVISIONING' | 'READY' | 'DRAINING' | 'STOPPED' | 'DELETED' | 'FAILED';

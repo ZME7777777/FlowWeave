@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-56`
+> 下一可执行切片：无
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -741,7 +741,7 @@ OpenHands Conversation、投递唯一正式 user event 并激活 binding。发�
 已激活会话。所有新建入口只打开浏览器内草稿，发送前左侧无临时会话项、无持久化；首条消息 bootstrap 成功
 后才插入标题生成中的正式会话并导航。刷新或离开未发送草稿时直接丢弃。
 
-### FR-56 Agent Workspace 右侧工作区与文件/IDE 信息 — PENDING
+### FR-56 Agent Workspace 右侧工作区与文件/IDE 信息 — DONE
 
 依赖：`FR-55`。
 
@@ -749,13 +749,17 @@ OpenHands Conversation、投递唯一正式 user event 并激活 binding。发�
 会话输入附件和 IDEA/Gateway 连接信息。文件第一版只读并按授权范围列树、预览和下载；终端复用现有 Runtime，
 以 Conversation 冻结 working directory 启动。标题栏移除编辑/缩放按钮，保留双击标题修改。
 
-### FR-57 工作目录与懒创建会话完整门禁 — PENDING
+### FR-57 工作目录与懒创建会话完整门禁 — DONE
 
 依赖：`FR-52`–`FR-56`。
 
 目标：集中完成迁移矩阵、静态检查、平台/Web 测试、OpenAPI、Compose 安全、真实 Runtime/OpenHands、根与
 单/多目录会话、草稿刷新丢弃、首条消息幂等、标题隔离、文件/终端/IDE 和部署后 E2E；确认多目录只表达产品
 范围而非权限隔离，既有根工作区 Conversation 保持可读写且不猜测迁移。
+
+完成：迁移矩阵、Compose 安全、Ruff、Pyright、Web lint/typecheck/build、OpenAPI、跨模块 façade 门禁和
+Agent Workspace 定向 Playwright 已通过；Runtime 镜像恢复、会话恢复期间的工作区读取及右侧栏交互问题已
+修复并部署。用户完成部署后验收并明确确认本切片标记为 `DONE`。
 
 ## 7. 恢复工作检查表
 
@@ -773,6 +777,9 @@ OpenHands Conversation、投递唯一正式 user event 并激活 binding。发�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-27 | FR-57（最终验收） | 已完成的迁移、静态检查、Web 构建、OpenAPI/架构、Compose、平台测试及定向 E2E；部署后 Runtime、历史会话和工作区恢复复验；用户验收 | PASS：Runtime 使用当前可用镜像恢复到可写 `ACTIVE` generation，历史会话独立加载，工作区概览和文件读取不再被 Runtime 恢复阻塞，右侧栏可正常打开并在失败时提供错误与重试。用户完成部署后验证并明确确认 FR-57 可以标记 `DONE`；无 `CURRENT` 或下一切片。 |
+| 2026-08-27 | FR-57（阻塞记录） | PostgreSQL Testcontainers migration-check；Compose security；Ruff format/check；Pyright strict；Web ESLint/typecheck/production build；OpenAPI 基线与跨模块 public façade 定向门禁；源码 Vite 上 Agent Workspace 定向 Playwright | 部分 PASS：migration-check、Compose security、Ruff、Pyright、Web 静态/构建、OpenAPI/边界门禁和 Agent Workspace E2E 通过。BLOCKED：Docker daemon socket 不存在，导致 407 个需要 Testcontainers 的平台用例在 fixture 初始化失败；同时无法运行固定 OpenHands image contract/smoke、真实 Runtime 与部署后 E2E。Docker 恢复后必须从完整平台 pytest、固定 image 合同/烟雾、真实根/单/多目录会话及部署后完整 E2E 继续；FR-57 不得标记 DONE。 |
+| 2026-08-27 | FR-56 | Agent Workspace 与 OpenHands 定向 pytest（98 passed）；受影响 Python Ruff；Web ESLint/typecheck；独立源码 Vite 上 Agent 工作台定向 Playwright（1 passed，覆盖概览、文件预览/下载、终端 Tab、根与草稿范围）；`git diff --check` | PASS：右侧抽屉默认收起，概览显示当前根/冻结工作目录、Git 仓库、待发送附件与不虚构凭据的 IDEA/Gateway 状态；文件树由 OpenHands 正式 archive/download API 提供，只读预览和下载均由服务端按 binding 冻结目录或仍为 ACTIVE 的草稿目录重新校验，拒绝越界、`.git`/`.openhands` 与目录下载。终端仅接收服务端解析的目录 ID，根/草稿/会话分别以有效目录或冻结 working directory 启动；该 `working_dir` 同时贯通本地 Docker 与远程 Controller。标题仅支持双击编辑，标题栏移除编辑与压缩按钮。唯一 head 保持 `0068_agent_title_metadata`；无 `CURRENT`，FR-57 为下一可执行切片。 |
 | 2026-08-27 | FR-55 | Web ESLint/typecheck/production build；独立源码 Vite 上 Agent 工作台定向 Playwright（1 passed，覆盖根与工作目录草稿入口、发送前无 bootstrap/list 项、首条消息后导航）；Agent Workspace/OpenHands 定向 pytest（97 passed）；受影响 Python Ruff、平台 Pyright（0 errors）；OpenAPI 基线、Alembic head、任务状态唯一性与 `git diff --check` | PASS：左侧顶层“新建会话”固定打开根工作区草稿并与工作目录平级；根工作区和每个活动工作目录均有新建入口，已激活会话按冻结版本所属目录分组，目录归档后仍在历史分组可见。浏览器草稿不写 binding、不产生会话 URL 或列表项；刷新/离开即丢弃。首条消息才向 bootstrap API 发送所选目录与模型配置；成功后将带 `PENDING` 标题状态的 binding 插入对应分组并导航。前端移除“未命名会话 N”回退，旧/异常空标题仅显示无序号“新会话”。API 列表/ bootstrap 投影正式返回工作目录 ID，按冻结 version 而非路径文本归属。唯一 head 为 `0068_agent_title_metadata`；无 `CURRENT`，FR-56 为下一可执行切片。 |
 | 2026-08-27 | FR-54 | `0068` 隔离 PostgreSQL migration-check upgrade/downgrade/upgrade；Agent Workspace 与 OpenHands 定向 pytest（97 passed，含标题独立调用、手动改名 CAS 和失败兜底）；受影响 Python Ruff、平台 Pyright（0 errors）；OpenAPI 基线；Alembic head、任务状态唯一性与 `git diff --check` | PASS：首条正式 user event 接受后，binding 立即显示由首个非空行规范化的标题并标记 `PENDING`，同时以 binding ID + generation 只投递一次标题任务。任务使用独立供应商调用（API Key Chat Completions / Codex OAuth Responses），不调用 OpenHands Runtime、不写 Conversation Event、HEAD 或上下文；临时首条文本种子在任务结束后清除。成功仅 CAS 写入本地 `display_title`/`GENERATED`；供应商失败保留首句并标记 `FALLBACK`。手动改名仍使用既有正式 OpenHands rename，并将本地标题标记 `MANUAL`、递增 generation，使所有延迟标题任务 no-op，绝不覆盖用户输入；不再生成带序号的未命名标题。唯一 head 为 `0068_agent_title_metadata`；无 `CURRENT`，FR-55 为下一可执行切片。 |
 | 2026-08-27 | FR-53 | 0067 隔离 PostgreSQL upgrade/downgrade/upgrade；Agent Workspace 与 OpenHands 定向 pytest（94 passed，其中 bootstrap 6 项）；受影响 Python Ruff、平台 Pyright（0 errors）；OpenAPI 基线；Alembic head、任务状态唯一性与 `git diff --check` | PASS：浏览器草稿在首条消息前无 API 创建路径、无 binding、无 OpenHands Conversation、无稳定 URL 和列表项。bootstrap 以必填幂等键先保留不可见命令，再冻结根/工作目录版本和 native working directory，使用原 UUID 创建 OpenHands Conversation 并投递唯一正式 user event；收到正式事件 ID 后才激活 binding。创建响应或消息投递结果不确定时，均先用同一 UUID 重载，再以 OpenHands 正式 user `MessageEvent` ID/`parent_id` 对账，绝不按文本/顺序猜测或重发；明确发送失败调用正式 delete 并隐藏失败行。OpenHands 适配器保留所选子目录为 LocalWorkspace working_dir；旧 binding 保持根路径/版本未知而不猜测。唯一 head 为 `0067_agent_bootstrap`；无 `CURRENT`，FR-54 为下一可执行切片。 |

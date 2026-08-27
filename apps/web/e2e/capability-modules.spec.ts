@@ -13,18 +13,19 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(page.locator('.skill-collection-section')).toBeVisible();
   const collectionEditor = page.locator('form.capability-collection-editor');
   const collectionDialog = collectionEditor.getByRole('heading', { name: '新建 Skill 组合' });
-  await page.getByRole('button', { name: '新建 Skill 组合' }).click();
+  // A persistent local deployment may already contain a collection. Both the
+  // empty-state and populated-state entry points must open the same editor.
+  await page.getByRole('button', { name: '新建 Skill 组合' })
+    .or(page.getByRole('button', { name: '创建第一个 Skill 组合' })).click();
   await expect(collectionDialog).toBeVisible();
   // The persistent local E2E database may already contain immutable Skill
   // versions from a preceding product scenario.  Both states must keep the
   // collection editor available.
   await expect(collectionEditor.getByText('还没有可选的 Skill 版本，请先关闭窗口并上传 Skill ZIP。')
     .or(collectionEditor.locator('.capability-collection-members input[type="checkbox"]').first())).toBeVisible();
-  await collectionEditor.getByRole('button', { name: '关闭' }).click();
-  await expect(collectionDialog).toBeHidden();
-  await page.getByRole('button', { name: '创建第一个 Skill 组合' }).click();
-  await expect(collectionDialog).toBeVisible();
-  await collectionEditor.getByRole('button', { name: '取消' }).click();
+  const closeEditor = collectionEditor.getByRole('button', { name: '关闭' });
+  if (await closeEditor.count()) await closeEditor.click();
+  else await collectionEditor.getByRole('button', { name: '取消' }).click();
   await expect(collectionDialog).toBeHidden();
 
   await modules.getByRole('button', { name: /Plugin/ }).click();

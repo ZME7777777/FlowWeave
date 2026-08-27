@@ -1,7 +1,7 @@
 import type {
   AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceDetails, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -105,9 +105,27 @@ export const api = {
     request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}/settings`, json('PATCH', { default_model_provider_id })),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
+  agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<AgentWorkspaceDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace${query.size ? `?${query}` : ''}`);
+  },
+  agentWorkspaceFilePreview: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ path });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return requestText(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`);
+  },
+  closeAgentWorkspaceTerminal: (id: string, terminalInstanceId: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
+  },
   agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
-  bootstrapAgentConversation: (workspaceId: string, model_provider_id: string, content: string, work_directory_id?: string) =>
-    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { model_provider_id, content, work_directory_id }, true)),
+  bootstrapAgentConversation: (workspaceId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], work_directory_id?: string) =>
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { model_provider_id, model_name, reasoning_effort, content, attachments, work_directory_id }, true)),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
@@ -124,6 +142,16 @@ export const api = {
     const body = new FormData(); body.append('file', file, file.name);
     let response: Response;
     try { response = await fetch(`${API_BASE}${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments`, { method: 'POST', body }); }
+    catch { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<AgentAttachment>;
+  },
+  uploadAgentWorkspaceAttachment: async (workspaceId: string, file: File, workDirectoryId?: string): Promise<AgentAttachment> => {
+    const body = new FormData(); body.append('file', file, file.name);
+    const query = new URLSearchParams();
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    let response: Response;
+    try { response = await fetch(`${API_BASE}${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments${query.size ? `?${query}` : ''}`, { method: 'POST', body }); }
     catch { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }
     if (!response.ok) throw await responseError(response);
     return response.json() as Promise<AgentAttachment>;
@@ -361,12 +389,24 @@ export function subscribeToConversationStream(
   };
 }
 
-export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, columns = 80): string {
+export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, columns = 80, options: { terminalInstanceId: string; bindingId?: string; workDirectoryId?: string }): string {
   const base = API_BASE || window.location.origin;
   const url = new URL(`${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/terminal`, base);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('rows', String(rows));
   url.searchParams.set('columns', String(columns));
+  url.searchParams.set('terminal_instance_id', options.terminalInstanceId);
+  if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
+  if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  return url.toString();
+}
+
+export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; download?: boolean } = {}): string {
+  const url = new URL(`${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/file`, API_BASE || window.location.origin);
+  url.searchParams.set('path', path);
+  if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
+  if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
+  if (options.download ?? true) url.searchParams.set('download', 'true');
   return url.toString();
 }
 

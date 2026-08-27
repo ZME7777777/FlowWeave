@@ -5,8 +5,10 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_workspaces.application.titles import process_agent_conversation_title
-from flowweave.modules.agent_workspaces.public import process_agent_workspace_runtime
+from flowweave.modules.agent_workspaces.public import (
+    process_agent_conversation_title,
+    process_agent_workspace_runtime,
+)
 from flowweave.modules.catalog.public import (
     build_capability_dependencies,
     cleanup_capability_import,

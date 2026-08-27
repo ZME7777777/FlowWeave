@@ -19,7 +19,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 )
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
-from flowweave.modules.tasks.application.service import enqueue
+from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.base import (
     RuntimeAgentContext,
     RuntimeAgentSpec,
@@ -486,7 +486,10 @@ def bootstrap_conversation(
     *,
     work_directory_id: str | None,
     model_provider_id: str | None,
+    model_name: str | None = None,
+    reasoning_effort: str | None = None,
     content: str,
+    attachments: tuple[dict[str, str], ...] = (),
     idempotency_key: str,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
@@ -497,9 +500,10 @@ def bootstrap_conversation(
     submit is reconciled by native event IDs and parent IDs, never resent.
     """
 
-    prompt = content.strip()
-    if not prompt:
+    message_text = content.strip()
+    if not message_text:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    prompt, image_urls = _message_payload(message_text, attachments)
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
     if binding is not None and command is not None:
@@ -511,7 +515,9 @@ def bootstrap_conversation(
                 previous_event_id=binding.bootstrap_parent_event_id,
             )
             if reconciled is not None:
-                return _activate_bootstrapped_conversation(db, binding, command, reconciled, prompt)
+                return _activate_bootstrapped_conversation(
+                    db, binding, command, reconciled, message_text
+                )
             raise DomainError(
                 "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
                 "首条消息发送结果仍不确定，请稍后刷新后继续对账",
@@ -538,14 +544,17 @@ def bootstrap_conversation(
         if runtime is None:
             raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
         provider = runtime_provider(
-            db, {"asset": {"executor": {"model_provider_id": model_provider_id}}}
+            db,
+            {"asset": {"executor": {"model_provider_id": model_provider_id}}},
+            model_name=model_name,
+            reasoning_effort=reasoning_effort,
         )
         binding = AgentConversationBinding(
             workspace_id=workspace.id,
             runtime_session_id=runtime.id,
             work_directory_version_id=version_id,
             working_directory=working_directory,
-            model_provider_id=model_provider_id,
+            model_provider_id=provider.provider_id,
             model_name=provider.model,
             reasoning_effort=provider.reasoning_effort,
             streaming_callback_ready=True,
@@ -613,7 +622,7 @@ def bootstrap_conversation(
         _record_bootstrap_failure(db, binding, command, exc)
         raise
     try:
-        delivered = get_runtime().send_message(handle, prompt)
+        delivered = get_runtime().send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             try:
@@ -621,7 +630,9 @@ def bootstrap_conversation(
             except DomainError:
                 reconciled = None
             if reconciled is not None:
-                return _activate_bootstrapped_conversation(db, binding, command, reconciled, prompt)
+                return _activate_bootstrapped_conversation(
+                    db, binding, command, reconciled, message_text
+                )
             command.state = "AMBIGUOUS"
             command.last_error_code = exc.code
             command.failure_summary = (
@@ -651,7 +662,9 @@ def bootstrap_conversation(
             504,
             {"binding_id": binding.id},
         )
-    return _activate_bootstrapped_conversation(db, binding, command, initial_event_id, prompt)
+    return _activate_bootstrapped_conversation(
+        db, binding, command, initial_event_id, message_text
+    )
 
 
 def patch_conversation(
@@ -795,7 +808,7 @@ def runtime_stream_details(
     )
 
 
-def terminal_resource_details(db: Session, workspace_id: str) -> tuple[str, str]:
+def _terminal_sandbox(db: Session, workspace_id: str) -> ManagedSandbox:
     workspace = _workspace(db, workspace_id)
     runtime = db.scalar(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
@@ -812,7 +825,21 @@ def terminal_resource_details(db: Session, workspace_id: str) -> tuple[str, str]
     )
     if sandbox is None:
         raise DomainError("AGENT_TERMINAL_UNAVAILABLE", "Agent 运行环境正在恢复，无法连接终端", 503)
+    if not sandbox.backend_resource_id:
+        raise DomainError("AGENT_TERMINAL_UNAVAILABLE", "Agent 运行环境正在恢复，无法连接终端", 503)
+    return sandbox
+
+
+def terminal_resource_details(db: Session, workspace_id: str) -> tuple[str, str]:
+    sandbox = _terminal_sandbox(db, workspace_id)
     return sandbox.backend_resource_name, sandbox.id
+
+
+def terminal_container_details(db: Session, workspace_id: str) -> tuple[str, str, str]:
+    """Return the owned Runtime locator and its diagnostic container identity."""
+
+    sandbox = _terminal_sandbox(db, workspace_id)
+    return sandbox.backend_resource_name, sandbox.id, sandbox.backend_resource_id
 
 
 def message(
@@ -824,12 +851,7 @@ def message(
 ) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
-    if len(attachments) > 10 or any(
-        _ATTACHMENT_PATH.fullmatch(item.get("path", "")) is None
-        or ("image_data_url" in item and not item["image_data_url"].startswith("data:image/"))
-        for item in attachments
-    ):
-        raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
+    prompt, image_urls = _message_payload(content, attachments)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
     if not binding.streaming_callback_ready:
@@ -873,11 +895,6 @@ def message(
             503,
             {"model_provider_id": target_provider_id},
         ) from exc
-    paths = tuple(item["path"] for item in attachments)
-    image_urls = tuple(item["image_data_url"] for item in attachments if "image_data_url" in item)
-    prompt = content.strip()
-    if paths:
-        prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(f"- {path}" for path in paths)
     try:
         result = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -894,14 +911,36 @@ _ATTACHMENT_PATH = re.compile(
 )
 
 
+def _message_payload(
+    content: str, attachments: tuple[dict[str, str], ...]
+) -> tuple[str, tuple[str, ...]]:
+    if len(attachments) > 10 or any(
+        _ATTACHMENT_PATH.fullmatch(item.get("path", "")) is None
+        or ("image_data_url" in item and not item["image_data_url"].startswith("data:image/"))
+        for item in attachments
+    ):
+        raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
+    paths = tuple(item["path"] for item in attachments)
+    image_urls = tuple(
+        item["image_data_url"] for item in attachments if "image_data_url" in item
+    )
+    prompt = content.strip()
+    if paths:
+        prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(
+            f"- {path}" for path in paths
+        )
+    return prompt, image_urls
+
+
 def upload_attachment(
     db: Session,
     workspace_id: str,
-    binding_id: str,
+    binding_id: str | None,
     *,
     filename: str,
     content_type: str,
     content: bytes,
+    work_directory_id: str | None = None,
 ) -> dict[str, str | int | None]:
     if not filename or len(filename) > 240 or "\x00" in filename:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件文件名无效", 422)
@@ -911,8 +950,19 @@ def upload_attachment(
     if len(mime_type) > 200:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件类型无效", 422)
     workspace = _workspace(db, workspace_id)
+    if binding_id is None:
+        work_directories.conversation_context(db, workspace.id, work_directory_id)
+        resource_name, resource_id = terminal_resource_details(db, workspace.id)
+        handle = RuntimeHandle(
+            job_id=f"agent-workspace:{workspace.id}",
+            conversation_id="",
+            runtime_resource_id=resource_id,
+            runtime_resource_name=resource_name,
+        )
+    else:
+        handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
     path = get_runtime().upload_workspace_file(
-        _handle(db, workspace, _binding(db, workspace_id, binding_id)),
+        handle,
         filename=filename,
         content_type=mime_type,
         content=content,

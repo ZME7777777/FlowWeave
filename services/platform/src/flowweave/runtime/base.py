@@ -363,6 +363,26 @@ class RuntimeHandle:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeWorkspaceEntry:
+    path: str
+    kind: Literal["file", "directory"]
+    size: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWorkspaceSnapshot:
+    entries: tuple[RuntimeWorkspaceEntry, ...] = ()
+    repositories: tuple[dict[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWorkspaceFile:
+    filename: str
+    content_type: str
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConversationIdentity:
     """Ephemeral OpenHands identity evidence used to verify an original-ID reload."""
 
@@ -621,6 +641,10 @@ class RuntimePort(Protocol):
     def upload_workspace_file(
         self, handle: RuntimeHandle, *, filename: str, content_type: str, content: bytes
     ) -> str: ...
+
+    def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot: ...
+
+    def download_workspace_file(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceFile: ...
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]: ...
 
