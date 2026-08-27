@@ -306,6 +306,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "base_url": "http://host.docker.internal:1234/v1",
         "api_key": "configured-secret",
         "usage_id": "flowweave:provider-1",
+        "stream": True,
         "max_input_tokens": 922000,
     }
     assert [tool["name"] for tool in payload["agent"]["tools"]] == [
@@ -1504,6 +1505,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     payload = captured["json"]
     assert isinstance(payload, dict)
     assert payload["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert payload["llm"]["stream"] is True
     assert payload["llm"]["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
@@ -1733,6 +1735,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "base_url": "http://host.docker.internal:1234/v1",
             "api_key": "configured-secret",
             "usage_id": "condenser",
+            "stream": True,
             "max_input_tokens": 922000,
         },
         "max_size": 80,

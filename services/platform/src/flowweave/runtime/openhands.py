@@ -714,6 +714,12 @@ class OpenHandsRuntime:
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "usage_id": f"flowweave:{provider.provider_id}",
+            # Agent Server decides whether to wire its formal token callback
+            # when the Event Service is created.  Keep it enabled from the
+            # first provider so a later switch_llm to a streaming-only
+            # provider (notably Codex OAuth) does not inherit a callback-less
+            # Conversation and get downgraded to a non-streaming request.
+            "stream": True,
         }
         if (window := self._DECLARED_CONTEXT_WINDOWS.get(model)) is not None:
             llm["max_input_tokens"] = window
@@ -733,7 +739,6 @@ class OpenHandsRuntime:
                     "model_canonical_name": "openai/codex-auto-review",
                     "extra_headers": provider.extra_headers,
                     "litellm_extra_body": extra_body,
-                    "stream": True,
                     "temperature": None,
                     "max_output_tokens": None,
                     "capability_overrides": {

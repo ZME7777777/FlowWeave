@@ -372,9 +372,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-2');
   await expect(page.getByText('供应商将在下次发送时切换')).toBeVisible();
   modelIsResponding = true;
-  await page.getByLabel('发送 Agent 消息').fill('第一条排队测试消息');
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('maven');
+  await composer.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
+  await expect.poll(() => sentMessages).toBe(0);
+  await expect(composer).toHaveValue('maven');
+  await composer.fill('第一条排队测试消息');
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
-  await page.getByRole('button', { name: '发送消息' }).click();
+  await composer.press('Enter');
   await expect.poll(() => sentProvider).toBe('provider-2');
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveJSProperty('open', true);

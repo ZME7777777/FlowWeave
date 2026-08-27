@@ -627,6 +627,12 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
 - Composer 采用紧凑圆角样式，当前会话的供应商、模型和（仅在模型明确支持时的）推理强度归入同一轻量
   浮层，全部只在下一条正式消息发送时生效。浮层在输入被禁用（例如等待工具确认）时自动收起，避免遮挡
   当前动作。
+- 顶层 Agent Conversation 的首个 LLM 即设置 OpenHands 正式 `stream=true`，使 Agent Server Event
+  Service 在创建时绑定 token callback；后续原生 `switch_llm` 切换到 Codex OAuth 等强制流式供应商时
+  复用该 callback，不会被 SDK 降级为非流式请求。FlowWeave 继续自行刷新并传入 OAuth 令牌，不把它伪装成
+  OpenHands 本地凭据存储拥有的 subscription credential。
+- Composer 的 Enter 快捷发送必须先排除浏览器正式 IME composition 状态及兼容性的 `keyCode=229`；中文
+  输入法确认候选期间只完成文本输入，不发送消息，组合完成后的独立 Enter 才发送，Shift+Enter 保持换行。
 - 上下文进度只读取当前 LLM `usage_id` 对应的 OpenHands 正式 stats bucket：`per_turn_token` 是当前轮
   View 用量，`context_window` 是供应商报告的窗口容量；不得混入 condenser 或子任务的 bucket。仅当两者
   都是正整数时显示环形图和紧凑 `k`/`m` 标签（如 `6.4k / 922k`、`256k`、`1m`）；缺失、非法或只有累计
