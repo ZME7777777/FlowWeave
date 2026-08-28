@@ -427,6 +427,7 @@ function WorkspaceDrawer({
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const [fullScreen, setFullScreen] = useState(false);
+  const handledAttachmentRequestKey = useRef<string | undefined>(undefined);
   const scopeState = scopeStates[scopeKey] ?? { tabs: [] };
   const updateScope = useCallback((updater: (current: WorkspaceToolScopeState) => WorkspaceToolScopeState) => {
     setScopeStates(current => ({ ...current, [scopeKey]: updater(current[scopeKey] ?? { tabs: [] }) }));
@@ -492,7 +493,12 @@ function WorkspaceDrawer({
     onOpen();
   }, [onOpen, updateScope]);
   useEffect(() => {
-    if (attachmentRequest) openFiles(attachmentRequest.attachment.path);
+    // `onOpen` is supplied by the page and may change identity on a render.
+    // Consume each request once so closing the file tab cannot immediately
+    // reopen it from this effect.
+    if (!attachmentRequest || handledAttachmentRequestKey.current === attachmentRequest.key) return;
+    handledAttachmentRequestKey.current = attachmentRequest.key;
+    openFiles(attachmentRequest.attachment.path);
   }, [attachmentRequest, openFiles]);
   const openTerminal = useCallback(() => {
     if (!runtimeAvailable) return;
