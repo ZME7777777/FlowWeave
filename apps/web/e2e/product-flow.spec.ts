@@ -327,6 +327,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let confirmationDecision: Record<string, unknown> | null = null;
   let bootstrapRequests = 0;
   let bootstrapWorkDirectory: string | null = null;
+  let bootstrapConversationId: string | null = null;
+  let bootstrapIdempotencyKey: string | null = null;
+  const bootstrapIdempotencyKeys: Array<string | null> = [];
   let renameRequests = 0;
   let contextAvailable = false;
   const longFinalReply = Array.from(
@@ -403,6 +406,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       const payload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
       const modelProviderId = payload.model_provider_id;
       bootstrapWorkDirectory = typeof payload.work_directory_id === 'string' ? payload.work_directory_id : null;
+      bootstrapConversationId = typeof payload.conversation_id === 'string' ? payload.conversation_id : null;
+      bootstrapIdempotencyKey = await request.headerValue('Idempotency-Key');
+      bootstrapIdempotencyKeys.push(bootstrapIdempotencyKey);
+      if (bootstrapRequests === 1) {
+        await route.fulfill({ status: 504, contentType: 'application/json', body: JSON.stringify({
+          error: { code: 'AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS', message: '首条消息正在安全对账，请稍后重试；系统不会重复发送' },
+        }) });
+        return;
+      }
       const created = {
         id: 'agent-conversation-1', display_title: '检查工作目录', title_state: 'PENDING', lifecycle: 'ACTIVE',
         model_provider_id: modelProviderId,
@@ -566,9 +578,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '检查工作目录' })).toHaveCount(0);
   await page.getByLabel('发送 Agent 消息').fill('检查工作目录');
   await page.getByLabel('发送消息').click();
+  await expect(page.getByText('正在安全核对首条消息', { exact: true })).toBeVisible();
+  await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
-  expect(bootstrapRequests).toBe(1);
+  await expect.poll(() => bootstrapRequests).toBe(2);
   expect(bootstrapWorkDirectory).toBeNull();
+  expect(bootstrapIdempotencyKey).toBe(bootstrapConversationId);
+  expect(bootstrapIdempotencyKeys).toHaveLength(2);
+  expect(bootstrapIdempotencyKeys[0]).toBe(bootstrapIdempotencyKeys[1]);
   await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
   await expect(page.locator('.agent-workbench-header').getByLabel(/工作区工具/)).toHaveCount(0);
   await expect(page.locator('.agent-workspace-summary').getByLabel('打开工作区工具')).toBeVisible();

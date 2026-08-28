@@ -98,10 +98,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
-const json = (method: string, body?: unknown, idempotent = false): RequestInit => ({
+const json = (method: string, body?: unknown, idempotencyKey?: string | true): RequestInit => ({
   method,
   body: body === undefined ? undefined : JSON.stringify(body),
-  headers: idempotent ? { 'Idempotency-Key': randomId() } : undefined,
+  headers: idempotencyKey
+    ? { 'Idempotency-Key': idempotencyKey === true ? randomId() : idempotencyKey }
+    : undefined,
 });
 
 /** The upload response includes display metadata which strict write schemas do
@@ -144,8 +146,8 @@ export const api = {
   agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
   addAgentConversationCapability: (workspaceId: string, bindingId: string, capability_version_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
-  bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], work_directory_id?: string) =>
-    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), work_directory_id }, true)),
+  bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], work_directory_id?: string, idempotencyKey = conversation_id) =>
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), work_directory_id }, idempotencyKey)),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>

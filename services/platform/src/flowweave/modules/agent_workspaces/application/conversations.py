@@ -909,7 +909,7 @@ def bootstrap_conversation(
                 )
             raise DomainError(
                 "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
-                "首条消息发送结果仍不确定，请稍后刷新后继续对账",
+                "首条消息正在安全对账，请稍后重试；系统不会重复发送",
                 504,
                 {"binding_id": binding.id},
             )
@@ -1037,7 +1037,7 @@ def bootstrap_conversation(
             db.commit()
             raise DomainError(
                 "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
-                "首条消息发送结果不确定，请稍后刷新后继续对账",
+                "首条消息正在安全对账，请稍后重试；系统不会重复发送",
                 504,
                 {"binding_id": binding.id},
             ) from exc
@@ -1054,7 +1054,7 @@ def bootstrap_conversation(
         db.commit()
         raise DomainError(
             "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
-            "首条消息发送结果不确定，请稍后刷新后继续对账",
+            "首条消息正在安全对账，请稍后重试；系统不会重复发送",
             504,
             {"binding_id": binding.id},
         )

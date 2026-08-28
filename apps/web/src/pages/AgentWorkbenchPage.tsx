@@ -20,6 +20,48 @@ interface QueuedMessage {
 }
 interface BoundQueuedMessage extends QueuedMessage { bindingId: string; }
 interface ConversationDraft { id: string; workDirectoryId?: string; displayName: string; }
+interface BootstrapRecovery {
+  draft: ConversationDraft;
+  message: QueuedMessage;
+  providerId: string;
+  modelName: string;
+  reasoningEffort: string | null;
+  attempts: number;
+}
+
+const BOOTSTRAP_RECOVERY_STORAGE_KEY = 'flowweave.agent.bootstrap-recovery.v1';
+const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
+
+function readBootstrapRecovery(): BootstrapRecovery | undefined {
+  try {
+    const stored = window.sessionStorage.getItem(BOOTSTRAP_RECOVERY_STORAGE_KEY);
+    if (!stored) return undefined;
+    const value = JSON.parse(stored) as Partial<BootstrapRecovery>;
+    if (!value.draft?.id || !value.message?.scope || value.message.scope !== value.draft.id
+      || typeof value.message.content !== 'string' || typeof value.providerId !== 'string'
+      || typeof value.modelName !== 'string' || typeof value.attempts !== 'number') return undefined;
+    return value as BootstrapRecovery;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeBootstrapRecovery(recovery: BootstrapRecovery | undefined) {
+  try {
+    if (recovery) window.sessionStorage.setItem(BOOTSTRAP_RECOVERY_STORAGE_KEY, JSON.stringify(recovery));
+    else window.sessionStorage.removeItem(BOOTSTRAP_RECOVERY_STORAGE_KEY);
+  } catch {
+    // Browser storage is only a recovery aid. The server-side command remains
+    // the source of truth and retries still use the stable draft UUID.
+  }
+}
+
+function isBootstrapAmbiguous(error: Error): boolean {
+  return [
+    'AGENT_BOOTSTRAP_CREATION_AMBIGUOUS',
+    'AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS',
+  ].includes((error as ApiError).code);
+}
 
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN';
 type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP';
@@ -758,7 +800,8 @@ interface Props { onNavigate: (path: string, replace?: boolean) => void; onOpenM
 
 export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState('');
+  const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery());
+  const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? '');
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
   const [liveEvents, setLiveEvents] = useState<OpenHandsConversationEvent[]>([]);
@@ -772,18 +815,19 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState('');
-  const [newConversationProviderId, setNewConversationProviderId] = useState('');
-  const [newConversationModelName, setNewConversationModelName] = useState('');
-  const [newConversationReasoningEffort, setNewConversationReasoningEffort] = useState<string | null>(null);
+  const [newConversationProviderId, setNewConversationProviderId] = useState(() => initialBootstrapRecovery.current?.providerId ?? '');
+  const [newConversationModelName, setNewConversationModelName] = useState(() => initialBootstrapRecovery.current?.modelName ?? '');
+  const [newConversationReasoningEffort, setNewConversationReasoningEffort] = useState<string | null>(() => initialBootstrapRecovery.current?.reasoningEffort ?? null);
   const [conversationProviderId, setConversationProviderId] = useState('');
   const [conversationModelName, setConversationModelName] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const [attachments, setAttachments] = useState<AgentAttachment[]>(() => initialBootstrapRecovery.current?.message.items ?? []);
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [operationError, setOperationError] = useState<Error>();
   const [pendingCreatedId, setPendingCreatedId] = useState<string>();
   const [pendingMigratedSend, setPendingMigratedSend] = useState<BoundQueuedMessage>();
-  const [conversationDraft, setConversationDraft] = useState<ConversationDraft>();
+  const [conversationDraft, setConversationDraft] = useState<ConversationDraft | undefined>(() => initialBootstrapRecovery.current?.draft);
+  const [bootstrapRecovery, setBootstrapRecovery] = useState<BootstrapRecovery | undefined>(() => initialBootstrapRecovery.current);
   const [workspaceScopeMigration, setWorkspaceScopeMigration] = useState<string>();
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
   const [capabilityManagerOpen, setCapabilityManagerOpen] = useState(false);
@@ -848,6 +892,10 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   activeComposerScope.current = composerScope;
   const reportOperationError = useCallback((scope: string | undefined, error: Error) => {
     if (scope && activeComposerScope.current === scope) setOperationError(error);
+  }, []);
+  const clearBootstrapRecovery = useCallback(() => {
+    setBootstrapRecovery(undefined);
+    writeBootstrapRecovery(undefined);
   }, []);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   const runtime = runtimeQuery.data;
@@ -1025,16 +1073,65 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     message.content,
     message.items,
     conversationDraft?.workDirectoryId,
+    conversationDraft!.id,
   ), onSuccess: value => {
     if (!workspace) return;
     const conversation = value.conversation;
     setWorkspaceScopeMigration(conversationDraft?.id);
     setPendingCreatedId(conversation.id);
     setConversationDraft(undefined);
+    clearBootstrapRecovery();
+    setOperationError(undefined);
     queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [conversation, ...(current ?? []).filter(item => item.id !== conversation.id)]);
     void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
     onNavigate(`/agent/conversations/${encodeURIComponent(conversation.id)}`);
-  }, onError: (error, message) => { if (activeComposerScope.current === message.scope) { setDraft(message.content); setAttachments(message.items); } reportOperationError(message.scope, error); } });
+  }, onError: (error, message) => {
+    if (activeComposerScope.current === message.scope) {
+      setDraft(message.content);
+      setAttachments(message.items);
+    }
+    if (isBootstrapAmbiguous(error)) {
+      // React Query can retain a mutation observer from the render that
+      // initiated the request. The command scope is the draft UUID, so it is
+      // sufficient to reconstruct the retry handle even if that observer's
+      // closure predates the draft state update.
+      const draftForRecovery = conversationDraft ?? {
+        id: message.scope,
+        displayName: '根工作区',
+      };
+      const recovery = {
+        draft: draftForRecovery,
+        message,
+        providerId: newConversationProviderId,
+        modelName: newConversationModelName,
+        reasoningEffort: newConversationReasoningEffort,
+        attempts: (bootstrapRecovery?.message.scope === message.scope ? bootstrapRecovery.attempts : 0) + 1,
+      };
+      setConversationDraft(current => current ?? draftForRecovery);
+      setBootstrapRecovery(recovery);
+      writeBootstrapRecovery(recovery);
+      if (recovery.attempts < MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS) {
+        setOperationError(undefined);
+        return;
+      }
+      reportOperationError(message.scope, new ApiError(
+        '首条消息仍在安全对账。点击发送可继续核对，不会重复发送。',
+        'AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS',
+        {},
+        504,
+      ));
+      return;
+    }
+    clearBootstrapRecovery();
+    reportOperationError(message.scope, error);
+  } });
+  useEffect(() => {
+    if (!bootstrapRecovery || !workspace || bootstrap.isPending
+      || bootstrapRecovery.attempts >= MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS) return;
+    const delay = 750 * bootstrapRecovery.attempts;
+    const timer = window.setTimeout(() => bootstrap.mutate(bootstrapRecovery.message), delay);
+    return () => window.clearTimeout(timer);
+  }, [bootstrap, bootstrapRecovery, workspace]);
   const rename = useMutation({ mutationFn: () => api.updateAgentConversation(workspace!.id, selected!.id, title.trim()), onSuccess: conversation => {
     queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace!.id], current => (current ?? []).map(item => item.id === conversation.id ? conversation : item));
     setTitle(conversationName(conversation));
@@ -1216,6 +1313,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     if (turnState === 'idle' || turnState === 'paused') rewrite.mutate({ eventId, content });
   }, [interrupt, rewrite, turnState]);
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
+    clearBootstrapRecovery();
     setConversationDraft({ ...next, id: randomId() });
     setWorkspaceScopeMigration(undefined);
     setDraft('');
@@ -1225,11 +1323,12 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate('/agent');
-  }, [clearLiveText, onNavigate]);
+  }, [clearBootstrapRecovery, clearLiveText, onNavigate]);
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
     if ((!content && !attachments.length) || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
     setDraft('');
+    setOperationError(undefined);
     if (!composerScope) return;
     const message = { id: randomId(), scope: composerScope, content, items: attachments };
     setAttachments([]);
@@ -1286,7 +1385,9 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       percentage: Math.min(100, Math.round((contextQuery.data.used_tokens / contextQuery.data.window_tokens) * 100)),
     }
     : undefined;
-  const composerStatus = conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+  const composerStatus = bootstrapRecovery
+    ? bootstrapRecovery.attempts < MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS ? '正在安全核对首条消息' : '首条消息待安全核对'
+    : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = queuedMessages.length > 0 ? `已排队 ${queuedMessages.length} 条` : '';
   const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'idle'
