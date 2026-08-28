@@ -125,7 +125,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
   useEffect(() => {
     const element = host.current;
     if (!element) return;
-    const terminal = new XTerm({ cursorBlink: true, scrollback: 3000, fontSize: 12, lineHeight: 1.3, fontFamily: "'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace", theme: { background: '#07110b', foreground: '#c8f7d8', cursor: '#75e99d', selectionBackground: '#315d42' } });
+    const terminal = new XTerm({ cursorBlink: true, scrollback: 3000, fontSize: 13, lineHeight: 1.25, fontFamily: "'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace", theme: { background: '#07110b', foreground: '#c8f7d8', cursor: '#75e99d', selectionBackground: '#315d42' } });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(element);
@@ -133,9 +133,25 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     let disposed = false;
     let reconnectTimer: number | undefined;
     let resizeFrame: number | undefined;
+    let remoteResizeTimer: number | undefined;
+    let pendingDimensions: { cols: number; rows: number } | undefined;
+    let lastSentDimensions: { cols: number; rows: number } | undefined;
     let attempts = 0;
     let connectionStarted = false;
     const reconnectDelays = [1000, 2000, 5000, 10_000, 30_000];
+    const sendPendingResize = () => {
+      remoteResizeTimer = undefined;
+      const dimensions = pendingDimensions;
+      if (!dimensions || socket?.readyState !== WebSocket.OPEN) return;
+      if (lastSentDimensions?.cols === dimensions.cols && lastSentDimensions.rows === dimensions.rows) return;
+      socket.send(JSON.stringify({ type: 'resize', rows: dimensions.rows, columns: dimensions.cols }));
+      lastSentDimensions = dimensions;
+    };
+    const scheduleRemoteResize = (dimensions: { cols: number; rows: number }, delay = 80) => {
+      pendingDimensions = dimensions;
+      if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer);
+      remoteResizeTimer = window.setTimeout(sendPendingResize, delay);
+    };
     const resize = () => {
       if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
       resizeFrame = window.requestAnimationFrame(() => {
@@ -149,6 +165,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
         const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
         if (terminal.cols !== dimensions.cols || terminal.rows !== dimensions.rows) {
           terminal.resize(dimensions.cols, dimensions.rows);
+          terminal.refresh(0, terminal.rows - 1);
           if (wasAtBottom) terminal.scrollToBottom();
         }
         if (!connectionStarted) {
@@ -156,7 +173,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
           connect();
           return;
         }
-        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', rows: dimensions.rows, columns: dimensions.cols }));
+        if (socket?.readyState === WebSocket.OPEN) scheduleRemoteResize(dimensions);
       });
     };
     const connect = () => {
@@ -166,7 +183,15 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
       const current = new WebSocket(agentWorkspaceTerminalUrl(workspaceId, terminal.rows, terminal.cols, { terminalInstanceId, bindingId, workDirectoryId }));
       socket = current;
       current.binaryType = 'arraybuffer';
-      current.onopen = () => { attempts = 0; setState('connected'); setDetail(`已连接 ${workingDirectory}`); resize(); terminal.focus(); };
+      current.onopen = () => {
+        attempts = 0;
+        lastSentDimensions = undefined;
+        setState('connected');
+        setDetail(`已连接 ${workingDirectory}`);
+        scheduleRemoteResize({ cols: terminal.cols, rows: terminal.rows }, 0);
+        resize();
+        terminal.focus();
+      };
       current.onmessage = event => {
         const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
         terminal.write(typeof event.data === 'string' ? event.data : new Uint8Array(event.data), () => {
@@ -187,7 +212,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     observer.observe(element);
     resize();
     void document.fonts?.ready.then(resize);
-    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); observer.disconnect(); input.dispose(); socket?.close(1000); terminal.dispose(); };
+    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); input.dispose(); socket?.close(1000); terminal.dispose(); };
   }, [bindingId, terminalInstanceId, workDirectoryId, workingDirectory, workspaceId]);
 
   return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;
@@ -273,6 +298,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
 }) {
   const [displayName, setDisplayName] = useState('');
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const detailsQuery = useQuery({
     queryKey: ['agent-workspace-create-directory', workspaceId],
     queryFn: () => api.agentWorkspaceDetails(workspaceId),
@@ -288,11 +314,13 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
     },
   });
   const details = detailsQuery.data;
-  const directories = (details?.files ?? [])
-    .filter(entry => entry.kind === 'directory')
-    .map(entry => ({ path: relativeWorkspacePath(entry.path, details!.root) }))
-    .filter(entry => entry.path !== '.' && !entry.path.startsWith('../') && !entry.path.startsWith('/'))
-    .sort((left, right) => left.path.localeCompare(right.path));
+  const directoryNodes = useMemo(
+    () => details ? workspaceTree(details.files.filter(entry => entry.kind === 'directory'), details.root) : [],
+    [details],
+  );
+  useEffect(() => {
+    setExpanded(new Set(directoryNodes.map(node => node.path)));
+  }, [directoryNodes]);
   const togglePath = (path: string) => {
     setSelectedPaths(current => {
       if (current.includes(path)) return current.filter(item => item !== path);
@@ -301,6 +329,24 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
     });
     if (!displayName.trim()) setDisplayName(path.split('/').pop() || path);
   };
+  const renderDirectories = (nodes: WorkspaceTreeNode[], depth = 0): ReactNode => nodes.map(node => {
+    const relativePath = relativeWorkspacePath(node.path, details!.root);
+    const open = expanded.has(node.path);
+    const checked = selectedPaths.includes(relativePath);
+    const hasChildren = node.children.length > 0;
+    return <div key={node.path} role="treeitem" aria-expanded={hasChildren ? open : undefined}>
+      <div className="agent-work-directory-row" style={{ '--directory-depth': depth } as CSSProperties}>
+        {hasChildren ? <button type="button" aria-label={(open ? '收起目录 ' : '展开目录 ') + relativePath} onClick={() => setExpanded(current => {
+          const next = new Set(current);
+          if (next.has(node.path)) next.delete(node.path); else next.add(node.path);
+          return next;
+        })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-work-directory-spacer"/>}
+        <input type="checkbox" aria-label={relativePath} checked={checked} disabled={!checked && selectedPaths.length >= 20} onChange={() => togglePath(relativePath)}/>
+        {open ? <FolderOpen size={14}/> : <Folder size={14}/>}<span title={relativePath}>{node.name}</span>
+      </div>
+      {hasChildren && open && <div role="group">{renderDirectories(node.children, depth + 1)}</div>}
+    </div>;
+  });
   const canSubmit = Boolean(displayName.trim() && selectedPaths.length && !create.isPending);
   return <div className="agent-work-directory-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !create.isPending) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="agent-work-directory-title" className="agent-work-directory-dialog">
@@ -311,12 +357,8 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
         <div>
           {detailsQuery.isLoading && <p>正在读取项目目录…</p>}
           {detailsQuery.isError && <p className="error">{detailsQuery.error instanceof Error ? detailsQuery.error.message : '项目目录读取失败，请稍后重试。'}</p>}
-          {!detailsQuery.isLoading && !detailsQuery.isError && !directories.length && <p>项目根目录中还没有可选择的子目录。</p>}
-          {directories.map(directory => {
-            const checked = selectedPaths.includes(directory.path);
-            const depth = directory.path.split('/').length - 1;
-            return <label key={directory.path} style={{ '--directory-depth': depth } as CSSProperties}><input type="checkbox" checked={checked} disabled={!checked && selectedPaths.length >= 20} onChange={() => togglePath(directory.path)}/><Folder size={14}/><span>{directory.path}</span></label>;
-          })}
+          {!detailsQuery.isLoading && !detailsQuery.isError && !directoryNodes.length && <p>项目根目录中还没有可选择的子目录。</p>}
+          {details && directoryNodes.length > 0 && <div role="tree" aria-label="项目目录树">{renderDirectories(directoryNodes)}</div>}
         </div>
       </section>
       <p className="agent-work-directory-note">选择多个目录时，它们属于同一个逻辑工作区；Agent 仍复用当前唯一 Runtime 容器。</p>
@@ -330,6 +372,12 @@ type WorkspaceToolTab =
   | { id: 'files'; kind: 'files' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string };
+
+function clampWorkspaceToolWidth(value: number): number {
+  if (window.innerWidth <= 1100) return Math.max(300, Math.min(720, value));
+  const viewportMaximum = Math.max(300, window.innerWidth - 700);
+  return Math.max(300, Math.min(720, viewportMaximum, value));
+}
 
 function readWorkspaceToolState(workspaceId: string): Record<string, WorkspaceToolScopeState> {
   try {
@@ -348,7 +396,7 @@ function WorkspaceDrawer({
   const [scopeStates, setScopeStates] = useState<Record<string, WorkspaceToolScopeState>>(() => readWorkspaceToolState(workspaceId));
   const [panelWidth, setPanelWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
-    return Number.isFinite(stored) && stored >= 300 && stored <= 720 ? stored : 400;
+    return clampWorkspaceToolWidth(Number.isFinite(stored) ? stored : 400);
   });
   const [panelError, setPanelError] = useState('');
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
@@ -372,6 +420,11 @@ function WorkspaceDrawer({
   useEffect(() => {
     localStorage.setItem('flowweave:workspace-tool-width', String(panelWidth));
   }, [panelWidth]);
+  useEffect(() => {
+    const clamp = () => setPanelWidth(current => clampWorkspaceToolWidth(current));
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
+  }, []);
   const detailsQuery = useQuery({
     queryKey: ['agent-workspace-details', workspaceId, bindingId, workDirectoryId],
     queryFn: () => api.agentWorkspaceDetails(workspaceId, { bindingId, workDirectoryId }),
@@ -425,13 +478,14 @@ function WorkspaceDrawer({
       const tabs = current.tabs.filter(candidate => candidate.id !== tab.id);
       return { ...current, tabs, activeTabId: current.activeTabId === tab.id ? tabs[tabs.length - 1]?.id : current.activeTabId };
     });
+    if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) onClose();
   };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!open || window.innerWidth <= 960) return;
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = panelWidth;
-    const move = (moveEvent: PointerEvent) => setPanelWidth(Math.max(300, Math.min(720, startWidth + startX - moveEvent.clientX)));
+    const move = (moveEvent: PointerEvent) => setPanelWidth(clampWorkspaceToolWidth(startWidth + startX - moveEvent.clientX));
     const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
@@ -449,7 +503,7 @@ function WorkspaceDrawer({
       ? <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><span>正在读取工作区…</span></div>
       : null;
   const summary = details && <section className="agent-workspace-overview">
-    <article><FolderOpen size={16}/><div><small>当前目录</small><code>{details.working_directory}</code></div></article>
+    <article><FolderOpen size={16}/><div><small>当前工作区</small><b>{details.scope.display_name}</b><code>{details.working_directory}</code></div></article>
     <article><MonitorCog size={16}/><div><small>运行容器</small><b>{details.runtime.container_id || '运行环境恢复中'}</b><p>所有会话共用此 Workspace Runtime；每个终端保留独立会话。</p></div></article>
     <article><GitBranch size={16}/><div><small>Git 仓库</small>{details.repositories.length ? details.repositories.map(repository => <p key={repository.path}><b>{relativeWorkspacePath(repository.path, details.root)}</b>{repository.branch && <span>{repository.branch}</span>}{repository.head && <em>{repository.head.slice(0, 12)}</em>}{repository.remote && <code>{repository.remote}</code>}</p>) : <p>当前目录未检测到 Git 仓库。</p>}</div></article>
     <article><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b><code>{details.ide.workspace_path}</code><p>{details.ide.gateway.note}</p></div></article>
@@ -464,17 +518,19 @@ function WorkspaceDrawer({
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
       <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : details?.runtime.container_id || '连接中…'}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) void closeTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label="关闭工作区工具" onClick={onClose}><X size={16}/></button></div></header>
-      {panelError && <p className="agent-workspace-panel-error">{panelError}</p>}
-      {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
-        {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`}>
-          <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} onSelect={path => updateScope(current => ({ ...current, selectedFile: path }))}/>
-          <div className="agent-file-preview">{selectedFile ? <>
-            <header><span>{relativeWorkspacePath(selectedFile, details.working_directory)}</span><a href={agentWorkspaceFileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId })}><Download size={13}/>下载</a></header>
-            {isTextPreviewable(selectedFile) ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
-          </> : <p>选择一个文件以预览或下载。</p>}</div>
-        </section>}
-        {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
-      </div>)}
+      <div className="agent-workspace-tool-body">
+        {panelError && <p className="agent-workspace-panel-error">{panelError}</p>}
+        {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
+          {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`}>
+            <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} onSelect={path => updateScope(current => ({ ...current, selectedFile: path }))}/>
+            <div className="agent-file-preview">{selectedFile ? <>
+              <header><span>{relativeWorkspacePath(selectedFile, details.working_directory)}</span><a href={agentWorkspaceFileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId })}><Download size={13}/>下载</a></header>
+              {isTextPreviewable(selectedFile) ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+            </> : <p>选择一个文件以预览或下载。</p>}</div>
+          </section>}
+          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
+        </div>)}
+      </div>
     </section>
   </aside>;
 }
@@ -897,7 +953,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected?.work_directory_id ?? conversationDraft?.workDirectoryId} attachments={attachments} runtimeAvailable={Boolean(runtime?.write_available)}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={attachments} runtimeAvailable={Boolean(runtime?.write_available)}/>
     {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
       queryClient.setQueryData<AgentWorkDirectoryList>(['agent-work-directories', workspace.id], current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspace.id] });

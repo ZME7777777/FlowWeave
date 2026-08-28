@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime
 
 import pytest
@@ -687,6 +688,120 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
         assert raised.value.code == "AGENT_WORK_DIRECTORY_ARCHIVED"
 
 
+def test_agent_workspace_multi_directory_files_are_scoped_and_frozen(settings, db_session_factory):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        for name in ("service-a", "service-b", "service-c"):
+            (project_root / name).mkdir()
+            (project_root / name / f"{name}.txt").write_text(name)
+        (project_root / "outside.txt").write_text("outside")
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=project_root / "service-a",
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "add", "service-a.txt"],
+            cwd=project_root / "service-a",
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=FlowWeave Test",
+                "-c",
+                "user.email=flowweave@example.test",
+                "commit",
+                "-m",
+                "initial",
+            ],
+            cwd=project_root / "service-a",
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "remote", "add", "origin", "ssh://git.example.test/product.git"],
+            cwd=project_root / "service-a",
+            check=True,
+            capture_output=True,
+        )
+
+        directory = work_directories.create_work_directory(
+            db, item.id, "跨服务", ("service-a", "service-b")
+        )
+        details = workspace.details(db, item.id, work_directory_id=directory["id"])
+        assert details["scope"] == {
+            "kind": "WORK_DIRECTORY",
+            "id": directory["id"],
+            "display_name": "跨服务",
+        }
+        assert details["working_directory"] == "/runtime/workspace/project"
+        visible_paths = {entry["path"] for entry in details["files"]}
+        assert visible_paths == {
+            "/runtime/workspace/project/service-a",
+            "/runtime/workspace/project/service-a/service-a.txt",
+            "/runtime/workspace/project/service-b",
+            "/runtime/workspace/project/service-b/service-b.txt",
+        }
+        assert details["repositories"][0]["branch"] == "main"
+        assert len(details["repositories"][0]["head"]) == 40
+        assert details["repositories"][0]["remote"] == ("ssh://git.example.test/product.git")
+        _, _, terminal_directory, _ = workspace.terminal_details(
+            db, item.id, work_directory_id=directory["id"]
+        )
+        assert terminal_directory == "/runtime/workspace/project"
+        assert (
+            workspace.download(
+                db,
+                item.id,
+                "/runtime/workspace/project/service-a/service-a.txt",
+                work_directory_id=directory["id"],
+            ).content
+            == b"service-a"
+        )
+        for denied in (
+            "/runtime/workspace/project/service-c/service-c.txt",
+            "/runtime/workspace/project/outside.txt",
+        ):
+            with pytest.raises(DomainError, match="当前工作目录范围"):
+                workspace.download(db, item.id, denied, work_directory_id=directory["id"])
+
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == item.id)
+        )
+        assert runtime is not None
+        binding = AgentConversationBinding(
+            workspace_id=item.id,
+            runtime_session_id=runtime.id,
+            work_directory_version_id=directory["current_version"]["id"],
+            working_directory="/runtime/workspace/project",
+            openhands_conversation_id="11111111-1111-4111-8111-111111111111",
+            create_idempotency_key="frozen-multi-directory",
+            lifecycle="ACTIVE",
+        )
+        db.add(binding)
+        db.flush()
+        work_directories.update_work_directory(
+            db, item.id, directory["id"], display_name=None, selected_paths=("service-c",)
+        )
+        frozen = workspace.details(db, item.id, binding_id=binding.id)
+        frozen_paths = {entry["path"] for entry in frozen["files"]}
+        assert "/runtime/workspace/project/service-a/service-a.txt" in frozen_paths
+        assert "/runtime/workspace/project/service-b/service-b.txt" in frozen_paths
+        assert "/runtime/workspace/project/service-c/service-c.txt" not in frozen_paths
+        with pytest.raises(DomainError, match="当前工作目录范围"):
+            workspace.download(
+                db,
+                item.id,
+                "/runtime/workspace/project/service-c/service-c.txt",
+                binding_id=binding.id,
+            )
+
+
 def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_directory(
     settings, db_session_factory, monkeypatch
 ):
@@ -969,6 +1084,67 @@ def test_agent_workspace_title_task_falls_back_to_normalized_first_sentence(
         assert "未命名会话" not in binding.display_title
 
 
+def test_agent_workspace_title_task_rejects_mechanical_generated_name(
+    settings, db_session_factory, monkeypatch
+):
+    assert conversations.normalized_first_sentence("新会话2") == "关于“新会话2”的请求"
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    monkeypatch.setattr(titles, "generate_title", lambda *_args: "新会话2")
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="排查支付回调重复入账",
+            idempotency_key="title-task-mechanical",
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert task is not None
+        titles.process_agent_conversation_title(
+            db, created["conversation"]["id"], task.payload_json, _title_task_lease(task)
+        )
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+        assert binding.display_title == "排查支付回调重复入账"
+        assert binding.title_state == "FALLBACK"
+
+
+def test_agent_workspace_terminal_session_names_are_safe_and_instance_scoped():
+    first = workspace.terminal_session_name(
+        "workspace-id",
+        "sha256:ABCDEF0123456789",
+        "11111111-1111-4111-8111-111111111111",
+    )
+    second = workspace.terminal_session_name(
+        "workspace-id",
+        "sha256:ABCDEF0123456789",
+        "22222222-2222-4222-8222-222222222222",
+    )
+
+    assert first != second
+    assert len(first) <= 64
+    assert len(second) <= 64
+    assert first.startswith("fw-agent-abcdef012345-")
+    assert all(
+        character.islower() or character.isdigit() or character == "-" for character in first
+    )
+
+
 def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversation(
     settings, db_session_factory, monkeypatch
 ):
@@ -1005,8 +1181,8 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
                 content="会失败",
                 idempotency_key="draft-known-failure",
             )
-        binding = db.scalar(select(AgentConversationBinding))
-        assert binding is not None and binding.lifecycle == "FAILED"
+        assert db.scalar(select(AgentConversationBinding)) is None
+        assert db.scalar(select(AgentConversationCommand)) is None
         assert runtime.deleted == 1
         assert conversations.list_conversations(db, workspace.id) == []
 

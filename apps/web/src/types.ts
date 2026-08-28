@@ -399,6 +399,7 @@ export interface AgentWorkDirectoryList {
 }
 export interface AgentWorkspaceDetails {
   root: string;
+  scope: { kind: 'ROOT' | 'WORK_DIRECTORY'; id?: string; display_name: string };
   working_directory: string;
   work_directory?: AgentWorkDirectory | null;
   files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;

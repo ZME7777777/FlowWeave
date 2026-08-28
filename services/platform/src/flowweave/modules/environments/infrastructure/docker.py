@@ -45,7 +45,11 @@ _TERMINAL_TMUX_SCRIPT = (
     # copy-mode scrollback instead of being interpreted by the shell.
     'tmux set-option -t "$session" mouse on; '
     'tmux set-option -t "$session" status off; '
-    'tmux resize-window -t "$session": -x "$columns" -y "$rows"; '
+    # resize-window switches the tmux window to manual sizing. That leaves a
+    # larger browser attachment padded with tmux's dotted unused-area marker.
+    # Keep the window bound to the latest active client so SIGWINCH updates
+    # track xterm while the resizable drawer is moving.
+    'tmux set-option -w -t "$session": window-size latest; '
     'exec tmux attach-session -t "$session"'
 )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 import httpx
@@ -17,13 +18,20 @@ _SYSTEM_PROMPT = (
     "根据用户第一条输入生成一个简洁、准确的中文会话标题。"
     "只返回标题本身：不使用 Markdown、引号、前后缀或换行；最多 24 个中文字符或 60 个字符。"
 )
+_MECHANICAL_TITLE = re.compile(
+    r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
+    re.IGNORECASE,
+)
 
 
 def _clean_title(value: object, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
     cleaned = " ".join(value.split()).strip(" '“”‘’\"")
-    return cleaned[:80] or fallback
+    cleaned = cleaned[:80]
+    if not cleaned or _MECHANICAL_TITLE.fullmatch(cleaned):
+        return fallback
+    return cleaned
 
 
 def _chat_title(snapshot: TitleProviderSnapshot, first_message: str) -> str:

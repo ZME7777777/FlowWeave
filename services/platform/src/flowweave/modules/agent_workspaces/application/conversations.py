@@ -43,6 +43,10 @@ _TOOLS = (
 )
 
 _PROJECT_ROOT = "/runtime/workspace/project"
+_MECHANICAL_TITLE = re.compile(
+    r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
+    re.IGNORECASE,
+)
 _PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
     (
         "当前会话的项目根目录是 /runtime/workspace/project。",
@@ -396,8 +400,10 @@ def normalized_first_sentence(content: str) -> str:
     """A useful local title while the independent metadata task is pending."""
 
     first_line = next((line for line in content.splitlines() if line.strip()), "")
-    normalized = " ".join(first_line.split())
-    return normalized[:80] or "新会话"
+    normalized = " ".join(first_line.split())[:80]
+    if _MECHANICAL_TITLE.fullmatch(normalized):
+        return f"关于“{normalized}”的请求"[:80]
+    return normalized or "用户请求"
 
 
 def _enqueue_title_task(db: Session, binding: AgentConversationBinding, first_message: str) -> None:
@@ -473,10 +479,16 @@ def _record_bootstrap_failure(
     command: AgentConversationCommand,
     error: DomainError,
 ) -> None:
-    binding.lifecycle = "FAILED"
-    command.state = "FAILED"
-    command.last_error_code = error.code
-    command.failure_summary = "Conversation bootstrap failed; inspect protected logs"
+    """Discard a definitively failed lazy bootstrap reservation.
+
+    Only ambiguous external outcomes retain reconciliation state. A known
+    failure must leave no Binding or command row behind.
+    """
+
+    del error
+    db.delete(command)
+    db.flush()
+    db.delete(binding)
     db.commit()
 
 

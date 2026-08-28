@@ -3,6 +3,7 @@ from __future__ import annotations
 import mimetypes
 import os
 import stat
+import subprocess
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -16,6 +17,9 @@ from flowweave.modules.agent_workspaces.application.conversations import (
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
+    AgentWorkDirectory,
+    AgentWorkDirectoryPath,
+    AgentWorkDirectoryVersion,
     AgentWorkspace,
 )
 from flowweave.runtime.base import RuntimeWorkspaceFile
@@ -25,6 +29,7 @@ from flowweave.shared.settings import get_settings
 _PROJECT_ROOT = "/runtime/workspace/project"
 _MAX_INDEX_ENTRIES = 20_000
 _MAX_FILE_BYTES = 25 * 1024 * 1024
+_GIT_TIMEOUT_SECONDS = 2
 
 
 def terminal_session_name(workspace_id: str, container_id: str, terminal_instance_id: str) -> str:
@@ -156,6 +161,74 @@ def _workspace_entries(project_root: Path, working_directory: str) -> list[dict[
     return entries
 
 
+def _git_value(repository: Path, *arguments: str) -> str | None:
+    """Read bounded, local Git metadata without invoking a shell."""
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            capture_output=True,
+            check=False,
+            env={"PATH": os.defpath},
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
+    details = {"path": runtime_path}
+    branch = _git_value(repository, "branch", "--show-current")
+    head = _git_value(repository, "rev-parse", "HEAD")
+    remote = _git_value(repository, "remote", "get-url", "origin")
+    if branch:
+        details["branch"] = branch
+    if head:
+        details["head"] = head
+    if remote:
+        details["remote"] = remote
+    return details
+
+
+def _scope_repositories(project_root: Path, file_roots: tuple[str, ...]) -> list[tuple[Path, str]]:
+    """Find repositories intersecting the visible scope, including an owning parent repo."""
+
+    found: dict[Path, str] = {}
+    for runtime_root in file_roots:
+        host_root = (
+            project_root
+            if runtime_root == _PROJECT_ROOT
+            else _host_path(project_root, runtime_root, require_file=False)
+        )
+        current = host_root
+        while current.is_relative_to(project_root):
+            if (current / ".git").is_dir():
+                relative = current.relative_to(project_root).as_posix()
+                found[current] = _PROJECT_ROOT if relative == "." else f"{_PROJECT_ROOT}/{relative}"
+                break
+            if current == project_root:
+                break
+            current = current.parent
+        for directory, directory_names, _ in os.walk(host_root, followlinks=False):
+            current_path = Path(directory)
+            if ".git" in directory_names:
+                relative = current_path.relative_to(project_root).as_posix()
+                found[current_path] = (
+                    _PROJECT_ROOT if relative == "." else f"{_PROJECT_ROOT}/{relative}"
+                )
+            directory_names[:] = [
+                name
+                for name in directory_names
+                if not name.startswith(".") and not (current_path / name).is_symlink()
+            ]
+            if len(found) >= 100:
+                break
+    return sorted(found.items(), key=lambda item: item[1])
+
+
 def _working_directory(
     db: Session,
     workspace_id: str,
@@ -192,6 +265,102 @@ def _working_directory(
     return working_directory, directory
 
 
+def _scope_details(
+    db: Session,
+    workspace_id: str,
+    work_directory_id: str | None,
+    binding_id: str | None,
+    directory: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Return the server-owned product scope without inferring it from a path."""
+
+    if directory is not None:
+        return {
+            "kind": "WORK_DIRECTORY",
+            "id": str(directory["id"]),
+            "display_name": str(directory["display_name"]),
+        }
+    if binding_id:
+        selected = db.execute(
+            select(AgentWorkDirectory.id, AgentWorkDirectory.display_name)
+            .join(
+                AgentWorkDirectoryVersion,
+                AgentWorkDirectoryVersion.work_directory_id == AgentWorkDirectory.id,
+            )
+            .join(
+                AgentConversationBinding,
+                AgentConversationBinding.work_directory_version_id == AgentWorkDirectoryVersion.id,
+            )
+            .where(
+                AgentConversationBinding.id == binding_id,
+                AgentConversationBinding.workspace_id == workspace_id,
+            )
+        ).one_or_none()
+        if selected is not None:
+            return {
+                "kind": "WORK_DIRECTORY",
+                "id": selected.id,
+                "display_name": selected.display_name,
+            }
+    if work_directory_id:
+        # `_working_directory` already rejects missing or archived IDs. This is
+        # defensive only and must not invent a name from the filesystem path.
+        raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作目录不存在", 404)
+    return {"kind": "ROOT", "display_name": "根工作区"}
+
+
+def _file_scope_roots(
+    db: Session,
+    workspace_id: str,
+    work_directory_id: str | None,
+    binding_id: str | None,
+    directory: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    """Resolve file roots independently from OpenHands' single working directory."""
+
+    version_id: str | None = None
+    if directory is not None:
+        version_id = str(directory["current_version"]["id"])
+    elif binding_id:
+        version_id = db.scalar(
+            select(AgentConversationBinding.work_directory_version_id).where(
+                AgentConversationBinding.id == binding_id,
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+            )
+        )
+    elif work_directory_id:
+        raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作目录不存在", 404)
+    if version_id is None:
+        return (_PROJECT_ROOT,)
+    relative_paths = tuple(
+        db.scalars(
+            select(AgentWorkDirectoryPath.relative_path)
+            .where(AgentWorkDirectoryPath.version_id == version_id)
+            .order_by(AgentWorkDirectoryPath.position)
+        )
+    )
+    if not relative_paths:
+        raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
+    return tuple(f"{_PROJECT_ROOT}/{path}" for path in relative_paths)
+
+
+def _scoped_workspace_entries(
+    project_root: Path, working_directory: str, file_roots: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    if file_roots == (_PROJECT_ROOT,):
+        return _workspace_entries(project_root, _PROJECT_ROOT)
+    if len(file_roots) == 1 and file_roots[0] == working_directory:
+        return _workspace_entries(project_root, working_directory)
+    entries: list[dict[str, Any]] = []
+    for root in file_roots:
+        entries.append({"path": root, "kind": "directory", "size": 0})
+        entries.extend(_workspace_entries(project_root, root))
+        if len(entries) >= _MAX_INDEX_ENTRIES:
+            break
+    return entries[:_MAX_INDEX_ENTRIES]
+
+
 def terminal_details(
     db: Session,
     workspace_id: str,
@@ -222,15 +391,13 @@ def details(
     working_directory, directory = _working_directory(
         db, workspace_id, work_directory_id, binding_id
     )
+    scope = _scope_details(db, workspace_id, work_directory_id, binding_id, directory)
+    file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
     project_root = _project_root(db, workspace_id)
-    repositories: list[dict[str, str]] = []
-    host_working_directory = (
-        project_root
-        if working_directory == _PROJECT_ROOT
-        else _host_path(project_root, working_directory, require_file=False)
-    )
-    if (host_working_directory / ".git").is_dir():
-        repositories.append({"path": working_directory})
+    repositories = [
+        _repository_details(host_repository, runtime_path)
+        for host_repository, runtime_path in _scope_repositories(project_root, file_roots)
+    ]
     try:
         _, _, container_id = terminal_container_details(db, workspace_id)
         container_short_id = container_id.removeprefix("sha256:")[:12]
@@ -238,9 +405,10 @@ def details(
         container_short_id = None
     return {
         "root": _PROJECT_ROOT,
+        "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
-        "files": _workspace_entries(project_root, working_directory),
+        "files": _scoped_workspace_entries(project_root, working_directory, file_roots),
         "repositories": repositories,
         "runtime": {"container_id": container_short_id},
         "ide": {
@@ -273,8 +441,9 @@ def download(
         or any(part in {".git", ".openhands"} for part in parsed.parts)
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
-    working_directory, _ = _working_directory(db, workspace_id, work_directory_id, binding_id)
-    if not (path == working_directory or path.startswith(working_directory.rstrip("/") + "/")):
+    _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
+    file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
+    if not any(path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
     host_path = _host_path(_project_root(db, workspace_id), path, require_file=True)
     try:

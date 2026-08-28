@@ -783,6 +783,28 @@ Alembic head、任务状态和 `git diff --check`。本切片使用独立 Git co
 binding，终端显式关闭会调用服务端销毁接口；会话列表固定为紧凑两行。平台全量、迁移、OpenAPI、
 Compose、固定 OpenHands contract/smoke、Web 静态构建和 3 项部署后 Agent E2E 均已通过。
 
+### FR-59 Agent Workspace 终端空间与宽屏重排修复 — DONE
+
+依赖：`FR-58`。
+
+目标：增大右侧工具区终端的有效显示面积，使终端宿主始终占满页签内容区剩余高度，并以更清晰的字号、
+行高、内边距和连接状态呈现。修复工具区连续拖宽至上限时 xterm、FitAddon、WebSocket PTY 与持久 tmux
+窗口尺寸不同步导致的右侧重复竖线/点阵残影；宽度变化必须在布局稳定后合并重排，前后端只接受当前有效
+行列数，隐藏页签重新显示时再次同步。不得重建 Agent Runtime、共享终端实例、修改 OpenHands 或改变
+终端关闭/最小化生命周期。
+
+验收：Agent 工作台定向 Playwright 覆盖终端占满可用高度、最小/默认/最大宽度重排、xterm screen/viewport
+边界一致、列数随宽度增长且无横向残影或溢出；Web lint/typecheck/production build、相关平台终端测试、
+真实 Runtime/tmux 尺寸同步与单容器检查、`git diff --check`、Alembic head 和任务状态唯一性通过。本切片
+与 FR-58 后续审计修复一并形成独立 Git commit，排除用户已有 README 和项目总览文档改动。
+
+完成：右侧终端使用完整工具主体高度，字号、行高、内边距和连接状态样式同步优化；拖动宽度时由
+FitAddon 在布局稳定后更新 xterm，并合并向 PTY 发送最终行列数。持久 tmux 不再被 `resize-window` 切换为
+`manual`，而以 `window-size latest` 跟随当前客户端，消除宽屏后的竖线和点阵空白。正式会话工具区仅传
+binding，未发送会话仅传工作目录，历史工作目录会话可正常打开文件和终端。真实部署在 1280×720 视口下
+将抽屉从 300px 拖至 580px 后，终端宿主高 569px、screen 宽 515px，screen/viewport 无水平溢出；tmux
+client/window 均为 `66×25`、模式为 `latest`，Agent Runtime 容器数量保持 1。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -799,6 +821,7 @@ Compose、固定 OpenHands contract/smoke、Web 静态构建和 3 项部署后 A
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-59 | Web ESLint/typecheck/production build；Agent Workspace 定向 Playwright（3 passed）；Agent Workspace 与 Environment terminal 定向 pytest（71 passed）；平台 Ruff/Pyright；部署后真实历史工作目录会话、终端高度、最大宽度、xterm 边界、tmux 行列同步与单 Runtime 容器检查；Alembic head 与 `git diff --check` | PASS：终端占满工具区可用高度，300px 到 580px 连续拖宽后 screen/viewport 均无横向溢出；tmux `window-size=latest`，client/window 同步为 `66×25`，不再出现 manual 模式的竖线/点阵填充。正式 binding 与未发送工作目录参数互斥，历史工作目录会话工具区恢复可用。唯一 head 为 `0068_agent_title_metadata`，Agent Runtime 数量为 1；无 `CURRENT` 或下一切片。 |
 | 2026-08-27 | FR-58 | Ruff format/check；Pyright strict；平台全量 pytest（479 passed）；OpenAPI 基线；PostgreSQL migration-check；Compose security；Web ESLint/typecheck/production build；固定 OpenHands `1.42.0` contract/smoke；源码与部署后 Agent Workspace 定向 Playwright（最终 3 passed）；镜像重建、API/Runtime Provider 健康、唯一 Alembic head 与 `git diff --check` | PASS：发送首条消息前可切换供应商、模型和推理强度，上传附件并使用文件树和多个独立终端；bootstrap 原子绑定工作目录、完整模型配置和附件后才创建 URL/列表项，发送前工具页签迁移到正式 binding。左栏可从项目根合法目录显式新增工作区，会话项固定为 38px 紧凑两行；关闭终端调用服务端销毁且不创建第二个 Agent Runtime。全仓 12 项浏览器套件曾有 7 项通过、5 项失败：FR-58 三项均通过；其余真实 Environment/Tool Catalog 场景因 E2E 遗留 Setup 容器将 API/Runtime Provider 拖入不健康状态而超时，服务重建恢复健康后未将这些无关场景伪记为通过。唯一 head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |
 | 2026-08-27 | FR-57（最终验收） | 已完成的迁移、静态检查、Web 构建、OpenAPI/架构、Compose、平台测试及定向 E2E；部署后 Runtime、历史会话和工作区恢复复验；用户验收 | PASS：Runtime 使用当前可用镜像恢复到可写 `ACTIVE` generation，历史会话独立加载，工作区概览和文件读取不再被 Runtime 恢复阻塞，右侧栏可正常打开并在失败时提供错误与重试。用户完成部署后验证并明确确认 FR-57 可以标记 `DONE`；无 `CURRENT` 或下一切片。 |
 | 2026-08-27 | FR-57（阻塞记录） | PostgreSQL Testcontainers migration-check；Compose security；Ruff format/check；Pyright strict；Web ESLint/typecheck/production build；OpenAPI 基线与跨模块 public façade 定向门禁；源码 Vite 上 Agent Workspace 定向 Playwright | 部分 PASS：migration-check、Compose security、Ruff、Pyright、Web 静态/构建、OpenAPI/边界门禁和 Agent Workspace E2E 通过。BLOCKED：Docker daemon socket 不存在，导致 407 个需要 Testcontainers 的平台用例在 fixture 初始化失败；同时无法运行固定 OpenHands image contract/smoke、真实 Runtime 与部署后 E2E。Docker 恢复后必须从完整平台 pytest、固定 image 合同/烟雾、真实根/单/多目录会话及部署后完整 E2E 继续；FR-57 不得标记 DONE。 |

@@ -192,6 +192,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let agentStream: WebSocketRoute | undefined;
   let terminalSocket: WebSocketRoute | undefined;
   const terminalInputs: string[] = [];
+  const terminalResizes: Array<{ rows: number; columns: number }> = [];
   let sentMessages = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -202,6 +203,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let confirmationDecision: Record<string, unknown> | null = null;
   let bootstrapRequests = 0;
   let bootstrapWorkDirectory: string | null = null;
+  let renameRequests = 0;
   let contextAvailable = false;
   const longFinalReply = Array.from(
     { length: 90 },
@@ -213,8 +215,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     terminalSocket = socket;
     socket.onMessage(message => {
       try {
-        const payload = JSON.parse(String(message)) as { type?: string; data?: string };
+        const payload = JSON.parse(String(message)) as { type?: string; data?: string; rows?: number; columns?: number };
         if (payload.type === 'input' && payload.data) terminalInputs.push(payload.data);
+        if (payload.type === 'resize' && Number.isFinite(payload.rows) && Number.isFinite(payload.columns)) {
+          terminalResizes.push({ rows: payload.rows!, columns: payload.columns! });
+        }
       } catch { /* resize/input frames are asserted through the collected input list. */ }
     });
   });
@@ -246,6 +251,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/workspace')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         root: '/runtime/workspace/project',
+        scope: { kind: 'ROOT', display_name: '根工作区' },
         working_directory: '/runtime/workspace/project',
         work_directory: null,
         files: [
@@ -282,6 +288,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       };
       conversations.splice(0, 0, created);
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ conversation: created, accepted: true, cursor: 'user-request' }) });
+      return;
+    }
+    if (/\/conversations\/[^/]+$/.test(path) && request.method() === 'PATCH') {
+      renameRequests += 1;
+      const bindingId = path.match(/\/conversations\/([^/]+)$/)?.[1];
+      const binding = conversations.find(item => item.id === bindingId);
+      const payload = JSON.parse(request.postData() ?? '{}') as { title: string };
+      if (binding) Object.assign(binding, { display_title: payload.title, title_state: 'MANUAL' });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(binding) });
       return;
     }
     if (path.endsWith('/condense') && request.method() === 'POST') {
@@ -411,7 +426,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
-  await expect(page).toHaveURL(/\/agent$/);
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/agent');
   await expect(page.getByRole('button', { name: '新建会话' }).first()).toBeEnabled();
   await expect(page.getByText('后端服务', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '在后端服务中新建会话' }).click();
@@ -428,6 +443,26 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   expect(bootstrapRequests).toBe(1);
   expect(bootstrapWorkDirectory).toBeNull();
+  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  await page.getByRole('heading', { name: '检查工作目录' }).dblclick();
+  const titleEditor = page.getByLabel('会话标题');
+  await expect(titleEditor).toHaveValue('检查工作目录');
+  expect(await titleEditor.evaluate(element => ({
+    start: (element as HTMLInputElement).selectionStart,
+    end: (element as HTMLInputElement).selectionEnd,
+  }))).toEqual({ start: 0, end: '检查工作目录'.length });
+  await titleEditor.fill('不应保存的标题');
+  await titleEditor.press('Escape');
+  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  expect(renameRequests).toBe(0);
+  await page.getByRole('heading', { name: '检查工作目录' }).dblclick();
+  await page.getByLabel('会话标题').fill('   ');
+  await page.getByLabel('会话标题').blur();
+  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  expect(renameRequests).toBe(0);
+  await page.getByRole('heading', { name: '检查工作目录' }).dblclick();
+  await page.getByLabel('会话标题').press('Enter');
+  await expect.poll(() => renameRequests).toBe(1);
   await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
   const compactConversationItem = page.getByRole('button', { name: /检查工作目录/ }).first();
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
@@ -450,15 +485,56 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     const hostBox = host.getBoundingClientRect();
     const drawerBox = drawer.getBoundingClientRect();
     const screenBox = screen.getBoundingClientRect();
+    const hostStyle = getComputedStyle(host);
     return {
       hostBottom: hostBox.bottom,
       drawerBottom: drawerBox.bottom,
       screenBottom: screenBox.bottom,
-      hostContentBottom: hostBox.bottom - parseFloat(getComputedStyle(host).paddingBottom),
+      hostRight: hostBox.right,
+      drawerRight: drawerBox.right,
+      screenRight: screenBox.right,
+      hostHeight: hostBox.height,
+      drawerHeight: drawerBox.height,
+      hostContentBottom: hostBox.bottom - parseFloat(hostStyle.paddingBottom),
+      hostContentRight: hostBox.right - parseFloat(hostStyle.paddingRight),
     };
   });
   expect(terminalLayout.hostBottom).toBeLessThanOrEqual(terminalLayout.drawerBottom + 1);
   expect(terminalLayout.screenBottom).toBeLessThanOrEqual(terminalLayout.hostContentBottom + 1);
+  expect(terminalLayout.hostHeight).toBeGreaterThan(terminalLayout.drawerHeight - 110);
+  expect(terminalLayout.hostRight).toBeLessThanOrEqual(terminalLayout.drawerRight + 1);
+  expect(terminalLayout.screenRight).toBeLessThanOrEqual(terminalLayout.hostContentRight + 1);
+  await expect.poll(() => terminalResizes.length).toBeGreaterThan(0);
+  const initialColumns = terminalResizes.at(-1)!.columns;
+  const initialDrawerWidth = await page.locator('.agent-workspace-drawer').evaluate(drawer => drawer.getBoundingClientRect().width);
+  const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
+  const resizerBox = await resizer.boundingBox();
+  if (!resizerBox) throw new Error('Expected workspace drawer resizer');
+  await page.mouse.move(resizerBox.x + resizerBox.width / 2, resizerBox.y + 80);
+  await page.mouse.down();
+  await page.mouse.move(Math.max(2, resizerBox.x - 500), resizerBox.y + 80, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(() => page.locator('.agent-workspace-drawer').evaluate(drawer => drawer.getBoundingClientRect().width)).toBeGreaterThan(initialDrawerWidth + 150);
+  await expect.poll(() => terminalResizes.at(-1)?.columns ?? 0).toBeGreaterThan(initialColumns);
+  const expandedLayout = await page.getByLabel('Agent 工作区终端').evaluate(host => {
+    const screen = host.querySelector('.xterm-screen');
+    const viewport = host.querySelector('.xterm-viewport');
+    if (!screen || !viewport) throw new Error('Expected terminal screen and viewport');
+    const hostBox = host.getBoundingClientRect();
+    const screenBox = screen.getBoundingClientRect();
+    const viewportBox = viewport.getBoundingClientRect();
+    const hostStyle = getComputedStyle(host);
+    const contentRight = hostBox.right - parseFloat(hostStyle.paddingRight);
+    return {
+      screenRight: screenBox.right,
+      viewportRight: viewportBox.right,
+      contentRight,
+      horizontalOverflow: host.scrollWidth - host.clientWidth,
+    };
+  });
+  expect(expandedLayout.screenRight).toBeLessThanOrEqual(expandedLayout.contentRight + 1);
+  expect(expandedLayout.viewportRight).toBeLessThanOrEqual(expandedLayout.contentRight + 1);
+  expect(expandedLayout.horizontalOverflow).toBeLessThanOrEqual(1);
   await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop < 3)).toBe(true);
   terminalSocket!.send('\u001b[?1000h\u001b[?1006h');
   await viewport.dispatchEvent('wheel', { deltaY: -120, deltaMode: 0 });
@@ -673,15 +749,20 @@ test('Agent new session keeps full capabilities and can create an explicit works
   const directories: Array<Record<string, unknown>> = [];
   const conversations: Array<Record<string, unknown>> = [];
   const terminalInstanceIds: string[] = [];
+  const terminalAttachCounts = new Map<string, number>();
   const destroyedTerminalIds: string[] = [];
+  const workspaceScopeRequests: Array<{ bindingId: string | null; workDirectoryId: string | null }> = [];
   let bootstrapPayload: Record<string, unknown> | null = null;
   let attachmentUploads = 0;
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.routeWebSocket('**/agent-workspaces/**/terminal*', socket => {
     const terminalId = new URL(socket.url()).searchParams.get('terminal_instance_id');
-    if (terminalId) terminalInstanceIds.push(terminalId);
-    socket.send('$ ');
+    if (terminalId) {
+      terminalInstanceIds.push(terminalId);
+      terminalAttachCounts.set(terminalId, (terminalAttachCounts.get(terminalId) ?? 0) + 1);
+      socket.send(`screen-${terminalId.slice(0, 8)}\r\n$ `);
+    }
   });
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
@@ -720,10 +801,20 @@ test('Agent new session keeps full capabilities and can create an explicit works
       return;
     }
     if (path.endsWith('/workspace')) {
+      workspaceScopeRequests.push({
+        bindingId: url.searchParams.get('binding_id'),
+        workDirectoryId: url.searchParams.get('work_directory_id'),
+      });
+      if (url.searchParams.has('binding_id') && url.searchParams.has('work_directory_id')) {
+        await route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: { code: 'AGENT_WORKSPACE_SCOPE_CONFLICT', message: '不能同时指定会话与工作目录' } }) });
+        return;
+      }
       const scoped = url.searchParams.has('work_directory_id') || url.searchParams.has('binding_id');
       const workingDirectory = scoped ? '/runtime/workspace/project/frontend' : '/runtime/workspace/project';
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        root: '/runtime/workspace/project', working_directory: workingDirectory,
+        root: '/runtime/workspace/project',
+        scope: scoped ? { kind: 'WORK_DIRECTORY', id: 'fr58-frontend', display_name: '前端工作区' } : { kind: 'ROOT', display_name: '根工作区' },
+        working_directory: workingDirectory,
         work_directory: scoped ? directories[0] ?? null : null,
         files: scoped ? [
           { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
@@ -734,7 +825,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
           { path: '/runtime/workspace/project/frontend/src', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/frontend/src/app.ts', kind: 'file', size: 36 },
         ],
-        repositories: [{ path: workingDirectory, branch: 'main', head: 'abcdef123456' }],
+        repositories: [{ path: workingDirectory, branch: 'main', head: 'abcdef123456', remote: 'ssh://git.example.test/product.git' }],
         runtime: { container_id: '2fae71c74c89' },
         ide: { workspace_path: workingDirectory, gateway: { supported: true, status: '可连接', note: '使用受保护的 Gateway 入口连接。' } },
       }) });
@@ -807,10 +898,18 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.getByRole('button', { name: '新增工作区', exact: true }).click();
   const creator = page.getByRole('dialog', { name: '新增工作区' });
   await expect(creator).toBeVisible();
+  await expect(creator.getByRole('tree', { name: '项目目录树' })).toBeVisible();
+  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeVisible();
+  await creator.getByRole('button', { name: '收起目录 frontend', exact: true }).click();
+  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).toBeHidden();
+  await creator.getByRole('button', { name: '展开目录 frontend', exact: true }).click();
+  await creator.getByRole('checkbox', { name: 'frontend/src', exact: true }).check();
+  await expect(creator.getByRole('checkbox', { name: 'frontend', exact: true })).not.toBeChecked();
   await creator.getByRole('checkbox', { name: 'frontend', exact: true }).check();
+  await expect(creator.getByRole('checkbox', { name: 'frontend/src', exact: true })).not.toBeChecked();
   await creator.getByLabel('工作区名称').fill('前端工作区');
   await creator.getByRole('button', { name: '创建工作区' }).click();
-  await expect(page.getByText('前端工作区', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-workspace-group').getByText('前端工作区', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '在前端工作区中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
@@ -827,12 +926,24 @@ test('Agent new session keeps full capabilities and can create an explicit works
   expect(attachmentUploads).toBe(1);
 
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
+  const environmentSummary = page.locator('.agent-workspace-overview');
+  await expect(environmentSummary.getByText('前端工作区', { exact: true })).toBeVisible();
+  await expect(environmentSummary.getByText('main', { exact: true })).toBeVisible();
+  await expect(environmentSummary.getByText('abcdef123456', { exact: true })).toBeVisible();
+  await expect(environmentSummary.getByText('ssh://git.example.test/product.git', { exact: true })).toBeVisible();
+  expect(workspaceScopeRequests.at(-1)).toEqual({ bindingId: null, workDirectoryId: 'fr58-frontend' });
   await expect(page.getByText('2fae71c74c89', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新终端', exact: true }).click();
   await page.getByLabel('新增工作区工具').click();
   await page.getByRole('button', { name: '终端', exact: true }).click();
   await expect.poll(() => new Set(terminalInstanceIds).size).toBe(2);
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
+  const initialTerminalIds = [...new Set(terminalInstanceIds)];
+  expect(initialTerminalIds[0]).not.toBe(initialTerminalIds[1]);
+  await expect(page.locator('.agent-terminal-tab-panel.active')).toContainText(`screen-${initialTerminalIds[1].slice(0, 8)}`);
+  await page.getByRole('button', { name: '2fae71c74c89', exact: true }).first().click();
+  await expect(page.locator('.agent-terminal-tab-panel.active')).toContainText(`screen-${initialTerminalIds[0].slice(0, 8)}`);
+  await expect(page.locator('.agent-terminal-tab-panel.active')).not.toContainText(`screen-${initialTerminalIds[1].slice(0, 8)}`);
 
   await page.getByLabel('新增工作区工具').click();
   await page.getByRole('button', { name: '文件', exact: true }).click();
@@ -840,6 +951,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.locator('.agent-workspace-tool-actions').getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.locator('.agent-workspace-tabs .agent-workspace-tab-select').filter({ hasText: '文件' })).toHaveCount(1);
   await expect(page.getByText('app.ts', { exact: true })).toBeVisible();
+  expect(new Set(terminalInstanceIds)).toEqual(new Set(initialTerminalIds));
 
   await page.getByLabel('发送 Agent 消息').fill('实现前端工作区');
   await page.getByRole('button', { name: '发送消息' }).click();
@@ -849,7 +961,32 @@ test('Agent new session keeps full capabilities and can create an explicit works
     work_directory_id: 'fr58-frontend', content: '实现前端工作区',
     attachments: [{ path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png', image_data_url: 'data:image/png;base64,iVBORw==' }],
   });
-  await expect(page.getByText('前端工作区', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-workspace-overview').getByText('前端工作区', { exact: true })).toBeHidden();
+  await expect.poll(() => workspaceScopeRequests.at(-1)).toEqual({ bindingId: 'fr58-conversation', workDirectoryId: null });
+  await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
+  expect(new Set(terminalInstanceIds)).toEqual(new Set(initialTerminalIds));
+
+  await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
+  await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
+  expect(destroyedTerminalIds).toHaveLength(0);
+  await page.getByRole('button', { name: '节点资产' }).click();
+  await page.getByRole('button', { name: 'Agent 会话' }).click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/agent/conversations/fr58-conversation');
+  await expect(page.getByRole('heading', { name: '实现前端工作区' })).toBeVisible();
+  await page.locator('.agent-workspace-summary').getByLabel('打开工作区工具').click();
+  const restoredTerminalTabs = page.getByRole('button', { name: '2fae71c74c89', exact: true });
+  await expect(restoredTerminalTabs).toHaveCount(2);
+  await restoredTerminalTabs.first().click();
+  await expect.poll(() => terminalAttachCounts.get(initialTerminalIds[0]) ?? 0).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('.agent-terminal-tab-panel.active')).toContainText(`screen-${initialTerminalIds[0].slice(0, 8)}`);
+  await restoredTerminalTabs.last().click();
+  await expect.poll(() => terminalAttachCounts.get(initialTerminalIds[1]) ?? 0).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('.agent-terminal-tab-panel.active')).toContainText(`screen-${initialTerminalIds[1].slice(0, 8)}`);
+  expect(new Set(terminalInstanceIds)).toEqual(new Set(initialTerminalIds));
+
+  page.once('dialog', dialog => void dialog.dismiss());
+  await page.getByRole('button', { name: '关闭终端 2fae71c74c89页签' }).first().click();
+  await expect.poll(() => destroyedTerminalIds.length).toBe(0);
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
 
   page.once('dialog', dialog => void dialog.accept());
@@ -857,6 +994,12 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect.poll(() => destroyedTerminalIds.length).toBe(1);
   expect([...new Set(terminalInstanceIds)]).toContain(destroyedTerminalIds[0]);
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(1);
+  await page.getByLabel('新增工作区工具').click();
+  await page.getByRole('button', { name: '终端', exact: true }).click();
+  await expect.poll(() => new Set(terminalInstanceIds).size).toBe(3);
+  const reopenedId = [...new Set(terminalInstanceIds)].find(id => !initialTerminalIds.includes(id));
+  expect(reopenedId).toBeTruthy();
+  expect(reopenedId).not.toBe(destroyedTerminalIds[0]);
 });
 
 test('Agent workspace drawer remains available while Runtime is recovering', async ({ page }) => {
@@ -909,7 +1052,7 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
     }
     if (path.endsWith('/workspace')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        root: '/runtime/workspace/project', working_directory: '/runtime/workspace/project',
+        root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
         work_directory: null, files: [{ path: '/runtime/workspace/project/README.md', kind: 'file', size: 12 }],
         repositories: [], runtime: { container_id: null },
         ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '需要部署 Gateway', note: '恢复期间仍可查看文件。' } },
@@ -925,7 +1068,7 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
   await expect(page.getByText('运行环境正在恢复', { exact: true })).toBeVisible();
   const workspaceDrawer = page.getByRole('complementary').filter({ hasText: 'WORKSPACE' });
   await expect(
-    workspaceDrawer.getByRole('article').filter({ hasText: '当前目录' }).getByRole('code'),
+    workspaceDrawer.getByRole('article').filter({ hasText: '当前工作区' }).getByRole('code'),
   ).toHaveText('/runtime/workspace/project');
   await expect(workspaceDrawer.getByRole('button', { name: '新终端', exact: true })).toBeDisabled();
   await workspaceDrawer.getByRole('button', { name: '文件', exact: true }).click();
