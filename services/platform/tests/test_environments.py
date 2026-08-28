@@ -926,6 +926,18 @@ def test_environment_version_run_reference_is_reported_and_blocks_deletion(
     assert blocked.json()["error"]["code"] == "ENVIRONMENT_VERSION_IN_USE"
     assert blocked.json()["error"]["details"]["run_reference_count"] == 1
 
+    blocked_environment = client.delete(
+        f"/api/v1/terminal-environments/{environment['id']}"
+    )
+    assert blocked_environment.status_code == 409, blocked_environment.text
+    error = blocked_environment.json()["error"]
+    assert error["code"] == "ENVIRONMENT_IN_USE"
+    assert error["message"] == "The terminal environment is referenced by a Snapshot or FlowRun"
+    assert error["details"] == {
+        "flow_run_reference_count": 1,
+        "snapshot_reference_count": 0,
+    }
+
 
 def test_delete_unused_versions_clears_provenance_and_preserves_version_high_watermark(
     client, db_session_factory, worker_container, monkeypatch

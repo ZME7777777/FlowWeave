@@ -327,6 +327,8 @@ export interface OpenHandsConversationEvent {
     timestamp?: string;
     event_name?: string;
     details?: Record<string, unknown>;
+    display_content?: string;
+    attachments?: AgentAttachment[];
     [key: string]: unknown;
   };
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -598,6 +599,61 @@ def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, 
     assert verification["manager_scope"] == _SCOPE
     assert verification["kind"] == "agent-runtime"
     assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settings, monkeypatch):
+    class BlockingStdout:
+        def __init__(self) -> None:
+            self.reading = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def readline(self) -> bytes:
+            self.reading.set()
+            await self.release.wait()
+            return b""
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdout = BlockingStdout()
+            self.stderr = None
+            self.returncode: int | None = None
+            self.terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = -15
+            self.stdout.release.set()
+
+        def kill(self) -> None:
+            self.returncode = -9
+            self.stdout.release.set()
+
+        async def wait(self) -> int:
+            await self.stdout.release.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = Process()
+
+    async def create_process(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(controller_module.asyncio, "create_subprocess_exec", create_process)
+    stream = controller_module._runtime_event_stream(
+        _settings(settings),
+        "immutable-runtime-container-id",
+        "CONVERSATION",
+        "conversation-1",
+        10.0,
+    )
+    pending = asyncio.create_task(anext(stream))
+    await process.stdout.reading.wait()
+    pending.cancel()
+    await asyncio.gather(pending, return_exceptions=True)
+    await stream.aclose()
+
+    assert process.terminated is True
 
 
 def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, monkeypatch):

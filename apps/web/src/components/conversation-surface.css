@@ -1,7 +1,8 @@
 .conversation-surface-shell{position:relative;min-height:0;overflow:hidden;background:#fff}
 .conversation-surface{height:100%;min-height:0;overflow:auto;padding:34px clamp(22px,6vw,110px) 26px;background:#fff}
 .conversation-surface>*{width:min(780px,100%);margin-left:auto;margin-right:auto}
-.conversation-message-ruler{display:none}
+.conversation-message-ruler,.message-position-navigator,.message-position-preview{display:none!important}
+.conversation-message-index{display:none}
 .conversation-surface-empty{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--muted);text-align:center}
 .conversation-surface-empty b{color:var(--ink);font-size:14px}
 .conversation-surface-empty span{font-size:12px}
@@ -22,6 +23,14 @@
 .conversation-message-edit footer{display:flex;justify-content:flex-end;gap:7px;margin-top:6px}
 .conversation-message-edit footer button{border:0;border-radius:7px;background:transparent;padding:5px 7px;color:#6d7770;font-size:11px}
 .conversation-message-edit footer button[type=submit]{background:#202522;color:#fff}
+.conversation-message-attachments{display:grid;gap:6px;margin-top:8px}
+.conversation-message-attachment{display:flex;min-width:220px;max-width:100%;align-items:center;gap:8px;border:1px solid #dde5df;border-radius:9px;background:#fff;padding:7px 8px;color:#425047;text-align:left;cursor:pointer}
+.conversation-message-attachment:hover{border-color:#b8cdbd;background:#f8fbf8}
+.conversation-message-attachment>svg:first-child{flex:0 0 auto;color:#4c8060}
+.conversation-message-attachment>span{display:grid;min-width:0;flex:1;gap:1px}
+.conversation-message-attachment b{overflow:hidden;color:#3c4840;font-size:11px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.conversation-message-attachment small{overflow:hidden;color:#839087;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.conversation-message-attachment>svg:last-child{flex:0 0 auto;color:#77857b}
 .conversation-activity-group{margin:0 0 14px;border:0;color:#69756d}
 .conversation-activity-group>summary,.conversation-activity-summary{display:flex;align-items:center;gap:7px;width:fit-content;list-style:none;font-size:12px}
 .conversation-activity-group>summary{cursor:pointer}
@@ -95,16 +104,14 @@
 .conversation-activity-command,.conversation-activity-path{display:block;max-width:100%;overflow:auto;margin-top:6px;border-radius:6px;background:#f2f4f2;padding:5px 7px;color:#546259;font:10px/1.45 'DM Mono',ui-monospace,monospace;white-space:pre-wrap}
 .conversation-activity-path{width:fit-content;background:transparent;padding:0;color:#7a877e}
 @media(min-width:760px){.conversation-surface{padding-left:clamp(54px,7vw,128px)}
-.conversation-message-ruler{position:absolute;z-index:3;top:34px;bottom:26px;left:17px;display:block;width:19px}
-.conversation-message-ruler>button{position:absolute;left:0;display:block;width:19px;height:20px;margin:0;padding:0;border:0;background:transparent;cursor:pointer;transform:translateY(-50%)}
-.conversation-message-ruler-tick{position:absolute;top:9px;right:0;width:8px;height:2px;border-radius:2px;background:#c8cfca;transition:width .16s ease,background .16s ease,box-shadow .16s ease}
-.conversation-message-ruler>button:hover .conversation-message-ruler-tick,.conversation-message-ruler>button:focus-visible .conversation-message-ruler-tick,.conversation-message-ruler>button.active .conversation-message-ruler-tick{width:15px;background:#607166}
-.conversation-message-ruler>button.active .conversation-message-ruler-tick{box-shadow:0 0 0 3px #edf1ee}
-.conversation-message-ruler>button:focus-visible{outline:0}
-.conversation-message-ruler>button:focus-visible .conversation-message-ruler-tick{box-shadow:0 0 0 3px #e0e8e2}
-.conversation-message-ruler-tooltip{position:absolute;top:50%;left:27px;display:block;width:max-content;max-width:min(260px,32vw);border:1px solid #dde4df;border-radius:8px;background:color-mix(in srgb,#fff 96%,#f0f4f0);padding:7px 9px;color:#58655d;font-size:11px;line-height:1.4;text-align:left;box-shadow:0 7px 18px #25322818;opacity:0;pointer-events:none;transform:translateY(-50%) translateX(-4px);transition:opacity .14s ease,transform .14s ease}
-.conversation-message-ruler-tooltip b{display:block;margin-bottom:2px;color:#3d4941;font-size:10px;font-weight:650}
-.conversation-message-ruler>button:hover .conversation-message-ruler-tooltip,.conversation-message-ruler>button:focus-visible .conversation-message-ruler-tooltip{opacity:1;transform:translateY(-50%) translateX(0)}
+.conversation-message-index{position:absolute;z-index:3;top:50%;left:17px;display:flex!important;width:19px;height:auto!important;max-height:calc(100% - 60px);flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:3px;overflow-y:auto;overscroll-behavior:contain;transform:translateY(-50%)}
+.conversation-message-index>button{position:relative!important;inset:auto!important;display:block;box-sizing:border-box;width:19px;height:7px!important;min-height:7px!important;flex:0 0 7px!important;margin:0;padding:0;border:0;background:transparent;cursor:pointer;transform:none!important}
+.conversation-message-index-tick{display:block;width:8px;height:2px;margin-top:3px;margin-left:0;border-radius:2px;background:#c8cfca;transform-origin:left center;transition:width .16s ease,background .16s ease,box-shadow .16s ease}
+.conversation-message-index>button:hover .conversation-message-index-tick,.conversation-message-index>button:focus-visible .conversation-message-index-tick{width:15px;background:#607166;box-shadow:0 0 0 3px #edf1ee}
+.conversation-message-index>button:focus-visible{outline:0}
+.conversation-message-index-tooltip{position:absolute;z-index:4;left:44px;display:block;width:min(300px,32vw);max-height:180px;overflow:auto;border:1px solid #dde4df;border-radius:8px;background:color-mix(in srgb,#fff 96%,#f0f4f0);padding:7px 9px;color:#58655d;font-size:11px;line-height:1.4;text-align:left;box-shadow:0 7px 18px #25322818;pointer-events:none;transform:translateY(-50%)}
+.conversation-message-index-tooltip b{display:block;margin-bottom:2px;color:#3d4941;font-size:10px;font-weight:650}
+.conversation-message-index-tooltip span{display:block;white-space:pre-wrap;overflow-wrap:anywhere}
 }
 @media(max-width:680px){.conversation-surface{padding:22px 16px}
 .conversation-message{font-size:13px}

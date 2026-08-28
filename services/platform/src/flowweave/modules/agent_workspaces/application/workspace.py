@@ -17,6 +17,7 @@ from flowweave.modules.agent_workspaces.application.conversations import (
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationMessageAttachment,
     AgentWorkDirectory,
     AgentWorkDirectoryPath,
     AgentWorkDirectoryVersion,
@@ -361,6 +362,45 @@ def _scoped_workspace_entries(
     return entries[:_MAX_INDEX_ENTRIES]
 
 
+def _bound_attachment_entries(
+    db: Session, binding_id: str | None, project_root: Path
+) -> list[dict[str, Any]]:
+    """Return only files explicitly attached to the requested conversation.
+
+    Attachments live under the shared upload directory, which may be outside a
+    frozen work-directory scope.  Their database binding is the additional
+    authorization boundary; this must never become a general uploads allowlist.
+    """
+
+    if binding_id is None:
+        return []
+    attachments = db.scalars(
+        select(AgentConversationMessageAttachment).where(
+            AgentConversationMessageAttachment.binding_id == binding_id
+        )
+    ).all()
+    entries: list[dict[str, Any]] = []
+    for attachment in attachments:
+        try:
+            host_path = _host_path(project_root, attachment.path, require_file=True)
+            size = host_path.stat().st_size
+        except (DomainError, OSError):
+            continue
+        entries.append({"path": attachment.path, "kind": "file", "size": size})
+    return entries
+
+
+def _is_bound_attachment(db: Session, binding_id: str | None, path: str) -> bool:
+    if binding_id is None:
+        return False
+    return db.scalar(
+        select(AgentConversationMessageAttachment.id).where(
+            AgentConversationMessageAttachment.binding_id == binding_id,
+            AgentConversationMessageAttachment.path == path,
+        )
+    ) is not None
+
+
 def terminal_details(
     db: Session,
     workspace_id: str,
@@ -408,7 +448,12 @@ def details(
         "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
-        "files": _scoped_workspace_entries(project_root, working_directory, file_roots),
+        "files": list(
+            {entry["path"]: entry for entry in (
+                _scoped_workspace_entries(project_root, working_directory, file_roots)
+                + _bound_attachment_entries(db, binding_id, project_root)
+            )}.values()
+        ),
         "repositories": repositories,
         "runtime": {"container_id": container_short_id},
         "ide": {
@@ -443,7 +488,10 @@ def download(
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
     file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
-    if not any(path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots):
+    in_workspace_scope = any(
+        path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots
+    )
+    if not in_workspace_scope and not _is_bound_attachment(db, binding_id, path):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
     host_path = _host_path(_project_root(db, workspace_id), path, require_file=True)
     try:

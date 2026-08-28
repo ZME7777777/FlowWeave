@@ -833,7 +833,13 @@ def _apply_reconcile_outcome(
         elif outcome.error is not None:
             _error(current, outcome.error)
             errors = 1
-        if errors and current.kind == "AGENT_RUNTIME" and current.owner_type == "FLOW_RUN":
+        runtime_replacement_required = outcome.kind in {"RUNTIME_LOST", "CONFLICT"}
+        if (
+            errors
+            and runtime_replacement_required
+            and current.kind == "AGENT_RUNTIME"
+            and current.owner_type == "FLOW_RUN"
+        ):
             active_session = control_db.scalar(
                 select(FlowRunRuntime)
                 .join(
@@ -861,7 +867,12 @@ def _apply_reconcile_outcome(
                     failed_generation=current.generation,
                     reason=current.last_error_code or "RUNTIME_HEALTH_FAILED",
                 )
-        elif errors and current.kind == "AGENT_RUNTIME" and current.owner_type == "AGENT_WORKSPACE":
+        elif (
+            errors
+            and runtime_replacement_required
+            and current.kind == "AGENT_RUNTIME"
+            and current.owner_type == "AGENT_WORKSPACE"
+        ):
             from flowweave.modules.agent_workspaces.public import (
                 mark_agent_workspace_runtime_lost,
             )

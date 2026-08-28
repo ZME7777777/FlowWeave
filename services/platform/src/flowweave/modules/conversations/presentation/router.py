@@ -30,6 +30,48 @@ def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
 
+async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: Any) -> None:
+    """Forward one Runtime stream and close it promptly when the client leaves."""
+
+    stream = runtime.stream_events(handle)
+    event_task: asyncio.Task[Any] | None = None
+    receive_task: asyncio.Task[Any] | None = None
+
+    async def next_event() -> dict[str, Any]:
+        return await anext(stream)
+
+    try:
+        event_task = asyncio.create_task(next_event())
+        receive_task = asyncio.create_task(websocket.receive())
+        while True:
+            done, _ = await asyncio.wait(
+                (event_task, receive_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if receive_task in done:
+                message = receive_task.result()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                receive_task = asyncio.create_task(websocket.receive())
+            if event_task in done:
+                try:
+                    event = event_task.result()
+                except StopAsyncIteration:
+                    return
+                await websocket.send_json(event)
+                event_task = asyncio.create_task(next_event())
+    finally:
+        for task in (event_task, receive_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (event_task, receive_task) if task is not None),
+            return_exceptions=True,
+        )
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
+
+
 @router.get("/flow-runs/{flow_run_id}/conversations")
 async def list_flow_run_conversations(flow_run_id: str, db: Db) -> list[dict[str, Any]]:
     return await run_sync(
@@ -154,8 +196,7 @@ async def conversation_stream(
             runtime = runtime_for(adapter, handle)
         await websocket.accept()
         try:
-            async for event in runtime.stream_events(handle):
-                await websocket.send_json(event)
+            await _forward_runtime_events(websocket, runtime, handle)
         except WebSocketDisconnect:
             pass
         except Exception:

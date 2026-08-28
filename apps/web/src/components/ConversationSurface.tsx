@@ -1,7 +1,7 @@
-import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileText, GitFork, LoaderCircle, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileText, GitFork, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import type { OpenHandsConversationEvent } from '../types';
+import type { AgentAttachment, OpenHandsConversationEvent } from '../types';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
@@ -22,8 +22,7 @@ interface Turn {
 
 interface UserMessageNavigationItem {
   id: string;
-  summary: string;
-  position: number;
+  content: string;
 }
 
 interface ActivityEntry {
@@ -33,13 +32,46 @@ interface ActivityEntry {
   results: Item[];
 }
 
+function eventAttachments(event: OpenHandsConversationEvent): AgentAttachment[] {
+  return Array.isArray(event.payload.attachments) ? event.payload.attachments : [];
+}
+
+function attachmentSize(bytes: number): string {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function MessageAttachments({ attachments, onOpen }: {
+  attachments: AgentAttachment[];
+  onOpen?: (attachment: AgentAttachment) => void;
+}) {
+  if (!attachments.length) return null;
+  return <div className="conversation-message-attachments" aria-label="消息附件">
+    {attachments.map(attachment => <button
+      type="button"
+      key={attachment.path}
+      className="conversation-message-attachment"
+      title={`查看附件：${attachment.filename}`}
+      onClick={() => onOpen?.(attachment)}
+    >
+      <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><PanelRightOpen size={13}/>
+    </button>)}
+  </div>;
+}
+
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
   const content = typeof event.payload.content === 'string' ? event.payload.content : '';
   const thought = typeof event.payload.thought === 'string' ? event.payload.thought : '';
   const eventName = String(event.payload.event_name || event.event_type);
   if (event.event_type === 'MESSAGE') {
     const source = String(event.payload.source ?? '').toLowerCase();
-    return [{ event, kind: source === 'user' || source === 'human' ? 'user' : 'assistant', title: '', content }];
+    const isUser = source === 'user' || source === 'human';
+    const displayContent = typeof event.payload.display_content === 'string'
+      ? event.payload.display_content
+      : content;
+    return [{ event, kind: isUser ? 'user' : 'assistant', title: '', content: isUser ? displayContent : content }];
   }
   if (event.event_type === 'THOUGHT') return [{ event, kind: 'thought', title: '分析', content: thought || content }];
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '正在自动压缩上下文', content: '' }];
@@ -456,7 +488,7 @@ function ConversationFailure({ item }: { item: Item }) {
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork }: {
+export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -465,8 +497,10 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   rewritePending?: boolean;
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
+  onOpenAttachment?: (attachment: AgentAttachment) => void;
 }) {
   const surface = useRef<HTMLElement>(null);
+  const shell = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
   const followLatest = useRef(true);
   const wasGenerating = useRef(isGenerating);
@@ -475,13 +509,12 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
+  const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
   const turns = useMemo(() => turnsFor(events), [events]);
-  const userMessages = useMemo(() => turns.flatMap(turn => turn.user ? [{
+  const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
     id: turn.user.event.id,
-    summary: messageSummary(turn.user.content),
+    content: turn.user.content,
   }] : []), [turns]);
-  const [userMessageNavigation, setUserMessageNavigation] = useState<UserMessageNavigationItem[]>([]);
-  const [activeUserMessageId, setActiveUserMessageId] = useState<string>();
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
     followLatest.current = true;
     setIsAtLatest(true);
@@ -495,34 +528,6 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     followLatest.current = atLatest;
     setIsAtLatest(atLatest);
   }, []);
-  const updateUserMessageNavigation = useCallback(() => {
-    const element = surface.current;
-    if (!element) return;
-    const surfaceBounds = element.getBoundingClientRect();
-    const scrollRange = Math.max(1, element.scrollHeight - element.clientHeight);
-    const messagesById = new Map<string, HTMLElement>();
-    for (const message of element.querySelectorAll<HTMLElement>('[data-user-event-id]')) {
-      if (message.dataset.userEventId) messagesById.set(message.dataset.userEventId, message);
-    }
-    const positions = userMessages.flatMap(message => {
-      const node = messagesById.get(message.id);
-      if (!node) return [];
-      const contentTop = node.getBoundingClientRect().top - surfaceBounds.top + element.scrollTop;
-      return [{ ...message, position: Math.min(100, Math.max(0, (contentTop / scrollRange) * 100)) }];
-    });
-    setUserMessageNavigation(previous => previous.length === positions.length
-      && previous.every((item, index) => item.id === positions[index].id && Math.abs(item.position - positions[index].position) < 0.1)
-      ? previous
-      : positions);
-    if (!positions.length) {
-      setActiveUserMessageId(undefined);
-      return;
-    }
-    const readingPoint = element.scrollTop + element.clientHeight * 0.32;
-    const closest = positions.reduce((selected, item) => Math.abs(item.position * scrollRange / 100 - readingPoint)
-      < Math.abs(selected.position * scrollRange / 100 - readingPoint) ? item : selected);
-    setActiveUserMessageId(previous => previous === closest.id ? previous : closest.id);
-  }, [userMessages]);
   const scrollToUserMessage = useCallback((eventId: string) => {
     const element = surface.current;
     const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
@@ -531,12 +536,21 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     const top = message.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 18;
     followLatest.current = false;
     element.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-    setActiveUserMessageId(eventId);
+  }, []);
+  const showMessagePreview = useCallback((message: UserMessageNavigationItem, index: number, target: HTMLElement) => {
+    const shellBounds = shell.current?.getBoundingClientRect();
+    const targetBounds = target.getBoundingClientRect();
+    if (!shellBounds) return;
+    setMessagePreview({
+      id: message.id,
+      content: message.content,
+      index,
+      top: targetBounds.top - shellBounds.top + targetBounds.height / 2,
+    });
   }, []);
   const handleScroll = useCallback(() => {
     updateScrollPosition();
-    updateUserMessageNavigation();
-  }, [updateScrollPosition, updateUserMessageNavigation]);
+  }, [updateScrollPosition]);
   const scrollToTerminalStart = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const terminals = surface.current?.querySelectorAll<HTMLElement>('[data-turn-terminal="true"]');
     const terminal = terminals?.[terminals.length - 1];
@@ -562,28 +576,6 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
   }, []);
   useEffect(() => {
-    const element = surface.current;
-    if (!element) return;
-    let frame = 0;
-    const schedule = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(updateUserMessageNavigation);
-    };
-    const observer = new ResizeObserver(schedule);
-    observer.observe(element);
-    for (const message of element.querySelectorAll<HTMLElement>('[data-user-event-id]')) observer.observe(message);
-    const mutations = new MutationObserver(schedule);
-    mutations.observe(element, { childList: true, subtree: true, characterData: true });
-    window.addEventListener('resize', schedule);
-    schedule();
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer.disconnect();
-      mutations.disconnect();
-      window.removeEventListener('resize', schedule);
-    };
-  }, [turns, updateUserMessageNavigation]);
-  useEffect(() => {
     const onCopy = (event: ClipboardEvent) => {
       const selection = window.getSelection();
       if (!selection || !surface.current) return;
@@ -607,21 +599,23 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
-  return <div className="conversation-surface-shell">
-    {userMessageNavigation.length > 0 && <nav className="conversation-message-ruler" aria-label="用户消息导航">
+  return <div ref={shell} className="conversation-surface-shell">
+    {userMessageNavigation.length > 0 && <nav className="conversation-message-index" aria-label="用户消息导航">
       {userMessageNavigation.map((message, index) => <button
         type="button"
         key={message.id}
-        className={activeUserMessageId === message.id ? 'active' : ''}
-        style={{ top: `${message.position}%` }}
-        aria-label={`定位到用户消息：${message.summary}`}
-        aria-current={activeUserMessageId === message.id ? 'location' : undefined}
+        aria-label={`定位到用户消息：${messageSummary(message.content)}`}
+        aria-describedby={messagePreview?.id === message.id ? 'conversation-message-preview' : undefined}
+        onPointerEnter={event => showMessagePreview(message, index, event.currentTarget)}
+        onFocus={event => showMessagePreview(message, index, event.currentTarget)}
+        onPointerLeave={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
+        onBlur={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
         onClick={() => scrollToUserMessage(message.id)}
       >
-        <span className="conversation-message-ruler-tick" aria-hidden="true"/>
-        <span className="conversation-message-ruler-tooltip" role="tooltip"><b>消息 {index + 1}</b>{message.summary}</span>
+        <span className="conversation-message-index-tick" aria-hidden="true"/>
       </button>)}
     </nav>}
+    {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
     <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={handleScroll}>
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
@@ -631,7 +625,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         return <section className="conversation-turn" key={turn.id}>
-          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user"><div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
+          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
           <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
           {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}

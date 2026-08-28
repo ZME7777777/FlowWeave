@@ -13,6 +13,7 @@ from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCommand,
+    AgentConversationMessageAttachment,
     AgentWorkDirectoryVersion,
     AgentWorkspace,
     AgentWorkspaceRuntime,
@@ -435,6 +436,7 @@ def _activate_bootstrapped_conversation(
     command: AgentConversationCommand,
     initial_event_id: str,
     first_message: str,
+    attachments: tuple[dict[str, str | int], ...] = (),
 ) -> dict[str, Any]:
     binding.initial_user_event_id = initial_event_id
     binding.display_title = normalized_first_sentence(first_message)
@@ -443,6 +445,7 @@ def _activate_bootstrapped_conversation(
     binding.updated_at = now()
     command.state = "SUCCEEDED"
     command.updated_at = binding.updated_at
+    _record_message_attachments(db, binding, initial_event_id, first_message, attachments)
     _enqueue_title_task(db, binding, first_message)
     db.commit()
     return _bootstrap_result(db, binding)
@@ -528,7 +531,7 @@ def bootstrap_conversation(
             )
             if reconciled is not None:
                 return _activate_bootstrapped_conversation(
-                    db, binding, command, reconciled, message_text
+                    db, binding, command, reconciled, message_text, attachments
                 )
             raise DomainError(
                 "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
@@ -643,7 +646,7 @@ def bootstrap_conversation(
                 reconciled = None
             if reconciled is not None:
                 return _activate_bootstrapped_conversation(
-                    db, binding, command, reconciled, message_text
+                    db, binding, command, reconciled, message_text, attachments
                 )
             command.state = "AMBIGUOUS"
             command.last_error_code = exc.code
@@ -674,7 +677,9 @@ def bootstrap_conversation(
             504,
             {"binding_id": binding.id},
         )
-    return _activate_bootstrapped_conversation(db, binding, command, initial_event_id, message_text)
+    return _activate_bootstrapped_conversation(
+        db, binding, command, initial_event_id, message_text, attachments
+    )
 
 
 def patch_conversation(
@@ -750,13 +755,61 @@ def delete_conversation(
 
 def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
-    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    binding = _binding(db, workspace_id, binding_id)
+    handle = _handle(db, workspace, binding)
     batch = get_runtime().read_active_events(replace(handle, cursor=cursor))
+    event_ids = [event.cursor for event in batch.events if event.event_type == "MESSAGE"]
+    stored = db.scalars(
+        select(AgentConversationMessageAttachment).where(
+            AgentConversationMessageAttachment.binding_id == binding.id,
+            AgentConversationMessageAttachment.event_id.in_(event_ids),
+        )
+    ).all() if event_ids else []
+    attachments_by_event: dict[str, list[AgentConversationMessageAttachment]] = {}
+    for attachment in stored:
+        attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
+
+    def projected_event(event: Any) -> dict[str, Any]:
+        payload = dict(event.payload)
+        attachments = attachments_by_event.get(event.cursor, [])
+        if attachments:
+            payload["display_content"] = attachments[0].content
+            payload["attachments"] = [
+                {
+                    "filename": attachment.filename,
+                    "mime_type": attachment.mime_type,
+                    "byte_size": attachment.byte_size,
+                    "path": attachment.path,
+                }
+                for attachment in attachments
+            ]
+        elif event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
+            "user",
+            "human",
+        }:
+            # Before attachment metadata was projected, OpenHands persisted a
+            # product-generated path suffix in the native message body.  Keep
+            # that old history readable without teaching the browser to parse
+            # private runtime paths.  The strict upload-path validator ensures
+            # only paths issued by this product are converted.
+            display_content, legacy_paths = _legacy_message_attachments(
+                str(payload.get("content") or "")
+            )
+            if legacy_paths:
+                payload["display_content"] = display_content
+                payload["attachments"] = [
+                    {
+                        "filename": _attachment_filename(path),
+                        "mime_type": "application/octet-stream",
+                        "byte_size": 0,
+                        "path": path,
+                    }
+                    for path in legacy_paths
+                ]
+        return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
+
     return {
-        "events": [
-            {"id": event.cursor, "event_type": event.event_type, "payload": event.payload}
-            for event in batch.events
-        ],
+        "events": [projected_event(event) for event in batch.events],
         "next_cursor": batch.cursor,
     }
 
@@ -857,7 +910,7 @@ def message(
     workspace_id: str,
     binding_id: str,
     content: str,
-    attachments: tuple[dict[str, str], ...] = (),
+    attachments: tuple[dict[str, str | int], ...] = (),
 ) -> dict[str, Any]:
     if not content.strip() and not attachments:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
@@ -913,16 +966,45 @@ def message(
                 "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
             ) from exc
         raise
+    if result.cursor:
+        _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     return {"accepted": True, "cursor": result.cursor}
 
 
 _ATTACHMENT_PATH = re.compile(
     r"^/runtime/workspace/project/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}$"
 )
+_ATTACHMENT_SUFFIX = re.compile(
+    r"(?:\n\n)?(?:已上传到共享工作区的附件：|请查看已上传到共享工作区的附件：)\n"
+    r"(?P<paths>(?:- /runtime/workspace/project/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}\n?)+)$"
+)
+
+
+def _attachment_filename(path: str) -> str:
+    """Extract the originally uploaded filename from a validated upload path."""
+
+    filename = path.rsplit("/", 1)[-1]
+    return filename[33:]
+
+
+def _legacy_message_attachments(content: str) -> tuple[str, tuple[str, ...]]:
+    """Project the pre-metadata attachment suffix without changing native history."""
+
+    matched = _ATTACHMENT_SUFFIX.search(content)
+    if matched is None:
+        return content, ()
+    paths = tuple(
+        line.removeprefix("- ")
+        for line in matched.group("paths").splitlines()
+        if _ATTACHMENT_PATH.fullmatch(line.removeprefix("- "))
+    )
+    if not paths:
+        return content, ()
+    return content[: matched.start()].strip(), paths
 
 
 def _message_payload(
-    content: str, attachments: tuple[dict[str, str], ...]
+    content: str, attachments: tuple[dict[str, str | int], ...]
 ) -> tuple[str, tuple[str, ...]]:
     if len(attachments) > 10 or any(
         _ATTACHMENT_PATH.fullmatch(item.get("path", "")) is None
@@ -938,6 +1020,35 @@ def _message_payload(
             "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
         ) + "\n".join(f"- {path}" for path in paths)
     return prompt, image_urls
+
+
+def _record_message_attachments(
+    db: Session,
+    binding: AgentConversationBinding,
+    event_id: str,
+    content: str,
+    attachments: tuple[dict[str, str | int], ...],
+) -> None:
+    """Persist safe display metadata against the native user event identity."""
+
+    for item in attachments:
+        path = str(item["path"])
+        filename = str(item.get("filename") or _attachment_filename(path))
+        mime_type = str(item.get("mime_type") or "application/octet-stream")
+        byte_size = item.get("byte_size")
+        db.add(
+            AgentConversationMessageAttachment(
+                binding_id=binding.id,
+                event_id=event_id,
+                content=content,
+                filename=filename[:240],
+                mime_type=mime_type[:200],
+                byte_size=byte_size if isinstance(byte_size, int) and byte_size >= 0 else 0,
+                path=path,
+            )
+        )
+    if attachments:
+        db.flush()
 
 
 def upload_attachment(
@@ -977,6 +1088,24 @@ def upload_attachment(
     )
     if _ATTACHMENT_PATH.fullmatch(path) is None:
         raise DomainError("RUNTIME_PROTOCOL_ERROR", "OpenHands 返回了无效附件路径", 502)
+    # A conversation-bound upload is safe to preview before the user sends it.
+    # Persist a pending projection so the file endpoint can authorize this exact
+    # opaque upload path without exposing the shared uploads directory.  A
+    # formal MessageEvent later receives its own projection for transcript UI.
+    if binding_id is not None:
+        binding = _binding(db, workspace_id, binding_id)
+        db.add(
+            AgentConversationMessageAttachment(
+                binding_id=binding.id,
+                event_id=f"pending:{uuid4()}",
+                content="",
+                filename=filename,
+                mime_type=mime_type,
+                byte_size=len(content),
+                path=path,
+            )
+        )
+        db.flush()
     image_data_url = (
         f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
         if mime_type.startswith("image/")

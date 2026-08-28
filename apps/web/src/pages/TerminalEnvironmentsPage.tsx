@@ -174,6 +174,7 @@ export function TerminalEnvironmentsPage() {
   const [description, setDescription] = useState('');
   const [terminal, setTerminal] = useState<EnvironmentSetupSession | null>(null);
   const [openingEnvironmentId, setOpeningEnvironmentId] = useState<string | null>(null);
+  const [deletingEnvironmentId, setDeletingEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const closeTerminal = useCallback(() => setTerminal(null), []);
   useEffect(() => {
@@ -198,17 +199,69 @@ export function TerminalEnvironmentsPage() {
       setOpeningEnvironmentId(null);
     }
   };
+  const explainEnvironmentInUse = (environment: TerminalEnvironment, reason: ApiError) => {
+    const runs = Number(reason.details.flow_run_reference_count ?? 0);
+    const snapshots = Number(reason.details.snapshot_reference_count ?? 0);
+    const references = [
+      runs > 0 ? `${runs} 个流程运行` : '',
+      snapshots > 0 ? `${snapshots} 份冻结快照` : '',
+    ].filter(Boolean);
+    const message = references.length
+      ? `无法删除终端环境：“${environment.name}”的基础镜像版本仍被${references.join('和')}引用。为保证这些运行可复现，请先永久删除相关流程运行；其冻结快照清理后即可再试。配置终端不会被停止。`
+      : `无法删除终端环境：“${environment.name}”仍被受保护的记录引用。请先解除引用后再试；配置终端不会被停止。`;
+    setError(message);
+  };
   const remove = async (environment: TerminalEnvironment) => {
     const confirmed = await dialog.confirm({
       title: '删除终端环境',
-      message: `确定删除“${environment.name}”吗？仍被运行引用时，系统会阻止删除。`,
+      message: environment.active_sessions.length
+        ? `确定删除“${environment.name}”吗？未发布的配置会话会停止并丢弃；仍被流程运行引用时，系统会阻止删除。`
+        : `确定删除“${environment.name}”吗？仍被流程运行引用时，系统会阻止删除。`,
       confirmLabel: '删除环境',
       tone: 'danger',
     });
     if (!confirmed) return;
     setError('');
-    try { await api.deleteTerminalEnvironment(environment.id); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : '删除失败'); }
+    setDeletingEnvironmentId(environment.id);
+    try {
+      try {
+        await api.deleteTerminalEnvironment(environment.id);
+        await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
+        return;
+      } catch (reason) {
+        if (!(reason instanceof ApiError) || reason.code !== 'ENVIRONMENT_SETUP_ACTIVE') {
+          if (reason instanceof ApiError && reason.code === 'ENVIRONMENT_IN_USE') {
+            explainEnvironmentInUse(environment, reason);
+            return;
+          }
+          throw reason;
+        }
+      }
+      if (terminal?.environment_id === environment.id) closeTerminal();
+      for (const session of environment.active_sessions) await api.stopEnvironmentSetup(session.id);
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+          await api.deleteTerminalEnvironment(environment.id);
+          await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
+          return;
+        } catch (reason) {
+          if (!(reason instanceof ApiError) || reason.code !== 'ENVIRONMENT_SETUP_ACTIVE') {
+            if (reason instanceof ApiError && reason.code === 'ENVIRONMENT_IN_USE') {
+              explainEnvironmentInUse(environment, reason);
+              return;
+            }
+            throw reason;
+          }
+          await new Promise<void>(resolve => window.setTimeout(resolve, 500));
+        }
+      }
+      throw new Error('配置终端仍在回收，请稍后重试删除。');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '删除失败');
+      await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
+    } finally {
+      setDeletingEnvironmentId(null);
+    }
   };
   const removeVersion = async (environment: TerminalEnvironment, version: EnvironmentVersion) => {
     if (version.reference_count > 0) return;
@@ -235,7 +288,7 @@ export function TerminalEnvironmentsPage() {
     <div className="environment-warning"><b>凭据风险</b><span>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</span></div>
     {error && <p className="error">{error}</p>}
     {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <div className="environment-grid">{environments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const latestCompatible = environment.versions.find(item => item.state === 'READY' && item.runtime_compatible); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
-      <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3></div><button className="ghost" aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}><Trash2 size={15}/></button></header>
+      <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3></div><button className="ghost" disabled={deletingEnvironmentId !== null} aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}>{deletingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={15}/> : <Trash2 size={15}/>}</button></header>
       <p>{environment.description || '未填写说明'}</p>
       <dl><div><dt>可运行版本</dt><dd>{environment.versions.filter(item => item.state === 'READY' && item.runtime_compatible).length}</dd></div><div><dt>最新可运行版本</dt><dd>{latestCompatible ? `v${latestCompatible.version_no} · ${latestCompatible.image_digest.slice(0, 19)}…` : '需要重新发布'}</dd></div><div><dt>配置会话</dt><dd>{active ? active.state : '无'}</dd></div></dl>
       {latest?.manifest.commands && <div className="environment-tools">{Object.entries(latest.manifest.commands).slice(0, 8).map(([command, version]) => <span key={command} title={version}>{command}</span>)}</div>}
@@ -248,7 +301,7 @@ export function TerminalEnvironmentsPage() {
           <button className="ghost" disabled={occupied} title={occupied ? '解除运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button>
         </section>;
       })}</div></details>}
-      <footer>{active ? <button className="primary" onClick={() => setTerminal(active)}><Terminal size={14}/>继续配置</button> : <button className="secondary" disabled={openingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
+      <footer>{active ? <button className="primary" disabled={deletingEnvironmentId !== null} onClick={() => setTerminal(active)}><Terminal size={14}/>继续配置</button> : <button className="secondary" disabled={openingEnvironmentId !== null || deletingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
     </article>; })}</div> : <div className="empty">暂无终端环境。新建后可在隔离终端中安装节点需要的命令。</div>}
     {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label className="wide">名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
     {terminal && <TerminalPanel session={terminal} onClose={closeTerminal}/>}

@@ -187,6 +187,129 @@ test('terminal environment creation keeps the setup image internal', async ({ pa
   });
 });
 
+test('terminal environment delete stops active setup sessions before retrying cleanup', async ({ page }) => {
+  let environmentVisible = true;
+  let environmentDeleteAttempts = 0;
+  const stoppedSessions: string[] = [];
+  const environment = {
+    id: 'environment-with-active-setup',
+    name: '待删除 E2E 终端环境',
+    description: '删除时应自动停止配置会话',
+    row_version: 1,
+    versions: [],
+    active_sessions: [{
+      id: 'setup-session-running',
+      environment_id: 'environment-with-active-setup',
+      base_version_id: null,
+      state: 'RUNNING',
+      base_image_reference: 'flowweave-openhands-runtime:1',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      error_detail: null,
+    }],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  const error = (code: string, message: string, details: Record<string, unknown> = {}) => ({
+    error: { code, message, details },
+  });
+
+  await page.route('**/api/v1/environment-setup-sessions/*', async route => {
+    if (route.request().method() !== 'DELETE') return route.fallback();
+    stoppedSessions.push(route.request().url().split('/').at(-1) ?? '');
+    await route.fulfill({ status: 204 });
+  });
+  await page.route('**/api/v1/terminal-environments**', async route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && pathname.endsWith('/terminal-environments')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(environmentVisible ? [environment] : []),
+      });
+      return;
+    }
+    if (request.method() === 'DELETE' && pathname.endsWith(`/terminal-environments/${environment.id}`)) {
+      environmentDeleteAttempts += 1;
+      if (environmentDeleteAttempts === 1) {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify(error('ENVIRONMENT_SETUP_ACTIVE', 'Setup container cleanup is pending', {
+            session_ids: [environment.active_sessions[0].id],
+          })),
+        });
+        return;
+      }
+      environmentVisible = false;
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await login(page);
+  await page.getByRole('button', { name: '终端环境' }).click();
+  const deleteButton = page.getByRole('button', { name: `删除环境 ${environment.name}` });
+  await expect(deleteButton).toBeVisible();
+  await confirmProductDialog(page, deleteButton, '删除环境', '配置会话会停止并丢弃');
+
+  await expect.poll(() => stoppedSessions).toEqual([environment.active_sessions[0].id]);
+  await expect.poll(() => environmentDeleteAttempts).toBe(2);
+  await expect(page.getByText(environment.name)).toHaveCount(0);
+});
+
+test('terminal environment deletion preserves setup sessions when a FlowRun uses its image', async ({ page }) => {
+  const stoppedSessions: string[] = [];
+  let environmentDeleteAttempts = 0;
+  const environment = {
+    id: 'environment-in-use-by-run', name: '被流程运行占用的环境', description: '', row_version: 1, versions: [],
+    active_sessions: [{
+      id: 'setup-session-to-preserve', environment_id: 'environment-in-use-by-run', base_version_id: null, state: 'RUNNING',
+      base_image_reference: 'flowweave-openhands-runtime:1', expires_at: new Date(Date.now() + 60_000).toISOString(), error_detail: null,
+    }],
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  await page.route('**/api/v1/environment-setup-sessions/*', async route => {
+    if (route.request().method() !== 'DELETE') return route.fallback();
+    stoppedSessions.push(route.request().url().split('/').at(-1) ?? '');
+    await route.fulfill({ status: 204 });
+  });
+  await page.route('**/api/v1/terminal-environments**', async route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && pathname.endsWith('/terminal-environments')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([environment]) });
+      return;
+    }
+    if (request.method() === 'DELETE' && pathname.endsWith(`/terminal-environments/${environment.id}`)) {
+      environmentDeleteAttempts += 1;
+      await route.fulfill({
+        status: 409, contentType: 'application/json',
+        body: JSON.stringify({ error: {
+          code: 'ENVIRONMENT_IN_USE', message: 'The terminal environment is referenced by a Snapshot or FlowRun',
+          details: { flow_run_reference_count: 2, snapshot_reference_count: 3 },
+        } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await login(page);
+  await page.getByRole('button', { name: '终端环境' }).click();
+  const deleteButton = page.getByRole('button', { name: `删除环境 ${environment.name}` });
+  await deleteButton.click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除环境', exact: true }).click();
+  const blocked = page.locator('.environments-page > .error');
+  await expect(blocked).toContainText('无法删除终端环境');
+  await expect(blocked).toContainText('2 个流程运行');
+  await expect(blocked).toContainText('3 份冻结快照');
+  await expect(blocked).toContainText('配置终端不会被停止');
+  await expect.poll(() => environmentDeleteAttempts).toBe(1);
+  expect(stoppedSessions).toEqual([]);
+});
+
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
   let modelIsResponding = false;
   let agentStream: WebSocketRoute | undefined;
@@ -609,10 +732,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(2);
   const messageRuler = page.getByRole('navigation', { name: '用户消息导航' });
   await expect(messageRuler).toBeVisible();
+  await expect(page.locator('.message-position-navigator, .message-position-preview')).toHaveCount(0);
   await expect(messageRuler.getByRole('button')).toHaveCount(4);
+  await expect.poll(() => messageRuler.getByRole('button').evaluateAll(buttons => {
+    const tops = buttons.map(button => button.getBoundingClientRect().top);
+    return Math.max(...tops) - Math.min(...tops);
+  })).toBeLessThanOrEqual(30);
   const firstMessageTick = messageRuler.getByRole('button', { name: '定位到用户消息：检查工作目录' });
   await firstMessageTick.hover();
-  await expect(firstMessageTick.getByRole('tooltip')).toContainText('检查工作目录');
+  await expect(page.locator('#conversation-message-preview')).toContainText('检查工作目录');
+  await expect(firstMessageTick.locator('.conversation-message-index-tick')).toHaveCSS('width', '15px');
   await firstMessageTick.click();
   await expect.poll(() => page.locator('[data-user-event-id="user-request"]').evaluate(message => {
     const surface = message.closest('.conversation-surface');
@@ -624,7 +753,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (!surface) throw new Error('Expected conversation surface');
     return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
   })).toBeLessThan(80);
-  await expect(firstMessageTick).toHaveAttribute('aria-current', 'location');
+  await page.getByRole('button', { name: '跳转到最新回复' }).click();
+  await expect(firstMessageTick).not.toHaveAttribute('aria-current', 'location');
   const directTurn = page.locator('.conversation-turn').filter({ hasText: '直接回复完成。' });
   await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
   await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);

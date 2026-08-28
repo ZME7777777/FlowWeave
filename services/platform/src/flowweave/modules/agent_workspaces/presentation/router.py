@@ -64,6 +64,9 @@ class AgentConversationPatchWrite(_Write):
 class AgentAttachmentReference(_Write):
     path: str = Field(min_length=1, max_length=300)
     image_data_url: str | None = Field(default=None, max_length=35_000_000)
+    filename: str | None = Field(default=None, max_length=240)
+    mime_type: str | None = Field(default=None, max_length=200)
+    byte_size: int | None = Field(default=None, ge=0, le=25 * 1024 * 1024)
 
 
 def _empty_attachment_references() -> list[AgentAttachmentReference]:
@@ -120,6 +123,53 @@ def _terminal_instance_id(value: str | None) -> str:
 
 def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
+
+
+async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: Any) -> None:
+    """Forward one transient Runtime stream while actively observing disconnects.
+
+    An idle Runtime event stream has no writes through which ``send_json`` can
+    notice a browser refresh.  Keep a receive pending as well, so closing the
+    WebSocket also closes the upstream async generator and its Provider relay.
+    """
+
+    stream = runtime.stream_events(handle)
+    event_task: asyncio.Task[Any] | None = None
+    receive_task: asyncio.Task[Any] | None = None
+
+    async def next_event() -> dict[str, Any]:
+        return await anext(stream)
+
+    try:
+        event_task = asyncio.create_task(next_event())
+        receive_task = asyncio.create_task(websocket.receive())
+        while True:
+            done, _ = await asyncio.wait(
+                (event_task, receive_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if receive_task in done:
+                message = receive_task.result()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                receive_task = asyncio.create_task(websocket.receive())
+            if event_task in done:
+                try:
+                    event = event_task.result()
+                except StopAsyncIteration:
+                    return
+                await websocket.send_json(event)
+                event_task = asyncio.create_task(next_event())
+    finally:
+        for task in (event_task, receive_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (event_task, receive_task) if task is not None),
+            return_exceptions=True,
+        )
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
 
 
 @router.get("/agent-workspaces/default")
@@ -595,8 +645,7 @@ async def agent_conversation_stream(
             runtime = runtime_for(adapter, handle)
         await websocket.accept()
         try:
-            async for event in runtime.stream_events(handle):
-                await websocket.send_json(event)
+            await _forward_runtime_events(websocket, runtime, handle)
         except WebSocketDisconnect:
             pass
         except Exception:

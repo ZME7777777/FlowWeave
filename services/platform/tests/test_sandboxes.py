@@ -7,6 +7,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select, text
 
+from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
+from flowweave.modules.agent_workspaces.infrastructure.models import (
+    AgentWorkspaceRuntime,
+    AgentWorkspaceRuntimeGeneration,
+)
 from flowweave.modules.sandboxes.application.service import (
     ReconcileReport,
     _owner_is_active,
@@ -900,6 +905,73 @@ def test_reconciler_does_not_recreate_a_missing_bound_runtime(
         assert persisted.last_error_code == "SANDBOX_RUNTIME_LOST"
     assert report.errors == 1
     assert recreated == []
+
+
+def test_reconciler_keeps_agent_runtime_when_docker_control_is_temporarily_unavailable(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        assert runtime is not None
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="AGENT_WORKSPACE",
+            owner_id=workspace.id,
+            backend="docker",
+            backend_resource_name="fw-sbx-agent-runtime",
+            observed_state="READY",
+            image_reference=runtime.runtime_image_digest,
+            agent_workspace_allocation_id=runtime.workspace_allocation_id,
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now - timedelta(seconds=1),
+        )
+        db.add(resource)
+        db.flush()
+        runtime.active_generation = resource.generation
+        runtime.status = "ACTIVE"
+        db.add(
+            AgentWorkspaceRuntimeGeneration(
+                runtime_session_id=runtime.id,
+                generation=resource.generation,
+                managed_runtime_id=resource.id,
+                runtime_image_digest=runtime.runtime_image_digest,
+                state="READY",
+                fence_token="12345678-1234-4234-9234-123456789abc",
+            )
+        )
+        db.commit()
+        resource_id = resource.id
+        workspace_id = workspace.id
+
+    def unavailable(self, _name):
+        del self
+        raise DomainError("SANDBOX_BACKEND_UNAVAILABLE", "Docker temporarily unavailable", 503)
+
+    monkeypatch.setattr(DockerSandboxProvider, "inspect", unavailable)
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+        db.commit()
+
+    with db_session_factory() as db:
+        resource = db.get(ManagedSandbox, resource_id)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace_id)
+        )
+        assert resource is not None
+        assert runtime is not None
+        assert resource.desired_state == "RUNNING"
+        assert resource.observed_state == "ERROR"
+        assert resource.last_error_code == "SANDBOX_BACKEND_UNAVAILABLE"
+        assert runtime.status == "ACTIVE"
+        assert runtime.failure_code is None
+    assert report.errors == 1
 
 
 def test_reconciler_deletes_auxiliary_resources_when_container_is_already_missing(

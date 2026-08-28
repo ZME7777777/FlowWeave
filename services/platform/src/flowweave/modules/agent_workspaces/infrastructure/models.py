@@ -291,6 +291,29 @@ class AgentConversationBinding(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class AgentConversationMessageAttachment(Base):
+    """A display projection for files attached to a formal user MessageEvent."""
+
+    __tablename__ = "agent_conversation_message_attachments"
+    __table_args__ = (
+        UniqueConstraint(
+            "binding_id", "event_id", "path", name="uq_agent_conversation_message_attachment"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversation_bindings.id", ondelete="RESTRICT"), index=True
+    )
+    event_id: Mapped[str] = mapped_column(String(200), index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    filename: Mapped[str] = mapped_column(String(240))
+    mime_type: Mapped[str] = mapped_column(String(200))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    path: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AgentConversationCommand(Base):
     __tablename__ = "agent_conversation_commands"
     __table_args__ = (
@@ -324,6 +347,7 @@ class AgentConversationCommand(Base):
 __all__ = (
     "AgentWorkspace",
     "AgentConversationBinding",
+    "AgentConversationMessageAttachment",
     "AgentConversationCommand",
     "AgentWorkDirectory",
     "AgentWorkDirectoryPath",

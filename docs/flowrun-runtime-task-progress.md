@@ -866,6 +866,29 @@ OpenHands 会话状态。
 完成：标题栏仅保留正式会话可用的删除入口，不再提供与右侧栏重复的工作区工具开关。右侧“环境信息”
 摘要仍保留展开入口，打开后的工具区仍保留关闭入口；不改变文件、终端或会话生命周期。
 
+### FR-63 Agent Runtime 事件中继清理与控制面故障隔离 — DONE
+
+依赖：`FR-62`。
+
+目标：修复 Agent Workspace 浏览器会话断开、页面刷新或重新部署后，API 未能取消 Runtime Provider 内
+`docker exec` 事件中继，持续累积子进程与线程并耗尽 Provider PID 配额的问题。WebSocket 路由必须在
+客户端断开时主动关闭上游异步事件迭代器，使 Provider 可靠终止对应 relay；同一条连接不得残留
+孤儿 relay。Sandbox reconcile 遇到 Docker 控制面暂不可用等暂态验证错误时，只记录可诊断降级并保留
+当前受管 Runtime，不得把它误判为物理丢失、删除容器或切换为 `RECONNECTING`。真正确认资源不存在的
+路径仍按既有 fenced recovery 执行。不得修改 OpenHands、Conversation/Event 持久化、Workspace 外置
+存储或 Runtime 容器隔离边界。
+
+验收：新增 Provider relay 取消、Agent Workspace WebSocket 断开和暂态 reconcile 故障定向测试；平台
+Ruff/Pyright、相关 pytest、Web lint/typecheck/build、`git diff --check`、Alembic head 和任务状态唯一性
+通过；在实际 Compose 中验证 Provider PID 不会随重复连接累积，重新部署后 Runtime 收敛回可写状态。本
+切片使用独立 Git commit，排除已有附件功能的未提交改动。
+
+完成：Agent Workspace 与 FlowRun Conversation WebSocket 现在并行监听 Runtime 上游事件和浏览器
+断连；空闲断连时取消 pending 读取并显式关闭异步生成器，Runtime Provider 随即终止对应
+`docker exec` relay。Sandbox reconcile 仅在确认 `RUNTIME_LOST` 或资源冲突时触发 Agent Runtime
+replacement；Docker 控制面暂时不可用只写入可诊断错误与退避，保留受管资源的 `RUNNING` 意图和
+既有活动 Runtime。新增 relay 终止、空闲 WebSocket 断连和控制面 503 隔离回归。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -882,6 +905,7 @@ OpenHands 会话状态。
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-63 | Provider relay、Agent Workspace 空闲 WebSocket 断连与 Docker 控制面暂时不可用定向 pytest（3 passed）；受影响 Python Ruff；两条 WebSocket 路由定向 Pyright（0 errors）；`git diff --check` | PASS：浏览器刷新/断连关闭上游 async generator，Provider 终止其 `docker exec` relay；暂态 `SANDBOX_BACKEND_UNAVAILABLE` 保留 Agent Runtime 的 `RUNNING` 意图与 `ACTIVE` 状态，不删除资源、不进入 `RECONNECTING`。全量 Pyright 未作为本切片通过项：附件功能的既有未提交改动另有类型错误，未纳入本提交。无 `CURRENT` 或下一切片。 |
 | 2026-08-28 | FR-62 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：标题栏无重复入口、环境信息入口保留）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：标题栏不再包含“打开/关闭工作区工具”按钮；右侧环境信息摘要仍可打开工具区，工具区内关闭入口保持可用。唯一 Alembic head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |
 | 2026-08-28 | FR-61 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：多条用户消息刻度、摘要、正式 event id 定位和当前态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：左侧刻度仅从正式 user event `id` 生成，随消息高度和滚动位置更新；悬停显示截断摘要，点击平滑定位至对应用户消息。唯一 Alembic head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |
 | 2026-08-28 | FR-60 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace Playwright（3 passed：实时思考/流式完成、局部重思考、终端关闭确认）；平台 Ruff/Pyright；Agent Workspace/OpenHands 定向 pytest（103 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：请求提交即呈现可计时“正在思考”，异步标题生成不再把当前轮重置为 0 秒；delta 以浏览器动画帧合并，正式终态会收束活动状态并将 Thought 标为已完成；编辑最后 user event 时仅隐藏该正式分支后代并保留历史轮次；终端关闭不再调用浏览器原生确认框。平台全量 pytest 仍报告 23 个未改动的 API/Environment/Sandbox 失败，未伪记为通过；唯一 head `0068_agent_title_metadata`。 |

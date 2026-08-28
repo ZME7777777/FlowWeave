@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import pytest
@@ -28,6 +30,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntimeAllocation,
     AgentWorkspaceRuntimeGeneration,
 )
+from flowweave.modules.agent_workspaces.presentation import router as agent_router
 from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
 from flowweave.modules.model_providers.public import TitleProviderSnapshot
 from flowweave.modules.sandboxes.infrastructure.docker import (
@@ -59,6 +62,75 @@ def _agent_project_root(settings, db, workspace):
     )
     assert allocation is not None
     return settings.workspace_root / allocation.relative_root / "workspace/project"
+
+
+def test_agent_conversation_stream_closes_idle_upstream_on_websocket_disconnect(
+    settings, monkeypatch
+):
+    stream_started = asyncio.Event()
+    stream_closed = asyncio.Event()
+
+    class Runtime:
+        async def stream_events(self, _handle):
+            stream_started.set()
+            try:
+                await asyncio.Event().wait()
+                yield {}
+            finally:
+                stream_closed.set()
+
+    class Database:
+        @asynccontextmanager
+        async def session(self):
+            yield self
+
+        async def run_sync(self, callback):
+            return callback(self)
+
+    class Container:
+        def __init__(self) -> None:
+            self.settings = settings
+            self.database = Database()
+            self.runtime = Runtime()
+
+    class WebSocket:
+        accepted = False
+
+        async def accept(self) -> None:
+            self.accepted = True
+
+        async def receive(self) -> dict[str, str]:
+            await stream_started.wait()
+            return {"type": "websocket.disconnect"}
+
+        async def send_json(self, _event) -> None:
+            raise AssertionError("an idle stream must not send an event")
+
+        async def close(self, **_kwargs) -> None:
+            raise AssertionError("a normal disconnect must not be reported as an error")
+
+    runtime = Runtime()
+    container = Container()
+    container.runtime = runtime
+    websocket = WebSocket()
+    monkeypatch.setattr(
+        agent_router.conversations,
+        "runtime_stream_details",
+        lambda *_args: ("mock", object()),
+    )
+    monkeypatch.setattr(agent_router, "runtime_for", lambda *_args: runtime)
+
+    asyncio.run(
+        agent_router.agent_conversation_stream(
+            websocket,
+            "workspace-1",
+            "binding-1",
+            container,
+        )
+    )
+
+    assert websocket.accepted is True
+    assert stream_closed.is_set()
 
 
 def test_agent_work_directory_root_is_implicit_and_versions_are_immutable(
@@ -686,6 +758,79 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
         with pytest.raises(DomainError) as raised:
             workspace.details(db, item.id, work_directory_id=directory["id"])
         assert raised.value.code == "AGENT_WORK_DIRECTORY_ARCHIVED"
+
+
+def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scope(
+    settings, db_session_factory, monkeypatch
+):
+    """An upload may be outside a frozen directory, but not outside its conversation."""
+
+    class UploadRuntime(MockRuntime):
+        def upload_workspace_file(self, handle, *, filename, content_type, content):
+            del handle, content_type, content
+            return f"/runtime/workspace/project/uploads/{'a' * 32}-{filename}"
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="test-key",
+        ),
+    )
+
+    with settings_context(settings), db_session_factory() as db, runtime_context(UploadRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        (project_root / "service").mkdir()
+        (project_root / "service" / "README.md").write_text("scoped")
+        directory = work_directories.create_work_directory(db, item.id, "服务", ("service",))
+        owner = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "attachment-owner"
+        )
+        other = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "attachment-other"
+        )
+        # The work-directory is frozen on the binding.  Make both test
+        # conversations use the restricted scope so `uploads/` is genuinely
+        # outside their normal readable tree.
+        for binding_id in (owner["id"], other["id"]):
+            binding = db.get(AgentConversationBinding, binding_id)
+            assert binding is not None
+            binding.work_directory_version_id = directory["current_version"]["id"]
+            binding.working_directory = "/runtime/workspace/project/service"
+        db.flush()
+        attachment = conversations.upload_attachment(
+            db, item.id, owner["id"], filename="requirements.pdf",
+            content_type="application/pdf", content=b"%PDF-1.7",
+        )
+        upload_path = project_root / "uploads" / f"{'a' * 32}-requirements.pdf"
+        upload_path.parent.mkdir()
+        upload_path.write_bytes(b"%PDF-1.7")
+        # A bound upload is previewable from the right-hand panel before it is
+        # sent, but remains inaccessible to every other conversation.
+        assert workspace.download(
+            db, item.id, str(attachment["path"]), binding_id=owner["id"]
+        ).content == b"%PDF-1.7"
+        with pytest.raises(DomainError, match="当前工作目录范围"):
+            workspace.download(
+                db, item.id, str(attachment["path"]), binding_id=other["id"]
+            )
+        conversations.message(
+            db, item.id, owner["id"], "", ({"path": str(attachment["path"]), "filename": "requirements.pdf", "mime_type": "application/pdf", "byte_size": 8},)
+        )
+
+        details = workspace.details(db, item.id, binding_id=owner["id"])
+        assert str(attachment["path"]) in {entry["path"] for entry in details["files"]}
+        assert workspace.download(
+            db, item.id, str(attachment["path"]), binding_id=owner["id"]
+        ).content == b"%PDF-1.7"
+        with pytest.raises(DomainError, match="当前工作目录范围"):
+            workspace.download(
+                db, item.id, str(attachment["path"]), binding_id=other["id"]
+            )
 
 
 def test_agent_workspace_multi_directory_files_are_scoped_and_frozen(settings, db_session_factory):

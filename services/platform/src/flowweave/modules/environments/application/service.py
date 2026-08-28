@@ -1176,17 +1176,29 @@ def delete_environment(db: Session, environment_id: str) -> None:
             409,
             {"mcp_oauth_secret_reference_count": oauth_reference_count},
         )
-    run_reference = db.scalar(
-        select(FlowRun.id).where(FlowRun.environment_version_id.in_(version_ids))
+    run_reference_count = int(
+        db.scalar(
+            select(func.count(FlowRun.id)).where(FlowRun.environment_version_id.in_(version_ids))
+        )
+        or 0
     )
-    snapshot_reference = db.scalar(
-        select(RunSnapshot.id).where(RunSnapshot.environment_version_id.in_(version_ids))
+    snapshot_reference_count = int(
+        db.scalar(
+            select(func.count(RunSnapshot.id)).where(
+                RunSnapshot.environment_version_id.in_(version_ids)
+            )
+        )
+        or 0
     )
-    if run_reference or snapshot_reference:
+    if run_reference_count or snapshot_reference_count:
         raise DomainError(
             "ENVIRONMENT_IN_USE",
             "The terminal environment is referenced by a Snapshot or FlowRun",
             409,
+            {
+                "flow_run_reference_count": run_reference_count,
+                "snapshot_reference_count": snapshot_reference_count,
+            },
         )
     active_sessions = list(
         db.scalars(

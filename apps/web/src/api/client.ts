@@ -106,8 +106,8 @@ const json = (method: string, body?: unknown, idempotent = false): RequestInit =
 
 /** The upload response includes display metadata which strict write schemas do
  * not accept. Only send the native attachment reference back to the API. */
-const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map(({ path, image_data_url }) =>
-  image_data_url ? { path, image_data_url } : { path },
+const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map(({ path, image_data_url, filename, mime_type, byte_size }) =>
+  image_data_url ? { path, image_data_url, filename, mime_type, byte_size } : { path, filename, mime_type, byte_size },
 );
 
 export const api = {
