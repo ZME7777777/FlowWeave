@@ -1819,10 +1819,15 @@ test('historical Agent conversation exposes capability guidance instead of a sil
     external_conversation_id: 'history-capability-openhands', display_title: '历史会话', title_state: 'FALLBACK', lifecycle: 'ACTIVE',
     working_directory: '/runtime/workspace/project', work_directory_id: null,
     model_provider_id: 'history-provider', model_name: 'history-model', reasoning_effort: null,
-    streaming_callback_ready: true, capabilities: [],
+    streaming_callback_ready: true, capabilities: [
+      { id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', digest: 'history-skill-digest' },
+    ],
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   };
-  const defaultCapabilities = [{ id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', digest: 'history-skill-digest' }];
+  const defaultCapabilities = [
+    { id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', digest: 'history-skill-digest' },
+    { id: 'history-new-skill', capability_type: 'SKILL', capability_key: 'history-new-skill', digest: 'history-new-skill-digest' },
+  ];
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
@@ -1871,6 +1876,7 @@ test('historical Agent conversation exposes capability guidance instead of a sil
   });
   await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
     { id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', description: '历史会话迁移验证 Skill', filename: 'history-skill.zip', is_latest: true, document: {} },
+    { id: 'history-new-skill', capability_type: 'SKILL', capability_key: 'history-new-skill', description: '可追加的历史会话 Skill', filename: 'history-new-skill.zip', is_latest: true, document: {} },
   ]) }));
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
     { id: 'history-provider', name: '历史模型', connection_state: 'CONNECTED', models: [{ model_name: 'history-model', enabled: true, is_default: true }] },
@@ -1879,17 +1885,23 @@ test('historical Agent conversation exposes capability guidance instead of a sil
   await page.goto('/agent/conversations/history-capability-conversation');
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('/');
-  await expect(page.getByRole('listbox', { name: '选择命令或 MCP' })).toContainText('当前会话还没有加载命令或 MCP');
+  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
+  await expect(commandMenu).toContainText('当前会话没有匹配的能力');
+  await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
   await composer.fill('$');
   const skillMenu = page.getByRole('listbox', { name: '选择技能' });
-  await expect(skillMenu).toContainText('当前会话还没有加载 Skill');
-  await skillMenu.getByRole('button', { name: '管理能力' }).click();
+  await expect(skillMenu.getByRole('option', { name: /history-skill/ })).toBeVisible();
+  await expect(skillMenu.getByText('管理当前会话能力')).toBeVisible();
+  await skillMenu.getByRole('button', { name: '管理' }).click();
   const manager = page.getByRole('dialog', { name: '能力' });
-  await manager.getByRole('button', { name: /history-skill/ }).click();
-  await manager.getByRole('button', { name: '加载到当前会话' }).click();
+  const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册，不能取消）' });
+  await expect(lockedSkill).toBeDisabled();
+  await expect(lockedSkill).toHaveClass(/locked/);
+  await manager.getByRole('button', { name: /history-new-skill/ }).click();
+  await manager.getByRole('button', { name: '注册到当前会话' }).click();
   await expect(manager).toContainText('此历史会话创建时未注册能力市场');
   await manager.getByRole('button', { name: '新建可使用能力的会话' }).click();
   await expect(page).toHaveURL(/\/agent$/);
   await composer.fill('$');
-  await expect(page.getByRole('listbox', { name: '选择技能' }).getByRole('option', { name: /history-skill/ })).toBeVisible();
+  await expect(page.getByRole('listbox', { name: '选择技能' }).getByRole('option', { name: /history-new-skill/ })).toBeVisible();
 });

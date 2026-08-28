@@ -945,6 +945,18 @@ Marketplace 拒绝后的新会话入口；`git diff --check`、任务状态唯�
 弹窗说明创建时缺少原生能力市场，并提供“新建可使用能力的会话”；它使用当前新会话默认能力、保留源会话
 及其事件历史，未伪造旧会话已加载状态。
 
+### FR-67 当前会话能力增量注册与锁定 — DONE
+
+依赖：`FR-66`。
+
+目标：当前 Agent 会话在 Composer 输入 `$` 或 `/` 时，无论是否已有匹配候选，均保留“管理当前会话能力”
+入口。能力管理器对已经通过固定 OpenHands 原生 `load_plugin` 注册的能力必须置灰、禁用且不可取消；用户只能
+选择并注册新的已发布能力。新会话默认能力仍可自由调整，且只影响后续新会话。不得伪造 OpenHands 卸载、
+删除已加载 Runtime 工具、修改 OpenHands persisted state 或修改 OpenHands 源码。
+
+完成：Composer 的 `$` 和 `/` 候选面板始终提供管理入口；当前会话已注册项带有锁定视觉和“不能取消”说明，
+禁用交互，新增项继续经原生 `load_plugin` 追加。全局默认配置保留可编辑语义。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -961,6 +973,7 @@ Marketplace 拒绝后的新会话入口；`git diff --check`、任务状态唯�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-67 | Web ESLint/typecheck/production build；源码 Vite 定向 Playwright（历史会话能力入口 1 passed）；`git diff --check` 与任务状态唯一性 | PASS：`$` 有 Skill 候选与 `/` 无匹配候选时均显示管理入口；当前会话已注册 Skill 以禁用状态展示并明确不能取消，新 Skill 仍可选择注册。 |
 | 2026-08-28 | FR-66 | Web ESLint/typecheck/production build；源码 Vite 定向 Playwright；`git diff --check` 与任务状态唯一性 | PASS：历史会话输入 `$` 和 `/` 均不再静默无候选，而是给出可点击的“管理能力”入口；模拟固定 OpenHands `load_plugin` 对无 `registered_marketplaces` 历史会话的 409 拒绝后，能力弹窗显示原生限制和新建预加载默认能力会话入口。新草稿的 `$` 候选可见，源会话未被改写。 |
 | 2026-08-28 | FR-65 | 受影响平台 Ruff；`workspace.py` Pyright（0 errors）；动态 Marketplace 与 Runtime contract 定向 pytest（8 passed）；Web ESLint/typecheck/production build；固定 OpenHands Runtime `contract_check.py`；Compose 配置与 `git diff --check`；Compose 部署后的真实 Agent Workspace 会话 | PASS：新建会话 `ed30f38d-5a12-485a-9c9a-52221939959e` 空闲时追加已发布 Skill `ui-product-skill`，FlowWeave 返回冻结引用；Runtime 日志确认读取会话 Marketplace、加载 wrapper Plugin，并对正式 `POST /api/conversations/a510ef50-c499-4465-8df2-bab3057e7540/load_plugin` 返回 200。随后发送 `$ui-product-skill` 的 OpenHands 正式 user event 含 `activated_skills:["ui-product-skill"]`，Agent 返回预期结果；部署后页面输入 `$` 显示 `$ui-product-skill` 原生 Skill 候选。为隔离旧默认 MCP `remote` 的外部服务超时，验证期间暂时清空新会话默认能力，验证完成后已恢复原默认能力。API、Web 健康，唯一 Alembic head `0070_agent_caps`。 |
 | 2026-08-28 | FR-64 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：刷新中恢复动态等待、工具过程、终态自动折叠）；`git diff --check` 与任务状态唯一性 | PASS：刷新中的 OpenHands 原生未就绪会话重新显示实时“正在思考”与墙钟耗时；正式工具事件按同一工作过程归组，终态到达后过程自动折叠。 |
