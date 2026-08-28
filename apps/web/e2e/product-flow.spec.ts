@@ -444,6 +444,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(bootstrapRequests).toBe(1);
   expect(bootstrapWorkDirectory).toBeNull();
   await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  await expect(page.locator('.agent-workbench-header').getByLabel(/工作区工具/)).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-summary').getByLabel('打开工作区工具')).toBeVisible();
   await page.getByRole('heading', { name: '检查工作目录' }).dblclick();
   const titleEditor = page.getByLabel('会话标题');
   await expect(titleEditor).toHaveValue('检查工作目录');
