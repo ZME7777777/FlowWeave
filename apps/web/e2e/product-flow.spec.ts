@@ -1000,7 +1000,9 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   const rootToggle = rootGroup.locator('.agent-workspace-group-toggle');
   const projectToggle = projectGroup.locator('.agent-workspace-group-toggle');
 
-  await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeVisible();
+  const rootConversation = rootGroup.getByRole('button', { name: '根会话' });
+  await expect(rootConversation).toBeVisible();
+  await expect(rootConversation).toHaveCSS('height', '38px');
   await rootToggle.click();
   await expect(rootToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeHidden();

@@ -1034,6 +1034,17 @@ Conversation 或触发 Runtime 写入。
 验收：Web ESLint/typecheck/production build；定向 Playwright 覆盖根工作区和普通工作目录的会话列表隐藏/恢复、
 ARIA 状态及独立“+”入口；Alembic head、任务状态唯一性与 `git diff --check` 通过。本切片使用独立 Git commit。
 
+### FR-73 Agent 工作区会话行紧凑样式回归修复 — DONE
+
+依赖：`FR-72`。
+
+目标：修复 FR-72 为会话列表加入折叠容器后，原先仅匹配分组直接子按钮的紧凑会话行样式失效问题。根工作区、
+活动工作目录和归档工作目录中的会话行必须继续使用 38px 两行布局、截断标题和活动态样式；分组标题与独立“+”
+入口不受影响。不得改变 Conversation、OpenHands、Runtime、工作区或 FlowRun 契约。
+
+验收：Web ESLint/typecheck/production build；定向 Playwright 验证折叠容器内会话行保持 38px 紧凑高度，并保留
+既有折叠/展开与独立“+”入口行为；Alembic head、任务状态唯一性与 `git diff --check` 通过。本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1050,6 +1061,7 @@ ARIA 状态及独立“+”入口；Alembic head、任务状态唯一性与 `git
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-73 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（折叠容器内根会话行固定 38px、根与 `ai-playbook` 折叠/展开、ARIA 与独立新建入口，1 passed）；Alembic head/current、任务状态唯一性与 `git diff --check` | PASS：会话行紧凑样式选择器已随 FR-72 的内容容器迁移，恢复 38px 两行栅格、标题截断和 hover/active 样式；折叠标题与独立“+”入口保持原行为，未改变任何平台或 OpenHands 契约。 |
 | 2026-08-28 | FR-72 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（根工作区与 `ai-playbook` 单击折叠/展开、ARIA 与独立新建入口，1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：分组标题现在是可访问的折叠控件，默认展开；根、活动及归档工作目录均复用同一行为。收起只隐藏对应会话列表，“+”保持独立可用；不写入浏览器或平台状态，也不触及 OpenHands、Runtime、工作区或 FlowRun 契约。 |
 | 2026-08-28 | FR-71 | Web ESLint/typecheck/production build；当前源码 Vite 上定向 Playwright（新会话 `/` 空态与“管理”入口，1 passed）；`git diff --check` 与任务状态唯一性 | PASS：新会话草稿输入 `/` 不再静默；已配置 MCP 保持候选可见，未配置时显示明确说明和默认能力管理入口。不会创建 Conversation 或写入 Runtime。 |
 | 2026-08-28 | FR-70 | Agent Workspace MCP readiness 与 MCP 初始化失败清理定向 pytest（2 passed）；OpenHands MCP probe/显式 timeout 映射定向 pytest（2 passed）；Web ESLint/typecheck/production build；受影响 Python `py_compile`、Ruff check、`git diff --check`；API/Web 镜像重建、部署后 health/OpenAPI 路由检查 | PASS：MCP readiness 通过当前受管 Agent Runtime 调用固定 OpenHands `POST /api/mcp/test`，不创建 Conversation；已选 MCP 在能力管理中显示检测中、已连接或连接失败，并可重新检测。保存前复检，连接失败则拒绝保存。明确 `MCPTimeoutError` 不再被归为首条消息不确定投递，隐藏预留会被清理并返回安全 MCP 错误；真实网络响应不确定仍复用 FR-69 草稿 UUID 对账。API、Web、Runtime Provider、Worker 和 Postgres 均健康。 |
