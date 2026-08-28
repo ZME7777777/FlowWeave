@@ -104,6 +104,12 @@ const json = (method: string, body?: unknown, idempotent = false): RequestInit =
   headers: idempotent ? { 'Idempotency-Key': randomId() } : undefined,
 });
 
+/** The upload response includes display metadata which strict write schemas do
+ * not accept. Only send the native attachment reference back to the API. */
+const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map(({ path, image_data_url }) =>
+  image_data_url ? { path, image_data_url } : { path },
+);
+
 export const api = {
   defaultAgentWorkspace: () => request<AgentWorkspace>('/agent-workspaces/default'),
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
@@ -133,7 +139,7 @@ export const api = {
   },
   agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
   bootstrapAgentConversation: (workspaceId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], work_directory_id?: string) =>
-    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { model_provider_id, model_name, reasoning_effort, content, attachments, work_directory_id }, true)),
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), work_directory_id }, true)),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
@@ -145,7 +151,7 @@ export const api = {
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments })),
+    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments) })),
   uploadAgentAttachment: async (workspaceId: string, bindingId: string, file: File): Promise<AgentAttachment> => {
     const body = new FormData(); body.append('file', file, file.name);
     let response: Response;
