@@ -29,8 +29,31 @@ interface BootstrapRecovery {
   attempts: number;
 }
 
+interface WorkspaceConversationGroupProps {
+  groupId: string;
+  label: string;
+  children: ReactNode;
+  canCreateConversation?: boolean;
+  onCreateConversation?: () => void;
+}
+
 const BOOTSTRAP_RECOVERY_STORAGE_KEY = 'flowweave.agent.bootstrap-recovery.v1';
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
+
+function WorkspaceConversationGroup({ groupId, label, children, canCreateConversation = false, onCreateConversation }: WorkspaceConversationGroupProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const contentId = `agent-workspace-group-${groupId}`;
+
+  return <section className={`agent-workspace-group${collapsed ? ' collapsed' : ''}`}>
+    <header>
+      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => !current)}>
+        <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
+      </button>
+      {onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
+    </header>
+    <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>{children}</div>
+  </section>;
+}
 
 function readBootstrapRecovery(): BootstrapRecovery | undefined {
   try {
@@ -1463,18 +1486,15 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     <aside className="agent-workbench-rail">
       <header><div><span className="eyebrow">AGENT WORKSPACE</span><h1>Agent 会话</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button><button type="button" className="secondary" aria-label="新增工作区" onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button></div></header>
       <div className="agent-workbench-list">
-        <section className="agent-workspace-group">
-          <header><div><Folder size={14}/><span>根工作区</span></div><button type="button" aria-label="在根工作区中新建会话" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={13}/></button></header>
+        <WorkspaceConversationGroup groupId="root" label="根工作区" canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
           {rootConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
-        </section>
-        {workDirectories.map(directory => <section key={directory.id} className="agent-workspace-group">
-          <header><div><Folder size={14}/><span>{directory.display_name}</span></div><button type="button" aria-label={`在${directory.display_name}中新建会话`} disabled={!canOpenConversation} onClick={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })}><Plus size={13}/></button></header>
+        </WorkspaceConversationGroup>
+        {workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })}>
           {conversationsForDirectory(directory.id).map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
-        </section>)}
-        {archivedDirectoryConversations.length > 0 && <section className="agent-workspace-group">
-          <header><div><Folder size={14}/><span>已归档工作目录</span></div></header>
+        </WorkspaceConversationGroup>)}
+        {archivedDirectoryConversations.length > 0 && <WorkspaceConversationGroup groupId="archived" label="已归档工作目录">
           {archivedDirectoryConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>保留的历史会话</small></span><ChevronRight size={13}/></button>)}
-        </section>}
+        </WorkspaceConversationGroup>}
       </div>
       <footer className="agent-workbench-rail-footer"><button type="button" onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>能力</b><small>{selected ? '管理当前会话能力' : '管理新会话默认能力'}</small></span><ChevronRight size={14}/></button></footer>
       {!conversations.length && !conversationDraft && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{connectedProviders.length ? '选择工作目录后新建会话开始协作。' : '请先完成至少一个模型供应商的连接测试。'}</span></div>}

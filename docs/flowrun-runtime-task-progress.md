@@ -1022,6 +1022,18 @@ MCP 应直接列为候选；尚未加载 MCP 时，面板必须说明当前没�
 继续直接列出；没有默认命令或 MCP 时，面板明确说明未加载并提供“管理”按钮，用于打开新会话默认能力管理，不会创建
 Conversation 或触发 Runtime 写入。
 
+### FR-72 Agent 工作区会话分组折叠 — DONE
+
+依赖：`FR-71`。
+
+目标：左侧 Agent 工作区的根工作区、活动工作目录和归档工作目录分组标题支持单击折叠与展开，只影响当前分组
+下的会话列表。标题必须提供 `aria-expanded` 与明确的展开/收起名称；右侧“+”继续作为独立的新建会话入口，不能
+因切换分组而触发创建或被隐藏。默认保持展开，不持久化浏览器状态，不修改 Conversation、OpenHands、Runtime、
+工作区或 FlowRun 契约。
+
+验收：Web ESLint/typecheck/production build；定向 Playwright 覆盖根工作区和普通工作目录的会话列表隐藏/恢复、
+ARIA 状态及独立“+”入口；Alembic head、任务状态唯一性与 `git diff --check` 通过。本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1038,6 +1050,7 @@ Conversation 或触发 Runtime 写入。
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-72 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（根工作区与 `ai-playbook` 单击折叠/展开、ARIA 与独立新建入口，1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：分组标题现在是可访问的折叠控件，默认展开；根、活动及归档工作目录均复用同一行为。收起只隐藏对应会话列表，“+”保持独立可用；不写入浏览器或平台状态，也不触及 OpenHands、Runtime、工作区或 FlowRun 契约。 |
 | 2026-08-28 | FR-71 | Web ESLint/typecheck/production build；当前源码 Vite 上定向 Playwright（新会话 `/` 空态与“管理”入口，1 passed）；`git diff --check` 与任务状态唯一性 | PASS：新会话草稿输入 `/` 不再静默；已配置 MCP 保持候选可见，未配置时显示明确说明和默认能力管理入口。不会创建 Conversation 或写入 Runtime。 |
 | 2026-08-28 | FR-70 | Agent Workspace MCP readiness 与 MCP 初始化失败清理定向 pytest（2 passed）；OpenHands MCP probe/显式 timeout 映射定向 pytest（2 passed）；Web ESLint/typecheck/production build；受影响 Python `py_compile`、Ruff check、`git diff --check`；API/Web 镜像重建、部署后 health/OpenAPI 路由检查 | PASS：MCP readiness 通过当前受管 Agent Runtime 调用固定 OpenHands `POST /api/mcp/test`，不创建 Conversation；已选 MCP 在能力管理中显示检测中、已连接或连接失败，并可重新检测。保存前复检，连接失败则拒绝保存。明确 `MCPTimeoutError` 不再被归为首条消息不确定投递，隐藏预留会被清理并返回安全 MCP 错误；真实网络响应不确定仍复用 FR-69 草稿 UUID 对账。API、Web、Runtime Provider、Worker 和 Postgres 均健康。 |
 | 2026-08-28 | FR-69 | Web ESLint/typecheck/production build；源码 Vite 定向 Playwright（首发 504、刷新、同 key 对账后创建会话）；Agent Workspace bootstrap 定向 pytest（3 passed）；`git diff --check` 与任务状态唯一性 | PASS：首条消息的请求体 conversation UUID 与 Idempotency-Key 一致；模拟首次投递不确定后刷新页面，浏览器恢复同一草稿并再次使用同一 key，对账成功后进入正式会话。平台既有三条 bootstrap 语义回归全部通过，未重发 native user event。 |

@@ -974,6 +974,49 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
 });
 
+test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
+  const now = new Date().toISOString();
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
+    if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, updated_at: now }) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+      { id: 'root-conversation', display_title: '根会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, created_at: now, updated_at: now },
+      { id: 'project-conversation', display_title: '项目会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, work_directory_id: 'project-directory', created_at: now, updated_at: now },
+    ]) });
+    if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [{ id: 'project-directory', display_name: 'ai-playbook', state: 'ACTIVE', current_version: { id: 'project-directory-v1', version: 1, selected_paths: ['ai-playbook'], working_directory: '/runtime/workspace/project/ai-playbook' } }] }) });
+    if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
+    if (path.endsWith('/capabilities')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+
+  await page.goto('/agent');
+  const rootGroup = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' });
+  const projectGroup = page.locator('.agent-workspace-group').filter({ hasText: 'ai-playbook' });
+  const rootToggle = rootGroup.locator('.agent-workspace-group-toggle');
+  const projectToggle = projectGroup.locator('.agent-workspace-group-toggle');
+
+  await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeVisible();
+  await rootToggle.click();
+  await expect(rootToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeHidden();
+  await expect(rootGroup.getByRole('button', { name: '在根工作区中新建会话' })).toBeVisible();
+  await rootToggle.click();
+  await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeVisible();
+
+  await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeVisible();
+  await projectToggle.click();
+  await expect(projectToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeHidden();
+  await expect(projectGroup.getByRole('button', { name: '在ai-playbook中新建会话' })).toBeVisible();
+  await projectToggle.click();
+  await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeVisible();
+});
+
 test('Agent new session keeps full capabilities and can create an explicit workspace', async ({ page }) => {
   const directories: Array<Record<string, unknown>> = [];
   const conversations: Array<Record<string, unknown>> = [];
