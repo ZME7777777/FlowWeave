@@ -275,6 +275,19 @@ def test_native_plugin_and_memory_loading_has_no_openhands_source_patch() -> Non
     assert "openhands_flow_run_capability_path(" in workspace
 
 
+def test_openhands_144_stream_and_builtin_tool_contracts_are_behavioral() -> None:
+    """FR-75: keep upstream behavior probes, not registry compatibility maps."""
+
+    contract_probe = (REPOSITORY / "infra" / "openhands" / "contract_check.py").read_text()
+    runtime = (SOURCE / "runtime" / "openhands.py").read_text()
+    assert "get_tool_module_qualnames" not in contract_probe
+    assert "EXPECTED_TOOL_MODULES" not in contract_probe
+    assert "tool_module_qualnames" not in contract_probe
+    assert '"streaming_delta_delivery_is_subscriber_scoped": True' in contract_probe
+    assert '"remote_structured_builtin_resolution": True' in contract_probe
+    assert '"tool_module_qualnames"' not in runtime
+
+
 def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
     orchestration = (
         SOURCE / "modules" / "orchestration" / "application" / "service.py"

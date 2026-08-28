@@ -627,7 +627,9 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   其他供应商隐式视为默认值。该卡片不属于当前会话，也不改变已创建 Conversation 的冻结模型。
 - Runtime 恢复中：历史列表可读；消息区说明“数据已保留，运行环境恢复后加载消息”；输入和终端禁用。
 - 当前 Conversation ACTIVE：REST 补齐历史后建立 WS，输入可用。
-- WebSocket `delta` 作为当前轮工作过程中的临时模型输出逐段展示。OpenHands 的正式最终回复有两条路径：
+- WebSocket `delta` 作为当前轮工作过程中的临时模型输出逐段展示。固定 OpenHands 1.44.0 只把
+  `StreamingDeltaEvent` 投递给显式声明接收 delta 的订阅者；FlowWeave 不维护第二套广播隔离器，只在完成
+  Conversation 授权后转发正式 WebSocket，并丢弃 `reasoning_content` 等隐藏推理。OpenHands 的正式最终回复有两条路径：
   assistant `MessageEvent`，或 Agent 调用 finish tool 时的 `FinishAction.message`；任一路径到达后清除临时
   文本，并只在过程区下方渲染一次最终回复。`FinishObservation` 只确认工具执行，不生成第二份回复。浏览器
   临时文本不写入 FlowWeave 数据库或本地持久状态。
@@ -645,6 +647,10 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   记录整行带箭头并可点击展开默认折叠的详情区，只展示平台安全投影后的原始操作信息：Terminal 命令、退出码和输出，File Editor
   命令、路径、行范围或变更片段，以及其他工具的脱敏输入和结果。不得把未经安全投影的原始事件、隐藏推理、
   Secret、Runtime 物理路径或内部观察文件位置透传到浏览器。
+- 结构化内置 Tool spec 由 OpenHands 1.44.0 的正式 built-in resolver 解析；即使远程进程没有对应的全局
+  registry 项，带 `response_schema` 的内置 Tool 仍须恢复为正式 ToolDefinition。FlowWeave 不发送
+  `tool_module_qualnames`，也不冻结进程级 Tool 注册表或模块映射；但仍保留 Tool Policy、允许列表、
+  Action/Observation 脱敏投影以及 `action_id/tool_call_id` 关联。
 - REST 与实时安全投影保留 OpenHands 正式事件 `timestamp`。完成轮次按正式 user 到 assistant/error 的
   墙钟时间显示耗时，运行中可在正式时间回读前使用浏览器请求开始时间计时；缺失或非法时间不猜测。
 - Agent 执行中：显示停止按钮和正式 Tool 活动；不把全部原始 JSON 默认展开。

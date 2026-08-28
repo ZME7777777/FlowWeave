@@ -8,6 +8,7 @@ default-value drift.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from importlib.metadata import distribution, version
@@ -38,8 +39,13 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StartGoalRequest,
 )
+from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_details_router import ServerInfo
-from openhands.agent_server.sockets import bash_events_socket, events_socket
+from openhands.agent_server.sockets import (
+    _WebSocketSubscriber,
+    bash_events_socket,
+    events_socket,
+)
 from openhands.sdk import AgentContext
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.context.condenser import (
@@ -64,8 +70,10 @@ from openhands.sdk.critic import (
     IterativeRefinementConfig,
 )
 from openhands.sdk.event import ActionEvent, MessageEvent
+from openhands.sdk.event import Event as OpenHandsEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
@@ -82,18 +90,15 @@ from openhands.sdk.profiles import (
 )
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.skills import KeywordTrigger, Skill
+from openhands.sdk.tool import registry as tool_registry
 from openhands.sdk.tool.builtins import BUILT_IN_TOOLS
+from openhands.sdk.tool.builtins.finish import FinishTool
 from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillAction,
     InvokeSkillExecutor,
     InvokeSkillTool,
 )
-from openhands.sdk.tool.registry import (
-    get_tool_module_qualnames,
-    list_registered_tools,
-    list_usable_tools,
-    resolve_tool,
-)
+from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
 from openhands.tools.preset.default import AgentDefinition
@@ -161,28 +166,34 @@ REQUIRED_START_FIELDS = {
     "worktree",
     "workspace",
 }
-EXPECTED_TOOL_MODULES = {
-    "ask_oracle": "openhands.tools.ask_oracle.definition",
-    "file_editor": "openhands.tools.file_editor.definition",
-    "task_tool_set": "openhands.tools.task.definition",
-    "task": "openhands.tools.task.definition",
-    "task_tracker": "openhands.tools.task_tracker.definition",
-    "terminal": "openhands.tools.terminal.definition",
-    "workflow_tool_set": "openhands.tools.workflow.definition",
-    "workflow": "openhands.tools.workflow.definition",
-    "browser_tool_set": "openhands.tools.browser_use.definition",
-    "edit": "openhands.tools.gemini.edit.definition",
-    "list_directory": "openhands.tools.gemini.list_directory.definition",
-    "read_file": "openhands.tools.gemini.read_file.definition",
-    "write_file": "openhands.tools.gemini.write_file.definition",
-    "glob": "openhands.tools.glob.definition",
-    "grep": "openhands.tools.grep.definition",
-    "planning_file_editor": "openhands.tools.planning_file_editor.definition",
-}
-
-
 def _field_default(model: type[object], name: str) -> object:
     return model.model_fields[name].default  # type: ignore[attr-defined]
+
+
+class _RecordingSubscriber(Subscriber[OpenHandsEvent]):
+    def __init__(self) -> None:
+        self.events: list[OpenHandsEvent] = []
+
+    async def __call__(self, event: OpenHandsEvent) -> None:
+        self.events.append(event)
+
+
+class _StreamingRecordingSubscriber(_RecordingSubscriber):
+    receives_streaming_deltas = True
+
+
+async def _assert_targeted_streaming_delta_delivery() -> None:
+    pub_sub = PubSub[OpenHandsEvent]()
+    ordinary = _RecordingSubscriber()
+    streaming = _StreamingRecordingSubscriber()
+    pub_sub.subscribe(ordinary)
+    pub_sub.subscribe(streaming)
+    delta = StreamingDeltaEvent(content="visible", reasoning_content="private")
+
+    await pub_sub(delta)
+
+    assert ordinary.events == []
+    assert streaming.events == [delta]
 
 
 def main() -> None:
@@ -217,6 +228,8 @@ def main() -> None:
     assert (
         "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
     )
+    assert _WebSocketSubscriber.receives_streaming_deltas is True
+    asyncio.run(_assert_targeted_streaming_delta_delivery())
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
         provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
@@ -549,12 +562,41 @@ def main() -> None:
             None,
             None,
         )
-    assert set(list_registered_tools()) == set(EXPECTED_TOOL_MODULES)
-    assert get_tool_module_qualnames() == EXPECTED_TOOL_MODULES
-    assert "tool_module_qualnames" in StartConversationRequest.model_fields
-    tool_modules_field = StartConversationRequest.model_fields["tool_module_qualnames"]
-    assert tool_modules_field.default_factory is dict
-    assert tool_modules_field.get_default(call_default_factory=True) == {}
+    response_schema = {
+        "type": "object",
+        "properties": {"outcome": {"type": "string"}},
+        "required": ["outcome"],
+    }
+    finish_tool_name = FinishTool.__name__
+    registered_finish = tool_registry._REG.pop(finish_tool_name, None)
+    registered_finish_usability = tool_registry._USABILITY_REG.pop(
+        finish_tool_name, None
+    )
+    registered_finish_module = tool_registry._MODULE_QUALNAMES.pop(
+        finish_tool_name, None
+    )
+    try:
+        [structured_finish] = resolve_tool(
+            Tool(
+                name=finish_tool_name,
+                params={"response_schema": response_schema},
+            ),
+            SimpleNamespace(),  # type: ignore[arg-type]
+        )
+    finally:
+        if registered_finish is not None:
+            tool_registry._REG[finish_tool_name] = registered_finish
+        if registered_finish_usability is not None:
+            tool_registry._USABILITY_REG[finish_tool_name] = (
+                registered_finish_usability
+            )
+        if registered_finish_module is not None:
+            tool_registry._MODULE_QUALNAMES[finish_tool_name] = (
+                registered_finish_module
+            )
+    assert isinstance(structured_finish, FinishTool)
+    assert structured_finish.response_schema == response_schema
+    assert "outcome" in structured_finish._get_tool_schema()["properties"]
     explicit_concurrency = StartConversationRequest.model_validate(
         {
             "workspace": {"kind": "LocalWorkspace", "working_dir": "/tmp"},
@@ -567,7 +609,6 @@ def main() -> None:
         }
     )
     assert explicit_concurrency.agent.tool_concurrency_limit == 4
-    assert explicit_concurrency.tool_module_qualnames == {}
     assert ParallelToolExecutor._resolve_lock_keys(  # noqa: SLF001
         DeclaredResources(keys=(), declared=False),
         SimpleNamespace(name="undeclared"),  # type: ignore[arg-type]
@@ -1093,7 +1134,9 @@ def main() -> None:
                 "bash_websocket_since_replay": False,
                 "bash_rest_compensation": True,
                 "start_field_count": len(start_fields),
-                "tool_count": len(EXPECTED_TOOL_MODULES),
+                "usable_tool_count": len(server_info.usable_tools),
+                "streaming_delta_delivery_is_subscriber_scoped": True,
+                "remote_structured_builtin_resolution": True,
                 "agent_definition_field_count": len(agent_definition_fields),
                 "agent_profile_field_count": len(agent_profile_fields),
                 "agent_profile_http_methods": profile_http_methods,

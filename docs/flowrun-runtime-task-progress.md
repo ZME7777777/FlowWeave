@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-75`
+> 下一可执行切片：`FR-76`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1062,14 +1062,14 @@ Environment Runtime image 和 Snapshot 继续引用原 digest，不就地漂移�
 `git diff --check`。确认现有 Conversation 原 ID reload、Plugin/MCP/Skill/Task/Condenser 和事件流契约在新镜像中
 保持正式可用。本切片独立提交，提交后停止。
 
-### FR-75 OpenHands 事件订阅隔离与远程结构化 Tool 收缩 — READY
+### FR-75 OpenHands 事件订阅隔离与远程结构化 Tool 收缩 — DONE
 
 依赖：`FR-74`。
 
 目标：利用 `1.44.0-6` 正式的按订阅者定向 delta 投递和远程结构化内置 Tool 解析，复核并删除 FlowWeave 中
 已经重复的广播隔离、Tool spec 展平或文本兼容逻辑；保留 FlowWeave 授权代理、安全投影和正式事件身份关联。
 
-### FR-76 OpenHands Profile、Secret、Condenser 与标题兼容收缩 — PENDING
+### FR-76 OpenHands Profile、Secret、Condenser 与标题兼容收缩 — READY
 
 依赖：`FR-75`。
 
@@ -1100,6 +1100,7 @@ dispatch 和远程标题生成修复，删除可由 OpenHands 生命周期接管
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-75 | 固定上游提交 `e38e02b38` 与 1.44.0 PubSub/WebSocket 源码取证；Runtime 镜像 contract check 行为探针；增强真实 smoke；Runtime/Agent Workspace/架构定向 pytest 141 passed；架构/源码供应 pytest 24 passed；受影响 Ruff、全量 Pyright 0 errors；任务状态唯一性与 `git diff --check` | PASS：OpenHands 仅向显式 opt-in 的 WebSocket 订阅者投递 `StreamingDeltaEvent`，普通内部订阅者不接收；FlowWeave 保留授权 relay 与隐藏推理过滤，不再承担或声明重复广播隔离。删除镜像门禁对进程级 Tool registry/module qualname 精确映射的耦合，改为实际清空 `FinishTool` 注册项后验证带 `response_schema` 的内置 Tool 仍由正式 built-in resolver 解析。平台未发现自建 Tool spec 展平旁路，故保留 Tool Policy、安全投影和正式事件身份关联。真实 confirmation、Condenser、Task 与第二容器原 ID reload 继续通过。 |
 | 2026-08-29 | FR-74 | 精确源码 commit/describe 与 codeload SHA-256；四包 1.44.0 lock；Runtime 无缓存构建、镜像 provenance、contract check；增强真实 smoke（confirmation、LLM condenser、Task 子 Agent、正式 pause handoff、第二容器按三个原 ID reload 且事件 ID 序列不变）；定向平台 pytest 255 passed；契约/架构/Compose 安全 36 passed；源码供应链/Plugin resolver/架构 35 passed；Agent Workspace 46 passed；OpenAPI 基线；受影响 Ruff、全量 Pyright 0 errors；Alembic head、任务状态唯一性与 git diff --check | PASS：基线固定为 commit 9a24f6c8866f353042a57df0514ccc900e3a0691、archive SHA-256 94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21 和四包 1.44.0；镜像无 overlay。正式 Tool 数增至 16，ask_oracle 仅登记为上游存在并默认禁用，未提前启用 Oracle/ACP。Plugin/MCP/Skill/Task/Condenser 与事件契约保持可用；外置 Workspace/Conversation 状态经正式 prepare-for-sandbox-pause 后由新容器恢复三个原 conversation ID，正式事件身份不变。附带修复既有跨模块内部仓储引用，改经 Catalog public façade；以纯类型收窄恢复 Pyright，并同步此前遗漏的 FR-69/FR-70 OpenAPI 快照。历史已发布 Environment/Snapshot digest 未改写。 |
 | 2026-08-28 | FR-73 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（折叠容器内根会话行固定 38px、根与 `ai-playbook` 折叠/展开、ARIA 与独立新建入口，1 passed）；Alembic head/current、任务状态唯一性与 `git diff --check` | PASS：会话行紧凑样式选择器已随 FR-72 的内容容器迁移，恢复 38px 两行栅格、标题截断和 hover/active 样式；折叠标题与独立“+”入口保持原行为，未改变任何平台或 OpenHands 契约。 |
 | 2026-08-28 | FR-72 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（根工作区与 `ai-playbook` 单击折叠/展开、ARIA 与独立新建入口，1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：分组标题现在是可访问的折叠控件，默认展开；根、活动及归档工作目录均复用同一行为。收起只隐藏对应会话列表，“+”保持独立可用；不写入浏览器或平台状态，也不触及 OpenHands、Runtime、工作区或 FlowRun 契约。 |
