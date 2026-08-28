@@ -222,6 +222,18 @@ async def put_agent_workspace_capabilities(
     )
 
 
+@router.post("/agent-workspaces/{workspace_id}/capabilities/{capability_version_id}/mcp-readiness")
+async def probe_agent_workspace_mcp_readiness(
+    workspace_id: str, capability_version_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.probe_workspace_mcp_readiness(
+            session, workspace_id, capability_version_id
+        ),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/runtime")
 async def get_agent_workspace_runtime(workspace_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: conversations.runtime_status(session, workspace_id))

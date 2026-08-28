@@ -162,6 +162,26 @@ class OpenHandsRuntime:
                     raise ValueError("OpenHands response must be an object")
                 return cast(dict[str, Any], value)
         except httpx.HTTPStatusError as exc:
+            # OpenHands initializes configured MCP servers before accepting the
+            # first user event.  Preserve only this explicit, stable failure
+            # class so callers can distinguish a known MCP outage from an
+            # ambiguous response loss; never surface the upstream traceback.
+            if path == "/api/conversations" and exc.response.status_code >= 500:
+                body = exc.response.text
+                if "MCPTimeoutError" in body:
+                    raise DomainError(
+                        "MCP_INITIALIZATION_UNAVAILABLE",
+                        "A configured MCP server timed out during initialization",
+                        503,
+                        {"error_kind": "timeout"},
+                    ) from exc
+                if "MCPConnectionError" in body or "MCPConnectionFailed" in body:
+                    raise DomainError(
+                        "MCP_INITIALIZATION_UNAVAILABLE",
+                        "A configured MCP server could not connect during initialization",
+                        503,
+                        {"error_kind": "connection"},
+                    ) from exc
             if exc.response.status_code == 400 and path.endswith("/load_plugin"):
                 raise DomainError(
                     "AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE",

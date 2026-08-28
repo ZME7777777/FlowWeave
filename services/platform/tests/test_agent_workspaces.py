@@ -889,10 +889,15 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
 
     class CapturingRuntime(MockRuntime):
         request = None
+        mcp_probe_request = None
 
         def create_conversation(self, request):
             self.request = request
             return super().create_conversation(request)
+
+        def probe_mcp(self, request):
+            self.mcp_probe_request = request
+            return super().probe_mcp(request)
 
     monkeypatch.setattr(
         conversations,
@@ -917,6 +922,16 @@ def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
             db,
             workspace.id,
             (plugin["capability_id"], mcp["capability_id"]),
+        )
+        readiness = conversations.probe_workspace_mcp_readiness(
+            db, workspace.id, mcp["capability_id"]
+        )
+        assert readiness["state"] == "READY"
+        assert readiness["error_kind"] is None
+        assert runtime.mcp_probe_request is not None
+        assert runtime.mcp_probe_request.server.name == "agent-local"
+        assert runtime.mcp_probe_request.runtime_resource_name == (
+            f"agent-workspace-{workspace.id}"
         )
         created = conversations.create_conversation(
             db,
@@ -1579,6 +1594,51 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         assert db.scalar(select(AgentConversationBinding)) is None
         assert db.scalar(select(AgentConversationCommand)) is None
         assert runtime.deleted == 1
+        assert conversations.list_conversations(db, workspace.id) == []
+
+
+def test_agent_workspace_bootstrap_mcp_initialization_failure_is_not_ambiguous(
+    settings, db_session_factory, monkeypatch
+):
+    class FailingMcpInitializationRuntime(MockRuntime):
+        def create_conversation(self, request):
+            del request
+            raise DomainError(
+                "MCP_INITIALIZATION_UNAVAILABLE",
+                "upstream MCP timeout",
+                503,
+                {"error_kind": "timeout"},
+            )
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    with (
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(FailingMcpInitializationRuntime()),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        with pytest.raises(DomainError) as raised:
+            conversations.bootstrap_conversation(
+                db,
+                workspace.id,
+                work_directory_id=None,
+                model_provider_id=workspace.default_model_provider_id,
+                content="首条消息",
+                idempotency_key="draft-mcp-timeout",
+            )
+        assert raised.value.code == "AGENT_MCP_UNAVAILABLE"
+        assert raised.value.details == {"error_kind": "timeout", "capability_keys": []}
+        assert db.scalar(select(AgentConversationBinding)) is None
+        assert db.scalar(select(AgentConversationCommand)) is None
         assert conversations.list_conversations(db, workspace.id) == []
 
 

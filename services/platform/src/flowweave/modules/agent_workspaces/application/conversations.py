@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import re
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from flowweave.runtime.base import (
     RuntimeAgentSpec,
     RuntimeCondenser,
     RuntimeHandle,
+    RuntimeMCPProbeRequest,
     RuntimeProvider,
     RuntimeTool,
     StartAttemptRequest,
@@ -227,6 +229,104 @@ def replace_workspace_capabilities(
     workspace.updated_at = now()
     db.flush()
     return workspace_capabilities(db, workspace.id)
+
+
+def _mcp_readiness_error(error_kind: str | None, capability_keys: tuple[str, ...]) -> DomainError:
+    """Return a safe, product-facing error for an MCP connection failure."""
+
+    names = "、".join(f"「{key}」" for key in capability_keys) or "已选 MCP"
+    if error_kind == "timeout":
+        message = f"MCP {names} 连接超时；请在能力管理中重新检测后再发送消息。"
+    elif error_kind == "connection":
+        message = f"MCP {names} 无法连接；请在能力管理中重新检测后再发送消息。"
+    else:
+        message = f"MCP {names} 当前不可用；请在能力管理中重新检测后再发送消息。"
+    return DomainError(
+        "AGENT_MCP_UNAVAILABLE",
+        message,
+        503,
+        {"error_kind": error_kind or "unknown", "capability_keys": list(capability_keys)},
+    )
+
+
+def _binding_mcp_keys(db: Session, binding: AgentConversationBinding) -> tuple[str, ...]:
+    return tuple(
+        reference.capability_key
+        for reference in db.scalars(
+            select(AgentConversationCapability)
+            .where(
+                AgentConversationCapability.binding_id == binding.id,
+                AgentConversationCapability.capability_type == "MCP",
+            )
+            .order_by(AgentConversationCapability.position)
+        )
+    )
+
+
+def probe_workspace_mcp_readiness(
+    db: Session, workspace_id: str, capability_version_id: str
+) -> dict[str, Any]:
+    """Probe one published MCP from the active Agent Workspace Runtime.
+
+    The probe deliberately does not create a Conversation.  It materializes the
+    immutable package under the Workspace's read-only capability mount so its
+    network and filesystem context exactly match the one used by future
+    conversations.
+    """
+
+    workspace = _workspace(db, workspace_id)
+    published = resolve_version(db, capability_version_id)
+    if published.package.capability_type != "MCP":
+        raise DomainError("MCP_CAPABILITY_REQUIRED", "只能检测 MCP 能力", 422)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
+        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+    sandbox = db.scalar(
+        select(ManagedSandbox).where(
+            ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+            ManagedSandbox.owner_id == workspace.id,
+            ManagedSandbox.generation == runtime.active_generation,
+            ManagedSandbox.desired_state == "RUNNING",
+        )
+    )
+    if sandbox is None or not sandbox.backend_resource_name:
+        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+    allocation = runtime_allocation_for_agent_workspace(db, workspace.id)
+    probe_id = str(uuid4())
+    host_root = (
+        Path(get_settings().workspace_root).resolve()
+        / allocation.relative_root
+        / "capabilities"
+        / "mcp-readiness"
+        / probe_id
+    )
+    runtime_root = Path("/runtime/capabilities/mcp-readiness") / probe_id
+    capability = _frozen_runtime_capability(db, published, "MCP")
+    try:
+        _, _, servers = materialize_agent_workspace_capabilities(
+            (capability,), host_root=host_root, runtime_root=runtime_root
+        )
+        result = get_runtime().probe_mcp(
+            RuntimeMCPProbeRequest(
+                server=servers[0],
+                base_url=f"http://{sandbox.backend_resource_name}:8000",
+                runtime_resource_name=sandbox.backend_resource_name,
+            )
+        )
+    except DomainError:
+        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+    finally:
+        # The MCP test endpoint has consumed the materialized configuration
+        # synchronously.  The temporary immutable probe directory is never a
+        # Conversation capability and must not accumulate in the allocation.
+        shutil.rmtree(host_root, ignore_errors=True)
+    return {
+        "state": "READY" if result.ok else "UNAVAILABLE",
+        "error_kind": None if result.ok else (result.error_kind or "unknown"),
+        "checked_at": now().isoformat(),
+    }
 
 
 def default_workspace(db: Session) -> dict[str, Any]:
@@ -1006,6 +1106,13 @@ def bootstrap_conversation(
         binding.bootstrap_parent_event_id = previous_event_id
         db.commit()
     except DomainError as exc:
+        if exc.code == "MCP_INITIALIZATION_UNAVAILABLE":
+            error = _mcp_readiness_error(
+                str(exc.details.get("error_kind") or "unknown"),
+                _binding_mcp_keys(db, binding),
+            )
+            _record_bootstrap_failure(db, binding, command, error)
+            raise error from exc
         if exc.status >= 500:
             command.last_error_code = exc.code
             command.failure_summary = "Conversation creation requires retry with the original UUID"

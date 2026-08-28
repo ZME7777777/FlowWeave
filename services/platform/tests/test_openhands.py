@@ -481,6 +481,37 @@ def test_openhands_probes_mcp_through_target_runtime_and_redacts_oauth_state(
     assert raised.value.code == "MCP_OAUTH_LIFECYCLE_REQUIRED"
 
 
+def test_openhands_classifies_explicit_mcp_initialization_timeout(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    response = openhands_module.httpx.Response(
+        500,
+        text="MCPTimeoutError: MCP tool listing timed out after 30 seconds",
+        request=openhands_module.httpx.Request("POST", "http://runtime:8000/api/conversations"),
+    )
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request(self, *_args, **_kwargs):
+            return response
+
+    monkeypatch.setattr(openhands_module.httpx, "Client", lambda **_kwargs: FakeClient())
+    with pytest.raises(DomainError) as raised:
+        runtime._request(
+            "POST",
+            "/api/conversations",
+            base_url="http://runtime:8000",
+            session_api_key="session-key",
+            json={},
+        )
+    assert raised.value.code == "MCP_INITIALIZATION_UNAVAILABLE"
+    assert raised.value.details == {"error_kind": "timeout"}
+
+
 def test_openhands_maps_formal_mcp_oauth_job_routes(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     calls: list[tuple[str, str, dict[str, object]]] = []

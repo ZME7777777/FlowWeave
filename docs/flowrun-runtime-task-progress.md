@@ -983,6 +983,30 @@ Runtime、工作区或 FlowRun 协议。
 恢复记录，自动以同一 key 有限次执行原生身份对账；刷新后恢复该草稿并继续对账。成功后清理恢复记录并导航到
 激活的会话；仍未确认时提供明确的安全重试提示，保证不会重复发送。服务端错误文案不再要求用户刷新页面。
 
+### FR-70 Agent Workspace MCP 就绪状态与首发故障隔离 — DONE
+
+依赖：`FR-69`。
+
+目标：Agent Workspace 的能力管理必须在同一受管 OpenHands Runtime 中，以正式
+`POST /api/mcp/test` 显示每个选中 MCP 的检测中、已连接或不可用状态；失败信息只说明超时、连接失败或未知，
+不得返回 URL、Secret、原始异常或 MCP Tool 内容。保存新会话默认能力前必须复检所有选中 MCP，任何一个
+不可用均拒绝保存，避免把已知坏配置冻结到下一条首发消息。检测不创建 Conversation、不写入消息、事件、HEAD
+或 Runtime 私有状态；能力管理器应提供重新检测入口。
+
+首条 bootstrap 若遇到已经明确可归类的 MCP 初始化故障，必须删除不可见预留并返回对应 MCP 可用性错误，不能
+伪装成不确定投递或安全核对。真正网络响应丢失的原生 event identity 对账与 `FR-69` 的稳定草稿 UUID 语义保持
+不变。不得修改 OpenHands 源码或用平台私有执行器模拟 MCP。
+
+验收：新增 Agent Workspace MCP readiness/首条失败清理定向 pytest；Web lint/typecheck/production build
+与定向 Playwright 覆盖检测中、已连接、失败提示、重新检测和阻止保存；固定 OpenHands MCP probe 契约、
+`git diff --check`、Alembic head 与任务状态唯一性通过。完成后单独提交并部署 API、Worker（如受影响）和 Web。
+
+完成：能力管理器对每个已选 MCP 自动显示“检测中 / 已连接 / 连接超时、连接失败或不可用”，并提供
+“重新检测 MCP”。检测通过当前 Agent Workspace 的受管 OpenHands Runtime 正式 `POST /api/mcp/test`，不创建
+Conversation 或写入消息/事件；保存默认能力或向当前会话追加能力前会重新检测，失败 MCP 不会被保存。
+OpenHands 明确的 `MCPTimeoutError` 和连接错误在首条 bootstrap 中会释放不可见预留、返回对应 MCP 名称与安全
+状态，保留真正不确定投递的原生 event identity 对账。API 与 Web 已重建部署，全部服务健康。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -999,6 +1023,7 @@ Runtime、工作区或 FlowRun 协议。
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-70 | Agent Workspace MCP readiness 与 MCP 初始化失败清理定向 pytest（2 passed）；OpenHands MCP probe/显式 timeout 映射定向 pytest（2 passed）；Web ESLint/typecheck/production build；受影响 Python `py_compile`、Ruff check、`git diff --check`；API/Web 镜像重建、部署后 health/OpenAPI 路由检查 | PASS：MCP readiness 通过当前受管 Agent Runtime 调用固定 OpenHands `POST /api/mcp/test`，不创建 Conversation；已选 MCP 在能力管理中显示检测中、已连接或连接失败，并可重新检测。保存前复检，连接失败则拒绝保存。明确 `MCPTimeoutError` 不再被归为首条消息不确定投递，隐藏预留会被清理并返回安全 MCP 错误；真实网络响应不确定仍复用 FR-69 草稿 UUID 对账。API、Web、Runtime Provider、Worker 和 Postgres 均健康。 |
 | 2026-08-28 | FR-69 | Web ESLint/typecheck/production build；源码 Vite 定向 Playwright（首发 504、刷新、同 key 对账后创建会话）；Agent Workspace bootstrap 定向 pytest（3 passed）；`git diff --check` 与任务状态唯一性 | PASS：首条消息的请求体 conversation UUID 与 Idempotency-Key 一致；模拟首次投递不确定后刷新页面，浏览器恢复同一草稿并再次使用同一 key，对账成功后进入正式会话。平台既有三条 bootstrap 语义回归全部通过，未重发 native user event。 |
 | 2026-08-28 | FR-67 | Web ESLint/typecheck/production build；源码 Vite 定向 Playwright（历史会话能力入口 1 passed）；`git diff --check` 与任务状态唯一性 | PASS：`$` 有 Skill 候选与 `/` 无匹配候选时均显示管理入口；当前会话已注册 Skill 以禁用状态展示并明确不能取消，新 Skill 仍可选择注册。 |
 | 2026-08-28 | FR-68 | Web ESLint/typecheck/production build；源码 Vite 桌面视口布局测量；Alembic head；`git diff --check` 与任务状态唯一性 | PASS：1440×900 下 Agent 路由外壳、文档和三栏高度均受限于视口；左侧会话列表与中间 Conversation Surface 保持独立 `overflow:auto`，左下能力入口仍在 rail 固定行，右侧摘要/工具内容保持自身滚动边界。唯一 Alembic head 为 `0070_agent_caps`。 |

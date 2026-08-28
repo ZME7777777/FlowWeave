@@ -6,7 +6,7 @@ import { Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, File
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, agentWorkspaceFileUrl, agentWorkspaceTerminalUrl, api, randomId, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, AgentWorkspaceMcpReadiness, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
 import './agent-workbench.css';
 import './agent-workbench-layout.css';
 
@@ -133,6 +133,8 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentWorkspaceMcpReadiness | undefined>>({});
+  const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
   const catalogQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
   const enabledQuery = useQuery({
     queryKey: ['agent-workspace-capabilities', workspaceId],
@@ -154,8 +156,38 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
     );
   }, [capabilities, kind, query]);
   const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
+  const selectedMcpIds = useMemo(() => selectedIds.filter(id => byId.get(id)?.capability_type === 'MCP'), [byId, selectedIds]);
+  const checkMcpReadiness = useCallback(async (ids: string[]) => {
+    if (!ids.length) return [] as Array<readonly [string, AgentWorkspaceMcpReadiness]>;
+    setCheckingMcpIds(current => new Set([...current, ...ids]));
+    const results = await Promise.all(ids.map(async id => {
+      try {
+        return [id, await api.agentWorkspaceMcpReadiness(workspaceId, id)] as const;
+      } catch {
+        return [id, { state: 'UNAVAILABLE', error_kind: 'unknown', checked_at: new Date().toISOString() } satisfies AgentWorkspaceMcpReadiness] as const;
+      }
+    }));
+    setMcpReadiness(current => ({ ...current, ...Object.fromEntries(results) }));
+    setCheckingMcpIds(current => {
+      const next = new Set(current);
+      ids.forEach(id => next.delete(id));
+      return next;
+    });
+    return results;
+  }, [workspaceId]);
+  useEffect(() => {
+    if (selectedMcpIds.length) void checkMcpReadiness(selectedMcpIds);
+  }, [checkMcpReadiness, selectedMcpIds]);
   const save = useMutation({
     mutationFn: async () => {
+      const readiness = await checkMcpReadiness(selectedMcpIds);
+      const unavailable = readiness.find(([, status]) => status.state !== 'READY');
+      if (unavailable) {
+        const [id, status] = unavailable;
+        const capability = byId.get(id);
+        const reason = status.error_kind === 'timeout' ? '连接超时' : status.error_kind === 'connection' ? '无法连接' : '暂时不可用';
+        throw new Error(`MCP「${capability?.capability_key ?? '未命名'}」${reason}，请重新检测后再保存。`);
+      }
       if (!bindingId) return api.replaceAgentWorkspaceCapabilities(workspaceId, selectedIds);
       const loaded = new Set((conversationCapabilities ?? []).map(item => item.id));
       let latest: AgentConversation | undefined;
@@ -194,9 +226,9 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
       <header><div><span className="eyebrow">{bindingId ? 'CURRENT AGENT SESSION' : 'AGENT WORKSPACE'}</span><h2 id="agent-capability-title">能力</h2><p>{bindingId ? '为当前会话注册新的已发布能力。Skill、MCP 和 Plugin 会立即通过原生 OpenHands Plugin Loader 生效；已注册能力不能取消或删除。' : '选择新会话默认挂载的已发布能力。每个会话会冻结其创建时的版本。'}</p></div><button type="button" aria-label="关闭插件管理" disabled={save.isPending} onClick={onClose}><X size={18}/></button></header>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', '全部'], ['PLUGIN', '插件'], ['MCP', 'MCP'], ['SKILL', '技能']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div>
       <div className="agent-capability-summary"><span>{bindingId ? '已注册' : '已启用'} <b>{selectedIds.length}</b> / 30</span><span>{bindingId ? '可继续注册新能力；已注册能力已锁定，不能取消或删除。' : '全局默认仅作用于后续新会话；可随时重新选择和保存。'}</span></div>
-      <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>没有匹配的已发布能力。</p> : visible.map(item => { const checked = selectedIds.includes(item.id); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? `${item.capability_key}（已注册，不能取消）` : undefined} title={locked ? '该能力已注册到当前会话，不能取消或删除。' : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{locked ? '已注册到当前会话，不能取消或删除。' : item.description || item.filename}</small><em>{item.capability_type === 'SKILL' ? '技能' : item.capability_type}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
+      <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>没有匹配的已发布能力。</p> : visible.map(item => { const checked = selectedIds.includes(item.id); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); const isMcp = item.capability_type === 'MCP'; const readiness = mcpReadiness[item.id]; const checking = isMcp && checkingMcpIds.has(item.id); const readinessLabel = !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用'; const detail = locked ? '已注册到当前会话，不能取消或删除。' : isMcp && checked && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；不会保存为新会话默认能力。` : item.description || item.filename; return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? `${item.capability_key}（已注册，不能取消）` : undefined} title={locked ? '该能力已注册到当前会话，不能取消或删除。' : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{detail}</small><em className={isMcp && checked ? `mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}` : undefined}>{readinessLabel}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
       {save.error && <div className="agent-capability-error"><p>{save.error.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。新会话会自动带入当前“新会话默认能力”；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={onCreateEnhancedConversation}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
-      <footer><button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || (!bindingId && enabledQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '保存默认能力'}</button></footer>
+      <footer>{selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0 || (!bindingId && enabledQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '保存默认能力'}</button></footer>
     </section>
   </div>;
 }

@@ -356,6 +356,11 @@ export interface AgentWorkspaceCapability {
   capability_key: string;
   digest: string;
 }
+export interface AgentWorkspaceMcpReadiness {
+  state: 'READY' | 'UNAVAILABLE';
+  error_kind: 'timeout' | 'connection' | 'unknown' | null;
+  checked_at: string;
+}
 
 export interface AgentConversationInputReadiness { ready: boolean }
 export interface AgentPendingConfirmationAction {
