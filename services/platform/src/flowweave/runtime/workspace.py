@@ -1167,3 +1167,72 @@ def materialize_node_workspace(
         json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
     )
     return skills, plugins, mcp_servers, str(runtime_root)
+
+
+def materialize_agent_workspace_capabilities(
+    capabilities: tuple[dict[str, Any], ...],
+    *,
+    host_root: Path,
+    runtime_root: Path,
+) -> tuple[tuple[RuntimeSkill, ...], tuple[RuntimePlugin, ...], tuple[RuntimeMCP, ...]]:
+    """Materialize immutable Agent Workspace capability versions.
+
+    ``host_root`` is a binding-specific child of the Runtime's already
+    read-only capability mount.  Inputs have been resolved from catalog
+    versions by the caller; this function only reuses the same package/hash
+    validation path as FlowRun materialization.
+    """
+
+    if host_root.name in {"", ".", ".."} or host_root.parent.is_symlink():
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Agent Workspace capability directory is invalid",
+            409,
+        )
+    _replace_managed_directory(host_root, host_root.parent)
+    expected = {"SKILL", "MCP", "PLUGIN"}
+    if any(str(item.get("capability_type") or "") not in expected for item in capabilities):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "An Agent Workspace capability type is unsupported",
+            409,
+        )
+    skills = tuple(
+        _extract_skill(item, host_root, runtime_root)
+        for item in capabilities
+        if item["capability_type"] == "SKILL"
+    )
+    plugins = tuple(
+        _extract_plugin(item, host_root, runtime_root)
+        for item in capabilities
+        if item["capability_type"] == "PLUGIN"
+    )
+    mcp_servers = tuple(
+        _materialize_mcp(item, host_root, runtime_root)
+        for item in capabilities
+        if item["capability_type"] == "MCP"
+    )
+    manifest = {
+        "schema_version": 1,
+        "runtime_path": str(runtime_root),
+        "capabilities": [
+            {
+                "type": item["capability_type"],
+                "key": item["capability_key"],
+                "version_id": item["capability_version_id"],
+                "digest": item["digest"],
+            }
+            for item in capabilities
+        ],
+    }
+    _atomic_write(
+        host_root / ".flowweave-manifest.json",
+        json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+    # The sandbox bind-mounts the allocation's ``capabilities`` root read-only.
+    # Do not chmod the control-plane files here: the host must retain enough
+    # write permission to atomically replace a conversation manifest and to
+    # reclaim it after deletion.  Docker's read-only mount is the Runtime
+    # isolation boundary, while package digests and the frozen manifest protect
+    # identity at materialization time.
+    return skills, plugins, mcp_servers

@@ -42,6 +42,10 @@ class AgentWorkspaceSettingsWrite(_Write):
     default_model_provider_id: str | None = Field(default=None, max_length=36)
 
 
+class AgentWorkspaceCapabilitiesWrite(_Write):
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
+
+
 AgentWorkDirectoryPathWrite = Annotated[str, Field(min_length=1, max_length=500)]
 
 
@@ -191,6 +195,25 @@ async def patch_agent_workspace_settings(
         db,
         lambda session: conversations.update_workspace_settings(
             session, workspace_id, payload.default_model_provider_id
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/capabilities")
+async def get_agent_workspace_capabilities(workspace_id: str, db: Db) -> list[dict[str, str]]:
+    return await run_sync(
+        db, lambda session: conversations.workspace_capabilities(session, workspace_id)
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/capabilities")
+async def put_agent_workspace_capabilities(
+    workspace_id: str, payload: AgentWorkspaceCapabilitiesWrite, db: Db
+) -> list[dict[str, str]]:
+    return await run_sync(
+        db,
+        lambda session: conversations.replace_workspace_capabilities(
+            session, workspace_id, tuple(payload.capability_version_ids)
         ),
     )
 

@@ -5,11 +5,13 @@ New code imports mappings from each module's ``infrastructure.models``.
 
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationCapability,
     AgentConversationCommand,
     AgentWorkDirectory,
     AgentWorkDirectoryPath,
     AgentWorkDirectoryVersion,
     AgentWorkspace,
+    AgentWorkspaceCapability,
     AgentWorkspaceRuntime,
     AgentWorkspaceRuntimeAllocation,
     AgentWorkspaceRuntimeGeneration,
@@ -84,6 +86,8 @@ from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunSta
 __all__ = (
     "ArtifactVersion",
     "AgentConversationBinding",
+    "AgentConversationCapability",
+    "AgentWorkspaceCapability",
     "AgentConversationCommand",
     "AgentWorkDirectory",
     "AgentWorkDirectoryPath",

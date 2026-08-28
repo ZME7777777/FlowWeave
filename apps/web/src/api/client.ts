@@ -1,7 +1,7 @@
 import type {
   AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceDetails, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -115,6 +115,10 @@ export const api = {
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
   updateAgentWorkspaceSettings: (id: string, default_model_provider_id: string | null) =>
     request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}/settings`, json('PATCH', { default_model_provider_id })),
+  agentWorkspaceCapabilities: (id: string) =>
+    request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`),
+  replaceAgentWorkspaceCapabilities: (id: string, capability_version_ids: string[]) =>
+    request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`, json('PUT', { capability_version_ids })),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>

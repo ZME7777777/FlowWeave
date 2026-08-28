@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
+import json
 import subprocess
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -50,6 +54,7 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
+from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import BackgroundTask, ManagedSandbox, TaskState
 from flowweave.shared.settings import settings_context
@@ -708,6 +713,170 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
         )
 
 
+def test_agent_workspace_selected_skill_is_frozen_and_mounted(
+    settings, container, db_session_factory, monkeypatch, skill_capability
+):
+    """A published workspace Skill reaches the native AgentSpec unchanged."""
+
+    class CapturingRuntime(MockRuntime):
+        request = None
+
+        def create_conversation(self, request):
+            self.request = request
+            return super().create_conversation(request)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CapturingRuntime()
+    with (
+        settings_context(settings),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        selected = conversations.replace_workspace_capabilities(
+            db, workspace.id, (skill_capability["capability_id"],)
+        )
+        created = conversations.create_conversation(
+            db, workspace.id, "带 Skill 的会话", workspace.default_model_provider_id, "skill-key"
+        )
+
+        assert selected == created["capabilities"]
+        assert runtime.request is not None
+        assert [skill.name for skill in runtime.request.agent_spec.skills] == ["test-skill"]
+        assert runtime.request.agent_spec.skills[0].content == "# Test Skill\n"
+        assert runtime.request.agent_spec.plugins == ()
+        assert runtime.request.agent_spec.mcp_servers == ()
+
+        # Later workspace-default changes do not alter the already native
+        # conversation's frozen capability provenance.
+        conversations.replace_workspace_capabilities(db, workspace.id, ())
+        frozen = conversations.get_conversation(db, workspace.id, created["id"])[
+            "capabilities"
+        ]
+        assert frozen == selected
+
+
+def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
+    settings, client, container, db_session_factory, monkeypatch
+):
+    """Published Plugin and MCP versions reach the native AgentSpec."""
+
+    plugin_archive = io.BytesIO()
+    with zipfile.ZipFile(plugin_archive, "w") as archive:
+        archive.writestr(
+            ".plugin/plugin.json",
+            json.dumps({"name": "agent-review", "version": "1.0.0"}),
+        )
+        archive.writestr("commands/review.md", "# Review\n")
+    plugin_validation = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "PLUGIN",
+            "filename": "agent-review.zip",
+            "content_base64": base64.b64encode(plugin_archive.getvalue()).decode(),
+        },
+    )
+    assert plugin_validation.status_code == 200, plugin_validation.text
+    plugin_commit = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": plugin_validation.json()["import_token"]},
+    )
+    assert plugin_commit.status_code == 201, plugin_commit.text
+    plugin = plugin_commit.json()["capabilities"][0]
+
+    mcp_validation = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "MCP",
+            "filename": "agent-mcp.json",
+            "content_base64": base64.b64encode(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "agent-local": {
+                                "transport": "stdio",
+                                "command": "python",
+                                "args": ["-m", "agent_server"],
+                            }
+                        }
+                    }
+                ).encode()
+            ).decode(),
+        },
+    )
+    assert mcp_validation.status_code == 200, mcp_validation.text
+    mcp_commit = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": mcp_validation.json()["import_token"]},
+    )
+    assert mcp_commit.status_code == 201, mcp_commit.text
+    mcp = mcp_commit.json()["capabilities"][0]
+
+    class CapturingRuntime(MockRuntime):
+        request = None
+
+        def create_conversation(self, request):
+            self.request = request
+            return super().create_conversation(request)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CapturingRuntime()
+    with (
+        settings_context(settings),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        selected = conversations.replace_workspace_capabilities(
+            db,
+            workspace.id,
+            (plugin["capability_id"], mcp["capability_id"]),
+        )
+        created = conversations.create_conversation(
+            db,
+            workspace.id,
+            "Plugin MCP 会话",
+            workspace.default_model_provider_id,
+            "plugin-mcp-key",
+        )
+
+        assert created["capabilities"] == selected
+        assert runtime.request is not None
+        assert [item.name for item in runtime.request.agent_spec.plugins] == ["agent-review"]
+        plugin_source = runtime.request.agent_spec.plugins[0].source
+        assert plugin_source.endswith(f"/plugins/agent-review-{plugin['capability_id']}")
+        assert [item.name for item in runtime.request.agent_spec.mcp_servers] == ["agent-local"]
+        assert runtime.request.agent_spec.mcp_servers[0].config == {
+            "transport": "stdio",
+            "command": "python",
+            "args": ["-m", "agent_server"],
+            "cwd": runtime.request.agent_spec.mcp_servers[0].workspace_path,
+        }
+        assert runtime.request.agent_spec.skills == ()
+
+
 def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
     settings, db_session_factory
 ):
@@ -823,7 +992,18 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
                 db, item.id, str(attachment["path"]), binding_id=other["id"]
             )
         conversations.message(
-            db, item.id, owner["id"], "", ({"path": str(attachment["path"]), "filename": "requirements.pdf", "mime_type": "application/pdf", "byte_size": 8},)
+            db,
+            item.id,
+            owner["id"],
+            "",
+            (
+                {
+                    "path": str(attachment["path"]),
+                    "filename": "requirements.pdf",
+                    "mime_type": "application/pdf",
+                    "byte_size": 8,
+                },
+            ),
         )
 
         details = workspace.details(db, item.id, binding_id=owner["id"])

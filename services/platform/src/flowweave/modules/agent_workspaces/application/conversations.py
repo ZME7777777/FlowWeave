@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import re
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -10,14 +11,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_workspaces.application import work_directories
+from flowweave.modules.agent_workspaces.application.service import (
+    runtime_allocation_for_agent_workspace,
+)
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationCapability,
     AgentConversationCommand,
     AgentConversationMessageAttachment,
     AgentWorkDirectoryVersion,
     AgentWorkspace,
+    AgentWorkspaceCapability,
     AgentWorkspaceRuntime,
 )
+from flowweave.modules.catalog.application.capability_repository import resolve_version
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
@@ -33,6 +40,7 @@ from flowweave.runtime.base import (
 from flowweave.runtime.contract import agent_workspace_runtime_contract
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.request import runtime_provider
+from flowweave.runtime.workspace import materialize_agent_workspace_capabilities
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.settings import get_settings
@@ -101,6 +109,19 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
         "work_directory_version_id": item.work_directory_version_id,
         "work_directory_id": work_directory_id,
         "working_directory": item.working_directory,
+        "capabilities": [
+            {
+                "id": capability.capability_version_id,
+                "capability_type": capability.capability_type,
+                "capability_key": capability.capability_key,
+                "digest": capability.digest,
+            }
+            for capability in db.scalars(
+                select(AgentConversationCapability)
+                .where(AgentConversationCapability.binding_id == item.id)
+                .order_by(AgentConversationCapability.position)
+            )
+        ],
         "streaming_callback_ready": item.streaming_callback_ready,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
@@ -117,6 +138,91 @@ def _workspace_dict(workspace: AgentWorkspace) -> dict[str, Any]:
         "desired_state": workspace.desired_state,
         "updated_at": workspace.updated_at.isoformat(),
     }
+
+
+def _capability_dict(
+    reference: AgentWorkspaceCapability | AgentConversationCapability,
+) -> dict[str, str]:
+    return {
+        "id": reference.capability_version_id,
+        "capability_type": reference.capability_type,
+        "capability_key": reference.capability_key,
+        "digest": reference.digest,
+    }
+
+
+def workspace_capabilities(db: Session, workspace_id: str) -> list[dict[str, str]]:
+    _workspace(db, workspace_id)
+    return [
+        _capability_dict(reference)
+        for reference in db.scalars(
+            select(AgentWorkspaceCapability)
+            .where(AgentWorkspaceCapability.workspace_id == workspace_id)
+            .order_by(AgentWorkspaceCapability.position)
+        )
+    ]
+
+
+def _validated_capabilities(
+    db: Session, capability_version_ids: tuple[str, ...]
+) -> tuple[tuple[Any, ...], ...]:
+    if len(capability_version_ids) > 30:
+        raise DomainError("AGENT_WORKSPACE_CAPABILITY_LIMIT", "最多启用 30 项能力", 422)
+    selected: list[tuple[Any, ...]] = []
+    seen_versions: set[str] = set()
+    seen_names: set[tuple[str, str]] = set()
+    for version_id in capability_version_ids:
+        if version_id in seen_versions:
+            raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
+        published = resolve_version(db, version_id)
+        capability_type = published.package.capability_type
+        identity = (capability_type, published.package.capability_key)
+        if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
+            raise DomainError(
+                "AGENT_CONVERSATION_CAPABILITY_UNSUPPORTED",
+                "Agent 会话仅支持挂载 Skill、MCP 或 Plugin",
+                422,
+                {"capability_version_id": version_id},
+            )
+        if identity in seen_names:
+            raise DomainError(
+                "AGENT_CONVERSATION_CAPABILITY_CONFLICT",
+                "同类型同名称能力只能选择一个版本",
+                422,
+                {"capability_key": published.package.capability_key},
+            )
+        seen_versions.add(version_id)
+        seen_names.add(identity)
+        selected.append((published, capability_type))
+    return tuple(selected)
+
+
+def replace_workspace_capabilities(
+    db: Session, workspace_id: str, capability_version_ids: tuple[str, ...]
+) -> list[dict[str, str]]:
+    workspace = _workspace(db, workspace_id)
+    selected = _validated_capabilities(db, capability_version_ids)
+    for reference in db.scalars(
+        select(AgentWorkspaceCapability)
+        .where(AgentWorkspaceCapability.workspace_id == workspace.id)
+        .with_for_update()
+    ):
+        db.delete(reference)
+    db.flush()
+    for position, (published, capability_type) in enumerate(selected):
+        db.add(
+            AgentWorkspaceCapability(
+                workspace_id=workspace.id,
+                capability_version_id=published.version.id,
+                capability_type=capability_type,
+                capability_key=published.package.capability_key,
+                digest=published.version.digest,
+                position=position,
+            )
+        )
+    workspace.updated_at = now()
+    db.flush()
+    return workspace_capabilities(db, workspace.id)
 
 
 def default_workspace(db: Session) -> dict[str, Any]:
@@ -229,6 +335,117 @@ def _system_context(working_directory: str) -> str:
     )
 
 
+def _frozen_capabilities(
+    db: Session, binding: AgentConversationBinding
+) -> tuple[dict[str, Any], ...]:
+    """Rebuild only the catalog versions frozen on this binding."""
+
+    frozen: list[dict[str, Any]] = []
+    for reference in db.scalars(
+        select(AgentConversationCapability)
+        .where(AgentConversationCapability.binding_id == binding.id)
+        .order_by(AgentConversationCapability.position)
+    ):
+        published = resolve_version(db, reference.capability_version_id, include_retired=True)
+        if (
+            published.package.capability_type != reference.capability_type
+            or published.package.capability_key != reference.capability_key
+            or published.version.digest != reference.digest
+        ):
+            raise DomainError(
+                "AGENT_CONVERSATION_CAPABILITY_IDENTITY_DRIFT",
+                "会话冻结能力身份校验失败",
+                409,
+            )
+        runtime_config = published.runtime_config()
+        frozen.append(
+            {
+                "capability_type": reference.capability_type,
+                "capability_key": reference.capability_key,
+                # Materializers consume the complete immutable runtime config:
+                # the Version document alone intentionally omits the blob's
+                # storage key and digest needed to verify and unpack packages.
+                "normalized_config": dict(runtime_config),
+                **runtime_config,
+            }
+        )
+    return tuple(frozen)
+
+
+def _runtime_capabilities(
+    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
+) -> tuple[tuple[Any, ...], tuple[Any, ...], tuple[Any, ...]]:
+    frozen = _frozen_capabilities(db, binding)
+    if not frozen:
+        return (), (), ()
+    allocation = runtime_allocation_for_agent_workspace(db, workspace.id)
+    host_root = (
+        Path(get_settings().workspace_root).resolve()
+        / allocation.relative_root
+        / "capabilities"
+        / "conversations"
+        / binding.id
+    )
+    runtime_root = Path("/runtime/capabilities/conversations") / binding.id
+    return materialize_agent_workspace_capabilities(
+        frozen, host_root=host_root, runtime_root=runtime_root
+    )
+
+
+def _freeze_capabilities(
+    db: Session, binding: AgentConversationBinding, capability_version_ids: tuple[str, ...]
+) -> None:
+    for position, (published, capability_type) in enumerate(
+        _validated_capabilities(db, capability_version_ids)
+    ):
+        db.add(
+            AgentConversationCapability(
+                binding_id=binding.id,
+                capability_version_id=published.version.id,
+                capability_type=capability_type,
+                capability_key=published.package.capability_key,
+                digest=published.version.digest,
+                position=position,
+            )
+        )
+
+
+def _freeze_workspace_capabilities(
+    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
+) -> None:
+    """Copy the current workspace selection into a native conversation manifest."""
+
+    references = tuple(
+        reference.capability_version_id
+        for reference in db.scalars(
+            select(AgentWorkspaceCapability)
+            .where(AgentWorkspaceCapability.workspace_id == workspace.id)
+            .order_by(AgentWorkspaceCapability.position)
+        )
+    )
+    _freeze_capabilities(db, binding, references)
+
+
+def _copy_frozen_capabilities(
+    db: Session, source: AgentConversationBinding, target: AgentConversationBinding
+) -> None:
+    for reference in db.scalars(
+        select(AgentConversationCapability)
+        .where(AgentConversationCapability.binding_id == source.id)
+        .order_by(AgentConversationCapability.position)
+    ):
+        db.add(
+            AgentConversationCapability(
+                binding_id=target.id,
+                capability_version_id=reference.capability_version_id,
+                capability_type=reference.capability_type,
+                capability_key=reference.capability_key,
+                digest=reference.digest,
+                position=reference.position,
+            )
+        )
+
+
 def _create_native_conversation(
     db: Session,
     workspace: AgentWorkspace,
@@ -262,6 +479,7 @@ def _create_native_conversation(
                     "AGENT_WORK_DIRECTORY_IDENTITY_DRIFT", "会话工作目录校验失败", 409
                 )
             return handle
+    skills, plugins, mcp_servers = _runtime_capabilities(db, workspace, binding)
     request = StartAttemptRequest(
         attempt_id=binding.id,
         execution_key=f"agent-workspace:{workspace.id}:conversation:{binding.id}",
@@ -280,6 +498,9 @@ def _create_native_conversation(
             condenser=RuntimeCondenser(kind="LLM_SUMMARIZING"),
             condenser_provider=provider,
             tools=_TOOLS,
+            skills=skills,
+            plugins=plugins,
+            mcp_servers=mcp_servers,
             runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in _TOOLS)),
         ),
         environment_image=runtime.runtime_image_digest,
@@ -353,6 +574,10 @@ def create_conversation(
     )
     db.add(binding)
     db.flush()
+    # Keep the legacy programmatic creation path aligned with lazy bootstrap:
+    # every native Agent conversation receives a durable copy of the current
+    # workspace capability selection before its RuntimeAgentSpec is compiled.
+    _freeze_workspace_capabilities(db, workspace, binding)
     command = AgentConversationCommand(
         workspace_id=workspace.id,
         binding_id=binding.id,
@@ -590,6 +815,7 @@ def bootstrap_conversation(
         )
         db.add(binding)
         db.flush()
+        _freeze_workspace_capabilities(db, workspace, binding)
         command = AgentConversationCommand(
             workspace_id=workspace.id,
             binding_id=binding.id,
@@ -1319,6 +1545,7 @@ def _fork_conversation(
     )
     db.add(target)
     db.flush()
+    _copy_frozen_capabilities(db, source, target)
     command = AgentConversationCommand(
         workspace_id=workspace.id,
         binding_id=target.id,

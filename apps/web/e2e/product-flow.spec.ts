@@ -540,6 +540,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
+
   await page.route('**/api/v1/model-providers', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -965,6 +966,11 @@ test('Agent new session keeps full capabilities and can create an explicit works
   const workspaceScopeRequests: Array<{ bindingId: string | null; workDirectoryId: string | null }> = [];
   let bootstrapPayload: Record<string, unknown> | null = null;
   let attachmentUploads = 0;
+  const defaultCapabilities = [
+    { id: 'cap-skill', capability_type: 'SKILL', capability_key: 'lark-sheets', digest: 'skill-digest' },
+    { id: 'cap-plugin', capability_type: 'PLUGIN', capability_key: 'lark-tools', digest: 'plugin-digest' },
+    { id: 'cap-mcp', capability_type: 'MCP', capability_key: 'lark-docs', digest: 'mcp-digest' },
+  ];
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.routeWebSocket('**/agent-workspaces/**/terminal*', socket => {
@@ -983,6 +989,10 @@ test('Agent new session keeps full capabilities and can create an explicit works
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         id: 'fr58-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString(),
       }) });
+      return;
+    }
+    if (path.endsWith('/capabilities') && request.method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(defaultCapabilities) });
       return;
     }
     if (path.endsWith('/runtime')) {
@@ -1092,6 +1102,16 @@ test('Agent new session keeps full capabilities and can create an explicit works
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
+  await page.route('**/api/v1/capabilities', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([
+      { id: 'cap-skill', capability_type: 'SKILL', capability_key: 'lark-sheets', description: '创建和操作飞书电子表格', filename: 'lark-sheets.zip', is_latest: true, document: {} },
+      { id: 'cap-plugin', capability_type: 'PLUGIN', capability_key: 'lark-tools', description: '飞书工具集', filename: 'lark-tools.zip', is_latest: true, document: { contributions: { commands: ['summarize'], skills: ['lark-notes'] } } },
+      { id: 'cap-mcp', capability_type: 'MCP', capability_key: 'lark-docs', description: '查询飞书文档', filename: 'lark-docs.json', is_latest: true, document: {} },
+    ]),
+  }));
+
   await page.route('**/api/v1/model-providers', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -1129,11 +1149,27 @@ test('Agent new session keeps full capabilities and can create an explicit works
   expect(conversations).toHaveLength(0);
   expect(bootstrapPayload).toBeNull();
 
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('$');
+  const skillMenu = page.getByRole('listbox', { name: '选择技能' });
+  await expect(skillMenu.getByRole('option', { name: /lark-sheets/ })).toBeVisible();
+  await expect(skillMenu.getByRole('option', { name: /lark-notes/ })).toBeVisible();
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('$lark-sheets ');
+
+  await composer.fill('/');
+  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
+  await expect(commandMenu.getByRole('option', { name: /summarize/ })).toBeVisible();
+  await expect(commandMenu.getByRole('option', { name: /lark-docs/ })).toBeVisible();
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('/summarize ');
+  await composer.fill('');
+
   await page.getByLabel('打开模型与推理设置').click();
   await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-pro');
   await page.getByLabel('思考程度').selectOption('low');
   await page.getByLabel('上传附件').setInputFiles({ name: '需求.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
-  await expect(page.getByText('需求.png', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
   expect(attachmentUploads).toBe(1);
 
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();

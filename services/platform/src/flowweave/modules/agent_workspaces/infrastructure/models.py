@@ -314,6 +314,70 @@ class AgentConversationMessageAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class AgentConversationCapability(Base):
+    """Immutable capability-version provenance frozen for one conversation."""
+
+    __tablename__ = "agent_conversation_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "binding_id", "capability_version_id", name="uq_agent_conversation_capability"
+        ),
+        UniqueConstraint(
+            "binding_id", "position", name="uq_agent_conversation_capability_position"
+        ),
+        CheckConstraint(
+            "capability_type IN ('SKILL', 'MCP', 'PLUGIN')",
+            name="ck_agent_conversation_capability_type",
+        ),
+        CheckConstraint("position >= 0", name="ck_agent_conversation_capability_position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversation_bindings.id", ondelete="RESTRICT"), index=True
+    )
+    capability_version_id: Mapped[str] = mapped_column(
+        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
+    )
+    capability_type: Mapped[str] = mapped_column(String(20))
+    capability_key: Mapped[str] = mapped_column(String(160))
+    digest: Mapped[str] = mapped_column(String(64))
+    position: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AgentWorkspaceCapability(Base):
+    """A governed capability enabled for new Agent Workspace conversations."""
+
+    __tablename__ = "agent_workspace_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "capability_version_id", name="uq_agent_workspace_capability"
+        ),
+        UniqueConstraint(
+            "workspace_id", "position", name="uq_agent_workspace_capability_position"
+        ),
+        CheckConstraint(
+            "capability_type IN ('SKILL', 'MCP', 'PLUGIN')",
+            name="ck_agent_workspace_capability_type",
+        ),
+        CheckConstraint("position >= 0", name="ck_agent_workspace_capability_position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
+    )
+    capability_version_id: Mapped[str] = mapped_column(
+        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
+    )
+    capability_type: Mapped[str] = mapped_column(String(20))
+    capability_key: Mapped[str] = mapped_column(String(160))
+    digest: Mapped[str] = mapped_column(String(64))
+    position: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AgentConversationCommand(Base):
     __tablename__ = "agent_conversation_commands"
     __table_args__ = (
@@ -347,6 +411,8 @@ class AgentConversationCommand(Base):
 __all__ = (
     "AgentWorkspace",
     "AgentConversationBinding",
+    "AgentConversationCapability",
+    "AgentWorkspaceCapability",
     "AgentConversationMessageAttachment",
     "AgentConversationCommand",
     "AgentWorkDirectory",

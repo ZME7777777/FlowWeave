@@ -2,11 +2,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, agentWorkspaceFileUrl, agentWorkspaceTerminalUrl, api, randomId, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
 import './agent-workbench.css';
 import './agent-workbench-layout.css';
 
@@ -20,6 +20,117 @@ interface QueuedMessage {
 }
 interface BoundQueuedMessage extends QueuedMessage { bindingId: string; }
 interface ConversationDraft { id: string; workDirectoryId?: string; displayName: string; }
+
+type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN';
+type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP';
+interface ComposerSuggestion {
+  id: string;
+  kind: ComposerSuggestionKind;
+  token: string;
+  label: string;
+  detail: string;
+}
+
+function composerTrigger(value: string): { sigil: '$' | '/'; query: string; start: number } | undefined {
+  const match = /(?:^|\s)([$/])([^\s]*)$/.exec(value);
+  if (!match) return undefined;
+  return { sigil: match[1] as '$' | '/', query: match[2], start: value.length - match[0].length + (match[0].startsWith(' ') ? 1 : 0) };
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
+}
+
+function ComposerCapabilityAutocomplete({
+  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onSubmit,
+}: {
+  draft: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
+  onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onSubmit: () => void;
+}) {
+  const input = useRef<HTMLTextAreaElement>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const trigger = composerTrigger(draft);
+  const visible = useMemo(() => {
+    if (!trigger) return [];
+    const needle = trigger.query.toLocaleLowerCase();
+    return suggestions.filter(item => (trigger.sigil === '$' ? item.kind === 'SKILL' : item.kind !== 'SKILL')
+      && (!needle || `${item.token} ${item.label} ${item.detail}`.toLocaleLowerCase().includes(needle)));
+  }, [suggestions, trigger]);
+  useEffect(() => setActiveIndex(0), [draft]);
+  const select = (item: ComposerSuggestion) => {
+    if (!trigger) return;
+    onDraftChange(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
+    requestAnimationFrame(() => input.current?.focus());
+  };
+  const hasMenu = Boolean(trigger && visible.length);
+  return <div className="agent-composer-input">
+    <textarea ref={input} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+      if (isImeComposition(event)) return;
+      if (hasMenu && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+        if (event.key === 'Escape') { onDraftChange(draft.slice(0, -trigger!.query.length - 1)); return; }
+        event.preventDefault();
+        if (event.key === 'ArrowDown') { setActiveIndex(index => (index + 1) % visible.length); return; }
+        if (event.key === 'ArrowUp') { setActiveIndex(index => (index - 1 + visible.length) % visible.length); return; }
+        select(visible[activeIndex] ?? visible[0]);
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
+    }}/>
+    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : '选择命令或 MCP'}>{visible.map((item, index) => <button type="button" key={item.id} role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : 'MCP'}</em></button>)}</div>}
+  </div>;
+}
+
+function CapabilityManager({ workspaceId, onClose }: { workspaceId: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [query, setQuery] = useState('');
+  const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const catalogQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+  const enabledQuery = useQuery({
+    queryKey: ['agent-workspace-capabilities', workspaceId],
+    queryFn: () => api.agentWorkspaceCapabilities(workspaceId),
+  });
+  useEffect(() => {
+    if (enabledQuery.data) setSelectedIds(enabledQuery.data.map(item => item.id));
+  }, [enabledQuery.data]);
+  const capabilities = useMemo(() => (catalogQuery.data ?? []).filter(item =>
+    item.is_latest && ['SKILL', 'MCP', 'PLUGIN'].includes(item.capability_type),
+  ), [catalogQuery.data]);
+  const visible = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase();
+    return capabilities.filter(item =>
+      (kind === 'ALL' || item.capability_type === kind)
+      && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)),
+    );
+  }, [capabilities, kind, query]);
+  const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
+  const save = useMutation({
+    mutationFn: () => api.replaceAgentWorkspaceCapabilities(workspaceId, selectedIds),
+    onSuccess: value => {
+      queryClient.setQueryData<AgentWorkspaceCapability[]>(['agent-workspace-capabilities', workspaceId], value);
+      onClose();
+    },
+  });
+  const toggle = (item: CapabilityAsset) => setSelectedIds(current => {
+    if (current.includes(item.id)) return current.filter(id => id !== item.id);
+    const sameName = current.filter(id => {
+      const selected = byId.get(id);
+      return selected?.capability_type === item.capability_type && selected.capability_key === item.capability_key;
+    });
+    if (current.length - sameName.length >= 30) return current;
+    return [...current.filter(id => !sameName.includes(id)), item.id];
+  });
+  return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !save.isPending) onClose(); }}>
+    <section className="agent-capability-manager" role="dialog" aria-modal="true" aria-labelledby="agent-capability-title">
+      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-capability-title">插件</h2><p>选择新会话默认挂载的已发布能力。每个会话会冻结其创建时的版本。</p></div><button type="button" aria-label="关闭插件管理" disabled={save.isPending} onClick={onClose}><X size={18}/></button></header>
+      <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', '全部'], ['PLUGIN', '插件'], ['MCP', 'MCP'], ['SKILL', '技能']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div>
+      <div className="agent-capability-summary"><span>已启用 <b>{selectedIds.length}</b> / 30</span><span>仅加载已发布的版本；修改不会伪造更新已存在的原生会话。</span></div>
+      <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>没有匹配的已发布能力。</p> : visible.map(item => { const checked = selectedIds.includes(item.id); return <button type="button" key={item.id} className={checked ? 'selected' : ''} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{item.description || item.filename}</small><em>{item.capability_type === 'SKILL' ? '技能' : item.capability_type}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
+      {save.error && <p className="agent-capability-error">{save.error.message}</p>}
+      <footer><button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || enabledQuery.isLoading} onClick={() => save.mutate()}>{save.isPending ? '正在保存…' : '保存插件设置'}</button></footer>
+    </section>
+  </div>;
+}
 
 function ComposerModelMenu({
   providers, providerId, modelName, models, efforts, effort, disabled, onProviderChange, onModelChange, onEffortChange,
@@ -648,6 +759,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const [conversationDraft, setConversationDraft] = useState<ConversationDraft>();
   const [workspaceScopeMigration, setWorkspaceScopeMigration] = useState<string>();
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
+  const [capabilityManagerOpen, setCapabilityManagerOpen] = useState(false);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const pendingLiveText = useRef('');
@@ -661,8 +773,49 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const conversationsQuery = useQuery({ queryKey: ['agent-conversations', workspace?.id], queryFn: () => api.agentConversations(workspace!.id), enabled: Boolean(workspace) });
   const workDirectoriesQuery = useQuery({ queryKey: ['agent-work-directories', workspace?.id], queryFn: () => api.agentWorkDirectories(workspace!.id), enabled: Boolean(workspace) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace) });
+  const capabilityCatalogQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities, enabled: Boolean(workspace) });
+  const defaultCapabilitiesQuery = useQuery({
+    queryKey: ['agent-workspace-capabilities', workspace?.id],
+    queryFn: () => api.agentWorkspaceCapabilities(workspace!.id),
+    enabled: Boolean(workspace),
+  });
   const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const selected = useMemo(() => conversations.find(item => item.id === selectedBindingId), [conversations, selectedBindingId]);
+  const composerCapabilityReferences = useMemo(
+    () => selected?.capabilities ?? (conversationDraft ? defaultCapabilitiesQuery.data ?? [] : []),
+    [conversationDraft, defaultCapabilitiesQuery.data, selected?.capabilities],
+  );
+  const composerSuggestions = useMemo(() => {
+    const catalog = new Map((capabilityCatalogQuery.data ?? []).map(item => [item.id, item]));
+    const seen = new Set<string>();
+    const add = (item: ComposerSuggestion) => {
+      if (!seen.has(item.id)) { seen.add(item.id); return item; }
+      return undefined;
+    };
+    return composerCapabilityReferences.flatMap(reference => {
+      const capability = catalog.get(reference.id);
+      const description = capability?.description || reference.capability_key;
+      if (reference.capability_type === 'SKILL') {
+        const item = add({ id: `skill:${reference.id}`, kind: 'SKILL', token: `$${reference.capability_key}`, label: reference.capability_key, detail: description });
+        return item ? [item] : [];
+      }
+      if (reference.capability_type === 'MCP') {
+        const item = add({ id: `mcp:${reference.id}`, kind: 'MCP', token: `使用 MCP「${reference.capability_key}」：`, label: reference.capability_key, detail: `${description} · 以自然语言说明要执行的操作` });
+        return item ? [item] : [];
+      }
+      const contributions = capability?.document.contributions;
+      const commands = contributions && typeof contributions === 'object'
+        ? stringValues((contributions as Record<string, unknown>).commands)
+        : [];
+      const skills = contributions && typeof contributions === 'object'
+        ? stringValues((contributions as Record<string, unknown>).skills)
+        : [];
+      return [
+        ...commands.map(command => add({ id: `command:${reference.id}:${command}`, kind: 'COMMAND', token: `/${command}`, label: command, detail: `${reference.capability_key} 命令 · ${description}` })).filter((item): item is ComposerSuggestion => Boolean(item)),
+        ...skills.map(skill => add({ id: `plugin-skill:${reference.id}:${skill}`, kind: 'SKILL', token: `$${skill}`, label: skill, detail: `${reference.capability_key} 提供的技能 · ${description}` })).filter((item): item is ComposerSuggestion => Boolean(item)),
+      ];
+    });
+  }, [capabilityCatalogQuery.data, composerCapabilityReferences]);
   const composerScope = selected?.id ?? conversationDraft?.id;
   const activeComposerScope = useRef<string | undefined>(undefined);
   activeComposerScope.current = composerScope;
@@ -1161,6 +1314,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
           {archivedDirectoryConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>保留的历史会话</small></span><ChevronRight size={13}/></button>)}
         </section>}
       </div>
+      <footer className="agent-workbench-rail-footer"><button type="button" onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>插件</b><small>管理新会话默认能力</small></span><ChevronRight size={14}/></button></footer>
       {!conversations.length && !conversationDraft && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{connectedProviders.length ? '选择工作目录后新建会话开始协作。' : '请先完成至少一个模型供应商的连接测试。'}</span></div>}
     </aside>
     <section className="agent-workbench-main">
@@ -1170,7 +1324,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || '图片附件'}</p><span>{message.items.length ? `${message.items.length} 个附件` : ''}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}
-        <textarea aria-label="发送 Agent 消息" value={draft} maxLength={200_000} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onChange={event => setDraft(event.target.value)} onPaste={event => { const images = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => file !== null); if (!images.length || !composerScope) return; event.preventDefault(); for (const image of images) upload.mutate({ file: image, scope: composerScope }); }} onKeyDown={event => { if (isImeComposition(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); enqueueDraft(); } }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择命令或 MCP）'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { const images = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => file !== null); if (!images.length || !composerScope) return; event.preventDefault(); for (const image of images) upload.mutate({ file: image, scope: composerScope }); }} onSubmit={enqueueDraft}/>
         {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
@@ -1192,5 +1346,6 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       queryClient.setQueryData<AgentWorkDirectoryList>(['agent-work-directories', workspace.id], current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspace.id] });
     }}/>}
+    {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} onClose={() => setCapabilityManagerOpen(false)}/>}
   </main>;
 }

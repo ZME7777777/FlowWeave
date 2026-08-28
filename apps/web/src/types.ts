@@ -350,6 +350,12 @@ export interface AgentWorkspaceRuntime {
   message?: string | null;
   updated_at: string;
 }
+export interface AgentWorkspaceCapability {
+  id: string;
+  capability_type: 'SKILL' | 'MCP' | 'PLUGIN';
+  capability_key: string;
+  digest: string;
+}
 
 export interface AgentConversationInputReadiness { ready: boolean }
 export interface AgentPendingConfirmationAction {
@@ -378,6 +384,7 @@ export interface AgentConversation {
   work_directory_id?: string | null;
   work_directory_version_id?: string | null;
   working_directory?: string | null;
+  capabilities?: AgentWorkspaceCapability[];
   streaming_callback_ready: boolean;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
