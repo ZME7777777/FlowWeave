@@ -1007,6 +1007,21 @@ Conversation 或写入消息/事件；保存默认能力或向当前会话追加
 OpenHands 明确的 `MCPTimeoutError` 和连接错误在首条 bootstrap 中会释放不可见预留、返回对应 MCP 名称与安全
 状态，保留真正不确定投递的原生 event identity 对账。API 与 Web 已重建部署，全部服务健康。
 
+### FR-71 新会话斜杠能力入口可见性 — DONE
+
+依赖：`FR-70`。
+
+目标：新会话草稿尚未拥有 Conversation binding 时，输入 `/` 也必须打开能力候选面板。已经保存为新会话默认能力的
+MCP 应直接列为候选；尚未加载 MCP 时，面板必须说明当前没有可用 MCP，并提供进入“能力”管理的入口，不能静默地
+让 `/` 看似失效。该入口只管理默认能力，不创建 Conversation、不改变消息或 Runtime 状态。
+
+验收：Web lint/typecheck/production build、定向浏览器用例覆盖新会话 `/` 的空态管理入口与已加载 MCP 候选，
+以及 `git diff --check` 和任务状态唯一性检查。完成后单独提交并部署 Web。
+
+完成：新会话草稿也把“管理能力”入口传递给斜杠候选组件，因此输入 `/` 始终显示候选面板。默认已加载的 MCP
+继续直接列出；没有默认命令或 MCP 时，面板明确说明未加载并提供“管理”按钮，用于打开新会话默认能力管理，不会创建
+Conversation 或触发 Runtime 写入。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1023,6 +1038,7 @@ OpenHands 明确的 `MCPTimeoutError` 和连接错误在首条 bootstrap 中会�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-71 | Web ESLint/typecheck/production build；当前源码 Vite 上定向 Playwright（新会话 `/` 空态与“管理”入口，1 passed）；`git diff --check` 与任务状态唯一性 | PASS：新会话草稿输入 `/` 不再静默；已配置 MCP 保持候选可见，未配置时显示明确说明和默认能力管理入口。不会创建 Conversation 或写入 Runtime。 |
 | 2026-08-28 | FR-70 | Agent Workspace MCP readiness 与 MCP 初始化失败清理定向 pytest（2 passed）；OpenHands MCP probe/显式 timeout 映射定向 pytest（2 passed）；Web ESLint/typecheck/production build；受影响 Python `py_compile`、Ruff check、`git diff --check`；API/Web 镜像重建、部署后 health/OpenAPI 路由检查 | PASS：MCP readiness 通过当前受管 Agent Runtime 调用固定 OpenHands `POST /api/mcp/test`，不创建 Conversation；已选 MCP 在能力管理中显示检测中、已连接或连接失败，并可重新检测。保存前复检，连接失败则拒绝保存。明确 `MCPTimeoutError` 不再被归为首条消息不确定投递，隐藏预留会被清理并返回安全 MCP 错误；真实网络响应不确定仍复用 FR-69 草稿 UUID 对账。API、Web、Runtime Provider、Worker 和 Postgres 均健康。 |
 | 2026-08-28 | FR-69 | Web ESLint/typecheck/production build；源码 Vite 定向 Playwright（首发 504、刷新、同 key 对账后创建会话）；Agent Workspace bootstrap 定向 pytest（3 passed）；`git diff --check` 与任务状态唯一性 | PASS：首条消息的请求体 conversation UUID 与 Idempotency-Key 一致；模拟首次投递不确定后刷新页面，浏览器恢复同一草稿并再次使用同一 key，对账成功后进入正式会话。平台既有三条 bootstrap 语义回归全部通过，未重发 native user event。 |
 | 2026-08-28 | FR-67 | Web ESLint/typecheck/production build；源码 Vite 定向 Playwright（历史会话能力入口 1 passed）；`git diff --check` 与任务状态唯一性 | PASS：`$` 有 Skill 候选与 `/` 无匹配候选时均显示管理入口；当前会话已注册 Skill 以禁用状态展示并明确不能取消，新 Skill 仍可选择注册。 |

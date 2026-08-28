@@ -1830,6 +1830,45 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   expect(bulkAssetB.id).toBeTruthy();
 });
 
+test('Agent new-session slash opens MCP guidance before a Conversation exists', async ({ page }) => {
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'draft-capability-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString() }) });
+      return;
+    }
+    if (path.endsWith('/runtime')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
+      return;
+    }
+    if (path.endsWith('/capabilities') && request.method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+      return;
+    }
+    if (path.endsWith('/conversations') || path.endsWith('/work-directories')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: path.endsWith('/conversations') ? '[]' : JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+    { id: 'draft-capability-provider', name: '草稿模型', connection_state: 'CONNECTED', models: [{ model_name: 'draft-model', enabled: true, is_default: true }] },
+  ]) }));
+
+  await page.goto('/agent');
+  await page.getByRole('button', { name: '新建会话' }).first().click();
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('/');
+  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
+  await expect(commandMenu).toContainText('当前会话还没有加载命令或 MCP');
+  await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
+  await commandMenu.getByRole('button', { name: '管理' }).click();
+  await expect(page.getByRole('dialog', { name: '能力' })).toContainText('选择新会话默认挂载的已发布能力');
+});
+
 test('historical Agent conversation exposes capability guidance instead of a silent $ or / menu', async ({ page }) => {
   const historicalConversation = {
     id: 'history-capability-conversation', workspace_id: 'history-capability-workspace',
