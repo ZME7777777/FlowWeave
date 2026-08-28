@@ -138,8 +138,8 @@ export const api = {
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
   agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
-  bootstrapAgentConversation: (workspaceId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], work_directory_id?: string) =>
-    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), work_directory_id }, true)),
+  bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], work_directory_id?: string) =>
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), work_directory_id }, true)),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
@@ -160,10 +160,11 @@ export const api = {
     if (!response.ok) throw await responseError(response);
     return response.json() as Promise<AgentAttachment>;
   },
-  uploadAgentWorkspaceAttachment: async (workspaceId: string, file: File, workDirectoryId?: string): Promise<AgentAttachment> => {
+  uploadAgentWorkspaceAttachment: async (workspaceId: string, file: File, workDirectoryId?: string, conversationId?: string): Promise<AgentAttachment> => {
     const body = new FormData(); body.append('file', file, file.name);
     const query = new URLSearchParams();
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (conversationId) query.set('conversation_id', conversationId);
     let response: Response;
     try { response = await fetch(`${API_BASE}${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments${query.size ? `?${query}` : ''}`, { method: 'POST', body }); }
     catch { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }

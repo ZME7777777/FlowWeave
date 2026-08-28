@@ -74,6 +74,7 @@ def _empty_attachment_references() -> list[AgentAttachmentReference]:
 
 
 class AgentConversationBootstrapWrite(_Write):
+    conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
@@ -340,6 +341,7 @@ async def create_agent_conversation(
             session,
             workspace_id,
             work_directory_id=payload.work_directory_id,
+            conversation_id=payload.conversation_id,
             model_provider_id=payload.model_provider_id,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
@@ -484,6 +486,7 @@ async def agent_workspace_attachment(
     db: Db,
     file: Annotated[UploadFile, File()],
     work_directory_id: str | None = Query(default=None),
+    conversation_id: str | None = Query(default=None, min_length=36, max_length=36),
 ) -> dict[str, Any]:
     content = await file.read(25 * 1024 * 1024 + 1)
     return await run_sync(
@@ -496,6 +499,7 @@ async def agent_workspace_attachment(
             content_type=file.content_type or "application/octet-stream",
             content=content,
             work_directory_id=work_directory_id,
+            attachment_owner_id=conversation_id,
         ),
     )
 

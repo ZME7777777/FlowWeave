@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, LoaderCircle, MonitorCog, PanelRightOpen, Play, Plus, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { Bot, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, agentWorkspaceFileUrl, agentWorkspaceTerminalUrl, api, randomId, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
@@ -426,6 +426,7 @@ function WorkspaceDrawer({
   const [panelError, setPanelError] = useState('');
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
+  const [fullScreen, setFullScreen] = useState(false);
   const scopeState = scopeStates[scopeKey] ?? { tabs: [] };
   const updateScope = useCallback((updater: (current: WorkspaceToolScopeState) => WorkspaceToolScopeState) => {
     setScopeStates(current => ({ ...current, [scopeKey]: updater(current[scopeKey] ?? { tabs: [] }) }));
@@ -451,6 +452,15 @@ function WorkspaceDrawer({
     window.addEventListener('resize', clamp);
     return () => window.removeEventListener('resize', clamp);
   }, []);
+  useEffect(() => {
+    if (!fullScreen) return;
+    const exitOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setFullScreen(false); };
+    window.addEventListener('keydown', exitOnEscape);
+    return () => window.removeEventListener('keydown', exitOnEscape);
+  }, [fullScreen]);
+  useEffect(() => {
+    if (!open) setFullScreen(false);
+  }, [open]);
   const detailsQuery = useQuery({
     queryKey: ['agent-workspace-details', workspaceId, bindingId, workDirectoryId],
     queryFn: () => api.agentWorkspaceDetails(workspaceId, { bindingId, workDirectoryId }),
@@ -512,7 +522,10 @@ function WorkspaceDrawer({
       const tabs = current.tabs.filter(candidate => candidate.id !== tab.id);
       return { ...current, tabs, activeTabId: current.activeTabId === tab.id ? tabs[tabs.length - 1]?.id : current.activeTabId };
     });
-    if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) onClose();
+    if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) {
+      setFullScreen(false);
+      onClose();
+    }
   };
   const requestCloseTab = (tab: WorkspaceToolTab) => {
     if (tab.kind === 'terminal') {
@@ -565,7 +578,7 @@ function WorkspaceDrawer({
     <article><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b><code>{details.ide.workspace_path}</code><p>{details.ide.gateway.note}</p></div></article>
     <article><FileText size={16}/><div><small>本会话附件</small>{attachments.length ? attachments.map(item => <button type="button" key={item.path} onClick={() => selectFile(item.path)}>{item.filename}</button>) : <p>当前会话还没有附件。</p>}</div></article>
   </section>;
-  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}`} style={{ width: open ? panelWidth : 272 }}>
+  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : 272 }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
@@ -573,7 +586,7 @@ function WorkspaceDrawer({
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : details?.runtime.container_id || '连接中…'}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label="关闭工作区工具" onClick={onClose}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : details?.runtime.container_id || '连接中…'}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error">{panelError}</p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
@@ -791,6 +804,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
 
   const bootstrap = useMutation({ mutationFn: (message: QueuedMessage) => api.bootstrapAgentConversation(
     workspace!.id,
+    conversationDraft!.id,
     newConversationProviderId,
     newConversationModelName,
     newConversationReasoningEffort,
@@ -898,7 +912,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   });
   const upload = useMutation({ mutationFn: ({ file }: { file: File; scope: string }) => selected
     ? api.uploadAgentAttachment(workspace!.id, selected.id, file)
-    : api.uploadAgentWorkspaceAttachment(workspace!.id, file, conversationDraft?.workDirectoryId), onSuccess: (value, request) => {
+    : api.uploadAgentWorkspaceAttachment(workspace!.id, file, conversationDraft?.workDirectoryId, conversationDraft?.id), onSuccess: (value, request) => {
     if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
   }, onError: (error, request) => reportOperationError(request.scope, error) });
   const fork = useMutation({ mutationFn: (eventId: string) => api.forkAgentConversation(workspace!.id, selected!.id, eventId), onSuccess: value => {

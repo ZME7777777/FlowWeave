@@ -639,7 +639,13 @@ class RuntimePort(Protocol):
     ) -> RuntimeResult: ...
 
     def upload_workspace_file(
-        self, handle: RuntimeHandle, *, filename: str, content_type: str, content: bytes
+        self,
+        handle: RuntimeHandle,
+        *,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        attachment_owner_id: str | None = None,
     ) -> str: ...
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot: ...

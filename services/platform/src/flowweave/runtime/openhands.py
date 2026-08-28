@@ -2683,11 +2683,25 @@ class OpenHandsRuntime:
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
     def upload_workspace_file(
-        self, handle: RuntimeHandle, *, filename: str, content_type: str, content: bytes
+        self,
+        handle: RuntimeHandle,
+        *,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        attachment_owner_id: str | None = None,
     ) -> str:
         """Write an attachment via OpenHands' formal workspace file API."""
         safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename).strip("._") or "attachment"
-        target = f"/runtime/workspace/project/uploads/{uuid4().hex}-{safe_name[:180]}"
+        # Attachment object names are opaque and scoped to the platform
+        # conversation.  Keep the user-facing filename exclusively in the
+        # database projection; it must not leak into the workspace path.
+        owner_id = attachment_owner_id or handle.conversation_id
+        try:
+            owner_id = str(UUID(owner_id))
+        except (TypeError, ValueError) as exc:
+            raise DomainError("RUNTIME_PROTOCOL_ERROR", "附件会话标识无效", 502) from exc
+        target = f"/runtime/workspace/project/uploads/{owner_id}-{uuid4().hex}"
         try:
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.post(

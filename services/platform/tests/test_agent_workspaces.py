@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -766,9 +767,12 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
     """An upload may be outside a frozen directory, but not outside its conversation."""
 
     class UploadRuntime(MockRuntime):
-        def upload_workspace_file(self, handle, *, filename, content_type, content):
-            del handle, content_type, content
-            return f"/runtime/workspace/project/uploads/{'a' * 32}-{filename}"
+        def upload_workspace_file(
+            self, handle, *, filename, content_type, content, attachment_owner_id=None
+        ):
+            del handle, filename, content_type, content
+            assert attachment_owner_id is not None
+            return f"/runtime/workspace/project/uploads/{attachment_owner_id}-{uuid4().hex}"
 
     monkeypatch.setattr(
         conversations,
@@ -806,7 +810,7 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             db, item.id, owner["id"], filename="requirements.pdf",
             content_type="application/pdf", content=b"%PDF-1.7",
         )
-        upload_path = project_root / "uploads" / f"{'a' * 32}-requirements.pdf"
+        upload_path = project_root / "uploads" / str(attachment["path"]).rsplit("/", 1)[-1]
         upload_path.parent.mkdir()
         upload_path.write_bytes(b"%PDF-1.7")
         # A bound upload is previewable from the right-hand panel before it is
@@ -831,6 +835,8 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             workspace.download(
                 db, item.id, str(attachment["path"]), binding_id=other["id"]
             )
+        conversations.delete_conversation(db, item.id, owner["id"], "delete-attachment-owner")
+        assert not upload_path.exists()
 
 
 def test_agent_workspace_multi_directory_files_are_scoped_and_frozen(settings, db_session_factory):
@@ -1562,9 +1568,12 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         sent: tuple[str, tuple[str, ...]] | None = None
         switched: RuntimeProvider | None = None
 
-        def upload_workspace_file(self, handle, *, filename, content_type, content):
-            del handle, content_type, content
-            return f"/runtime/workspace/project/uploads/{'a' * 32}-{filename}"
+        def upload_workspace_file(
+            self, handle, *, filename, content_type, content, attachment_owner_id=None
+        ):
+            del handle, filename, content_type, content
+            assert attachment_owner_id is not None
+            return f"/runtime/workspace/project/uploads/{attachment_owner_id}-{uuid4().hex}"
 
         def send_message(self, handle, content, image_urls=()):
             self.sent = (content, image_urls)
@@ -1629,7 +1638,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         )
         assert runtime.sent == (
             "请查看已上传到共享工作区的附件：\n"
-            f"- /runtime/workspace/project/uploads/{'a' * 32}-diagram.png",
+            f"- {attachment['path']}",
             ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
         )
         pdf = conversations.upload_attachment(
@@ -1645,7 +1654,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         conversations.message(db, workspace.id, created["id"], "", ({"path": str(pdf["path"])},))
         assert runtime.sent == (
             "请查看已上传到共享工作区的附件：\n"
-            f"- /runtime/workspace/project/uploads/{'a' * 32}-requirements.pdf",
+            f"- {pdf['path']}",
             (),
         )
         selected = conversations.switch_conversation_model(

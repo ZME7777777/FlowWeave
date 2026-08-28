@@ -489,6 +489,12 @@ def _record_bootstrap_failure(
     """
 
     del error
+    # Draft attachments are already private to this reserved binding ID.  A
+    # definitively failed first message must release those files too, even
+    # though no attachment projection has been committed yet.
+    from flowweave.modules.agent_workspaces.application import workspace as workspace_files
+
+    workspace_files.delete_bound_attachment_files(db, binding.workspace_id, binding.id)
     db.delete(command)
     db.flush()
     db.delete(binding)
@@ -500,6 +506,7 @@ def bootstrap_conversation(
     workspace_id: str,
     *,
     work_directory_id: str | None,
+    conversation_id: str | None = None,
     model_provider_id: str | None,
     model_name: str | None = None,
     reasoning_effort: str | None = None,
@@ -564,7 +571,12 @@ def bootstrap_conversation(
             model_name=model_name,
             reasoning_effort=reasoning_effort,
         )
+        try:
+            binding_id = str(UUID(conversation_id)) if conversation_id else str(uuid4())
+        except ValueError as exc:
+            raise DomainError("AGENT_CONVERSATION_ID_INVALID", "会话标识无效", 422) from exc
         binding = AgentConversationBinding(
+            id=binding_id,
             workspace_id=workspace.id,
             runtime_session_id=runtime.id,
             work_directory_version_id=version_id,
@@ -592,6 +604,7 @@ def bootstrap_conversation(
         db.commit()
 
     assert binding is not None and command is not None
+    _validate_attachment_owners(binding.id, attachments)
     if not binding.model_provider_id or not binding.working_directory:
         error = DomainError("AGENT_CONVERSATION_BOOTSTRAP_INVALID", "会话创建数据不完整", 409)
         _record_bootstrap_failure(db, binding, command, error)
@@ -747,6 +760,12 @@ def delete_conversation(
         command.failure_summary = "Conversation deletion failed; inspect protected logs"
         item.lifecycle = "ACTIVE"
         raise
+    # The native conversation is now gone, so its private attachment objects
+    # must not outlive it.  The helper only unlinks files bearing this binding's
+    # opaque owner UUID and never traverses arbitrary workspace paths.
+    from flowweave.modules.agent_workspaces.application import workspace as workspace_files
+
+    workspace_files.delete_bound_attachment_files(db, workspace.id, item.id)
     item.lifecycle = "DELETED"
     item.deleted_at = now()
     command.state = "SUCCEEDED"
@@ -914,9 +933,10 @@ def message(
 ) -> dict[str, Any]:
     if not content.strip() and not attachments:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
-    prompt, image_urls = _message_payload(content, attachments)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
+    _validate_attachment_owners(binding.id, attachments)
+    prompt, image_urls = _message_payload(content, attachments)
     if not binding.streaming_callback_ready:
         raise DomainError(
             "AGENT_STREAMING_MIGRATION_REQUIRED",
@@ -972,11 +992,16 @@ def message(
 
 
 _ATTACHMENT_PATH = re.compile(
+    r"^/runtime/workspace/project/uploads/"
+    r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
+    r"(?P<object>[0-9a-f]{32})$"
+)
+_LEGACY_ATTACHMENT_PATH = re.compile(
     r"^/runtime/workspace/project/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}$"
 )
 _ATTACHMENT_SUFFIX = re.compile(
     r"(?:\n\n)?(?:已上传到共享工作区的附件：|请查看已上传到共享工作区的附件：)\n"
-    r"(?P<paths>(?:- /runtime/workspace/project/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}\n?)+)$"
+    r"(?P<paths>(?:- /runtime/workspace/project/uploads/.+\n?)+)$"
 )
 
 
@@ -984,7 +1009,8 @@ def _attachment_filename(path: str) -> str:
     """Extract the originally uploaded filename from a validated upload path."""
 
     filename = path.rsplit("/", 1)[-1]
-    return filename[33:]
+    matched = _ATTACHMENT_PATH.fullmatch(path)
+    return "attachment" if matched else filename[33:]
 
 
 def _legacy_message_attachments(content: str) -> tuple[str, tuple[str, ...]]:
@@ -997,6 +1023,7 @@ def _legacy_message_attachments(content: str) -> tuple[str, tuple[str, ...]]:
         line.removeprefix("- ")
         for line in matched.group("paths").splitlines()
         if _ATTACHMENT_PATH.fullmatch(line.removeprefix("- "))
+        or _LEGACY_ATTACHMENT_PATH.fullmatch(line.removeprefix("- "))
     )
     if not paths:
         return content, ()
@@ -1020,6 +1047,19 @@ def _message_payload(
             "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
         ) + "\n".join(f"- {path}" for path in paths)
     return prompt, image_urls
+
+
+def _validate_attachment_owners(
+    binding_id: str, attachments: tuple[dict[str, str | int], ...]
+) -> None:
+    """Reject private attachment paths belonging to another conversation."""
+
+    for item in attachments:
+        matched = _ATTACHMENT_PATH.fullmatch(str(item.get("path") or ""))
+        if matched is None or matched.group("owner") != binding_id:
+            raise DomainError(
+                "AGENT_ATTACHMENT_INVALID", "附件不属于当前会话，请重新上传", 422
+            )
 
 
 def _record_message_attachments(
@@ -1060,6 +1100,7 @@ def upload_attachment(
     content_type: str,
     content: bytes,
     work_directory_id: str | None = None,
+    attachment_owner_id: str | None = None,
 ) -> dict[str, str | int | None]:
     if not filename or len(filename) > 240 or "\x00" in filename:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件文件名无效", 422)
@@ -1070,6 +1111,10 @@ def upload_attachment(
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件类型无效", 422)
     workspace = _workspace(db, workspace_id)
     if binding_id is None:
+        try:
+            owner_id = str(UUID(attachment_owner_id or ""))
+        except ValueError as exc:
+            raise DomainError("AGENT_CONVERSATION_ID_INVALID", "附件必须关联有效会话", 422) from exc
         work_directories.conversation_context(db, workspace.id, work_directory_id)
         resource_name, resource_id = terminal_resource_details(db, workspace.id)
         handle = RuntimeHandle(
@@ -1079,21 +1124,24 @@ def upload_attachment(
             runtime_resource_name=resource_name,
         )
     else:
-        handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+        binding = _binding(db, workspace_id, binding_id)
+        owner_id = binding.id
+        handle = _handle(db, workspace, binding)
     path = get_runtime().upload_workspace_file(
         handle,
         filename=filename,
         content_type=mime_type,
         content=content,
+        attachment_owner_id=owner_id,
     )
-    if _ATTACHMENT_PATH.fullmatch(path) is None:
+    matched_path = _ATTACHMENT_PATH.fullmatch(path)
+    if matched_path is None or matched_path.group("owner") != owner_id:
         raise DomainError("RUNTIME_PROTOCOL_ERROR", "OpenHands 返回了无效附件路径", 502)
     # A conversation-bound upload is safe to preview before the user sends it.
     # Persist a pending projection so the file endpoint can authorize this exact
     # opaque upload path without exposing the shared uploads directory.  A
     # formal MessageEvent later receives its own projection for transcript UI.
     if binding_id is not None:
-        binding = _binding(db, workspace_id, binding_id)
         db.add(
             AgentConversationMessageAttachment(
                 binding_id=binding.id,

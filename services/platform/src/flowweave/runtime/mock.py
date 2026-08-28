@@ -188,10 +188,16 @@ class MockRuntime:
         del handle, provider
 
     def upload_workspace_file(
-        self, handle: RuntimeHandle, *, filename: str, content_type: str, content: bytes
+        self,
+        handle: RuntimeHandle,
+        *,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        attachment_owner_id: str | None = None,
     ) -> str:
-        del handle, content_type, content
-        return f"/runtime/workspace/project/uploads/{filename}"
+        del filename, content_type, content
+        return f"/runtime/workspace/project/uploads/{attachment_owner_id or handle.conversation_id}-{uuid4().hex}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         del handle

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import re
 import stat
 import subprocess
 from hashlib import sha256
@@ -399,6 +400,54 @@ def _is_bound_attachment(db: Session, binding_id: str | None, path: str) -> bool
             AgentConversationMessageAttachment.path == path,
         )
     ) is not None
+
+
+_PRIVATE_ATTACHMENT_PATH = re.compile(
+    r"^/runtime/workspace/project/uploads/"
+    r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
+    r"[0-9a-f]{32}$"
+)
+
+
+def delete_bound_attachment_files(db: Session, workspace_id: str, binding_id: str) -> None:
+    """Best-effort cleanup of a deleted conversation's private attachments."""
+
+    paths = db.scalars(
+        select(AgentConversationMessageAttachment.path)
+        .where(AgentConversationMessageAttachment.binding_id == binding_id)
+        .distinct()
+    ).all()
+    project_root = _project_root(db, workspace_id)
+    private_paths = set(paths)
+    uploads = project_root / "uploads"
+    try:
+        private_paths.update(
+            str(PurePosixPath(_PROJECT_ROOT) / "uploads" / candidate.name)
+            for candidate in uploads.glob(f"{binding_id}-*")
+            if candidate.is_file()
+        )
+    except OSError:
+        pass
+    for path in private_paths:
+        matched = _PRIVATE_ATTACHMENT_PATH.fullmatch(path)
+        if matched is None or matched.group("owner") != binding_id:
+            continue
+        # Do not remove an object if an unexpected historical projection shares it.
+        referenced_elsewhere = db.scalar(
+            select(AgentConversationMessageAttachment.id).where(
+                AgentConversationMessageAttachment.binding_id != binding_id,
+                AgentConversationMessageAttachment.path == path,
+            )
+        )
+        if referenced_elsewhere is not None:
+            continue
+        try:
+            _host_path(project_root, path, require_file=True).unlink()
+        except (DomainError, OSError):
+            # The conversation deletion has already succeeded upstream. Missing
+            # files and transient storage cleanup failures must not resurrect it.
+            continue
+    db.flush()
 
 
 def terminal_details(
