@@ -87,6 +87,40 @@ def test_expired_lease_cannot_be_revived_by_heartbeat(db_session_factory):
         assert recover_expired(db) == 1
 
 
+def test_worker_maintenance_recovers_a_lease_that_expires_after_startup(
+    worker_container, db_session_factory
+):
+    """A restart just before expiry must not strand the task until another restart."""
+
+    from flowweave.bootstrap.worker import TaskWorker
+
+    worker = TaskWorker(worker_container)
+    worker._recover_startup()
+    with db_session_factory() as db:
+        task = enqueue(
+            db,
+            task_type="PROVISION_AGENT_WORKSPACE_RUNTIME",
+            aggregate_type="AGENT_WORKSPACE",
+            aggregate_id="default-agent-workspace",
+            idempotency_key="lease-expired-after-startup",
+        )
+        claimed = claim(db, "interrupted-worker", lease_seconds=5)
+        assert claimed is not None
+        task.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+        task_id = task.id
+
+    worker._run_sync(worker.run_maintenance())
+
+    with db_session_factory() as db:
+        recovered = db.get(BackgroundTask, task_id)
+        assert recovered is not None
+        assert recovered.state == TaskState.RETRY
+        assert recovered.lease_owner is None
+        assert recovered.lease_until is None
+        assert recovered.last_error == "LEASE_EXPIRED"
+
+
 def test_lease_heartbeat_prevents_recovery_and_second_claim(db_session_factory, settings):
     from flowweave.bootstrap.worker import LeaseHeartbeat
 

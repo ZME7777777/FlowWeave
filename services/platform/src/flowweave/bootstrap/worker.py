@@ -243,6 +243,13 @@ class TaskWorker:
         with settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox:
             async with self.container.database.session() as session:
                 try:
+                    # A process can restart in the narrow interval before a
+                    # claimed task's lease expires. Startup recovery then sees
+                    # it as live, but without this recurring sweep it remains
+                    # RUNNING forever once its lease elapses.
+                    await session.run_sync(
+                        lambda db: (mark_uow_owned(db), recover_expired(db, commit=False))[1]
+                    )
                     expired = await session.run_sync(
                         lambda db: (
                             mark_uow_owned(db),
