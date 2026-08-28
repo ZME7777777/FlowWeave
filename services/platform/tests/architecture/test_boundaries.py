@@ -288,6 +288,27 @@ def test_openhands_144_stream_and_builtin_tool_contracts_are_behavioral() -> Non
     assert '"tool_module_qualnames"' not in runtime
 
 
+def test_openhands_144_profile_secret_condenser_and_title_boundaries() -> None:
+    """FR-76: use upstream lifecycle behavior without dropping product-owned title CAS."""
+
+    contract_probe = (REPOSITORY / "infra" / "openhands" / "contract_check.py").read_text()
+    runtime = (SOURCE / "runtime" / "openhands.py").read_text()
+    conversations = (
+        SOURCE / "modules" / "agent_workspaces" / "application" / "conversations.py"
+    ).read_text()
+    titles = (SOURCE / "modules" / "agent_workspaces" / "application" / "titles.py").read_text()
+    assert "agent_profile_fields ==" not in contract_probe
+    assert "expected_condenser_defaults" not in contract_probe
+    assert '"profile_v1_migration": True' in contract_probe
+    assert '"provider_connection_read_at_use": True' in contract_probe
+    assert '"nested_secret_serializer_probe": True' in contract_probe
+    assert '"subscription_condenser_dispatch": True' in contract_probe
+    assert '"remote_title_generation_fix_in_frozen_source": False' in contract_probe
+    assert 'payload["autotitle"] = False' in runtime
+    assert "_enqueue_title_task" in conversations
+    assert "AgentConversationBinding.title_generation == generation" in titles
+
+
 def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
     orchestration = (
         SOURCE / "modules" / "orchestration" / "application" / "service.py"

@@ -285,6 +285,18 @@ HOME/项目的 ambient Plugin 扫描是例外：它保持上游原生默认语�
 的 USER/PROJECT 冻结内容按会话工作目录合并成只读 project Memory bundle，避免进程级 HOME 在同一
 FlowRun 多 Conversation 间串扰，再由 OpenHands 正式 `load_memory` 生命周期原生加载。固定镜像真实
 create/smoke 验证仍集中在 FR-12。
+
+固定 OpenHands 1.44.0 已正式负责 Agent Profile v1→v2 迁移、LLM Profile 预检、Provider Connection
+凭据的 read-at-use 解析、Secret serializer 探测，以及 subscription LLM 的 condenser dispatch。FlowWeave
+不复制这些存储迁移、凭据刷新或 condenser 调度生命周期；镜像门禁以实际迁移、轮换后重读、嵌套 Secret
+识别和 subscription condenser 行为验收，而不冻结上游字段全集或默认值表。FlowWeave 仍只持有不可变
+Snapshot 引用、权限、用量归属和调用边界 Secret Reference；显式 Agent JSON 继续避免从可变 Server
+Profile Store 恢复产品事实。
+
+远程标题生成的 Profile 解析、调用上下文和 metadata cache 修复不属于当前冻结提交
+`9a24f6c8866f353042a57df0514ccc900e3a0691`。在升级到包含这些修复且完成行为验收的源码前，Agent
+Workspace 必须继续关闭 OpenHands `autotitle`，保留 FlowWeave 独立标题任务、失败兜底和手动标题 CAS；
+不得仅因后续上游 `main` 已修复而提前删除。
 没有对应 FlowWeave 产品需求的 OpenHands 能力不因此进入范围。
 
 ## 10. 数据模型草案

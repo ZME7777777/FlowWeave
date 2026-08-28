@@ -20,6 +20,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from pydantic import SecretStr
+
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 os.environ.setdefault("OH_SECRET_KEY", "flowweave-contract-check-secret-000000000000")
 
@@ -39,6 +41,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StartGoalRequest,
 )
+from openhands.agent_server.persistence import PersistedSettings
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_details_router import ServerInfo
 from openhands.agent_server.sockets import (
@@ -74,7 +77,12 @@ from openhands.sdk.event import Event as OpenHandsEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import (
+    ProviderConnection,
+    ProviderConnectionStore,
+)
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
@@ -141,6 +149,9 @@ REQUIRED_PATHS = {
     "/api/agent-profiles/{name}/materialize",
     "/api/agent-profiles/{name}/rename",
     "/api/agent-profiles/{profile_id}/activate",
+    "/api/profiles/{name}/validate",
+    "/api/llm/provider-connections",
+    "/api/llm/provider-connections/{connection_id}",
     "/api/plugins",
     "/api/skills",
     "/api/sub-agents",
@@ -196,6 +207,80 @@ async def _assert_targeted_streaming_delta_delivery() -> None:
     assert streaming.events == [delta]
 
 
+def _assert_profile_provider_secret_and_condenser_behavior() -> None:
+    migrated = validate_agent_profile(
+        {
+            "schema_version": 1,
+            "name": "legacy-flowweave-profile",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "skills": [{"name": "retired-embedded-skill", "content": "legacy"}],
+        }
+    )
+    assert isinstance(migrated, OpenHandsAgentProfile)
+    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 2
+    assert migrated.disabled_skills == []
+
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        provider_store = ProviderConnectionStore(root / "provider-connections")
+        profile_store = LLMProfileStore(
+            root / "profiles", provider_store=provider_store
+        )
+        connection = ProviderConnection(
+            id="governed-provider",
+            display_name="Governed Provider",
+            provider="openai",
+            api_key=SecretStr("first-key"),
+            base_url="https://models.example.test/v1",
+            created_at=1,
+            updated_at=1,
+        )
+        provider_store.create(connection)
+        profile_store.save(
+            "governed-profile",
+            LLM(
+                model="openai/test",
+                provider_connection_id=connection.id,
+                usage_id="provider-probe",
+            ),
+        )
+        first = profile_store.load("governed-profile")
+        assert first.api_key is not None
+        assert first.api_key.get_secret_value() == "first-key"
+        provider_store.update(
+            connection.model_copy(
+                update={"api_key": SecretStr("rotated-key"), "updated_at": 2}
+            )
+        )
+        rotated = profile_store.load("governed-profile")
+        assert rotated.api_key is not None
+        assert rotated.api_key.get_secret_value() == "rotated-key"
+
+    nested_secret = PersistedSettings.model_validate(
+        {"agent_settings": {"agent_context": {"secrets": {"TOKEN": "private"}}}}
+    )
+    assert nested_secret.has_any_secret is True
+    assert PersistedSettings().has_any_secret is False
+
+    streaming_llm = LLM(
+        model="openai/test",
+        api_key=SecretStr("contract-only"),
+        usage_id="condenser-probe",
+        stream=True,
+    )
+    condenser = LLMSummarizingCondenser(llm=streaming_llm)
+    assert condenser.llm is not streaming_llm
+    assert condenser.llm.stream is False
+    assert condenser.llm.metrics is streaming_llm.metrics
+    subscription_llm = streaming_llm.model_copy(deep=True)
+    subscription_llm.is_subscription = True
+    subscription_condenser = LLMSummarizingCondenser(llm=subscription_llm)
+    assert subscription_condenser.llm is subscription_llm
+    assert subscription_condenser.llm.requires_streaming is True
+    assert subscription_condenser.llm.stream is True
+
+
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
@@ -230,6 +315,7 @@ def main() -> None:
     )
     assert _WebSocketSubscriber.receives_streaming_deltas is True
     asyncio.run(_assert_targeted_streaming_delta_delivery())
+    _assert_profile_provider_secret_and_condenser_behavior()
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
         provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
@@ -429,41 +515,14 @@ def main() -> None:
         "/api/agent-profiles/{name}/rename": ["post"],
         "/api/agent-profiles/{profile_id}/activate": ["post"],
     }
-    agent_profile_fields = set(OpenHandsAgentProfile.model_fields)
-    assert agent_profile_fields == {
-        "schema_version",
-        "id",
-        "name",
-        "revision",
-        "mcp_server_refs",
-        "agent_kind",
-        "llm_profile_ref",
-        "agent",
-        "tools",
-        "system_message_suffix",
-        "disabled_skills",
-        "condenser",
-        "verification",
-        "enable_sub_agents",
-        "enable_switch_llm_tool",
-        "tool_concurrency_limit",
+    assert set(schema["paths"]["/api/profiles/{name}/validate"]) == {"post"}
+    assert set(schema["paths"]["/api/llm/provider-connections"]) == {
+        "get",
+        "post",
     }
-    assert AGENT_PROFILE_SCHEMA_VERSION == 2
-    assert _field_default(OpenHandsAgentProfile, "agent_kind") == "openhands"
-    assert _field_default(OpenHandsAgentProfile, "agent") == "CodeActAgent"
-    assert _field_default(OpenHandsAgentProfile, "tools") is None
-    assert _field_default(OpenHandsAgentProfile, "enable_sub_agents") is False
-    assert _field_default(OpenHandsAgentProfile, "enable_switch_llm_tool") is True
-    assert _field_default(OpenHandsAgentProfile, "tool_concurrency_limit") == 1
-    assert set(ProfileVerificationSettings.model_fields) == {
-        "critic_enabled",
-        "critic_mode",
-        "enable_iterative_refinement",
-        "critic_threshold",
-        "max_refinement_iterations",
-        "critic_server_url",
-        "critic_model_name",
-    }
+    assert set(
+        schema["paths"]["/api/llm/provider-connections/{connection_id}"]
+    ) == {"delete", "patch"}
     governed_profile = validate_agent_profile(
         {
             "schema_version": 2,
@@ -1069,20 +1128,6 @@ def main() -> None:
         "kind": "NoOpCondenser"
     }
 
-    expected_condenser_defaults = {
-        "max_size": 240,
-        "max_tokens": None,
-        "keep_first": 2,
-        "minimum_progress": 0.1,
-        "hard_context_reset_max_retries": 5,
-        "hard_context_reset_context_scaling": 0.8,
-    }
-    actual_condenser_defaults = {
-        name: _field_default(LLMSummarizingCondenser, name)
-        for name in expected_condenser_defaults
-    }
-    assert actual_condenser_defaults == expected_condenser_defaults
-
     # Importing these public types is itself part of the frozen source contract.
     native_types = (
         NoOpCondenser,
@@ -1138,7 +1183,6 @@ def main() -> None:
                 "streaming_delta_delivery_is_subscriber_scoped": True,
                 "remote_structured_builtin_resolution": True,
                 "agent_definition_field_count": len(agent_definition_fields),
-                "agent_profile_field_count": len(agent_profile_fields),
                 "agent_profile_http_methods": profile_http_methods,
                 "task_action_fields": sorted(task_action_fields),
                 "task_observation_fields": sorted(task_observation_fields),
@@ -1155,7 +1199,11 @@ def main() -> None:
                 "memory_char_budget": MEMORY_CHAR_BUDGET,
                 "memory_tiers_independently_selectable": False,
                 "memory_read_failure_is_fatal": False,
-                "condenser_defaults": actual_condenser_defaults,
+                "profile_v1_migration": True,
+                "provider_connection_read_at_use": True,
+                "nested_secret_serializer_probe": True,
+                "subscription_condenser_dispatch": True,
+                "remote_title_generation_fix_in_frozen_source": False,
             },
             sort_keys=True,
         )

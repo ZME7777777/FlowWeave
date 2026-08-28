@@ -718,6 +718,13 @@ Responses 端点；它不调用 OpenHands Runtime、不会写入 Conversation Ev
 `title_generation`，延迟任务只可在 generation 与 `PENDING` 同时匹配时 CAS 写入，因此永不覆盖手动名称。
 供应商不可用或响应无效时保留规范化首句并标记 `FALLBACK`；列表不得回退为“未命名会话 N”。
 
+固定 Runtime 源码 `9a24f6c8866f353042a57df0514ccc900e3a0691` 尚未包含远程标题生成的
+LLM Profile 解析、调用上下文传播和 metadata-only cache 失效修复；其 title utility 仍会把普通流式 LLM
+复制为非流式请求。因此 Agent Workspace 继续显式发送 `autotitle=false`，上述独立 Provider 请求、
+临时 seed 清理、`PENDING/GENERATED/FALLBACK/MANUAL` 投影和 `title_generation` CAS 均不得删除。只有
+未来源码锁包含对应修复、Codex subscription 标题与手动改名竞争的真实 smoke 全部通过后，才可另开切片
+评估迁移；不能按上游浮动 `main` 推断当前镜像已具备该能力。
+
 ## 15. 一致性和恢复对账
 
 平台必须定期做只读对账，不解析 OpenHands 内部 JSON 文件：
