@@ -1812,3 +1812,84 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   expect(bulkAssetA.id).toBeTruthy();
   expect(bulkAssetB.id).toBeTruthy();
 });
+
+test('historical Agent conversation exposes capability guidance instead of a silent $ or / menu', async ({ page }) => {
+  const historicalConversation = {
+    id: 'history-capability-conversation', workspace_id: 'history-capability-workspace',
+    external_conversation_id: 'history-capability-openhands', display_title: '历史会话', title_state: 'FALLBACK', lifecycle: 'ACTIVE',
+    working_directory: '/runtime/workspace/project', work_directory_id: null,
+    model_provider_id: 'history-provider', model_name: 'history-model', reasoning_effort: null,
+    streaming_callback_ready: true, capabilities: [],
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  const defaultCapabilities = [{ id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', digest: 'history-skill-digest' }];
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'history-capability-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString() }) });
+      return;
+    }
+    if (path.endsWith('/runtime')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
+      return;
+    }
+    if (path.endsWith('/capabilities') && request.method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(defaultCapabilities) });
+      return;
+    }
+    if (path.endsWith('/capabilities') && request.method() === 'POST') {
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE', message: '此历史会话创建时未注册能力市场，无法原地动态加载；请新建会话后继续使用能力。' } }) });
+      return;
+    }
+    if (path.endsWith('/conversations')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([historicalConversation]) });
+      return;
+    }
+    if (path.endsWith('/work-directories')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+      return;
+    }
+    if (path.endsWith('/events')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [], next_cursor: null }) });
+      return;
+    }
+    if (path.endsWith('/context')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: 'history-model', reasoning_effort: null }) });
+      return;
+    }
+    if (path.endsWith('/pending-confirmation')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+      return;
+    }
+    if (path.endsWith('/workspace')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'history-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+    { id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', description: '历史会话迁移验证 Skill', filename: 'history-skill.zip', is_latest: true, document: {} },
+  ]) }));
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+    { id: 'history-provider', name: '历史模型', connection_state: 'CONNECTED', models: [{ model_name: 'history-model', enabled: true, is_default: true }] },
+  ]) }));
+
+  await page.goto('/agent/conversations/history-capability-conversation');
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('/');
+  await expect(page.getByRole('listbox', { name: '选择命令或 MCP' })).toContainText('当前会话还没有加载命令或 MCP');
+  await composer.fill('$');
+  const skillMenu = page.getByRole('listbox', { name: '选择技能' });
+  await expect(skillMenu).toContainText('当前会话还没有加载 Skill');
+  await skillMenu.getByRole('button', { name: '管理能力' }).click();
+  const manager = page.getByRole('dialog', { name: '能力' });
+  await manager.getByRole('button', { name: /history-skill/ }).click();
+  await manager.getByRole('button', { name: '加载到当前会话' }).click();
+  await expect(manager).toContainText('此历史会话创建时未注册能力市场');
+  await manager.getByRole('button', { name: '新建可使用能力的会话' }).click();
+  await expect(page).toHaveURL(/\/agent$/);
+  await composer.fill('$');
+  await expect(page.getByRole('listbox', { name: '选择技能' }).getByRole('option', { name: /history-skill/ })).toBeVisible();
+});

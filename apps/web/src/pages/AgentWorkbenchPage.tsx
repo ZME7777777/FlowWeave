@@ -42,10 +42,11 @@ function stringValues(value: unknown): string[] {
 }
 
 function ComposerCapabilityAutocomplete({
-  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onSubmit,
+  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onSubmit, onManageCapabilities,
 }: {
   draft: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
   onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onSubmit: () => void;
+  onManageCapabilities?: () => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -62,7 +63,9 @@ function ComposerCapabilityAutocomplete({
     onDraftChange(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
     requestAnimationFrame(() => input.current?.focus());
   };
-  const hasMenu = Boolean(trigger && visible.length);
+  const hasSuggestions = visible.length > 0;
+  const showCapabilityHelp = Boolean(trigger && !suggestions.length && onManageCapabilities);
+  const hasMenu = Boolean(trigger && (hasSuggestions || showCapabilityHelp));
   return <div className="agent-composer-input">
     <textarea ref={input} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
@@ -76,12 +79,13 @@ function ComposerCapabilityAutocomplete({
       }
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
     }}/>
-    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : '选择命令或 MCP'}>{visible.map((item, index) => <button type="button" key={item.id} role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : 'MCP'}</em></button>)}</div>}
+    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : '选择命令或 MCP'}>{hasSuggestions ? visible.map((item, index) => <button type="button" key={item.id} role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : 'MCP'}</em></button>) : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP'}</b><small>先为此会话加载能力，随后可在这里用 {trigger!.sigil} 选择并插入。</small></span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理能力</button></div>}</div>}
   </div>;
 }
 
-function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, onClose }: {
+function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, onClose, onCreateEnhancedConversation }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentWorkspaceCapability[]; onClose: () => void;
+  onCreateEnhancedConversation?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
@@ -149,7 +153,7 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', '全部'], ['PLUGIN', '插件'], ['MCP', 'MCP'], ['SKILL', '技能']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div>
       <div className="agent-capability-summary"><span>已启用 <b>{selectedIds.length}</b> / 30</span><span>{bindingId ? '只能追加，当前回复完成后即可加载。' : '仅加载已发布的版本；修改不会伪造更新已存在的原生会话。'}</span></div>
       <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>没有匹配的已发布能力。</p> : visible.map(item => { const checked = selectedIds.includes(item.id); return <button type="button" key={item.id} className={checked ? 'selected' : ''} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{item.description || item.filename}</small><em>{item.capability_type === 'SKILL' ? '技能' : item.capability_type}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
-      {save.error && <p className="agent-capability-error">{save.error.message}</p>}
+      {save.error && <div className="agent-capability-error"><p>{save.error.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。新会话会自动带入当前“新会话默认能力”；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={onCreateEnhancedConversation}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
       <footer><button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || (!bindingId && enabledQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在加载…' : bindingId ? '加载到当前会话' : '保存默认能力'}</button></footer>
     </section>
   </div>;
@@ -1347,7 +1351,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || '图片附件'}</p><span>{message.items.length ? `${message.items.length} 个附件` : ''}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择命令或 MCP）'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { const images = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => file !== null); if (!images.length || !composerScope) return; event.preventDefault(); for (const image of images) upload.mutate({ file: image, scope: composerScope }); }} onSubmit={enqueueDraft}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择命令或 MCP）'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { const images = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => file !== null); if (!images.length || !composerScope) return; event.preventDefault(); for (const image of images) upload.mutate({ file: image, scope: composerScope }); }} onSubmit={enqueueDraft} onManageCapabilities={selected ? () => setCapabilityManagerOpen(true) : undefined}/>
         {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
@@ -1369,6 +1373,6 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       queryClient.setQueryData<AgentWorkDirectoryList>(['agent-work-directories', workspace.id], current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspace.id] });
     }}/>}
-    {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} onClose={() => setCapabilityManagerOpen(false)}/>}
+    {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={() => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区' }); }}/>}
   </main>;
 }
