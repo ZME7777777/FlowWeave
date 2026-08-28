@@ -474,14 +474,13 @@ chmod 0700 "$target"
                 422,
                 {"kind": resource.kind},
             )
-        # The controller must not turn possession of its API key into the
-        # ability to launch an arbitrary local image. Verify the immutable
-        # image identity before creating networks, mounts, or containers.
-        verified_image_reference = self._verify_image_trust(resource)
         existing = self.inspect(resource.backend_resource_name)
         if existing is not None:
-            # Never create or attach auxiliary resources until the immutable
-            # container labels prove that the deterministic name is ours.
+            # A running container retains its image layer even if a later
+            # deployment prunes the historical image digest locally. Its
+            # immutable labels remain the identity proof for an existing
+            # resource, so do not require that old image merely to observe,
+            # reattach, or probe an already-owned container.
             self._verify_resource_contract(existing, resource)
             self._ensure_runtime_network(resource)
             if existing.state != "RUNNING":
@@ -502,6 +501,9 @@ chmod 0700 "$target"
                 self._wait_for_agent_server(resource.backend_resource_name)
             return existing
 
+        # No owned container exists. Verify the immutable image identity
+        # before any new container can be created from it.
+        verified_image_reference = self._verify_image_trust(resource)
         self._ensure_runtime_network(resource)
         runtime_home_id = str(
             (resource.spec_json or {}).get("agent_workspace_id")

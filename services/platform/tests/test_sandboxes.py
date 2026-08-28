@@ -279,7 +279,6 @@ def test_runtime_conflict_is_rejected_before_network_creation(settings, monkeypa
     provider = DockerSandboxProvider(_docker_settings(settings))
     resource = _runtime_resource()
     conflict = _observation(resource, resource_id="another-resource")
-    monkeypatch.setattr(provider, "_verify_image_trust", lambda _item: "sha256:" + "a" * 64)
     monkeypatch.setattr(provider, "inspect", lambda _name: conflict)
     network_touched: list[str] = []
     monkeypatch.setattr(
@@ -299,6 +298,7 @@ def test_untrusted_runtime_image_is_rejected_before_network_creation(settings, m
     provider = DockerSandboxProvider(_docker_settings(settings))
     resource = _runtime_resource()
     network_touched: list[str] = []
+    monkeypatch.setattr(provider, "inspect", lambda _name: None)
     monkeypatch.setattr(
         provider,
         "_ensure_runtime_network",
@@ -318,7 +318,6 @@ def test_existing_container_spec_drift_is_rejected_before_network_creation(setti
     observation = _observation(resource)
     observation.labels["flowweave.spec-hash"] = "0" * 64
     network_touched: list[str] = []
-    monkeypatch.setattr(provider, "_verify_image_trust", lambda _item: "sha256:" + "a" * 64)
     monkeypatch.setattr(provider, "inspect", lambda _name: observation)
     monkeypatch.setattr(
         provider,
@@ -332,6 +331,30 @@ def test_existing_container_spec_drift_is_rejected_before_network_creation(setti
     assert caught.value.code == "SANDBOX_RESOURCE_CONFLICT"
     assert "flowweave.spec-hash" in caught.value.details["mismatches"]
     assert network_touched == []
+
+
+def test_existing_owned_runtime_does_not_require_pruned_historical_image(settings, monkeypatch):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    observation = _observation(resource)
+    network_touched: list[str] = []
+
+    monkeypatch.setattr(provider, "inspect", lambda _name: observation)
+    monkeypatch.setattr(
+        provider,
+        "_verify_image_trust",
+        lambda _item: (_ for _ in ()).throw(AssertionError("must not inspect a pruned image")),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_ensure_runtime_network",
+        lambda item: network_touched.append(item.id) or "unused",
+    )
+    monkeypatch.setattr(provider, "_isolate_runtime_container", lambda *_args: None)
+    monkeypatch.setattr(provider, "_wait_for_agent_server", lambda _name: None)
+
+    assert provider.ensure_running(resource) == observation
+    assert network_touched == [resource.id]
 
 
 def test_setup_ledger_survives_outer_rollback_as_delete_intent(
