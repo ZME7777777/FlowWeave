@@ -513,7 +513,7 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if not message_text:
+    if not message_text and not attachments:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     prompt, image_urls = _message_payload(message_text, attachments)
     workspace = _workspace(db, workspace_id)
@@ -859,7 +859,7 @@ def message(
     content: str,
     attachments: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
-    if not content.strip():
+    if not content.strip() and not attachments:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     prompt, image_urls = _message_payload(content, attachments)
     workspace = _workspace(db, workspace_id)
@@ -934,7 +934,9 @@ def _message_payload(
     image_urls = tuple(item["image_data_url"] for item in attachments if "image_data_url" in item)
     prompt = content.strip()
     if paths:
-        prompt += "\n\n已上传到共享工作区的附件：\n" + "\n".join(f"- {path}" for path in paths)
+        prompt += (
+            "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
+        ) + "\n".join(f"- {path}" for path in paths)
     return prompt, image_urls
 
 

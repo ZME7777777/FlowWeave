@@ -1474,7 +1474,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             db,
             workspace.id,
             created["id"],
-            "请分析图片",
+            "",
             (
                 {
                     "path": str(attachment["path"]),
@@ -1483,9 +1483,25 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             ),
         )
         assert runtime.sent == (
-            "请分析图片\n\n已上传到共享工作区的附件：\n"
+            "请查看已上传到共享工作区的附件：\n"
             f"- /runtime/workspace/project/uploads/{'a' * 32}-diagram.png",
             ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
+        )
+        pdf = conversations.upload_attachment(
+            db,
+            workspace.id,
+            created["id"],
+            filename="requirements.pdf",
+            content_type="application/pdf",
+            content=b"%PDF-1.7",
+        )
+        assert pdf["mime_type"] == "application/pdf"
+        assert pdf["image_data_url"] is None
+        conversations.message(db, workspace.id, created["id"], "", ({"path": str(pdf["path"])},))
+        assert runtime.sent == (
+            "请查看已上传到共享工作区的附件：\n"
+            f"- /runtime/workspace/project/uploads/{'a' * 32}-requirements.pdf",
+            (),
         )
         selected = conversations.switch_conversation_model(
             db,

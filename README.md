@@ -16,11 +16,14 @@ FlowWeave 是面向内部研发流程的 Agent 工作台：可复用节点资产
 
 ```text
 apps/web/          React + TypeScript 产品前端
-services/platform/ Python 3.12 FastAPI API、Worker、五段核心加两段前向 Alembic 迁移
+services/platform/ Python 3.12 FastAPI API、Worker、Runtime Provider 与 Alembic 迁移
 contracts/         跨进程 JSON Schema
 agent-packages/    可导入 Agent Skill/Plugin 示例
 infra/compose.yaml PostgreSQL、migration、Runtime Provider、API、Worker、Web
 ```
+
+第一次接触项目时，请从 [项目总览、构建与部署统一入口](docs/project-overview-build-deploy.md) 开始；
+它按目录解释代码职责，并给出变更范围到编译、打包和部署方式的选择表。
 
 ## 启动
 
@@ -44,18 +47,20 @@ RUNTIME_ADAPTER=openhands make infra-up
 make rebuild-deploy
 ```
 
-全量重建、单服务部署、运行时镜像更新、迁移顺序和部署后检查详见 [本地编译、打包与部署](docs/local-build-and-deploy.md)。
+全量重建、单服务部署、运行时镜像更新、迁移顺序和部署后检查详见
+[项目总览、构建与部署统一入口](docs/project-overview-build-deploy.md)；完整命令参考保留在
+[本地编译、打包与部署](docs/local-build-and-deploy.md)。
 
 节点可写资源保存在宿主机 `var/workspaces/nodes/<node-asset-id>/`：`skills/` 存放完整 Skill 包，`files/` 可放文本或附件，`repositories/` 可放代码仓库，`sessions/` 保存各次运行的会话工作区。上传的 MCP/Hook 配置与脚本由平台物化到 `var/workspaces/.managed-assets/nodes/<node-asset-id>/`，并以只读方式挂载到 Runtime 的 `/runtime/capabilities/nodes/<node-asset-id>/`，不会暴露在节点可写挂载中。可通过绝对路径配置 `FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT` 改为其他宿主机目录。
 
-OpenHands 镜像内置 `sh`、`bash`、Python、Node.js、npm/npx、`js`、uv/uvx、Git、SSH、curl、jq、unzip 与 `lark-cli`。默认会把宿主机 `~/.lark-cli` 及 `~/Library/Application Support/lark-cli` 映射到 Session 容器，并自动为 Linux 创建兼容的 `master.key` 链接，因此在宿主机完成的配置和授权可被所有 Agent 会话直接复用。macOS 首次共享前需在宿主机终端执行一次：
+OpenHands 镜像内置 `sh`、`bash`、Python、Node.js、npm/npx、`js`、uv/uvx、Git、SSH、curl、jq、unzip 与 `lark-cli`。每个终端环境拥有独立的 Controller 管理凭据卷；Setup Session 和该环境发布后的 Runtime 使用同一份凭据，但不同环境之间不共享，凭据也不会进入镜像层。需要 Lark 能力时，在目标环境的 Setup 终端内执行：
 
 ```bash
-lark-cli config keychain-downgrade
+lark-cli config init --new
 lark-cli auth login --domain all
 ```
 
-可用 `FLOWWEAVE_HOST_LARK_CLI_HOME` 和 `FLOWWEAVE_HOST_LARK_CLI_KEY_HOME` 覆盖这两个宿主机目录。它们包含授权凭据，只应挂载到可信的本地 Agent 环境。
+不要把 token、Cookie 或 `.lark-cli` 内容复制到节点工作区、镜像层或 Agent 消息。
 
 本地分进程开发：
 

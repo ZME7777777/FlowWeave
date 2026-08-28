@@ -75,14 +75,14 @@ class AgentConversationBootstrapWrite(_Write):
     model_name: str = Field(min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str = Field(max_length=200_000)
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
 
 
 class AgentMessageWrite(_Write):
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str = Field(max_length=200_000)
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
