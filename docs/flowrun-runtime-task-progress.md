@@ -889,6 +889,22 @@ Ruff/Pyright、相关 pytest、Web lint/typecheck/build、`git diff --check`、A
 replacement；Docker 控制面暂时不可用只写入可诊断错误与退避，保留受管资源的 `RUNNING` 意图和
 既有活动 Runtime。新增 relay 终止、空闲 WebSocket 断连和控制面 503 隔离回归。
 
+### FR-64 Agent 会话刷新恢复与连续过程反馈 — DONE
+
+依赖：`FR-63`。
+
+目标：Agent 工作台在浏览器刷新、重连或初始 REST 回填时，必须通过 OpenHands 正式 input-readiness
+和正式事件树恢复尚未终止的当前轮，持续显示动态“正在思考”或具体工具执行状态与墙钟耗时；不能把仍在
+运行的过程错误呈现为静态“耗时 0 秒”。安全可见 delta 和过程事件使用动画帧批量合并，流式阶段不重复
+解析整段 Markdown，避免高频输出卡顿。收到本轮正式 assistant、FinishAction 或 ERROR 后，过程区域必须可靠
+自动折叠，最终回复或失败结果单独显示。不得持久化浏览器运行状态、伪造 Agent 思考、修改 OpenHands、
+Runtime 或 FlowRun 契约。
+
+完成：刷新后的当前轮仅在 OpenHands 正式 `input-readiness` 返回不可接收输入、且正式事件树存在未终止 user
+event 时恢复为运行中；过程摘要按正式 Action 语义显示思考、后台命令、文件、浏览器、MCP、Skill 或任务状态。
+流式正文和过程事件均在动画帧合并，正文在终态前以轻量文本呈现；正式 assistant、FinishAction 或 ERROR
+到达后过程卡片受控关闭，最终内容独立呈现。未新增平台会话状态或 OpenHands 旁路。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -905,6 +921,7 @@ replacement；Docker 控制面暂时不可用只写入可诊断错误与退避�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-64 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：刷新中恢复动态等待、工具过程、终态自动折叠）；`git diff --check` 与任务状态唯一性 | PASS：刷新中的 OpenHands 原生未就绪会话重新显示实时“正在思考”与墙钟耗时；正式工具事件按同一工作过程归组，终态到达后过程自动折叠。 |
 | 2026-08-28 | FR-63 | Provider relay、Agent Workspace 空闲 WebSocket 断连与 Docker 控制面暂时不可用定向 pytest（3 passed）；受影响 Python Ruff；两条 WebSocket 路由定向 Pyright（0 errors）；`git diff --check` | PASS：浏览器刷新/断连关闭上游 async generator，Provider 终止其 `docker exec` relay；暂态 `SANDBOX_BACKEND_UNAVAILABLE` 保留 Agent Runtime 的 `RUNNING` 意图与 `ACTIVE` 状态，不删除资源、不进入 `RECONNECTING`。全量 Pyright 未作为本切片通过项：附件功能的既有未提交改动另有类型错误，未纳入本提交。无 `CURRENT` 或下一切片。 |
 | 2026-08-28 | FR-62 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：标题栏无重复入口、环境信息入口保留）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：标题栏不再包含“打开/关闭工作区工具”按钮；右侧环境信息摘要仍可打开工具区，工具区内关闭入口保持可用。唯一 Alembic head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |
 | 2026-08-28 | FR-61 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：多条用户消息刻度、摘要、正式 event id 定位和当前态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：左侧刻度仅从正式 user event `id` 生成，随消息高度和滚动位置更新；悬停显示截断摘要，点击平滑定位至对应用户消息。唯一 Alembic head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |

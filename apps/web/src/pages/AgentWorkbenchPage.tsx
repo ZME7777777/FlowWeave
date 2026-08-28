@@ -123,6 +123,12 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
   });
 }
 
+function latestUnfinishedUserEventId(events: OpenHandsConversationEvent[]): string | undefined {
+  const userEvents = events.filter(event => event.event_type === 'MESSAGE'
+    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
+  return [...userEvents].reverse().find(event => !hasFinishedTurn(events, event.id))?.id;
+}
+
 function eventBranchIds(events: OpenHandsConversationEvent[], rootEventId: string): Set<string> {
   const children = new Map<string, string[]>();
   for (const event of events) {
@@ -646,6 +652,8 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const titleInput = useRef<HTMLInputElement>(null);
   const pendingLiveText = useRef('');
   const liveTextFrame = useRef<number | undefined>(undefined);
+  const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
+  const liveEventsFrame = useRef<number | undefined>(undefined);
   const selectedBindingId = bindingIdFromLocation();
   const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultAgentWorkspace, retry: false });
   const workspace = workspaceQuery.data;
@@ -697,8 +705,10 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const inputReadinessQuery = useQuery({
     queryKey: ['agent-conversation-input-readiness', workspace?.id, selected?.id],
     queryFn: () => api.agentConversationInputReadiness(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected && (turnState === 'pausing' || queuedMessages.length > 0)),
-    refetchInterval: turnState === 'pausing' || queuedMessages.length > 0 ? 700 : false,
+    // This is the formal OpenHands execution-state read used to restore an
+    // in-flight turn after a browser reload. It is not persisted by FlowWeave.
+    enabled: Boolean(workspace && selected),
+    refetchInterval: query => turnState === 'pausing' || queuedMessages.length > 0 || isGenerating || query.state.data?.ready === false ? 700 : false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const contextQuery = useQuery({
@@ -739,13 +749,24 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       if (next) setLiveText(current => current + next);
     });
   }, []);
+  const appendLiveEvent = useCallback((event: OpenHandsConversationEvent) => {
+    pendingLiveEvents.current.push(event);
+    if (liveEventsFrame.current !== undefined) return;
+    liveEventsFrame.current = window.requestAnimationFrame(() => {
+      liveEventsFrame.current = undefined;
+      const next = pendingLiveEvents.current;
+      pendingLiveEvents.current = [];
+      if (next.length) setLiveEvents(current => mergeConversationEvents(current, next));
+    });
+  }, []);
   useEffect(() => () => {
     if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
+    if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current);
   }, []);
   const onStreamEvent = useCallback((event: { type: 'delta' | 'event' | 'message_complete'; content?: string; event?: OpenHandsConversationEvent }) => {
     if (event.type === 'delta' && event.content) appendLiveText(event.content);
     if (event.type === 'event' && event.event) {
-      setLiveEvents(current => mergeConversationEvents(current, [event.event!]));
+      appendLiveEvent(event.event);
       const formalCommentary = typeof event.event.payload.thought === 'string'
         ? event.event.payload.thought
         : ['THOUGHT', 'TOOL_CALL'].includes(event.event.event_type) && typeof event.event.payload.content === 'string'
@@ -760,7 +781,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     // frame must never complete a newer turn; durable assistant/error events
     // associated with activeTurnEventId are the authoritative terminal signal.
     if (event.type === 'message_complete') { clearLiveText(); refresh(); }
-  }, [appendLiveText, clearLiveText, refresh]);
+  }, [appendLiveEvent, appendLiveText, clearLiveText, refresh]);
 
   useEffect(() => {
     if (!conversationDraft && !selectedBindingId && conversations.length) onNavigate(`/agent/conversations/${encodeURIComponent(conversations[0].id)}`, true);
@@ -768,7 +789,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   }, [conversationDraft, conversations, conversationsQuery.isFetching, onNavigate, pendingCreatedId, selected, selectedBindingId]);
   useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribeToAgentWorkspaceStream(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
-  useEffect(() => { setEditing(false); clearLiveText(); setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setOperationError(undefined); }, [clearLiveText, composerScope]);
+  useEffect(() => { setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setOperationError(undefined); }, [clearLiveText, composerScope]);
   useEffect(() => {
     if (!editing) setTitle(selected?.display_title ?? '');
   }, [editing, selected?.display_title]);
@@ -798,6 +819,13 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   useEffect(() => {
     if (turnState === 'pausing' && inputReadinessQuery.data?.ready) setTurnState('paused');
   }, [inputReadinessQuery.data?.ready, turnState]);
+  useEffect(() => {
+    if (!selected || inputReadinessQuery.data?.ready !== false) return;
+    const userEventId = latestUnfinishedUserEventId(displayedEvents);
+    if (!userEventId) return;
+    setActiveTurnEventId(current => current ?? userEventId);
+    setTurnState(current => current === 'idle' ? 'running' : current);
+  }, [displayedEvents, inputReadinessQuery.data?.ready, selected]);
   useEffect(() => {
     if ((turnState === 'running' || turnState === 'resuming') && activeTurnEventId && hasFinishedTurn(displayedEvents, activeTurnEventId)) {
       clearLiveText();

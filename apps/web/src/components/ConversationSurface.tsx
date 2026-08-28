@@ -401,6 +401,22 @@ function useElapsedSeconds(startedAt: number | undefined, finishedAt: number | u
   return Math.max(0, ((finishedAt ?? now) - startedAt) / 1000);
 }
 
+function activeActivityLabel(entries: ActivityEntry[], waiting: boolean, requestSubmitting: boolean): string {
+  if (requestSubmitting) return '正在提交消息';
+  const current = [...entries].reverse().find(entry => entry.item.kind !== 'thought')?.action
+    ?? [...entries].reverse().find(entry => entry.item.kind !== 'thought')?.item;
+  if (!current || current.kind === 'thought' || waiting) return '正在思考';
+  const eventName = String(current.event.payload.event_name ?? '');
+  if (current.kind === 'condensation') return '正在压缩上下文';
+  if (eventName.includes('Terminal')) return '正在后台执行命令';
+  if (eventName.includes('FileEditor')) return '正在处理文件';
+  if (eventName.includes('Browser')) return '正在执行浏览器操作';
+  if (eventName.includes('MCP')) return '正在调用 MCP 工具';
+  if (eventName.includes('Skill')) return '正在使用技能';
+  if (eventName.includes('Task')) return '正在处理任务';
+  return '正在执行工具';
+}
+
 function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting, requestSubmitting }: {
   items: Item[];
   active: boolean;
@@ -413,13 +429,15 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
   const itemCount = entries.length + (liveText ? 1 : 0);
+  const [open, setOpen] = useState(active);
+  useEffect(() => { setOpen(active); }, [active]);
   const label = active
-    ? `正在思考${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
-    : elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
+    ? `${activeActivityLabel(entries, Boolean(waiting), Boolean(requestSubmitting))}${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
+    : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
   const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
   const hasDetails = itemCount > 0 || waiting;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
-  return <details className="conversation-activity-group" open={active} onToggle={event => { if (active && !event.currentTarget.open) event.currentTarget.open = true; }}>
+  return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
       {entries.map(entry => {
@@ -442,7 +460,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
           </div>
         </article>;
       })}
-      {liveText && <article className="conversation-activity-row live-text"><Sparkles size={14}/><div><b>正在生成回复</b><small>模型输出</small><ReactMarkdown>{liveText}</ReactMarkdown></div></article>}
+      {liveText && <article className="conversation-activity-row live-text"><Sparkles size={14}/><div><b>正在生成回复</b><small>模型输出</small><p className="conversation-live-text-content">{liveText}</p></div></article>}
       {waiting && <ResponseWait startedAt={startedAt} submitting={Boolean(requestSubmitting)}/>}
     </div>
   </details>;

@@ -312,6 +312,7 @@ test('terminal environment deletion preserves setup sessions when a FlowRun uses
 
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
   let modelIsResponding = false;
+  let interrupted = false;
   let agentStream: WebSocketRoute | undefined;
   let terminalSocket: WebSocketRoute | undefined;
   const terminalInputs: string[] = [];
@@ -524,11 +525,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/interrupt') && request.method() === 'POST') {
+      interrupted = true;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true }) });
       return;
     }
     if (path.endsWith('/input-readiness')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: !modelIsResponding || interrupted }) });
       return;
     }
     if (path.endsWith('/resume') && request.method() === 'POST') {
@@ -818,6 +820,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => sentBinding).toBe('agent-conversation-streaming-1');
   await expect.poll(() => sentMessages).toBe(1);
   expect(sentProvider).toBeNull();
+  // Reloading during a native turn must restore the formal non-ready state,
+  // not leave a static zero-second process card behind.
+  await page.reload();
+  await expect(page.getByText(/正在思考 · 已耗时 \d+秒/)).toBeVisible();
+  await expect(page.getByText('仍在等待模型响应')).toBeVisible();
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess.getByText(/正在思考 · 已耗时 \d+秒/)).toBeVisible();
@@ -870,6 +877,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);
+  await expect(activeProcess).toHaveJSProperty('open', false);
   const completedViewport = await page.locator('.conversation-turn').last().evaluate(turn => {
     const surface = turn.closest('.conversation-surface');
     const reply = turn.querySelector('.conversation-message.assistant');
