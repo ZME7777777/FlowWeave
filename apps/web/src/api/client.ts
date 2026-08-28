@@ -142,6 +142,8 @@ export const api = {
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
   agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
+  addAgentConversationCapability: (workspaceId: string, bindingId: string, capability_version_id: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], work_directory_id?: string) =>
     request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), work_directory_id }, true)),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>

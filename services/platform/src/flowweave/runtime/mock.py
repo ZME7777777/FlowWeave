@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from flowweave.runtime.base import (
     RuntimeAskAgentResult,
@@ -187,6 +188,9 @@ class MockRuntime:
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
 
+    def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
+        del handle, plugin_ref
+
     def upload_workspace_file(
         self,
         handle: RuntimeHandle,
@@ -197,7 +201,8 @@ class MockRuntime:
         attachment_owner_id: str | None = None,
     ) -> str:
         del filename, content_type, content
-        return f"/runtime/workspace/project/uploads/{attachment_owner_id or handle.conversation_id}-{uuid4().hex}"
+        owner = attachment_owner_id or handle.conversation_id
+        return f"/runtime/workspace/project/uploads/{owner}-{uuid4().hex}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         del handle

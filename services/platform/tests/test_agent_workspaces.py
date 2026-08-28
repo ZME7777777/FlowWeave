@@ -767,6 +767,70 @@ def test_agent_workspace_selected_skill_is_frozen_and_mounted(
         assert frozen == selected
 
 
+def test_agent_workspace_loads_capability_through_native_marketplace(
+    settings, container, db_session_factory, monkeypatch, skill_capability
+):
+    """A ready Conversation receives a new Skill only after native load_plugin."""
+
+    class CapturingRuntime(MockRuntime):
+        request = None
+        plugin_refs: list[str]
+
+        def __init__(self):
+            super().__init__()
+            self.plugin_refs = []
+
+        def create_conversation(self, request):
+            self.request = request
+            return super().create_conversation(request)
+
+        def can_accept_input(self, handle):
+            del handle
+            return True
+
+        def load_plugin(self, handle, plugin_ref):
+            del handle
+            self.plugin_refs.append(plugin_ref)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CapturingRuntime()
+    with (
+        settings_context(settings),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "动态 Skill", workspace.default_model_provider_id, "dynamic-skill-key"
+        )
+
+        registration = runtime.request.agent_spec.agent_context.registered_marketplaces
+        assert len(registration) == 1
+        assert registration[0]["auto_load"] is False
+        assert registration[0]["source"].endswith(f"/conversations/{created['id']}/marketplace")
+
+        updated = conversations.add_conversation_capability(
+            db, workspace.id, created["id"], skill_capability["capability_id"]
+        )
+
+        assert [item["id"] for item in updated["capabilities"]] == [
+            skill_capability["capability_id"]
+        ]
+        assert len(runtime.plugin_refs) == 1
+        assert runtime.plugin_refs[0].endswith(f"@flowweave-{created['id']}")
+
+
 def test_agent_workspace_selected_plugin_and_mcp_are_mounted(
     settings, client, container, db_session_factory, monkeypatch
 ):

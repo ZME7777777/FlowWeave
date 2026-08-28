@@ -40,7 +40,11 @@ from flowweave.runtime.base import (
 from flowweave.runtime.contract import agent_workspace_runtime_contract
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.request import runtime_provider
-from flowweave.runtime.workspace import materialize_agent_workspace_capabilities
+from flowweave.runtime.workspace import (
+    agent_workspace_capability_marketplace_name,
+    materialize_agent_workspace_capabilities,
+    materialize_agent_workspace_capability_marketplace,
+)
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.settings import get_settings
@@ -360,8 +364,10 @@ def _frozen_capabilities(
         runtime_config = published.runtime_config()
         frozen.append(
             {
+                "capability_version_id": reference.capability_version_id,
                 "capability_type": reference.capability_type,
                 "capability_key": reference.capability_key,
+                "digest": reference.digest,
                 # Materializers consume the complete immutable runtime config:
                 # the Version document alone intentionally omits the blob's
                 # storage key and digest needed to verify and unpack packages.
@@ -390,6 +396,48 @@ def _runtime_capabilities(
     return materialize_agent_workspace_capabilities(
         frozen, host_root=host_root, runtime_root=runtime_root
     )
+
+
+def _capability_marketplace_paths(
+    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
+) -> tuple[Path, Path, str]:
+    allocation = runtime_allocation_for_agent_workspace(db, workspace.id)
+    host_root = (
+        Path(get_settings().workspace_root).resolve()
+        / allocation.relative_root
+        / "capabilities"
+        / "conversations"
+        / binding.id
+    )
+    runtime_root = Path("/runtime/capabilities/conversations") / binding.id
+    return host_root, runtime_root, agent_workspace_capability_marketplace_name(binding.id)
+
+
+def _ensure_capability_marketplace(
+    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
+) -> tuple[str, str]:
+    host_root, runtime_root, marketplace_name = _capability_marketplace_paths(
+        db, workspace, binding
+    )
+    materialize_agent_workspace_capability_marketplace(
+        None,
+        host_root=host_root,
+        runtime_root=runtime_root,
+        marketplace_name=marketplace_name,
+    )
+    return marketplace_name, str(runtime_root / "marketplace")
+
+
+def _frozen_runtime_capability(db: Session, published: Any, capability_type: str) -> dict[str, Any]:
+    runtime_config = published.runtime_config()
+    return {
+        "capability_version_id": published.version.id,
+        "capability_type": capability_type,
+        "capability_key": published.package.capability_key,
+        "digest": published.version.digest,
+        "normalized_config": dict(runtime_config),
+        **runtime_config,
+    }
 
 
 def _freeze_capabilities(
@@ -480,6 +528,9 @@ def _create_native_conversation(
                 )
             return handle
     skills, plugins, mcp_servers = _runtime_capabilities(db, workspace, binding)
+    marketplace_name, marketplace_runtime_path = _ensure_capability_marketplace(
+        db, workspace, binding
+    )
     request = StartAttemptRequest(
         attempt_id=binding.id,
         execution_key=f"agent-workspace:{workspace.id}:conversation:{binding.id}",
@@ -491,7 +542,17 @@ def _create_native_conversation(
             provider=provider,
             confirmation_policy="NEVER",
             agent_context=RuntimeAgentContext(
-                system_message_suffix=_system_context(working_directory)
+                system_message_suffix=_system_context(working_directory),
+                # OpenHands resolves dynamic Plugin loads only through this
+                # persisted AgentContext registration.  It is intentionally a
+                # binding-specific, read-only Marketplace and auto-load is off.
+                registered_marketplaces=(
+                    {
+                        "name": marketplace_name,
+                        "source": marketplace_runtime_path,
+                        "auto_load": False,
+                    },
+                ),
             ),
             # This is the fixed OpenHands 1.42.0 summarizing condenser, not a
             # FlowWeave summary loop. It remains native Conversation history.
@@ -596,6 +657,87 @@ def create_conversation(
         raise
     binding.lifecycle = "ACTIVE"
     command.state = "SUCCEEDED"
+    db.flush()
+    return _dict(db, binding)
+
+
+def add_conversation_capability(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    capability_version_id: str,
+) -> dict[str, Any]:
+    """Dynamically add one governed capability through native Plugin loading.
+
+    The catalog reference is written only after OpenHands acknowledges the
+    formal ``load_plugin`` request.  This prevents a control-plane checkbox
+    from claiming a Skill/MCP/Plugin is active when the native runtime rejected
+    it.
+    """
+
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace.id, binding_id, lock=True)
+    if binding.lifecycle != "ACTIVE" or not binding.working_directory:
+        raise DomainError("AGENT_CONVERSATION_NOT_READY", "会话当前无法加载能力", 409)
+    existing = db.scalar(
+        select(AgentConversationCapability).where(
+            AgentConversationCapability.binding_id == binding.id,
+            AgentConversationCapability.capability_version_id == capability_version_id,
+        )
+    )
+    if existing is not None:
+        return _dict(db, binding)
+    selected = _validated_capabilities(db, (capability_version_id,))
+    published, capability_type = selected[0]
+    conflict = db.scalar(
+        select(AgentConversationCapability).where(
+            AgentConversationCapability.binding_id == binding.id,
+            AgentConversationCapability.capability_type == capability_type,
+            AgentConversationCapability.capability_key == published.package.capability_key,
+        )
+    )
+    if conflict is not None:
+        raise DomainError(
+            "AGENT_CONVERSATION_CAPABILITY_CONFLICT",
+            "同类型同名称能力已在此会话加载其他版本",
+            409,
+            {"capability_key": published.package.capability_key},
+        )
+    handle = _handle(db, workspace, binding)
+    if not get_runtime().can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_RUNNING", "会话运行中，完成当前回复后再加载能力", 409)
+    host_root, runtime_root, marketplace_name = _capability_marketplace_paths(
+        db, workspace, binding
+    )
+    plugin_name = materialize_agent_workspace_capability_marketplace(
+        _frozen_runtime_capability(db, published, capability_type),
+        host_root=host_root,
+        runtime_root=runtime_root,
+        marketplace_name=marketplace_name,
+    )
+    if plugin_name is None:
+        raise DomainError("RUNTIME_CAPABILITY_UNAVAILABLE", "能力插件物化失败", 409)
+    # This is the formal OpenHands conversation lifecycle endpoint.  Existing
+    # pre-registration conversations fail here rather than receiving a fake
+    # FlowWeave-only capability record.
+    get_runtime().load_plugin(handle, f"{plugin_name}@{marketplace_name}")
+    position = db.scalar(
+        select(AgentConversationCapability.position)
+        .where(AgentConversationCapability.binding_id == binding.id)
+        .order_by(AgentConversationCapability.position.desc())
+        .limit(1)
+    )
+    db.add(
+        AgentConversationCapability(
+            binding_id=binding.id,
+            capability_version_id=published.version.id,
+            capability_type=capability_type,
+            capability_key=published.package.capability_key,
+            digest=published.version.digest,
+            position=(position + 1) if position is not None else 0,
+        )
+    )
+    binding.updated_at = now()
     db.flush()
     return _dict(db, binding)
 

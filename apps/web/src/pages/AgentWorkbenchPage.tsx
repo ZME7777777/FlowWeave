@@ -80,7 +80,9 @@ function ComposerCapabilityAutocomplete({
   </div>;
 }
 
-function CapabilityManager({ workspaceId, onClose }: { workspaceId: string; onClose: () => void }) {
+function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, onClose }: {
+  workspaceId: string; bindingId?: string; conversationCapabilities?: AgentWorkspaceCapability[]; onClose: () => void;
+}) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
@@ -89,10 +91,12 @@ function CapabilityManager({ workspaceId, onClose }: { workspaceId: string; onCl
   const enabledQuery = useQuery({
     queryKey: ['agent-workspace-capabilities', workspaceId],
     queryFn: () => api.agentWorkspaceCapabilities(workspaceId),
+    enabled: !bindingId,
   });
   useEffect(() => {
-    if (enabledQuery.data) setSelectedIds(enabledQuery.data.map(item => item.id));
-  }, [enabledQuery.data]);
+    const current = bindingId ? conversationCapabilities : enabledQuery.data;
+    if (current) setSelectedIds(current.map(item => item.id));
+  }, [bindingId, conversationCapabilities, enabledQuery.data]);
   const capabilities = useMemo(() => (catalogQuery.data ?? []).filter(item =>
     item.is_latest && ['SKILL', 'MCP', 'PLUGIN'].includes(item.capability_type),
   ), [catalogQuery.data]);
@@ -105,14 +109,33 @@ function CapabilityManager({ workspaceId, onClose }: { workspaceId: string; onCl
   }, [capabilities, kind, query]);
   const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
   const save = useMutation({
-    mutationFn: () => api.replaceAgentWorkspaceCapabilities(workspaceId, selectedIds),
+    mutationFn: async () => {
+      if (!bindingId) return api.replaceAgentWorkspaceCapabilities(workspaceId, selectedIds);
+      const loaded = new Set((conversationCapabilities ?? []).map(item => item.id));
+      let latest: AgentConversation | undefined;
+      for (const capabilityVersionId of selectedIds.filter(id => !loaded.has(id))) {
+        latest = await api.addAgentConversationCapability(workspaceId, bindingId, capabilityVersionId);
+      }
+      return latest;
+    },
     onSuccess: value => {
-      queryClient.setQueryData<AgentWorkspaceCapability[]>(['agent-workspace-capabilities', workspaceId], value);
+      if (!bindingId) queryClient.setQueryData<AgentWorkspaceCapability[]>(['agent-workspace-capabilities', workspaceId], value as AgentWorkspaceCapability[]);
+      if (bindingId && value) {
+        queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspaceId], current =>
+          current?.map(item => item.id === bindingId ? value as AgentConversation : item),
+        );
+        queryClient.setQueryData<AgentConversation>(['agent-conversation', workspaceId, bindingId], value as AgentConversation);
+      }
       onClose();
     },
   });
   const toggle = (item: CapabilityAsset) => setSelectedIds(current => {
-    if (current.includes(item.id)) return current.filter(id => id !== item.id);
+    if (current.includes(item.id)) {
+      // The formal OpenHands API is additive.  Do not display an uncheckable
+      // illusion for a capability already loaded into this native session.
+      if (bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)) return current;
+      return current.filter(id => id !== item.id);
+    }
     const sameName = current.filter(id => {
       const selected = byId.get(id);
       return selected?.capability_type === item.capability_type && selected.capability_key === item.capability_key;
@@ -122,12 +145,12 @@ function CapabilityManager({ workspaceId, onClose }: { workspaceId: string; onCl
   });
   return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !save.isPending) onClose(); }}>
     <section className="agent-capability-manager" role="dialog" aria-modal="true" aria-labelledby="agent-capability-title">
-      <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-capability-title">插件</h2><p>选择新会话默认挂载的已发布能力。每个会话会冻结其创建时的版本。</p></div><button type="button" aria-label="关闭插件管理" disabled={save.isPending} onClick={onClose}><X size={18}/></button></header>
+      <header><div><span className="eyebrow">{bindingId ? 'CURRENT AGENT SESSION' : 'AGENT WORKSPACE'}</span><h2 id="agent-capability-title">能力</h2><p>{bindingId ? '为当前会话加载已发布的能力。Skill、MCP 和 Plugin 会立即通过原生 OpenHands Plugin Loader 生效；已加载能力不能在运行中卸载。' : '选择新会话默认挂载的已发布能力。每个会话会冻结其创建时的版本。'}</p></div><button type="button" aria-label="关闭插件管理" disabled={save.isPending} onClick={onClose}><X size={18}/></button></header>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', '全部'], ['PLUGIN', '插件'], ['MCP', 'MCP'], ['SKILL', '技能']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div>
-      <div className="agent-capability-summary"><span>已启用 <b>{selectedIds.length}</b> / 30</span><span>仅加载已发布的版本；修改不会伪造更新已存在的原生会话。</span></div>
+      <div className="agent-capability-summary"><span>已启用 <b>{selectedIds.length}</b> / 30</span><span>{bindingId ? '只能追加，当前回复完成后即可加载。' : '仅加载已发布的版本；修改不会伪造更新已存在的原生会话。'}</span></div>
       <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>没有匹配的已发布能力。</p> : visible.map(item => { const checked = selectedIds.includes(item.id); return <button type="button" key={item.id} className={checked ? 'selected' : ''} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{item.description || item.filename}</small><em>{item.capability_type === 'SKILL' ? '技能' : item.capability_type}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
       {save.error && <p className="agent-capability-error">{save.error.message}</p>}
-      <footer><button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || enabledQuery.isLoading} onClick={() => save.mutate()}>{save.isPending ? '正在保存…' : '保存插件设置'}</button></footer>
+      <footer><button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || (!bindingId && enabledQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在加载…' : bindingId ? '加载到当前会话' : '保存默认能力'}</button></footer>
     </section>
   </div>;
 }
@@ -811,7 +834,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
         ? stringValues((contributions as Record<string, unknown>).skills)
         : [];
       return [
-        ...commands.map(command => add({ id: `command:${reference.id}:${command}`, kind: 'COMMAND', token: `/${command}`, label: command, detail: `${reference.capability_key} 命令 · ${description}` })).filter((item): item is ComposerSuggestion => Boolean(item)),
+        ...commands.map(command => add({ id: `command:${reference.id}:${command}`, kind: 'COMMAND', token: `/${reference.capability_key}:${command}`, label: command, detail: `${reference.capability_key} 命令 · ${description}` })).filter((item): item is ComposerSuggestion => Boolean(item)),
         ...skills.map(skill => add({ id: `plugin-skill:${reference.id}:${skill}`, kind: 'SKILL', token: `$${skill}`, label: skill, detail: `${reference.capability_key} 提供的技能 · ${description}` })).filter((item): item is ComposerSuggestion => Boolean(item)),
       ];
     });
@@ -1314,7 +1337,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
           {archivedDirectoryConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>保留的历史会话</small></span><ChevronRight size={13}/></button>)}
         </section>}
       </div>
-      <footer className="agent-workbench-rail-footer"><button type="button" onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>插件</b><small>管理新会话默认能力</small></span><ChevronRight size={14}/></button></footer>
+      <footer className="agent-workbench-rail-footer"><button type="button" onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>能力</b><small>{selected ? '管理当前会话能力' : '管理新会话默认能力'}</small></span><ChevronRight size={14}/></button></footer>
       {!conversations.length && !conversationDraft && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{connectedProviders.length ? '选择工作目录后新建会话开始协作。' : '请先完成至少一个模型供应商的连接测试。'}</span></div>}
     </aside>
     <section className="agent-workbench-main">
@@ -1346,6 +1369,6 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       queryClient.setQueryData<AgentWorkDirectoryList>(['agent-work-directories', workspace.id], current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspace.id] });
     }}/>}
-    {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} onClose={() => setCapabilityManagerOpen(false)}/>}
+    {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} onClose={() => setCapabilityManagerOpen(false)}/>}
   </main>;
 }

@@ -104,6 +104,7 @@ def agent_workspace_runtime_contract(required_tools: tuple[str, ...]) -> Runtime
                 | {
                     ("PATCH", "/api/conversations/{conversation_id}"),
                     ("DELETE", "/api/conversations/{conversation_id}"),
+                    ("POST", "/api/conversations/{conversation_id}/load_plugin"),
                 }
             )
         ),

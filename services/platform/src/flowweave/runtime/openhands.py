@@ -162,6 +162,13 @@ class OpenHandsRuntime:
                     raise ValueError("OpenHands response must be an object")
                 return cast(dict[str, Any], value)
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400 and path.endswith("/load_plugin"):
+                raise DomainError(
+                    "AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE",
+                    "此历史会话创建时未注册能力市场，无法原地动态加载；请新建会话后继续使用能力。",
+                    409,
+                    {"status_code": 400, "path": path},
+                ) from exc
             if exc.response.status_code == 404 and path.startswith("/api/conversations/"):
                 raise DomainError(
                     "RUNTIME_CONVERSATION_MISSING",
@@ -2883,6 +2890,17 @@ class OpenHandsRuntime:
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
             json={"llm": self._llm_payload(provider)},
+        )
+
+    def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
+        """Use OpenHands' formal conversation-level dynamic Plugin loader."""
+
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/load_plugin",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={"plugin_ref": plugin_ref},
         )
 
     def interrupt(self, handle: RuntimeHandle) -> None:

@@ -905,6 +905,28 @@ event 时恢复为运行中；过程摘要按正式 Action 语义显示思考、
 流式正文和过程事件均在动画帧合并，正文在终态前以轻量文本呈现；正式 assistant、FinishAction 或 ERROR
 到达后过程卡片受控关闭，最终内容独立呈现。未新增平台会话状态或 OpenHands 旁路。
 
+### FR-65 Agent 会话原生动态能力加载 — DONE
+
+依赖：`FR-64`。
+
+目标：为每个新建 Agent 会话在创建时通过正式 `AgentContext.registered_marketplaces` 注册会话专属、只读的
+FlowWeave Marketplace，并维持现有创建时的显式能力加载。会话设置可在空闲时追加已发布的 Skill、MCP 或
+Plugin；FlowWeave 必须将固定版本/digest 物化为原生 Marketplace Plugin，再调用固定 OpenHands 1.42.0 的
+`POST /api/conversations/{conversation_id}/load_plugin`。Skill 的 `$` trigger、Plugin 的 `/plugin:command` 与
+MCP runtime tools 必须由 OpenHands 原生 Loader 生效；Runtime 拒绝时不得写入会话能力引用。历史会话如果创建时
+没有该 Marketplace，不得伪造已加载状态，应清晰提示上游正式 API 无法原地补注册。不得修改 OpenHands 源码、
+直接修改 OpenHands persisted state，或使用 prompt/私有执行器模拟能力。
+
+验收：新增动态 Marketplace/原生 `load_plugin` 定向测试，受影响 Python Ruff/Pyright、Web
+lint/typecheck/build、固定 OpenHands contract（含 load_plugin route）、`git diff --check` 与任务状态唯一性；
+完成后以 Compose 部署并在新建会话上真实验证动态添加能力和 `$`/`/` 候选。单独提交本切片，排除无关改动。
+
+完成：每条新 Agent Conversation 创建前均物化并注册独立的空 Marketplace，后续追加的已发布 Skill、MCP
+或 Plugin 都以固定版本/digest 进入该 Marketplace，并只在 OpenHands 正式 `load_plugin` 成功后写入会话
+能力引用。Skill wrapper 明确声明 `$<capability_key>` trigger；Composer 按当前会话已加载能力提供 `$`
+Skill、`/plugin:command` 和 MCP 入口候选。创建时没有注册 Marketplace 的旧会话保持可读写，但追加能力返回
+明确的上游限制错误，不伪造已加载状态。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -921,6 +943,7 @@ event 时恢复为运行中；过程摘要按正式 Action 语义显示思考、
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-65 | 受影响平台 Ruff；`workspace.py` Pyright（0 errors）；动态 Marketplace 与 Runtime contract 定向 pytest（8 passed）；Web ESLint/typecheck/production build；固定 OpenHands Runtime `contract_check.py`；Compose 配置与 `git diff --check`；Compose 部署后的真实 Agent Workspace 会话 | PASS：新建会话 `ed30f38d-5a12-485a-9c9a-52221939959e` 空闲时追加已发布 Skill `ui-product-skill`，FlowWeave 返回冻结引用；Runtime 日志确认读取会话 Marketplace、加载 wrapper Plugin，并对正式 `POST /api/conversations/a510ef50-c499-4465-8df2-bab3057e7540/load_plugin` 返回 200。随后发送 `$ui-product-skill` 的 OpenHands 正式 user event 含 `activated_skills:["ui-product-skill"]`，Agent 返回预期结果；部署后页面输入 `$` 显示 `$ui-product-skill` 原生 Skill 候选。为隔离旧默认 MCP `remote` 的外部服务超时，验证期间暂时清空新会话默认能力，验证完成后已恢复原默认能力。API、Web 健康，唯一 Alembic head `0070_agent_caps`。 |
 | 2026-08-28 | FR-64 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：刷新中恢复动态等待、工具过程、终态自动折叠）；`git diff --check` 与任务状态唯一性 | PASS：刷新中的 OpenHands 原生未就绪会话重新显示实时“正在思考”与墙钟耗时；正式工具事件按同一工作过程归组，终态到达后过程自动折叠。 |
 | 2026-08-28 | FR-63 | Provider relay、Agent Workspace 空闲 WebSocket 断连与 Docker 控制面暂时不可用定向 pytest（3 passed）；受影响 Python Ruff；两条 WebSocket 路由定向 Pyright（0 errors）；`git diff --check` | PASS：浏览器刷新/断连关闭上游 async generator，Provider 终止其 `docker exec` relay；暂态 `SANDBOX_BACKEND_UNAVAILABLE` 保留 Agent Runtime 的 `RUNNING` 意图与 `ACTIVE` 状态，不删除资源、不进入 `RECONNECTING`。全量 Pyright 未作为本切片通过项：附件功能的既有未提交改动另有类型错误，未纳入本提交。无 `CURRENT` 或下一切片。 |
 | 2026-08-28 | FR-62 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：标题栏无重复入口、环境信息入口保留）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：标题栏不再包含“打开/关闭工作区工具”按钮；右侧环境信息摘要仍可打开工具区，工具区内关闭入口保持可用。唯一 Alembic head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |

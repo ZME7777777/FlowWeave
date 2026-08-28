@@ -1236,3 +1236,214 @@ def materialize_agent_workspace_capabilities(
     # isolation boundary, while package digests and the frozen manifest protect
     # identity at materialization time.
     return skills, plugins, mcp_servers
+
+
+def agent_workspace_capability_marketplace_name(binding_id: str) -> str:
+    """Return the stable native Marketplace registration for one Conversation."""
+
+    return _segment(f"flowweave-{binding_id}", "flowweave-conversation").lower()
+
+
+def _agent_workspace_capability_plugin_name(capability: dict[str, Any]) -> str:
+    """Build an immutable marketplace entry name from governed provenance."""
+
+    capability_type = _segment(capability.get("capability_type"), "capability").lower()
+    capability_key = _segment(capability.get("capability_key"), "capability").lower()
+    version_id = _segment(capability.get("capability_version_id"), "version").lower()
+    return _segment(
+        f"flowweave-{capability_type}-{capability_key}-{version_id}", "flowweave-capability"
+    ).lower()
+
+
+def _replace_agentskills_frontmatter(
+    skill_path: Path, *, capability_key: str, description: str, disable_model_invocation: bool
+) -> None:
+    """Make a wrapped AgentSkills package natively triggerable with ``$name``.
+
+    The catalog package may have been authored without OpenHands trigger
+    metadata.  The wrapper keeps its complete body/resources but supplies the
+    governed invocation trigger required by the session capability contract.
+    Existing frontmatter is replaced rather than duplicated so OpenHands'
+    normal AgentSkills parser sees one unambiguous document.
+    """
+
+    content = skill_path.read_text(encoding="utf-8")
+    body = content
+    if content.startswith("---\n"):
+        closing = content.find("\n---", 4)
+        if closing >= 0:
+            remainder = content.find("\n", closing + 4)
+            body = content[remainder + 1 :] if remainder >= 0 else ""
+    normalized_description = " ".join(description.split()) or capability_key
+    frontmatter = [
+        "---",
+        f"name: {json.dumps(capability_key, ensure_ascii=False)}",
+        f"description: {json.dumps(normalized_description, ensure_ascii=False)}",
+        "triggers:",
+        f"  - {json.dumps(f'${capability_key}', ensure_ascii=False)}",
+    ]
+    if disable_model_invocation:
+        frontmatter.append("disable-model-invocation: true")
+    frontmatter.append("---")
+    _atomic_write(skill_path, ("\n".join(frontmatter) + "\n" + body).encode("utf-8"), mode=0o444)
+
+
+def _load_marketplace_plugins(marketplace_root: Path) -> list[dict[str, Any]]:
+    manifest_path = marketplace_root / ".plugin" / "marketplace.json"
+    if not manifest_path.exists():
+        return []
+    try:
+        decoded = cast(object, json.loads(manifest_path.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as exc:
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Agent Conversation Marketplace manifest is invalid",
+            409,
+        ) from exc
+    raw = cast(dict[object, object], decoded) if isinstance(decoded, dict) else None
+    plugins = raw.get("plugins") if raw is not None else None
+    if not isinstance(plugins, list):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Agent Conversation Marketplace manifest is invalid",
+            409,
+        )
+    parsed: list[dict[str, Any]] = []
+    for item in cast(list[object], plugins):
+        if not isinstance(item, dict):
+            raise DomainError(
+                "RUNTIME_CAPABILITY_UNAVAILABLE",
+                "The Agent Conversation Marketplace manifest is invalid",
+                409,
+            )
+        parsed.append({str(key): value for key, value in cast(dict[object, object], item).items()})
+    return parsed
+
+
+def materialize_agent_workspace_capability_marketplace(
+    capability: dict[str, Any] | None,
+    *,
+    host_root: Path,
+    runtime_root: Path,
+    marketplace_name: str,
+) -> str | None:
+    """Create/update the read-only native Marketplace for one Conversation.
+
+    FlowWeave owns the immutable catalog version and its digest verification.
+    OpenHands owns Plugin/Skill/MCP parsing and runtime activation: every
+    dynamic capability becomes a normal Marketplace Plugin entry.
+    """
+
+    if host_root.name in {"", ".", ".."} or host_root.parent.is_symlink():
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Agent Workspace capability directory is invalid",
+            409,
+        )
+    marketplace_root = host_root / "marketplace"
+    if marketplace_root.exists() and (
+        marketplace_root.is_symlink() or not marketplace_root.is_dir()
+    ):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Agent Conversation Marketplace directory is invalid",
+            409,
+        )
+    marketplace_root.mkdir(parents=True, exist_ok=True)
+    plugins = _load_marketplace_plugins(marketplace_root)
+    plugin_ref: str | None = None
+    if capability is not None:
+        capability_type = str(capability.get("capability_type") or "")
+        if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
+            raise DomainError(
+                "RUNTIME_CAPABILITY_UNAVAILABLE",
+                "An Agent Workspace capability type is unsupported",
+                409,
+            )
+        plugin_ref = _agent_workspace_capability_plugin_name(capability)
+        if not any(item.get("name") == plugin_ref for item in plugins):
+            plugin_root = marketplace_root / "plugins" / plugin_ref
+            runtime_plugin_root = runtime_root / "marketplace" / "plugins" / plugin_ref
+            if capability_type == "SKILL":
+                materialized = _extract_skill(capability, plugin_root, runtime_plugin_root)
+                skill_path = (
+                    plugin_root
+                    / "skills"
+                    / _segment(capability.get("capability_key"), "skill")
+                    / "SKILL.md"
+                )
+                # _extract_skill preserves the package entry filename. Rename a
+                # non-standard entry only inside our wrapper so Plugin.load()
+                # uses the standard AgentSkills discovery path.
+                if not skill_path.exists():
+                    candidates = tuple((plugin_root / "skills").rglob("*.md"))
+                    if len(candidates) != 1:
+                        raise DomainError(
+                            "RUNTIME_CAPABILITY_UNAVAILABLE",
+                            "A selected Skill package has an invalid entry",
+                            422,
+                        )
+                    skill_path.parent.mkdir(parents=True, exist_ok=True)
+                    candidates[0].replace(skill_path)
+                _replace_agentskills_frontmatter(
+                    skill_path,
+                    capability_key=str(capability.get("capability_key") or "skill"),
+                    description=materialized.description,
+                    disable_model_invocation=materialized.disable_model_invocation,
+                )
+                _atomic_write(
+                    plugin_root / ".plugin" / "plugin.json",
+                    json.dumps(
+                        {
+                            "name": plugin_ref,
+                            "version": str(capability.get("capability_version_id") or "1"),
+                            "description": materialized.description,
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    mode=0o444,
+                )
+            elif capability_type == "MCP":
+                server = _materialize_mcp(capability, plugin_root, runtime_plugin_root)
+                _atomic_write(
+                    plugin_root / ".plugin" / "plugin.json",
+                    json.dumps(
+                        {
+                            "name": plugin_ref,
+                            "version": str(capability.get("capability_version_id") or "1"),
+                            "description": str(capability.get("capability_key") or "MCP"),
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    mode=0o444,
+                )
+                _atomic_write(
+                    plugin_root / ".mcp.json",
+                    json.dumps(
+                        {"mcpServers": {server.name: server.config}}, ensure_ascii=False
+                    ).encode("utf-8"),
+                    mode=0o444,
+                )
+            else:
+                plugin = _extract_plugin(capability, marketplace_root, runtime_root / "marketplace")
+                plugins.append(
+                    {
+                        "name": plugin_ref,
+                        "source": f"./plugins/{Path(plugin.source).name}",
+                    }
+                )
+                plugin = None
+            if capability_type != "PLUGIN":
+                plugins.append({"name": plugin_ref, "source": f"./plugins/{plugin_ref}"})
+    manifest = {
+        "name": marketplace_name,
+        "owner": {"name": "FlowWeave"},
+        "description": "FlowWeave governed conversation capabilities",
+        "plugins": plugins,
+    }
+    _atomic_write(
+        marketplace_root / ".plugin" / "marketplace.json",
+        json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+        mode=0o444,
+    )
+    return plugin_ref

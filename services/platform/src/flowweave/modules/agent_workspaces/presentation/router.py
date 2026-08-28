@@ -65,6 +65,10 @@ class AgentConversationPatchWrite(_Write):
     title: str = Field(min_length=1, max_length=200)
 
 
+class AgentConversationCapabilityAddWrite(_Write):
+    capability_version_id: str = Field(min_length=1, max_length=36)
+
+
 class AgentAttachmentReference(_Write):
     path: str = Field(min_length=1, max_length=300)
     image_data_url: str | None = Field(default=None, max_length=35_000_000)
@@ -390,6 +394,21 @@ async def patch_agent_conversation(
         db,
         lambda session: conversations.patch_conversation(
             session, workspace_id, binding_id, payload.title
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/capabilities")
+async def add_agent_conversation_capability(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationCapabilityAddWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.add_conversation_capability(
+            session, workspace_id, binding_id, payload.capability_version_id
         ),
     )
 
