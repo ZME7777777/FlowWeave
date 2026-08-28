@@ -832,6 +832,25 @@ build、源码 Vite 上 3 个相关 Playwright 场景、Ruff/Pyright 和 Agent W
 （103 passed）通过；全量平台 pytest 仍有 23 个未改动的 API/Environment/Sandbox 既有失败项，未将其伪记为
 通过。唯一 Alembic head 为 `0068_agent_title_metadata`，`git diff --check` 通过。
 
+### FR-61 Agent 会话用户消息刻度导航 — DONE
+
+依赖：`FR-60`。
+
+目标：在 Agent 会话内容区增加仅针对正式 user MessageEvent 的左侧刻度导航。刻度必须按各用户消息在
+滚动内容中的实际位置分布，当前阅读位置清晰高亮；悬停或键盘聚焦显示经规范化、截断的消息摘要，点击后在
+会话内容容器内平滑定位到对应消息。锚点仅使用 OpenHands 正式 user event `id`，不按文本、时序或虚构
+位置猜测，不持久化阅读位置，不修改 Conversation/Event/HEAD、OpenHands、Runtime 或工作区边界。窄屏隐藏
+该辅助导航，避免覆盖消息内容。
+
+验收：补充 Agent 工作台定向 Playwright，覆盖多个用户消息的刻度数量、正式 event id 锚点、摘要、当前态与
+点击定位；集中运行 Web lint/typecheck/production build、Alembic head、任务状态唯一性与 `git diff --check`。
+本切片使用独立 Git commit，排除用户已有 README 与项目总览文档改动。
+
+完成：会话内容区在宽屏显示仅对应正式 user MessageEvent 的左侧刻度；每个刻度以事件 `id` 绑定用户消息，
+由 ResizeObserver、MutationObserver 和滚动事件按真实内容高度重算位置及当前阅读项。悬停或键盘聚焦可查看
+规范化、截断的消息摘要，点击在自身滚动容器内平滑定位；窄屏不显示导航。未新增接口、持久化数据或
+OpenHands 会话状态。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -847,6 +866,7 @@ build、源码 Vite 上 3 个相关 Playwright 场景、Ruff/Pyright 和 Agent W
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-08-28 | FR-61 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（1 passed：多条用户消息刻度、摘要、正式 event id 定位和当前态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：左侧刻度仅从正式 user event `id` 生成，随消息高度和滚动位置更新；悬停显示截断摘要，点击平滑定位至对应用户消息。唯一 Alembic head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |
 |---|---|---|---|
 | 2026-08-28 | FR-60 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace Playwright（3 passed：实时思考/流式完成、局部重思考、终端关闭确认）；平台 Ruff/Pyright；Agent Workspace/OpenHands 定向 pytest（103 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：请求提交即呈现可计时“正在思考”，异步标题生成不再把当前轮重置为 0 秒；delta 以浏览器动画帧合并，正式终态会收束活动状态并将 Thought 标为已完成；编辑最后 user event 时仅隐藏该正式分支后代并保留历史轮次；终端关闭不再调用浏览器原生确认框。平台全量 pytest 仍报告 23 个未改动的 API/Environment/Sandbox 失败，未伪记为通过；唯一 head `0068_agent_title_metadata`。 |
 | 2026-08-28 | FR-59 | Web ESLint/typecheck/production build；Agent Workspace 定向 Playwright（3 passed）；Agent Workspace 与 Environment terminal 定向 pytest（71 passed）；平台 Ruff/Pyright；部署后真实历史工作目录会话、终端高度、最大宽度、xterm 边界、tmux 行列同步与单 Runtime 容器检查；Alembic head 与 `git diff --check` | PASS：终端占满工具区可用高度，300px 到 580px 连续拖宽后 screen/viewport 均无横向溢出；tmux `window-size=latest`，client/window 同步为 `66×25`，不再出现 manual 模式的竖线/点阵填充。正式 binding 与未发送工作目录参数互斥，历史工作目录会话工具区恢复可用。唯一 head 为 `0068_agent_title_metadata`，Agent Runtime 数量为 1；无 `CURRENT` 或下一切片。 |

@@ -20,6 +20,12 @@ interface Turn {
   activity: Item[];
 }
 
+interface UserMessageNavigationItem {
+  id: string;
+  summary: string;
+  position: number;
+}
+
 interface ActivityEntry {
   id: string;
   item: Item;
@@ -120,6 +126,12 @@ function workspacePath(value: string): string {
 function compactCommand(value: string): string {
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact.length > 110 ? `${compact.slice(0, 107)}...` : compact;
+}
+
+function messageSummary(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (!compact) return '空消息';
+  return compact.length > 72 ? `${compact.slice(0, 69)}...` : compact;
 }
 
 function groupedActivities(items: Item[]): ActivityEntry[] {
@@ -464,6 +476,12 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
   const turns = useMemo(() => turnsFor(events), [events]);
+  const userMessages = useMemo(() => turns.flatMap(turn => turn.user ? [{
+    id: turn.user.event.id,
+    summary: messageSummary(turn.user.content),
+  }] : []), [turns]);
+  const [userMessageNavigation, setUserMessageNavigation] = useState<UserMessageNavigationItem[]>([]);
+  const [activeUserMessageId, setActiveUserMessageId] = useState<string>();
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
     followLatest.current = true;
     setIsAtLatest(true);
@@ -477,6 +495,48 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     followLatest.current = atLatest;
     setIsAtLatest(atLatest);
   }, []);
+  const updateUserMessageNavigation = useCallback(() => {
+    const element = surface.current;
+    if (!element) return;
+    const surfaceBounds = element.getBoundingClientRect();
+    const scrollRange = Math.max(1, element.scrollHeight - element.clientHeight);
+    const messagesById = new Map<string, HTMLElement>();
+    for (const message of element.querySelectorAll<HTMLElement>('[data-user-event-id]')) {
+      if (message.dataset.userEventId) messagesById.set(message.dataset.userEventId, message);
+    }
+    const positions = userMessages.flatMap(message => {
+      const node = messagesById.get(message.id);
+      if (!node) return [];
+      const contentTop = node.getBoundingClientRect().top - surfaceBounds.top + element.scrollTop;
+      return [{ ...message, position: Math.min(100, Math.max(0, (contentTop / scrollRange) * 100)) }];
+    });
+    setUserMessageNavigation(previous => previous.length === positions.length
+      && previous.every((item, index) => item.id === positions[index].id && Math.abs(item.position - positions[index].position) < 0.1)
+      ? previous
+      : positions);
+    if (!positions.length) {
+      setActiveUserMessageId(undefined);
+      return;
+    }
+    const readingPoint = element.scrollTop + element.clientHeight * 0.32;
+    const closest = positions.reduce((selected, item) => Math.abs(item.position * scrollRange / 100 - readingPoint)
+      < Math.abs(selected.position * scrollRange / 100 - readingPoint) ? item : selected);
+    setActiveUserMessageId(previous => previous === closest.id ? previous : closest.id);
+  }, [userMessages]);
+  const scrollToUserMessage = useCallback((eventId: string) => {
+    const element = surface.current;
+    const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
+    const message = Array.from(target ?? []).find(item => item.dataset.userEventId === eventId);
+    if (!element || !message) return;
+    const top = message.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 18;
+    followLatest.current = false;
+    element.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    setActiveUserMessageId(eventId);
+  }, []);
+  const handleScroll = useCallback(() => {
+    updateScrollPosition();
+    updateUserMessageNavigation();
+  }, [updateScrollPosition, updateUserMessageNavigation]);
   const scrollToTerminalStart = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const terminals = surface.current?.querySelectorAll<HTMLElement>('[data-turn-terminal="true"]');
     const terminal = terminals?.[terminals.length - 1];
@@ -502,6 +562,28 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
   }, []);
   useEffect(() => {
+    const element = surface.current;
+    if (!element) return;
+    let frame = 0;
+    const schedule = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(updateUserMessageNavigation);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(element);
+    for (const message of element.querySelectorAll<HTMLElement>('[data-user-event-id]')) observer.observe(message);
+    const mutations = new MutationObserver(schedule);
+    mutations.observe(element, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('resize', schedule);
+    schedule();
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      mutations.disconnect();
+      window.removeEventListener('resize', schedule);
+    };
+  }, [turns, updateUserMessageNavigation]);
+  useEffect(() => {
     const onCopy = (event: ClipboardEvent) => {
       const selection = window.getSelection();
       if (!selection || !surface.current) return;
@@ -526,7 +608,21 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
   return <div className="conversation-surface-shell">
-    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={updateScrollPosition}>
+    {userMessageNavigation.length > 0 && <nav className="conversation-message-ruler" aria-label="用户消息导航">
+      {userMessageNavigation.map((message, index) => <button
+        type="button"
+        key={message.id}
+        className={activeUserMessageId === message.id ? 'active' : ''}
+        style={{ top: `${message.position}%` }}
+        aria-label={`定位到用户消息：${message.summary}`}
+        aria-current={activeUserMessageId === message.id ? 'location' : undefined}
+        onClick={() => scrollToUserMessage(message.id)}
+      >
+        <span className="conversation-message-ruler-tick" aria-hidden="true"/>
+        <span className="conversation-message-ruler-tooltip" role="tooltip"><b>消息 {index + 1}</b>{message.summary}</span>
+      </button>)}
+    </nav>}
+    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={handleScroll}>
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
         const failures = turn.activity.filter(item => item.kind === 'error');
@@ -535,7 +631,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         return <section className="conversation-turn" key={turn.id}>
-          {turn.user && (editingEventId === turn.user.event.id ? <form className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article className="conversation-message user"><div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
+          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user"><div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
           <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
           {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}

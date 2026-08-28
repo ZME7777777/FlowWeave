@@ -605,6 +605,24 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
   await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(2);
+  const messageRuler = page.getByRole('navigation', { name: '用户消息导航' });
+  await expect(messageRuler).toBeVisible();
+  await expect(messageRuler.getByRole('button')).toHaveCount(4);
+  const firstMessageTick = messageRuler.getByRole('button', { name: '定位到用户消息：检查工作目录' });
+  await firstMessageTick.hover();
+  await expect(firstMessageTick.getByRole('tooltip')).toContainText('检查工作目录');
+  await firstMessageTick.click();
+  await expect.poll(() => page.locator('[data-user-event-id="user-request"]').evaluate(message => {
+    const surface = message.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
+  })).toBeGreaterThanOrEqual(-1);
+  await expect.poll(() => page.locator('[data-user-event-id="user-request"]').evaluate(message => {
+    const surface = message.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
+  })).toBeLessThan(80);
+  await expect(firstMessageTick).toHaveAttribute('aria-current', 'location');
   const directTurn = page.locator('.conversation-turn').filter({ hasText: '直接回复完成。' });
   await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
   await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);

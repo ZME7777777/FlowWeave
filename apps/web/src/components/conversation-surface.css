@@ -1,6 +1,7 @@
 .conversation-surface-shell{position:relative;min-height:0;overflow:hidden;background:#fff}
 .conversation-surface{height:100%;min-height:0;overflow:auto;padding:34px clamp(22px,6vw,110px) 26px;background:#fff}
 .conversation-surface>*{width:min(780px,100%);margin-left:auto;margin-right:auto}
+.conversation-message-ruler{display:none}
 .conversation-surface-empty{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--muted);text-align:center}
 .conversation-surface-empty b{color:var(--ink);font-size:14px}
 .conversation-surface-empty span{font-size:12px}
@@ -93,6 +94,18 @@
 .conversation-failure small{display:block;margin-top:5px;color:#a46a62;font:10px 'DM Mono',ui-monospace,monospace}
 .conversation-activity-command,.conversation-activity-path{display:block;max-width:100%;overflow:auto;margin-top:6px;border-radius:6px;background:#f2f4f2;padding:5px 7px;color:#546259;font:10px/1.45 'DM Mono',ui-monospace,monospace;white-space:pre-wrap}
 .conversation-activity-path{width:fit-content;background:transparent;padding:0;color:#7a877e}
+@media(min-width:760px){.conversation-surface{padding-left:clamp(54px,7vw,128px)}
+.conversation-message-ruler{position:absolute;z-index:3;top:34px;bottom:26px;left:17px;display:block;width:19px}
+.conversation-message-ruler>button{position:absolute;left:0;display:block;width:19px;height:20px;margin:0;padding:0;border:0;background:transparent;cursor:pointer;transform:translateY(-50%)}
+.conversation-message-ruler-tick{position:absolute;top:9px;right:0;width:8px;height:2px;border-radius:2px;background:#c8cfca;transition:width .16s ease,background .16s ease,box-shadow .16s ease}
+.conversation-message-ruler>button:hover .conversation-message-ruler-tick,.conversation-message-ruler>button:focus-visible .conversation-message-ruler-tick,.conversation-message-ruler>button.active .conversation-message-ruler-tick{width:15px;background:#607166}
+.conversation-message-ruler>button.active .conversation-message-ruler-tick{box-shadow:0 0 0 3px #edf1ee}
+.conversation-message-ruler>button:focus-visible{outline:0}
+.conversation-message-ruler>button:focus-visible .conversation-message-ruler-tick{box-shadow:0 0 0 3px #e0e8e2}
+.conversation-message-ruler-tooltip{position:absolute;top:50%;left:27px;display:block;width:max-content;max-width:min(260px,32vw);border:1px solid #dde4df;border-radius:8px;background:color-mix(in srgb,#fff 96%,#f0f4f0);padding:7px 9px;color:#58655d;font-size:11px;line-height:1.4;text-align:left;box-shadow:0 7px 18px #25322818;opacity:0;pointer-events:none;transform:translateY(-50%) translateX(-4px);transition:opacity .14s ease,transform .14s ease}
+.conversation-message-ruler-tooltip b{display:block;margin-bottom:2px;color:#3d4941;font-size:10px;font-weight:650}
+.conversation-message-ruler>button:hover .conversation-message-ruler-tooltip,.conversation-message-ruler>button:focus-visible .conversation-message-ruler-tooltip{opacity:1;transform:translateY(-50%) translateX(0)}
+}
 @media(max-width:680px){.conversation-surface{padding:22px 16px}
 .conversation-message{font-size:13px}
 .conversation-message.user{max-width:88%}
