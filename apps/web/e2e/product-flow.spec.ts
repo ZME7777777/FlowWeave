@@ -670,9 +670,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(sentProvider).toBeNull();
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveJSProperty('open', true);
-  await expect(activeProcess.getByText(/正在处理 · 已耗时 1[2-9]秒/)).toBeVisible();
-  await expect(activeProcess.getByText(/正在处理 · 已耗时 .*小时/)).toHaveCount(0);
-  await expect(activeProcess.getByText(/已等待 1[2-9]秒。/)).toBeVisible();
+  await expect(activeProcess.getByText(/正在思考 · 已耗时 \d+秒/)).toBeVisible();
+  await expect(activeProcess.getByText(/正在思考 · 已耗时 .*小时/)).toHaveCount(0);
+  await expect(activeProcess.getByText(/已等待 \d+秒。/)).toBeVisible();
   await expect.poll(() => Boolean(agentStream)).toBe(true);
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
   await expect(activeProcess.getByText('正在核对上下文。')).toBeVisible();
@@ -719,6 +719,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(1);
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);
   const completedViewport = await page.locator('.conversation-turn').last().evaluate(turn => {
     const surface = turn.closest('.conversation-surface');
     const reply = turn.querySelector('.conversation-message.assistant');
@@ -743,6 +744,58 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
+});
+
+test('editing the latest user message locally replaces only its active branch', async ({ page }) => {
+  let rewritten = false;
+  let releaseRewrite: (() => void) | undefined;
+  const events = () => rewritten ? [
+    { id: 'earlier-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '更早的问题', timestamp: '2026-08-28T10:00:00Z' } },
+    { id: 'earlier-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'earlier-user', content: '更早的回答', timestamp: '2026-08-28T10:00:01Z' } },
+    { id: 'rethink-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '修改后的问题', timestamp: '2026-08-28T10:00:03Z' } },
+    { id: 'rethink-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'rethink-user', content: '新的回答', timestamp: '2026-08-28T10:00:04Z' } },
+  ] : [
+    { id: 'earlier-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '更早的问题', timestamp: '2026-08-28T10:00:00Z' } },
+    { id: 'earlier-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'earlier-user', content: '更早的回答', timestamp: '2026-08-28T10:00:01Z' } },
+    { id: 'original-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '需要重新思考的问题', timestamp: '2026-08-28T10:00:02Z' } },
+    { id: 'old-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'original-user', content: '不应保留的旧回答', timestamp: '2026-08-28T10:00:03Z' } },
+  ];
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString() }) });
+    if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'rethink-conversation', display_title: '重新思考', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }]) });
+    if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: events(), next_cursor: null }) });
+    if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+    if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
+    if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
+    if (path.endsWith('/pending-confirmation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+    if (path.endsWith('/original-user/rerun') && request.method() === 'POST') {
+      await new Promise<void>(resolve => { releaseRewrite = resolve; });
+      rewritten = true;
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'rethink-user' }) });
+    }
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+
+  await page.goto('/agent/conversations/rethink-conversation');
+  await expect(page.getByText('不应保留的旧回答', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '编辑并重新思考' }).click();
+  await page.getByLabel('编辑已发送消息').fill('修改后的问题');
+  await page.getByRole('button', { name: '重新思考', exact: true }).click();
+  await expect(page.getByText('更早的问题', { exact: true })).toBeVisible();
+  await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
+  await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('修改后的问题', { exact: true })).toBeVisible();
+  await expect(page.getByText(/正在思考 · 已耗时 \d+秒/)).toBeVisible();
+  await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
+  if (!releaseRewrite) throw new Error('Expected rerun request');
+  releaseRewrite();
+  await expect(page.getByText('新的回答', { exact: true })).toBeVisible();
+  await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
 });
 
 test('Agent new session keeps full capabilities and can create an explicit workspace', async ({ page }) => {
@@ -984,13 +1037,18 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(page.locator('.agent-terminal-tab-panel.active')).toContainText(`screen-${initialTerminalIds[1].slice(0, 8)}`);
   expect(new Set(terminalInstanceIds)).toEqual(new Set(initialTerminalIds));
 
-  page.once('dialog', dialog => void dialog.dismiss());
   await page.getByRole('button', { name: '关闭终端 2fae71c74c89页签' }).first().click();
+  const closeTerminalDialog = page.getByRole('dialog', { name: '关闭此终端？' });
+  await expect(closeTerminalDialog).toBeVisible();
+  await expect(closeTerminalDialog).toContainText('正在执行的命令');
+  await closeTerminalDialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(closeTerminalDialog).toBeHidden();
   await expect.poll(() => destroyedTerminalIds.length).toBe(0);
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
 
-  page.once('dialog', dialog => void dialog.accept());
   await page.getByRole('button', { name: '关闭终端 2fae71c74c89页签' }).first().click();
+  await expect(closeTerminalDialog).toBeVisible();
+  await closeTerminalDialog.getByRole('button', { name: '关闭终端', exact: true }).click();
   await expect.poll(() => destroyedTerminalIds.length).toBe(1);
   expect([...new Set(terminalInstanceIds)]).toContain(destroyedTerminalIds[0]);
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(1);

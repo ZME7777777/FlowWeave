@@ -805,6 +805,33 @@ binding，未发送会话仅传工作目录，历史工作目录会话可正常�
 将抽屉从 300px 拖至 580px 后，终端宿主高 569px、screen 宽 515px，screen/viewport 无水平溢出；tmux
 client/window 均为 `66×25`、模式为 `latest`，Agent Runtime 容器数量保持 1。
 
+### FR-60 Agent 会话实时反馈、重思考与终端关闭交互收口 — DONE
+
+依赖：`FR-59`。
+
+目标：修复 Agent 工作台发送首条流式正文前即丢失“正在思考”反馈、计时错误显示为 0 秒，以及高频
+WebSocket delta 逐帧同步 React state 导致的可见流式卡顿。浏览器必须从正式请求提交起连续展示可计时的
+等待/工作过程，并以动画帧合并安全可见 delta；同一轮收到正式 assistant、FinishAction 或 ERROR 后按其
+正式 event identity 收束临时运行状态，不再把已完成的分析保留为“分析中”。最后一条用户消息编辑并重新
+思考时，页面只按正式 `parent_id` 拓扑裁剪该 user event 的活动后代和临时投影，保留更早轮次，等待新的
+active branch 回填；不得全会话刷新、残留旧回复或按文本/时序猜测分支。终端关闭确认改为符合工作台样式的
+应用内无障碍对话框，明确确认后才关闭并停止运行命令，取消不改变终端。不得修改 OpenHands、事件持久化、
+Conversation HEAD、工作区或 Runtime 容器边界。
+
+验收：补充 Agent 工作台定向 Playwright，覆盖请求提交即显示动态等待、连续 delta 可见追加、正式终态结束
+过程、编辑重思考只移除目标后代、关闭终端的应用内确认/取消/确认关闭；集中运行 Web lint/typecheck/
+production build、相关平台 OpenHands 投影测试、Ruff/Pyright、`git diff --check`、Alembic head 和任务状态
+唯一性。完成后独立 Git commit，排除用户已有 README 与项目总览文档改动。
+
+完成：前端在正式消息请求提交的同一渲染周期插入浏览器内的临时 user event 并启动“正在思考”计时，
+不会因标题异步更新而重置当前轮。安全可见 delta 使用 `requestAnimationFrame` 批量追加；正式 commentary、
+assistant、FinishAction 或 ERROR 到达后清除临时文本，并将已完成 Thought 显示为“分析 / 已完成”。重思考按
+正式 `parent_id` 递归隐藏被编辑 user event 及其活动后代，再以新 user event 局部替换，较早轮次不刷新。
+终端关闭改为可取消、支持 Escape 的工作台内确认对话框，确认后才调用关闭 API。Web lint/typecheck/production
+build、源码 Vite 上 3 个相关 Playwright 场景、Ruff/Pyright 和 Agent Workspace/OpenHands 定向 pytest
+（103 passed）通过；全量平台 pytest 仍有 23 个未改动的 API/Environment/Sandbox 既有失败项，未将其伪记为
+通过。唯一 Alembic head 为 `0068_agent_title_metadata`，`git diff --check` 通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -821,6 +848,7 @@ client/window 均为 `66×25`、模式为 `latest`，Agent Runtime 容器数量�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-28 | FR-60 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace Playwright（3 passed：实时思考/流式完成、局部重思考、终端关闭确认）；平台 Ruff/Pyright；Agent Workspace/OpenHands 定向 pytest（103 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：请求提交即呈现可计时“正在思考”，异步标题生成不再把当前轮重置为 0 秒；delta 以浏览器动画帧合并，正式终态会收束活动状态并将 Thought 标为已完成；编辑最后 user event 时仅隐藏该正式分支后代并保留历史轮次；终端关闭不再调用浏览器原生确认框。平台全量 pytest 仍报告 23 个未改动的 API/Environment/Sandbox 失败，未伪记为通过；唯一 head `0068_agent_title_metadata`。 |
 | 2026-08-28 | FR-59 | Web ESLint/typecheck/production build；Agent Workspace 定向 Playwright（3 passed）；Agent Workspace 与 Environment terminal 定向 pytest（71 passed）；平台 Ruff/Pyright；部署后真实历史工作目录会话、终端高度、最大宽度、xterm 边界、tmux 行列同步与单 Runtime 容器检查；Alembic head 与 `git diff --check` | PASS：终端占满工具区可用高度，300px 到 580px 连续拖宽后 screen/viewport 均无横向溢出；tmux `window-size=latest`，client/window 同步为 `66×25`，不再出现 manual 模式的竖线/点阵填充。正式 binding 与未发送工作目录参数互斥，历史工作目录会话工具区恢复可用。唯一 head 为 `0068_agent_title_metadata`，Agent Runtime 数量为 1；无 `CURRENT` 或下一切片。 |
 | 2026-08-27 | FR-58 | Ruff format/check；Pyright strict；平台全量 pytest（479 passed）；OpenAPI 基线；PostgreSQL migration-check；Compose security；Web ESLint/typecheck/production build；固定 OpenHands `1.42.0` contract/smoke；源码与部署后 Agent Workspace 定向 Playwright（最终 3 passed）；镜像重建、API/Runtime Provider 健康、唯一 Alembic head 与 `git diff --check` | PASS：发送首条消息前可切换供应商、模型和推理强度，上传附件并使用文件树和多个独立终端；bootstrap 原子绑定工作目录、完整模型配置和附件后才创建 URL/列表项，发送前工具页签迁移到正式 binding。左栏可从项目根合法目录显式新增工作区，会话项固定为 38px 紧凑两行；关闭终端调用服务端销毁且不创建第二个 Agent Runtime。全仓 12 项浏览器套件曾有 7 项通过、5 项失败：FR-58 三项均通过；其余真实 Environment/Tool Catalog 场景因 E2E 遗留 Setup 容器将 API/Runtime Provider 拖入不健康状态而超时，服务重建恢复健康后未将这些无关场景伪记为通过。唯一 head 为 `0068_agent_title_metadata`；无 `CURRENT` 或下一切片。 |
 | 2026-08-27 | FR-57（最终验收） | 已完成的迁移、静态检查、Web 构建、OpenAPI/架构、Compose、平台测试及定向 E2E；部署后 Runtime、历史会话和工作区恢复复验；用户验收 | PASS：Runtime 使用当前可用镜像恢复到可写 `ACTIVE` generation，历史会话独立加载，工作区概览和文件读取不再被 Runtime 恢复阻塞，右侧栏可正常打开并在失败时提供错误与重试。用户完成部署后验证并明确确认 FR-57 可以标记 `DONE`；无 `CURRENT` 或下一切片。 |

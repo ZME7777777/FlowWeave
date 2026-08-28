@@ -169,13 +169,17 @@ interface ActivityPresentation {
   resultDetails?: Record<string, unknown>;
 }
 
-function activityPresentation(entry: ActivityEntry): ActivityPresentation {
+function activityPresentation(entry: ActivityEntry, active: boolean): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') {
     return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
   }
   if (item.kind === 'thought') {
-    return { title: '正在分析', status: '分析中', thought: item.content.slice(0, 2_000) || undefined };
+    return {
+      title: active ? '正在分析' : '分析',
+      status: active ? '分析中' : '已完成',
+      thought: item.content.slice(0, 2_000) || undefined,
+    };
   }
   if (item.kind === 'error') return { title: '执行遇到问题', status: '失败' };
   const details = item.event.payload.details ?? {};
@@ -366,7 +370,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
   const entries = groupedActivities(items);
   const itemCount = entries.length + (liveText ? 1 : 0);
   const label = active
-    ? `正在处理${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
+    ? `正在思考${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
     : elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
   const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
   const hasDetails = itemCount > 0 || waiting;
@@ -379,7 +383,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
         const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
         const eventName = String(item.event.payload.event_name ?? '');
         const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
-        const presentation = activityPresentation(entry);
+        const presentation = activityPresentation(entry, active);
         const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName}/> : null;
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
           {presentation.thought && <article className="conversation-activity-row thought"><Sparkles size={14}/><div><ReactMarkdown>{presentation.thought}</ReactMarkdown></div></article>}

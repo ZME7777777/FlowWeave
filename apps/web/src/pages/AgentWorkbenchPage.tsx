@@ -91,8 +91,12 @@ function mergeConversationEvents(
   durable: OpenHandsConversationEvent[],
   transient: OpenHandsConversationEvent[],
 ): OpenHandsConversationEvent[] {
-  const merged = new Map(transient.map(event => [event.id, event]));
-  for (const event of durable) merged.set(event.id, event);
+  // REST remains the source of truth for an event already persisted.  Append
+  // browser-only frames after that stable order so an optimistic current user
+  // turn cannot jump in front of the existing transcript before its parent is
+  // returned by OpenHands.
+  const merged = new Map(durable.map(event => [event.id, event]));
+  for (const event of transient) if (!merged.has(event.id)) merged.set(event.id, event);
   return [...merged.values()];
 }
 
@@ -115,6 +119,25 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
       || (event.event_type === 'MESSAGE' && !['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
     return isTerminal && descendsFromActiveUser(event);
   });
+}
+
+function eventBranchIds(events: OpenHandsConversationEvent[], rootEventId: string): Set<string> {
+  const children = new Map<string, string[]>();
+  for (const event of events) {
+    const parentId = event.payload.parent_id;
+    if (!parentId) continue;
+    const siblings = children.get(parentId) ?? [];
+    siblings.push(event.id);
+    children.set(parentId, siblings);
+  }
+  const branch = new Set<string>();
+  const visit = (eventId: string) => {
+    if (branch.has(eventId)) return;
+    branch.add(eventId);
+    for (const childId of children.get(eventId) ?? []) visit(childId);
+  };
+  visit(rootEventId);
+  return branch;
 }
 
 function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDirectoryId, workingDirectory }: { workspaceId: string; terminalInstanceId: string; bindingId?: string; workDirectoryId?: string; workingDirectory: string }) {
@@ -400,6 +423,7 @@ function WorkspaceDrawer({
   });
   const [panelError, setPanelError] = useState('');
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
+  const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const scopeState = scopeStates[scopeKey] ?? { tabs: [] };
   const updateScope = useCallback((updater: (current: WorkspaceToolScopeState) => WorkspaceToolScopeState) => {
     setScopeStates(current => ({ ...current, [scopeKey]: updater(current[scopeKey] ?? { tabs: [] }) }));
@@ -462,7 +486,6 @@ function WorkspaceDrawer({
   const selectFile = (path: string) => openFiles(path);
   const closeTab = async (tab: WorkspaceToolTab) => {
     if (tab.kind === 'terminal') {
-      if (!window.confirm('关闭此终端会停止其中正在执行的命令，并清除该终端会话。确定关闭吗？')) return;
       setPanelError('');
       setClosingTerminalId(tab.terminalInstanceId);
       try {
@@ -480,6 +503,21 @@ function WorkspaceDrawer({
     });
     if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) onClose();
   };
+  const requestCloseTab = (tab: WorkspaceToolTab) => {
+    if (tab.kind === 'terminal') {
+      setPendingTerminalClose(tab);
+      return;
+    }
+    void closeTab(tab);
+  };
+  useEffect(() => {
+    if (!pendingTerminalClose || closingTerminalId) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPendingTerminalClose(undefined);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [closingTerminalId, pendingTerminalClose]);
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!open || window.innerWidth <= 960) return;
     event.preventDefault();
@@ -509,7 +547,7 @@ function WorkspaceDrawer({
     <article><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b><code>{details.ide.workspace_path}</code><p>{details.ide.gateway.note}</p></div></article>
     <article><FileText size={16}/><div><small>本次输入附件</small>{attachments.length ? attachments.map(item => visibleFiles.some(file => file.path === item.path && file.kind === 'file') ? <button type="button" key={item.path} onClick={() => selectFile(item.path)}>{item.filename}</button> : <span key={item.path}>{item.filename}</span>) : <p>当前输入区没有待发送附件。</p>}</div></article>
   </section>;
-  return <aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}`} style={{ width: open ? panelWidth : 272 }}>
+  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}`} style={{ width: open ? panelWidth : 272 }}>
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
@@ -517,7 +555,7 @@ function WorkspaceDrawer({
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : details?.runtime.container_id || '连接中…'}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) void closeTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label="关闭工作区工具" onClick={onClose}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : details?.runtime.container_id || '连接中…'}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label="关闭工作区工具" onClick={onClose}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error">{panelError}</p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
@@ -532,7 +570,7 @@ function WorkspaceDrawer({
         </div>)}
       </div>
     </section>
-  </aside>;
+  </aside>{pendingTerminalClose && <div className="agent-terminal-close-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !closingTerminalId) setPendingTerminalClose(undefined); }}><section role="dialog" aria-modal="true" aria-labelledby="agent-terminal-close-title" className="agent-terminal-close-dialog"><header><span className="eyebrow">TERMINAL</span><h2 id="agent-terminal-close-title">关闭此终端？</h2></header><p>关闭后会停止该终端中正在执行的命令，并清除这一个终端会话；其他终端和当前会话不会受影响。</p><footer><button type="button" className="secondary" disabled={Boolean(closingTerminalId)} onClick={() => setPendingTerminalClose(undefined)}>取消</button><button type="button" className="danger" autoFocus disabled={Boolean(closingTerminalId)} onClick={() => { const tab = pendingTerminalClose; setPendingTerminalClose(undefined); void closeTab(tab); }}>{closingTerminalId ? '正在关闭…' : '关闭终端'}</button></footer></section></div>}</>;
 }
 
 interface Props { onNavigate: (path: string, replace?: boolean) => void; onOpenModels: () => void; }
@@ -543,6 +581,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
   const [liveEvents, setLiveEvents] = useState<OpenHandsConversationEvent[]>([]);
+  const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
@@ -566,6 +605,8 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
+  const pendingLiveText = useRef('');
+  const liveTextFrame = useRef<number | undefined>(undefined);
   const selectedBindingId = bindingIdFromLocation();
   const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultAgentWorkspace, retry: false });
   const workspace = workspaceQuery.data;
@@ -588,8 +629,8 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const displayedEvents = useMemo(
-    () => mergeConversationEvents(eventsQuery.data?.events ?? [], liveEvents),
-    [eventsQuery.data?.events, liveEvents],
+    () => mergeConversationEvents(eventsQuery.data?.events ?? [], liveEvents).filter(event => !hiddenEventIds.has(event.id)),
+    [eventsQuery.data?.events, hiddenEventIds, liveEvents],
   );
   const inputReadinessQuery = useQuery({
     queryKey: ['agent-conversation-input-readiness', workspace?.id, selected?.id],
@@ -620,8 +661,27 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       void queryClient.invalidateQueries({ queryKey: ['agent-conversation-confirmation', workspace.id, selected.id] });
     }
   }, [queryClient, selected?.id, workspace]);
+  const clearLiveText = useCallback(() => {
+    pendingLiveText.current = '';
+    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
+    liveTextFrame.current = undefined;
+    setLiveText('');
+  }, []);
+  const appendLiveText = useCallback((content: string) => {
+    pendingLiveText.current += content;
+    if (liveTextFrame.current !== undefined) return;
+    liveTextFrame.current = window.requestAnimationFrame(() => {
+      liveTextFrame.current = undefined;
+      const next = pendingLiveText.current;
+      pendingLiveText.current = '';
+      if (next) setLiveText(current => current + next);
+    });
+  }, []);
+  useEffect(() => () => {
+    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
+  }, []);
   const onStreamEvent = useCallback((event: { type: 'delta' | 'event' | 'message_complete'; content?: string; event?: OpenHandsConversationEvent }) => {
-    if (event.type === 'delta' && event.content) setLiveText(value => value + event.content);
+    if (event.type === 'delta' && event.content) appendLiveText(event.content);
     if (event.type === 'event' && event.event) {
       setLiveEvents(current => mergeConversationEvents(current, [event.event!]));
       const formalCommentary = typeof event.event.payload.thought === 'string'
@@ -632,13 +692,13 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       // Replace a streamed commentary draft only when its formal ActionEvent
       // projection arrives. Empty tool/status frames must not erase visible
       // model output before OpenHands has persisted an equivalent event.
-      if (formalCommentary || ['MESSAGE', 'ERROR', 'COMPLETED'].includes(event.event.event_type)) setLiveText('');
+      if (formalCommentary || ['MESSAGE', 'ERROR', 'COMPLETED'].includes(event.event.event_type)) clearLiveText();
     }
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events
     // associated with activeTurnEventId are the authoritative terminal signal.
-    if (event.type === 'message_complete') { setLiveText(''); refresh(); }
-  }, [refresh]);
+    if (event.type === 'message_complete') { clearLiveText(); refresh(); }
+  }, [appendLiveText, clearLiveText, refresh]);
 
   useEffect(() => {
     if (!conversationDraft && !selectedBindingId && conversations.length) onNavigate(`/agent/conversations/${encodeURIComponent(conversations[0].id)}`, true);
@@ -646,7 +706,10 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   }, [conversationDraft, conversations, conversationsQuery.isFetching, onNavigate, pendingCreatedId, selected, selectedBindingId]);
   useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribeToAgentWorkspaceStream(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
-  useEffect(() => { setEditing(false); setTitle(selected?.display_title ?? ''); setLiveText(''); setLiveEvents([]); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); }, [selected?.display_title, selected?.id]);
+  useEffect(() => { setEditing(false); clearLiveText(); setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); }, [clearLiveText, selected?.id]);
+  useEffect(() => {
+    if (!editing) setTitle(selected?.display_title ?? '');
+  }, [editing, selected?.display_title]);
   useEffect(() => {
     if (!editing) return;
     titleInput.current?.focus();
@@ -675,13 +738,13 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   }, [inputReadinessQuery.data?.ready, turnState]);
   useEffect(() => {
     if ((turnState === 'running' || turnState === 'resuming') && activeTurnEventId && hasFinishedTurn(displayedEvents, activeTurnEventId)) {
-      setLiveText('');
+      clearLiveText();
       setActiveTurnEventId(undefined);
       setRequestStartedAt(undefined);
       setTurnState('idle');
       refresh();
     }
-  }, [activeTurnEventId, displayedEvents, refresh, turnState]);
+  }, [activeTurnEventId, clearLiveText, displayedEvents, refresh, turnState]);
 
   const bootstrap = useMutation({ mutationFn: (message: QueuedMessage) => api.bootstrapAgentConversation(
     workspace!.id,
@@ -723,7 +786,44 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       setReasoningEffort(selected?.reasoning_effort ?? null);
     },
   });
-  const send = useMutation({ mutationFn: (message: BoundQueuedMessage) => api.sendAgentMessage(workspace!.id, message.bindingId, message.content, message.items), onMutate: () => { setActiveTurnEventId(undefined); setRequestStartedAt(Date.now()); setTurnState('running'); }, onSuccess: (value, message) => { const cursor = value.cursor; setLiveText(''); if (cursor) { setActiveTurnEventId(cursor); setLiveEvents([{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content } }]); } setAttachments([]); refresh(); }, onError: (error, message) => { if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') { setQueuedMessages(current => [...current, { content: message.content, items: message.items }]); setActiveTurnEventId(undefined); setTurnState('running'); return; } setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setTurnState('idle'); } });
+  const send = useMutation({
+    mutationFn: (message: BoundQueuedMessage) => api.sendAgentMessage(workspace!.id, message.bindingId, message.content, message.items),
+    onMutate: message => {
+      const optimisticEventId = `pending-user:${randomId()}`;
+      clearLiveText();
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(Date.now());
+      setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: { source: 'user', content: message.content } }]);
+      setTurnState('running');
+      return { optimisticEventId };
+    },
+    onSuccess: (value, message, context) => {
+      const cursor = value.cursor;
+      if (cursor) {
+        setActiveTurnEventId(cursor);
+        setLiveEvents(current => mergeConversationEvents(
+          current.filter(event => event.id !== context?.optimisticEventId),
+          [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content } }],
+        ));
+      }
+      setAttachments([]);
+      refresh();
+    },
+    onError: (error, message, context) => {
+      if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
+        setQueuedMessages(current => [...current, { content: message.content, items: message.items }]);
+        setLiveEvents(current => current.filter(event => event.id !== context?.optimisticEventId));
+        setActiveTurnEventId(undefined);
+        setTurnState('running');
+        return;
+      }
+      setLiveEvents(current => current.filter(event => event.id !== context?.optimisticEventId));
+      clearLiveText();
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      setTurnState('idle');
+    },
+  });
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
@@ -776,7 +876,43 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
       refresh();
     },
   });
-  const rewrite = useMutation({ mutationFn: ({ eventId, content }: { eventId: string; content: string }) => api.rerunAgentMessage(workspace!.id, selected!.id, eventId, content), onMutate: () => { setQueuedMessages([]); setLiveText(''); setActiveTurnEventId(undefined); setRequestStartedAt(Date.now()); setTurnState('running'); }, onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); refresh(); }, onError: () => { setRequestStartedAt(undefined); setTurnState('paused'); } });
+  const rewrite = useMutation({
+    mutationFn: ({ eventId, content }: { eventId: string; content: string }) => api.rerunAgentMessage(workspace!.id, selected!.id, eventId, content),
+    onMutate: request => {
+      const optimisticEventId = `pending-rewrite:${randomId()}`;
+      const branch = eventBranchIds(displayedEvents, request.eventId);
+      const replacementParentId = displayedEvents.find(event => event.id === request.eventId)?.payload.parent_id;
+      setQueuedMessages([]);
+      clearLiveText();
+      setHiddenEventIds(current => new Set([...current, ...branch]));
+      setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: { source: 'user', content: request.content, parent_id: replacementParentId } }]);
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(Date.now());
+      setTurnState('running');
+      return { optimisticEventId, branch, replacementParentId };
+    },
+    onSuccess: (value, request, context) => {
+      const cursor = value.cursor;
+      if (cursor) {
+        setActiveTurnEventId(cursor);
+        setLiveEvents(current => mergeConversationEvents(
+          current.filter(event => event.id !== context?.optimisticEventId),
+          [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: request.content, parent_id: context?.replacementParentId } }],
+        ));
+      }
+      refresh();
+    },
+    onError: (_error, _request, context) => {
+      setLiveEvents(current => current.filter(event => event.id !== context?.optimisticEventId));
+      setHiddenEventIds(current => {
+        const next = new Set(current);
+        for (const eventId of context?.branch ?? []) next.delete(eventId);
+        return next;
+      });
+      setRequestStartedAt(undefined);
+      setTurnState('paused');
+    },
+  });
   useEffect(() => {
     if (!pendingMigratedSend || selected?.id !== pendingMigratedSend.bindingId || send.isPending) return;
     const message = pendingMigratedSend;
@@ -808,11 +944,12 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     setWorkspaceScopeMigration(undefined);
     setDraft('');
     setAttachments([]);
-    setLiveText('');
+    clearLiveText();
     setLiveEvents([]);
+    setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate('/agent');
-  }, [onNavigate]);
+  }, [clearLiveText, onNavigate]);
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
     if (!content || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
