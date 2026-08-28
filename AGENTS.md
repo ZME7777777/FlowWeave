@@ -12,7 +12,7 @@
   等执行能力应由 OpenHands 正式类型、事件、API 和生命周期实现。
 - 不得用提示词、私有控制 JSON、文本约定、私有 HTTP 或平台自建执行器模拟 OpenHands 已提供的能力。
 - FlowWeave 显式传入的 Runtime 能力必须可追溯到固定 version、digest、blob/hash 和
-  Snapshot Runtime Manifest，明文 Secret 不得持久化进入 Runtime。OpenHands 1.42.0 原生的 HOME/项目
+  Snapshot Runtime Manifest，明文 Secret 不得持久化进入 Runtime。OpenHands 1.44.0 原生的 HOME/项目
   ambient Plugin 发现明确允许，它不是 FlowWeave 冻结 Plugin 的替代事实源，也不得用私有
   字段或源码补丁禁用。
 - 事件关联必须使用 OpenHands 正式的 `id`、`parent_id`、`action_id`、`tool_call_id`、cursor 等字段，
@@ -21,13 +21,13 @@
 ## OpenHands 源码与镜像基线
 
 当前目标能力事实固定为 OpenHands 源码 commit
-`f09e03eac772290feeb51b7d7390ffaefeca1a09`（审计时 `v1.42.0-1-gf09e03eac`），只修改 FlowWeave。
+`9a24f6c8866f353042a57df0514ccc900e3a0691`（审计时 `v1.44.0-6-g9a24f6c88`），只修改 FlowWeave。
 OpenHands 源码工作树保持只读；不得在当前 `FR-*` 主线中创建 fork、修改 OpenHands 源码或提前实施二开。
 
 - SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk`
-- 历史兼容基线：`v1.40.0` / `2f27653959f7596769427ee4657247b32c94504e`
-- 固定包版本：`openhands-agent-server==1.42.0`、`openhands-sdk==1.42.0`、
-  `openhands-tools==1.42.0`、`openhands-workspace==1.42.0`
+- 历史兼容基线：`v1.42.0` / `f09e03eac772290feeb51b7d7390ffaefeca1a09`
+- 固定包版本：`openhands-agent-server==1.44.0`、`openhands-sdk==1.44.0`、
+  `openhands-tools==1.44.0`、`openhands-workspace==1.44.0`
 - 固定运行时镜像：`flowweave-openhands-runtime:1`
 - 契约探针：`infra/openhands/contract_check.py`
 
@@ -35,10 +35,10 @@ OpenHands 源码工作树保持只读；不得在当前 `FR-*` 主线中创建 f
 
 ```bash
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk \
-  show f09e03eac772290feeb51b7d7390ffaefeca1a09:<相对路径>
+  show 9a24f6c8866f353042a57df0514ccc900e3a0691:<相对路径>
 
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk \
-  grep -n '<模式>' f09e03eac772290feeb51b7d7390ffaefeca1a09 -- \
+  grep -n '<模式>' 9a24f6c8866f353042a57df0514ccc900e3a0691 -- \
   openhands-agent-server openhands-sdk openhands-tools openhands-workspace
 ```
 

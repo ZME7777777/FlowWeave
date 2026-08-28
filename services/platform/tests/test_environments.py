@@ -89,7 +89,7 @@ def _runtime_provenance() -> dict[str, object]:
         "source_commit": OPENHANDS_SOURCE_COMMIT,
         "source_ref": OPENHANDS_SOURCE_COMMIT,
         "source_archive_digest": (
-            "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
+            "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
         ),
         "overlays": {},
     }
@@ -187,7 +187,7 @@ def _mock_formal_publish_pipeline(monkeypatch, calls: list[str] | None = None) -
         assert probe_token == "version1"
         if calls is not None:
             calls.append("probe")
-        return {"agent-server": "1.42.0"}, _runtime_provenance(), "b" * 64
+        return {"agent-server": "1.44.0"}, _runtime_provenance(), "b" * 64
 
     monkeypatch.setattr(environment_docker, "_build_openhands_runtime", build)
     monkeypatch.setattr(environment_docker, "_probe_runtime_image", probe)
@@ -926,9 +926,7 @@ def test_environment_version_run_reference_is_reported_and_blocks_deletion(
     assert blocked.json()["error"]["code"] == "ENVIRONMENT_VERSION_IN_USE"
     assert blocked.json()["error"]["details"]["run_reference_count"] == 1
 
-    blocked_environment = client.delete(
-        f"/api/v1/terminal-environments/{environment['id']}"
-    )
+    blocked_environment = client.delete(f"/api/v1/terminal-environments/{environment['id']}")
     assert blocked_environment.status_code == 409, blocked_environment.text
     error = blocked_environment.json()["error"]
     assert error["code"] == "ENVIRONMENT_IN_USE"

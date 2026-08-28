@@ -6,7 +6,10 @@ from flowweave.modules.catalog.application.capability_imports import (
     cleanup_expired_import,
     process_dependency_build,
 )
-from flowweave.modules.catalog.application.capability_repository import resolve_version
+from flowweave.modules.catalog.application.capability_repository import (
+    PublishedCapability,
+    resolve_version,
+)
 from flowweave.modules.catalog.application.mcp_oauth_authorizations import (
     authorization_owner_is_active,
 )
@@ -127,6 +130,8 @@ __all__ = (
     "fail_plugin_source_resolution",
     "hold_snapshot_memory_references",
     "mcp_oauth_authorization_owner_is_active",
+    "PublishedCapability",
     "resolve_plugin_source",
+    "resolve_version",
     "resolve_snapshot_memory",
 )

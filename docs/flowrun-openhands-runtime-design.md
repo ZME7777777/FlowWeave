@@ -3,7 +3,7 @@
 > 状态：`FR-00 FROZEN`
 > 日期：2026-08-21
 > OpenHands 事实基线：`software-agent-sdk`
-> `f09e03eac772290feeb51b7d7390ffaefeca1a09`（四包 `1.42.0`）
+> `9a24f6c8866f353042a57df0514ccc900e3a0691`（四包 `1.44.0`）
 > 本文冻结目标架构和后续迁移边界，不表示后续运行时代码已经落地。
 
 ## 1. 决策摘要
@@ -126,7 +126,7 @@ FlowRun 启动和 replacement 只使用已发布 Runtime Image digest，遵循 `
 “基本预置能力”来自上述固定 OpenHands Runtime 层和用户 base image。FlowRun/Conversation 特定且由
 FlowWeave 显式绑定的 Skill、MCP、Plugin、Hook、Agent Definition、Policy 与 Memory 不烘焙进可变
 镜像，而按 Snapshot Runtime Manifest 只读物化，并在创建 Conversation 时通过 OpenHands 正式字段或
-Loader 加载。OpenHands 1.42.0 对 HOME 和项目目录的 ambient Plugin 原生扫描按上游默认保留；
+Loader 加载。OpenHands 1.44.0 对 HOME 和项目目录的 ambient Plugin 原生扫描按上游默认保留；
 FlowWeave 不再用私有请求字段或构建时源码补丁禁用它。
 
 ## 5. 持久化与可替换性

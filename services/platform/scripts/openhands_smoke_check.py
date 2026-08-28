@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -17,7 +18,8 @@ from uuid import uuid4
 
 IMAGE = "flowweave-openhands-runtime:1"
 SESSION_KEY = "flowweave-smoke-key"
-EXPECTED_VERSION = "1.42.0"
+SECRET_KEY = "flowweave-smoke-persistent-secret"
+EXPECTED_VERSION = "1.44.0"
 REPOSITORY = Path(__file__).resolve().parents[3]
 FAKE_MODEL = REPOSITORY / "services/platform/scripts/openhands_fake_llm.py"
 
@@ -101,7 +103,7 @@ def _confirmation_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
         {
             "workspace": {
                 "kind": "LocalWorkspace",
-                "working_dir": f"/tmp/flowweave-confirmation-{suffix}",
+                "working_dir": f"/runtime/workspace/project/confirmation-{suffix}",
             },
             "max_iterations": 4,
             "agent": {
@@ -170,7 +172,7 @@ def _condenser_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
         {
             "workspace": {
                 "kind": "LocalWorkspace",
-                "working_dir": f"/tmp/flowweave-condenser-{suffix}",
+                "working_dir": f"/runtime/workspace/project/condenser-{suffix}",
             },
             "max_iterations": 2,
             "agent": {
@@ -251,7 +253,7 @@ def _native_task_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
         {
             "workspace": {
                 "kind": "LocalWorkspace",
-                "working_dir": f"/tmp/flowweave-native-task-{suffix}",
+                "working_dir": f"/runtime/workspace/project/native-task-{suffix}",
             },
             "max_iterations": 4,
             "agent": {
@@ -320,7 +322,7 @@ def _native_task_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
     task_metrics_key = f"task:{detail['task_id']}"
     assert task_metrics_key in usage_to_metrics, usage_to_metrics
     # The server publishes the child aggregate inside the parent Conversation;
-    # There is no separate child Task stats endpoint in 1.42.0.
+    # There is no separate child Task stats endpoint in the pinned 1.44.0 API.
     task_metrics = usage_to_metrics[task_metrics_key]
     assert isinstance(task_metrics, dict), task_metrics
     token_usage = task_metrics.get("accumulated_token_usage")
@@ -350,93 +352,159 @@ def _cleanup(server: str, fake: str, network: str) -> None:
     )
 
 
+def _start_server(server: str, network: str, state_root: Path) -> str:
+    _run(
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        server,
+        "--network",
+        network,
+        "-p",
+        "127.0.0.1::8000",
+        "-e",
+        f"SESSION_API_KEY={SESSION_KEY}",
+        "-e",
+        f"OH_SESSION_API_KEYS_0={SESSION_KEY}",
+        "-e",
+        f"OH_SECRET_KEY={SECRET_KEY}",
+        "-e",
+        "OH_WORKSPACE_PATH=/runtime/workspace/project",
+        "-e",
+        "OH_CONVERSATIONS_PATH=/runtime/state/conversations",
+        "-e",
+        "OH_BASH_EVENTS_DIR=/runtime/state/bash-events",
+        "-e",
+        "OH_PERSISTENCE_DIR=/runtime/state/persistence",
+        "--mount",
+        f"type=bind,src={state_root / 'workspace'},dst=/runtime/workspace/project",
+        "--mount",
+        f"type=bind,src={state_root / 'conversations'},dst=/runtime/state/conversations",
+        "--mount",
+        f"type=bind,src={state_root / 'bash-events'},dst=/runtime/state/bash-events",
+        "--mount",
+        f"type=bind,src={state_root / 'persistence'},dst=/runtime/state/persistence",
+        IMAGE,
+    )
+    port_line = _run("docker", "port", server, "8000/tcp", capture=True).splitlines()[0]
+    base_url = f"http://127.0.0.1:{port_line.rsplit(':', 1)[1]}"
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            code, _ = _request(base_url, "GET", "/openapi.json", timeout=2)
+            if code == 200:
+                return base_url
+        except (OSError, TimeoutError, urllib.error.URLError):
+            pass
+        if time.monotonic() >= deadline:
+            logs = _run("docker", "logs", server, capture=True)
+            raise AssertionError(f"OpenHands Agent Server did not become ready:\n{logs[-4000:]}")
+        time.sleep(0.5)
+
+
+def _event_ids(base_url: str, conversation_id: str) -> tuple[str, ...]:
+    result = tuple(str(item["id"]) for item in _events(base_url, conversation_id) if item.get("id"))
+    assert result, conversation_id
+    return result
+
+
+def _assert_persisted_conversations(state_root: Path, conversation_ids: tuple[str, ...]) -> None:
+    for conversation_id in conversation_ids:
+        conversation_dir = state_root / "conversations" / conversation_id.replace("-", "")
+        for filename in ("meta.json", "base_state.json"):
+            path = conversation_dir / filename
+            assert path.is_file() and path.stat().st_size > 0, path
+
+
+def _catalog_ids(base_url: str) -> set[str]:
+    code, value = _request(base_url, "GET", "/api/conversations/search?limit=100")
+    assert code == 200 and isinstance(value, dict), (code, value)
+    items = value.get("items")
+    assert isinstance(items, list), value
+    return {str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")}
+
+
 def main() -> None:
     suffix = uuid4().hex[:10]
     network = f"flowweave-oh-smoke-{suffix}"
     fake = f"flowweave-fake-llm-{suffix}"
     server = f"flowweave-oh-server-{suffix}"
-    try:
-        _run("docker", "network", "create", network)
-        _run(
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            fake,
-            "--network",
-            network,
-            "--entrypoint",
-            "/runtime/.venv/bin/python",
-            "-v",
-            f"{FAKE_MODEL}:/smoke/fake.py:ro",
-            IMAGE,
-            "/smoke/fake.py",
-        )
-        _run(
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            server,
-            "--network",
-            network,
-            "-p",
-            "127.0.0.1::8000",
-            "-e",
-            f"SESSION_API_KEY={SESSION_KEY}",
-            "-e",
-            f"OH_SESSION_API_KEYS_0={SESSION_KEY}",
-            IMAGE,
-        )
-        versions = _run(
-            "docker",
-            "exec",
-            server,
-            "/runtime/.venv/bin/python",
-            "-c",
-            (
-                "from importlib.metadata import version; "
-                "names=('openhands-agent-server','openhands-sdk','openhands-tools',"
-                "'openhands-workspace'); print(','.join(version(n) for n in names))"
-            ),
-            capture=True,
-        )
-        assert versions.split(",") == [EXPECTED_VERSION] * 4, versions
-        port_line = _run("docker", "port", server, "8000/tcp", capture=True).splitlines()[0]
-        base_url = f"http://127.0.0.1:{port_line.rsplit(':', 1)[1]}"
-        deadline = time.monotonic() + 60
-        while True:
-            try:
-                code, _ = _request(base_url, "GET", "/openapi.json", timeout=2)
-                if code == 200:
-                    break
-            except (OSError, TimeoutError, urllib.error.URLError):
-                pass
-            if time.monotonic() >= deadline:
-                logs = _run("docker", "logs", server, capture=True)
-                raise AssertionError(
-                    f"OpenHands Agent Server did not become ready:\n{logs[-4000:]}"
-                )
-            time.sleep(0.5)
-
-        fake_model_url = f"http://{fake}:18080/v1"
-        confirmation_id = _confirmation_smoke(base_url, fake_model_url, suffix)
-        condenser_id = _condenser_smoke(base_url, fake_model_url, suffix)
-        native_task_id = _native_task_smoke(base_url, fake_model_url, suffix)
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "openhands_version": EXPECTED_VERSION,
-                    "confirmation_conversation_id": confirmation_id,
-                    "condenser_conversation_id": condenser_id,
-                    "native_task_conversation_id": native_task_id,
-                },
-                sort_keys=True,
+    with tempfile.TemporaryDirectory(prefix="flowweave-openhands-smoke-") as state_dir:
+        state_root = Path(state_dir)
+        for name in ("workspace", "conversations", "bash-events", "persistence"):
+            (state_root / name).mkdir()
+        try:
+            _run("docker", "network", "create", network)
+            _run(
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                fake,
+                "--network",
+                network,
+                "--entrypoint",
+                "/runtime/.venv/bin/python",
+                "-v",
+                f"{FAKE_MODEL}:/smoke/fake.py:ro",
+                IMAGE,
+                "/smoke/fake.py",
             )
-        )
-    finally:
-        _cleanup(server, fake, network)
+            base_url = _start_server(server, network, state_root)
+            versions = _run(
+                "docker",
+                "exec",
+                server,
+                "/runtime/.venv/bin/python",
+                "-c",
+                (
+                    "from importlib.metadata import version; "
+                    "names=('openhands-agent-server','openhands-sdk','openhands-tools',"
+                    "'openhands-workspace'); print(','.join(version(n) for n in names))"
+                ),
+                capture=True,
+            )
+            assert versions.split(",") == [EXPECTED_VERSION] * 4, versions
+            fake_model_url = f"http://{fake}:18080/v1"
+            confirmation_id = _confirmation_smoke(base_url, fake_model_url, suffix)
+            condenser_id = _condenser_smoke(base_url, fake_model_url, suffix)
+            native_task_id = _native_task_smoke(base_url, fake_model_url, suffix)
+            conversation_ids = (confirmation_id, condenser_id, native_task_id)
+            original_event_ids = {item: _event_ids(base_url, item) for item in conversation_ids}
+            _assert_persisted_conversations(state_root, conversation_ids)
+
+            code, response = _request(
+                base_url,
+                "POST",
+                "/api/conversations/prepare-for-sandbox-pause",
+                {},
+            )
+            assert code in {200, 204}, (code, response)
+            _run("docker", "rm", "-f", server)
+            base_url = _start_server(server, network, state_root)
+            assert set(conversation_ids) <= _catalog_ids(base_url)
+            reloaded_event_ids = {item: _event_ids(base_url, item) for item in conversation_ids}
+            assert reloaded_event_ids == original_event_ids, (
+                original_event_ids,
+                reloaded_event_ids,
+            )
+
+            print(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "openhands_version": EXPECTED_VERSION,
+                        "confirmation_conversation_id": confirmation_id,
+                        "condenser_conversation_id": condenser_id,
+                        "native_task_conversation_id": native_task_id,
+                        "original_id_reload": True,
+                    },
+                    sort_keys=True,
+                )
+            )
+        finally:
+            _cleanup(server, fake, network)
 
 
 if __name__ == "__main__":

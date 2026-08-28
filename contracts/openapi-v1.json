@@ -183,6 +183,156 @@
         }
       }
     },
+    "/api/v1/agent-workspaces/{workspace_id}/capabilities": {
+      "get": {
+        "summary": "Get Agent Workspace Capabilities",
+        "operationId": "get_agent_workspace_capabilities_api_v1_agent_workspaces__workspace_id__capabilities_get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "title": "Response Get Agent Workspace Capabilities Api V1 Agent Workspaces  Workspace Id  Capabilities Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Put Agent Workspace Capabilities",
+        "operationId": "put_agent_workspace_capabilities_api_v1_agent_workspaces__workspace_id__capabilities_put",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentWorkspaceCapabilitiesWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "title": "Response Put Agent Workspace Capabilities Api V1 Agent Workspaces  Workspace Id  Capabilities Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/capabilities/{capability_version_id}/mcp-readiness": {
+      "post": {
+        "summary": "Probe Agent Workspace Mcp Readiness",
+        "operationId": "probe_agent_workspace_mcp_readiness_api_v1_agent_workspaces__workspace_id__capabilities__capability_version_id__mcp_readiness_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "capability_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Probe Agent Workspace Mcp Readiness Api V1 Agent Workspaces  Workspace Id  Capabilities  Capability Version Id  Mcp Readiness Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent-workspaces/{workspace_id}/runtime": {
       "get": {
         "summary": "Get Agent Workspace Runtime",
@@ -894,6 +1044,66 @@
         }
       }
     },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/capabilities": {
+      "post": {
+        "summary": "Add Agent Conversation Capability",
+        "operationId": "add_agent_conversation_capability_api_v1_agent_workspaces__workspace_id__conversations__binding_id__capabilities_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConversationCapabilityAddWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Add Agent Conversation Capability Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Capabilities Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/events": {
       "get": {
         "summary": "Agent Events",
@@ -1235,6 +1445,24 @@
                 }
               ],
               "title": "Work Directory Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 36,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
             }
           }
         ],
@@ -7028,6 +7256,43 @@
               }
             ],
             "title": "Image Data Url"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "byte_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 26214400.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Byte Size"
           }
         },
         "additionalProperties": false,
@@ -7067,6 +7332,19 @@
       },
       "AgentConversationBootstrapWrite": {
         "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 36
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
           "model_provider_id": {
             "type": "string",
             "maxLength": 36,
@@ -7107,7 +7385,6 @@
           "content": {
             "type": "string",
             "maxLength": 200000,
-            "minLength": 1,
             "title": "Content"
           },
           "attachments": {
@@ -7127,6 +7404,22 @@
           "content"
         ],
         "title": "AgentConversationBootstrapWrite"
+      },
+      "AgentConversationCapabilityAddWrite": {
+        "properties": {
+          "capability_version_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Capability Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capability_version_id"
+        ],
+        "title": "AgentConversationCapabilityAddWrite"
       },
       "AgentConversationForkWrite": {
         "properties": {
@@ -7212,7 +7505,6 @@
           "content": {
             "type": "string",
             "maxLength": 200000,
-            "minLength": 1,
             "title": "Content"
           },
           "attachments": {
@@ -7452,6 +7744,21 @@
         "additionalProperties": false,
         "type": "object",
         "title": "AgentWorkDirectoryPatchWrite"
+      },
+      "AgentWorkspaceCapabilitiesWrite": {
+        "properties": {
+          "capability_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Capability Version Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AgentWorkspaceCapabilitiesWrite"
       },
       "AgentWorkspaceSettingsWrite": {
         "properties": {

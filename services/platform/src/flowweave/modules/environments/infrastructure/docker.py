@@ -893,8 +893,8 @@ def _build_openhands_runtime(
         "push": False,
         "include_base_tag": False,
         "include_versioned_tag": False,
-        "git_sha": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
-        "git_ref": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+        "git_sha": "9a24f6c8866f353042a57df0514ccc900e3a0691",
+        "git_ref": "9a24f6c8866f353042a57df0514ccc900e3a0691",
     }
     output = _run(
         [

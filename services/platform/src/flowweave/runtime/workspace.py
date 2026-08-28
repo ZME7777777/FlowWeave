@@ -60,8 +60,8 @@ _HOOK_METADATA_KEYS = {
     "filename",
     "content_hash",
 }
-_HOOK_OPENHANDS_VERSION = "1.42.0"
-_HOOK_SOURCE_COMMIT = "f09e03eac772290feeb51b7d7390ffaefeca1a09"
+_HOOK_OPENHANDS_VERSION = "1.44.0"
+_HOOK_SOURCE_COMMIT = "9a24f6c8866f353042a57df0514ccc900e3a0691"
 _MCP_KEYS = {
     "url",
     "transport",
@@ -1017,7 +1017,7 @@ def materialize_hook_config(
                 or normalized.get("allowed_events") != sorted(_HOOK_EVENTS)
                 or set(normalized) - set(_HOOK_EVENTS) - _HOOK_METADATA_KEYS
             ):
-                raise ValueError("Hook Set must be republished against OpenHands 1.42.0")
+                raise ValueError("Hook Set must be republished against OpenHands 1.44.0")
             for event in _HOOK_EVENTS:
                 raw_matchers = normalized.get(event)
                 if not isinstance(raw_matchers, list):

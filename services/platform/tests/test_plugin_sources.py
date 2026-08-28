@@ -81,7 +81,7 @@ class _Resolver:
             COMMIT_B,
             {
                 "schema_version": 1,
-                "openhands_version": "1.42.0",
+                "openhands_version": "1.44.0",
                 "file_hashes": self.file_hashes,
                 "source_kind": "MARKETPLACE",
             },

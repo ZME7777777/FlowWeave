@@ -25,7 +25,7 @@ _FIELDS = frozenset(
 def normalize_agent_definition_document(
     value: object, *, fallback_key: str
 ) -> tuple[str, dict[str, Any]]:
-    """Validate the governed OpenHands 1.42.0 AgentDefinition subset.
+    """Validate the governed OpenHands 1.44.0 AgentDefinition subset.
 
     FlowWeave intentionally rejects nested Skill/MCP/Hook/profile configuration
     until those references can be resolved to immutable Capability Versions.
@@ -84,7 +84,7 @@ def normalize_agent_definition_document(
     permission_mode = document.get("permission_mode")
     if permission_mode != "never_confirm":
         raise ValueError(
-            "Agent Definition permission_mode must be never_confirm: OpenHands 1.42.0 "
+            "Agent Definition permission_mode must be never_confirm: OpenHands 1.44.0 "
             "TaskToolSet has no Agent Server confirmation handler and would otherwise "
             "auto-approve sub-agent actions"
         )

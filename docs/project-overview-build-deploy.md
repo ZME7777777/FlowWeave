@@ -681,7 +681,7 @@ IDE 中看到的 `node_modules/` 是 pnpm 安装结果，`dist/` 是 Vite 生产
 | --- | --- | --- | --- |
 | Web 镜像 | `apps/web/Dockerfile` | Vite 生产产物 + Nginx | 重建并重启 `web` |
 | Platform 镜像 | `services/platform/Dockerfile` | Python venv、平台源码、迁移、Docker CLI | Compose 分别标记为 `migration/api/worker/runtime-provider` |
-| OpenHands Runtime 基础镜像 | `infra/openhands/Dockerfile` | 固定 OpenHands 1.42.0、工具链、源码 provenance、契约探针 | 用于环境构建；发布后的 Environment Runtime 按 digest 运行 |
+| OpenHands Runtime 基础镜像 | `infra/openhands/Dockerfile` | 固定 OpenHands 1.44.0、工具链、源码 provenance、契约探针 | 用于环境构建；发布后的 Environment Runtime 按 digest 运行 |
 | Python/JS Sandbox 镜像 | `infra/sandbox/*/Dockerfile` | 受限的一次性代码 Runner | Runtime Provider 后续按需创建 |
 | Dependency Builder 镜像 | `infra/dependency-builder/Dockerfile` | Python/Node 依赖构建 Runner | Runtime Provider 后续按需创建 |
 | Schema | Alembic migration | PostgreSQL 结构变化 | `migration` 成功后再更新平台进程 |

@@ -79,7 +79,7 @@ def ensure_default_tool_policy(db: Session) -> PublishedCapability:
     package_id = _builtin_id("package", f"TOOL_POLICY:{DEFAULT_TOOL_POLICY_KEY}")
     # Version 2 was published by the superseded 1.42.1/fork Runtime.  Retain
     # it as immutable history but never select it for new node assets after
-    # the fixed 1.42.0 baseline is restored.
+    # the fixed 1.44.0 baseline is restored.
     version_id = _builtin_id("version", f"builtin:{DEFAULT_TOOL_POLICY_KEY}:3")
     digest = version_digest(
         "TOOL_POLICY", DEFAULT_TOOL_POLICY_KEY, content_hash, DEFAULT_TOOL_POLICY_CONFIG
@@ -131,7 +131,7 @@ def ensure_default_tool_policy(db: Session) -> PublishedCapability:
                 status="PASSED",
                 report_json={
                     "builtin": True,
-                    "openhands_version": "1.42.0",
+                    "openhands_version": "1.44.0",
                     "source_commit": DEFAULT_TOOL_POLICY_CONFIG["source_commit"],
                     "catalog_digest": DEFAULT_TOOL_POLICY_CONFIG["catalog_digest"],
                 },

@@ -25,7 +25,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceCapability,
     AgentWorkspaceRuntime,
 )
-from flowweave.modules.catalog.application.capability_repository import resolve_version
+from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
@@ -654,7 +654,7 @@ def _create_native_conversation(
                     },
                 ),
             ),
-            # This is the fixed OpenHands 1.42.0 summarizing condenser, not a
+            # This is the fixed OpenHands 1.44.0 summarizing condenser, not a
             # FlowWeave summary loop. It remains native Conversation history.
             condenser=RuntimeCondenser(kind="LLM_SUMMARIZING"),
             condenser_provider=provider,
@@ -978,7 +978,7 @@ def bootstrap_conversation(
     model_name: str | None = None,
     reasoning_effort: str | None = None,
     content: str,
-    attachments: tuple[dict[str, str], ...] = (),
+    attachments: tuple[dict[str, str | int], ...] = (),
     idempotency_key: str,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
@@ -1253,12 +1253,18 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
     handle = _handle(db, workspace, binding)
     batch = get_runtime().read_active_events(replace(handle, cursor=cursor))
     event_ids = [event.cursor for event in batch.events if event.event_type == "MESSAGE"]
-    stored = db.scalars(
-        select(AgentConversationMessageAttachment).where(
-            AgentConversationMessageAttachment.binding_id == binding.id,
-            AgentConversationMessageAttachment.event_id.in_(event_ids),
+    stored: list[AgentConversationMessageAttachment] = (
+        list(
+            db.scalars(
+                select(AgentConversationMessageAttachment).where(
+                    AgentConversationMessageAttachment.binding_id == binding.id,
+                    AgentConversationMessageAttachment.event_id.in_(event_ids),
+                )
+            ).all()
         )
-    ).all() if event_ids else []
+        if event_ids
+        else []
+    )
     attachments_by_event: dict[str, list[AgentConversationMessageAttachment]] = {}
     for attachment in stored:
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
@@ -1508,20 +1514,34 @@ def _legacy_message_attachments(content: str) -> tuple[str, tuple[str, ...]]:
 def _message_payload(
     content: str, attachments: tuple[dict[str, str | int], ...]
 ) -> tuple[str, tuple[str, ...]]:
-    if len(attachments) > 10 or any(
-        _ATTACHMENT_PATH.fullmatch(item.get("path", "")) is None
-        or ("image_data_url" in item and not item["image_data_url"].startswith("data:image/"))
-        for item in attachments
-    ):
+    if len(attachments) > 10:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
-    paths = tuple(item["path"] for item in attachments)
-    image_urls = tuple(item["image_data_url"] for item in attachments if "image_data_url" in item)
+    paths: list[str] = []
+    image_urls: list[str] = []
+    for item in attachments:
+        path = item.get("path")
+        image_data_url = item.get("image_data_url")
+        if (
+            not isinstance(path, str)
+            or _ATTACHMENT_PATH.fullmatch(path) is None
+            or (
+                image_data_url is not None
+                and (
+                    not isinstance(image_data_url, str)
+                    or not image_data_url.startswith("data:image/")
+                )
+            )
+        ):
+            raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
+        paths.append(path)
+        if isinstance(image_data_url, str):
+            image_urls.append(image_data_url)
     prompt = content.strip()
     if paths:
         prompt += (
             "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
         ) + "\n".join(f"- {path}" for path in paths)
-    return prompt, image_urls
+    return prompt, tuple(image_urls)
 
 
 def _validate_attachment_owners(
@@ -1532,9 +1552,7 @@ def _validate_attachment_owners(
     for item in attachments:
         matched = _ATTACHMENT_PATH.fullmatch(str(item.get("path") or ""))
         if matched is None or matched.group("owner") != binding_id:
-            raise DomainError(
-                "AGENT_ATTACHMENT_INVALID", "附件不属于当前会话，请重新上传", 422
-            )
+            raise DomainError("AGENT_ATTACHMENT_INVALID", "附件不属于当前会话，请重新上传", 422)
 
 
 def _record_message_attachments(
@@ -1585,6 +1603,7 @@ def upload_attachment(
     if len(mime_type) > 200:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件类型无效", 422)
     workspace = _workspace(db, workspace_id)
+    bound_conversation: AgentConversationBinding | None = None
     if binding_id is None:
         try:
             owner_id = str(UUID(attachment_owner_id or ""))
@@ -1599,9 +1618,9 @@ def upload_attachment(
             runtime_resource_name=resource_name,
         )
     else:
-        binding = _binding(db, workspace_id, binding_id)
-        owner_id = binding.id
-        handle = _handle(db, workspace, binding)
+        bound_conversation = _binding(db, workspace_id, binding_id)
+        owner_id = bound_conversation.id
+        handle = _handle(db, workspace, bound_conversation)
     path = get_runtime().upload_workspace_file(
         handle,
         filename=filename,
@@ -1616,10 +1635,10 @@ def upload_attachment(
     # Persist a pending projection so the file endpoint can authorize this exact
     # opaque upload path without exposing the shared uploads directory.  A
     # formal MessageEvent later receives its own projection for transcript UI.
-    if binding_id is not None:
+    if bound_conversation is not None:
         db.add(
             AgentConversationMessageAttachment(
-                binding_id=binding.id,
+                binding_id=bound_conversation.id,
                 event_id=f"pending:{uuid4()}",
                 content="",
                 filename=filename,

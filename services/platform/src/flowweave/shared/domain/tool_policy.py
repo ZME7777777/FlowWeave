@@ -5,8 +5,8 @@ import hashlib
 import json
 from typing import Any, cast
 
-OPENHANDS_VERSION = "1.42.0"
-OPENHANDS_SOURCE_COMMIT = "f09e03eac772290feeb51b7d7390ffaefeca1a09"
+OPENHANDS_VERSION = "1.44.0"
+OPENHANDS_SOURCE_COMMIT = "9a24f6c8866f353042a57df0514ccc900e3a0691"
 TOOL_POLICY_SCHEMA_VERSION = 2
 MAX_TOOL_CONCURRENCY = 16
 
@@ -15,6 +15,17 @@ MAX_TOOL_CONCURRENCY = 16
 # explains why FlowWeave rejects them instead of silently pretending they do not
 # exist.  Parameter schemas describe Tool.create(), not LLM action arguments.
 OPENHANDS_TOOL_CATALOG: dict[str, dict[str, Any]] = {
+    "ask_oracle": {
+        "module": "openhands.tools.ask_oracle.definition",
+        "params": {},
+        "access": "OPEN_WORLD",
+        "confirmation": "REQUIRED",
+        "concurrency": "SERIAL_ONLY",
+        "policy_enabled": False,
+        "disabled_reason": (
+            "requires a governed read-at-use LLM profile named oracle; enable in FR-77"
+        ),
+    },
     "file_editor": {
         "module": "openhands.tools.file_editor.definition",
         "params": {},
@@ -197,7 +208,7 @@ def tool_policy_catalog() -> dict[str, Any]:
 
 
 def normalize_tool_entries(value: object) -> list[dict[str, Any]]:
-    """Validate the OpenHands 1.42.0 Tool subset governed by FlowWeave.
+    """Validate the OpenHands 1.44.0 Tool subset governed by FlowWeave.
 
     The catalog and create-parameter schemas are frozen from the pinned image.
     Unknown names, disabled low-level entries, and undeclared parameters fail
@@ -379,7 +390,7 @@ def normalize_tool_policy_document(
 
 _DEFAULT_TOOL_POLICY_DOCUMENT: dict[str, Any] = {
     "name": DEFAULT_TOOL_POLICY_KEY,
-    "description": "FlowWeave default OpenHands 1.42.0 tool policy",
+    "description": "FlowWeave default OpenHands 1.44.0 tool policy",
     "tool_concurrency_limit": 1,
     "tools": [
         {"name": "terminal", "params": {}},

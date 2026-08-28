@@ -43,8 +43,8 @@ def _read_model(item: PublishedCapability) -> dict[str, Any]:
         "state": item.version.state,
         "document": dict(item.version.normalized_config_json),
         "compatibility": {
-            "openhands_version": "1.42.0",
-            "source_commit": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+            "openhands_version": "1.44.0",
+            "source_commit": "9a24f6c8866f353042a57df0514ccc900e3a0691",
             "schema_version": OPENHANDS_AGENT_PROFILE_SCHEMA_VERSION,
             "fields": dict(OPENHANDS_AGENT_PROFILE_FIELD_MATRIX),
             "server_profile_store": "PROHIBITED_FOR_PRODUCTION",

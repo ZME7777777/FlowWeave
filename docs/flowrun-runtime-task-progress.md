@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：无
+> 下一可执行切片：`FR-75`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -15,8 +15,9 @@
 此前的重构决策不能作为本任务已经完成、可以跳过验证或必须保留现有实现的依据。现有源码只作为
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
-本任务只修改 FlowWeave。OpenHands 源码仓库保持只读，目标事实基线仍为固定 commit
-`f09e03eac772290feeb51b7d7390ffaefeca1a09` 和由其构建的四个 `1.42.0` 包。
+本任务只修改 FlowWeave。OpenHands 源码仓库保持只读，当前目标事实基线为固定 commit
+`9a24f6c8866f353042a57df0514ccc900e3a0691` 和由其构建的四个 `1.44.0` 包；此前完成记录中的旧版本号
+继续表示当时实际验收的历史基线，不做追溯改写。
 
 ## 2. 最终目标
 
@@ -1045,6 +1046,44 @@ ARIA 状态及独立“+”入口；Alembic head、任务状态唯一性与 `git
 验收：Web ESLint/typecheck/production build；定向 Playwright 验证折叠容器内会话行保持 38px 紧凑高度，并保留
 既有折叠/展开与独立“+”入口行为；Alembic head、任务状态唯一性与 `git diff --check` 通过。本切片使用独立 Git commit。
 
+### FR-74 OpenHands 1.44.0 精确源码基线升级 — DONE
+
+依赖：`FR-73`。
+
+目标：把 FlowWeave 的 OpenHands 事实基线从四包 `1.42.0`、commit
+`f09e03eac772290feeb51b7d7390ffaefeca1a09` 升级到用户已拉取并审计的四包 `1.44.0`、精确 commit
+`9a24f6c8866f353042a57df0514ccc900e3a0691`（`v1.44.0-6-g9a24f6c88`）。冻结新的源码 archive digest、
+四包依赖、Runtime build provenance、Tool catalog 与正式 HTTP/Event/Plugin/Task/Condenser 契约；历史已经发布的
+Environment Runtime image 和 Snapshot 继续引用原 digest，不就地漂移。升级只修改 FlowWeave，不修改 OpenHands
+源码，不以浮动 `main`、PyPI 最新版或私有 overlay 代替精确 source lock。
+
+验收：源码锁下载与四包版本校验；Runtime 镜像无缓存构建、provenance、`contract_check.py` 和真实 smoke；
+受影响平台 Ruff/Pyright/pytest、OpenAPI/架构契约、Compose 安全、Alembic head、任务状态唯一性与
+`git diff --check`。确认现有 Conversation 原 ID reload、Plugin/MCP/Skill/Task/Condenser 和事件流契约在新镜像中
+保持正式可用。本切片独立提交，提交后停止。
+
+### FR-75 OpenHands 事件订阅隔离与远程结构化 Tool 收缩 — READY
+
+依赖：`FR-74`。
+
+目标：利用 `1.44.0-6` 正式的按订阅者定向 delta 投递和远程结构化内置 Tool 解析，复核并删除 FlowWeave 中
+已经重复的广播隔离、Tool spec 展平或文本兼容逻辑；保留 FlowWeave 授权代理、安全投影和正式事件身份关联。
+
+### FR-76 OpenHands Profile、Secret、Condenser 与标题兼容收缩 — PENDING
+
+依赖：`FR-75`。
+
+目标：利用正式 Profile 持久迁移/预检、read-at-use connection、Secret serializer 探测、订阅模型 condenser
+dispatch 和远程标题生成修复，删除可由 OpenHands 生命周期接管的 FlowWeave 兼容分支；保留不可变供应商引用、
+权限、用量、手动标题 CAS 和产品状态投影。
+
+### FR-77 OpenHands Oracle、结构化 Task Outcome 与可选 ACP — PENDING
+
+依赖：`FR-76`。
+
+目标：以 FlowWeave 冻结的模型 Profile、Tool Policy、预算和审计启用原生 `ask_oracle`，消费结构化 Task Outcome；
+仅在产品明确选择 ACP Agent 时使用上游 `INSTALL_ACP_PROVIDERS` 构建参数，默认 Runtime 不安装或暴露未治理 Provider。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1061,6 +1100,7 @@ ARIA 状态及独立“+”入口；Alembic head、任务状态唯一性与 `git
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-74 | 精确源码 commit/describe 与 codeload SHA-256；四包 1.44.0 lock；Runtime 无缓存构建、镜像 provenance、contract check；增强真实 smoke（confirmation、LLM condenser、Task 子 Agent、正式 pause handoff、第二容器按三个原 ID reload 且事件 ID 序列不变）；定向平台 pytest 255 passed；契约/架构/Compose 安全 36 passed；源码供应链/Plugin resolver/架构 35 passed；Agent Workspace 46 passed；OpenAPI 基线；受影响 Ruff、全量 Pyright 0 errors；Alembic head、任务状态唯一性与 git diff --check | PASS：基线固定为 commit 9a24f6c8866f353042a57df0514ccc900e3a0691、archive SHA-256 94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21 和四包 1.44.0；镜像无 overlay。正式 Tool 数增至 16，ask_oracle 仅登记为上游存在并默认禁用，未提前启用 Oracle/ACP。Plugin/MCP/Skill/Task/Condenser 与事件契约保持可用；外置 Workspace/Conversation 状态经正式 prepare-for-sandbox-pause 后由新容器恢复三个原 conversation ID，正式事件身份不变。附带修复既有跨模块内部仓储引用，改经 Catalog public façade；以纯类型收窄恢复 Pyright，并同步此前遗漏的 FR-69/FR-70 OpenAPI 快照。历史已发布 Environment/Snapshot digest 未改写。 |
 | 2026-08-28 | FR-73 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（折叠容器内根会话行固定 38px、根与 `ai-playbook` 折叠/展开、ARIA 与独立新建入口，1 passed）；Alembic head/current、任务状态唯一性与 `git diff --check` | PASS：会话行紧凑样式选择器已随 FR-72 的内容容器迁移，恢复 38px 两行栅格、标题截断和 hover/active 样式；折叠标题与独立“+”入口保持原行为，未改变任何平台或 OpenHands 契约。 |
 | 2026-08-28 | FR-72 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（根工作区与 `ai-playbook` 单击折叠/展开、ARIA 与独立新建入口，1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：分组标题现在是可访问的折叠控件，默认展开；根、活动及归档工作目录均复用同一行为。收起只隐藏对应会话列表，“+”保持独立可用；不写入浏览器或平台状态，也不触及 OpenHands、Runtime、工作区或 FlowRun 契约。 |
 | 2026-08-28 | FR-71 | Web ESLint/typecheck/production build；当前源码 Vite 上定向 Playwright（新会话 `/` 空态与“管理”入口，1 passed）；`git diff --check` 与任务状态唯一性 | PASS：新会话草稿输入 `/` 不再静默；已配置 MCP 保持候选可见，未配置时显示明确说明和默认能力管理入口。不会创建 Conversation 或写入 Runtime。 |

@@ -16,7 +16,7 @@ CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_CLIENT_VERSION = "0.144.1"
 DEVICE_VERIFICATION_URL = f"{ISSUER}/codex/device"
 DEVICE_REDIRECT_URI = f"{ISSUER}/deviceauth/callback"
-# This mirrors ``OPENAI_CODEX_MODELS`` in the fixed OpenHands 1.42.0 source
+# This mirrors ``OPENAI_CODEX_MODELS`` in the fixed OpenHands 1.44.0 source
 # baseline. The Codex account catalog can also expose product aliases such as
 # ``codex-auto-review``. LiteLLM 1.93.1 treats those aliases as lacking native
 # Responses streaming and silently makes a non-streaming request, which the

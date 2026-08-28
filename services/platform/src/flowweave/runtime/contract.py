@@ -64,7 +64,7 @@ REQUIRED_START_FIELDS: tuple[str, ...] = tuple(
     )
 )
 
-# The target 1.42.0 server currently declares only credential-binding
+# The target 1.44.0 server currently declares only credential-binding
 # capabilities.  FlowWeave does not consume that product surface, so the
 # governed requirement is deliberately empty.  The adapter still requires the
 # formal ServerInfo.capabilities field to be a list of unique strings.

@@ -109,7 +109,7 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     assert "--build-context openhands_sdk" not in makefile
     assert "COPY --from=openhands_sdk" not in dockerfile
     assert source_lock["source_kind"] == "upstream_source"
-    assert source_lock["upstream_base_commit"] == ("f09e03eac772290feeb51b7d7390ffaefeca1a09")
+    assert source_lock["upstream_base_commit"] == ("9a24f6c8866f353042a57df0514ccc900e3a0691")
     assert source_lock["source_commit"] == source_lock["upstream_base_commit"]
     assert source_lock["fork_commit"] is None
     assert len(source_lock["source_commit"]) == 40
@@ -119,14 +119,14 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     assert "--destination /opt/openhands-source" in dockerfile
     assert "/opt/openhands-source/openhands-sdk" in dockerfile
     assert "/opt/openhands-source/openhands-agent-server" in dockerfile
-    assert "expected='1.42.0'" in dockerfile
+    assert "expected='1.44.0'" in dockerfile
     for package in (
         "openhands-agent-server",
         "openhands-sdk",
         "openhands-tools",
         "openhands-workspace",
     ):
-        assert f'"{package}==1.42.0"' in project
+        assert f'"{package}==1.44.0"' in project
         assert f'name = "{package}"' in lockfile
 
 

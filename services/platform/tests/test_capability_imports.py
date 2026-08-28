@@ -668,8 +668,8 @@ def test_hook_config_normalizes_form_json_and_binds_to_node(client):
             "capability_key": "security-guardrails",
             "normalized_config": {
                 "hook_set_schema_version": 1,
-                "openhands_version": "1.42.0",
-                "source_commit": "f09e03eac772290feeb51b7d7390ffaefeca1a09",
+                "openhands_version": "1.44.0",
+                "source_commit": "9a24f6c8866f353042a57df0514ccc900e3a0691",
                 "allowed_events": [
                     "post_tool_use",
                     "pre_tool_use",
@@ -1433,11 +1433,11 @@ def test_tool_policy_import_is_strict_and_node_binds_exactly_one_version(client)
     )
     frozen = read_only_parallel["normalized_config"]
     assert frozen["unknown_tool"] == "DENY"
-    assert frozen["openhands_version"] == "1.42.0"
+    assert frozen["openhands_version"] == "1.44.0"
     assert frozen["tool_concurrency_limit"] == 4
     assert frozen["confirmation_required_tools"] == []
     assert {tool["access"] for tool in frozen["tools"]} == {"READ_ONLY"}
-    assert all(tool["source"]["version"] == "1.42.0" for tool in frozen["tools"])
+    assert all(tool["source"]["version"] == "1.44.0" for tool in frozen["tools"])
 
     no_confirmation = client.post(
         "/api/v1/node-assets",
@@ -1802,11 +1802,11 @@ def test_tool_policy_catalog_exposes_governed_and_disabled_tools(client):
     response = client.get("/api/v1/tool-policy-catalog")
     assert response.status_code == 200
     catalog = response.json()
-    assert catalog["openhands_version"] == "1.42.0"
+    assert catalog["openhands_version"] == "1.44.0"
     assert catalog["catalog_digest"] == OPENHANDS_TOOL_CATALOG_DIGEST
     assert catalog["max_tool_concurrency"] == 16
     tools = {item["name"]: item for item in catalog["tools"]}
-    assert len(tools) == 15
+    assert len(tools) == 16
     assert tools["terminal"]["policy_enabled"] is True
     assert tools["terminal"]["params"]["terminal_type"]["enum"] == [
         "tmux",
@@ -1815,6 +1815,8 @@ def test_tool_policy_catalog_exposes_governed_and_disabled_tools(client):
     ]
     assert tools["browser_tool_set"]["policy_enabled"] is False
     assert "SSRF" in tools["browser_tool_set"]["disabled_reason"]
+    assert tools["ask_oracle"]["policy_enabled"] is False
+    assert "FR-77" in tools["ask_oracle"]["disabled_reason"]
 
 
 def test_tool_policy_accepts_enum_string_parameter_without_length_limit(client):

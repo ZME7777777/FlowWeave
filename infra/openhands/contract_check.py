@@ -101,9 +101,11 @@ from openhands.tools.task import TaskAction, TaskObservation, TaskToolSet
 from openhands.tools.task.impl import TaskExecutor
 from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
-EXPECTED_VERSION = "1.42.0"
-EXPECTED_UPSTREAM_BASE = "f09e03eac772290feeb51b7d7390ffaefeca1a09"
-EXPECTED_SOURCE_ARCHIVE_SHA256 = "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
+EXPECTED_VERSION = "1.44.0"
+EXPECTED_UPSTREAM_BASE = "9a24f6c8866f353042a57df0514ccc900e3a0691"
+EXPECTED_SOURCE_ARCHIVE_SHA256 = (
+    "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
+)
 PACKAGES = (
     "openhands-agent-server",
     "openhands-sdk",
@@ -160,6 +162,7 @@ REQUIRED_START_FIELDS = {
     "workspace",
 }
 EXPECTED_TOOL_MODULES = {
+    "ask_oracle": "openhands.tools.ask_oracle.definition",
     "file_editor": "openhands.tools.file_editor.definition",
     "task_tool_set": "openhands.tools.task.definition",
     "task": "openhands.tools.task.definition",
@@ -207,9 +210,13 @@ def main() -> None:
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)
     socket_source = event_socket_source + bash_socket_source
-    assert '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
+    assert (
+        '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
+    )
     assert '@sockets_router.websocket("/bash-events")' in bash_socket_source
-    assert "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
+    assert (
+        "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
+    )
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
         provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
@@ -229,9 +236,13 @@ def main() -> None:
         "file:///agent-server",
     )
     for package in PACKAGES:
-        direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
+        direct_url = json.loads(
+            distribution(package).read_text("direct_url.json") or "{}"
+        )
         actual_url = direct_url.get("url")
-        assert actual_url in tuple(f"{root}/{package}" for root in allowed_source_roots), (
+        assert actual_url in tuple(
+            f"{root}/{package}" for root in allowed_source_roots
+        ), (
             package,
             direct_url,
         )
@@ -259,9 +270,9 @@ def main() -> None:
         "capabilities",
     } <= set(server_info_schema["properties"])
     mcp_test_operation = schema["paths"]["/api/mcp/test"]["post"]
-    assert mcp_test_operation["requestBody"]["content"]["application/json"]["schema"] == {
-        "$ref": "#/components/schemas/MCPTestRequest"
-    }
+    assert mcp_test_operation["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/MCPTestRequest"}
     mcp_schemas = schema["components"]["schemas"]
     mcp_request = mcp_schemas["MCPTestRequest"]
     assert set(mcp_request["properties"]) == {
@@ -272,7 +283,9 @@ def main() -> None:
     }
     assert mcp_request["required"] == ["server"]
     assert mcp_request["properties"]["timeout"]["default"] == 15.0
-    mcp_response = mcp_test_operation["responses"]["200"]["content"]["application/json"]["schema"]
+    mcp_response = mcp_test_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
     assert mcp_response["discriminator"]["propertyName"] == "ok"
     assert mcp_response["oneOf"] == [
         {"$ref": "#/components/schemas/MCPTestSuccess"},
@@ -356,7 +369,9 @@ def main() -> None:
     }
     assert set(MCPOAuthCallbackRequest.model_fields) == {"callback_url"}
     task_http_paths = sorted(
-        path for path in paths if "sub-agent" in path or "subagent" in path or "/tasks" in path
+        path
+        for path in paths
+        if "sub-agent" in path or "subagent" in path or "/tasks" in path
     )
     # The pinned OpenHands source exposes only the Agent Definition catalog.
     # Running TaskToolSet children remain internal blocking LocalConversations;
@@ -386,7 +401,9 @@ def main() -> None:
     start_fields = set(StartConversationRequest.model_fields)
     missing_start_fields = sorted(REQUIRED_START_FIELDS - start_fields)
     assert not missing_start_fields, {"missing_start_fields": missing_start_fields}
-    assert isinstance(_field_default(StartConversationRequest, "confirmation_policy"), NeverConfirm)
+    assert isinstance(
+        _field_default(StartConversationRequest, "confirmation_policy"), NeverConfirm
+    )
     profile_http_methods = {
         path: sorted(schema["paths"][path])
         for path in REQUIRED_PATHS
@@ -481,13 +498,17 @@ def main() -> None:
     except ValueError:
         pass
     else:
-        raise AssertionError("OpenHands unexpectedly accepts agent and agent_profile_id together")
+        raise AssertionError(
+            "OpenHands unexpectedly accepts agent and agent_profile_id together"
+        )
     plugin_source_fields = PluginSource.model_fields
     assert set(plugin_source_fields) == {"source", "ref", "repo_path"}
     assert plugin_source_fields["source"].is_required()
     assert plugin_source_fields["ref"].default is None
     assert plugin_source_fields["repo_path"].default is None
-    local_plugin = PluginSource(source="/runtime/capabilities/nodes/node-1/plugins/review")
+    local_plugin = PluginSource(
+        source="/runtime/capabilities/nodes/node-1/plugins/review"
+    )
     assert local_plugin.model_dump(mode="json", exclude_none=True) == {
         "source": "/runtime/capabilities/nodes/node-1/plugins/review"
     }
@@ -521,7 +542,9 @@ def main() -> None:
         assert fetched_marketplace.resolved_ref == marketplace_commit
         marketplace_plugin = fetched_marketplace.marketplace.get_plugin("review")
         assert marketplace_plugin is not None
-        assert fetched_marketplace.marketplace.resolve_plugin_source(marketplace_plugin) == (
+        assert fetched_marketplace.marketplace.resolve_plugin_source(
+            marketplace_plugin
+        ) == (
             str(marketplace_root / "plugins/review"),
             None,
             None,
@@ -590,7 +613,10 @@ def main() -> None:
             objective="Verify the governed result",
         ).model_dump(),
     )
-    assert goal_event.model_dump(mode="json", exclude_none=True)["value"]["status"] == "running"
+    assert (
+        goal_event.model_dump(mode="json", exclude_none=True)["value"]["status"]
+        == "running"
+    )
 
     agent_context_fields = AgentContext.model_fields
     assert {"load_memory", "memory_context"} <= set(agent_context_fields)
@@ -644,9 +670,13 @@ def main() -> None:
     except ValueError:
         pass
     else:
-        raise AssertionError("OpenHands iterative refinement unexpectedly accepts zero iterations")
+        raise AssertionError(
+            "OpenHands iterative refinement unexpectedly accepts zero iterations"
+        )
     critic = AgentFinishedCritic(
-        iterative_refinement=IterativeRefinementConfig(success_threshold=0.7, max_iterations=2)
+        iterative_refinement=IterativeRefinementConfig(
+            success_threshold=0.7, max_iterations=2
+        )
     )
     assert critic.model_dump(mode="json", exclude_none=True) == {
         "kind": "AgentFinishedCritic",
@@ -699,7 +729,8 @@ def main() -> None:
         "conversation",
     }
     assert not any(
-        hasattr(TaskManager, name) for name in ("cancel_task", "interrupt_task", "pause_task")
+        hasattr(TaskManager, name)
+        for name in ("cancel_task", "interrupt_task", "pause_task")
     )
     assert list(signature(TaskExecutor.__call__).parameters) == [
         "self",
@@ -768,14 +799,18 @@ def main() -> None:
     # index from that directory.  Existing durable child data therefore does
     # not constitute a service-restart resume contract.
     with TemporaryDirectory() as parent_persistence_dir:
-        persisted_subagent_dir = Path(parent_persistence_dir) / "subagents" / "persisted-child"
+        persisted_subagent_dir = (
+            Path(parent_persistence_dir) / "subagents" / "persisted-child"
+        )
         persisted_subagent_dir.mkdir(parents=True)
         (persisted_subagent_dir / "events.jsonl").write_text(
             "persisted child state\n", encoding="utf-8"
         )
         restarted_manager = TaskManager()
         restarted_manager.attach_parent(
-            SimpleNamespace(state=SimpleNamespace(persistence_dir=Path(parent_persistence_dir)))  # type: ignore[arg-type]
+            SimpleNamespace(
+                state=SimpleNamespace(persistence_dir=Path(parent_persistence_dir))
+            )  # type: ignore[arg-type]
         )
         assert restarted_manager._persistence_dir == (  # noqa: SLF001
             Path(parent_persistence_dir) / "subagents"
@@ -789,7 +824,9 @@ def main() -> None:
         except ValueError as exc:
             assert "Task 'task_00000001' not found" in str(exc)
         else:
-            raise AssertionError("a restarted TaskManager unexpectedly restored a Task identity")
+            raise AssertionError(
+                "a restarted TaskManager unexpectedly restored a Task identity"
+            )
 
     class CompletedTaskManager:
         def start_task(self, **kwargs: object) -> SimpleNamespace:
@@ -987,7 +1024,9 @@ def main() -> None:
             "metadata": {},
         }
     )
-    assert governed_definition.model_dump(mode="json")["condenser"] == {"kind": "NoOpCondenser"}
+    assert governed_definition.model_dump(mode="json")["condenser"] == {
+        "kind": "NoOpCondenser"
+    }
 
     expected_condenser_defaults = {
         "max_size": 240,
@@ -998,7 +1037,8 @@ def main() -> None:
         "hard_context_reset_context_scaling": 0.8,
     }
     actual_condenser_defaults = {
-        name: _field_default(LLMSummarizingCondenser, name) for name in expected_condenser_defaults
+        name: _field_default(LLMSummarizingCondenser, name)
+        for name in expected_condenser_defaults
     }
     assert actual_condenser_defaults == expected_condenser_defaults
 

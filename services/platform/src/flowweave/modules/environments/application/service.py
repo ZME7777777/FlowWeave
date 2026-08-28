@@ -82,7 +82,7 @@ def _session_dict(item: EnvironmentSetupSession) -> dict[str, Any]:
 
 _CLEANUP_MAX_ATTEMPTS = 20
 _OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
-    "a33dfae9a55732cfb6ffe0b7d5cf02b557a041bc82629df5c61459400d35c832"
+    "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
 )
 
 

@@ -4,7 +4,7 @@
 > 日期：2026-08-25
 > 产品入口：一级导航 `Agent 会话`
 > OpenHands 事实基线：`software-agent-sdk`
-> `f09e03eac772290feeb51b7d7390ffaefeca1a09`（四包 `1.42.0`）
+> `9a24f6c8866f353042a57df0514ccc900e3a0691`（四包 `1.44.0`）
 > 关联但不从属：`docs/flowrun-openhands-runtime-design.md`
 
 本文冻结 FlowWeave 独立 Agent 工作台的产品、领域、持久化、Runtime、OpenHands、API、Web、故障恢复和
@@ -422,7 +422,7 @@ generation、Session ID 和容器错误堆栈只进入运维日志，不在普�
 - 默认 Workspace 的持久数据只允许通过单独的管理员销毁流程删除，必须展示目标路径、Conversation 数量、
   备份状态并二次确认；这不属于首个产品闭环。
 
-## 11. OpenHands 1.42.0 正式契约
+## 11. OpenHands 1.44.0 正式契约
 
 ### 11.1 创建与读取
 
@@ -499,7 +499,7 @@ Agent Runtime 启动不依赖模型配置。创建 Conversation 时必须满足�
 创建成功后，binding 必须记录本次实际使用的 `model_provider_id + model_name + reasoning_effort`。用户在
 当前会话选择另一个已测试供应商、模型或推理强度时，该选择即代表确认：平台必须先通过 OpenHands 正式
 `switch_llm` 应用到空闲会话，再原子更新 binding；选择失败则回滚页面显示并保留原绑定，不等待下一条消息
-才保存。固定 OpenHands `1.42.0` 的 `switch_llm` 只替换当前 Event Service 的活跃 LLM，不持久化替换值，
+才保存。固定 OpenHands `1.44.0` 的 `switch_llm` 只替换当前 Event Service 的活跃 LLM，不持久化替换值，
 Runtime reload 后正式 `agent.llm` 可能恢复为创建会话时的供应商。因此每次发送前必须重新应用 binding 中
 完整的供应商、模型和推理强度，失败则阻止 user event 并返回 `AGENT_MODEL_REBIND_FAILED`，不得静默使用
 旧配置。迁移前没有可审计选择的历史 binding 保持 `NULL`，不得依据 Workspace 默认值猜测回填；用户首次
@@ -631,7 +631,7 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   assistant `MessageEvent`，或 Agent 调用 finish tool 时的 `FinishAction.message`；任一路径到达后清除临时
   文本，并只在过程区下方渲染一次最终回复。`FinishObservation` 只确认工具执行，不生成第二份回复。浏览器
   临时文本不写入 FlowWeave 数据库或本地持久状态。
-- `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程显示。固定 OpenHands 1.42.0
+- `THOUGHT`、`TOOL_CALL`、`TOOL_RESULT` 与 `ERROR` 作为可折叠的工作过程显示。固定 OpenHands 1.44.0
   的 `ActionEvent.thought` 和 `ActionEvent.summary` 是事件顶层正式字段，不属于嵌套 `action` 参数；平台
   分别安全投影为 `payload.thought` 和 `payload.summary`，并让普通 Tool Action 的兼容 `payload.content`
   继续等于可见 thought。`FinishAction` 同一正式事件可同时携带顶层 thought 和 `action.message`，前端必须
@@ -702,7 +702,7 @@ OpenHands Conversation、投递唯一正式 user event，拿到正式事件 ID �
 不插入临时项、页面不产生 stable URL 或持久化记录；只有 bootstrap 成功后，带 `PENDING` 标题状态的会话才
 写入查询缓存、出现在对应分组并导航。
 
-OpenHands 1.42.0 的发送接口没有客户端幂等键；网络结果不确定时，平台只按正式 user `MessageEvent` ID 及
+OpenHands 1.44.0 的发送接口没有客户端幂等键；网络结果不确定时，平台只按正式 user `MessageEvent` ID 及
 `parent_id` 对账，绝不根据文本、事件顺序或名称猜测、更不会重复投递。明确失败会调用正式 delete 清理隐藏
 空会话；无法确认的投递保持不可见，等待同一 bootstrap 键继续对账。首条正式 user event 接受后，平台立即以
 首个非空行的规范化文本写入本地兜底标题并标记 `PENDING`，然后投递一次性标题元数据任务。该任务通过独立的

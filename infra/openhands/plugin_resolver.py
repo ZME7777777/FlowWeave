@@ -85,10 +85,14 @@ def validate_input(
     raw_hosts = value.get("allowed_hosts")
     if not isinstance(raw_hosts, list) or not raw_hosts:
         raise ValueError("allowed hosts are required")
-    allowed_hosts = {str(host).lower().rstrip(".") for host in cast(list[object], raw_hosts)}
+    allowed_hosts = {
+        str(host).lower().rstrip(".") for host in cast(list[object], raw_hosts)
+    }
     raw_repo_path = value.get("repo_path")
     repo_path = str(raw_repo_path) if raw_repo_path is not None else None
-    source, commit, repo_path = _validate_remote_source(source, commit, repo_path, allowed_hosts)
+    source, commit, repo_path = _validate_remote_source(
+        source, commit, repo_path, allowed_hosts
+    )
     if kind not in {"GIT", "MARKETPLACE", "MARKETPLACE_CATALOG"}:
         raise ValueError("unsupported Plugin source kind")
     if (
@@ -171,7 +175,9 @@ def main() -> None:
         registration = MarketplaceRegistration(
             name="governed", source=source, ref=commit, repo_path=repo_path
         )
-        fetched = MarketplaceRegistry([registration]).get_marketplace_with_resolution("governed")
+        fetched = MarketplaceRegistry([registration]).get_marketplace_with_resolution(
+            "governed"
+        )
         if (fetched.resolved_ref or "").lower() != commit:
             raise ValueError("Marketplace did not resolve to the requested commit")
         marketplace = fetched.marketplace
@@ -184,7 +190,9 @@ def main() -> None:
                 "marketplace_name": marketplace.name,
                 "description": marketplace.description
                 or (marketplace.metadata.description if marketplace.metadata else None),
-                "version": marketplace.metadata.version if marketplace.metadata else None,
+                "version": marketplace.metadata.version
+                if marketplace.metadata
+                else None,
                 "owner": marketplace.owner.name,
                 "plugins": [
                     {
@@ -214,13 +222,17 @@ def main() -> None:
         registration = MarketplaceRegistration(
             name="governed", source=source, ref=commit, repo_path=repo_path
         )
-        fetched = MarketplaceRegistry([registration]).get_marketplace_with_resolution("governed")
+        fetched = MarketplaceRegistry([registration]).get_marketplace_with_resolution(
+            "governed"
+        )
         if (fetched.resolved_ref or "").lower() != commit:
             raise ValueError("Marketplace did not resolve to the requested commit")
         entry = fetched.marketplace.get_plugin(plugin_name)
         if entry is None:
             raise ValueError("Marketplace Plugin entry was not found")
-        entry_source, entry_ref, entry_repo_path = fetched.marketplace.resolve_plugin_source(entry)
+        entry_source, entry_ref, entry_repo_path = (
+            fetched.marketplace.resolve_plugin_source(entry)
+        )
         entry_path = Path(entry_source)
         try:
             relative = entry_path.resolve().relative_to(fetched.path.resolve())
@@ -231,7 +243,9 @@ def main() -> None:
                 ) from None
             external_source = entry_source
             if external_source.startswith("github:"):
-                external_source = f"https://github.com/{external_source.removeprefix('github:')}"
+                external_source = (
+                    f"https://github.com/{external_source.removeprefix('github:')}"
+                )
             path, resolved_ref = fetch_plugin_with_resolution(
                 source=external_source,
                 cache_dir=Path("/work/plugin-cache"),
@@ -267,7 +281,7 @@ def main() -> None:
     plugin = Plugin.load(path)
     report: dict[str, Any] = {
         "schema_version": 1,
-        "openhands_version": "1.42.0",
+        "openhands_version": "1.44.0",
         "name": plugin.name,
         "file_count": len(hashes),
         "expanded_bytes": expanded_bytes,
