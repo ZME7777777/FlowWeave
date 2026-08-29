@@ -6,6 +6,7 @@ import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -58,6 +59,9 @@ _TOOLS = (
 )
 
 _PROJECT_ROOT = "/runtime/workspace/project"
+_SANDBOX_PROJECT_IMAGE = re.compile(
+    r"sandbox:(/runtime/workspace/project/[A-Za-z0-9][A-Za-z0-9._/-]*)"
+)
 _MECHANICAL_TITLE = re.compile(
     r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
     re.IGNORECASE,
@@ -78,6 +82,24 @@ def _workspace(db: Session, workspace_id: str) -> AgentWorkspace:
     if item is None:
         raise not_found("agent_workspace", workspace_id)
     return item
+
+
+def _project_sandbox_images(content: str, *, workspace_id: str, binding_id: str) -> str:
+    """Project Agent-local images through the authenticated workspace file route.
+
+    OpenHands messages may refer to a file produced in its container with a
+    ``sandbox:`` URL. That protocol is meaningful only to the Runtime, not a
+    browser. Preserve the native message as the source of truth while safely
+    projecting project-root image paths to the existing, scope-checked file
+    endpoint. Other sandbox URLs remain untouched and therefore cannot grant
+    browser access to arbitrary Runtime files.
+    """
+
+    def replace_url(match: re.Match[str]) -> str:
+        query = urlencode({"path": match.group(1), "binding_id": binding_id})
+        return f"/api/v1/agent-workspaces/{workspace_id}/workspace/file?{query}"
+
+    return _SANDBOX_PROJECT_IMAGE.sub(replace_url, content)
 
 
 def _binding(
@@ -1271,6 +1293,11 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
 
     def projected_event(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
+        content = payload.get("content")
+        if isinstance(content, str):
+            payload["content"] = _project_sandbox_images(
+                content, workspace_id=workspace.id, binding_id=binding.id
+            )
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             payload["display_content"] = attachments[0].content

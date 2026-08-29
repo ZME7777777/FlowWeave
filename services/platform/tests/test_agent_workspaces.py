@@ -713,6 +713,53 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
         )
 
 
+def test_agent_workspace_projects_runtime_sandbox_images_for_the_browser(
+    settings, db_session_factory, monkeypatch
+):
+    class ImageEventRuntime(MockRuntime):
+        def read_active_events(self, handle):
+            del handle
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="assistant-image",
+                        event_type="COMPLETED",
+                        payload={
+                            "content": (
+                                "扫码：![二维码]"
+                                "(sandbox:/runtime/workspace/project/lark-config-auth.png)"
+                            ),
+                        },
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = ImageEventRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "二维码", workspace.default_model_provider_id, "image-event-key"
+        )
+
+        event = conversations.events(db, workspace.id, created["id"], None)["events"][0]
+
+    assert event["payload"]["content"] == (
+        "扫码：![二维码](/api/v1/agent-workspaces/"
+        f"{workspace.id}/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F"
+        f"lark-config-auth.png&binding_id={created['id']})"
+    )
+
+
 def test_agent_workspace_selected_skill_is_frozen_and_mounted(
     settings, container, db_session_factory, monkeypatch, skill_capability
 ):
