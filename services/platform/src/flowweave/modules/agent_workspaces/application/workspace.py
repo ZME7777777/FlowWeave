@@ -12,9 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.application.conversations import (
-    terminal_container_details,
-)
+from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_workspaces.application import service, work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
@@ -465,7 +463,10 @@ def terminal_details(
     """
     _workspace(db, workspace_id)
     working_directory, _ = _working_directory(db, workspace_id, work_directory_id, binding_id)
-    resource_name, resource_id, container_id = terminal_container_details(db, workspace_id)
+    session_service = agent_sessions.conversations
+    resource_name, resource_id, container_id = session_service.terminal_container_details(
+        db, workspace_id
+    )
     return resource_name, resource_id, working_directory, container_id
 
 
@@ -488,7 +489,8 @@ def details(
         for host_repository, runtime_path in _scope_repositories(project_root, file_roots)
     ]
     try:
-        _, _, container_id = terminal_container_details(db, workspace_id)
+        session_service = agent_sessions.conversations
+        _, _, container_id = session_service.terminal_container_details(db, workspace_id)
         container_short_id = container_id.removeprefix("sha256:")[:12]
     except DomainError:
         container_short_id = None

@@ -7,9 +7,9 @@ future hosts must use that same implementation rather than copy it.
 
 import sys
 
-from flowweave.modules.agent_sessions.application import conversations as _shared_conversations
+from flowweave.modules.agent_sessions import public as _agent_sessions
 
 # Preserve the historical module identity for current Agent Workspace callers.
 # This is an alias, not a copied facade: monkeypatches and every function
 # global resolve against the one shared implementation.
-sys.modules[__name__] = _shared_conversations
+sys.modules[__name__] = _agent_sessions.conversations

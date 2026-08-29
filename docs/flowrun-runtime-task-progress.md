@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
-> 当前执行切片：`FR-97`
-> 下一可执行切片：待 `FR-97` 完成后确定
+> 当前执行切片：无
+> 下一可执行切片：待后续规划
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1360,13 +1360,18 @@ py_compile、Alembic head 和 `git diff --check` 通过。无需数据库迁移�
 `agent_workspaces.infrastructure.models` 只保留兼容导出，不再声明第二套 ORM 映射。`/agent` 的数据、
 API 和行为不变。
 
-### FR-97 Agent 会话内核与默认宿主分层 — CURRENT
+### FR-97 Agent 会话内核与默认宿主分层 — DONE
 
 依赖：`FR-96`。
 
 目标：让 `agent_sessions` 的 OpenHands 会话逻辑只依赖中性 host context、共享 locator 和 OpenHands bridge；
 Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端和策略解析器及 API 适配。保持 `/agent`
 全部功能和历史身份兼容，不改动 FlowRun、节点或 Attempt。
+
+完成：共享会话内核不再导入 Agent Workspace 的 application/infrastructure 私有模块；默认工作区通过
+公开宿主适配面提供 Runtime allocation、工作目录冻结和附件清理。所有历史兼容模块、ORM 导出和标题任务同样
+只通过 `agent_sessions.public` 访问共享能力，公开 facade 使用惰性 application 导出避免宿主模型与共享内核
+之间的导入环。未接入 FlowRun、节点或 Attempt，也未复制任意会话逻辑。
 
 ## 7. 恢复工作检查表
 
@@ -1385,6 +1390,7 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
 | 2026-08-29 | FR-92 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享组件专有 gateway 方法扫描与 `git diff --check` | PASS：共享 Workbench 只使用中性 host 传输协议；默认 gateway 保持对既有 Agent Workspace API 的逐项映射，浏览器回归 2 passed。无 `CURRENT` 或下一切片。 |
+| 2026-08-29 | FR-97 | Agent Workspace 宿主/标题定向 pytest（6 passed）与 bootstrap、目录、能力、标题定向 pytest（4 passed）；共享 Workbench/facade、宿主合同与跨模块公开 facade 架构 pytest（4 passed）；受影响 Ruff/py_compile；Alembic `0070_agent_caps` head 与 `git diff --check` | PASS：共享会话内核只经默认宿主的 public facade 获取 Workspace 事实，所有跨模块依赖门禁通过；惰性公开导出消除了宿主与核心的导入循环，`/agent` 的会话、目录、能力、标题、附件、文件与终端行为保持已有定向回归。 |
 | 2026-08-29 | FR-95 | 共享 host/gateway 静态边界 pytest（3 passed）；默认 Workspace adapter 与不可变 host context pytest（2 passed）；受影响 Ruff/py_compile；Web ESLint、TypeScript、production build；顶层 Agent 会话首发/URL 恢复 Playwright（1 passed）；Alembic `0070_agent_caps` head、任务状态唯一性与 `git diff --check` | PASS：共享工作台只接受显式中性 transport 与宿主命名空间，默认 Agent Workspace 是唯一已实现的宿主适配器；`/agent` 功能、路由、API 和渲染不变，未接入 FlowRun/节点。 |
 | 2026-08-29 | FR-96 | 共享/兼容 ORM identity 与唯一业务 facade 架构 pytest（8 passed）；Agent Workspace 首发、Runtime、标题、附件、模型、能力与分叉定向 pytest（21 passed）；受影响 Ruff/py_compile；Alembic `0070_agent_caps` head 与 `git diff --check` | PASS：共享会话 binding、能力、附件和命令映射只在 `agent_sessions` 声明；旧 Agent Workspace 导入仍是同一 Python class/同一 SQL table，未产生迁移或 `/agent` 行为变化。 |
 | 2026-08-29 | FR-94 | 新增共享页面/后端 facade 静态边界 pytest（2 passed）；Agent Workspace 核心 runtime、bootstrap、附件/模型、确认、文件/终端与 replacement 定向 pytest（8 passed）；Agent 工作台首发/URL 恢复 Playwright（1 passed）；Web ESLint、TypeScript、production build；受影响 Ruff/py_compile；`git diff --check` | PASS：`/agent` 只通过薄路由宿主装配唯一 `AgentSessionWorkbench`，历史 Agent Workspace conversations 导入路径与 `agent_sessions` 指向同一模块对象。旧 `AgentChatPage` 仍只作为未迁移 FlowRun 页面遗留入口，不参与 `/agent` 路由；本切片未改动 FlowRun/节点代码或 Runtime 拓扑。 |

@@ -19,16 +19,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCommand,
     AgentConversationMessageAttachment,
 )
-from flowweave.modules.agent_workspaces.application import work_directories
-from flowweave.modules.agent_workspaces.application.service import (
-    runtime_allocation_for_agent_workspace,
-)
-from flowweave.modules.agent_workspaces.infrastructure.models import (
-    AgentWorkDirectoryVersion,
-    AgentWorkspace,
-    AgentWorkspaceCapability,
-    AgentWorkspaceRuntime,
-)
+from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
@@ -83,6 +74,14 @@ _PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
         "只要任务跟踪器仍有未完成项，或用户的完成条件尚未满足，就不得因为上下文压缩而提前收口。",
     )
 )
+
+# The default Agent Workspace is a host adapter.  Keep its compatibility ORM
+# aliases local so the shared session implementation never imports its private
+# application or infrastructure modules.
+AgentWorkDirectoryVersion = agent_workspace_host.AgentWorkDirectoryVersion
+AgentWorkspace = agent_workspace_host.AgentWorkspace
+AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
+AgentWorkspaceRuntime = agent_workspace_host.AgentWorkspaceRuntime
 
 
 def _workspace(db: Session, workspace_id: str) -> AgentWorkspace:
@@ -323,7 +322,7 @@ def probe_workspace_mcp_readiness(
     )
     if sandbox is None or not sandbox.backend_resource_name:
         return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
-    allocation = runtime_allocation_for_agent_workspace(db, workspace.id)
+    allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(db, workspace.id)
     probe_id = str(uuid4())
     host_root = (
         Path(get_settings().workspace_root).resolve()
@@ -514,7 +513,7 @@ def _runtime_capabilities(
     frozen = _frozen_capabilities(db, binding)
     if not frozen:
         return (), (), ()
-    allocation = runtime_allocation_for_agent_workspace(db, workspace.id)
+    allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(db, workspace.id)
     host_root = (
         Path(get_settings().workspace_root).resolve()
         / allocation.relative_root
@@ -531,7 +530,9 @@ def _runtime_capabilities(
 def _capability_marketplace_paths(
     db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
 ) -> tuple[Path, Path, str]:
-    allocation = runtime_allocation_for_agent_workspace(db, workspace.id)
+    allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(
+        db, workspace.id
+    )
     host_root = (
         Path(get_settings().workspace_root).resolve()
         / allocation.relative_root
@@ -1003,9 +1004,9 @@ def _record_bootstrap_failure(
     # Draft attachments are already private to this reserved binding ID.  A
     # definitively failed first message must release those files too, even
     # though no attachment projection has been committed yet.
-    from flowweave.modules.agent_workspaces.application import workspace as workspace_files
-
-    workspace_files.delete_bound_attachment_files(db, binding.workspace_id, binding.id)
+    agent_workspace_host.delete_session_attachment_files(
+        db, binding.workspace_id, binding.id
+    )
     db.delete(command)
     db.flush()
     db.delete(binding)
@@ -1068,7 +1069,7 @@ def bootstrap_conversation(
                 "请选择已测试成功且存在启用默认模型的模型供应商",
                 409,
             )
-        version_id, working_directory = work_directories.conversation_context(
+        version_id, working_directory = agent_workspace_host.conversation_work_directory_context(
             db, workspace.id, work_directory_id
         )
         runtime = db.scalar(
@@ -1122,8 +1123,10 @@ def bootstrap_conversation(
         _record_bootstrap_failure(db, binding, command, error)
         raise error
     if binding.work_directory_version_id is not None:
-        frozen_working_directory = work_directories.frozen_conversation_context(
-            db, workspace.id, binding.work_directory_version_id
+        frozen_working_directory = (
+            agent_workspace_host.frozen_conversation_work_directory_context(
+                db, workspace.id, binding.work_directory_version_id
+            )
         )
         if frozen_working_directory != binding.working_directory:
             error = DomainError(
@@ -1282,9 +1285,7 @@ def delete_conversation(
     # The native conversation is now gone, so its private attachment objects
     # must not outlive it.  The helper only unlinks files bearing this binding's
     # opaque owner UUID and never traverses arbitrary workspace paths.
-    from flowweave.modules.agent_workspaces.application import workspace as workspace_files
-
-    workspace_files.delete_bound_attachment_files(db, workspace.id, item.id)
+    agent_workspace_host.delete_session_attachment_files(db, workspace.id, item.id)
     item.lifecycle = "DELETED"
     item.deleted_at = now()
     command.state = "SUCCEEDED"
@@ -1947,7 +1948,9 @@ def upload_attachment(
             owner_id = str(UUID(attachment_owner_id or ""))
         except ValueError as exc:
             raise DomainError("AGENT_CONVERSATION_ID_INVALID", "附件必须关联有效会话", 422) from exc
-        work_directories.conversation_context(db, workspace.id, work_directory_id)
+        agent_workspace_host.conversation_work_directory_context(
+            db, workspace.id, work_directory_id
+        )
         resource_name, resource_id = terminal_resource_details(db, workspace.id)
         handle = RuntimeHandle(
             job_id=f"agent-workspace:{workspace.id}",

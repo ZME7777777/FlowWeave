@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.application.host import (
+from flowweave.modules.agent_sessions.public import (
     ACCESS_FILES,
     ACCESS_TERMINAL,
     CONTROL_SESSIONS,

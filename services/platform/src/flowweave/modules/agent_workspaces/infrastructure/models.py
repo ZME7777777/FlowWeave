@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from flowweave.modules.agent_sessions.infrastructure.models import (
+from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,

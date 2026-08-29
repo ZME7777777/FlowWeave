@@ -347,7 +347,7 @@ def test_agent_workspace_uses_the_single_agent_session_workbench_and_facade() ->
     assert "return <AgentSessionWorkbench {...props}/>;" in route_host
     assert "export function AgentSessionWorkbench" in workbench
     assert "agentWorkspaceSessionGateway" in gateway
-    assert "from flowweave.modules.agent_sessions.application import conversations" in legacy_facade
+    assert "from flowweave.modules.agent_sessions import public as _agent_sessions" in legacy_facade
     assert '"conversations"' in public_facade
 
 
@@ -396,7 +396,7 @@ def test_agent_session_host_contract_is_explicit_and_namespaced() -> None:
     assert "sessionQueryKey(host," in workbench
     assert "['agent-" not in workbench
     assert "AgentWorkspaceCapability" not in workbench
-    assert "from flowweave.modules.agent_sessions.application.host import" in default_adapter
+    assert "from flowweave.modules.agent_sessions.public import" in default_adapter
     assert "AgentSessionHostContext.create(" in default_adapter
 
 

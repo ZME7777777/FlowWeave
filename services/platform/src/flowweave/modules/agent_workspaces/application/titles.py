@@ -2,6 +2,6 @@
 
 import sys
 
-from flowweave.modules.agent_sessions.application import titles as _shared_titles
+from flowweave.modules.agent_sessions import public as _agent_sessions
 
-sys.modules[__name__] = _shared_titles
+sys.modules[__name__] = _agent_sessions.titles
