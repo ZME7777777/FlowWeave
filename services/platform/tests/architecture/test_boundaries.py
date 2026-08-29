@@ -324,6 +324,42 @@ def test_openhands_144_profile_secret_condenser_and_title_boundaries() -> None:
     assert "AgentConversationBinding.title_generation == generation" in titles
 
 
+def test_agent_workspace_uses_the_single_agent_session_workbench_and_facade() -> None:
+    """FR-94: `/agent` is the canonical session product, not a copied surface."""
+
+    web_root = REPOSITORY / "apps" / "web" / "src"
+    app = (web_root / "App.tsx").read_text()
+    route_host = (web_root / "pages" / "AgentWorkbenchPage.tsx").read_text()
+    workbench = (
+        web_root / "components" / "agent-session" / "AgentSessionWorkbench.tsx"
+    ).read_text()
+    gateway = (web_root / "api" / "agent-session-gateway.ts").read_text()
+    legacy_facade = (
+        SOURCE / "modules" / "agent_workspaces" / "application" / "conversations.py"
+    ).read_text()
+    public_facade = (SOURCE / "modules" / "agent_sessions" / "public.py").read_text()
+
+    assert "import { AgentWorkbenchPage }" in app
+    # The legacy FlowRun page remains temporarily reachable only through its
+    # own view.  It must never become the `/agent` route again before that
+    # host is migrated to the shared workbench in a later slice.
+    assert "isAgentRoute ? <AgentWorkbenchPage onNavigate={navigate}/>" in app
+    assert "return <AgentSessionWorkbench {...props}/>;" in route_host
+    assert "export function AgentSessionWorkbench" in workbench
+    assert "agentWorkspaceSessionGateway" in gateway
+    assert "from flowweave.modules.agent_sessions.application import conversations" in legacy_facade
+    assert '"conversations"' in public_facade
+
+
+def test_agent_workspace_conversation_compatibility_import_is_the_shared_module() -> None:
+    """Do not let the historical Agent Workspace path grow a second service."""
+
+    from flowweave.modules.agent_sessions.application import conversations as shared
+    from flowweave.modules.agent_workspaces.application import conversations as legacy
+
+    assert legacy is shared
+
+
 def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
     orchestration = (
         SOURCE / "modules" / "orchestration" / "application" / "service.py"
