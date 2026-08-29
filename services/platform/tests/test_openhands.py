@@ -2071,9 +2071,7 @@ def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
     ]
 
 
-def test_openhands_fork_replaces_only_the_governed_condenser(
-    openhands_settings, monkeypatch
-):
+def test_openhands_fork_replaces_only_the_governed_condenser(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str, object]] = []
     responses = iter(
@@ -2081,9 +2079,7 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
             _state(execution_status="idle", leaf_event_id="event-4"),
             {
                 "id": "10000000-0000-4000-8000-000000000003",
-                "forked_from_conversation_id": (
-                    "10000000-0000-4000-8000-000000000002"
-                ),
+                "forked_from_conversation_id": ("10000000-0000-4000-8000-000000000002"),
                 "forked_from_event_id": "event-4",
                 "leaf_event_id": "event-4",
             },
@@ -2145,6 +2141,179 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
     }
     assert payload["from_event_id"] == "event-4"
     assert payload["reset_metrics"] is True
+
+
+def test_openhands_resolves_visible_finish_to_executed_fork_boundary(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str]] = []
+    finish_action = {
+        "kind": "ActionEvent",
+        "id": "finish-action",
+        "parent_id": "user-1",
+        "source": "agent",
+        "tool_call_id": "finish-call",
+        "action": {"kind": "FinishAction", "message": "done"},
+    }
+    finish_observation = {
+        "kind": "ObservationEvent",
+        "id": "finish-observation",
+        "parent_id": "finish-action",
+        "source": "environment",
+        "action_id": "finish-action",
+        "tool_call_id": "finish-call",
+        "observation": {"kind": "FinishObservation", "content": "done"},
+    }
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        del kwargs
+        requests.append((method, path))
+        if path.endswith("/events/finish-action"):
+            return finish_action
+        return {"items": [finish_action, finish_observation]}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    boundary = runtime.resolve_fork_boundary(_handle("finish-observation"), "finish-action")
+
+    assert boundary == "finish-observation"
+    assert OpenHandsRuntime._event_type(finish_action) == "COMPLETED"
+    assert OpenHandsRuntime._event_type(finish_observation) == "TOOL_RESULT"
+    assert OpenHandsRuntime._event_payload(finish_observation)["content"] == ""
+    assert requests == [
+        (
+            "GET",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/events/finish-action",
+        ),
+        (
+            "GET",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/events/search",
+        ),
+    ]
+
+
+def test_openhands_detects_legacy_fork_that_only_replayed_copied_finish(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    source_id = "10000000-0000-4000-8000-000000000003"
+    fork_state = _state(
+        execution_status="finished",
+        leaf_event_id="replayed-observation",
+        forked_from_conversation_id=source_id,
+        forked_from_event_id="finish-action",
+    )
+    source_user = {
+        "kind": "MessageEvent",
+        "id": "source-user",
+        "parent_id": "__root__",
+        "source": "user",
+        "llm_message": {"role": "user", "content": "source request"},
+    }
+    copied_finish = {
+        "kind": "ActionEvent",
+        "id": "finish-action",
+        "parent_id": "source-user",
+        "source": "agent",
+        "tool_call_id": "finish-call",
+        "action": {"kind": "FinishAction", "message": "old reply"},
+    }
+    retry_user = {
+        "kind": "MessageEvent",
+        "id": "retry-user",
+        "parent_id": "finish-action",
+        "source": "user",
+        "llm_message": {"role": "user", "content": "continue"},
+    }
+    replayed_observation = {
+        "kind": "ObservationEvent",
+        "id": "replayed-observation",
+        "parent_id": "retry-user",
+        "source": "environment",
+        "action_id": "finish-action",
+        "tool_call_id": "finish-call",
+        "observation": {"kind": "FinishObservation", "content": "old reply"},
+    }
+    source_finish = {**copied_finish}
+    source_observation = {
+        **replayed_observation,
+        "id": "source-finish-observation",
+        "parent_id": "finish-action",
+    }
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        del method, kwargs
+        if path.endswith("/events/finish-action"):
+            return source_finish
+        if f"/conversations/{source_id}/events/search" in path:
+            return {"items": [source_finish, source_observation]}
+        if path.endswith(f"/conversations/{source_id}"):
+            return {
+                **_state(leaf_event_id="source-finish-observation"),
+                "id": source_id,
+                "persistence_dir": (
+                    "/runtime/state/conversations/10000000000040008000000000000003"
+                ),
+            }
+        if path.endswith("/events/search"):
+            return {"items": [source_user, copied_finish, retry_user, replayed_observation]}
+        return fork_state
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    recovery = runtime.incomplete_fork_recovery(_handle("replayed-observation"))
+
+    assert recovery is not None
+    assert recovery.source_conversation_id == source_id
+    assert recovery.requested_event_id == "finish-action"
+    assert recovery.completed_event_id == "source-finish-observation"
+    assert recovery.source_leaf_event_id == "source-finish-observation"
+
+
+def test_openhands_does_not_rebuild_fork_after_new_agent_progress(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    state = _state(
+        execution_status="finished",
+        leaf_event_id="new-answer",
+        forked_from_conversation_id="10000000-0000-4000-8000-000000000003",
+        forked_from_event_id="finish-action",
+    )
+    events = [
+        {
+            "kind": "MessageEvent",
+            "id": "source-user",
+            "parent_id": "__root__",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "source request"},
+        },
+        {
+            "kind": "ActionEvent",
+            "id": "finish-action",
+            "parent_id": "source-user",
+            "source": "agent",
+            "tool_call_id": "finish-call",
+            "action": {"kind": "FinishAction", "message": "old reply"},
+        },
+        {
+            "kind": "MessageEvent",
+            "id": "new-user",
+            "parent_id": "finish-action",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "continue"},
+        },
+        {
+            "kind": "MessageEvent",
+            "id": "new-answer",
+            "parent_id": "new-user",
+            "source": "agent",
+            "llm_message": {"role": "assistant", "content": "new reply"},
+        },
+    ]
+    responses = iter([state, {"items": events}])
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+
+    assert runtime.incomplete_fork_recovery(_handle("new-answer")) is None
 
 
 def test_openhands_read_events_projects_only_native_task_cumulative_usage(

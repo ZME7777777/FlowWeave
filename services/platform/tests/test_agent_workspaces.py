@@ -47,6 +47,7 @@ from flowweave.runtime.base import (
     RuntimeConversationIdentity,
     RuntimeEvent,
     RuntimeEventBatch,
+    RuntimeForkRecovery,
     RuntimePendingAction,
     RuntimePendingConfirmation,
     RuntimeProvider,
@@ -2494,6 +2495,98 @@ def test_agent_workspace_reapplies_persisted_model_after_runtime_reload_before_s
         assert runtime.sent == ["reload 后发送"]
 
 
+def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
+    settings, db_session_factory, monkeypatch
+):
+    class RecoveryRuntime(MockRuntime):
+        damaged_conversation_id: str | None = None
+        fork_calls: list[tuple[str, str, str]] = []
+        switched_conversation_ids: list[str] = []
+        sent: list[tuple[str, str]] = []
+
+        def can_accept_input(self, handle):
+            del handle
+            return True
+
+        def incomplete_fork_recovery(self, handle):
+            if handle.conversation_id != self.damaged_conversation_id:
+                return None
+            return RuntimeForkRecovery(
+                source_conversation_id="10000000-0000-4000-8000-000000000099",
+                requested_event_id="finish-action",
+                completed_event_id="finish-observation",
+                source_leaf_event_id="source-current-head",
+            )
+
+        def fork_conversation(self, handle, **kwargs):
+            self.fork_calls.append(
+                (
+                    handle.conversation_id,
+                    kwargs["target_conversation_id"],
+                    kwargs["from_event_id"],
+                )
+            )
+            return super().fork_conversation(handle, **kwargs)
+
+        def switch_model(self, handle, provider):
+            del provider
+            self.switched_conversation_ids.append(handle.conversation_id)
+
+        def send_message(self, handle, content, image_urls=()):
+            del image_urls
+            self.sent.append((handle.conversation_id, content))
+            return RuntimeResult(status="RUNNING", cursor=f"user-{len(self.sent)}")
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = RecoveryRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "异常分叉", workspace.default_model_provider_id, "create-key"
+        )
+        binding_id = created["id"]
+        binding = db.get(AgentConversationBinding, binding_id)
+        assert binding is not None
+        runtime.damaged_conversation_id = binding.openhands_conversation_id
+
+        first = conversations.message(db, workspace.id, binding_id, "第一次继续")
+        repaired_conversation_id = binding.openhands_conversation_id
+        assert repaired_conversation_id != runtime.damaged_conversation_id
+        assert first["cursor"] == "user-1"
+        assert runtime.fork_calls == [
+            (
+                "10000000-0000-4000-8000-000000000099",
+                repaired_conversation_id,
+                "finish-observation",
+            )
+        ]
+        assert runtime.switched_conversation_ids == [repaired_conversation_id]
+        assert runtime.sent == [(repaired_conversation_id, "第一次继续")]
+        assert conversations.get_conversation(db, workspace.id, binding_id)["id"] == binding_id
+
+        second = conversations.message(db, workspace.id, binding_id, "第二次继续")
+        assert second["cursor"] == "user-2"
+        assert len(runtime.fork_calls) == 1
+        assert runtime.switched_conversation_ids == [
+            repaired_conversation_id,
+            repaired_conversation_id,
+        ]
+        assert runtime.sent == [
+            (repaired_conversation_id, "第一次继续"),
+            (repaired_conversation_id, "第二次继续"),
+        ]
+
+
 def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     settings, db_session_factory, monkeypatch
 ):
@@ -2624,6 +2717,70 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         condensed = conversations.condense_conversation(db, workspace.id, source["id"])
         assert condensed["accepted"] is True
         assert runtime.condensed is True
+
+
+def test_agent_workspace_refreshes_source_head_after_finish_boundary_resolution(
+    settings, db_session_factory, monkeypatch
+):
+    class CompletingFinishRuntime(MockRuntime):
+        head = "finish-action"
+        fork_call: tuple[str, str] | None = None
+
+        def can_accept_input(self, handle):
+            del handle
+            return True
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            return RuntimeConversationIdentity(
+                conversation_id=handle.conversation_id,
+                workspace_working_dir="/runtime/workspace/project",
+                persistence_dir=(
+                    f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
+                ),
+                event_id=self.head,
+                parent_id=None,
+                action_id=None,
+                tool_call_id=None,
+            )
+
+        def resolve_fork_boundary(self, handle, event_id):
+            del handle
+            assert event_id == "finish-action"
+            self.head = "finish-observation"
+            return self.head
+
+        def fork_conversation(self, handle, **kwargs):
+            self.fork_call = (
+                kwargs["from_event_id"],
+                kwargs["expected_source_leaf_event_id"],
+            )
+            return super().fork_conversation(handle, **kwargs)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CompletingFinishRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        source = conversations.create_conversation(
+            db, workspace.id, "源会话", workspace.default_model_provider_id, "create-key"
+        )
+
+        fork = conversations.fork_conversation(
+            db, workspace.id, source["id"], "finish-action", None, "fork-key"
+        )
+
+        assert fork["lifecycle"] == "ACTIVE"
+        assert runtime.fork_call == ("finish-observation", "finish-observation")
 
 
 def test_agent_workspace_migrates_historical_streaming_callback_before_send(

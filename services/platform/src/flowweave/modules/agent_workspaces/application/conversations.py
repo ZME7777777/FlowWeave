@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -1706,7 +1706,8 @@ def message(
             {"binding_id": binding.id},
         )
     handle = _handle(db, workspace, binding)
-    if not get_runtime().can_accept_input(handle):
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
         raise DomainError(
             "AGENT_CONVERSATION_BUSY",
             "Agent 正在处理上一条消息或停止请求，请稍候",
@@ -1723,7 +1724,48 @@ def message(
             "请选择已测试成功且存在启用默认模型的模型供应商",
             409,
         )
-    runtime = get_runtime()
+    recovery = runtime.incomplete_fork_recovery(handle)
+    if recovery is not None:
+        source_handle = replace(
+            handle,
+            conversation_id=recovery.source_conversation_id,
+            cursor=recovery.source_leaf_event_id,
+        )
+        replacement_id = str(
+            uuid5(
+                UUID(binding.id),
+                f"finish-boundary-recovery:{handle.conversation_id}:{recovery.completed_event_id}",
+            )
+        )
+        recovery_provider = runtime_provider(
+            db,
+            {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+            model_name=binding.model_name,
+            reasoning_effort=binding.reasoning_effort,
+        )
+        repaired = runtime.fork_conversation(
+            source_handle,
+            target_conversation_id=replacement_id,
+            title=binding.display_title or "未命名会话",
+            from_event_id=recovery.completed_event_id,
+            expected_source_leaf_event_id=recovery.source_leaf_event_id,
+            reset_metrics=True,
+            condenser=RuntimeCondenser(
+                kind="LLM_SUMMARIZING",
+                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+                max_tokens_ratio=_PROACTIVE_COMPACTION_RATIO,
+                keep_first=4,
+            ),
+            condenser_provider=recovery_provider,
+        )
+        if repaired.leaf_event_id != recovery.completed_event_id:
+            raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "异常分叉会话恢复边界校验失败", 409)
+        handle = repaired.handle
+        if not runtime.can_accept_input(handle):
+            raise DomainError("RUNTIME_FORK_NOT_WRITABLE", "异常分叉会话恢复后仍不可继续输入", 503)
+        binding.openhands_conversation_id = replacement_id
+        binding.updated_at = now()
+        db.flush()
     provider = runtime_provider(
         db,
         {"asset": {"executor": {"model_provider_id": target_provider_id}}},
@@ -2162,6 +2204,14 @@ def _fork_conversation(
         event_id = source_identity.event_id
     if event_id is None:
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)
+    fork_event_id = runtime.resolve_fork_boundary(source_handle, event_id)
+    # A FinishObservation may be persisted while resolve_fork_boundary waits
+    # for the selected FinishAction's execution closure.  Refresh the native
+    # source HEAD after resolution so the fork CAS accepts that legitimate
+    # terminal advance while still rejecting any later drift.
+    source_identity = runtime.reload_conversation(source_handle)
+    if not source_identity.event_id:
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)
     if migration_provider_id is not None:
         display_title = source.display_title
         runtime_title = source.display_title or "未命名会话"
@@ -2208,7 +2258,7 @@ def _fork_conversation(
             source_handle,
             target_conversation_id=target_id,
             title=runtime_title,
-            from_event_id=event_id,
+            from_event_id=fork_event_id,
             expected_source_leaf_event_id=source_identity.event_id,
             reset_metrics=True,
             condenser=RuntimeCondenser(
@@ -2222,12 +2272,16 @@ def _fork_conversation(
         if (
             result.handle.conversation_id != target_id
             or result.source_conversation_id != source.openhands_conversation_id
-            or result.source_event_id != event_id
+            or result.source_event_id != fork_event_id
         ):
             raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "会话分叉身份校验失败", 409)
         identity = runtime.reload_conversation(result.handle)
         if identity.persistence_dir != f"/runtime/state/conversations/{UUID(target_id).hex}":
             raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "分叉会话持久化身份校验失败", 409)
+        if identity.event_id != fork_event_id or not runtime.can_accept_input(result.handle):
+            raise DomainError(
+                "RUNTIME_FORK_NOT_WRITABLE", "分叉会话未停在可继续输入的完整回复边界", 503
+            )
         fork_context = runtime.conversation_context(result.handle)
         if fork_context.get("condenser_max_size") != _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS:
             raise DomainError(

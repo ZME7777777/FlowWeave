@@ -419,6 +419,16 @@ class RuntimeForkResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeForkRecovery:
+    """A native fork whose HEAD still points at an executed final action."""
+
+    source_conversation_id: str
+    requested_event_id: str
+    completed_event_id: str
+    source_leaf_event_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimePendingAction:
     """One redacted OpenHands pending action used at the approval boundary."""
 
@@ -626,6 +636,10 @@ class RuntimePort(Protocol):
     def ask_agent(
         self, handle: RuntimeHandle, question: str, *, timeout_seconds: float
     ) -> RuntimeAskAgentResult: ...
+
+    def resolve_fork_boundary(self, handle: RuntimeHandle, event_id: str) -> str: ...
+
+    def incomplete_fork_recovery(self, handle: RuntimeHandle) -> RuntimeForkRecovery | None: ...
 
     def fork_conversation(
         self,

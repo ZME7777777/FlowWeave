@@ -1198,6 +1198,21 @@ Playwright 覆盖网络错误终止“正在思考”并展示安全提示；Ale
 单次超时。连接失败、服务不可用、超时或无响应在重试耗尽后继续由原生 `ConversationErrorEvent` 结束当前轮；
 页面停止动态“正在思考”，显示不含上游连接细节的网络问题提示。额度等非网络错误保持原有独立提示。
 
+### FR-86 Agent 会话最终回复分叉完整边界与历史恢复 — DONE
+
+依赖：`FR-85`。
+
+目标：用户对已完成的最终回复执行分叉时，新会话必须完整、空闲且可继续输入。`FinishAction.message` 仍是
+产品层唯一最终回复；FlowWeave 在调用 OpenHands 原生 fork 前，使用正式 `id`、`action_id` 与
+`tool_call_id` 将其解析到配对 `FinishObservation` 所形成的完整执行边界，并在创建后回读验证 HEAD 与输入
+readiness。不得要求用户理解或规避 Action/Observation 生命周期，也不得把旧最终回复重新执行为下一轮结果。
+
+完成：新分叉以配对 `FinishObservation` 作为原生 HEAD，并处理 Observation 在边界解析期间落盘导致源 HEAD
+合法推进的竞态。历史上停在旧 `FinishAction`、且后续活动父链仅包含用户重试与同一旧 Action 的补偿
+Observation 的异常分叉，会在下一次发送前以确定性原生 Conversation ID 幂等重建；FlowWeave binding ID、页面
+URL、冻结模型和能力保持不变，用户消息只投递一次。已产生新 assistant/Action/error 的正常分叉不会重建。
+`FinishObservation` 只投影为无正文的 `TOOL_RESULT` 执行确认，不再生成第二份最终回复或错误收束当前轮。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1214,6 +1229,7 @@ Playwright 覆盖网络错误终止“正在思考”并展示安全提示；Ale
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-86 | 固定 OpenHands 1.44.0 Finish Tool、事件父链、原生 fork/HEAD 与 send_message 源码取证；OpenHands/Agent Workspace 合并 pytest（124 passed）；Ruff；全量 Pyright（0 errors）；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright（1 passed）；Alembic head、正式事件关联扫描与 `git diff --check` | PASS：最终回复分叉统一落在完整执行边界，创建后强制验证可写；即时 Observation 落盘竞态可正常 fork；既有异常分叉保持 binding/URL 无损幂等恢复并只发送一次，正常分叉不误修复。`FinishObservation` 保留正式关联身份但不重复回复正文。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-85 | 固定 OpenHands 1.44.0 `stop_after_attempt`、网络异常映射与正式错误事件取证；OpenHands 适配器定向 pytest（6 passed）；Ruff、Pyright；Web ESLint/typecheck/production build；当前源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：主模型创建、原生模型切换与 condenser 均使用总计最多 5 次、1–4 秒退避和 20 秒单次超时；正式 `LLMServiceUnavailableError` 结束失败轮并移除“正在思考”，页面显示安全网络提示且不泄露原始连接错误。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-84 | Agent Workspace/OpenHands 压缩定向 pytest；Runtime 终结任务恢复 pytest；受影响 Python Ruff/Pyright；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright；`git diff --check`；无缓存 `make rebuild-deploy`；固定 OpenHands 1.44.0 contract check；Compose、HTTP、Alembic head/current；真实历史 Conversation `/context` 与 Runtime 恢复 | PASS：新会话使用 90% token 原生压缩、正式请求/完成父链验收、关键用户事件保护和失败回滚；旧 240 策略会话服务端与页面均只读。完整栈无缓存重建成功。部署发现并修复已成功幂等 provision 任务无法在镜像替换后重新领取的问题；健康 writer 存在时不重置，缺失时安全进入 RETRY 并恢复新 generation。最终 API/Postgres/Runtime Provider 健康、Web 200、Alembic `0070_agent_caps` head/current；原会话返回 `proactive_compaction_ratio=0.9`、阈值 `829800`、`compaction_policy_current=false`。 |
 | 2026-08-29 | FR-82 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（纯耗时、无等待卡、唯一动态状态、工具过程与正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行中工作过程标题只显示耗时，大块等待模型响应提示已删除；当前状态仅在轮末显示一次，工具和终态切换保持正确。 |

@@ -28,6 +28,7 @@ from flowweave.runtime.base import (
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeEventType,
+    RuntimeForkRecovery,
     RuntimeForkResult,
     RuntimeHandle,
     RuntimeMCP,
@@ -1489,6 +1490,13 @@ class OpenHandsRuntime:
             observation = item.get("observation")
             if isinstance(observation, dict):
                 observation_item = cast(dict[str, object], observation)
+                # FinishAction.message is the one formal user-facing final
+                # response. FinishObservation only confirms execution of the
+                # built-in finish tool, so projecting its echoed content would
+                # render the same assistant reply twice. Keep the observation's
+                # formal identities and event name, but no visible body.
+                if str(observation_item.get("kind") or "") == "FinishObservation":
+                    return ""
                 value = observation_item.get("content") or observation_item.get("message")
                 return cls._text_content(value)
             value = item.get("content") or item.get("message")
@@ -1515,14 +1523,6 @@ class OpenHandsRuntime:
                 return "COMPLETED"
             return "THOUGHT" if action_kind == "ThinkAction" else "TOOL_CALL"
         if kind == "ObservationEvent":
-            observation = item.get("observation")
-            observation_kind = (
-                str(cast(dict[str, object], observation).get("kind") or "")
-                if isinstance(observation, dict)
-                else ""
-            )
-            if observation_kind == "FinishObservation":
-                return "COMPLETED"
             return "TOOL_RESULT"
         if "error" in kind.lower():
             return "ERROR"
@@ -3186,6 +3186,169 @@ class OpenHandsRuntime:
             None,
         )
         return RuntimeAskAgentResult(response=answer, before_usage=before, after_usage=after)
+
+    @staticmethod
+    def _is_finish_action(item: dict[str, Any]) -> bool:
+        action = item.get("action")
+        return bool(
+            item.get("kind") == "ActionEvent"
+            and isinstance(action, dict)
+            and cast(dict[str, object], action).get("kind") == "FinishAction"
+        )
+
+    @staticmethod
+    def _is_finish_observation(item: dict[str, Any]) -> bool:
+        observation = item.get("observation")
+        return bool(
+            item.get("kind") == "ObservationEvent"
+            and isinstance(observation, dict)
+            and cast(dict[str, object], observation).get("kind") == "FinishObservation"
+        )
+
+    def resolve_fork_boundary(self, handle: RuntimeHandle, event_id: str) -> str:
+        """Resolve a visible final reply to its fully executed native boundary."""
+
+        validated_event_id = self._formal_identity(event_id, field="id", required=True)
+        assert validated_event_id is not None
+        event_id = validated_event_id
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        selected = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}/events/{event_id}",
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        if self._event_identity(selected)[0] != event_id:
+            raise DomainError(
+                "RUNTIME_EVENT_IDENTITY_DRIFT",
+                "OpenHands returned a different fork event identity",
+                409,
+            )
+        if not self._is_finish_action(selected):
+            return event_id
+
+        selected_tool_call_id = self._event_identity(selected)[3]
+        # FinishAction is the user-visible final reply, while FinishObservation
+        # records that the built-in finish tool has been executed.  Forking at
+        # the action alone leaves it pending in the copied View.  Wait briefly
+        # for the formally correlated observation so an immediately requested
+        # fork still receives a complete, writable native branch.
+        deadline = time.monotonic() + 2.0
+        while True:
+            items, _ = self._events(
+                handle.conversation_id,
+                None,
+                base_url=base_url,
+                session_api_key=session_api_key,
+            )
+            matches: list[str] = []
+            for item in items:
+                if not self._is_finish_observation(item):
+                    continue
+                observation_id, _, action_id, tool_call_id = self._event_identity(item)
+                if action_id != event_id:
+                    continue
+                if selected_tool_call_id is not None and tool_call_id != selected_tool_call_id:
+                    continue
+                matches.append(observation_id)
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise DomainError(
+                    "RUNTIME_FORK_BOUNDARY_AMBIGUOUS",
+                    "OpenHands returned multiple observations for one final reply",
+                    502,
+                    {"conversation_id": handle.conversation_id, "event_id": event_id},
+                )
+            if time.monotonic() >= deadline:
+                raise DomainError(
+                    "RUNTIME_FORK_BOUNDARY_INCOMPLETE",
+                    "OpenHands has not persisted the final reply execution boundary",
+                    503,
+                    {"conversation_id": handle.conversation_id, "event_id": event_id},
+                )
+            time.sleep(0.1)
+
+    def incomplete_fork_recovery(self, handle: RuntimeHandle) -> RuntimeForkRecovery | None:
+        """Describe a legacy fork that never advanced beyond its copied finish.
+
+        Affected forks may contain retries, but their active tail consists only
+        of user messages followed by ``FinishObservation`` events still tied to
+        the copied source action.  Any new agent action, assistant message, or
+        error proves that the fork made real progress and must never be rebuilt.
+        """
+
+        state = self._conversation_state(handle)
+        source_conversation_id = str(state.get("forked_from_conversation_id") or "")
+        requested_event_id = str(state.get("forked_from_event_id") or "")
+        leaf_event_id = str(state.get("leaf_event_id") or "")
+        if not source_conversation_id or not requested_event_id or not leaf_event_id:
+            return None
+        self._formal_identity(source_conversation_id, field="conversation_id", required=True)
+        self._formal_identity(requested_event_id, field="id", required=True)
+        items, _ = self._events(
+            handle.conversation_id,
+            None,
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+        branch = self._active_branch(items, leaf_event_id)
+        requested_index = next(
+            (
+                index
+                for index, item in enumerate(branch)
+                if self._event_identity(item)[0] == requested_event_id
+            ),
+            None,
+        )
+        if requested_index is None or not self._is_finish_action(branch[requested_index]):
+            return None
+        requested_tool_call_id = self._event_identity(branch[requested_index])[3]
+        tail = branch[requested_index + 1 :]
+        for item in tail:
+            kind = str(item.get("kind") or "")
+            if kind == "MessageEvent":
+                message = item.get("llm_message")
+                role = (
+                    str(cast(dict[str, object], message).get("role") or "").lower()
+                    if isinstance(message, dict)
+                    else ""
+                )
+                if role == "user" and str(item.get("source") or "").lower() in {
+                    "user",
+                    "human",
+                }:
+                    continue
+                return None
+            if self._is_finish_observation(item):
+                _, _, action_id, tool_call_id = self._event_identity(item)
+                if action_id == requested_event_id and (
+                    requested_tool_call_id is None or tool_call_id == requested_tool_call_id
+                ):
+                    continue
+            return None
+        source_handle = RuntimeHandle(
+            job_id=handle.job_id,
+            conversation_id=source_conversation_id,
+            cursor=requested_event_id,
+            runtime_resource_id=handle.runtime_resource_id,
+            runtime_resource_name=handle.runtime_resource_name,
+        )
+        completed_event_id = self.resolve_fork_boundary(source_handle, requested_event_id)
+        if completed_event_id == requested_event_id:
+            return None
+        source_state = self._conversation_state(source_handle)
+        source_leaf_event_id = self._formal_identity(
+            source_state.get("leaf_event_id"), field="leaf_event_id", required=True
+        )
+        assert source_leaf_event_id is not None
+        return RuntimeForkRecovery(
+            source_conversation_id=source_conversation_id,
+            requested_event_id=requested_event_id,
+            completed_event_id=completed_event_id,
+            source_leaf_event_id=source_leaf_event_id,
+        )
 
     def fork_conversation(
         self,

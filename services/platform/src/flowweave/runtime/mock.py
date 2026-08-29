@@ -10,6 +10,7 @@ from flowweave.runtime.base import (
     RuntimeCondenser,
     RuntimeConversationIdentity,
     RuntimeEventBatch,
+    RuntimeForkRecovery,
     RuntimeForkResult,
     RuntimeHandle,
     RuntimeMCPOAuthCallbackRequest,
@@ -283,6 +284,14 @@ class MockRuntime:
         del handle, timeout_seconds
         return RuntimeAskAgentResult(response=f"Mock diagnostic: {question}")
 
+    def resolve_fork_boundary(self, handle: RuntimeHandle, event_id: str) -> str:
+        del handle
+        return event_id
+
+    def incomplete_fork_recovery(self, handle: RuntimeHandle) -> RuntimeForkRecovery | None:
+        del handle
+        return None
+
     def fork_conversation(
         self,
         handle: RuntimeHandle,
@@ -303,9 +312,7 @@ class MockRuntime:
             runtime_resource_id=handle.runtime_resource_id,
             runtime_resource_name=handle.runtime_resource_name,
         )
-        self._results[fork_handle.job_id] = RuntimeResult(
-            status="RUNNING", cursor=fork_handle.cursor
-        )
+        self._results[fork_handle.job_id] = RuntimeResult(status="IDLE", cursor=fork_handle.cursor)
         if condenser is not None:
             self._conversation_condensers[target_conversation_id] = condenser
         return RuntimeForkResult(
