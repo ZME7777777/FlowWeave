@@ -198,7 +198,7 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
   const catalogQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
   const enabledQuery = useQuery({
     queryKey: ['agent-workspace-capabilities', workspaceId],
-    queryFn: () => api.agentWorkspaceCapabilities(workspaceId),
+    queryFn: () => api.hostCapabilities(workspaceId),
     enabled: !bindingId,
   });
   useEffect(() => {
@@ -222,7 +222,7 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
     setCheckingMcpIds(current => new Set([...current, ...ids]));
     const results = await Promise.all(ids.map(async id => {
       try {
-        return [id, await api.agentWorkspaceMcpReadiness(workspaceId, id)] as const;
+        return [id, await api.mcpReadiness(workspaceId, id)] as const;
       } catch {
         return [id, { state: 'UNAVAILABLE', error_kind: 'unknown', checked_at: new Date().toISOString() } satisfies AgentWorkspaceMcpReadiness] as const;
       }
@@ -248,11 +248,11 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
         const reason = status.error_kind === 'timeout' ? '连接超时' : status.error_kind === 'connection' ? '无法连接' : '暂时不可用';
         throw new Error(`MCP「${capability?.capability_key ?? '未命名'}」${reason}，请重新检测后再保存。`);
       }
-      if (!bindingId) return api.replaceAgentWorkspaceCapabilities(workspaceId, selectedIds);
+      if (!bindingId) return api.replaceHostCapabilities(workspaceId, selectedIds);
       const loaded = new Set((conversationCapabilities ?? []).map(item => item.id));
       let latest: AgentConversation | undefined;
       for (const capabilityVersionId of selectedIds.filter(id => !loaded.has(id))) {
-        latest = await api.addAgentConversationCapability(workspaceId, bindingId, capabilityVersionId);
+        latest = await api.addConversationCapability(workspaceId, bindingId, capabilityVersionId);
       }
       return latest;
     },
@@ -690,11 +690,11 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const detailsQuery = useQuery({
     queryKey: ['agent-workspace-create-directory', workspaceId],
-    queryFn: () => api.agentWorkspaceDetails(workspaceId),
+    queryFn: () => api.workspaceDetails(workspaceId),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const create = useMutation({
-    mutationFn: () => api.createAgentWorkDirectory(workspaceId, displayName.trim(), selectedPaths),
+    mutationFn: () => api.createWorkDirectory(workspaceId, displayName.trim(), selectedPaths),
     onSuccess: directory => {
       onCreated(directory);
       setDisplayName('');
@@ -829,7 +829,7 @@ function WorkspaceDrawer({
   }, [open]);
   const detailsQuery = useQuery({
     queryKey: ['agent-workspace-details', workspaceId, bindingId, workDirectoryId],
-    queryFn: () => api.agentWorkspaceDetails(workspaceId, { bindingId, workDirectoryId }),
+    queryFn: () => api.workspaceDetails(workspaceId, { bindingId, workDirectoryId }),
     enabled: true,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
@@ -837,7 +837,7 @@ function WorkspaceDrawer({
   const selectedFile = scopeState.selectedFile;
   const previewQuery = useQuery({
     queryKey: ['agent-workspace-file-preview', workspaceId, bindingId, selectedFile],
-    queryFn: () => api.agentWorkspaceFilePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }),
+    queryFn: () => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }),
     enabled: Boolean(open && scopeState.activeTabId === 'files' && selectedFile && isTextPreviewable(selectedFile)),
     retry: false,
   });
@@ -881,7 +881,7 @@ function WorkspaceDrawer({
       setPanelError('');
       setClosingTerminalId(tab.terminalInstanceId);
       try {
-        await api.closeAgentWorkspaceTerminal(workspaceId, tab.terminalInstanceId);
+        await api.closeTerminal(workspaceId, tab.terminalInstanceId);
       } catch (error) {
         setPanelError(error instanceof Error ? error.message : '终端关闭失败，请稍后重试。');
         setClosingTerminalId(undefined);
@@ -1041,16 +1041,16 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = host.bindingIdFromPathname(window.location.pathname);
-  const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultAgentWorkspace, retry: false });
+  const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultHost, retry: false });
   const workspace = workspaceQuery.data;
-  const runtimeQuery = useQuery({ queryKey: ['agent-workspace-runtime', workspace?.id], queryFn: () => api.agentWorkspaceRuntime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
-  const conversationsQuery = useQuery({ queryKey: ['agent-conversations', workspace?.id], queryFn: () => api.agentConversations(workspace!.id), enabled: Boolean(workspace) });
-  const workDirectoriesQuery = useQuery({ queryKey: ['agent-work-directories', workspace?.id], queryFn: () => api.agentWorkDirectories(workspace!.id), enabled: Boolean(workspace) });
+  const runtimeQuery = useQuery({ queryKey: ['agent-workspace-runtime', workspace?.id], queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
+  const conversationsQuery = useQuery({ queryKey: ['agent-conversations', workspace?.id], queryFn: () => api.conversations(workspace!.id), enabled: Boolean(workspace) });
+  const workDirectoriesQuery = useQuery({ queryKey: ['agent-work-directories', workspace?.id], queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace) });
   const capabilityCatalogQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities, enabled: Boolean(workspace) });
   const defaultCapabilitiesQuery = useQuery({
     queryKey: ['agent-workspace-capabilities', workspace?.id],
-    queryFn: () => api.agentWorkspaceCapabilities(workspace!.id),
+    queryFn: () => api.hostCapabilities(workspace!.id),
     enabled: Boolean(workspace),
   });
   const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
@@ -1116,7 +1116,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const canBootstrap = Boolean(runtimeWritable && conversationDraft && newConversationProviderId && newConversationModelName);
   const isGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventsQuery = useQuery({
-    queryKey: ['agent-conversation-events', workspace?.id, selected?.id], queryFn: () => api.agentConversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
+    queryKey: ['agent-conversation-events', workspace?.id, selected?.id], queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const displayedEvents = useMemo(() => {
@@ -1164,7 +1164,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   }, []);
   const inputReadinessQuery = useQuery({
     queryKey: ['agent-conversation-input-readiness', workspace?.id, selected?.id],
-    queryFn: () => api.agentConversationInputReadiness(workspace!.id, selected!.id),
+    queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. It is not persisted by FlowWeave.
     enabled: Boolean(workspace && selected),
@@ -1173,7 +1173,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   });
   const contextQuery = useQuery({
     queryKey: ['agent-conversation-context', workspace?.id, selected?.id],
-    queryFn: () => api.agentConversationContext(workspace!.id, selected!.id),
+    queryFn: () => api.conversationContext(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 2000 : false,
   });
   const compactionPolicyCurrent = contextQuery.data?.compaction_policy_current !== false;
@@ -1181,7 +1181,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));
   const confirmationQuery = useQuery({
     queryKey: ['agent-conversation-confirmation', workspace?.id, selected?.id],
-    queryFn: () => api.agentPendingConfirmation(workspace!.id, selected!.id),
+    queryFn: () => api.pendingConfirmation(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected && runtime?.write_available),
     refetchInterval: isGenerating ? 1200 : 2500,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
@@ -1306,7 +1306,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     }
   }, [activeTurnEventId, clearLiveText, displayedEvents, refresh, turnState]);
 
-  const bootstrap = useMutation({ mutationFn: (message: QueuedMessage) => api.bootstrapAgentConversation(
+  const bootstrap = useMutation({ mutationFn: (message: QueuedMessage) => api.bootstrapConversation(
     workspace!.id,
     conversationDraft!.id,
     newConversationProviderId,
@@ -1385,15 +1385,15 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     const timer = window.setTimeout(() => bootstrap.mutate(bootstrapRecovery.message), delay);
     return () => window.clearTimeout(timer);
   }, [bootstrap, bootstrapRecovery, workspace]);
-  const rename = useMutation({ mutationFn: () => api.updateAgentConversation(workspace!.id, selected!.id, title.trim()), onSuccess: conversation => {
+  const rename = useMutation({ mutationFn: () => api.updateConversation(workspace!.id, selected!.id, title.trim()), onSuccess: conversation => {
     queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace!.id], current => (current ?? []).map(item => item.id === conversation.id ? conversation : item));
     setTitle(conversationName(conversation));
     setEditing(false);
     refresh();
   }, onError: error => reportOperationError(selected?.id, error) });
-  const remove = useMutation({ mutationFn: () => api.deleteAgentConversation(workspace!.id, selected!.id), onSuccess: () => { setDrawerOpen(false); onNavigate(host.rootPath, true); refresh(); }, onError: error => reportOperationError(selected?.id, error) });
+  const remove = useMutation({ mutationFn: () => api.deleteConversation(workspace!.id, selected!.id), onSuccess: () => { setDrawerOpen(false); onNavigate(host.rootPath, true); refresh(); }, onError: error => reportOperationError(selected?.id, error) });
   const persistModel = useMutation({
-    mutationFn: ({ providerId, modelName, effort }: { providerId: string; modelName: string; effort: string | null }) => api.switchAgentConversationModel(workspace!.id, selected!.id, providerId, modelName, effort),
+    mutationFn: ({ providerId, modelName, effort }: { providerId: string; modelName: string; effort: string | null }) => api.switchConversationModel(workspace!.id, selected!.id, providerId, modelName, effort),
     onSuccess: value => {
       queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace!.id], current => (current ?? []).map(item => item.id === selected!.id ? { ...item, ...value } : item));
       setConversationProviderId(value.model_provider_id);
@@ -1409,7 +1409,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     },
   });
   const send = useMutation({
-    mutationFn: (message: BoundQueuedMessage) => api.sendAgentMessage(workspace!.id, message.bindingId, message.content, message.items),
+    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items),
     onMutate: message => {
       const optimisticEventId = `pending-user:${randomId()}`;
       clearLiveText();
@@ -1453,7 +1453,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
       const providerId = selected?.model_provider_id || contextQuery.data?.provider_id;
       if (!providerId) throw new ApiError('此历史会话缺少可迁移的模型供应商，请新建会话。', 'AGENT_CONVERSATION_PROVIDER_REQUIRED', {}, 409);
       const provider = connectedProviders.find(item => item.id === providerId);
-      return api.migrateAgentStreamingConversation(
+      return api.migrateStreamingConversation(
         workspace!.id,
         selected!.id,
         providerId,
@@ -1475,11 +1475,11 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     },
   });
   const upload = useMutation({ mutationFn: ({ file }: { file: File; scope: string }) => selected
-    ? api.uploadAgentAttachment(workspace!.id, selected.id, file)
-    : api.uploadAgentWorkspaceAttachment(workspace!.id, file, conversationDraft?.workDirectoryId, conversationDraft?.id), onSuccess: (value, request) => {
+    ? api.uploadConversationAttachment(workspace!.id, selected.id, file)
+    : api.uploadDraftAttachment(workspace!.id, file, conversationDraft?.workDirectoryId, conversationDraft?.id), onSuccess: (value, request) => {
     if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
   }, onError: (error, request) => reportOperationError(request.scope, error) });
-  const fork = useMutation({ mutationFn: (eventId: string) => api.forkAgentConversation(workspace!.id, selected!.id, eventId), onSuccess: value => {
+  const fork = useMutation({ mutationFn: (eventId: string) => api.forkConversation(workspace!.id, selected!.id, eventId), onSuccess: value => {
     if (!workspace) return;
     setPendingCreatedId(value.id);
     queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
@@ -1495,10 +1495,10 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
       const completedBefore = new Set((existing?.events ?? [])
         .filter(event => event.event_type === 'CONDENSATION_COMPLETED')
         .map(event => event.id));
-      const accepted = await api.condenseAgentConversation(workspaceId, bindingId);
+      const accepted = await api.condenseConversation(workspaceId, bindingId);
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
-        const batch = await api.agentConversationEvents(workspaceId, bindingId);
+        const batch = await api.conversationEvents(workspaceId, bindingId);
         queryClient.setQueryData(queryKey, batch);
         if (batch.events.some(event =>
           event.event_type === 'CONDENSATION_COMPLETED' && !completedBefore.has(event.id)
@@ -1511,10 +1511,10 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     onSuccess: () => refresh(),
     onError: error => reportOperationError(selected?.id, error),
   });
-  const interrupt = useMutation({ mutationFn: () => api.interruptAgentConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: refresh, onError: error => { setTurnState('running'); reportOperationError(selected?.id, error); } });
-  const resume = useMutation({ mutationFn: () => api.resumeAgentConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); setTurnState('running'); refresh(); }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
+  const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: refresh, onError: error => { setTurnState('running'); reportOperationError(selected?.id, error); } });
+  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); setTurnState('running'); refresh(); }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
   const decideConfirmation = useMutation({
-    mutationFn: (accept: boolean) => api.decideAgentConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
+    mutationFn: (accept: boolean) => api.decideConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
     onSuccess: value => {
       const cursor = value.cursor ?? undefined;
       if (cursor) setActiveTurnEventId(current => current ?? cursor);
@@ -1527,7 +1527,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     onError: error => reportOperationError(selected?.id, error),
   });
   const rewrite = useMutation({
-    mutationFn: ({ eventId, content }: { eventId: string; content: string }) => api.rerunAgentMessage(workspace!.id, selected!.id, eventId, content),
+    mutationFn: ({ eventId, content }: { eventId: string; content: string }) => api.rerunMessage(workspace!.id, selected!.id, eventId, content),
     onMutate: request => {
       const optimisticEventId = `pending-rewrite:${randomId()}`;
       const branch = eventBranchIds(displayedEvents, request.eventId);

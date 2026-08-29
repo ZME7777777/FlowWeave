@@ -1298,6 +1298,22 @@ FlowRun adapter、完整 gateway 和共享页面装配，未在本切片修改�
 存储键；所有页面导航和恢复操作不再硬编码 `/agent`。默认 Agent Workspace host 保持原 URL 与
 `sessionStorage` key，工作台状态和传输网关职责不变。本切片未新增 FlowRun 页面、路由或节点代码。
 
+### FR-92 Agent 会话中性前端传输协议 — DONE
+
+依赖：`FR-91`。
+
+目标：将 `AgentSessionGateway` 与共享 Workbench 内部调用使用的 Agent Workspace 专有方法名收敛为中性
+会话 host 协议；默认 gateway 仅逐项映射至原 Agent Workspace API，不能改变任何请求、URL、响应或产品
+行为。此协议是将来 FlowRun node host 实现完整 gateway 的前置；本切片不新增 FlowRun/节点 API 或页面。
+
+验收：受影响 Web ESLint/typecheck/production build、既有 Agent Workspace 首发/URL 恢复定向 Playwright、
+内部组件不得出现专有 gateway 方法调用，以及 `git diff --check`。完成后独立提交。
+
+完成：`AgentSessionGateway.api` 的内部协议已改为 `defaultHost`、`runtime`、`conversations`、
+`workspaceDetails`、`bootstrapConversation`、`conversationEvents`、`sendMessage` 等中性会话操作；默认
+Agent Workspace gateway 逐项映射到原有 API。共享 Workbench 不再调用 Agent Workspace 专有 gateway
+方法，网络请求、响应、URL 和产品行为均未变化。本切片未新增 FlowRun/节点 API 或页面。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1314,6 +1330,7 @@ FlowRun adapter、完整 gateway 和共享页面装配，未在本切片修改�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-92 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享组件专有 gateway 方法扫描与 `git diff --check` | PASS：共享 Workbench 只使用中性 host 传输协议；默认 gateway 保持对既有 Agent Workspace API 的逐项映射，浏览器回归 2 passed。无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-91 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享组件路由依赖扫描与 `git diff --check` | PASS：共享 Workbench 的绑定 URL、根回退和首发恢复均由注入 host 决定；默认 Agent Workspace 仍使用原 `/agent` 路由和恢复键，浏览器回归 2 passed。无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-90 | 当前 Agent Workspace 共享页面/facade/gateway、旧 FlowRun 页面/API/service 与固定 FlowRun Runtime 设计交叉审计；设计文档引用、任务状态唯一性与 `git diff --check` | PASS：设计明确了唯一会话页面和内核、FlowRun 仅为宿主、节点 N 对 N 会话和工作目录隔离、首发提示词与单 Run 单 Runtime；旧平行聊天页和服务不属于最终状态。无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-89 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享传输依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 仍通过默认 Agent Workspace 网关运行完整唯一工作台；共享页面的 API、文件 URL、终端 URL 和事件订阅均可由宿主注入，未复制会话状态或渲染逻辑。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
