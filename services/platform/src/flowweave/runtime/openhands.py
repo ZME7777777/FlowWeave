@@ -1754,11 +1754,7 @@ class OpenHandsRuntime:
                 status = str(detail.get("status") or "error").lower()
                 is_error = bool(detail.get("is_error"))
                 payload["runtime_task"] = {
-                    "phase": (
-                        "COMPLETED"
-                        if status == "completed" and not is_error
-                        else "ERROR"
-                    ),
+                    "phase": ("COMPLETED" if status == "completed" and not is_error else "ERROR"),
                     "action_event_id": str(item.get("action_id") or ""),
                     "observation_event_id": str(item.get("id") or ""),
                     "tool_call_id": str(item.get("tool_call_id") or ""),
@@ -2907,9 +2903,15 @@ class OpenHandsRuntime:
         """Expose the current LLM's formal OpenHands context usage snapshot."""
         state = self._conversation_state(handle)
         agent = cast(object, state.get("agent"))
+        agent_config = cast(dict[str, Any], agent) if isinstance(agent, dict) else {}
         llm = (
-            cast(dict[str, Any], cast(dict[str, Any], agent).get("llm"))
-            if isinstance(agent, dict) and isinstance(cast(dict[str, Any], agent).get("llm"), dict)
+            cast(dict[str, Any], agent_config.get("llm"))
+            if isinstance(agent_config.get("llm"), dict)
+            else {}
+        )
+        condenser = (
+            cast(dict[str, Any], agent_config.get("condenser"))
+            if isinstance(agent_config.get("condenser"), dict)
             else {}
         )
         usage_id = llm.get("usage_id")
@@ -2968,6 +2970,9 @@ class OpenHandsRuntime:
                 llm.get("reasoning_effort")
                 if isinstance(llm.get("reasoning_effort"), str)
                 else None
+            ),
+            "condenser_max_size": (
+                condenser.get("max_size") if isinstance(condenser.get("max_size"), int) else None
             ),
         }
 

@@ -260,9 +260,7 @@ def test_openhands_serializes_native_critic_without_invalid_zero_iteration_refin
         assert critic["iterative_refinement"] == expected_refinement
 
 
-def test_openhands_materializes_oracle_profile_with_frozen_binding(
-    openhands_settings, monkeypatch
-):
+def test_openhands_materializes_oracle_profile_with_frozen_binding(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     provider = RuntimeProvider(
         provider_id="provider-1",
@@ -298,9 +296,7 @@ def test_openhands_materializes_oracle_profile_with_frozen_binding(
     assert body["llm"]["usage_id"].startswith("flowweave-oracle:provider-1:")
 
 
-def test_openhands_refreshes_only_the_same_frozen_oracle_binding(
-    openhands_settings, monkeypatch
-):
+def test_openhands_refreshes_only_the_same_frozen_oracle_binding(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     provider = RuntimeProvider(
         provider_id="provider-1",
@@ -335,9 +331,7 @@ def test_openhands_refreshes_only_the_same_frozen_oracle_binding(
     assert methods == ["GET", "POST"]
 
 
-def test_openhands_refuses_to_overwrite_a_different_oracle_binding(
-    openhands_settings, monkeypatch
-):
+def test_openhands_refuses_to_overwrite_a_different_oracle_binding(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     provider = RuntimeProvider(
         provider_id="provider-1",
@@ -2139,6 +2133,7 @@ def test_openhands_conversation_context_reads_the_active_native_usage_bucket(
         "provider_id": "provider-1",
         "model_name": "openai/gpt-5.6-luna",
         "reasoning_effort": None,
+        "condenser_max_size": None,
     }
 
 

@@ -702,6 +702,7 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
         assert runtime.request is not None
         assert runtime.request.agent_spec.confirmation_policy == "NEVER"
         assert runtime.request.agent_spec.condenser.kind == "LLM_SUMMARIZING"
+        assert runtime.request.agent_spec.condenser.max_size == 10_000
         assert runtime.request.agent_spec.condenser_provider is not None
         assert runtime.request.workspace_ref == "/runtime/workspace/project"
         assert runtime.request.agent_spec.agent_context.system_message_suffix == (
@@ -808,9 +809,7 @@ def test_agent_workspace_selected_skill_is_frozen_and_mounted(
         # Later workspace-default changes do not alter the already native
         # conversation's frozen capability provenance.
         conversations.replace_workspace_capabilities(db, workspace.id, ())
-        frozen = conversations.get_conversation(db, workspace.id, created["id"])[
-            "capabilities"
-        ]
+        frozen = conversations.get_conversation(db, workspace.id, created["id"])["capabilities"]
         assert frozen == selected
 
 
@@ -1102,21 +1101,24 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
             binding.working_directory = "/runtime/workspace/project/service"
         db.flush()
         attachment = conversations.upload_attachment(
-            db, item.id, owner["id"], filename="requirements.pdf",
-            content_type="application/pdf", content=b"%PDF-1.7",
+            db,
+            item.id,
+            owner["id"],
+            filename="requirements.pdf",
+            content_type="application/pdf",
+            content=b"%PDF-1.7",
         )
         upload_path = project_root / "uploads" / str(attachment["path"]).rsplit("/", 1)[-1]
         upload_path.parent.mkdir()
         upload_path.write_bytes(b"%PDF-1.7")
         # A bound upload is previewable from the right-hand panel before it is
         # sent, but remains inaccessible to every other conversation.
-        assert workspace.download(
-            db, item.id, str(attachment["path"]), binding_id=owner["id"]
-        ).content == b"%PDF-1.7"
+        assert (
+            workspace.download(db, item.id, str(attachment["path"]), binding_id=owner["id"]).content
+            == b"%PDF-1.7"
+        )
         with pytest.raises(DomainError, match="当前工作目录范围"):
-            workspace.download(
-                db, item.id, str(attachment["path"]), binding_id=other["id"]
-            )
+            workspace.download(db, item.id, str(attachment["path"]), binding_id=other["id"])
         conversations.message(
             db,
             item.id,
@@ -1134,13 +1136,12 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
 
         details = workspace.details(db, item.id, binding_id=owner["id"])
         assert str(attachment["path"]) in {entry["path"] for entry in details["files"]}
-        assert workspace.download(
-            db, item.id, str(attachment["path"]), binding_id=owner["id"]
-        ).content == b"%PDF-1.7"
+        assert (
+            workspace.download(db, item.id, str(attachment["path"]), binding_id=owner["id"]).content
+            == b"%PDF-1.7"
+        )
         with pytest.raises(DomainError, match="当前工作目录范围"):
-            workspace.download(
-                db, item.id, str(attachment["path"]), binding_id=other["id"]
-            )
+            workspace.download(db, item.id, str(attachment["path"]), binding_id=other["id"])
         conversations.delete_conversation(db, item.id, owner["id"], "delete-attachment-owner")
         assert not upload_path.exists()
 
@@ -1912,6 +1913,100 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
+def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_send(
+    settings, db_session_factory, monkeypatch
+):
+    class ProactiveCompactionRuntime(MockRuntime):
+        used_tokens = 79_999
+        fail_compaction = False
+        calls: list[str] = []
+        active_events: tuple[RuntimeEvent, ...] = ()
+
+        def conversation_context(self, handle):
+            del handle
+            return {
+                "used_tokens": self.used_tokens,
+                "window_tokens": 100_000,
+                "cumulative_tokens": self.used_tokens,
+                "provider_id": "provider-1",
+                "model_name": "test-model",
+                "reasoning_effort": None,
+                "condenser_max_size": 10_000,
+            }
+
+        def condense(self, handle):
+            self.calls.append("condense")
+            if self.fail_compaction:
+                raise DomainError("EXECUTOR_UNAVAILABLE", "compaction failed", 503)
+            return super().condense(handle)
+
+        def read_active_events(self, handle):
+            del handle
+            return RuntimeEventBatch(events=self.active_events)
+
+        def send_message(self, handle, content, image_urls=()):
+            self.calls.append(f"send:{content}")
+            return super().send_message(handle, content, image_urls)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = ProactiveCompactionRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
+
+        below = conversations.message(db, workspace.id, created["id"], "below")
+        assert below["compacted"] is False
+        assert runtime.calls == ["send:below"]
+
+        runtime.calls.clear()
+        runtime.used_tokens = 80_000
+        at_threshold = conversations.message(db, workspace.id, created["id"], "threshold")
+        assert at_threshold["compacted"] is True
+        assert runtime.calls == ["condense", "send:threshold"]
+
+        runtime.calls.clear()
+        runtime.fail_compaction = True
+        with pytest.raises(DomainError) as raised:
+            conversations.message(db, workspace.id, created["id"], "must-not-send")
+        assert raised.value.code == "AGENT_CONTEXT_COMPACTION_FAILED"
+        assert runtime.calls == ["condense"]
+
+        runtime.fail_compaction = False
+        runtime.active_events = (
+            RuntimeEvent(
+                cursor="condensation-1",
+                event_type="CONDENSATION_COMPLETED",
+                payload={},
+            ),
+        )
+        stale = conversations.conversation_context(db, workspace.id, created["id"])
+        assert stale["used_tokens"] is None
+        assert stale["usage_current"] is False
+
+        runtime.active_events += (
+            RuntimeEvent(
+                cursor="thought-after-condensation",
+                event_type="THOUGHT",
+                payload={"source": "agent", "content": "继续处理"},
+            ),
+        )
+        refreshed = conversations.conversation_context(db, workspace.id, created["id"])
+        assert refreshed["used_tokens"] == 80_000
+        assert refreshed["usage_current"] is True
+
+
 def test_agent_workspace_uses_native_attachments_context_and_model_switch(
     settings, db_session_factory, monkeypatch
 ):
@@ -1988,8 +2083,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             ),
         )
         assert runtime.sent == (
-            "请查看已上传到共享工作区的附件：\n"
-            f"- {attachment['path']}",
+            f"请查看已上传到共享工作区的附件：\n- {attachment['path']}",
             ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
         )
         pdf = conversations.upload_attachment(
@@ -2004,8 +2098,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         assert pdf["image_data_url"] is None
         conversations.message(db, workspace.id, created["id"], "", ({"path": str(pdf["path"])},))
         assert runtime.sent == (
-            "请查看已上传到共享工作区的附件：\n"
-            f"- {pdf['path']}",
+            f"请查看已上传到共享工作区的附件：\n- {pdf['path']}",
             (),
         )
         selected = conversations.switch_conversation_model(
@@ -2031,6 +2124,9 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "cumulative_tokens": 456,
             "model_name": "test-model",
             "reasoning_effort": "medium",
+            "usage_current": True,
+            "proactive_compaction_ratio": 0.8,
+            "proactive_compaction_tokens": 102_400,
         }
         # Selecting a provider/model is persisted immediately on the individual
         # Conversation and sending only re-applies that saved selection.

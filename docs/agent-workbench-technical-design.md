@@ -691,6 +691,13 @@ Terminal 属于共享 Workspace，不依附某个 Conversation。它连接同一
   View 用量，`context_window` 是供应商报告的窗口容量；不得混入 condenser 或子任务的 bucket。仅当两者
   都是正整数时显示环形图和紧凑 `k`/`m` 标签（如 `6.4k / 922k`、`256k`、`1m`）；缺失、非法或只有累计
   usage 时完全不显示上下文控件，不估算或伪造窗口。
+- 新建 Agent Conversation 将 OpenHands 原生 `LLMSummarizingCondenser.max_size` 设为 `10,000`，避免工具
+  事件很多但 token 占用仍低时被默认事件数阈值过早压缩；OpenHands 自身的 token、事件和显式请求处理仍
+  保留。平台只在正式当前 View 用量达到供应商 `context_window` 的 `80%` 时，于下一条 user event 写入前
+  同步调用同一原生 `/condense`，成功后才发送消息；压缩失败时消息不得写入。
+- 已绑定 Conversation 的 `/` 菜单把“压缩上下文”列在独立的“OpenHands 原生能力”分区，MCP 与插件命令
+  保持另一分区；草稿会话不展示需要原生 Conversation 的命令。手动压缩后若主 LLM 尚未产生新的正式
+  `per_turn_token`，页面隐藏压缩前数值并提示等待下一次模型调用更新，不推算或伪造压缩后的 token。
 - 非瞬态错误：停止请求风暴，显示错误码、request ID、重试或返回列表。
 - 浏览器刷新：恢复同一 binding；binding 不存在时回 `/agent`，不进入全局异常页。
 

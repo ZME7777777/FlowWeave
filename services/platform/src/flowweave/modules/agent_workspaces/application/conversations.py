@@ -59,6 +59,8 @@ _TOOLS = (
 )
 
 _PROJECT_ROOT = "/runtime/workspace/project"
+_PROACTIVE_COMPACTION_RATIO = 0.8
+_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _SANDBOX_PROJECT_IMAGE = re.compile(
     r"sandbox:(/runtime/workspace/project/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
@@ -678,7 +680,15 @@ def _create_native_conversation(
             ),
             # This is the fixed OpenHands 1.44.0 summarizing condenser, not a
             # FlowWeave summary loop. It remains native Conversation history.
-            condenser=RuntimeCondenser(kind="LLM_SUMMARIZING"),
+            # Keep OpenHands' native event/token safeguards, but avoid the
+            # default 240-event heuristic compacting tool-heavy sessions while
+            # their token window is still mostly empty. FlowWeave proactively
+            # invokes the same native condenser at 80% of OpenHands' registered
+            # context window before accepting the next user message.
+            condenser=RuntimeCondenser(
+                kind="LLM_SUMMARIZING",
+                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+            ),
             condenser_provider=provider,
             tools=_TOOLS,
             skills=skills,
@@ -1486,6 +1496,18 @@ def message(
             503,
             {"model_provider_id": target_provider_id},
         ) from exc
+    compacted = False
+    context = runtime.conversation_context(handle)
+    if _proactive_compaction_required(runtime, handle, context):
+        try:
+            runtime.condense(handle)
+            compacted = True
+        except DomainError as exc:
+            raise DomainError(
+                "AGENT_CONTEXT_COMPACTION_FAILED",
+                "上下文达到压缩阈值，但 OpenHands 压缩失败；消息尚未发送",
+                503,
+            ) from exc
     try:
         result = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -1496,7 +1518,7 @@ def message(
         raise
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
-    return {"accepted": True, "cursor": result.cursor}
+    return {"accepted": True, "cursor": result.cursor, "compacted": compacted}
 
 
 _ATTACHMENT_PATH = re.compile(
@@ -1689,12 +1711,79 @@ def upload_attachment(
     }
 
 
+def _context_usage_is_current(runtime: Any, handle: RuntimeHandle) -> bool:
+    """Whether per_turn_token was produced after the latest condensation.
+
+    OpenHands keeps the last main-LLM usage snapshot when only its independent
+    condenser LLM has run. Treat that value as stale until a subsequent formal
+    agent/model event exists; otherwise the UI would keep showing the
+    pre-compaction percentage as if it described the compacted View.
+    """
+
+    events = runtime.read_active_events(handle).events
+    latest_condensation = max(
+        (
+            index
+            for index, event in enumerate(events)
+            if event.event_type == "CONDENSATION_COMPLETED"
+        ),
+        default=-1,
+    )
+    if latest_condensation < 0:
+        return True
+    for event in events[latest_condensation + 1 :]:
+        if event.event_type in {"THOUGHT", "TOOL_CALL", "COMPLETED"}:
+            return True
+        if event.event_type == "MESSAGE" and str(event.payload.get("source") or "").lower() not in {
+            "user",
+            "human",
+        }:
+            return True
+    return False
+
+
+def _proactive_compaction_required(
+    runtime: Any, handle: RuntimeHandle, context: dict[str, Any]
+) -> bool:
+    """Use only OpenHands' registered current-View usage and window."""
+
+    used_tokens = context.get("used_tokens")
+    window_tokens = context.get("window_tokens")
+    return (
+        _context_usage_is_current(runtime, handle)
+        and isinstance(used_tokens, int)
+        and not isinstance(used_tokens, bool)
+        and isinstance(window_tokens, int)
+        and not isinstance(window_tokens, bool)
+        and window_tokens > 0
+        and used_tokens >= int(window_tokens * _PROACTIVE_COMPACTION_RATIO)
+    )
+
+
 def conversation_context(
     db: Session, workspace_id: str, binding_id: str
-) -> dict[str, int | str | None]:
+) -> dict[str, int | float | str | bool | None]:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
-    return get_runtime().conversation_context(_handle(db, workspace, binding))
+    runtime = get_runtime()
+    handle = _handle(db, workspace, binding)
+    context = runtime.conversation_context(handle)
+    usage_current = _context_usage_is_current(runtime, handle)
+    window_tokens = context.get("window_tokens")
+    threshold_tokens = (
+        int(window_tokens * _PROACTIVE_COMPACTION_RATIO)
+        if isinstance(window_tokens, int)
+        and not isinstance(window_tokens, bool)
+        and window_tokens > 0
+        else None
+    )
+    return {
+        **context,
+        "used_tokens": context.get("used_tokens") if usage_current else None,
+        "usage_current": usage_current,
+        "proactive_compaction_ratio": _PROACTIVE_COMPACTION_RATIO,
+        "proactive_compaction_tokens": threshold_tokens,
+    }
 
 
 def switch_conversation_model(

@@ -559,7 +559,9 @@ async def agent_workspace_attachment(
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/context")
-async def agent_context(workspace_id: str, binding_id: str, db: Db) -> dict[str, int | str | None]:
+async def agent_context(
+    workspace_id: str, binding_id: str, db: Db
+) -> dict[str, int | float | str | bool | None]:
     return await run_sync(
         db,
         lambda session: conversations.conversation_context(session, workspace_id, binding_id),

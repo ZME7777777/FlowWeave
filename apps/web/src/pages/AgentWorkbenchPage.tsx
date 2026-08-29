@@ -99,13 +99,15 @@ function isBootstrapAmbiguous(error: Error): boolean {
 }
 
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN';
-type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP';
+type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'NATIVE';
+type NativeComposerAction = 'CONDENSE';
 interface ComposerSuggestion {
   id: string;
   kind: ComposerSuggestionKind;
   token: string;
   label: string;
   detail: string;
+  nativeAction?: NativeComposerAction;
 }
 
 function composerTrigger(value: string): { sigil: '$' | '/'; query: string; start: number } | undefined {
@@ -119,11 +121,12 @@ function stringValues(value: unknown): string[] {
 }
 
 function ComposerCapabilityAutocomplete({
-  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onSubmit, onManageCapabilities,
+  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onSubmit, onManageCapabilities, onNativeAction,
 }: {
   draft: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
   onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onSubmit: () => void;
   onManageCapabilities?: () => void;
+  onNativeAction?: (action: NativeComposerAction) => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -137,6 +140,11 @@ function ComposerCapabilityAutocomplete({
   useEffect(() => setActiveIndex(0), [draft]);
   const select = (item: ComposerSuggestion) => {
     if (!trigger) return;
+    if (item.kind === 'NATIVE' && item.nativeAction) {
+      onDraftChange(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
+      onNativeAction?.(item.nativeAction);
+      return;
+    }
     onDraftChange(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
     requestAnimationFrame(() => input.current?.focus());
   };
@@ -145,20 +153,22 @@ function ComposerCapabilityAutocomplete({
   // available for a draft before it has a native Conversation binding too.
   const showCapabilityManager = Boolean(trigger && onManageCapabilities);
   const hasMenu = Boolean(trigger && (hasSuggestions || showCapabilityManager));
+  const hasNativeSuggestions = suggestions.some(item => item.kind === 'NATIVE');
   return <div className="agent-composer-input">
     <textarea ref={input} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
-      if (hasMenu && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
-        if (event.key === 'Escape') { onDraftChange(draft.slice(0, -trigger!.query.length - 1)); return; }
+      if (hasMenu && event.key === 'Escape') { onDraftChange(draft.slice(0, -trigger!.query.length - 1)); return; }
+      if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
         event.preventDefault();
         if (event.key === 'ArrowDown') { setActiveIndex(index => (index + 1) % visible.length); return; }
         if (event.key === 'ArrowUp') { setActiveIndex(index => (index - 1 + visible.length) % visible.length); return; }
         select(visible[activeIndex] ?? visible[0]);
         return;
       }
+      if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
     }}/>
-    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : '选择命令或 MCP'}>{hasSuggestions ? visible.map((item, index) => <button type="button" key={item.id} role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : 'MCP'}</em></button>) : <div className="agent-composer-capability-empty"><span><b>{!suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{!suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
+    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '/' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && item.kind !== 'NATIVE' && <div className="agent-composer-capability-section">MCP 与命令</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}<button type="button" role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : 'MCP'}</em></button></div>) : <div className="agent-composer-capability-empty"><span><b>{!suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{!suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
   </div>;
 }
 
@@ -1023,7 +1033,7 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
       if (!seen.has(item.id)) { seen.add(item.id); return item; }
       return undefined;
     };
-    return composerCapabilityReferences.flatMap(reference => {
+    const capabilities = composerCapabilityReferences.flatMap(reference => {
       const capability = catalog.get(reference.id);
       const description = capability?.description || reference.capability_key;
       if (reference.capability_type === 'SKILL') {
@@ -1046,7 +1056,16 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
         ...skills.map(skill => add({ id: `plugin-skill:${reference.id}:${skill}`, kind: 'SKILL', token: `$${skill}`, label: skill, detail: `${reference.capability_key} 提供的技能 · ${description}` })).filter((item): item is ComposerSuggestion => Boolean(item)),
       ];
     });
-  }, [capabilityCatalogQuery.data, composerCapabilityReferences]);
+    const native: ComposerSuggestion[] = selected && (turnState === 'idle' || turnState === 'paused') ? [{
+      id: 'native:condense',
+      kind: 'NATIVE',
+      token: '/condense',
+      label: '压缩上下文',
+      detail: '调用 OpenHands 原生 condenser，完成后保留正式 Condensation 事件',
+      nativeAction: 'CONDENSE',
+    }] : [];
+    return [...native, ...capabilities];
+  }, [capabilityCatalogQuery.data, composerCapabilityReferences, selected, turnState]);
   const composerScope = selected?.id ?? conversationDraft?.id;
   const activeComposerScope = useRef<string | undefined>(undefined);
   activeComposerScope.current = composerScope;
@@ -1141,6 +1160,7 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     if (selected?.id) {
       void queryClient.invalidateQueries({ queryKey: ['agent-conversation-events', workspace.id, selected.id] });
       void queryClient.invalidateQueries({ queryKey: ['agent-conversation-confirmation', workspace.id, selected.id] });
+      void queryClient.invalidateQueries({ queryKey: ['agent-conversation-context', workspace.id, selected.id] });
     }
   }, [queryClient, selected?.id, workspace]);
   const clearLiveText = useCallback(() => {
@@ -1432,6 +1452,12 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
     onNavigate(`/agent/conversations/${encodeURIComponent(value.id)}`);
   }, onError: error => reportOperationError(selected?.id, error) });
+  const condense = useMutation({
+    mutationFn: () => api.condenseAgentConversation(workspace!.id, selected!.id),
+    onMutate: () => setOperationError(undefined),
+    onSuccess: () => refresh(),
+    onError: error => reportOperationError(selected?.id, error),
+  });
   const interrupt = useMutation({ mutationFn: () => api.interruptAgentConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: refresh, onError: error => { setTurnState('running'); reportOperationError(selected?.id, error); } });
   const resume = useMutation({ mutationFn: () => api.resumeAgentConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); setTurnState('running'); refresh(); }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
   const decideConfirmation = useMutation({
@@ -1593,9 +1619,13 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
       percentage: Math.min(100, Math.round((contextQuery.data.used_tokens / contextQuery.data.window_tokens) * 100)),
     }
     : undefined;
+  const contextUsagePending = Boolean(selected && contextQuery.data?.usage_current === false);
+  const contextTitle = contextProgress
+    ? `OpenHands 当前 View：${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()} tokens（${contextProgress.percentage}%）；达到 ${Math.round((contextQuery.data?.proactive_compaction_ratio ?? 0.8) * 100)}% 时发送前主动调用原生压缩；OpenHands 仍保留 ${contextQuery.data?.condenser_max_size?.toLocaleString() ?? '自身'} 事件数兜底`
+    : undefined;
   const composerStatus = bootstrapRecovery
     ? bootstrapRecovery.attempts < MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS ? '正在安全核对首条消息' : '首条消息待安全核对'
-    : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+    : conversationDraft && !newConversationModelName ? '请选择模型' : condense.isPending ? '正在压缩上下文' : contextUsagePending ? '压缩已完成，等待下次模型调用更新用量' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = queuedMessages.length > 0 ? `已排队 ${queuedMessages.length} 条` : '';
   const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'idle'
@@ -1608,6 +1638,7 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
   const composerActionDisabled = !(canWrite || canBootstrap)
     || Boolean(pendingConfirmation)
     || bootstrap.isPending
+    || condense.isPending
     || migrateStreaming.isPending
     || Boolean(pendingMigratedSend)
     || (turnState === 'idle' && ((!draft.trim() && !attachments.length) || send.isPending))
@@ -1657,12 +1688,12 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || '图片附件'}</p><span>{message.items.length ? `${message.items.length} 个附件` : ''}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择命令或 MCP）'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { const images = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => file !== null); if (!images.length || !composerScope) return; event.preventDefault(); for (const image of images) upload.mutate({ file: image, scope: composerScope }); }} onSubmit={enqueueDraft} onManageCapabilities={() => setCapabilityManagerOpen(true)}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择 OpenHands 原生能力、命令或 MCP）'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { const images = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => file !== null); if (!images.length || !composerScope) return; event.preventDefault(); for (const image of images) upload.mutate({ file: image, scope: composerScope }); }} onSubmit={enqueueDraft} onManageCapabilities={() => setCapabilityManagerOpen(true)} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) condense.mutate(); }}/>
         {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
             {(selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
-            {contextProgress && <span className="agent-context-progress" title={`当前上下文 ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()} tokens`} aria-label={`上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span>}
+            {contextProgress && <span className="agent-context-progress" title={contextTitle} aria-label={`OpenHands 当前上下文用量 ${contextProgress.percentage}%，80% 时主动压缩`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span>}
             {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}
           </div>
