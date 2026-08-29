@@ -2192,6 +2192,18 @@ def _fork_conversation(
     )
     db.add(command)
     try:
+        if not target_provider_id:
+            raise DomainError(
+                "AGENT_MODEL_CONFIGURATION_REQUIRED",
+                "分叉会话缺少可用的模型供应商",
+                409,
+            )
+        fork_provider = runtime_provider(
+            db,
+            {"asset": {"executor": {"model_provider_id": target_provider_id}}},
+            model_name=target_model_name,
+            reasoning_effort=target_reasoning_effort,
+        )
         result = runtime.fork_conversation(
             source_handle,
             target_conversation_id=target_id,
@@ -2199,6 +2211,13 @@ def _fork_conversation(
             from_event_id=event_id,
             expected_source_leaf_event_id=source_identity.event_id,
             reset_metrics=True,
+            condenser=RuntimeCondenser(
+                kind="LLM_SUMMARIZING",
+                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+                max_tokens_ratio=_PROACTIVE_COMPACTION_RATIO,
+                keep_first=4,
+            ),
+            condenser_provider=fork_provider,
         )
         if (
             result.handle.conversation_id != target_id
@@ -2209,8 +2228,15 @@ def _fork_conversation(
         identity = runtime.reload_conversation(result.handle)
         if identity.persistence_dir != f"/runtime/state/conversations/{UUID(target_id).hex}":
             raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "分叉会话持久化身份校验失败", 409)
+        fork_context = runtime.conversation_context(result.handle)
+        if fork_context.get("condenser_max_size") != _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS:
+            raise DomainError(
+                "RUNTIME_FORK_POLICY_DRIFT",
+                "分叉会话上下文压缩策略校验失败",
+                409,
+            )
         if migration_provider_id is not None:
-            active_provider_id = runtime.conversation_context(result.handle).get("provider_id")
+            active_provider_id = fork_context.get("provider_id")
             if active_provider_id != target_provider_id:
                 raise DomainError(
                     "RUNTIME_FORK_IDENTITY_DRIFT",

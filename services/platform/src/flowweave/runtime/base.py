@@ -636,6 +636,8 @@ class RuntimePort(Protocol):
         from_event_id: str | None,
         expected_source_leaf_event_id: str,
         reset_metrics: bool,
+        condenser: RuntimeCondenser | None = None,
+        condenser_provider: RuntimeProvider | None = None,
     ) -> RuntimeForkResult: ...
 
     def send_message(

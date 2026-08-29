@@ -3195,6 +3195,8 @@ class OpenHandsRuntime:
         from_event_id: str | None,
         expected_source_leaf_event_id: str,
         reset_metrics: bool,
+        condenser: RuntimeCondenser | None = None,
+        condenser_provider: RuntimeProvider | None = None,
     ) -> RuntimeForkResult:
         """Create or recover one native fork with a caller-owned identity."""
 
@@ -3220,6 +3222,8 @@ class OpenHandsRuntime:
             "title": title,
             "reset_metrics": reset_metrics,
         }
+        if condenser is not None:
+            payload["condenser"] = self._condenser_payload(condenser, condenser_provider)
         if from_event_id is not None:
             payload["from_event_id"] = from_event_id
         try:

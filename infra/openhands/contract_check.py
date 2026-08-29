@@ -9,6 +9,7 @@ default-value drift.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from importlib.metadata import distribution, version
@@ -326,7 +327,10 @@ def main() -> None:
     assert build_input["source_kind"] == "upstream_source"
     assert build_input["fork_commit"] is None
     assert provenance["source_archive_sha256"] == EXPECTED_SOURCE_ARCHIVE_SHA256
-    assert provenance["overlays"] == {}
+    patch_path = Path("/runtime/patch_fork_condenser.py")
+    assert provenance["overlays"] == {
+        patch_path.name: hashlib.sha256(patch_path.read_bytes()).hexdigest()
+    }
     direct_urls = {}
     allowed_source_roots = (
         "file:///opt/openhands-source",
@@ -686,6 +690,7 @@ def main() -> None:
 
     assert _field_default(ForkConversationRequest, "from_event_id") is None
     assert _field_default(ForkConversationRequest, "reset_metrics") is True
+    assert _field_default(ForkConversationRequest, "condenser") is None
     assert _field_default(NavigateConversationRequest, "event_id") is None
 
     goal_request_fields = StartGoalRequest.model_fields

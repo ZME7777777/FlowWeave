@@ -117,6 +117,8 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     assert "fetch_openhands_source.py" in dockerfile
     assert "--lock /runtime/openhands-source.lock.json" in dockerfile
     assert "--destination /opt/openhands-source" in dockerfile
+    assert "--overlay /runtime/patch_fork_condenser.py" in dockerfile
+    assert "patch_fork_condenser.py /opt/openhands-source" in dockerfile
     assert "/opt/openhands-source/openhands-sdk" in dockerfile
     assert "/opt/openhands-source/openhands-agent-server" in dockerfile
     assert "expected='1.44.0'" in dockerfile

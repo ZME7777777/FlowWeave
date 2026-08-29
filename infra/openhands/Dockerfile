@@ -39,10 +39,13 @@ ENV UV_PROJECT_ENV=/runtime/.venv
 RUN uv sync --frozen --no-dev
 COPY infra/openhands/source.lock.json /runtime/openhands-source.lock.json
 COPY infra/openhands/fetch_source.py /runtime/fetch_openhands_source.py
+COPY infra/openhands/patch_fork_condenser.py /runtime/patch_fork_condenser.py
 RUN /usr/local/bin/python /runtime/fetch_openhands_source.py \
       --lock /runtime/openhands-source.lock.json \
       --destination /opt/openhands-source \
-      --provenance /runtime/openhands-source-provenance.json
+      --provenance /runtime/openhands-source-provenance.json \
+      --overlay /runtime/patch_fork_condenser.py
+RUN /usr/local/bin/python /runtime/patch_fork_condenser.py /opt/openhands-source
 RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
       /opt/openhands-source/openhands-sdk \
       /opt/openhands-source/openhands-tools \

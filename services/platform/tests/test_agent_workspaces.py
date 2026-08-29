@@ -2498,7 +2498,7 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     settings, db_session_factory, monkeypatch
 ):
     class ForkRuntime(MockRuntime):
-        fork_call: tuple[str | None, str, bool] | None = None
+        fork_call: tuple[str | None, str, bool, int, float | None] | None = None
         condensed = False
         head = "assistant-event"
         active_events: tuple[RuntimeEvent, ...] = (
@@ -2533,6 +2533,8 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
                 kwargs["from_event_id"],
                 kwargs["expected_source_leaf_event_id"],
                 kwargs["reset_metrics"],
+                kwargs["condenser"].max_size,
+                kwargs["condenser"].max_tokens_ratio,
             )
             return super().fork_conversation(handle, **kwargs)
 
@@ -2605,7 +2607,13 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         assert fork["model_name"] == "fork-model"
         assert fork["reasoning_effort"] == "high"
         assert fork["streaming_callback_ready"] is False
-        assert runtime.fork_call == ("assistant-event", "assistant-event", True)
+        assert runtime.fork_call == (
+            "assistant-event",
+            "assistant-event",
+            True,
+            10_000,
+            0.8,
+        )
         assert (
             conversations.fork_conversation(
                 db, workspace.id, source["id"], "assistant-event", None, "fork-key"
@@ -2660,8 +2668,9 @@ def test_agent_workspace_migrates_historical_streaming_callback_before_send(
             return super().fork_conversation(handle, **kwargs)
 
         def conversation_context(self, handle):
-            del handle
+            context = super().conversation_context(handle)
             return {
+                **context,
                 "used_tokens": None,
                 "window_tokens": None,
                 "cumulative_tokens": None,

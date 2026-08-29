@@ -2071,6 +2071,82 @@ def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
     ]
 
 
+def test_openhands_fork_replaces_only_the_governed_condenser(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str, object]] = []
+    responses = iter(
+        [
+            _state(execution_status="idle", leaf_event_id="event-4"),
+            {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "forked_from_conversation_id": (
+                    "10000000-0000-4000-8000-000000000002"
+                ),
+                "forked_from_event_id": "event-4",
+                "leaf_event_id": "event-4",
+            },
+        ]
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    request = _request()
+    result = runtime.fork_conversation(
+        _handle("event-4"),
+        target_conversation_id="10000000-0000-4000-8000-000000000003",
+        title="Fork",
+        from_event_id="event-4",
+        expected_source_leaf_event_id="event-4",
+        reset_metrics=True,
+        condenser=RuntimeCondenser(
+            kind="LLM_SUMMARIZING",
+            max_size=10_000,
+            max_tokens_ratio=0.8,
+            keep_first=4,
+        ),
+        condenser_provider=request.agent_spec.provider,
+    )
+
+    assert result.handle.conversation_id == "10000000-0000-4000-8000-000000000003"
+    assert requests[0][:2] == (
+        "GET",
+        "/api/conversations/10000000-0000-4000-8000-000000000002",
+    )
+    method, path, payload = requests[1]
+    assert method == "POST"
+    assert path == "/api/conversations/10000000-0000-4000-8000-000000000002/fork"
+    assert isinstance(payload, dict)
+    assert payload["condenser"] == {
+        "kind": "LLMSummarizingCondenser",
+        "llm": {
+            "model": "openai/gpt-5.6-sol",
+            "base_url": "http://host.docker.internal:1234/v1",
+            "api_key": "configured-secret",
+            "usage_id": "condenser",
+            "stream": True,
+            "num_retries": 2,
+            "retry_multiplier": 2.0,
+            "retry_min_wait": 2,
+            "retry_max_wait": 4,
+            "timeout": 60,
+            "max_input_tokens": 922_000,
+        },
+        "max_size": 10_000,
+        "max_tokens": 737_600,
+        "keep_first": 4,
+        "minimum_progress": 0.1,
+        "hard_context_reset_max_retries": 5,
+        "hard_context_reset_context_scaling": 0.8,
+    }
+    assert payload["from_event_id"] == "event-4"
+    assert payload["reset_metrics"] is True
+
+
 def test_openhands_read_events_projects_only_native_task_cumulative_usage(
     openhands_settings, monkeypatch
 ):

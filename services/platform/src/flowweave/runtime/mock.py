@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from flowweave.runtime.base import (
     RuntimeAskAgentResult,
+    RuntimeCondenser,
     RuntimeConversationIdentity,
     RuntimeEventBatch,
     RuntimeForkResult,
@@ -36,6 +37,7 @@ class MockRuntime:
 
     def __init__(self) -> None:
         self._results: dict[str, RuntimeResult] = {}
+        self._conversation_condensers: dict[str, RuntimeCondenser] = {}
 
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
         del request
@@ -219,7 +221,7 @@ class MockRuntime:
         return RuntimeWorkspaceFile(path.rsplit("/", 1)[-1], "text/plain", b"mock workspace file\n")
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
-        del handle
+        condenser = self._conversation_condensers.get(handle.conversation_id)
         return {
             "used_tokens": None,
             "window_tokens": None,
@@ -227,6 +229,8 @@ class MockRuntime:
             "provider_id": None,
             "model_name": None,
             "reasoning_effort": None,
+            "condenser_max_size": condenser.max_size if condenser is not None else None,
+            "condenser_max_tokens": condenser.max_tokens if condenser is not None else None,
         }
 
     def interrupt(self, handle: RuntimeHandle) -> None:
@@ -288,8 +292,10 @@ class MockRuntime:
         from_event_id: str | None,
         expected_source_leaf_event_id: str,
         reset_metrics: bool,
+        condenser: RuntimeCondenser | None = None,
+        condenser_provider: RuntimeProvider | None = None,
     ) -> RuntimeForkResult:
-        del title
+        del title, condenser_provider
         fork_handle = RuntimeHandle(
             job_id=handle.job_id,
             conversation_id=target_conversation_id,
@@ -300,6 +306,8 @@ class MockRuntime:
         self._results[fork_handle.job_id] = RuntimeResult(
             status="RUNNING", cursor=fork_handle.cursor
         )
+        if condenser is not None:
+            self._conversation_condensers[target_conversation_id] = condenser
         return RuntimeForkResult(
             handle=fork_handle,
             source_conversation_id=handle.conversation_id,
