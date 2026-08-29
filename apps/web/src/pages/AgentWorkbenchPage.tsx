@@ -6,7 +6,7 @@ import { Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, File
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, agentWorkspaceFileUrl, agentWorkspaceTerminalUrl, api, randomId, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, AgentWorkspaceMcpReadiness, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, ProviderModel } from '../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, AgentWorkspaceMcpReadiness, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../types';
 import './agent-workbench.css';
 import './agent-workbench-layout.css';
 
@@ -1453,7 +1453,26 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     onNavigate(`/agent/conversations/${encodeURIComponent(value.id)}`);
   }, onError: error => reportOperationError(selected?.id, error) });
   const condense = useMutation({
-    mutationFn: () => api.condenseAgentConversation(workspace!.id, selected!.id),
+    mutationFn: async () => {
+      const workspaceId = workspace!.id;
+      const bindingId = selected!.id;
+      const queryKey = ['agent-conversation-events', workspaceId, bindingId] as const;
+      const existing = queryClient.getQueryData<OpenHandsConversationEventBatch>(queryKey);
+      const completedBefore = new Set((existing?.events ?? [])
+        .filter(event => event.event_type === 'CONDENSATION_COMPLETED')
+        .map(event => event.id));
+      const accepted = await api.condenseAgentConversation(workspaceId, bindingId);
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        const batch = await api.agentConversationEvents(workspaceId, bindingId);
+        queryClient.setQueryData(queryKey, batch);
+        if (batch.events.some(event =>
+          event.event_type === 'CONDENSATION_COMPLETED' && !completedBefore.has(event.id)
+        )) return accepted;
+        await new Promise(resolve => window.setTimeout(resolve, 600));
+      }
+      throw new Error('上下文压缩请求已接受，但未在 60 秒内收到正式完成事件。');
+    },
     onMutate: () => setOperationError(undefined),
     onSuccess: () => refresh(),
     onError: error => reportOperationError(selected?.id, error),

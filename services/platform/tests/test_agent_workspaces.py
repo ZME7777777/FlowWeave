@@ -761,6 +761,72 @@ def test_agent_workspace_projects_runtime_sandbox_images_for_the_browser(
     )
 
 
+def test_agent_workspace_projects_condensation_reason_and_separate_times(
+    settings, db_session_factory, monkeypatch
+):
+    class CondensationEventRuntime(MockRuntime):
+        def read_active_events(self, handle):
+            del handle
+            events = [
+                RuntimeEvent(
+                    cursor=f"event-{index}",
+                    event_type="THOUGHT",
+                    payload={
+                        "parent_id": "__root__" if index == 0 else f"event-{index - 1}",
+                        "timestamp": f"2026-08-26T10:00:{index % 60:02d}+00:00",
+                    },
+                )
+                for index in range(241)
+            ]
+            events.append(
+                RuntimeEvent(
+                    cursor="condensation-1",
+                    event_type="CONDENSATION_COMPLETED",
+                    payload={
+                        "parent_id": "event-240",
+                        "timestamp": "2026-08-26T10:05:00+00:00",
+                        "forgotten_event_ids": ["event-2", "event-3"],
+                    },
+                )
+            )
+            return RuntimeEventBatch(events=tuple(events))
+
+        def conversation_context(self, handle):
+            del handle
+            return {"condenser_max_size": 240}
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = CondensationEventRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "压缩记录", workspace.default_model_provider_id, "condense-key"
+        )
+        projected = conversations.events(db, workspace.id, created["id"], None)["events"][-1]
+
+    assert projected["event_type"] == "CONDENSATION_COMPLETED"
+    assert projected["payload"]["condensation_reason"] == "EVENTS"
+    assert projected["payload"]["condensation_event_count"] == 241
+    assert projected["payload"]["condensation_max_events"] == 240
+    assert projected["payload"]["condensation_triggered_at"] == (
+        "2026-08-26T10:00:00+00:00"
+    )
+    assert projected["payload"]["condensation_completed_at"] == (
+        "2026-08-26T10:05:00+00:00"
+    )
+    assert "241" in projected["payload"]["condensation_reason_detail"]
+    assert "240" in projected["payload"]["condensation_reason_detail"]
+
+
 def test_agent_workspace_selected_skill_is_frozen_and_mounted(
     settings, container, db_session_factory, monkeypatch, skill_capability
 ):

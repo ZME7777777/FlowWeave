@@ -1284,6 +1284,102 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
     batch = get_runtime().read_active_events(replace(handle, cursor=cursor))
+    # OpenHands 1.44 persists a Condensation when compaction finishes, but an
+    # automatic event/token-triggered compaction has no separate durable start
+    # event and the Condensation itself does not retain its trigger reason.
+    # Enrich the browser projection from the formal active branch so the UI can
+    # render an auditable start record and a separate completion record without
+    # changing native conversation history.
+    try:
+        context = get_runtime().conversation_context(handle)
+    except (DomainError, AttributeError):
+        context = {}
+    raw_max_events = context.get("condenser_max_size")
+    max_events = (
+        raw_max_events
+        if isinstance(raw_max_events, int)
+        and not isinstance(raw_max_events, bool)
+        and raw_max_events > 0
+        else None
+    )
+    events_by_id = {event.cursor: event for event in batch.events}
+    condensation_metadata: dict[str, dict[str, Any]] = {}
+    for event in batch.events:
+        if event.event_type != "CONDENSATION_COMPLETED":
+            continue
+        # Associate a request and an earlier condensation only through the
+        # formal active-branch parent chain. REST ordering is transport detail
+        # and must never decide conversation causality.
+        ancestors: list[Any] = []
+        seen_ids: set[str] = set()
+        parent_id = event.payload.get("parent_id")
+        while isinstance(parent_id, str) and parent_id != "__root__":
+            if parent_id in seen_ids:
+                break
+            seen_ids.add(parent_id)
+            ancestor = events_by_id.get(parent_id)
+            if ancestor is None:
+                break
+            ancestors.append(ancestor)
+            parent_id = ancestor.payload.get("parent_id")
+        previous_completion = next(
+            (item for item in ancestors if item.event_type == "CONDENSATION_COMPLETED"),
+            None,
+        )
+        current_ancestors = (
+            ancestors[: ancestors.index(previous_completion)]
+            if previous_completion is not None
+            else ancestors
+        )
+        pending_request = next(
+            (
+                item
+                for item in current_ancestors
+                if item.event_type == "CONDENSATION_REQUESTED"
+            ),
+            None,
+        )
+        # A first condensation's complete formal ancestry provides a lower
+        # bound for the native View size. After an earlier condensation, the
+        # summary/retained-tail View cannot be reconstructed from event order,
+        # so leave the detailed automatic reason unspecified.
+        event_count = len(current_ancestors)
+        if pending_request is not None:
+            reason = "REQUEST"
+            reason_detail = (
+                "OpenHands 收到显式压缩请求；该请求可能来自手动压缩、"
+                "上下文用量主动保护或模型上下文超限后的恢复。"
+            )
+            trigger_event = pending_request
+        elif (
+            previous_completion is None
+            and max_events is not None
+            and event_count > max_events
+        ):
+            reason = "EVENTS"
+            reason_detail = (
+                f"压缩前正式事件链至少有 {event_count} 个事件，"
+                f"已超过该会话的 {max_events} 条事件上限。"
+            )
+            trigger_event = current_ancestors[0] if current_ancestors else event
+        else:
+            reason = "AUTOMATIC_CONTEXT_PROTECTION"
+            reason_detail = (
+                "OpenHands 自动上下文保护已触发；原生完成事件未保存更细的触发分类，"
+                "因此无法可靠区分 token 压力与模型恢复。"
+            )
+            trigger_event = current_ancestors[0] if current_ancestors else event
+        condensation_metadata[event.cursor] = {
+            "condensation_reason": reason,
+            "condensation_reason_detail": reason_detail,
+            "condensation_triggered_at": trigger_event.payload.get("timestamp"),
+            "condensation_completed_at": event.payload.get("timestamp"),
+            "condensation_event_count": event_count,
+            "condensation_max_events": max_events,
+            "condensation_request_event_id": (
+                pending_request.cursor if pending_request is not None else None
+            ),
+        }
     event_ids = [event.cursor for event in batch.events if event.event_type == "MESSAGE"]
     stored: list[AgentConversationMessageAttachment] = (
         list(
@@ -1303,6 +1399,8 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
 
     def projected_event(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
+        if event.event_type == "CONDENSATION_COMPLETED":
+            payload.update(condensation_metadata.get(event.cursor, {}))
         content = payload.get("content")
         if isinstance(content, str):
             payload["content"] = _project_sandbox_images(

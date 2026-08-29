@@ -360,6 +360,60 @@ function eventTime(item?: Item): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
+function formatEventTime(raw: unknown): string {
+  if (typeof raw !== 'string' || !raw) return '时间未知';
+  const normalized = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : raw + 'Z';
+  const value = Date.parse(normalized);
+  if (!Number.isFinite(value)) return '时间未知';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(value);
+}
+
+function condensationReason(item: Item): string {
+  const detail = item.event.payload.condensation_reason_detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (item.event.event_type === 'CONDENSATION_REQUESTED') {
+    return 'OpenHands 收到显式压缩请求，正在整理较早的上下文。';
+  }
+  return 'OpenHands 自动上下文保护已触发；原生事件未保存更细的触发原因。';
+}
+
+function CondensationNotices({ items }: { items: Item[] }) {
+  if (!items.length) return null;
+  const requestIds = new Set(items
+    .filter(item => item.event.event_type === 'CONDENSATION_REQUESTED')
+    .map(item => item.event.id));
+  return <div className="conversation-condensation-timeline" aria-label="上下文压缩记录">
+    {items.flatMap(item => {
+      if (item.event.event_type === 'CONDENSATION_REQUESTED') {
+        return [<article className="conversation-condensation-notice triggered" key={item.event.id} role="status">
+          <CircleAlert size={17}/><div><header><b>已触发上下文压缩</b><time>{formatEventTime(item.event.payload.timestamp)}</time></header><p>{condensationReason(item)}</p></div>
+        </article>];
+      }
+      const requestId = typeof item.event.payload.condensation_request_event_id === 'string'
+        ? item.event.payload.condensation_request_event_id
+        : undefined;
+      const needsRecoveredStart = !requestId || !requestIds.has(requestId);
+      const forgotten = Array.isArray(item.event.payload.forgotten_event_ids)
+        ? item.event.payload.forgotten_event_ids.length
+        : undefined;
+      const completedText = forgotten
+        ? '已完成摘要并从模型上下文中移除 ' + forgotten + ' 个较早事件；完整事件记录仍然保留。'
+        : '已完成较早上下文的摘要；完整事件记录仍然保留。';
+      return [
+        ...(needsRecoveredStart ? [<article className="conversation-condensation-notice triggered" key={item.event.id + '-triggered'} role="status">
+          <CircleAlert size={17}/><div><header><b>已触发上下文压缩</b><time>{formatEventTime(item.event.payload.condensation_triggered_at ?? item.event.payload.timestamp)}</time></header><p>{condensationReason(item)}</p></div>
+        </article>] : []),
+        <article className="conversation-condensation-notice completed" key={item.event.id} role="status">
+          <Check size={17}/><div><header><b>上下文压缩已完成</b><time>{formatEventTime(item.event.payload.condensation_completed_at ?? item.event.payload.timestamp)}</time></header><p>{completedText}</p></div>
+        </article>,
+      ];
+    })}
+  </div>;
+}
+
 function formatDuration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(seconds / 3600);
@@ -653,13 +707,15 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
         const failures = turn.activity.filter(item => item.kind === 'error');
-        const processItems = turn.activity;
+        const condensationItems = turn.activity.filter(item => item.kind === 'condensation');
+        const processItems = turn.activity.filter(item => item.kind !== 'condensation');
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
           <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt}/>
-          {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={processItems} liveText={liveText} requestSubmitting={requestSubmitting}/>}
+          <CondensationNotices items={condensationItems}/>
+          {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting}/>}
           {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
         </section>;

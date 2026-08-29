@@ -534,7 +534,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'finish-observation', event_type: 'COMPLETED', payload: { source: 'environment', parent_id: 'finish-action', event_name: 'FinishObservation', content: '任务跟踪已完成。', timestamp: '2026-08-26T10:03:14Z' } },
           { id: 'failure-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'finish-observation', content: '触发失败', timestamp: '2026-08-26T10:04:00Z' } },
           { id: 'failure-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'failure-user', content: '模型服务暂时不可用。', error_code: 'ModelUnavailable', timestamp: '2026-08-26T10:04:03Z' } },
-          ...(manualCondensations ? [{ id: 'manual-condensation', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'failure-event', event_name: 'Condensation', summary: '已压缩较早上下文', timestamp: '2026-08-26T10:05:00Z' } }] : []),
+          ...(manualCondensations ? [{ id: 'manual-condensation', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'failure-event', event_name: 'Condensation', summary: '已压缩较早上下文', forgotten_event_ids: ['tool-request', 'tool-result'], condensation_reason: 'REQUEST', condensation_reason_detail: 'OpenHands 收到显式压缩请求；该请求可能来自手动压缩、上下文用量主动保护或模型上下文超限后的恢复。', condensation_triggered_at: '2026-08-26T10:04:58Z', condensation_completed_at: '2026-08-26T10:05:00Z', timestamp: '2026-08-26T10:05:00Z' } }] : []),
         ] : [], next_cursor: null,
       }) });
       return;
@@ -728,6 +728,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => manualCondensations).toBe(1);
   await expect(page.locator('.agent-context-progress')).toHaveCount(0);
   await expect(page.getByText('压缩已完成，等待下次模型调用更新用量', { exact: true })).toBeVisible();
+  const condensationTimeline = page.getByLabel('上下文压缩记录');
+  await expect(condensationTimeline.getByText('已触发上下文压缩', { exact: true })).toBeVisible();
+  await expect(condensationTimeline.getByText('上下文压缩已完成', { exact: true })).toBeVisible();
+  await expect(condensationTimeline).toContainText('OpenHands 收到显式压缩请求');
+  await expect(condensationTimeline).toContainText('完整事件记录仍然保留');
+  await expect(condensationTimeline.locator('.conversation-condensation-notice')).toHaveCount(2);
+  await expect(condensationTimeline.locator('time')).toHaveCount(2);
+  await expect(condensationTimeline.locator('.conversation-activity-group')).toHaveCount(0);
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('.conversation-activity-group');
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
