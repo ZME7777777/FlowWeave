@@ -11,6 +11,7 @@ from flowweave.modules.agent_sessions.application.host import (
     READ_SESSIONS,
     WRITE_SESSIONS,
     AgentSessionHostContext,
+    AgentSessionPermission,
 )
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
@@ -38,10 +39,28 @@ def __getattr__(name: str) -> Any:
     dependency direction from becoming an import-time cycle.
     """
 
-    if name in {"conversations", "titles"}:
-        from flowweave.modules.agent_sessions.application import conversations, titles
+    if name in {
+        "conversations",
+        "flow_node_conversations",
+        "flow_node_locator",
+        "flow_node_workspace",
+        "titles",
+    }:
+        from flowweave.modules.agent_sessions.application import (
+            conversations,
+            flow_node_conversations,
+            flow_node_locator,
+            flow_node_workspace,
+            titles,
+        )
 
-        return {"conversations": conversations, "titles": titles}[name]
+        return {
+            "conversations": conversations,
+            "flow_node_conversations": flow_node_conversations,
+            "flow_node_locator": flow_node_locator,
+            "flow_node_workspace": flow_node_workspace,
+            "titles": titles,
+        }[name]
     if name in {"FlowNodeSessionHost", "resolve_flow_node_session_host"}:
         from flowweave.modules.agent_sessions.application.flow_node_host import (
             FlowNodeSessionHost,
@@ -54,12 +73,14 @@ def __getattr__(name: str) -> Any:
         }[name]
     raise AttributeError(name)
 
+
 __all__ = [
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentConversationCommand",
     "AgentConversationMessageAttachment",
     "AgentSessionHostContext",
+    "AgentSessionPermission",
     "ACCESS_FILES",
     "ACCESS_TERMINAL",
     "CONTROL_SESSIONS",

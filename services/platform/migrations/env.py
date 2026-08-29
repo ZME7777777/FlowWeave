@@ -64,7 +64,6 @@ def _bridge_legacy_runtime_lineage(connection) -> None:
         forbidden_tables = {
             "flow_run_runtime_allocations",
             "flow_run_runtimes",
-            "flow_run_conversation_bindings",
         }
         if not required_tables <= tables or forbidden_tables & tables:
             raise RuntimeError(

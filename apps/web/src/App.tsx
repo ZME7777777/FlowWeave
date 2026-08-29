@@ -1,5 +1,5 @@
 import { Activity, Bot, Boxes, BrainCircuit, GitFork, Hexagon, Library, PlayCircle, TerminalSquare } from 'lucide-react';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FlowsPage } from './pages/FlowsPage';
 import { NodesPage } from './pages/NodesPage';
 import { ModelsPage } from './pages/ModelsPage';
@@ -9,9 +9,8 @@ import { CapabilitiesPage } from './pages/CapabilitiesPage';
 import { TerminalEnvironmentsPage } from './pages/TerminalEnvironmentsPage';
 import { StandaloneAgentTerminal } from './components/AgentRuntimeSidebar';
 import { AgentWorkbenchPage } from './pages/AgentWorkbenchPage';
+import { FlowNodeSessionPage } from './pages/FlowNodeSessionPage';
 import { useWorkbenchStore } from './store/workbench';
-
-const AgentChatPage = lazy(async () => ({ default: (await import('./pages/AgentChatPage')).AgentChatPage }));
 
 const nav = [
   { view: 'nodes' as const, label: '节点资产', icon: Boxes },
@@ -27,7 +26,26 @@ export function App() {
   const { view, setView } = useWorkbenchStore();
   const [, setRouteVersion] = useState(0);
   useEffect(() => {
-    const update = () => setRouteVersion(value => value + 1);
+    const update = (event: PopStateEvent) => {
+      const flowRun = event.state?.flowweaveFlowRun;
+      if (
+        flowRun
+        && typeof flowRun.runId === 'string'
+        && typeof flowRun.nodeRunId === 'string'
+        && typeof flowRun.attemptId === 'string'
+      ) {
+        // Node sessions are a routed leaf of the selected Attempt. Restore
+        // that in-memory selection when Back returns to the originating
+        // workbench entry instead of falling through to the run list.
+        useWorkbenchStore.setState({
+          view: 'workbench',
+          selectedRunId: flowRun.runId,
+          selectedNodeRunId: flowRun.nodeRunId,
+          selectedAttemptId: flowRun.attemptId,
+        });
+      }
+      setRouteVersion(value => value + 1);
+    };
     window.addEventListener('popstate', update);
     return () => window.removeEventListener('popstate', update);
   }, []);
@@ -36,7 +54,10 @@ export function App() {
     else window.history.pushState({}, '', path);
     setRouteVersion(value => value + 1);
   };
-  const isAgentRoute = window.location.pathname === '/agent' || window.location.pathname.startsWith('/agent/conversations/');
+  const nodeSessionRoute = window.location.pathname.match(
+    /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
+  );
+  const isAgentRoute = window.location.pathname === '/agent' || window.location.pathname.startsWith('/agent/conversations/') || Boolean(nodeSessionRoute);
   const leaveAgentRoute = () => {
     if (isAgentRoute) navigate('/', true);
   };
@@ -53,9 +74,8 @@ export function App() {
   const terminalRunId = terminalParams.get('terminalRun');
   const terminalConversationId = terminalParams.get('terminalConversation');
   if (terminalRunId && terminalConversationId) return <StandaloneAgentTerminal runId={terminalRunId} conversationId={terminalConversationId}/>;
-  if (view === 'agent-chat' && !isAgentRoute) return <div className="app-shell agent-focus-shell"><Suspense fallback={<div className="empty">加载 Agent 对话…</div>}><AgentChatPage/></Suspense></div>;
   const renderedView = view === 'agent-workbench' ? 'nodes' : view;
   return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar"><button className="brand" onClick={() => selectView('nodes')}><Hexagon size={23} fill="currentColor"/>FlowWeave</button><nav>{nav.map(item => <button key={item.view} className={(isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav><span className="kernel-status"><Activity size={14}/>{isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span></header>
-    {isAgentRoute ? <AgentWorkbenchPage onNavigate={navigate}/> : <>{<div className="principle-bar">一个 FlowRun 共享一个可替换 Runtime 与 Workspace；全部会话保留各自的 OpenHands 原生身份和事件树。</div>}{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}
+    {isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{<div className="principle-bar">一个 FlowRun 共享一个可替换 Runtime 与 Workspace；全部会话保留各自的 OpenHands 原生身份和事件树。</div>}{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}
   </div>;
 }

@@ -118,6 +118,26 @@ def _runtime_manifest(
     }
 
 
+def test_runtime_manifest_allows_only_the_reviewed_fork_overlay() -> None:
+    manifest = _runtime_manifest()
+    provenance = manifest["runtime_provenance"]
+    assert isinstance(provenance, dict)
+    provenance["overlays"] = {
+        "patch_fork_condenser.py": (
+            "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3"
+        )
+    }
+    environment_service.validate_runtime_manifest(manifest)
+
+    provenance["overlays"] = {"patch_fork_condenser.py": "tampered"}
+    with pytest.raises(DomainError, match="does not satisfy"):
+        environment_service.validate_runtime_manifest(manifest)
+
+    provenance["overlays"] = {"unreviewed.py": "a" * 64}
+    with pytest.raises(DomainError, match="does not satisfy"):
+        environment_service.validate_runtime_manifest(manifest)
+
+
 def _mock_setup_provider(monkeypatch):
     created: list[str] = []
     removed: list[str] = []

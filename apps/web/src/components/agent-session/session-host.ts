@@ -34,3 +34,29 @@ export const agentWorkspaceSessionHost: AgentSessionHost = {
     return match ? decodeURIComponent(match[1]) : undefined;
   },
 };
+
+export function flowNodeSessionHost(
+  flowRunId: string,
+  nodeRunId: string,
+  attemptId: string,
+): AgentSessionHost {
+  const rootPath = `/flow-runs/${encodeURIComponent(flowRunId)}/nodes/${encodeURIComponent(nodeRunId)}/attempts/${encodeURIComponent(attemptId)}/agent-sessions`;
+  const identity = `flow-node:${flowRunId}:${attemptId}`;
+  return {
+    id: identity,
+    displayName: '节点会话',
+    rootPath,
+    bootstrapRecoveryStorageKey: `flowweave.node-session.bootstrap-recovery.v1:${flowRunId}:${attemptId}`,
+    queryKey: (resource, ...identifiers) => [
+      'agent-session', identity, resource,
+      ...identifiers.filter((value): value is string => Boolean(value)),
+    ],
+    workspaceToolsStorageKey: hostId => `flowweave:agent-session-tools:${identity}:${hostId}`,
+    conversationPath: bindingId => `${rootPath}/${encodeURIComponent(bindingId)}`,
+    bindingIdFromPathname: pathname => {
+      const expression = new RegExp(`^${rootPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/([^/]+)$`);
+      const match = pathname.match(expression);
+      return match ? decodeURIComponent(match[1]) : undefined;
+    },
+  };
+}

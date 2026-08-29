@@ -8,6 +8,7 @@ product; a product host only supplies its authorized host context and Runtime.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import cast
 
 from sqlalchemy import (
     Boolean,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -84,7 +86,10 @@ class AgentConversationBinding(Base):
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
-    openhands_conversation_id: Mapped[str] = mapped_column(String(36))
+    # OpenHands identifiers are UUIDs today, but the formal Runtime contract
+    # permits opaque identifiers. Keep the shared locator compatible with the
+    # existing FlowRun locator rather than silently truncating a future host.
+    openhands_conversation_id: Mapped[str] = mapped_column(String(100))
     display_title: Mapped[str | None] = mapped_column(String(240))
     title_state: Mapped[str] = mapped_column(String(20), default="FALLBACK")
     title_generation: Mapped[int] = mapped_column(Integer, default=1)
@@ -183,6 +188,34 @@ class AgentConversationCommand(Base):
     failure_summary: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+def _normalize_default_host(
+    _mapper: object,
+    _connection: object,
+    target: AgentConversationBinding | AgentConversationCommand,
+) -> None:
+    """Retain the historical Workspace-only construction contract.
+
+    Direct callers predating the multi-host locator supplied only
+    ``workspace_id``. FlowRun callers always provide explicit host lineage.
+    """
+
+    workspace_id = cast(str | None, getattr(target, "workspace_id", None))
+    host_kind = cast(str | None, getattr(target, "host_kind", None))
+    if host_kind not in {None, "AGENT_WORKSPACE"} or not workspace_id:
+        return
+    target.host_kind = "AGENT_WORKSPACE"
+    if not cast(str | None, getattr(target, "host_id", None)):
+        target.host_id = workspace_id
+    if isinstance(target, AgentConversationBinding) and not cast(
+        str | None, getattr(target, "conversation_scope_id", None)
+    ):
+        target.conversation_scope_id = workspace_id
+
+
+event.listen(AgentConversationBinding, "before_insert", _normalize_default_host)
+event.listen(AgentConversationCommand, "before_insert", _normalize_default_host)
 
 
 __all__ = (

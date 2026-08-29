@@ -3,7 +3,7 @@ import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, ExternalLink, Link2, Play, Plus, RefreshCw, Send, StopCircle, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, subscribeToRun } from '../api/client';
+import { api, nodeSessionApi, subscribeToRun } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { AgentProfileSwitchPanel } from '../components/AgentProfileSwitchPanel';
@@ -52,6 +52,23 @@ const attemptStateLabel = (run: NodeRun) => {
   const state = attemptState(run);
   return state in ATTEMPT_STATE_LABELS ? ATTEMPT_STATE_LABELS[state as AttemptState] : state;
 };
+
+function openNodeSession(
+  flowRunId: string,
+  nodeRunId: string,
+  attemptId: string,
+  bindingId?: string,
+): void {
+  const base = `/flow-runs/${encodeURIComponent(flowRunId)}/nodes/${encodeURIComponent(nodeRunId)}/attempts/${encodeURIComponent(attemptId)}/agent-sessions`;
+  // Preserve the originating Workbench selection in the previous history
+  // entry. The node-session route is browser-addressable, but Back should
+  // return to this exact Attempt rather than lose Zustand's transient state.
+  window.history.replaceState({
+    flowweaveFlowRun: { runId: flowRunId, nodeRunId, attemptId },
+  }, '', window.location.href);
+  window.history.pushState({ flowweaveNodeSession: true }, '', bindingId ? `${base}/${encodeURIComponent(bindingId)}` : base);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
 
 function RunRail({ run, selected, onSelect }: { run: FlowRun; selected?: string; onSelect: (id: string) => void }) {
   const active = run.node_runs.filter(item => item.state === 'ACTIVE').length;
@@ -150,7 +167,9 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
       const attempt = created.attempts.at(-1);
       if (!attempt || attempt.state !== 'WAITING_START_CONFIRMATION') return { created };
       if (mode === 'CHAT') {
-        const conversation = await api.createConversation(run.id, attempt.id, `${node.alias || node.asset.name} · 会话`);
+        const conversation = await nodeSessionApi.create(
+          run.id, attempt.id, `${node.alias || node.asset.name} · 会话`,
+        );
         return { created, conversationId: conversation.id };
       }
       const started = await api.confirmStart(attempt.id, attempt.state_version, mode === 'SKILL'
@@ -164,7 +183,8 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
       onActivated(result.created);
       refresh();
       if (result.conversationId) {
-        useWorkbenchStore.getState().openAgentChat(run.id, result.conversationId);
+        const attempt = result.created.attempts.at(-1);
+        if (attempt) openNodeSession(run.id, result.created.id, attempt.id, result.conversationId);
       }
     },
   });
@@ -197,7 +217,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
     if (kind === 'confirm') return api.confirmStart(attempt.id, attempt.state_version, body as { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string });
-    if (kind === 'chat') return api.createConversation(run.id, attempt.id, `${nodeRunName(run, nodeRun)} · 会话`);
+    if (kind === 'chat') return nodeSessionApi.create(
+      run.id, attempt.id, `${nodeRunName(run, nodeRun)} · 会话`,
+    );
     if (kind === 'accept') return api.acceptAttempt(attempt.id, attempt.state_version);
     if (kind === 'reject') return api.rejectAttempt(attempt.id, String((body as { reason: string }).reason), attempt.state_version);
     if (kind === 'human') return api.humanInput(attempt.id, String((body as { content: string }).content), attempt.state_version);
@@ -206,13 +228,19 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     if (kind === 'delete-runtime') return api.retryRuntimeCancel(attempt.id, attempt.state_version, 'DELETE_MANAGED_RUNTIME');
     if (kind === 'bind') return api.bindInputs(attempt.id, body as Record<string, string>, attempt.state_version);
     return api.cancelAttempt(attempt.id, attempt.state_version);
-  }, onSuccess: (result, variables) => { setText(''); if (variables.kind === 'chat' && result && typeof result === 'object' && 'id' in result) useWorkbenchStore.getState().openAgentChat(run.id, String(result.id)); else navigate(result, variables.kind); refresh(); } });
+  }, onSuccess: (result, variables) => {
+    setText('');
+    if (variables.kind === 'chat' && result && typeof result === 'object' && 'id' in result) {
+      openNodeSession(run.id, nodeRun.id, attempt.id, String(result.id));
+    } else navigate(result, variables.kind);
+    refresh();
+  } });
   const act = (kind: string, body?: unknown) => mutation.mutate({ kind, body });
   const bindingPayload = Object.fromEntries((attemptNode?.asset.inputs ?? []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
   const attemptTerminal = attempt.state === 'ACCEPTED' || attempt.state === 'REJECTED' || attempt.state === 'CANCELLED';
   return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><div className="action-content">{!terminal && <button className="primary full create-another-run" onClick={onCreateNew}><Plus size={15}/>创建新的独立执行</button>}<div className="state-banner"><span>当前轮次状态</span><b>{ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
-    <button className="secondary full agent-chat-entry" onClick={() => useWorkbenchStore.getState().openAgentChat(run.id)}><Send size={15}/>进入 FlowRun 会话</button>
+    <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id)}><Send size={15}/>进入节点会话</button>
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
     <section className="attempt-side-section"><h4>本轮冻结输入</h4>{attempt.input_bindings.length ? attempt.input_bindings.map(item => { const boundArtifact = run.artifacts.find(artifactItem => artifactItem.id === item.artifact_version_id); const contract = attemptNode?.asset.inputs.find(field => field.field_key === item.input_field_key); return <article className="attempt-input-card" key={item.id}><header><span><b>{contract?.display_name || item.input_field_key}</b><small>{item.input_field_key}</small></span><span className="artifact-version">{boundArtifact ? `v${boundArtifact.version_no}` : '失效'}</span></header><strong>{boundArtifact ? artifactLabel(boundArtifact) : '产物不可用'}</strong><a href={boundArtifact?.uri ?? undefined} target="_blank" rel="noreferrer">{boundArtifact?.uri || '无外部 URL'}</a></article>; }) : <div className="empty compact">本轮没有输入绑定。</div>}</section>
     <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations}/></section>
@@ -271,7 +299,7 @@ export function WorkbenchPage() {
     if (kind === 'delete') {
       qc.removeQueries({ queryKey: ['flow-run', selectedRunId] });
       void qc.invalidateQueries({ queryKey: ['runs'] });
-      useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined, selectedConversationId: undefined });
+      useWorkbenchStore.setState({ view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined });
       return;
     }
     if (kind === 'reject' && result && typeof result === 'object' && 'id' in result && nodeRun) {

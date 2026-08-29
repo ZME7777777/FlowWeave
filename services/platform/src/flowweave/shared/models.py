@@ -41,10 +41,7 @@ from flowweave.modules.catalog.infrastructure.models import (
     NodeIOField,
     PluginSourceResolution,
 )
-from flowweave.modules.conversations.infrastructure.models import (
-    FlowRunConversationBinding,
-    RuntimeConfirmationApproval,
-)
+from flowweave.modules.conversations.infrastructure.models import RuntimeConfirmationApproval
 from flowweave.modules.environments.infrastructure.models import (
     EnvironmentSetupSession,
     EnvironmentVersion,
@@ -123,7 +120,6 @@ __all__ = (
     "FlowPortMapping",
     "FlowNode",
     "FlowRun",
-    "FlowRunConversationBinding",
     "FlowRunRuntime",
     "FlowRunRuntimeAllocation",
     "FlowRunRuntimeSecretReference",

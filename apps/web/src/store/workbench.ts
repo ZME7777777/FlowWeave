@@ -4,27 +4,23 @@ import type { ViewName } from '../types';
 
 const STORAGE_KEY = 'flowweave-workbench';
 const STORAGE_VERSION = 4;
-const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'models', 'flows', 'runs', 'workbench', 'agent-chat', 'agent-workbench']);
+const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'models', 'flows', 'runs', 'workbench', 'agent-workbench']);
 
 interface WorkbenchState {
   view: ViewName;
   selectedRunId?: string;
   selectedNodeRunId?: string;
   selectedAttemptId?: string;
-  selectedConversationId?: string;
   setView: (view: ViewName) => void;
   openRun: (runId: string, nodeRunId?: string) => void;
   selectNodeRun: (id: string) => void;
   selectAttempt: (id: string) => void;
   selectExecution: (nodeRunId: string, attemptId?: string) => void;
-  openAgentChat: (runId: string, conversationId?: string) => void;
-  selectConversation: (id: string) => void;
-  returnToWorkbench: () => void;
 }
 
 type PersistedWorkbenchState = Pick<
   WorkbenchState,
-  'view' | 'selectedRunId' | 'selectedNodeRunId' | 'selectedAttemptId' | 'selectedConversationId'
+  'view' | 'selectedRunId' | 'selectedNodeRunId' | 'selectedAttemptId'
 >;
 
 function sanitizePersistedState(value: unknown): PersistedWorkbenchState {
@@ -36,7 +32,7 @@ function sanitizePersistedState(value: unknown): PersistedWorkbenchState {
     // Run, Attempt and Conversation IDs are transient. Persisting them made a
     // browser refresh reopen deleted or obsolete Runtime contexts after a
     // deploy. Return to the Run list instead of restoring those deep links.
-    view: view === 'workbench' || view === 'agent-chat' || view === 'agent-workbench' ? 'runs' : view,
+    view: view === 'workbench' || view === 'agent-workbench' ? 'runs' : view,
   };
 }
 
@@ -72,18 +68,13 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       selectExecution: (selectedNodeRunId, selectedAttemptId) => set({
         selectedNodeRunId, selectedAttemptId,
       }),
-      openAgentChat: (selectedRunId, selectedConversationId) => set({
-        view: 'agent-chat', selectedRunId, selectedConversationId,
-      }),
-      selectConversation: selectedConversationId => set({ selectedConversationId }),
-      returnToWorkbench: () => set({ view: 'workbench' }),
     }),
     {
       name: STORAGE_KEY,
       version: STORAGE_VERSION,
       storage: createJSONStorage<PersistedWorkbenchState>(() => safeLocalStorage),
       partialize: ({ view }) => ({
-        view: view === 'workbench' || view === 'agent-chat' || view === 'agent-workbench' ? 'runs' : view,
+        view: view === 'workbench' || view === 'agent-workbench' ? 'runs' : view,
       }),
       migrate: persisted => sanitizePersistedState(persisted),
       merge: (persisted, current) => ({ ...current, ...sanitizePersistedState(persisted) }),

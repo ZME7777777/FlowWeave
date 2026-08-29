@@ -220,7 +220,7 @@ def test_flowrun_conversation_model_has_no_platform_message_or_state_truth() -> 
         "WAIT_CONVERSATION_WAKEUP",
     ):
         assert task_type not in worker_handlers
-    assert "class FlowRunConversationBinding" in models
+    assert "FlowRunConversationBinding" not in models
     assert "class RuntimeConfirmationApproval" in models
 
 
@@ -340,10 +340,12 @@ def test_agent_workspace_uses_the_single_agent_session_workbench_and_facade() ->
     public_facade = (SOURCE / "modules" / "agent_sessions" / "public.py").read_text()
 
     assert "import { AgentWorkbenchPage }" in app
-    # The legacy FlowRun page remains temporarily reachable only through its
-    # own view.  It must never become the `/agent` route again before that
-    # host is migrated to the shared workbench in a later slice.
-    assert "isAgentRoute ? <AgentWorkbenchPage onNavigate={navigate}/>" in app
+    # Both the default Workspace and FlowRun node hosts mount the same
+    # Workbench. The former FlowRun chat page must never return as a second
+    # page/state machine.
+    assert "import { FlowNodeSessionPage }" in app
+    assert "<FlowNodeSessionPage" in app
+    assert not (web_root / "pages" / "AgentChatPage.tsx").exists()
     assert "return <AgentSessionWorkbench {...props}/>;" in route_host
     assert "export function AgentSessionWorkbench" in workbench
     assert "agentWorkspaceSessionGateway" in gateway
@@ -381,11 +383,7 @@ def test_agent_session_host_contract_is_explicit_and_namespaced() -> None:
         web_root / "components" / "agent-session" / "AgentSessionWorkbench.tsx"
     ).read_text()
     default_adapter = (
-        SOURCE
-        / "modules"
-        / "agent_workspaces"
-        / "application"
-        / "session_host.py"
+        SOURCE / "modules" / "agent_workspaces" / "application" / "session_host.py"
     ).read_text()
 
     assert "export interface AgentSessionApi" in gateway
@@ -405,7 +403,7 @@ def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
         SOURCE / "modules" / "orchestration" / "application" / "service.py"
     ).read_text()
     conversations = (
-        SOURCE / "modules" / "conversations" / "application" / "service.py"
+        SOURCE / "modules" / "agent_sessions" / "application" / "flow_node_conversations.py"
     ).read_text()
     assert "from flowweave.runtime.manifest import" in orchestration
     assert "from flowweave.runtime.manifest import runtime_node" in conversations
@@ -424,7 +422,8 @@ def test_flowrun_api_and_web_do_not_restore_legacy_conversation_or_endpoint_trut
         (web_root / path).read_text()
         for path in (
             "api/client.ts",
-            "pages/AgentChatPage.tsx",
+            "pages/FlowNodeSessionPage.tsx",
+            "components/agent-session/AgentSessionWorkbench.tsx",
             "components/AgentRuntimeSidebar.tsx",
             "components/RuntimeGovernancePanel.tsx",
         )

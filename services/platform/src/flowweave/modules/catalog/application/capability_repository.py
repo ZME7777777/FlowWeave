@@ -61,7 +61,7 @@ def _builtin_id(kind: str, value: str) -> str:
 
 
 def ensure_default_tool_policy(db: Session) -> PublishedCapability:
-    """Return the immutable built-in Tool Policy installed by migration 0031.
+    """Return the current immutable built-in Tool Policy.
 
     Application code may repair a freshly constructed test database, but it
     never synthesizes policy inside a Runtime request. Every node and Snapshot
@@ -77,10 +77,6 @@ def ensure_default_tool_policy(db: Session) -> PublishedCapability:
     content_hash = hashlib.sha256(content).hexdigest()
     blob_id = _builtin_id("blob", content_hash)
     package_id = _builtin_id("package", f"TOOL_POLICY:{DEFAULT_TOOL_POLICY_KEY}")
-    # Version 2 was published by the superseded 1.42.1/fork Runtime.  Retain
-    # it as immutable history but never select it for new node assets after
-    # the fixed 1.44.0 baseline is restored.
-    version_id = _builtin_id("version", f"builtin:{DEFAULT_TOOL_POLICY_KEY}:3")
     digest = version_digest(
         "TOOL_POLICY", DEFAULT_TOOL_POLICY_KEY, content_hash, DEFAULT_TOOL_POLICY_CONFIG
     )
@@ -109,16 +105,27 @@ def ensure_default_tool_policy(db: Session) -> PublishedCapability:
     # enforce the immutable Version foreign keys without relying on ORM
     # instance dependency ordering.
     db.flush()
-    version = db.get(CapabilityVersion, version_id)
+    version = db.scalar(
+        select(CapabilityVersion).where(
+            CapabilityVersion.package_id == package_id,
+            CapabilityVersion.digest == digest,
+        )
+    )
     if version is None:
+        # Empty databases may already have the compatible content in v3 because
+        # historical migrations import the current frozen document.  Deployed
+        # databases instead retain a provenance-drifted v3, so the v4 migration
+        # publishes this explicit immutable successor before application code
+        # can select it.
+        version_id = _builtin_id("version", f"builtin:{DEFAULT_TOOL_POLICY_KEY}:4")
         version = CapabilityVersion(
             id=version_id,
             package_id=package_id,
             blob_id=blob_id,
-            version_no=3,
+            version_no=4,
             digest=digest,
             normalized_config_json=dict(DEFAULT_TOOL_POLICY_CONFIG),
-            source_filename="flowweave-default-tools-v3.json",
+            source_filename="flowweave-default-tools-v4.json",
             state="PUBLISHED",
         )
         db.add(version)
@@ -127,7 +134,7 @@ def ensure_default_tool_policy(db: Session) -> PublishedCapability:
             CapabilityValidation(
                 id=_builtin_id("validation", version_id),
                 capability_version_id=version_id,
-                validator="flowweave-builtin-v3",
+                validator="flowweave-builtin-v4",
                 status="PASSED",
                 report_json={
                     "builtin": True,

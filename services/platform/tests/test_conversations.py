@@ -6,11 +6,11 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
-from flowweave.modules.agent_sessions.application import flow_node_host
+from flowweave.modules.agent_sessions.application import flow_node_host, flow_node_workspace
 from flowweave.modules.agent_sessions.application.host import CREATE_SESSIONS, READ_SESSIONS
+from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.conversations.application import locator
 from flowweave.modules.conversations.application import service as conversation_service
-from flowweave.modules.conversations.infrastructure.models import FlowRunConversationBinding
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     EnvironmentVersion,
@@ -25,6 +25,7 @@ from flowweave.shared.models import (
     TerminalEnvironment,
 )
 from flowweave.shared.schemas import FlowRunConversationCreateWrite
+from flowweave.shared.settings import settings_context
 
 
 def _runtime_context(db: Session) -> tuple[str, str]:
@@ -123,16 +124,11 @@ def test_binding_is_an_idempotent_minimal_locator(
         assert second.id == first.id
         assert second.runtime_session_id == runtime_session_id
         assert second.openhands_conversation_id == "conversation-original"
-        assert second.display_label == "会话一（更新）"
-        assert set(FlowRunConversationBinding.__table__.columns.keys()) == {
-            "id",
-            "flow_run_id",
-            "runtime_session_id",
-            "openhands_conversation_id",
-            "display_label",
-            "created_at",
-            "last_connected_at",
-        }
+        assert second.display_title == "会话一（更新）"
+        assert second.host_kind == "FLOW_NODE"
+        assert second.flow_run_id == flow_run_id
+        assert second.conversation_scope_id == flow_run_id
+        assert "flow_run_id" in AgentConversationBinding.__table__.columns
 
 
 def test_unbound_conversation_fails_closed(
@@ -323,6 +319,149 @@ def test_flow_node_host_rejects_non_startable_or_unscoped_attempts(
                 require_start_permission=True,
             )
         assert unscoped.value.code == "NODE_WORKSPACE_REQUIRED"
+
+
+def test_node_session_scope_hides_other_attempt_bindings(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One FlowRun's node-attempt routes never cross-list or resolve sessions."""
+
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, first_attempt_id = _node_session_context(db)
+        first_attempt = db.get(NodeAttempt, first_attempt_id)
+        assert first_attempt is not None
+        second_attempt = NodeAttempt(
+            node_run_id=first_attempt.node_run_id,
+            attempt_no=2,
+            snapshot_id=first_attempt.snapshot_id,
+            state="WAITING_START_CONFIRMATION",
+            workspace_ref="/runtime/workspace/project/nodes/node-2",
+        )
+        db.add(second_attempt)
+        db.flush()
+        first_binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=first_attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=first_attempt.node_run_id,
+            node_attempt_id=first_attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=first_attempt.workspace_ref,
+            openhands_conversation_id="node-one-conversation",
+            lifecycle="ACTIVE",
+            create_idempotency_key=f"node-scope:{first_attempt_id}",
+        )
+        second_binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=second_attempt.id,
+            flow_run_id=flow_run_id,
+            node_run_id=first_attempt.node_run_id,
+            node_attempt_id=second_attempt.id,
+            runtime_session_id=runtime_session_id,
+            working_directory=second_attempt.workspace_ref,
+            openhands_conversation_id="node-two-conversation",
+            lifecycle="ACTIVE",
+            create_idempotency_key=f"node-scope:{second_attempt.id}",
+        )
+        db.add_all((first_binding, second_binding))
+        db.flush()
+        monkeypatch.setattr(
+            conversation_service.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+
+        first_items = conversation_service.list_node_conversations(
+            db, flow_run_id=flow_run_id, attempt_id=first_attempt_id
+        )
+        assert [item["id"] for item in first_items] == [first_binding.id]
+        assert (
+            conversation_service.get_node_conversation(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=first_attempt_id,
+                binding_id=first_binding.id,
+            )["id"]
+            == first_binding.id
+        )
+        with pytest.raises(DomainError) as denied:
+            conversation_service.get_node_conversation(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=first_attempt_id,
+                binding_id=second_binding.id,
+            )
+        assert denied.value.code == "RESOURCE_NOT_FOUND"
+
+
+def test_node_workspace_projection_is_attempt_scoped(
+    settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A node host projects only its selected Attempt's regular files."""
+
+    from flowweave.modules.sandboxes.application.runtime_allocation import (
+        flow_run_workspace_project_path,
+    )
+
+    with settings_context(settings), db_session_factory() as db:
+        flow_run_id, runtime_session_id, first_attempt_id = _node_session_context(db)
+        first_attempt = db.get(NodeAttempt, first_attempt_id)
+        assert first_attempt is not None
+        second_attempt = NodeAttempt(
+            node_run_id=first_attempt.node_run_id,
+            attempt_no=2,
+            snapshot_id=first_attempt.snapshot_id,
+            state="WAITING_START_CONFIRMATION",
+            workspace_ref="",
+        )
+        db.add(second_attempt)
+        db.flush()
+        project_root = flow_run_workspace_project_path(flow_run_id)
+        first_root = project_root / "nodes" / "one" / "sessions" / "first" / "1"
+        second_root = project_root / "nodes" / "two" / "sessions" / "second" / "1"
+        first_root.mkdir(parents=True)
+        second_root.mkdir(parents=True)
+        (first_root / "first.txt").write_text("first")
+        (second_root / "second.txt").write_text("second")
+        first_attempt.workspace_ref = str(first_root)
+        second_attempt.workspace_ref = str(second_root)
+        db.flush()
+        monkeypatch.setattr(
+            flow_node_workspace,
+            "resolve_flow_node_session_host",
+            lambda _db, **_kwargs: SimpleNamespace(attempt_id=_kwargs["attempt_id"]),
+        )
+
+        details = flow_node_workspace.details(
+            db, flow_run_id=flow_run_id, attempt_id=first_attempt_id
+        )
+        paths = {item["path"] for item in details["files"]}
+        first_runtime_path = "/runtime/workspace/project/nodes/one/sessions/first/1/first.txt"
+        second_runtime_path = "/runtime/workspace/project/nodes/two/sessions/second/1/second.txt"
+        assert first_runtime_path in paths
+        assert second_runtime_path not in paths
+        content, _content_type, filename = flow_node_workspace.read_file(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=first_attempt_id,
+            binding_id=None,
+            path=first_runtime_path,
+        )
+        assert content == b"first"
+        assert filename == "first.txt"
+        with pytest.raises(DomainError) as cross_attempt:
+            flow_node_workspace.read_file(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=first_attempt_id,
+                binding_id=None,
+                path=second_runtime_path,
+            )
+        assert cross_attempt.value.code == "NODE_WORKSPACE_PATH_INVALID"
 
 
 def test_flow_run_creation_resolves_the_node_host_once(

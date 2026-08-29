@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
 from flowweave.modules.catalog.presentation.router import router as catalog_router
 from flowweave.modules.conversations.presentation.router import router as conversations_router
@@ -140,6 +141,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route("/health", health, methods=["GET"])
 
     for router in (
+        agent_sessions_router,
         agent_workspaces_router,
         catalog_router,
         environments_router,

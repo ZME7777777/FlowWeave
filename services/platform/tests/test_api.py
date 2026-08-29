@@ -410,13 +410,18 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     node_run = activated.json()
     attempt = node_run["attempts"][0]
     assert attempt["state"] == "WAITING_START_CONFIRMATION"
+    scope = f"/api/v1/flow-runs/{run['id']}/node-attempts/{attempt['id']}/agent-sessions"
+    assert client.get(scope).json() == []
     conversation = client.post(
-        f"/api/v1/flow-runs/{run['id']}/conversations",
-        json={"title": "首个会话", "node_attempt_id": attempt["id"]},
+        scope,
+        json={"title": "首个会话"},
         headers={"Idempotency-Key": "selected-node-first-conversation"},
     )
     assert conversation.status_code == 201, conversation.text
-    assert conversation.json()["flow_run_id"] == run["id"]
+    assert conversation.json()["id"]
+    listed = client.get(scope)
+    assert listed.status_code == 200, listed.text
+    assert [item["id"] for item in listed.json()] == [conversation.json()["id"]]
     with db_session_factory() as db:
         allocation = db.scalar(
             select(FlowRunRuntimeAllocation).where(

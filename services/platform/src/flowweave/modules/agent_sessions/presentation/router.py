@@ -1,0 +1,480 @@
+"""FlowRun-node gateway for shared Agent-session operations.
+
+These routes are scoped by immutable FlowRun and node-attempt lineage.  They
+are deliberately narrow while host-neutral workspace/file APIs are extracted:
+no Agent Workspace ownership or browser-visible Runtime identity leaks here.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Annotated, Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, Header, Query, Response, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field
+
+from flowweave.bootstrap.container import Container
+from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.environments import public as environments
+from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.routing import runtime_for
+from flowweave.shared.errors import DomainError
+from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
+from flowweave.shared.schemas import ConversationPatchWrite, ConversationQuestionWrite
+from flowweave.shared.settings import bind_settings, reset_settings
+
+router = APIRouter()
+Actor = Annotated[str | None, Header(alias="X-Actor-ID")]
+ContainerDep = Annotated[Container, Depends(get_container)]
+
+
+class _Write(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class NodeSessionCreateWrite(_Write):
+    title: str | None = Field(default=None, max_length=160)
+    model_name: str | None = Field(default=None, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+
+
+def _key(value: str | None, action: str, identifier: str) -> str:
+    return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
+
+
+async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: Any) -> None:
+    stream = runtime.stream_events(handle)
+    event_task: asyncio.Task[Any] | None = None
+    receive_task: asyncio.Task[Any] | None = None
+
+    async def next_event() -> dict[str, Any]:
+        return await anext(stream)
+
+    try:
+        event_task = asyncio.create_task(next_event())
+        receive_task = asyncio.create_task(websocket.receive())
+        while True:
+            done, _ = await asyncio.wait(
+                (event_task, receive_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if receive_task in done:
+                message = receive_task.result()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                receive_task = asyncio.create_task(websocket.receive())
+            if event_task in done:
+                try:
+                    event = event_task.result()
+                except StopAsyncIteration:
+                    return
+                await websocket.send_json(event)
+                event_task = asyncio.create_task(next_event())
+    finally:
+        for task in (event_task, receive_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (event_task, receive_task) if task is not None),
+            return_exceptions=True,
+        )
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
+
+
+_BASE = "/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions"
+
+
+@router.get(f"{_BASE}/host")
+async def node_session_host(flow_run_id: str, attempt_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.node_host_details(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id
+        ),
+    )
+
+
+@router.get(f"{_BASE}/runtime")
+async def node_session_runtime(flow_run_id: str, attempt_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.node_runtime_status(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id
+        ),
+    )
+
+
+@router.get(_BASE)
+async def list_node_sessions(flow_run_id: str, attempt_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.list_node_session_views(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id
+        ),
+    )
+
+
+@router.post(_BASE, status_code=201)
+async def create_node_session(
+    flow_run_id: str,
+    attempt_id: str,
+    payload: NodeSessionCreateWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    def create(session: Any) -> dict[str, Any]:
+        created = agent_sessions.flow_node_conversations.create_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            title=payload.title,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
+            idempotency_key=_key(idempotency_key, "create-node-agent-session", attempt_id),
+        )
+        return agent_sessions.flow_node_conversations.get_node_session_view(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=str(created["id"]),
+        )
+
+    return await run_sync(db, create)
+
+
+@router.get(f"{_BASE}/{{binding_id}}")
+async def get_node_session(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.get_node_session_view(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        ),
+    )
+
+
+@router.patch(f"{_BASE}/{{binding_id}}")
+async def patch_node_session(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: ConversationPatchWrite,
+    db: Db,
+) -> dict[str, Any]:
+    def patch(session: Any) -> dict[str, Any]:
+        agent_sessions.flow_node_conversations.patch_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            title=payload.title,
+        )
+        return agent_sessions.flow_node_conversations.get_node_session_view(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        )
+
+    return await run_sync(db, patch)
+
+
+@router.get(f"{_BASE}/workspace")
+async def node_session_workspace(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.details(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/workspace/file")
+async def node_session_workspace_file(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    download: bool = Query(default=False),
+) -> Response:
+    content, content_type, filename = await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.read_file(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            path=path,
+        ),
+    )
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+@router.get(f"{_BASE}/{{binding_id}}/events")
+async def node_session_events(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    db: Db,
+    cursor: str | None = Query(default=None, max_length=200),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.read_node_conversation_events(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            cursor=cursor,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/{{binding_id}}/input-readiness")
+async def node_session_input_readiness(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, bool]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.node_input_readiness(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/{{binding_id}}/context")
+async def node_session_context(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.node_conversation_context(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/messages", status_code=202)
+async def node_session_message(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: ConversationQuestionWrite,
+    db: Db,
+    actor: Actor = None,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.send_node_question(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            payload=payload,
+            idempotency_key=_key(idempotency_key, "node-agent-session-message", binding_id),
+            actor=actor,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/condense", status_code=202)
+async def condense_node_session(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.condense_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/interrupt", status_code=202)
+async def interrupt_node_session(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, bool]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.interrupt_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/resume", status_code=202)
+async def resume_node_session(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.resume_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/stop", status_code=202)
+async def stop_node_session(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.stop_node_conversation(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        ),
+    )
+
+
+@router.websocket(f"{_BASE}/{{binding_id}}/stream")
+async def node_session_stream(
+    websocket: WebSocket,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+) -> None:
+    token = bind_settings(container.settings)
+    try:
+        async with container.database.session() as db:
+            try:
+                adapter, handle = await db.run_sync(
+                    lambda session: (
+                        agent_sessions.flow_node_conversations.node_runtime_stream_details(
+                            session,
+                            flow_run_id=flow_run_id,
+                            attempt_id=attempt_id,
+                            binding_id=binding_id,
+                        )
+                    )
+                )
+            except DomainError as exc:
+                await websocket.close(code=4409, reason=exc.message)
+                return
+        with runtime_context(container.runtime):
+            runtime = runtime_for(adapter, handle)
+        await websocket.accept()
+        try:
+            await _forward_runtime_events(websocket, runtime, handle)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            await websocket.close(code=1011, reason="Runtime stream unavailable")
+    finally:
+        reset_settings(token)
+
+
+@router.websocket(f"{_BASE}/{{binding_id}}/terminal")
+async def node_session_terminal(
+    websocket: WebSocket,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+) -> None:
+    token = bind_settings(container.settings)
+    terminal: environments.ManagedTerminal | None = None
+    try:
+        try:
+            rows = max(2, min(int(websocket.query_params.get("rows", "24")), 200))
+            columns = max(20, min(int(websocket.query_params.get("columns", "80")), 400))
+        except ValueError:
+            rows, columns = 24, 80
+        async with container.database.session() as db:
+            try:
+                resource_name, runtime_id, environment_id = await db.run_sync(
+                    lambda session: (
+                        agent_sessions.flow_node_conversations.node_terminal_resource_details(
+                            session,
+                            flow_run_id=flow_run_id,
+                            attempt_id=attempt_id,
+                            binding_id=binding_id,
+                        )
+                    )
+                )
+            except DomainError as exc:
+                await websocket.close(code=4409, reason=exc.message)
+                return
+        terminal = await asyncio.to_thread(
+            environments.open_managed_terminal,
+            resource_name,
+            resource_id=runtime_id,
+            environment_id=environment_id,
+            session_name=f"flowweave-node-{binding_id}",
+            rows=rows,
+            columns=columns,
+        )
+        await websocket.accept()
+
+        async def forward_output() -> None:
+            assert terminal is not None
+            while True:
+                chunk, eof = await asyncio.to_thread(terminal.read)
+                if chunk:
+                    await websocket.send_bytes(chunk)
+                if eof:
+                    return
+
+        output = asyncio.create_task(forward_output())
+        try:
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                text = message.get("text")
+                if not isinstance(text, str):
+                    continue
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError:
+                    value = {"type": "input", "data": text}
+                if value.get("type") == "resize":
+                    await asyncio.to_thread(
+                        terminal.resize,
+                        max(2, min(int(value.get("rows", 24)), 200)),
+                        max(20, min(int(value.get("columns", 80)), 400)),
+                    )
+                elif value.get("type") == "input":
+                    await asyncio.to_thread(terminal.write, str(value.get("data", "")).encode())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            output.cancel()
+            await asyncio.gather(output, return_exceptions=True)
+    finally:
+        if terminal is not None:
+            await asyncio.to_thread(terminal.close)
+        reset_settings(token)

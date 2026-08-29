@@ -8,6 +8,7 @@ the Runtime endpoint to callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -44,9 +45,45 @@ class FlowNodeSessionHost:
 
 
 _READ_PERMISSIONS = frozenset({LIST_SESSIONS, READ_SESSIONS, ACCESS_FILES})
-_WRITE_PERMISSIONS = frozenset(
-    {CREATE_SESSIONS, WRITE_SESSIONS, ACCESS_TERMINAL, CONTROL_SESSIONS}
-)
+_WRITE_PERMISSIONS = frozenset({CREATE_SESSIONS, WRITE_SESSIONS, ACCESS_TERMINAL, CONTROL_SESSIONS})
+_RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
+
+
+def _runtime_working_directory(*, flow_run_id: str, workspace_ref: str) -> str:
+    """Project a server-owned Attempt path into the Runtime mount.
+
+    ``NodeAttempt.workspace_ref`` is an absolute host path under the FlowRun
+    allocation.  Shared session records and browser DTOs must never expose
+    that host path: OpenHands sees the same project through its stable mount.
+    Test fixtures may already provide that mounted path, which remains valid.
+    """
+
+    raw = workspace_ref.strip()
+    runtime_path = PurePosixPath(raw)
+    if (
+        runtime_path.is_absolute()
+        and runtime_path.is_relative_to(_RUNTIME_PROJECT)
+        and runtime_path.as_posix() == raw
+    ):
+        return raw
+    project_root = sandboxes.flow_run_workspace_project_path(flow_run_id)
+    try:
+        relative = Path(raw).relative_to(project_root)
+    except ValueError as exc:
+        raise DomainError(
+            "NODE_WORKSPACE_INVALID",
+            "The selected node Attempt workspace is outside its FlowRun allocation",
+            409,
+            {"flow_run_id": flow_run_id},
+        ) from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise DomainError(
+            "NODE_WORKSPACE_INVALID",
+            "The selected node Attempt workspace layout is invalid",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    return str(_RUNTIME_PROJECT.joinpath(*relative.parts))
 
 
 def resolve_flow_node_session_host(
@@ -116,13 +153,16 @@ def resolve_flow_node_session_host(
             409,
             {"node_attempt_id": attempt.id},
         )
+    runtime_working_directory = _runtime_working_directory(
+        flow_run_id=run.id, workspace_ref=working_directory
+    )
     return FlowNodeSessionHost(
         session=AgentSessionHostContext.create(
             host_kind="FLOW_NODE",
             host_id=run.id,
             conversation_scope_id=attempt.id,
             runtime_session_id=connection.runtime_session_id,
-            working_directory=working_directory,
+            working_directory=runtime_working_directory,
             runtime_manifest=snapshot.runtime_manifest_json or {},
             model_policy={
                 "model_name": attempt.model_name,

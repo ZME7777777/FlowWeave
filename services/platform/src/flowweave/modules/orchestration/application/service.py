@@ -13,13 +13,14 @@ from uuid import uuid4
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.catalog.public import (
     describe_agent_profile_version,
     describe_asset,
     hold_snapshot_memory_references,
     resolve_snapshot_memory,
 )
-from flowweave.modules.conversations import public as conversations
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
     validate_runtime_manifest,
@@ -79,7 +80,6 @@ from flowweave.shared.models import (
     BackgroundTask,
     EnvironmentVersion,
     FlowRun,
-    FlowRunConversationBinding,
     FlowRunState,
     GateEvaluation,
     HumanAction,
@@ -487,7 +487,7 @@ def _active_attempt_runtime_handle(
             conversation_id=openhands_conversation_id,
             cursor=cursor,
         )
-    return conversations.active_runtime_handle(
+    return agent_sessions.flow_node_locator.active_runtime_handle(
         db,
         flow_run_id=flow_run_id,
         openhands_conversation_id=openhands_conversation_id,
@@ -957,7 +957,7 @@ def _freeze_runtime_confirmation(
             502,
         )
     flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
-    conversation = conversations.conversation_binding(
+    conversation = agent_sessions.flow_node_locator.conversation_binding(
         db,
         flow_run_id=flow_run_id,
         openhands_conversation_id=attempt.conversation_id,
@@ -2231,7 +2231,7 @@ def process_start_runtime(
         get_runtime().cancel(handle)
         _require_current_lease(db, lease)
         return
-    conversations.bind_openhands_conversation(
+    agent_sessions.flow_node_locator.bind_openhands_conversation(
         db,
         flow_run_id=flow_run_id,
         openhands_conversation_id=handle.conversation_id,
@@ -3643,8 +3643,9 @@ def delete_run(db: Session, run_id: str) -> None:
     )
     conversation_ids = list(
         db.scalars(
-            select(FlowRunConversationBinding.id).where(
-                FlowRunConversationBinding.flow_run_id == run.id
+            select(AgentConversationBinding.id).where(
+                AgentConversationBinding.host_kind == "FLOW_NODE",
+                AgentConversationBinding.flow_run_id == run.id,
             )
         )
     )

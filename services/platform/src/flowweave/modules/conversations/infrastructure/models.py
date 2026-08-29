@@ -9,46 +9,15 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flowweave.shared.database import Base, now, uid
-
-
-class FlowRunConversationBinding(Base):
-    """The only active FlowWeave model for an OpenHands Conversation."""
-
-    __tablename__ = "flow_run_conversation_bindings"
-    __table_args__ = (
-        UniqueConstraint(
-            "runtime_session_id",
-            "openhands_conversation_id",
-            name="uq_flow_run_conversation_runtime_identity",
-        ),
-        ForeignKeyConstraint(
-            ["runtime_session_id", "flow_run_id"],
-            ["flow_run_runtimes.id", "flow_run_runtimes.flow_run_id"],
-            name="fk_flow_run_conversation_runtime_owner",
-            ondelete="CASCADE",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_run_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_runs.id", ondelete="CASCADE"), index=True
-    )
-    runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
-    openhands_conversation_id: Mapped[str] = mapped_column(String(100))
-    display_label: Mapped[str | None] = mapped_column(String(160))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    last_connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class RuntimeConfirmationApproval(Base):
@@ -77,7 +46,7 @@ class RuntimeConfirmationApproval(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     flow_run_conversation_binding_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_run_conversation_bindings.id", ondelete="CASCADE"), index=True
+        ForeignKey("agent_conversation_bindings.id", ondelete="CASCADE"), index=True
     )
     attempt_id: Mapped[str] = mapped_column(
         ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
@@ -97,4 +66,4 @@ class RuntimeConfirmationApproval(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
-__all__ = ("FlowRunConversationBinding", "RuntimeConfirmationApproval")
+__all__ = ("RuntimeConfirmationApproval",)

@@ -48,8 +48,9 @@ def assert_native_subagent_schema(connection_url: str) -> None:
             "archived_agent_conversations",
             "archived_runtime_subagent_tasks",
             "archived_runtime_subagent_task_usage",
-            "flow_run_conversation_bindings",
+            "agent_conversation_bindings",
         } <= tables
+        assert "flow_run_conversation_bindings" not in tables
         task_columns = {
             str(row[0])
             for row in connection.execute(
@@ -110,23 +111,6 @@ def assert_native_subagent_schema(connection_url: str) -> None:
             }
             & conversation_columns
         )
-        locator_columns = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' "
-                "AND table_name = 'flow_run_conversation_bindings'"
-            )
-        }
-        assert locator_columns == {
-            "id",
-            "flow_run_id",
-            "runtime_session_id",
-            "openhands_conversation_id",
-            "display_label",
-            "created_at",
-            "last_connected_at",
-        }
 
 
 def assert_shared_agent_session_host_schema(connection_url: str) -> None:

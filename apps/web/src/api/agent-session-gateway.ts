@@ -3,6 +3,8 @@ import {
   agentWorkspaceFileUrl,
   agentWorkspaceTerminalUrl,
   api,
+  nodeSessionApi,
+  subscribeToNodeSessionStream,
   subscribeToAgentWorkspaceStream,
 } from './client';
 import type {
@@ -35,6 +37,25 @@ export type AgentSessionTerminalOptions = Omit<AgentSessionFileOptions, 'downloa
   terminalInstanceId: string;
 };
 export type AgentSessionStreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
+
+/** Product capabilities deliberately supplied by each session host. */
+export interface AgentSessionFeatures {
+  readonly workDirectories: boolean;
+  readonly capabilities: boolean;
+  readonly attachments: boolean;
+  readonly modelSelection: boolean;
+  readonly conversationDeletion: boolean;
+  readonly fork: boolean;
+  readonly rewrite: boolean;
+  readonly confirmations: boolean;
+  readonly terminalRequiresConversation: boolean;
+}
+
+const fullSessionFeatures: AgentSessionFeatures = {
+  workDirectories: true, capabilities: true, attachments: true, modelSelection: true,
+  conversationDeletion: true, fork: true, rewrite: true, confirmations: true,
+  terminalRequiresConversation: false,
+};
 
 /**
  * The complete, host-neutral browser transport contract for the shared
@@ -82,6 +103,7 @@ export interface AgentSessionApi {
  */
 export interface AgentSessionGateway {
   readonly id: string;
+  readonly features: AgentSessionFeatures;
   readonly api: AgentSessionApi;
   readonly terminalUrl: (hostId: AgentSessionHostId, rows: number | undefined, columns: number | undefined, options: AgentSessionTerminalOptions) => string;
   readonly fileUrl: (hostId: AgentSessionHostId, path: string, options?: AgentSessionFileOptions) => string;
@@ -90,6 +112,7 @@ export interface AgentSessionGateway {
 
 export const agentWorkspaceSessionGateway: AgentSessionGateway = {
   id: 'agent-workspace',
+  features: fullSessionFeatures,
   api: {
     defaultHost: api.defaultAgentWorkspace,
     runtime: api.agentWorkspaceRuntime,
@@ -128,3 +151,98 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
   fileUrl: agentWorkspaceFileUrl,
   subscribe: subscribeToAgentWorkspaceStream,
 };
+
+const unavailable = (operation: string): never => {
+  throw new Error(`${operation} is unavailable for a FlowRun node session`);
+};
+
+/**
+ * Transport for one immutable FlowRun node-Attempt scope. Every browser
+ * request carries the same server-authorized Run/Attempt lineage; binding IDs
+ * never become globally addressable through this adapter.
+ */
+export function flowNodeSessionGateway(
+  flowRunId: string,
+  attemptId: string,
+): AgentSessionGateway {
+  return {
+    id: `flow-node:${flowRunId}:${attemptId}`,
+    features: {
+      workDirectories: false, capabilities: false, attachments: false,
+      modelSelection: false, conversationDeletion: false, fork: false,
+      rewrite: false, confirmations: false, terminalRequiresConversation: true,
+    },
+    api: {
+      defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
+      runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
+      conversations: () => nodeSessionApi.conversations(flowRunId, attemptId),
+      workDirectories: async () => ({
+        root: { kind: 'ROOT', display_name: '节点工作目录', working_directory: '/runtime/workspace/project' },
+        items: [],
+      }),
+      providers: async () => [],
+      capabilities: async () => [],
+      hostCapabilities: async () => [],
+      mcpReadiness: async () => unavailable('Capability readiness'),
+      replaceHostCapabilities: async () => unavailable('Capability replacement'),
+      addConversationCapability: async () => unavailable('Conversation capability registration'),
+      workspaceDetails: (_hostId, options) =>
+        nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId),
+      createWorkDirectory: async () => unavailable('Work-directory creation'),
+      filePreview: async (_hostId, path, options) => {
+        const response = await fetch(nodeSessionApi.file(
+          flowRunId, attemptId, path, options?.bindingId, false,
+        ));
+        if (!response.ok) throw new Error('Node workspace file preview is unavailable');
+        return response.text();
+      },
+      // Node terminals are browser-owned websocket instances. Closing a tab
+      // closes its socket; there is no persistent Workspace terminal record.
+      closeTerminal: async () => undefined,
+      bootstrapConversation: async (_hostId, conversationId, _providerId, modelName, reasoningEffort, content, _attachments, _workDirectoryId, idempotencyKey) => {
+        const conversation = await nodeSessionApi.create(
+          flowRunId, attemptId, undefined, modelName || undefined, reasoningEffort, idempotencyKey ?? conversationId,
+        );
+        const sent = content.trim()
+          ? await nodeSessionApi.message(flowRunId, attemptId, conversation.id, content, idempotencyKey)
+          : { accepted: true, cursor: null };
+        return { conversation, accepted: sent.accepted, cursor: sent.cursor };
+      },
+      updateConversation: (_hostId, bindingId, title) =>
+        nodeSessionApi.update(flowRunId, attemptId, bindingId, title),
+      deleteConversation: async () => unavailable('Conversation deletion'),
+      conversationEvents: (_hostId, bindingId, cursor) =>
+        nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor),
+      inputReadiness: (_hostId, bindingId) =>
+        nodeSessionApi.inputReadiness(flowRunId, attemptId, bindingId),
+      conversationContext: (_hostId, bindingId) =>
+        nodeSessionApi.context(flowRunId, attemptId, bindingId),
+      pendingConfirmation: async () => ({ pending: false }),
+      sendMessage: async (_hostId, bindingId, content, attachments = []) => {
+        if (attachments.length) unavailable('Conversation attachments');
+        return nodeSessionApi.message(flowRunId, attemptId, bindingId, content);
+      },
+      migrateStreamingConversation: async () => unavailable('Streaming migration'),
+      uploadConversationAttachment: async () => unavailable('Conversation attachments'),
+      uploadDraftAttachment: async () => unavailable('Draft attachments'),
+      forkConversation: async () => unavailable('Conversation forks'),
+      condenseConversation: (_hostId, bindingId) =>
+        nodeSessionApi.condense(flowRunId, attemptId, bindingId),
+      interruptConversation: (_hostId, bindingId) =>
+        nodeSessionApi.interrupt(flowRunId, attemptId, bindingId),
+      resumeConversation: (_hostId, bindingId) =>
+        nodeSessionApi.resume(flowRunId, attemptId, bindingId),
+      decideConfirmation: async () => unavailable('Tool confirmations'),
+      rerunMessage: async () => unavailable('Message rewriting'),
+      switchConversationModel: async () => unavailable('Model switching'),
+    },
+    terminalUrl: (_hostId, rows, columns, options) => {
+      if (!options.bindingId) return unavailable('Node terminal without a conversation');
+      return nodeSessionApi.terminal(flowRunId, attemptId, options.bindingId, rows, columns);
+    },
+    fileUrl: (_hostId, path, options) =>
+      nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.download),
+    subscribe: (_hostId, bindingId, onEvent, onStatus) =>
+      subscribeToNodeSessionStream(flowRunId, attemptId, bindingId, onEvent, onStatus),
+  };
+}

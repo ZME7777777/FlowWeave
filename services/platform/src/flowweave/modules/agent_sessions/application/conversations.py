@@ -530,9 +530,7 @@ def _runtime_capabilities(
 def _capability_marketplace_paths(
     db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
 ) -> tuple[Path, Path, str]:
-    allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(
-        db, workspace.id
-    )
+    allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(db, workspace.id)
     host_root = (
         Path(get_settings().workspace_root).resolve()
         / allocation.relative_root
@@ -768,6 +766,9 @@ def create_conversation(
     conversation_id = str(uuid4())
     binding = AgentConversationBinding(
         workspace_id=workspace.id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
+        conversation_scope_id=workspace.id,
         runtime_session_id=runtime.id,
         model_provider_id=model_provider_id,
         model_name=provider.model,
@@ -786,6 +787,8 @@ def create_conversation(
     _freeze_workspace_capabilities(db, workspace, binding)
     command = AgentConversationCommand(
         workspace_id=workspace.id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
         binding_id=binding.id,
         command_type="CREATE",
         idempotency_key=idempotency_key,
@@ -1004,9 +1007,8 @@ def _record_bootstrap_failure(
     # Draft attachments are already private to this reserved binding ID.  A
     # definitively failed first message must release those files too, even
     # though no attachment projection has been committed yet.
-    agent_workspace_host.delete_session_attachment_files(
-        db, binding.workspace_id, binding.id
-    )
+    if binding.workspace_id is not None:
+        agent_workspace_host.delete_session_attachment_files(db, binding.workspace_id, binding.id)
     db.delete(command)
     db.flush()
     db.delete(binding)
@@ -1090,6 +1092,9 @@ def bootstrap_conversation(
         binding = AgentConversationBinding(
             id=binding_id,
             workspace_id=workspace.id,
+            host_kind="AGENT_WORKSPACE",
+            host_id=workspace.id,
+            conversation_scope_id=workspace.id,
             runtime_session_id=runtime.id,
             work_directory_version_id=version_id,
             working_directory=working_directory,
@@ -1105,6 +1110,8 @@ def bootstrap_conversation(
         _freeze_workspace_capabilities(db, workspace, binding)
         command = AgentConversationCommand(
             workspace_id=workspace.id,
+            host_kind="AGENT_WORKSPACE",
+            host_id=workspace.id,
             binding_id=binding.id,
             command_type="CREATE",
             idempotency_key=idempotency_key,
@@ -1123,10 +1130,8 @@ def bootstrap_conversation(
         _record_bootstrap_failure(db, binding, command, error)
         raise error
     if binding.work_directory_version_id is not None:
-        frozen_working_directory = (
-            agent_workspace_host.frozen_conversation_work_directory_context(
-                db, workspace.id, binding.work_directory_version_id
-            )
+        frozen_working_directory = agent_workspace_host.frozen_conversation_work_directory_context(
+            db, workspace.id, binding.work_directory_version_id
         )
         if frozen_working_directory != binding.working_directory:
             error = DomainError(
@@ -1227,6 +1232,8 @@ def patch_conversation(
     item = _binding(db, workspace_id, binding_id, lock=True)
     command = AgentConversationCommand(
         workspace_id=workspace.id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
         binding_id=item.id,
         command_type="RENAME",
         idempotency_key=f"rename-agent-conversation:{item.id}:{uuid4()}",
@@ -1268,6 +1275,8 @@ def delete_conversation(
     item.lifecycle = "DELETE_PENDING"
     command = AgentConversationCommand(
         workspace_id=workspace.id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
         binding_id=item.id,
         command_type="DELETE",
         idempotency_key=idempotency_key,
@@ -2226,6 +2235,9 @@ def _fork_conversation(
     target_id = str(uuid4())
     target = AgentConversationBinding(
         workspace_id=workspace.id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
+        conversation_scope_id=workspace.id,
         runtime_session_id=source.runtime_session_id,
         model_provider_id=target_provider_id,
         model_name=target_model_name,
@@ -2240,6 +2252,8 @@ def _fork_conversation(
     _copy_frozen_capabilities(db, source, target)
     command = AgentConversationCommand(
         workspace_id=workspace.id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
         binding_id=target.id,
         command_type="FORK",
         idempotency_key=idempotency_key,

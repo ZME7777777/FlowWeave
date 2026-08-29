@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.sandboxes.application import runtime_replacement
 from flowweave.modules.sandboxes.application.runtime_sessions import (
     acquire_runtime_replacement_lease,
@@ -30,7 +31,6 @@ from flowweave.shared.models import (
     EnvironmentVersion,
     FlowDefinition,
     FlowRun,
-    FlowRunConversationBinding,
     FlowRunRuntime,
     FlowRunRuntimeAllocation,
     FlowRunRuntimeSecretReference,
@@ -127,11 +127,17 @@ def _seed_active_runtime(db: Session, *, with_conversation: bool = True) -> tupl
     )
     if with_conversation:
         db.add(
-            FlowRunConversationBinding(
+            AgentConversationBinding(
+                workspace_id=None,
+                host_kind="FLOW_NODE",
+                host_id=run.id,
+                conversation_scope_id=run.id,
                 flow_run_id=run.id,
                 runtime_session_id=runtime.id,
                 openhands_conversation_id=str(uuid4()),
-                display_label="replacement probe",
+                display_title="replacement probe",
+                lifecycle="ACTIVE",
+                create_idempotency_key=f"replacement-probe:{runtime.id}",
             )
         )
     db.commit()
@@ -159,8 +165,9 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
         flow_run_id, runtime_session_id = _seed_active_runtime(db)
         old_connection = active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
         conversation_id = db.scalar(
-            select(FlowRunConversationBinding.openhands_conversation_id).where(
-                FlowRunConversationBinding.runtime_session_id == runtime_session_id
+            select(AgentConversationBinding.openhands_conversation_id).where(
+                AgentConversationBinding.host_kind == "FLOW_NODE",
+                AgentConversationBinding.runtime_session_id == runtime_session_id,
             )
         )
         assert conversation_id is not None

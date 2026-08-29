@@ -1,59 +1,19 @@
-from flowweave.modules.conversations.application.locator import (
-    active_runtime_handle,
-    bind_openhands_conversation,
-    binding_locator,
-    conversation_binding,
-    conversation_locator,
-)
-from flowweave.modules.conversations.application.service import (
-    ask_agent,
-    condense_conversation,
-    control_goal,
-    create_conversation,
-    create_flow_run_conversation,
-    flow_run_runtime_stream_details,
-    flow_run_terminal_resource_details,
-    get_conversation,
-    get_flow_run_conversation,
-    list_conversations,
-    list_flow_run_conversations,
-    patch_conversation,
-    patch_flow_run_conversation,
-    read_conversation_events,
-    read_flow_run_conversation_events,
-    runtime_stream_details,
-    send_flow_run_question,
-    send_question,
-    stop_conversation,
-    stop_flow_run_conversation,
-    terminal_resource_details,
-)
+"""Compatibility facade for FlowRun-hosted shared sessions."""
 
-__all__ = (
-    "active_runtime_handle",
-    "ask_agent",
-    "binding_locator",
-    "bind_openhands_conversation",
-    "condense_conversation",
-    "conversation_binding",
-    "conversation_locator",
-    "control_goal",
-    "create_conversation",
-    "create_flow_run_conversation",
-    "flow_run_runtime_stream_details",
-    "flow_run_terminal_resource_details",
-    "get_conversation",
-    "get_flow_run_conversation",
-    "list_conversations",
-    "list_flow_run_conversations",
-    "patch_conversation",
-    "patch_flow_run_conversation",
-    "read_conversation_events",
-    "read_flow_run_conversation_events",
-    "runtime_stream_details",
-    "send_question",
-    "send_flow_run_question",
-    "stop_conversation",
-    "stop_flow_run_conversation",
-    "terminal_resource_details",
-)
+from typing import Any
+
+from flowweave.modules.agent_sessions import public as _agent_sessions
+
+_LOCATOR = _agent_sessions.flow_node_locator
+_CONVERSATIONS = _agent_sessions.flow_node_conversations
+
+
+def __getattr__(name: str) -> Any:
+    """Forward legacy FlowRun session imports to the shared implementation."""
+
+    for module in (_LOCATOR, _CONVERSATIONS):
+        try:
+            return getattr(module, name)
+        except AttributeError:
+            continue
+    raise AttributeError(name)

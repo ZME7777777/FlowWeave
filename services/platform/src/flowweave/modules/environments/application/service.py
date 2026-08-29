@@ -98,6 +98,15 @@ def runtime_manifest_compatibility(manifest: object) -> tuple[bool, str | None]:
     return True, None
 
 
+_APPROVED_OPENHANDS_OVERLAYS: dict[str, str] = {
+    # The pinned OpenHands source is patched during the formal Runtime build
+    # to retain native conversation-fork condensation behavior.  Treat this
+    # exact content hash as part of the frozen Runtime contract; reject every
+    # other overlay rather than broadly allowing source modifications.
+    "patch_fork_condenser.py": "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3",
+}
+
+
 def validate_runtime_manifest(
     manifest: object, *, environment_version_id: str | None = None
 ) -> None:
@@ -132,7 +141,10 @@ def validate_runtime_manifest(
         or actual_commit != OPENHANDS_SOURCE_COMMIT
         or actual_ref != OPENHANDS_SOURCE_COMMIT
         or provenance.get("source_archive_digest") != _OPENHANDS_SOURCE_ARCHIVE_DIGEST
-        or actual_overlays
+        # Historical Runtime manifests predate the formal fork patch and have
+        # no overlays.  A newly published image may carry only the exact
+        # reviewed patch above; unknown or altered overlays fail closed.
+        or actual_overlays not in ({}, _APPROVED_OPENHANDS_OVERLAYS)
         or build.get("builder") != "openhands.agent_server.docker.build"
         or build.get("target") not in {"source-minimal", "source"}
         or build.get("platform") not in {"linux/amd64", "linux/arm64"}

@@ -62,8 +62,10 @@ async function readyEnvironmentVersionId(request: APIRequestContext) {
     const existing = await request.get(`${apiBase}/api/v1/terminal-environments`);
     expect(existing.ok(), await existing.text()).toBeTruthy();
     const environments = await existing.json() as Array<{ name: string; versions: Array<{ id: string; state: string; runtime_compatible: boolean }> }>;
+    // Product-flow tests exercise FlowRun and node-session behavior, not the
+    // substantially slower Runtime-image publication path. Reuse any
+    // compatible READY environment already present in the deployed stack.
     const published = environments
-      .filter(environment => environment.name.startsWith('E2E运行环境-'))
       .flatMap(environment => environment.versions)
       .find(version => version.state === 'READY' && version.runtime_compatible);
     if (published) return published.id;
@@ -1692,12 +1694,27 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await nodeConsole.getByRole('button', { name: '保存到产物池' }).click();
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`需求文档-${suffix}`);
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
+  const createdNodeSession = page.waitForResponse(response =>
+    response.url().includes('/agent-sessions') && response.request().method() === 'POST',
+  );
   await nodeConsole.getByRole('button', { name: '启动节点会话' }).click();
-
-  await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toBeVisible();
-  await expect(page.locator('.conversation-list button')).toHaveCount(1);
-  await expect(page.getByRole('button', { name: '新建会话' })).toHaveCount(0);
-  await page.getByRole('button', { name: '返回运行详情' }).click();
+  const nodeSessionResponse = await createdNodeSession;
+  expect(nodeSessionResponse.ok(), await nodeSessionResponse.text()).toBeTruthy();
+  const nodeSession = await nodeSessionResponse.json() as { id: string };
+  const nodeSessionUrl = new RegExp(
+    `/flow-runs/${createdRun.id}/nodes/[^/]+/attempts/[^/]+/agent-sessions/${nodeSession.id}$`,
+  );
+  await expect(page).toHaveURL(nodeSessionUrl);
+  await expect(page.getByRole('heading', { name: 'Agent 会话', exact: true })).toBeVisible();
+  await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '新增工作区' })).toHaveCount(0);
+  await expect(page.locator('.agent-workbench-rail-footer')).toHaveCount(0);
+  await expect(page.getByLabel('添加附件')).toHaveCount(0);
+  await page.reload();
+  await expect(page).toHaveURL(nodeSessionUrl);
+  await expect(page.getByRole('heading', { name: 'Agent 会话', exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.locator('.attempt-control')).toBeVisible();
 
   const attemptControl = page.locator('.attempt-control');
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
@@ -1709,16 +1726,16 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await page.locator('.run-rail .timeline').getByRole('button', { name: /首轮方案/ }).click();
   await expect(page.locator('.run-graph .run-graph-node.snapshot-selected')).toHaveCount(0);
   await expect(attemptControl).toContainText('首轮方案');
-  const agentChatEntry = attemptControl.getByRole('button', { name: '进入 FlowRun 会话' });
-  await expect(agentChatEntry).toBeVisible();
+  const nodeSessionEntry = attemptControl.getByRole('button', { name: '进入节点会话' });
+  await expect(nodeSessionEntry).toBeVisible();
   await expect(attemptControl.locator('.attempt-runtime-summary')).toHaveCount(0);
   expect(await attemptControl.evaluate(panel => {
     const state = panel.querySelector('.state-banner');
-    const chat = panel.querySelector('.agent-chat-entry');
+    const session = panel.querySelector('.node-session-entry');
     const frozenInputs = Array.from(panel.querySelectorAll('.attempt-side-section')).find(section => section.textContent?.includes('本轮冻结输入'));
-    return Boolean(state && chat && frozenInputs
-      && (state.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING)
-      && (chat.compareDocumentPosition(frozenInputs) & Node.DOCUMENT_POSITION_FOLLOWING));
+    return Boolean(state && session && frozenInputs
+      && (state.compareDocumentPosition(session) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && (session.compareDocumentPosition(frozenInputs) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBeTruthy();
   await expect(attemptControl.locator('.attempt-input-card')).toContainText(`需求文档-${suffix}`);
   await expect(attemptControl.locator('.attempt-input-card')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);

@@ -1,5 +1,7 @@
 """Stable public facade for the independent Agent Workspace."""
 
+from sqlalchemy.orm import Session
+
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_workspaces.application.service import (
     agent_workspace_owner_is_active,
@@ -21,7 +23,7 @@ process_agent_conversation_title = agent_sessions.process_agent_conversation_tit
 
 
 def conversation_work_directory_context(
-    db, workspace_id: str, work_directory_id: str | None
+    db: Session, workspace_id: str, work_directory_id: str | None
 ) -> tuple[str | None, str]:
     """Resolve a new conversation's Workspace-owned directory selection."""
 
@@ -33,7 +35,7 @@ def conversation_work_directory_context(
 
 
 def frozen_conversation_work_directory_context(
-    db, workspace_id: str, version_id: str
+    db: Session, workspace_id: str, version_id: str
 ) -> str:
     """Revalidate a Workspace directory version frozen on a session locator."""
 
@@ -42,7 +44,7 @@ def frozen_conversation_work_directory_context(
     return work_directories.frozen_conversation_context(db, workspace_id, version_id)
 
 
-def delete_session_attachment_files(db, workspace_id: str, binding_id: str) -> None:
+def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: str) -> None:
     """Remove only attachment files owned by one shared session locator."""
 
     from flowweave.modules.agent_workspaces.application import workspace

@@ -14,6 +14,7 @@ from flowweave.modules.agent_sessions.public import (
     READ_SESSIONS,
     WRITE_SESSIONS,
     AgentSessionHostContext,
+    AgentSessionPermission,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
@@ -22,8 +23,10 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.shared.errors import DomainError, not_found
 
 _PROJECT_ROOT = "/runtime/workspace/project"
-_READ_PERMISSIONS = frozenset({LIST_SESSIONS, READ_SESSIONS, ACCESS_FILES})
-_WRITE_PERMISSIONS = frozenset(
+_READ_PERMISSIONS: frozenset[AgentSessionPermission] = frozenset(
+    {LIST_SESSIONS, READ_SESSIONS, ACCESS_FILES}
+)
+_WRITE_PERMISSIONS: frozenset[AgentSessionPermission] = frozenset(
     {CREATE_SESSIONS, WRITE_SESSIONS, ACCESS_TERMINAL, CONTROL_SESSIONS}
 )
 
@@ -61,6 +64,9 @@ def resolve_agent_workspace_session_host(
             503,
             {"agent_workspace_id": workspace.id},
         )
+    permissions: frozenset[AgentSessionPermission] = _READ_PERMISSIONS
+    if writable:
+        permissions = _READ_PERMISSIONS | _WRITE_PERMISSIONS
     return AgentSessionHostContext.create(
         host_kind="AGENT_WORKSPACE",
         host_id=workspace.id,
@@ -68,7 +74,7 @@ def resolve_agent_workspace_session_host(
         runtime_session_id=runtime.id,
         working_directory=_PROJECT_ROOT,
         model_policy={"default_model_provider_id": workspace.default_model_provider_id},
-        permissions=_READ_PERMISSIONS | (_WRITE_PERMISSIONS if writable else frozenset()),
+        permissions=permissions,
     )
 
 

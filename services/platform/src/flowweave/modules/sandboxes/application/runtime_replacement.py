@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
 )
@@ -38,7 +39,6 @@ from flowweave.runtime.base import RuntimeConversationIdentity, RuntimeHandle
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import FlowRunConversationBinding
 from flowweave.shared.settings import get_settings
 
 
@@ -463,9 +463,12 @@ def process_flow_run_runtime_replacement(
                 replacement_lease_token=state.replacement_lease_token,
             )
             binding = control_db.scalar(
-                select(FlowRunConversationBinding)
-                .where(FlowRunConversationBinding.runtime_session_id == session.id)
-                .order_by(FlowRunConversationBinding.created_at)
+                select(AgentConversationBinding)
+                .where(
+                    AgentConversationBinding.host_kind == "FLOW_NODE",
+                    AgentConversationBinding.runtime_session_id == session.id,
+                )
+                .order_by(AgentConversationBinding.created_at)
                 .limit(1)
             )
             source = control_db.get(RuntimeGeneration, state.source_generation_id)

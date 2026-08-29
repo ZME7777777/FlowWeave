@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-chat' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;

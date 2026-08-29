@@ -78,12 +78,6 @@
   color: var(--green);
 }
 
-.agent-chat-layout.runtime-sidebar-collapsed {
-  grid-template-columns: 240px minmax(420px, 1fr) 48px;
-}
-.agent-focus-shell .agent-chat-layout.runtime-sidebar-collapsed {
-  grid-template-columns: 248px minmax(0, 1fr) 48px;
-}
 .agent-runtime-sidebar.collapsed { grid-template-rows: minmax(0, 1fr); }
 .agent-runtime-sidebar.collapsed .agent-sidebar-header {
   align-items: flex-start;
@@ -352,10 +346,6 @@
     max-height: 520px;
     border-top: 1px solid var(--line);
     border-left: 0;
-  }
-  .agent-chat-layout.runtime-sidebar-collapsed,
-  .agent-focus-shell .agent-chat-layout.runtime-sidebar-collapsed {
-    grid-template-columns: 210px minmax(420px, 1fr);
   }
   .agent-runtime-sidebar.collapsed { max-height: 48px; }
   .agent-runtime-sidebar.collapsed .agent-sidebar-header {

@@ -487,6 +487,78 @@ export function subscribeToAgentWorkspaceStream(
   };
 }
 
+function nodeSessionBase(flowRunId: string, attemptId: string): string {
+  return `/flow-runs/${encodeURIComponent(flowRunId)}/node-attempts/${encodeURIComponent(attemptId)}/agent-sessions`;
+}
+
+export const nodeSessionApi = {
+  host: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionHostDetails>(`${nodeSessionBase(flowRunId, attemptId)}/host`),
+  runtime: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionRuntime>(`${nodeSessionBase(flowRunId, attemptId)}/runtime`),
+  conversations: (flowRunId: string, attemptId: string) => request<import('../types').AgentConversation[]>(nodeSessionBase(flowRunId, attemptId)),
+  create: (flowRunId: string, attemptId: string, title?: string, model_name?: string, reasoning_effort?: string | null, idempotencyKey = randomId()) =>
+    request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_name, reasoning_effort }, idempotencyKey)),
+  update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
+    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
+  events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string) =>
+    request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+  inputReadiness: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<{ ready: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/input-readiness`),
+  context: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<import('../types').AgentConversationContext>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/context`),
+  message: (flowRunId: string, attemptId: string, bindingId: string, content: string, idempotencyKey = randomId()) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { client_question_id: randomId(), content: [{ type: 'text', text: content }] }, idempotencyKey)),
+  condense: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST')),
+  interrupt: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
+  resume: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/resume`, json('POST')),
+  workspace: (flowRunId: string, attemptId: string, bindingId?: string) =>
+    request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : ''}`),
+  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, download = false) => {
+    const query = new URLSearchParams({ path });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (download) query.set('download', 'true');
+    return `${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/workspace/file?${query}`;
+  },
+  terminal: (flowRunId: string, attemptId: string, bindingId: string, rows = 24, columns = 80) => {
+    const base = API_BASE || window.location.origin;
+    const url = new URL(`${ROOT}${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/terminal`, base);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.searchParams.set('rows', String(rows));
+    url.searchParams.set('columns', String(columns));
+    return url.toString();
+  },
+  stream: (flowRunId: string, attemptId: string, bindingId: string) => {
+    const base = API_BASE || window.location.origin;
+    const url = new URL(`${ROOT}${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/stream`, base);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return url.toString();
+  },
+};
+
+export function subscribeToNodeSessionStream(
+  flowRunId: string, attemptId: string, bindingId: string, onEvent: (event: AgentStreamEvent) => void,
+  onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
+): () => void {
+  let disposed = false; let socket: WebSocket | undefined; let retry: number | undefined; let attempts = 0;
+  const connect = () => {
+    if (disposed) return;
+    onStatus?.(attempts ? 'recovering' : 'connecting');
+    socket = new WebSocket(nodeSessionApi.stream(flowRunId, attemptId, bindingId));
+    socket.onopen = () => { attempts = 0; onStatus?.('live'); };
+    socket.onmessage = message => { try {
+      const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
+      if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content });
+      else if (event.type === 'event' && event.event && typeof event.event.id === 'string') onEvent({ type: 'event', event: event.event });
+      else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
+    } catch { /* REST remains authoritative. */ } };
+    socket.onclose = event => { socket = undefined; if (disposed || event.code === 4409) { onStatus?.('disabled'); return; } onStatus?.('recovering'); retry = window.setTimeout(connect, Math.min(1000 * 2 ** attempts++, 10_000)); };
+  };
+  connect();
+  return () => { disposed = true; if (retry !== undefined) window.clearTimeout(retry); socket?.close(1000, 'Conversation changed'); onStatus?.('disabled'); };
+}
+
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`);
   source.onmessage = onEvent;
