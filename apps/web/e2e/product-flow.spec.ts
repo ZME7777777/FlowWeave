@@ -1319,7 +1319,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
 
   await page.getByRole('button', { name: '在前端工作区中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
-  await expect(page.getByText('需要我帮你完成什么？', { exact: true })).toBeVisible();
+  await expect(page.getByText('会话已就绪', { exact: true })).toBeVisible();
   await expect(page.getByText('草稿', { exact: true })).toHaveCount(0);
   expect(conversations).toHaveLength(0);
   expect(bootstrapPayload).toBeNull();
@@ -1337,7 +1337,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(commandMenu.getByRole('option', { name: /summarize/ })).toBeVisible();
   await expect(commandMenu.getByRole('option', { name: /lark-docs/ })).toBeVisible();
   await composer.press('Enter');
-  await expect(composer).toHaveValue('/summarize ');
+  await expect(composer).toHaveValue('/lark-tools:summarize ');
   await composer.fill('');
 
   await page.getByLabel('打开模型与推理设置').click();

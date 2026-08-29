@@ -1213,6 +1213,24 @@ Observation 的异常分叉，会在下一次发送前以确定性原生 Convers
 URL、冻结模型和能力保持不变，用户消息只投递一次。已产生新 assistant/Action/error 的正常分叉不会重建。
 `FinishObservation` 只投影为无正文的 `TOOL_RESULT` 执行确认，不再生成第二份最终回复或错误收束当前轮。
 
+### FR-87 Agent 会话共享页面唯一入口 — DONE
+
+依赖：`FR-86`。
+
+目标：将当前一级 Agent Workspace 的完整会话页面从路由页迁移至唯一的共享 `agent-session` 页面模块；
+`/agent` 保留为只装配该模块的薄入口。共享页面必须原样保留会话草稿、首发 bootstrap、事件流、模型与能力、
+附件、来源、工作目录、文件和终端等已验证行为；不得新增第二套 reducer、WebSocket、Composer 或终端逻辑，
+不得改动 `/agent-workspaces/**` API、数据库、OpenHands 事件身份、FlowRun、节点或旧节点会话代码。此切片只
+建立前端唯一入口与静态依赖边界，不接入节点。
+
+验收：受影响 Web ESLint/typecheck/production build；现有 Agent 工作台定向 Playwright；`git diff --check`、
+Alembic head 与任务状态唯一性检查。完成后独立提交；后续后端内核迁移另开切片。
+
+完成：完整 Agent 会话实现已移入 `components/agent-session/AgentSessionWorkbench.tsx`，路由页
+`AgentWorkbenchPage` 只装配该共享页面；会话状态、Composer、事件流、能力、工作目录、附件、文件和终端
+均未复制或改写。`/agent` 原有 URL 和 API 调用保持不变。同步修正两条已落后于当前页面的浏览器断言：
+空会话展示“会话已就绪”，Plugin 命令保留原生命名空间 `/lark-tools:summarize`。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1229,6 +1247,7 @@ URL、冻结模型和能力保持不变，用户消息只投递一次。已产�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-87 | Web ESLint/typecheck/production build；定向 Playwright：顶层 Agent 会话首发与 URL 恢复、Runtime 恢复时工作区抽屉；共享模块依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 已只渲染唯一 `AgentSessionWorkbench`，首发 bootstrap/稳定 URL/刷新恢复和 Runtime 恢复抽屉均通过；共享模块只依赖 Agent API、共享渲染器、类型及样式，未引用 FlowRun、Node 或旧节点会话。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-86 | 固定 OpenHands 1.44.0 Finish Tool、事件父链、原生 fork/HEAD 与 send_message 源码取证；OpenHands/Agent Workspace 合并 pytest（124 passed）；Ruff；全量 Pyright（0 errors）；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright（1 passed）；Alembic head、正式事件关联扫描与 `git diff --check` | PASS：最终回复分叉统一落在完整执行边界，创建后强制验证可写；即时 Observation 落盘竞态可正常 fork；既有异常分叉保持 binding/URL 无损幂等恢复并只发送一次，正常分叉不误修复。`FinishObservation` 保留正式关联身份但不重复回复正文。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-85 | 固定 OpenHands 1.44.0 `stop_after_attempt`、网络异常映射与正式错误事件取证；OpenHands 适配器定向 pytest（6 passed）；Ruff、Pyright；Web ESLint/typecheck/production build；当前源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：主模型创建、原生模型切换与 condenser 均使用总计最多 5 次、1–4 秒退避和 20 秒单次超时；正式 `LLMServiceUnavailableError` 结束失败轮并移除“正在思考”，页面显示安全网络提示且不泄露原始连接错误。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-84 | Agent Workspace/OpenHands 压缩定向 pytest；Runtime 终结任务恢复 pytest；受影响 Python Ruff/Pyright；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright；`git diff --check`；无缓存 `make rebuild-deploy`；固定 OpenHands 1.44.0 contract check；Compose、HTTP、Alembic head/current；真实历史 Conversation `/context` 与 Runtime 恢复 | PASS：新会话使用 90% token 原生压缩、正式请求/完成父链验收、关键用户事件保护和失败回滚；旧 240 策略会话服务端与页面均只读。完整栈无缓存重建成功。部署发现并修复已成功幂等 provision 任务无法在镜像替换后重新领取的问题；健康 writer 存在时不重置，缺失时安全进入 RETRY 并恢复新 generation。最终 API/Postgres/Runtime Provider 健康、Web 200、Alembic `0070_agent_caps` head/current；原会话返回 `proactive_compaction_ratio=0.9`、阈值 `829800`、`compaction_policy_current=false`。 |
