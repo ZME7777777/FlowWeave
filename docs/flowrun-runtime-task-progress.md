@@ -1166,6 +1166,21 @@ PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 
 有正式过程明细时仍可展开核对，但标题不再重复“正在思考”或工具状态。当前运行语义只在轮末轻量动态提示中
 出现一次，正式终态到达后照常移除。
 
+### FR-84 Agent 上下文压缩连续性与部署恢复 — DONE
+
+依赖：`FR-83`。
+
+完成：新 Agent 会话将 OpenHands 原生 summarizing condenser 的常规触发改为正式模型窗口的 90%，
+事件数 10,000 仅保留为兜底，并以 `keep_first=4` 保留早期上下文。主动或手动压缩必须等待新的
+`CondensationRequest → Condensation` 正式父链；摘要需保留 `USER_CONTEXT`、`COMPLETED`、`PENDING`，
+且不得遗忘首条用户目标或最近纠偏。验收失败时恢复压缩前 HEAD，下一条用户消息不发送。历史
+`max_size=240` 会话保持可浏览但禁止发送、重写、继续和手动压缩，页面可在相同工作目录创建新会话。
+
+部署时发现无缓存镜像替换会将 Runtime 置为 `STARTING`，但固定幂等 provision 任务若已 `SUCCEEDED`
+则不会再次被领取。恢复逻辑现仅在不存在 Provider 确认的健康可写 Runtime 时，将最新 `SUCCEEDED`
+或 `DEAD` provision 任务重置为 `RETRY`；健康 writer 存在时绝不重复创建 generation。部署后原
+Conversation ID 恢复可读，真实 `/context` 返回 90% 阈值并将旧 240 策略标记为只读。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1182,6 +1197,7 @@ PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-84 | Agent Workspace/OpenHands 压缩定向 pytest；Runtime 终结任务恢复 pytest；受影响 Python Ruff/Pyright；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright；`git diff --check`；无缓存 `make rebuild-deploy`；固定 OpenHands 1.44.0 contract check；Compose、HTTP、Alembic head/current；真实历史 Conversation `/context` 与 Runtime 恢复 | PASS：新会话使用 90% token 原生压缩、正式请求/完成父链验收、关键用户事件保护和失败回滚；旧 240 策略会话服务端与页面均只读。完整栈无缓存重建成功。部署发现并修复已成功幂等 provision 任务无法在镜像替换后重新领取的问题；健康 writer 存在时不重置，缺失时安全进入 RETRY 并恢复新 generation。最终 API/Postgres/Runtime Provider 健康、Web 200、Alembic `0070_agent_caps` head/current；原会话返回 `proactive_compaction_ratio=0.9`、阈值 `829800`、`compaction_policy_current=false`。 |
 | 2026-08-29 | FR-82 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（纯耗时、无等待卡、唯一动态状态、工具过程与正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行中工作过程标题只显示耗时，大块等待模型响应提示已删除；当前状态仅在轮末显示一次，工具和终态切换保持正确。 |
 | 2026-08-29 | FR-81 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（未完成命令、工具结果后继续思考、正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：当前轮末尾持续显示灰色动态运行提示；未完成命令显示“正在后台执行命令”，正式 Observation 到达后切换为“正在思考”，FinishAction 到达后提示消失。 |
 | 2026-08-29 | FR-80 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（启用 xterm 鼠标上报后的普通拖拽选区、copy 事件内容、无新增 PTY 鼠标序列）；`git diff --check`、任务状态唯一性 | PASS：会话终端普通拖拽可保留并复制 xterm 选区；tmux 鼠标上报不会再清空选区或接收该拖拽手势。 |

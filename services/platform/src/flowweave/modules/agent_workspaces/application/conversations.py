@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import re
 import shutil
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -59,8 +60,9 @@ _TOOLS = (
 )
 
 _PROJECT_ROOT = "/runtime/workspace/project"
-_PROACTIVE_COMPACTION_RATIO = 0.8
+_PROACTIVE_COMPACTION_RATIO = 0.9
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
+_COMPACTION_EVENT_WAIT_SECONDS = 10.0
 _SANDBOX_PROJECT_IMAGE = re.compile(
     r"sandbox:(/runtime/workspace/project/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
@@ -75,6 +77,8 @@ _PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
         "可按需求或功能自行创建子目录；优先使用相对于项目根的路径。",
         "不要将用户项目文件写入项目根以外的位置，例如 /runtime 的其他目录、/tmp 或 HOME。",
         "不要向用户解释宿主机路径、Docker 挂载或容器实现细节；对用户而言，这就是项目根目录。",
+        "多步骤任务必须使用原生任务跟踪器维护目标、未完成项和完成条件；压缩上下文后继续执行时，不得把最近一次局部结果误当成用户的最终目标。",
+        "只要任务跟踪器仍有未完成项，或用户的完成条件尚未满足，就不得因为上下文压缩而提前收口。",
     )
 )
 
@@ -683,11 +687,17 @@ def _create_native_conversation(
             # Keep OpenHands' native event/token safeguards, but avoid the
             # default 240-event heuristic compacting tool-heavy sessions while
             # their token window is still mostly empty. FlowWeave proactively
-            # invokes the same native condenser at 80% of OpenHands' registered
-            # context window before accepting the next user message.
+            # invokes the same native condenser at 90% of OpenHands' registered
+            # context window before accepting the next user message. The first
+            # system/user context remains verbatim through OpenHands' standard
+            # ``keep_first=4`` checkpoint boundary. The same 90% policy is
+            # frozen into the native condenser for long tool loops; the very
+            # high event limit is only a disaster guard.
             condenser=RuntimeCondenser(
                 kind="LLM_SUMMARIZING",
                 max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+                max_tokens_ratio=_PROACTIVE_COMPACTION_RATIO,
+                keep_first=4,
             ),
             condenser_provider=provider,
             tools=_TOOLS,
@@ -1332,11 +1342,7 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
             else ancestors
         )
         pending_request = next(
-            (
-                item
-                for item in current_ancestors
-                if item.event_type == "CONDENSATION_REQUESTED"
-            ),
+            (item for item in current_ancestors if item.event_type == "CONDENSATION_REQUESTED"),
             None,
         )
         # A first condensation's complete formal ancestry provides a lower
@@ -1351,11 +1357,7 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
                 "上下文用量主动保护或模型上下文超限后的恢复。"
             )
             trigger_event = pending_request
-        elif (
-            previous_completion is None
-            and max_events is not None
-            and event_count > max_events
-        ):
+        elif previous_completion is None and max_events is not None and event_count > max_events:
             reason = "EVENTS"
             reason_detail = (
                 f"压缩前正式事件链至少有 {event_count} 个事件，"
@@ -1540,6 +1542,159 @@ def terminal_container_details(db: Session, workspace_id: str) -> tuple[str, str
     return sandbox.backend_resource_name, sandbox.id, sandbox.backend_resource_id
 
 
+def _require_current_compaction_policy(context: dict[str, Any]) -> None:
+    raw_max_events = context.get("condenser_max_size")
+    if (
+        isinstance(raw_max_events, int)
+        and not isinstance(raw_max_events, bool)
+        and raw_max_events < _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
+    ):
+        raise DomainError(
+            "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED",
+            "此历史会话仍使用旧的事件数压缩策略，继续执行可能再次受错误摘要影响；"
+            "请新建会话，或从错误压缩前的回复分叉后仅用于审计。",
+            409,
+            {
+                "condenser_max_size": raw_max_events,
+                "required_max_size": _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+            },
+        )
+
+
+def _compaction_summary_is_structured(summary: object) -> bool:
+    if not isinstance(summary, str) or not summary.strip():
+        return False
+    # Strip Markdown emphasis markers without changing the protocol field
+    # names themselves (notably the underscore in USER_CONTEXT).
+    normalized = re.sub(r"[*`]", "", summary.upper())
+    # These are the stable handoff anchors required by OpenHands' own fixed
+    # summarizing prompt. CURRENT_STATE/TASK_TRACKING are task-dependent, but
+    # the user goal and pending work must always survive a safe checkpoint.
+    return all(
+        re.search(
+            rf"(?:^|\n)[ \t]*(?:#+[ \t]*)?{section}[ \t]*:[ \t]*\S",
+            normalized,
+        )
+        for section in ("USER_CONTEXT", "COMPLETED", "PENDING")
+    )
+
+
+def _rollback_unsafe_compaction(runtime: Any, handle: RuntimeHandle, event_id: str) -> None:
+    try:
+        runtime.navigate(handle, event_id)
+    except DomainError as exc:
+        raise DomainError(
+            "AGENT_CONTEXT_COMPACTION_ROLLBACK_FAILED",
+            "压缩验收失败且无法恢复压缩前 HEAD；会话已停止，消息尚未发送",
+            503,
+            {"event_id": event_id},
+        ) from exc
+
+
+def _safe_native_compaction(runtime: Any, handle: RuntimeHandle) -> str:
+    before_identity = runtime.reload_conversation(handle)
+    before_event_id = before_identity.event_id
+    if not before_event_id:
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "压缩前会话缺少正式 HEAD 身份", 409)
+    before_events = runtime.read_active_events(handle).events
+    before_ids = {event.cursor for event in before_events}
+    completed_before = {
+        event.cursor for event in before_events if event.event_type == "CONDENSATION_COMPLETED"
+    }
+    request_error: DomainError | None = None
+    try:
+        runtime.condense(handle)
+    except DomainError as exc:
+        # A transport/server error can mean the synchronous Agent Server call
+        # completed but its HTTP response was lost. Reconcile exclusively by
+        # the durable native request/completion ancestry before deciding that
+        # the compaction failed; never retry the mutation.
+        if exc.status < 500:
+            raise DomainError(
+                "AGENT_CONTEXT_COMPACTION_FAILED",
+                "OpenHands 原生压缩被拒绝；消息尚未发送",
+                exc.status,
+            ) from exc
+        request_error = exc
+
+    deadline = time.monotonic() + _COMPACTION_EVENT_WAIT_SECONDS
+    completed_event: Any | None = None
+    request_event: Any | None = None
+    while time.monotonic() < deadline:
+        after_events = runtime.read_active_events(handle).events
+        by_id = {event.cursor: event for event in after_events}
+        for candidate in reversed(after_events):
+            if (
+                candidate.event_type != "CONDENSATION_COMPLETED"
+                or candidate.cursor in completed_before
+            ):
+                continue
+            ancestor_id = candidate.payload.get("parent_id")
+            seen: set[str] = set()
+            while isinstance(ancestor_id, str) and ancestor_id != "__root__":
+                if ancestor_id in seen:
+                    break
+                seen.add(ancestor_id)
+                ancestor = by_id.get(ancestor_id)
+                if ancestor is None:
+                    break
+                if (
+                    ancestor.event_type == "CONDENSATION_REQUESTED"
+                    and ancestor.cursor not in before_ids
+                ):
+                    completed_event = candidate
+                    request_event = ancestor
+                    break
+                ancestor_id = ancestor.payload.get("parent_id")
+            if completed_event is not None:
+                break
+        if completed_event is not None and request_event is not None:
+            break
+        time.sleep(0.1)
+    if completed_event is None or request_event is None:
+        _rollback_unsafe_compaction(runtime, handle, before_event_id)
+        raise DomainError(
+            (
+                "AGENT_CONTEXT_COMPACTION_DELIVERY_AMBIGUOUS"
+                if request_error is not None
+                else "AGENT_CONTEXT_COMPACTION_INCOMPLETE"
+            ),
+            (
+                "OpenHands 压缩响应丢失且未发现可关联的完成事件；"
+                if request_error is not None
+                else "OpenHands 未持久化可关联本次请求的压缩完成事件；"
+            )
+            + "已恢复压缩前 HEAD，消息尚未发送",
+            503,
+        ) from request_error
+    forgotten = {str(value) for value in completed_event.payload.get("forgotten_event_ids", [])}
+    user_events = [
+        event
+        for event in before_events
+        if event.event_type == "MESSAGE"
+        and str(event.payload.get("source") or "").lower() in {"user", "human"}
+    ]
+    protected_user_ids = {event.cursor for event in user_events[:1] + user_events[-1:]}
+    if protected_user_ids & forgotten:
+        _rollback_unsafe_compaction(runtime, handle, before_event_id)
+        raise DomainError(
+            "AGENT_CONTEXT_COMPACTION_UNSAFE",
+            "压缩移除了用户的初始目标或最近纠偏；已恢复压缩前 HEAD，消息尚未发送",
+            409,
+            {"condensation_event_id": completed_event.cursor},
+        )
+    if not _compaction_summary_is_structured(completed_event.payload.get("summary")):
+        _rollback_unsafe_compaction(runtime, handle, before_event_id)
+        raise DomainError(
+            "AGENT_CONTEXT_COMPACTION_UNSAFE",
+            "压缩摘要没有完整保留用户目标、已完成事项和待办；已恢复压缩前 HEAD，消息尚未发送",
+            409,
+            {"condensation_event_id": completed_event.cursor},
+        )
+
+    return completed_event.cursor
+
+
 def message(
     db: Session,
     workspace_id: str,
@@ -1596,16 +1751,10 @@ def message(
         ) from exc
     compacted = False
     context = runtime.conversation_context(handle)
+    _require_current_compaction_policy(context)
     if _proactive_compaction_required(runtime, handle, context):
-        try:
-            runtime.condense(handle)
-            compacted = True
-        except DomainError as exc:
-            raise DomainError(
-                "AGENT_CONTEXT_COMPACTION_FAILED",
-                "上下文达到压缩阈值，但 OpenHands 压缩失败；消息尚未发送",
-                503,
-            ) from exc
+        _safe_native_compaction(runtime, handle)
+        compacted = True
     try:
         result = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -1875,12 +2024,19 @@ def conversation_context(
         and window_tokens > 0
         else None
     )
+    condenser_max_size = context.get("condenser_max_size")
+    compaction_policy_current = not (
+        isinstance(condenser_max_size, int)
+        and not isinstance(condenser_max_size, bool)
+        and condenser_max_size < _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
+    )
     return {
         **context,
         "used_tokens": context.get("used_tokens") if usage_current else None,
         "usage_current": usage_current,
         "proactive_compaction_ratio": _PROACTIVE_COMPACTION_RATIO,
         "proactive_compaction_tokens": threshold_tokens,
+        "compaction_policy_current": compaction_policy_current,
     }
 
 
@@ -1930,10 +2086,12 @@ def switch_conversation_model(
 def condense_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     handle = _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
-    if not get_runtime().can_accept_input(handle):
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
-    result = get_runtime().condense(handle)
-    return {"accepted": True, "cursor": result.cursor}
+    _require_current_compaction_policy(runtime.conversation_context(handle))
+    cursor = _safe_native_compaction(runtime, handle)
+    return {"accepted": True, "cursor": cursor}
 
 
 def _fork_conversation(
@@ -2132,6 +2290,7 @@ def rewrite_message(
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
+    _require_current_compaction_policy(runtime.conversation_context(handle))
     batch = runtime.read_active_events(handle)
     user_events = [
         event
@@ -2163,5 +2322,8 @@ def rewrite_message(
 
 def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
-    result = get_runtime().run(_handle(db, workspace, _binding(db, workspace_id, binding_id)))
+    runtime = get_runtime()
+    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    _require_current_compaction_policy(runtime.conversation_context(handle))
+    result = runtime.run(handle)
     return {"accepted": True, "cursor": result.cursor}

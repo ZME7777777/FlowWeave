@@ -382,6 +382,7 @@ export interface AgentConversationContext {
   usage_current?: boolean;
   proactive_compaction_ratio?: number;
   proactive_compaction_tokens?: number | null;
+  compaction_policy_current?: boolean;
 }
 export interface AgentConversation {
   id: string;

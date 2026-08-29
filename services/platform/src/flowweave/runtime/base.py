@@ -61,6 +61,7 @@ class RuntimeCondenser:
     kind: Literal["NO_OP", "LLM_SUMMARIZING"] = "NO_OP"
     max_size: int = 240
     max_tokens: int | None = None
+    max_tokens_ratio: float | None = None
     keep_first: int = 2
     minimum_progress: float = 0.1
     hard_context_reset_max_retries: int = 5

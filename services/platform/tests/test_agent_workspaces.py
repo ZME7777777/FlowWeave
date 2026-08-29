@@ -451,24 +451,33 @@ def test_dead_workspace_runtime_task_retries_when_resource_is_not_healthy(
             )
         )
         task.state = TaskState.SUCCEEDED
-        recovery_task = BackgroundTask(
-            task_type="PROVISION_AGENT_WORKSPACE_RUNTIME",
-            aggregate_type="AGENT_WORKSPACE",
-            aggregate_id=workspace.id,
-            idempotency_key=f"recover-agent-workspace-runtime:{workspace.id}:1",
-            state=TaskState.DEAD,
-            attempts=20,
-            max_attempts=20,
-            last_error="Docker backend unavailable",
+        db.flush()
+
+        # A provider-confirmed writer must never be duplicated, even if the
+        # original idempotent bootstrap task is already terminal.
+        healthy_resource = db.scalar(
+            select(ManagedSandbox).where(
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace.id,
+            )
         )
-        db.add(recovery_task)
+        assert healthy_resource is not None
+        healthy_resource.observed_state = "READY"
+        healthy_resource.backend_resource_id = "healthy-runtime"
+        assert recover_default_agent_workspace_runtime_task(db) is False
+        assert task.state == TaskState.SUCCEEDED
+
+        # A no-cache deployment can change the pinned image after the old
+        # physical writer disappeared. Re-open the latest terminal provision
+        # command so desired-state recovery can create N+1.
+        healthy_resource.observed_state = "ERROR"
         db.flush()
 
         assert recover_default_agent_workspace_runtime_task(db) is True
 
-        assert recovery_task.state == TaskState.RETRY
-        assert recovery_task.attempts == 0
-        assert recovery_task.last_error is None
+        assert task.state == TaskState.RETRY
+        assert task.attempts == 0
+        assert task.last_error is None
 
 
 def test_workspace_runtime_replaces_deleted_physical_generation(
@@ -817,12 +826,8 @@ def test_agent_workspace_projects_condensation_reason_and_separate_times(
     assert projected["payload"]["condensation_reason"] == "EVENTS"
     assert projected["payload"]["condensation_event_count"] == 241
     assert projected["payload"]["condensation_max_events"] == 240
-    assert projected["payload"]["condensation_triggered_at"] == (
-        "2026-08-26T10:00:00+00:00"
-    )
-    assert projected["payload"]["condensation_completed_at"] == (
-        "2026-08-26T10:05:00+00:00"
-    )
+    assert projected["payload"]["condensation_triggered_at"] == ("2026-08-26T10:00:00+00:00")
+    assert projected["payload"]["condensation_completed_at"] == ("2026-08-26T10:05:00+00:00")
     assert "241" in projected["payload"]["condensation_reason_detail"]
     assert "240" in projected["payload"]["condensation_reason_detail"]
 
@@ -1979,14 +1984,32 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
-def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_send(
+def test_agent_workspace_proactively_condenses_at_native_ninety_percent_before_send(
     settings, db_session_factory, monkeypatch
 ):
     class ProactiveCompactionRuntime(MockRuntime):
-        used_tokens = 79_999
+        used_tokens = 89_999
         fail_compaction = False
+        unsafe_summary = False
         calls: list[str] = []
-        active_events: tuple[RuntimeEvent, ...] = ()
+        condensation_count = 0
+        active_events: tuple[RuntimeEvent, ...] = (
+            RuntimeEvent(
+                cursor="initial-user",
+                event_type="MESSAGE",
+                payload={
+                    "source": "user",
+                    "parent_id": "__root__",
+                    "content": "完成端到端调研，不要提前收口",
+                },
+            ),
+            RuntimeEvent(
+                cursor="assistant-head",
+                event_type="MESSAGE",
+                payload={"source": "agent", "parent_id": "initial-user"},
+            ),
+        )
+        head = "assistant-head"
 
         def conversation_context(self, handle):
             del handle
@@ -2004,11 +2027,56 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
             self.calls.append("condense")
             if self.fail_compaction:
                 raise DomainError("EXECUTOR_UNAVAILABLE", "compaction failed", 503)
-            return super().condense(handle)
+            self.condensation_count += 1
+            request_id = f"condensation-request-{self.condensation_count}"
+            completed_id = f"condensation-completed-{self.condensation_count}"
+            self.active_events += (
+                RuntimeEvent(
+                    cursor=request_id,
+                    event_type="CONDENSATION_REQUESTED",
+                    payload={"parent_id": self.head},
+                ),
+                RuntimeEvent(
+                    cursor=completed_id,
+                    event_type="CONDENSATION_COMPLETED",
+                    payload={
+                        "parent_id": request_id,
+                        "forgotten_event_ids": ["assistant-head"],
+                        "summary": (
+                            "只有局部结果"
+                            if self.unsafe_summary
+                            else "USER_CONTEXT: 完成端到端调研，不要提前收口\n"
+                            "COMPLETED: 已定位数据源\n"
+                            "PENDING: 补齐处理、存储和客户端链路"
+                        ),
+                    },
+                ),
+            )
+            self.head = completed_id
+            return RuntimeResult(status="RUNNING", cursor=self.head)
 
         def read_active_events(self, handle):
             del handle
             return RuntimeEventBatch(events=self.active_events)
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            return RuntimeConversationIdentity(
+                conversation_id=handle.conversation_id,
+                workspace_working_dir="/runtime/workspace/project",
+                persistence_dir=(
+                    f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
+                ),
+                event_id=self.head,
+                parent_id=None,
+                action_id=None,
+                tool_call_id=None,
+            )
+
+        def navigate(self, handle, event_id):
+            del handle
+            self.calls.append(f"navigate:{event_id}")
+            self.head = event_id
 
         def send_message(self, handle, content, image_urls=()):
             self.calls.append(f"send:{content}")
@@ -2037,26 +2105,41 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
         assert runtime.calls == ["send:below"]
 
         runtime.calls.clear()
-        runtime.used_tokens = 80_000
+        runtime.used_tokens = 90_000
         at_threshold = conversations.message(db, workspace.id, created["id"], "threshold")
         assert at_threshold["compacted"] is True
         assert runtime.calls == ["condense", "send:threshold"]
 
+        runtime.active_events += (
+            RuntimeEvent(
+                cursor="thought-after-first-condensation",
+                event_type="THOUGHT",
+                payload={
+                    "source": "agent",
+                    "parent_id": runtime.head,
+                    "content": "继续处理",
+                },
+            ),
+        )
+        runtime.head = "thought-after-first-condensation"
         runtime.calls.clear()
         runtime.fail_compaction = True
         with pytest.raises(DomainError) as raised:
             conversations.message(db, workspace.id, created["id"], "must-not-send")
-        assert raised.value.code == "AGENT_CONTEXT_COMPACTION_FAILED"
-        assert runtime.calls == ["condense"]
+        assert raised.value.code == "AGENT_CONTEXT_COMPACTION_DELIVERY_AMBIGUOUS"
+        assert runtime.calls == ["condense", "navigate:thought-after-first-condensation"]
 
         runtime.fail_compaction = False
-        runtime.active_events = (
-            RuntimeEvent(
-                cursor="condensation-1",
-                event_type="CONDENSATION_COMPLETED",
-                payload={},
-            ),
-        )
+        runtime.used_tokens = 90_000
+        runtime.unsafe_summary = True
+        runtime.calls.clear()
+        with pytest.raises(DomainError) as unsafe:
+            conversations.message(db, workspace.id, created["id"], "must-not-follow-bad-summary")
+        assert unsafe.value.code == "AGENT_CONTEXT_COMPACTION_UNSAFE"
+        assert runtime.calls == ["condense", "navigate:thought-after-first-condensation"]
+        assert not any(call.startswith("send:") for call in runtime.calls)
+
+        runtime.unsafe_summary = False
         stale = conversations.conversation_context(db, workspace.id, created["id"])
         assert stale["used_tokens"] is None
         assert stale["usage_current"] is False
@@ -2069,8 +2152,59 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
             ),
         )
         refreshed = conversations.conversation_context(db, workspace.id, created["id"])
-        assert refreshed["used_tokens"] == 80_000
+        assert refreshed["used_tokens"] == 90_000
         assert refreshed["usage_current"] is True
+
+
+def test_agent_workspace_rejects_legacy_event_count_policy_before_send(
+    settings, db_session_factory, monkeypatch
+):
+    class LegacyPolicyRuntime(MockRuntime):
+        sent = False
+
+        def conversation_context(self, handle):
+            del handle
+            return {
+                "used_tokens": 1_000,
+                "window_tokens": 100_000,
+                "condenser_max_size": 240,
+            }
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            self.sent = True
+            return RuntimeResult(status="RUNNING")
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = LegacyPolicyRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
+        with pytest.raises(DomainError) as raised:
+            conversations.message(db, workspace.id, created["id"], "must-not-send")
+        assert raised.value.code == "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED"
+        assert runtime.sent is False
+        with pytest.raises(DomainError) as rewrite_raised:
+            conversations.rewrite_message(
+                db, workspace.id, created["id"], "legacy-user-event", "must-not-rewrite"
+            )
+        assert rewrite_raised.value.code == "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED"
+        with pytest.raises(DomainError) as resume_raised:
+            conversations.resume(db, workspace.id, created["id"])
+        assert resume_raised.value.code == "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED"
+        context = conversations.conversation_context(db, workspace.id, created["id"])
+        assert context["compaction_policy_current"] is False
 
 
 def test_agent_workspace_uses_native_attachments_context_and_model_switch(
@@ -2191,8 +2325,9 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "model_name": "test-model",
             "reasoning_effort": "medium",
             "usage_current": True,
-            "proactive_compaction_ratio": 0.8,
-            "proactive_compaction_tokens": 102_400,
+            "proactive_compaction_ratio": 0.9,
+            "proactive_compaction_tokens": 115_200,
+            "compaction_policy_current": True,
         }
         # Selecting a provider/model is persisted immediately on the individual
         # Conversation and sending only re-applies that saved selection.

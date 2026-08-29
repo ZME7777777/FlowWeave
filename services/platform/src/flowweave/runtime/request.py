@@ -274,6 +274,11 @@ def _runtime_condenser(
             max_tokens=(
                 int(config["max_tokens"]) if config.get("max_tokens") is not None else None
             ),
+            max_tokens_ratio=(
+                float(config["max_tokens_ratio"])
+                if config.get("max_tokens_ratio") is not None
+                else None
+            ),
             keep_first=int(config.get("keep_first") or 0),
             minimum_progress=float(config.get("minimum_progress") or 0.1),
             hard_context_reset_max_retries=int(config.get("hard_context_reset_max_retries") or 5),

@@ -250,7 +250,7 @@ def _has_healthy_active_resource(db: Session, workspace_id: str, generation: int
     )
 
 
-def _reset_dead_runtime_task(
+def _reset_terminal_runtime_task(
     db: Session, workspace: AgentWorkspace, runtime: AgentWorkspaceRuntime
 ) -> bool:
     task = db.scalar(
@@ -258,7 +258,7 @@ def _reset_dead_runtime_task(
         .where(
             BackgroundTask.task_type == "PROVISION_AGENT_WORKSPACE_RUNTIME",
             BackgroundTask.aggregate_id == workspace.id,
-            BackgroundTask.state == TaskState.DEAD,
+            BackgroundTask.state.in_([TaskState.SUCCEEDED, TaskState.DEAD]),
         )
         .order_by(BackgroundTask.updated_at.desc(), BackgroundTask.created_at.desc())
         .with_for_update()
@@ -287,7 +287,7 @@ def recover_default_agent_workspace_runtime_task(db: Session) -> bool:
     )
     if runtime is None:
         return False
-    return _reset_dead_runtime_task(db, workspace, runtime)
+    return _reset_terminal_runtime_task(db, workspace, runtime)
 
 
 def runtime_allocation_for_agent_workspace(
@@ -405,7 +405,7 @@ def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
         # Bootstrap is desired state, not a one-shot provisioning command. A
         # fresh deployment can make an unavailable image available, provided
         # no active resource remains writable.
-        _reset_dead_runtime_task(db, workspace, runtime)
+        _reset_terminal_runtime_task(db, workspace, runtime)
     return workspace
 
 

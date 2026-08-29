@@ -2016,6 +2016,42 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
     }
 
 
+def test_openhands_derives_native_condenser_token_limit_from_declared_window(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000005", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    request = _request()
+    runtime.start(
+        replace(
+            request,
+            agent_spec=replace(
+                request.agent_spec,
+                condenser=RuntimeCondenser(
+                    kind="LLM_SUMMARIZING",
+                    max_size=10_000,
+                    max_tokens_ratio=0.9,
+                    keep_first=4,
+                ),
+                condenser_provider=request.agent_spec.provider,
+            ),
+        )
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    condenser = payload["agent"]["condenser"]
+    assert condenser["max_tokens"] == 829_800
+    assert condenser["max_size"] == 10_000
+    assert condenser["keep_first"] == 4
+
+
 def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
     openhands_settings, monkeypatch
 ):
@@ -2134,6 +2170,7 @@ def test_openhands_conversation_context_reads_the_active_native_usage_bucket(
         "model_name": "openai/gpt-5.6-luna",
         "reasoning_effort": None,
         "condenser_max_size": None,
+        "condenser_max_tokens": None,
     }
 
 

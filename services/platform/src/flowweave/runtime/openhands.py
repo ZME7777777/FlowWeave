@@ -823,6 +823,16 @@ class OpenHandsRuntime:
         }
         if condenser.max_tokens is not None:
             payload["max_tokens"] = condenser.max_tokens
+        elif condenser.max_tokens_ratio is not None:
+            if not 0 < condenser.max_tokens_ratio < 1:
+                raise DomainError(
+                    "RUNTIME_CONFIGURATION_INVALID",
+                    "OpenHands condenser token ratio must be between zero and one",
+                    422,
+                )
+            raw_window = llm.get("max_input_tokens")
+            if isinstance(raw_window, int) and not isinstance(raw_window, bool) and raw_window > 0:
+                payload["max_tokens"] = int(raw_window * condenser.max_tokens_ratio)
         return payload
 
     @staticmethod
@@ -2973,6 +2983,11 @@ class OpenHandsRuntime:
             ),
             "condenser_max_size": (
                 condenser.get("max_size") if isinstance(condenser.get("max_size"), int) else None
+            ),
+            "condenser_max_tokens": (
+                condenser.get("max_tokens")
+                if isinstance(condenser.get("max_tokens"), int)
+                else None
             ),
         }
 

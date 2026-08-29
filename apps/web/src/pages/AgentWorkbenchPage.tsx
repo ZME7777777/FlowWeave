@@ -1080,9 +1080,7 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
   const canOpenConversation = runtimeWritable;
-  const canWrite = Boolean(runtimeWritable && selected);
   const canBootstrap = Boolean(runtimeWritable && conversationDraft && newConversationProviderId && newConversationModelName);
-  const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));
   const isGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventsQuery = useQuery({
     queryKey: ['agent-conversation-events', workspace?.id, selected?.id], queryFn: () => api.agentConversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
@@ -1145,6 +1143,9 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     queryFn: () => api.agentConversationContext(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 2000 : false,
   });
+  const compactionPolicyCurrent = contextQuery.data?.compaction_policy_current !== false;
+  const canWrite = Boolean(runtimeWritable && selected && compactionPolicyCurrent);
+  const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));
   const confirmationQuery = useQuery({
     queryKey: ['agent-conversation-confirmation', workspace?.id, selected?.id],
     queryFn: () => api.agentPendingConfirmation(workspace!.id, selected!.id),
@@ -1640,7 +1641,7 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     : undefined;
   const contextUsagePending = Boolean(selected && contextQuery.data?.usage_current === false);
   const contextTitle = contextProgress
-    ? `OpenHands 当前 View：${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()} tokens（${contextProgress.percentage}%）；达到 ${Math.round((contextQuery.data?.proactive_compaction_ratio ?? 0.8) * 100)}% 时发送前主动调用原生压缩；OpenHands 仍保留 ${contextQuery.data?.condenser_max_size?.toLocaleString() ?? '自身'} 事件数兜底`
+    ? `OpenHands 当前 View：${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()} tokens（${contextProgress.percentage}%）；达到 ${Math.round((contextQuery.data?.proactive_compaction_ratio ?? 0.9) * 100)}% 时发送前主动调用原生压缩；OpenHands 仍保留 ${contextQuery.data?.condenser_max_size?.toLocaleString() ?? '自身'} 事件数兜底`
     : undefined;
   const composerStatus = bootstrapRecovery
     ? bootstrapRecovery.attempts < MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS ? '正在安全核对首条消息' : '首条消息待安全核对'
@@ -1669,6 +1670,15 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     else if (turnState === 'paused') resume.mutate();
   };
   const workDirectories = workDirectoriesQuery.data?.items ?? [];
+  const openCurrentDirectoryDraft = () => {
+    const directory = selected?.work_directory_id
+      ? workDirectories.find(item => item.id === selected.work_directory_id)
+      : undefined;
+    openConversationDraft({
+      workDirectoryId: directory?.id,
+      displayName: directory?.display_name ?? '根工作区',
+    });
+  };
   const activeWorkDirectoryIds = new Set(workDirectories.map(item => item.id));
   const rootConversations = conversations.filter(item => !item.work_directory_id);
   const archivedDirectoryConversations = conversations.filter(item => {
@@ -1703,7 +1713,8 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : <h2 title={selected ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected) return; setTitle(conversationName(selected)); setEditing(true); }}>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</h2>}{(selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div>{selected && <div className="agent-header-actions"><button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button></div>}</header>
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
-      {selected || conversationDraft ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={selected ? requestRewrite : undefined} onFork={selected ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={openAttachmentInDrawer}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></div>}
+      {selected && !compactionPolicyCurrent && <section className="agent-compaction-policy-warning" aria-label="历史压缩策略风险"><ShieldAlert size={18}/><div><b>此历史会话已切换为只读</b><span>它仍使用旧的事件数压缩策略，继续回复可能再次受错误摘要影响。历史内容保持可浏览；请在相同工作目录创建采用 90% token 策略的新会话。</span><button type="button" className="primary" disabled={!canOpenConversation} onClick={openCurrentDirectoryDraft}><Plus size={14}/>在相同工作目录新建会话</button></div></section>}
+      {selected || conversationDraft ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={selected && compactionPolicyCurrent ? requestRewrite : undefined} onFork={selected ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={openAttachmentInDrawer}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || '图片附件'}</p><span>{message.items.length ? `${message.items.length} 个附件` : ''}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}
@@ -1712,7 +1723,7 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
         <footer>
           <div className="agent-composer-context">
             {(selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
-            {contextProgress && <span className="agent-context-progress" title={contextTitle} aria-label={`OpenHands 当前上下文用量 ${contextProgress.percentage}%，80% 时主动压缩`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span>}
+            {contextProgress && <span className="agent-context-progress" title={contextTitle} aria-label={`OpenHands 当前上下文用量 ${contextProgress.percentage}%，90% 时主动压缩`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span>}
             {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}
           </div>

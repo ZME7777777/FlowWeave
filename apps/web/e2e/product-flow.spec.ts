@@ -494,12 +494,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(manualCondensations ? {
         used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: false,
-        proactive_compaction_ratio: 0.8, proactive_compaction_tokens: 737_600,
+        proactive_compaction_ratio: 0.9, proactive_compaction_tokens: 829_800, compaction_policy_current: true,
         condenser_max_size: 10_000,
       } : contextAvailable ? {
         used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
-        proactive_compaction_ratio: 0.8, proactive_compaction_tokens: 737_600,
+        proactive_compaction_ratio: 0.9, proactive_compaction_tokens: 829_800, compaction_policy_current: true,
         condenser_max_size: 10_000,
       } : {
         used_tokens: null, window_tokens: null, cumulative_tokens: 12_716,
@@ -718,7 +718,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   contextAvailable = true;
   await page.reload();
   await expect(page.locator('.agent-context-progress')).toHaveText('6.4k / 922k');
-  await expect(page.locator('.agent-context-progress')).toHaveAttribute('title', /OpenHands 当前 View.*80%.*10,000/);
+  await expect(page.locator('.agent-context-progress')).toHaveAttribute('title', /OpenHands 当前 View.*90%.*10,000/);
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
   await composerAfterReload.fill('/');
   const nativeMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
