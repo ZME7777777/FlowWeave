@@ -13,15 +13,17 @@ from uuid import UUID, uuid4, uuid5
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentConversationBinding,
+    AgentConversationCapability,
+    AgentConversationCommand,
+    AgentConversationMessageAttachment,
+)
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.application.service import (
     runtime_allocation_for_agent_workspace,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
-    AgentConversationBinding,
-    AgentConversationCapability,
-    AgentConversationCommand,
-    AgentConversationMessageAttachment,
     AgentWorkDirectoryVersion,
     AgentWorkspace,
     AgentWorkspaceCapability,

@@ -309,9 +309,9 @@ def test_openhands_144_profile_secret_condenser_and_title_boundaries() -> None:
     contract_probe = (REPOSITORY / "infra" / "openhands" / "contract_check.py").read_text()
     runtime = (SOURCE / "runtime" / "openhands.py").read_text()
     conversations = (
-        SOURCE / "modules" / "agent_workspaces" / "application" / "conversations.py"
+        SOURCE / "modules" / "agent_sessions" / "application" / "conversations.py"
     ).read_text()
-    titles = (SOURCE / "modules" / "agent_workspaces" / "application" / "titles.py").read_text()
+    titles = (SOURCE / "modules" / "agent_sessions" / "application" / "titles.py").read_text()
     assert "agent_profile_fields ==" not in contract_probe
     assert "expected_condenser_defaults" not in contract_probe
     assert '"profile_v1_migration": True' in contract_probe
@@ -355,9 +355,20 @@ def test_agent_workspace_conversation_compatibility_import_is_the_shared_module(
     """Do not let the historical Agent Workspace path grow a second service."""
 
     from flowweave.modules.agent_sessions.application import conversations as shared
+    from flowweave.modules.agent_sessions.infrastructure.models import (
+        AgentConversationBinding as shared_binding,
+    )
     from flowweave.modules.agent_workspaces.application import conversations as legacy
+    from flowweave.modules.agent_workspaces.infrastructure.models import (
+        AgentConversationBinding as legacy_binding,
+    )
 
     assert legacy is shared
+    assert legacy_binding is shared_binding
+    session_models = (
+        SOURCE / "modules" / "agent_sessions" / "infrastructure" / "models.py"
+    ).read_text()
+    assert "from flowweave.modules.agent_workspaces" not in session_models
 
 
 def test_agent_session_host_contract_is_explicit_and_namespaced() -> None:

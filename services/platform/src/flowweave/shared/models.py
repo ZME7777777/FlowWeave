@@ -3,10 +3,12 @@
 New code imports mappings from each module's ``infrastructure.models``.
 """
 
-from flowweave.modules.agent_workspaces.infrastructure.models import (
+from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
+)
+from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkDirectory,
     AgentWorkDirectoryPath,
     AgentWorkDirectoryVersion,

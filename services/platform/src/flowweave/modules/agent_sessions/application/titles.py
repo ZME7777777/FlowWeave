@@ -9,7 +9,7 @@ import httpx
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_workspaces.infrastructure.models import AgentConversationBinding
+from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
 from flowweave.modules.model_providers.public import TitleProviderSnapshot, title_provider_snapshot
 from flowweave.modules.tasks.public import Lease, lease_is_current
 from flowweave.shared.models import BackgroundTask
