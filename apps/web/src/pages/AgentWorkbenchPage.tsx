@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, agentWorkspaceFileUrl, agentWorkspaceTerminalUrl, api, randomId, subscribeToAgentWorkspaceStream } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
@@ -31,6 +31,14 @@ interface BootstrapRecovery {
 interface OptimisticBootstrapTurn {
   scope: string;
   event: OpenHandsConversationEvent;
+}
+interface ConversationSource {
+  id: string;
+  kind: 'url' | 'file' | 'image';
+  label: string;
+  url?: string;
+  attachment?: AgentAttachment;
+  pending?: boolean;
 }
 
 interface WorkspaceConversationGroupProps {
@@ -341,6 +349,37 @@ function mergeConversationEvents(
   const merged = new Map(durable.map(event => [event.id, event]));
   for (const event of transient) if (!merged.has(event.id)) merged.set(event.id, event);
   return [...merged.values()];
+}
+
+const USER_SOURCE_URL_PATTERN = /\b(?:https?:\/\/|www\.)[^\s<>"'`()[\]{}]+/gi;
+
+function sourceUrl(value: string): string | undefined {
+  const trimmed = value.replace(/[.,;:!?]+$/, '');
+  const href = /^www\./i.test(trimmed) ? `http://${trimmed}` : trimmed;
+  try {
+    const parsed = new URL(href);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function userProvidedSources(events: OpenHandsConversationEvent[]): ConversationSource[] {
+  const sources = new Map<string, ConversationSource>();
+  for (const event of events) {
+    const isUserMessage = event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
+    if (!isUserMessage) continue;
+    for (const attachment of event.payload.attachments ?? []) {
+      const kind = attachment.mime_type.startsWith('image/') ? 'image' : 'file';
+      sources.set(`attachment:${attachment.path}`, { id: `attachment:${attachment.path}`, kind, label: attachment.filename, attachment });
+    }
+    for (const match of String(event.payload.content ?? '').matchAll(USER_SOURCE_URL_PATTERN)) {
+      const url = sourceUrl(match[0]);
+      if (!url || sources.has(`url:${url}`)) continue;
+      sources.set(`url:${url}`, { id: `url:${url}`, kind: 'url', label: url.replace(/^https?:\/\//i, ''), url });
+    }
+  }
+  return [...sources.values()];
 }
 
 function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: string): boolean {
@@ -661,9 +700,9 @@ function readWorkspaceToolState(workspaceId: string): Record<string, WorkspaceTo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, attachmentRequest, runtimeAvailable,
+  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, sources, attachmentRequest, runtimeAvailable,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; runtimeAvailable: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; runtimeAvailable: boolean;
 }) {
   const [scopeStates, setScopeStates] = useState<Record<string, WorkspaceToolScopeState>>(() => readWorkspaceToolState(workspaceId));
   const [panelWidth, setPanelWidth] = useState(() => {
@@ -829,7 +868,7 @@ function WorkspaceDrawer({
     <article><MonitorCog size={16}/><div><small>运行容器</small><b>{details.runtime.container_id || '运行环境恢复中'}</b><p>所有会话共用此 Workspace Runtime；每个终端保留独立会话。</p></div></article>
     <article><GitBranch size={16}/><div><small>Git 仓库</small>{details.repositories.length ? details.repositories.map(repository => <p key={repository.path}><b>{relativeWorkspacePath(repository.path, details.root)}</b>{repository.branch && <span>{repository.branch}</span>}{repository.head && <em>{repository.head.slice(0, 12)}</em>}{repository.remote && <code>{repository.remote}</code>}</p>) : <p>当前目录未检测到 Git 仓库。</p>}</div></article>
     <article><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b><code>{details.ide.workspace_path}</code><p>{details.ide.gateway.note}</p></div></article>
-    <article><FileText size={16}/><div><small>本会话附件</small>{attachments.length ? attachments.map(item => <button type="button" key={item.path} onClick={() => selectFile(item.path)}>{item.filename}</button>) : <p>当前会话还没有附件。</p>}</div></article>
+    <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <div className="agent-workspace-source-list">{sources.map(source => source.kind === 'url' ? <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer" title={`打开链接：${source.label}`}><Link2 size={12}/><span><b>{source.label}</b><em>链接</em></span></a> : <button type="button" key={source.id} title={`在工作区预览：${source.label}`} onClick={() => source.attachment && selectFile(source.attachment.path)}>{source.kind === 'image' ? <ImageIcon size={12}/> : <FileText size={12}/>}<span><b>{source.label}</b><em>{source.pending ? '待发送' : source.kind === 'image' ? '图片' : '文件'}</em></span></button>)}</div> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
   return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : 272 }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
@@ -996,6 +1035,21 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
     for (const attachment of attachments) byPath.set(attachment.path, attachment);
     return [...byPath.values()];
   }, [attachments, sessionAttachments]);
+  const drawerSources = useMemo(() => {
+    const byId = new Map(userProvidedSources(displayedEvents).map(source => [source.id, source]));
+    for (const attachment of attachments) {
+      const id = `attachment:${attachment.path}`;
+      if (byId.has(id)) continue;
+      byId.set(id, {
+        id,
+        kind: attachment.mime_type.startsWith('image/') ? 'image' : 'file',
+        label: attachment.filename,
+        attachment,
+        pending: true,
+      });
+    }
+    return [...byId.values()];
+  }, [attachments, displayedEvents]);
   const openAttachmentInDrawer = useCallback((attachment: AgentAttachment) => {
     setAttachmentRequest({ key: randomId(), attachment });
     setDrawerOpen(true);
@@ -1562,7 +1616,7 @@ export function AgentWorkbenchPage({ onNavigate }: Props) {
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} attachmentRequest={attachmentRequest} runtimeAvailable={Boolean(runtime?.write_available)}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} runtimeAvailable={Boolean(runtime?.write_available)}/>
     {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
       queryClient.setQueryData<AgentWorkDirectoryList>(['agent-work-directories', workspace.id], current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspace.id] });

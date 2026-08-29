@@ -516,7 +516,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
           { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'file-result', timestamp: '2026-08-26T10:00:04Z' } },
           { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'state-empty', content: '工作区已就绪。', timestamp: '2026-08-26T10:02:19Z' } },
-          { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答 https://input.example.test/brief', timestamp: '2026-08-26T10:03:00Z' } },
+          { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答 https://input.example.test/brief', attachments: [{ filename: '需求截图.png', mime_type: 'image/png', byte_size: 128, path: '/runtime/workspace/project/uploads/source-image.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:03:00Z' } },
           { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。更多信息见 www.output.example.test/result', timestamp: '2026-08-26T10:03:02Z' } },
           { id: 'finish-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'direct-reply', content: '整理任务', timestamp: '2026-08-26T10:03:10Z' } },
           { id: 'tracker-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'finish-user', action_id: 'tracker-action', tool_call_id: 'tracker-call', tool_name: 'task_tracker', event_name: 'TaskTrackerAction', content: '我先把执行步骤整理成任务列表。', thought: '我先把执行步骤整理成任务列表。', summary: '整理并更新执行步骤', details: { command: 'plan', task_list: [{ title: '检查构建', status: 'in_progress' }] }, timestamp: '2026-08-26T10:03:11Z' } },
@@ -784,6 +784,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(outputLink).toHaveAttribute('href', 'http://www.output.example.test/result');
   await expect(outputLink).toHaveAttribute('target', '_blank');
   await expect(outputLink).toHaveAttribute('rel', 'noopener noreferrer');
+  const sources = page.locator('.agent-workspace-source-list');
+  await expect(sources).toContainText('需求截图.png');
+  await expect(sources.getByRole('link', { name: 'input.example.test/brief' })).toHaveAttribute('href', 'https://input.example.test/brief');
+  await expect(sources.getByRole('link', { name: 'output.example.test/result' })).toHaveCount(0);
   await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
   await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);
   const finishTurn = page.locator('.conversation-turn').filter({ hasText: '任务跟踪已完成。' });

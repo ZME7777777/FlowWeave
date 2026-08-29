@@ -1101,6 +1101,22 @@ dispatch 和远程标题生成修复，删除可由 OpenHands 生命周期接管
 渲染，只有正式消息回填才解析 Markdown。补充了用户输入与 Agent 回复裸链接的浏览器回归，Web 已无缓存重建并
 替换部署，未重启 API、Worker 或 Agent Runtime。
 
+### FR-79 Agent 会话来源统一管理 — DONE
+
+依赖：`FR-78`。
+
+目标：将 Agent 工作台右侧环境摘要中的“本会话附件”改为“来源”，统一展示当前会话用户消息提供的文件、
+图片及 HTTP(S) URL；URL 必须从用户输入中安全提取并提供受隔离的新标签页打开，文件/图片继续复用现有工作区
+文件预览。去重后的来源须有明确类型，草稿附件与已发送来源不得混淆。不得持久化消息或来源副本，不修改
+OpenHands、Runtime 或 FlowRun 契约。
+
+验收：Web lint/typecheck/build、定向浏览器验证用户 URL、图片与文件来源的聚合、打开/预览入口以及
+`git diff --check`、任务状态唯一性通过；独立提交本切片。
+
+完成：右侧环境摘要的“本会话附件”已替换为“来源”。它仅从当前会话正式 user/human MessageEvent 聚合
+HTTP(S) URL、文件与图片；同一 URL 或路径只出现一次。链接以隔离的新标签页打开，文件与图片继续打开既有
+工作区预览。尚未发送的附件会明确标记为“待发送”，不会与已发送来源混淆；不保存平台来源副本。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1117,6 +1133,7 @@ dispatch 和远程标题生成修复，删除可由 OpenHands 生命周期接管
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-79 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（用户 URL、图片来源、类型标记、外部回复 URL 不混入来源）；`git diff --check`、任务状态唯一性 | PASS：右侧环境摘要统一展示用户提供的链接、图片和文件来源；链接可安全打开，图片/文件复用工作区预览，不引入消息或来源持久化。 |
 | 2026-08-29 | FR-78 | Web ESLint/typecheck/production build；源码 Vite 与部署后 Web 的定向 Playwright（用户输入与 Agent 回复中的 `https://…`/`www.…` 裸链接、href、`_blank`、`noopener noreferrer`）；`git diff --check`、任务状态唯一性；Web 无缓存镜像构建、强制替换和 HTTP 200 | PASS：已发送输入、Agent 回复及可见过程文本中的裸链接通过 GFM 自动识别并安全打开新标签页；流式 delta 保持纯文本，避免逐 token Markdown 重解析。部署仅替换 Web 服务，API、Worker 和 Agent Runtime 未重启。 |
 | 2026-08-29 | FR-77 | 固定 OpenHands 1.44.0 Oracle/Profile 正式契约取证；原生 `ask_oracle`、结构化 Task Outcome、可选 ACP 构建与默认无 Provider 回归；最终合并 pytest 259 passed；受影响 Ruff、全量 Pyright 0 errors；Runtime 镜像 build/provenance/contract check；真实 confirmation、Condenser、Task、Oracle 与四会话原 ID reload smoke；部署后 migration、服务健康、Tool Catalog、Agent Runtime generation 26 与历史会话恢复复验；Alembic head、任务状态唯一性及 `git diff --check` | PASS：Oracle 仅由显式 Tool Policy 启用，并冻结 Runtime 级 Provider/Model 绑定；正式 Profile API 持久化到受治理的 `~/.openhands/profiles` 子目录，凭据保持 read-at-use，同名异模型冲突 fail closed，用量归入独立 `oracle:oracle` bucket。Task Observation 保留安全的结构化 Outcome。ACP Provider 默认不安装，仅显式 allowlist 安装固定版本；历史 Tool Catalog digest `b053075e…` 保持不变。部署后 API、Postgres、Runtime Provider、Worker 与 Web 正常，Agent Runtime 从 generation 25 安全滚动至 26，旧 generation 删除，历史 Conversation/Event 按原 ID 可读。 |
 | 2026-08-29 | FR-76 | 固定提交 `9a24f6c8866f353042a57df0514ccc900e3a0691` 的 Profile migration/pre-flight、Provider Connection read-at-use、Secret serializer probe、subscription condenser 与标题源码取证；Runtime 镜像 contract check 行为探针；增强真实 smoke；Runtime/Agent Workspace/架构定向 pytest 142 passed；架构/源码供应 pytest 25 passed；受影响 Ruff、全量 Pyright 0 errors；任务状态唯一性与 `git diff --check` | PASS：删除镜像门禁对 Agent Profile 字段全集和 condenser 默认值表的脆弱镜像，改为实际验证 v1→v2 Profile 迁移、Provider 凭据轮换后重读、嵌套 Secret serializer 识别和 subscription condenser dispatch，并冻结正式预检及 Provider Connection HTTP 方法。FlowWeave 继续保留不可变 Snapshot/供应商引用、权限、独立 condenser 用量和调用边界 Secret Reference。远程标题 Profile 解析、调用上下文与 metadata cache 修复均晚于冻结提交，故保留 `autotitle=false`、独立标题任务、失败投影和手动标题 CAS，并以负向架构门禁防止误删。confirmation、Condenser、Task 与第二容器原 ID reload 继续通过。 |
