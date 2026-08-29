@@ -337,30 +337,42 @@ export interface OpenHandsConversationEventBatch {
   next_cursor?: string | null;
   result?: { status?: string; final_message?: string | null; error?: string | null } | null;
 }
-export interface AgentWorkspace {
+/**
+ * Host-neutral data consumed by the shared Agent session workbench. A host
+ * adapter may expose the current Agent Workspace, a future node scope, or
+ * another authorized session scope without changing the workbench contract.
+ */
+export interface AgentSessionHostDetails {
   id: string;
   display_name: string;
   default_model_provider_id?: string | null;
   desired_state: 'RUNNING' | 'MAINTENANCE';
   updated_at: string;
 }
-export interface AgentWorkspaceRuntime {
+export type AgentWorkspace = AgentSessionHostDetails;
+
+export interface AgentSessionRuntime {
   state: 'ACTIVE' | 'RECOVERING';
   write_available: boolean;
   message?: string | null;
   updated_at: string;
 }
-export interface AgentWorkspaceCapability {
+export type AgentWorkspaceRuntime = AgentSessionRuntime;
+
+export interface AgentSessionCapability {
   id: string;
   capability_type: 'SKILL' | 'MCP' | 'PLUGIN';
   capability_key: string;
   digest: string;
 }
-export interface AgentWorkspaceMcpReadiness {
+export type AgentWorkspaceCapability = AgentSessionCapability;
+
+export interface AgentSessionMcpReadiness {
   state: 'READY' | 'UNAVAILABLE';
   error_kind: 'timeout' | 'connection' | 'unknown' | null;
   checked_at: string;
 }
+export type AgentWorkspaceMcpReadiness = AgentSessionMcpReadiness;
 
 export interface AgentConversationInputReadiness { ready: boolean }
 export interface AgentPendingConfirmationAction {
@@ -394,14 +406,14 @@ export interface AgentConversation {
   work_directory_id?: string | null;
   work_directory_version_id?: string | null;
   working_directory?: string | null;
-  capabilities?: AgentWorkspaceCapability[];
+  capabilities?: AgentSessionCapability[];
   streaming_callback_ready: boolean;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;
   last_connected_at?: string | null;
 }
-export interface AgentWorkDirectory {
+export interface AgentSessionWorkDirectory {
   id: string;
   display_name: string;
   state: 'ACTIVE' | 'ARCHIVED';
@@ -412,20 +424,25 @@ export interface AgentWorkDirectory {
     working_directory: string;
   };
 }
-export interface AgentWorkDirectoryList {
+export type AgentWorkDirectory = AgentSessionWorkDirectory;
+
+export interface AgentSessionWorkDirectoryList {
   root: { kind: 'ROOT'; display_name: string; working_directory: string };
-  items: AgentWorkDirectory[];
+  items: AgentSessionWorkDirectory[];
 }
-export interface AgentWorkspaceDetails {
+export type AgentWorkDirectoryList = AgentSessionWorkDirectoryList;
+
+export interface AgentSessionWorkspaceDetails {
   root: string;
   scope: { kind: 'ROOT' | 'WORK_DIRECTORY'; id?: string; display_name: string };
   working_directory: string;
-  work_directory?: AgentWorkDirectory | null;
+  work_directory?: AgentSessionWorkDirectory | null;
   files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
   repositories: Array<{ path: string; remote?: string; branch?: string; head?: string }>;
   runtime: { container_id?: string | null };
   ide: { workspace_path: string; gateway: { supported: boolean; status: string; note: string } };
 }
+export type AgentWorkspaceDetails = AgentSessionWorkspaceDetails;
 export interface FlowRunRuntimeGeneration {
   generation: number;
   state: 'PROVISIONING' | 'READY' | 'DRAINING' | 'STOPPED' | 'DELETED' | 'FAILED';

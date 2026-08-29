@@ -1,44 +1,80 @@
 import {
+  type AgentStreamEvent,
   agentWorkspaceFileUrl,
   agentWorkspaceTerminalUrl,
   api,
   subscribeToAgentWorkspaceStream,
 } from './client';
+import type {
+  AgentAttachment,
+  AgentConversation,
+  AgentConversationContext,
+  AgentConversationInputReadiness,
+  AgentPendingConfirmation,
+  AgentSessionCapability,
+  AgentSessionHostDetails,
+  AgentSessionMcpReadiness,
+  AgentSessionRuntime,
+  AgentSessionWorkDirectory,
+  AgentSessionWorkDirectoryList,
+  AgentSessionWorkspaceDetails,
+  CapabilityAsset,
+  ModelProvider,
+  OpenHandsConversationEventBatch,
+} from '../types';
 
-type AgentSessionApi = {
-  readonly defaultHost: typeof api.defaultAgentWorkspace;
-  readonly runtime: typeof api.agentWorkspaceRuntime;
-  readonly conversations: typeof api.agentConversations;
-  readonly workDirectories: typeof api.agentWorkDirectories;
-  readonly providers: typeof api.providers;
-  readonly capabilities: typeof api.capabilities;
-  readonly hostCapabilities: typeof api.agentWorkspaceCapabilities;
-  readonly mcpReadiness: typeof api.agentWorkspaceMcpReadiness;
-  readonly replaceHostCapabilities: typeof api.replaceAgentWorkspaceCapabilities;
-  readonly addConversationCapability: typeof api.addAgentConversationCapability;
-  readonly workspaceDetails: typeof api.agentWorkspaceDetails;
-  readonly createWorkDirectory: typeof api.createAgentWorkDirectory;
-  readonly filePreview: typeof api.agentWorkspaceFilePreview;
-  readonly closeTerminal: typeof api.closeAgentWorkspaceTerminal;
-  readonly bootstrapConversation: typeof api.bootstrapAgentConversation;
-  readonly updateConversation: typeof api.updateAgentConversation;
-  readonly deleteConversation: typeof api.deleteAgentConversation;
-  readonly conversationEvents: typeof api.agentConversationEvents;
-  readonly inputReadiness: typeof api.agentConversationInputReadiness;
-  readonly conversationContext: typeof api.agentConversationContext;
-  readonly pendingConfirmation: typeof api.agentPendingConfirmation;
-  readonly sendMessage: typeof api.sendAgentMessage;
-  readonly migrateStreamingConversation: typeof api.migrateAgentStreamingConversation;
-  readonly uploadConversationAttachment: typeof api.uploadAgentAttachment;
-  readonly uploadDraftAttachment: typeof api.uploadAgentWorkspaceAttachment;
-  readonly forkConversation: typeof api.forkAgentConversation;
-  readonly condenseConversation: typeof api.condenseAgentConversation;
-  readonly interruptConversation: typeof api.interruptAgentConversation;
-  readonly resumeConversation: typeof api.resumeAgentConversation;
-  readonly decideConfirmation: typeof api.decideAgentConfirmation;
-  readonly rerunMessage: typeof api.rerunAgentMessage;
-  readonly switchConversationModel: typeof api.switchAgentConversationModel;
+export type AgentSessionHostId = string;
+export type AgentSessionBindingId = string;
+export type AgentSessionWorkDirectoryId = string;
+export type AgentSessionFileOptions = {
+  bindingId?: AgentSessionBindingId;
+  workDirectoryId?: AgentSessionWorkDirectoryId;
+  download?: boolean;
 };
+export type AgentSessionTerminalOptions = Omit<AgentSessionFileOptions, 'download'> & {
+  terminalInstanceId: string;
+};
+export type AgentSessionStreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
+
+/**
+ * The complete, host-neutral browser transport contract for the shared
+ * session workbench. Host adapters may use different routes, but must return
+ * these DTOs and preserve the same OpenHands session semantics.
+ */
+export interface AgentSessionApi {
+  readonly defaultHost: () => Promise<AgentSessionHostDetails>;
+  readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
+  readonly conversations: (hostId: AgentSessionHostId) => Promise<AgentConversation[]>;
+  readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
+  readonly providers: () => Promise<ModelProvider[]>;
+  readonly capabilities: () => Promise<CapabilityAsset[]>;
+  readonly hostCapabilities: (hostId: AgentSessionHostId) => Promise<AgentSessionCapability[]>;
+  readonly mcpReadiness: (hostId: AgentSessionHostId, capabilityVersionId: string) => Promise<AgentSessionMcpReadiness>;
+  readonly replaceHostCapabilities: (hostId: AgentSessionHostId, capabilityVersionIds: string[]) => Promise<AgentSessionCapability[]>;
+  readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
+  readonly workspaceDetails: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceDetails>;
+  readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
+  readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<string>;
+  readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
+  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], workDirectoryId?: AgentSessionWorkDirectoryId, idempotencyKey?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
+  readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
+  readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
+  readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string) => Promise<OpenHandsConversationEventBatch>;
+  readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
+  readonly conversationContext: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationContext>;
+  readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
+  readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[]) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean }>;
+  readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
+  readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File) => Promise<AgentAttachment>;
+  readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string) => Promise<AgentAttachment>;
+  readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
+  readonly condenseConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
+  readonly interruptConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean }>;
+  readonly resumeConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
+  readonly decideConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, expectedPendingDigest: string, accept: boolean, reason: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
+  readonly rerunMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string, content: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
+  readonly switchConversationModel: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName: string, reasoningEffort: string | null) => Promise<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>;
+}
 
 /**
  * A host adapter for the complete Agent-session UI. The workbench owns all
@@ -47,9 +83,9 @@ type AgentSessionApi = {
 export interface AgentSessionGateway {
   readonly id: string;
   readonly api: AgentSessionApi;
-  readonly terminalUrl: typeof agentWorkspaceTerminalUrl;
-  readonly fileUrl: typeof agentWorkspaceFileUrl;
-  readonly subscribe: typeof subscribeToAgentWorkspaceStream;
+  readonly terminalUrl: (hostId: AgentSessionHostId, rows: number | undefined, columns: number | undefined, options: AgentSessionTerminalOptions) => string;
+  readonly fileUrl: (hostId: AgentSessionHostId, path: string, options?: AgentSessionFileOptions) => string;
+  readonly subscribe: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, onEvent: (event: AgentStreamEvent) => void, onStatus?: (status: AgentSessionStreamStatus) => void) => () => void;
 }
 
 export const agentWorkspaceSessionGateway: AgentSessionGateway = {

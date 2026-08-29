@@ -360,6 +360,35 @@ def test_agent_workspace_conversation_compatibility_import_is_the_shared_module(
     assert legacy is shared
 
 
+def test_agent_session_host_contract_is_explicit_and_namespaced() -> None:
+    """FR-95: shared UI accepts a host, never an Agent Workspace-shaped API."""
+
+    web_root = REPOSITORY / "apps" / "web" / "src"
+    gateway = (web_root / "api" / "agent-session-gateway.ts").read_text()
+    host = (web_root / "components" / "agent-session" / "session-host.ts").read_text()
+    workbench = (
+        web_root / "components" / "agent-session" / "AgentSessionWorkbench.tsx"
+    ).read_text()
+    default_adapter = (
+        SOURCE
+        / "modules"
+        / "agent_workspaces"
+        / "application"
+        / "session_host.py"
+    ).read_text()
+
+    assert "export interface AgentSessionApi" in gateway
+    assert "typeof api." not in gateway
+    assert "typeof agentWorkspace" not in gateway
+    assert "queryKey(resource:" in host
+    assert "workspaceToolsStorageKey(" in host
+    assert "sessionQueryKey(host," in workbench
+    assert "['agent-" not in workbench
+    assert "AgentWorkspaceCapability" not in workbench
+    assert "from flowweave.modules.agent_sessions.application.host import" in default_adapter
+    assert "AgentSessionHostContext.create(" in default_adapter
+
+
 def test_execution_and_conversation_share_runtime_manifest_projection() -> None:
     orchestration = (
         SOURCE / "modules" / "orchestration" / "application" / "service.py"

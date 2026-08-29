@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
-> 当前执行切片：`FR-95`
-> 下一可执行切片：`FR-96`
+> 当前执行切片：`FR-96`
+> 下一可执行切片：待 `FR-96` 完成后确定
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1326,7 +1326,7 @@ Attempt、旧节点会话或 Runtime 拓扑；`FR-93` 保持待办，不能混�
 流式事件、控制操作、模型/能力、附件、文件/终端和默认 Runtime 恢复；受影响 Python/Web 静态检查、
 `git diff --check`、Alembic head 与任务状态唯一性检查。完成后独立提交。
 
-### FR-95 Agent 会话中性宿主合同 — CURRENT
+### FR-95 Agent 会话中性宿主合同 — DONE
 
 依赖：`FR-94`。
 
@@ -1334,9 +1334,18 @@ Attempt、旧节点会话或 Runtime 拓扑；`FR-93` 保持待办，不能混�
 使 `AgentSessionWorkbench` 和 `agent_sessions` 不再依赖默认 Agent Workspace 的私有传输或宿主语义。只
 实现默认 Agent Workspace 适配器；不接入 FlowRun/节点。
 
-### FR-96 Agent 会话内核与默认宿主分层 — READY
+验收：共享 Web gateway 显式声明中性 `AgentSessionApi`，共享 Workbench 的 query 与浏览器工具状态均通过
+宿主命名空间隔离；后端 host context 复制并冻结 Runtime、工作目录、策略和权限事实，默认 Agent Workspace
+仅作为其 ORM/Runtime 适配器。定向 pytest、Ruff/py_compile、Web lint/typecheck/build、既有 `/agent` 首发/
+URL 恢复 Playwright、Alembic head、任务状态唯一性和 `git diff --check` 通过。
 
+完成：默认 `/agent` 的公开路由、API URL、浏览器交互与 Runtime 行为保持不变；新增合同未引入 FlowRun、
+节点、Attempt 或第二套会话页面/服务。
+
+
+### FR-96 Agent 会话内核与默认宿主分层 — CURRENT
 依赖：`FR-95`。
+
 
 目标：让 `agent_sessions` 只依赖中性会话 host context、locator 和 OpenHands bridge；Agent Workspace
 仅作为默认 Runtime/工作目录/策略解析器及 API 适配。保持 `/agent` 全部功能和历史身份兼容，不改动
@@ -1359,6 +1368,7 @@ FlowRun、节点或 Attempt。
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
 | 2026-08-29 | FR-92 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享组件专有 gateway 方法扫描与 `git diff --check` | PASS：共享 Workbench 只使用中性 host 传输协议；默认 gateway 保持对既有 Agent Workspace API 的逐项映射，浏览器回归 2 passed。无 `CURRENT` 或下一切片。 |
+| 2026-08-29 | FR-95 | 共享 host/gateway 静态边界 pytest（3 passed）；默认 Workspace adapter 与不可变 host context pytest（2 passed）；受影响 Ruff/py_compile；Web ESLint、TypeScript、production build；顶层 Agent 会话首发/URL 恢复 Playwright（1 passed）；Alembic `0070_agent_caps` head、任务状态唯一性与 `git diff --check` | PASS：共享工作台只接受显式中性 transport 与宿主命名空间，默认 Agent Workspace 是唯一已实现的宿主适配器；`/agent` 功能、路由、API 和渲染不变，未接入 FlowRun/节点。 |
 | 2026-08-29 | FR-94 | 新增共享页面/后端 facade 静态边界 pytest（2 passed）；Agent Workspace 核心 runtime、bootstrap、附件/模型、确认、文件/终端与 replacement 定向 pytest（8 passed）；Agent 工作台首发/URL 恢复 Playwright（1 passed）；Web ESLint、TypeScript、production build；受影响 Ruff/py_compile；`git diff --check` | PASS：`/agent` 只通过薄路由宿主装配唯一 `AgentSessionWorkbench`，历史 Agent Workspace conversations 导入路径与 `agent_sessions` 指向同一模块对象。旧 `AgentChatPage` 仍只作为未迁移 FlowRun 页面遗留入口，不参与 `/agent` 路由；本切片未改动 FlowRun/节点代码或 Runtime 拓扑。 |
 | 2026-08-29 | FR-91 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享组件路由依赖扫描与 `git diff --check` | PASS：共享 Workbench 的绑定 URL、根回退和首发恢复均由注入 host 决定；默认 Agent Workspace 仍使用原 `/agent` 路由和恢复键，浏览器回归 2 passed。无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-90 | 当前 Agent Workspace 共享页面/facade/gateway、旧 FlowRun 页面/API/service 与固定 FlowRun Runtime 设计交叉审计；设计文档引用、任务状态唯一性与 `git diff --check` | PASS：设计明确了唯一会话页面和内核、FlowRun 仅为宿主、节点 N 对 N 会话和工作目录隔离、首发提示词与单 Run 单 Runtime；旧平行聊天页和服务不属于最终状态。无 `CURRENT` 或下一切片。 |

@@ -8,7 +8,7 @@ import { ApiError, randomId } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface } from '../ConversationSurface';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, AgentWorkspaceMcpReadiness, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -49,6 +49,10 @@ interface WorkspaceConversationGroupProps {
   children: ReactNode;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
+}
+
+function sessionQueryKey(host: AgentSessionHost, resource: string, ...identifiers: Array<string | undefined>) {
+  return host.queryKey(resource, ...identifiers);
 }
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
@@ -185,19 +189,20 @@ function ComposerCapabilityAutocomplete({
 }
 
 function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, onClose, onCreateEnhancedConversation }: {
-  workspaceId: string; bindingId?: string; conversationCapabilities?: AgentWorkspaceCapability[]; onClose: () => void;
+  workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
   onCreateEnhancedConversation?: () => void;
 }) {
   const { api } = useAgentSessionGateway();
+  const host = useAgentSessionHost();
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentWorkspaceMcpReadiness | undefined>>({});
+  const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentSessionMcpReadiness | undefined>>({});
   const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
-  const catalogQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
+  const catalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities });
   const enabledQuery = useQuery({
-    queryKey: ['agent-workspace-capabilities', workspaceId],
+    queryKey: sessionQueryKey(host, 'host-capabilities', workspaceId),
     queryFn: () => api.hostCapabilities(workspaceId),
     enabled: !bindingId,
   });
@@ -218,13 +223,13 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
   const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
   const selectedMcpIds = useMemo(() => selectedIds.filter(id => byId.get(id)?.capability_type === 'MCP'), [byId, selectedIds]);
   const checkMcpReadiness = useCallback(async (ids: string[]) => {
-    if (!ids.length) return [] as Array<readonly [string, AgentWorkspaceMcpReadiness]>;
+    if (!ids.length) return [] as Array<readonly [string, AgentSessionMcpReadiness]>;
     setCheckingMcpIds(current => new Set([...current, ...ids]));
     const results = await Promise.all(ids.map(async id => {
       try {
         return [id, await api.mcpReadiness(workspaceId, id)] as const;
       } catch {
-        return [id, { state: 'UNAVAILABLE', error_kind: 'unknown', checked_at: new Date().toISOString() } satisfies AgentWorkspaceMcpReadiness] as const;
+        return [id, { state: 'UNAVAILABLE', error_kind: 'unknown', checked_at: new Date().toISOString() } satisfies AgentSessionMcpReadiness] as const;
       }
     }));
     setMcpReadiness(current => ({ ...current, ...Object.fromEntries(results) }));
@@ -257,12 +262,12 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
       return latest;
     },
     onSuccess: value => {
-      if (!bindingId) queryClient.setQueryData<AgentWorkspaceCapability[]>(['agent-workspace-capabilities', workspaceId], value as AgentWorkspaceCapability[]);
+      if (!bindingId) queryClient.setQueryData<AgentSessionCapability[]>(sessionQueryKey(host, 'host-capabilities', workspaceId), value as AgentSessionCapability[]);
       if (bindingId && value) {
-        queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspaceId], current =>
+        queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspaceId), current =>
           current?.map(item => item.id === bindingId ? value as AgentConversation : item),
         );
-        queryClient.setQueryData<AgentConversation>(['agent-conversation', workspaceId, bindingId], value as AgentConversation);
+        queryClient.setQueryData<AgentConversation>(sessionQueryKey(host, 'conversation', workspaceId, bindingId), value as AgentConversation);
       }
       onClose();
     },
@@ -682,14 +687,15 @@ function WorkspaceFileTree({ entries, root, selectedFile, onSelect }: { entries:
 function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   workspaceId: string;
   onClose: () => void;
-  onCreated: (directory: AgentWorkDirectory) => void;
+  onCreated: (directory: AgentSessionWorkDirectory) => void;
 }) {
   const { api } = useAgentSessionGateway();
+  const host = useAgentSessionHost();
   const [displayName, setDisplayName] = useState('');
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const detailsQuery = useQuery({
-    queryKey: ['agent-workspace-create-directory', workspaceId],
+    queryKey: sessionQueryKey(host, 'work-directory-creation', workspaceId),
     queryFn: () => api.workspaceDetails(workspaceId),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
@@ -768,9 +774,9 @@ function clampWorkspaceToolWidth(value: number): number {
   return Math.max(300, Math.min(720, viewportMaximum, value));
 }
 
-function readWorkspaceToolState(workspaceId: string): Record<string, WorkspaceToolScopeState> {
+function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToolScopeState> {
   try {
-    const parsed = JSON.parse(sessionStorage.getItem(`flowweave:workspace-tools:${workspaceId}`) ?? '{}') as Record<string, WorkspaceToolScopeState>;
+    const parsed = JSON.parse(sessionStorage.getItem(storageKey) ?? '{}') as Record<string, WorkspaceToolScopeState>;
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
@@ -783,7 +789,9 @@ function WorkspaceDrawer({
   open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; runtimeAvailable: boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
-  const [scopeStates, setScopeStates] = useState<Record<string, WorkspaceToolScopeState>>(() => readWorkspaceToolState(workspaceId));
+  const host = useAgentSessionHost();
+  const toolsStorageKey = host.workspaceToolsStorageKey(workspaceId);
+  const [scopeStates, setScopeStates] = useState<Record<string, WorkspaceToolScopeState>>(() => readWorkspaceToolState(toolsStorageKey));
   const [panelWidth, setPanelWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
     return clampWorkspaceToolWidth(Number.isFinite(stored) ? stored : 400);
@@ -798,8 +806,8 @@ function WorkspaceDrawer({
     setScopeStates(current => ({ ...current, [scopeKey]: updater(current[scopeKey] ?? { tabs: [] }) }));
   }, [scopeKey]);
   useEffect(() => {
-    sessionStorage.setItem(`flowweave:workspace-tools:${workspaceId}`, JSON.stringify(scopeStates));
-  }, [scopeStates, workspaceId]);
+    sessionStorage.setItem(toolsStorageKey, JSON.stringify(scopeStates));
+  }, [scopeStates, toolsStorageKey]);
   useEffect(() => {
     if (!migrateFromScopeKey || migrateFromScopeKey === scopeKey) return;
     setScopeStates(current => {
@@ -828,7 +836,7 @@ function WorkspaceDrawer({
     if (!open) setFullScreen(false);
   }, [open]);
   const detailsQuery = useQuery({
-    queryKey: ['agent-workspace-details', workspaceId, bindingId, workDirectoryId],
+    queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.workspaceDetails(workspaceId, { bindingId, workDirectoryId }),
     enabled: true,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
@@ -836,7 +844,7 @@ function WorkspaceDrawer({
   const details = detailsQuery.data;
   const selectedFile = scopeState.selectedFile;
   const previewQuery = useQuery({
-    queryKey: ['agent-workspace-file-preview', workspaceId, bindingId, selectedFile],
+    queryKey: sessionQueryKey(host, 'file-preview', workspaceId, bindingId, selectedFile),
     queryFn: () => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }),
     enabled: Boolean(open && scopeState.activeTabId === 'files' && selectedFile && isTextPreviewable(selectedFile)),
     retry: false,
@@ -1041,15 +1049,15 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = host.bindingIdFromPathname(window.location.pathname);
-  const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultHost, retry: false });
+  const workspaceQuery = useQuery({ queryKey: sessionQueryKey(host, 'default-host'), queryFn: api.defaultHost, retry: false });
   const workspace = workspaceQuery.data;
-  const runtimeQuery = useQuery({ queryKey: ['agent-workspace-runtime', workspace?.id], queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
-  const conversationsQuery = useQuery({ queryKey: ['agent-conversations', workspace?.id], queryFn: () => api.conversations(workspace!.id), enabled: Boolean(workspace) });
-  const workDirectoriesQuery = useQuery({ queryKey: ['agent-work-directories', workspace?.id], queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace) });
+  const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
+  const conversationsQuery = useQuery({ queryKey: sessionQueryKey(host, 'conversations', workspace?.id), queryFn: () => api.conversations(workspace!.id), enabled: Boolean(workspace) });
+  const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace) });
-  const capabilityCatalogQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities, enabled: Boolean(workspace) });
+  const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace) });
   const defaultCapabilitiesQuery = useQuery({
-    queryKey: ['agent-workspace-capabilities', workspace?.id],
+    queryKey: sessionQueryKey(host, 'host-capabilities', workspace?.id),
     queryFn: () => api.hostCapabilities(workspace!.id),
     enabled: Boolean(workspace),
   });
@@ -1116,7 +1124,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const canBootstrap = Boolean(runtimeWritable && conversationDraft && newConversationProviderId && newConversationModelName);
   const isGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventsQuery = useQuery({
-    queryKey: ['agent-conversation-events', workspace?.id, selected?.id], queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
+    queryKey: sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id), queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const displayedEvents = useMemo(() => {
@@ -1163,7 +1171,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     setDrawerOpen(true);
   }, []);
   const inputReadinessQuery = useQuery({
-    queryKey: ['agent-conversation-input-readiness', workspace?.id, selected?.id],
+    queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. It is not persisted by FlowWeave.
@@ -1172,7 +1180,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const contextQuery = useQuery({
-    queryKey: ['agent-conversation-context', workspace?.id, selected?.id],
+    queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 2000 : false,
   });
@@ -1180,7 +1188,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const canWrite = Boolean(runtimeWritable && selected);
   const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));
   const confirmationQuery = useQuery({
-    queryKey: ['agent-conversation-confirmation', workspace?.id, selected?.id],
+    queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace?.id, selected?.id),
     queryFn: () => api.pendingConfirmation(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected && runtime?.write_available),
     refetchInterval: isGenerating ? 1200 : 2500,
@@ -1189,14 +1197,14 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const pendingConfirmation = confirmationQuery.data?.pending ? confirmationQuery.data : undefined;
   const refresh = useCallback(() => {
     if (!workspace) return;
-    void queryClient.invalidateQueries({ queryKey: ['agent-workspace-runtime', workspace.id] });
-    void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'runtime', workspace.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     if (selected?.id) {
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversation-events', workspace.id, selected.id] });
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversation-confirmation', workspace.id, selected.id] });
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversation-context', workspace.id, selected.id] });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-events', workspace.id, selected.id) });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, selected.id) });
     }
-  }, [queryClient, selected?.id, workspace]);
+  }, [host, queryClient, selected?.id, workspace]);
   const clearLiveText = useCallback(() => {
     pendingLiveText.current = '';
     if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
@@ -1330,8 +1338,8 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     setConversationDraft(undefined);
     clearBootstrapRecovery();
     setOperationError(undefined);
-    queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [conversation, ...(current ?? []).filter(item => item.id !== conversation.id)]);
-    void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
+    queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspace.id), current => [conversation, ...(current ?? []).filter(item => item.id !== conversation.id)]);
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     onNavigate(host.conversationPath(conversation.id));
   }, onError: (error, message) => {
     if (isBootstrapAmbiguous(error)) {
@@ -1386,7 +1394,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     return () => window.clearTimeout(timer);
   }, [bootstrap, bootstrapRecovery, workspace]);
   const rename = useMutation({ mutationFn: () => api.updateConversation(workspace!.id, selected!.id, title.trim()), onSuccess: conversation => {
-    queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace!.id], current => (current ?? []).map(item => item.id === conversation.id ? conversation : item));
+    queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspace!.id), current => (current ?? []).map(item => item.id === conversation.id ? conversation : item));
     setTitle(conversationName(conversation));
     setEditing(false);
     refresh();
@@ -1395,11 +1403,11 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const persistModel = useMutation({
     mutationFn: ({ providerId, modelName, effort }: { providerId: string; modelName: string; effort: string | null }) => api.switchConversationModel(workspace!.id, selected!.id, providerId, modelName, effort),
     onSuccess: value => {
-      queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace!.id], current => (current ?? []).map(item => item.id === selected!.id ? { ...item, ...value } : item));
+      queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspace!.id), current => (current ?? []).map(item => item.id === selected!.id ? { ...item, ...value } : item));
       setConversationProviderId(value.model_provider_id);
       setConversationModelName(value.model_name ?? '');
       setReasoningEffort(value.reasoning_effort ?? null);
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversation-context', workspace!.id, selected!.id] });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace!.id, selected!.id) });
     },
     onError: () => {
       setConversationProviderId(selected?.model_provider_id ?? '');
@@ -1464,9 +1472,9 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     onSuccess: (value, message) => {
       if (!workspace) return;
       setPendingCreatedId(value.id);
-      queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
+      queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspace.id), current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
       setPendingMigratedSend({ ...message, bindingId: value.id });
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
       onNavigate(host.conversationPath(value.id));
     },
     onError: (error, message) => {
@@ -1482,15 +1490,15 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const fork = useMutation({ mutationFn: (eventId: string) => api.forkConversation(workspace!.id, selected!.id, eventId), onSuccess: value => {
     if (!workspace) return;
     setPendingCreatedId(value.id);
-    queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
-    void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
+    queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspace.id), current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     onNavigate(host.conversationPath(value.id));
   }, onError: error => reportOperationError(selected?.id, error) });
   const condense = useMutation({
     mutationFn: async () => {
       const workspaceId = workspace!.id;
       const bindingId = selected!.id;
-      const queryKey = ['agent-conversation-events', workspaceId, bindingId] as const;
+      const queryKey = sessionQueryKey(host, 'conversation-events', workspaceId, bindingId);
       const existing = queryClient.getQueryData<OpenHandsConversationEventBatch>(queryKey);
       const completedBefore = new Set((existing?.events ?? [])
         .filter(event => event.event_type === 'CONDENSATION_COMPLETED')
@@ -1521,7 +1529,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
       setConfirmationReason('');
       setRequestStartedAt(Date.now());
       setTurnState('running');
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversation-confirmation', workspace!.id, selected!.id] });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace!.id, selected!.id) });
       refresh();
     },
     onError: error => reportOperationError(selected?.id, error),
@@ -1799,8 +1807,8 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     </section>
     <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} runtimeAvailable={Boolean(runtime?.write_available)}/>
     {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
-      queryClient.setQueryData<AgentWorkDirectoryList>(['agent-work-directories', workspace.id], current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
-      void queryClient.invalidateQueries({ queryKey: ['agent-work-directories', workspace.id] });
+      queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
     }}/>}
     {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={() => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区' }); }}/>}
   </main>;

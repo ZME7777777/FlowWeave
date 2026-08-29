@@ -14,6 +14,10 @@ import pytest
 from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
+from flowweave.modules.agent_sessions.application.host import (
+    READ_SESSIONS,
+    AgentSessionHostContext,
+)
 from flowweave.modules.agent_workspaces.application import (
     conversations,
     titles,
@@ -24,6 +28,9 @@ from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     process_agent_workspace_runtime,
     recover_default_agent_workspace_runtime_task,
+)
+from flowweave.modules.agent_workspaces.application.session_host import (
+    resolve_agent_workspace_session_host,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
@@ -330,6 +337,66 @@ def test_default_agent_workspace_has_external_storage_and_no_flow_owner(
         assert (settings.workspace_root / allocation.relative_root / "state/conversations").is_dir()
         assert runtime.runtime_image_digest == "sha256:" + "0" * 64
         db.commit()
+
+
+def test_agent_workspace_resolves_the_shared_session_host_context(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(
+                AgentWorkspaceRuntime.workspace_id == workspace.id
+            )
+        )
+        assert runtime is not None
+        runtime.status = "ACTIVE"
+
+        host = resolve_agent_workspace_session_host(db, workspace.id, require_write=True)
+
+        assert host.host_kind == "AGENT_WORKSPACE"
+        assert host.host_id == workspace.id
+        assert host.conversation_scope_id == workspace.id
+        assert host.runtime_session_id == runtime.id
+        assert host.working_directory == "/runtime/workspace/project"
+        assert host.permits("LIST_SESSIONS")
+        assert host.permits("WRITE_SESSIONS")
+        assert host.model_policy == {
+            "default_model_provider_id": workspace.default_model_provider_id
+        }
+        with pytest.raises(TypeError):
+            host.model_policy["unexpected"] = "value"  # type: ignore[index]
+
+        runtime.status = "RECONNECTING"
+        read_only = resolve_agent_workspace_session_host(db, workspace.id)
+        assert read_only.permits("READ_SESSIONS")
+        assert not read_only.permits("WRITE_SESSIONS")
+        with pytest.raises(DomainError, match="AGENT_RUNTIME_RECOVERING"):
+            resolve_agent_workspace_session_host(db, workspace.id, require_write=True)
+
+
+def test_agent_session_host_context_copies_verified_mapping_facts() -> None:
+    manifest = {"capability_digest": "before"}
+    policy = {"model": "before"}
+
+    host = AgentSessionHostContext.create(
+        host_kind="TEST",
+        host_id="host-1",
+        conversation_scope_id="scope-1",
+        runtime_session_id="runtime-1",
+        working_directory="/runtime/workspace/project",
+        runtime_manifest=manifest,
+        model_policy=policy,
+        permissions=frozenset({READ_SESSIONS}),
+    )
+    manifest["capability_digest"] = "after"
+    policy["model"] = "after"
+
+    assert host.runtime_manifest == {"capability_digest": "before"}
+    assert host.model_policy == {"model": "before"}
+    assert host.permits(READ_SESSIONS)
+    with pytest.raises(TypeError):
+        host.runtime_manifest["capability_digest"] = "mutated"  # type: ignore[index]
 
 
 def test_unavailable_workspace_runtime_refreshes_missing_deployment_image(
