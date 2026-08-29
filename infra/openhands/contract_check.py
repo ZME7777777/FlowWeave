@@ -111,6 +111,8 @@ from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
 from openhands.tools.preset.default import AgentDefinition
+from openhands.tools.file_editor.editor import FileEditor
+from openhands.tools.file_editor.exceptions import FileValidationError
 from openhands.tools.task import TaskAction, TaskObservation, TaskToolSet
 from openhands.tools.task.impl import TaskExecutor
 from openhands.tools.task.manager import Task, TaskManager, TaskStatus
@@ -126,6 +128,7 @@ PACKAGES = (
     "openhands-tools",
     "openhands-workspace",
 )
+EXPECTED_BINARYORNOT_VERSION = "0.4.4"
 REQUIRED_PATHS = {
     "/ready",
     "/server_info",
@@ -178,6 +181,8 @@ REQUIRED_START_FIELDS = {
     "worktree",
     "workspace",
 }
+
+
 def _field_default(model: type[object], name: str) -> object:
     return model.model_fields[name].default  # type: ignore[attr-defined]
 
@@ -285,6 +290,25 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
+    assert version("binaryornot") == EXPECTED_BINARYORNOT_VERSION
+    with TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        multilingual_markdown = directory_path / "中文边界.md"
+        # The first UTF-8 code point crosses byte 512. binaryornot 0.6.0 sampled
+        # exactly 512 bytes and misclassified this valid text as binary.
+        multilingual_markdown.write_text(
+            "a" * 511 + "中文 Markdown\n", encoding="utf-8"
+        )
+        FileEditor().validate_file(multilingual_markdown)
+
+        binary_file = directory_path / "nul.bin"
+        binary_file.write_bytes(b"text\x00binary")
+        try:
+            FileEditor().validate_file(binary_file)
+        except FileValidationError:
+            pass
+        else:
+            raise AssertionError("FileEditor accepted a NUL-containing binary file")
     assert os.environ.get("OPENHANDS_BUILD_GIT_SHA") == EXPECTED_UPSTREAM_BASE
     assert os.environ.get("OPENHANDS_BUILD_GIT_REF") == EXPECTED_UPSTREAM_BASE
     event_socket_parameters = signature(events_socket).parameters
@@ -524,9 +548,10 @@ def main() -> None:
         "get",
         "post",
     }
-    assert set(
-        schema["paths"]["/api/llm/provider-connections/{connection_id}"]
-    ) == {"delete", "patch"}
+    assert set(schema["paths"]["/api/llm/provider-connections/{connection_id}"]) == {
+        "delete",
+        "patch",
+    }
     governed_profile = validate_agent_profile(
         {
             "schema_version": 2,
@@ -650,13 +675,9 @@ def main() -> None:
         if registered_finish is not None:
             tool_registry._REG[finish_tool_name] = registered_finish
         if registered_finish_usability is not None:
-            tool_registry._USABILITY_REG[finish_tool_name] = (
-                registered_finish_usability
-            )
+            tool_registry._USABILITY_REG[finish_tool_name] = registered_finish_usability
         if registered_finish_module is not None:
-            tool_registry._MODULE_QUALNAMES[finish_tool_name] = (
-                registered_finish_module
-            )
+            tool_registry._MODULE_QUALNAMES[finish_tool_name] = registered_finish_module
     assert isinstance(structured_finish, FinishTool)
     assert structured_finish.response_schema == response_schema
     assert "outcome" in structured_finish._get_tool_schema()["properties"]
