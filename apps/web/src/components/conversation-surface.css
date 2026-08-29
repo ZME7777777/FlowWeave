@@ -14,6 +14,11 @@
 .conversation-message.assistant{max-width:100%;color:#222722}
 .conversation-message.assistant pre{max-width:100%;overflow:auto;border:1px solid #e5e8e5;border-radius:10px;background:#f7f8f7;padding:11px;font:11px/1.55 'DM Mono',ui-monospace,monospace}
 .conversation-message.assistant code{border-radius:4px;background:#f1f3f1;padding:1px 4px;font:12px 'DM Mono',ui-monospace,monospace}
+.conversation-markdown-image{display:block;max-width:min(100%,640px);max-height:520px;margin:10px 0;border:1px solid #e2e6e2;border-radius:9px;background:#f7f8f7;object-fit:contain}
+.conversation-image-unavailable{display:flex;max-width:min(100%,640px);align-items:center;gap:8px;margin:10px 0;border:1px solid #ead8aa;border-radius:9px;background:#fffaf0;padding:9px 10px;color:#705b27;font-size:12px}
+.conversation-image-unavailable b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-image-unavailable a{margin-left:auto;color:#795d1e;font-size:11px;text-decoration:underline;white-space:nowrap}
+.conversation-image-unavailable small{margin-left:auto;color:#887548;font-size:11px;white-space:nowrap}
 .conversation-message-actions{position:absolute;right:-58px;bottom:4px;display:flex;gap:4px;opacity:0;transition:opacity .16s}
 .conversation-message-copy,.conversation-message-rewrite{display:grid;place-items:center;width:23px;height:23px;border:0;border-radius:6px;background:transparent;color:#738078;cursor:pointer;user-select:none;transition:background .16s,color .16s}
 .conversation-message.user:hover .conversation-message-actions,.conversation-message-actions:focus-within{opacity:1}

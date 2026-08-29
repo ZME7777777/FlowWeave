@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileText, GitFork, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { AgentAttachment, OpenHandsConversationEvent } from '../types';
 import './conversation-surface.css';
@@ -59,6 +59,24 @@ function MessageAttachments({ attachments, onOpen }: {
       <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><PanelRightOpen size={13}/>
     </button>)}
   </div>;
+}
+
+function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) {
+  const [failed, setFailed] = useState(false);
+  const safeSource = typeof src === 'string' && /^(?:https?:|data:image\/|blob:|\/)/i.test(src);
+  if (!safeSource || failed) {
+    return <span className="conversation-image-unavailable" role="status">
+      <b>{alt || '图片无法显示'}</b>
+      {safeSource
+        ? <a href={src} target="_blank" rel="noreferrer">在新窗口打开图片</a>
+        : <small>图片地址无效</small>}
+    </span>;
+  }
+  return <img {...props} className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={src} alt={alt ?? ''} onError={() => setFailed(true)}/>;
+}
+
+function MessageMarkdown({ children }: { children: string }) {
+  return <ReactMarkdown components={{ img: MarkdownImage }}>{children}</ReactMarkdown>;
 }
 
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
@@ -448,7 +466,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
         const presentation = activityPresentation(entry, active);
         const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName}/> : null;
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
-          {presentation.thought && <article className="conversation-activity-row thought"><Sparkles size={14}/><div><ReactMarkdown>{presentation.thought}</ReactMarkdown></div></article>}
+          {presentation.thought && <article className="conversation-activity-row thought"><Sparkles size={14}/><div><MessageMarkdown>{presentation.thought}</MessageMarkdown></div></article>}
           <details className="conversation-activity-row tool conversation-tool-detail">
             <summary><ToolIcon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
             {toolDetail}
@@ -456,7 +474,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
         </div>;
         return <article className={`conversation-activity-row ${item.kind}`} key={entry.id}>
           <ToolIcon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small>
-            {presentation.thought && <ReactMarkdown>{presentation.thought}</ReactMarkdown>}
+            {presentation.thought && <MessageMarkdown>{presentation.thought}</MessageMarkdown>}
           </div>
         </article>;
       })}
@@ -468,7 +486,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
 
 function AgentReply({ eventId, content, onFork }: { eventId: string; content: string; onFork?: () => void }) {
   return <article className="conversation-message assistant" data-turn-terminal="true" data-event-id={eventId}>
-    {content ? <ReactMarkdown>{content}</ReactMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
+    {content ? <MessageMarkdown>{content}</MessageMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
     {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
   </article>;
 }
@@ -643,7 +661,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         return <section className="conversation-turn" key={turn.id}>
-          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><ReactMarkdown>{turn.user.content}</ReactMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
+          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
           <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
           {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}

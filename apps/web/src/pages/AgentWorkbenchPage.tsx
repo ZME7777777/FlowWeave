@@ -28,6 +28,10 @@ interface BootstrapRecovery {
   reasoningEffort: string | null;
   attempts: number;
 }
+interface OptimisticBootstrapTurn {
+  scope: string;
+  event: OpenHandsConversationEvent;
+}
 
 interface WorkspaceConversationGroupProps {
   groupId: string;
@@ -862,6 +866,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
   const [liveEvents, setLiveEvents] = useState<OpenHandsConversationEvent[]>([]);
+  const [optimisticBootstrapTurn, setOptimisticBootstrapTurn] = useState<OptimisticBootstrapTurn>();
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
@@ -894,6 +899,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   const liveTextFrame = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
+  const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = bindingIdFromLocation();
   const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultAgentWorkspace, retry: false });
   const workspace = workspaceQuery.data;
@@ -966,10 +972,17 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     queryKey: ['agent-conversation-events', workspace?.id, selected?.id], queryFn: () => api.agentConversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected), refetchInterval: isGenerating ? 1200 : false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  const displayedEvents = useMemo(
-    () => mergeConversationEvents(eventsQuery.data?.events ?? [], liveEvents).filter(event => !hiddenEventIds.has(event.id)),
-    [eventsQuery.data?.events, hiddenEventIds, liveEvents],
-  );
+  const displayedEvents = useMemo(() => {
+    const activeScope = selected?.id ?? conversationDraft?.id;
+    const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
+      ? [optimisticBootstrapTurn.event]
+      : [];
+    return mergeConversationEvents(
+      mergeConversationEvents(eventsQuery.data?.events ?? [], liveEvents),
+      bootstrapEvent,
+    )
+      .filter(event => !hiddenEventIds.has(event.id));
+  }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, liveEvents, optimisticBootstrapTurn, selected?.id]);
   const sessionAttachments = useMemo(() => {
     const byPath = new Map<string, AgentAttachment>();
     for (const event of displayedEvents) {
@@ -1074,7 +1087,13 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
   }, [conversationDraft, conversations, conversationsQuery.isFetching, onNavigate, pendingCreatedId, selected, selectedBindingId]);
   useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribeToAgentWorkspaceStream(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
-  useEffect(() => { setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setOperationError(undefined); }, [clearLiveText, composerScope]);
+  useEffect(() => {
+    if (bootstrapTransitionScope.current === composerScope) {
+      bootstrapTransitionScope.current = undefined;
+      return;
+    }
+    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setOperationError(undefined);
+  }, [clearLiveText, composerScope]);
   useEffect(() => {
     if (!editing) setTitle(selected?.display_title ?? '');
   }, [editing, selected?.display_title]);
@@ -1131,11 +1150,17 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     message.items,
     conversationDraft?.workDirectoryId,
     conversationDraft!.id,
-  ), onSuccess: value => {
+  ), onSuccess: (value, message) => {
     if (!workspace) return;
     const conversation = value.conversation;
-    setWorkspaceScopeMigration(conversationDraft?.id);
+    setWorkspaceScopeMigration(message.scope);
     setPendingCreatedId(conversation.id);
+    bootstrapTransitionScope.current = conversation.id;
+    setActiveTurnEventId(value.cursor ?? undefined);
+    setOptimisticBootstrapTurn(current => current?.scope === message.scope ? {
+      scope: conversation.id,
+      event: { id: value.cursor || current.event.id, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items } },
+    } : current);
     setConversationDraft(undefined);
     clearBootstrapRecovery();
     setOperationError(undefined);
@@ -1143,10 +1168,6 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
     onNavigate(`/agent/conversations/${encodeURIComponent(conversation.id)}`);
   }, onError: (error, message) => {
-    if (activeComposerScope.current === message.scope) {
-      setDraft(message.content);
-      setAttachments(message.items);
-    }
     if (isBootstrapAmbiguous(error)) {
       // React Query can retain a mutation observer from the render that
       // initiated the request. The command scope is the draft UUID, so it is
@@ -1178,6 +1199,15 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
         504,
       ));
       return;
+    }
+    setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+    clearLiveText();
+    setActiveTurnEventId(undefined);
+    setRequestStartedAt(undefined);
+    setTurnState('idle');
+    if (activeComposerScope.current === message.scope) {
+      setDraft(message.content);
+      setAttachments(message.items);
     }
     clearBootstrapRecovery();
     reportOperationError(message.scope, error);
@@ -1377,6 +1407,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     setAttachments([]);
     clearLiveText();
     setLiveEvents([]);
+    setOptimisticBootstrapTurn(undefined);
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate('/agent');
@@ -1390,7 +1421,15 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     const message = { id: randomId(), scope: composerScope, content, items: attachments };
     setAttachments([]);
     if (conversationDraft) {
-      if (canBootstrap && !bootstrap.isPending) bootstrap.mutate(message);
+      if (canBootstrap && !bootstrap.isPending) {
+        setOptimisticBootstrapTurn({
+          scope: conversationDraft.id,
+          event: { id: `pending-bootstrap:${message.id}`, event_type: 'MESSAGE', payload: { source: 'user', content, attachments } },
+        });
+        setRequestStartedAt(Date.now());
+        setTurnState('running');
+        bootstrap.mutate(message);
+      }
       else { setDraft(content); setAttachments(attachments); }
       return;
     }
@@ -1502,7 +1541,7 @@ export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
     <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : <h2 title={selected ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected) return; setTitle(conversationName(selected)); setEditing(true); }}>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</h2>}{(selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div>{selected && <div className="agent-header-actions"><button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button></div>}</header>
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
-      {selected ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={requestRewrite} onFork={eventId => fork.mutate(eventId)} onOpenAttachment={openAttachmentInDrawer}/> : conversationDraft ? <div className="agent-workbench-empty"><Bot size={32}/><b>需要我帮你完成什么？</b><span>你可以直接发送问题，也可以先选择模型、添加附件或打开工作区工具。</span>{!connectedProviders.length && <button className="primary" onClick={onOpenModels}>配置模型供应商</button>}</div> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></div>}
+      {selected || conversationDraft ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={selected ? requestRewrite : undefined} onFork={selected ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={openAttachmentInDrawer}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>每个会话共享同一工作区，但保留独立的对话与事件记录。</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || '图片附件'}</p><span>{message.items.length ? `${message.items.length} 个附件` : ''}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}
