@@ -1181,6 +1181,23 @@ PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 
 或 `DEAD` provision 任务重置为 `RETRY`；健康 writer 存在时绝不重复创建 generation。部署后原
 Conversation ID 恢复可读，真实 `/context` 返回 90% 阈值并将旧 240 策略标记为只读。
 
+### FR-85 Agent 会话模型网络失败有界重试与终态 — DONE
+
+依赖：`FR-84`。
+
+目标：模型网关无法连接、服务暂不可用、请求超时或无响应时，使用 OpenHands 正式 LLM 重试链总计最多尝试
+5 次，并以短退避和有界单次超时避免页面长时间停留在“正在思考”。重试耗尽后必须由 OpenHands 原生
+`ConversationErrorEvent` 结束当前轮；页面显示明确的网络问题和已停止状态，不暴露上游连接细节。额度、鉴权、
+上下文等非网络错误继续保留独立语义，不由浏览器假超时篡改正式运行状态。
+
+验收：固定 OpenHands `stop_after_attempt`、网络异常映射和正式错误事件链取证；OpenHands 适配器定向 pytest
+覆盖创建、切换模型与 condenser 的 5 次策略；Web lint/typecheck/production build；Agent 工作台定向
+Playwright 覆盖网络错误终止“正在思考”并展示安全提示；Alembic head、任务状态唯一性与 `git diff --check`。
+
+完成：主模型与 condenser 均通过 OpenHands 正式 LLM 配置使用总计最多 5 次调用、1–4 秒短退避和 20 秒
+单次超时。连接失败、服务不可用、超时或无响应在重试耗尽后继续由原生 `ConversationErrorEvent` 结束当前轮；
+页面停止动态“正在思考”，显示不含上游连接细节的网络问题提示。额度等非网络错误保持原有独立提示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1197,6 +1214,7 @@ Conversation ID 恢复可读，真实 `/context` 返回 90% 阈值并将旧 240 
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-85 | 固定 OpenHands 1.44.0 `stop_after_attempt`、网络异常映射与正式错误事件取证；OpenHands 适配器定向 pytest（6 passed）；Ruff、Pyright；Web ESLint/typecheck/production build；当前源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：主模型创建、原生模型切换与 condenser 均使用总计最多 5 次、1–4 秒退避和 20 秒单次超时；正式 `LLMServiceUnavailableError` 结束失败轮并移除“正在思考”，页面显示安全网络提示且不泄露原始连接错误。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-84 | Agent Workspace/OpenHands 压缩定向 pytest；Runtime 终结任务恢复 pytest；受影响 Python Ruff/Pyright；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright；`git diff --check`；无缓存 `make rebuild-deploy`；固定 OpenHands 1.44.0 contract check；Compose、HTTP、Alembic head/current；真实历史 Conversation `/context` 与 Runtime 恢复 | PASS：新会话使用 90% token 原生压缩、正式请求/完成父链验收、关键用户事件保护和失败回滚；旧 240 策略会话服务端与页面均只读。完整栈无缓存重建成功。部署发现并修复已成功幂等 provision 任务无法在镜像替换后重新领取的问题；健康 writer 存在时不重置，缺失时安全进入 RETRY 并恢复新 generation。最终 API/Postgres/Runtime Provider 健康、Web 200、Alembic `0070_agent_caps` head/current；原会话返回 `proactive_compaction_ratio=0.9`、阈值 `829800`、`compaction_policy_current=false`。 |
 | 2026-08-29 | FR-82 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（纯耗时、无等待卡、唯一动态状态、工具过程与正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行中工作过程标题只显示耗时，大块等待模型响应提示已删除；当前状态仅在轮末显示一次，工具和终态切换保持正确。 |
 | 2026-08-29 | FR-81 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（未完成命令、工具结果后继续思考、正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：当前轮末尾持续显示灰色动态运行提示；未完成命令显示“正在后台执行命令”，正式 Observation 到达后切换为“正在思考”，FinishAction 到达后提示消失。 |

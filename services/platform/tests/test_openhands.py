@@ -424,11 +424,11 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "api_key": "configured-secret",
         "usage_id": "flowweave:provider-1",
         "stream": True,
-        "num_retries": 2,
+        "num_retries": 5,
         "retry_multiplier": 2.0,
-        "retry_min_wait": 2,
+        "retry_min_wait": 1,
         "retry_max_wait": 4,
-        "timeout": 60,
+        "timeout": 20,
         "max_input_tokens": 922000,
     }
     assert [tool["name"] for tool in payload["agent"]["tools"]] == [
@@ -882,11 +882,11 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
     assert llm["api_mode"] == "responses"
     assert llm["model_canonical_name"] == "openai/codex-auto-review"
     assert llm["stream"] is True
-    assert llm["num_retries"] == 2
+    assert llm["num_retries"] == 5
     assert llm["retry_multiplier"] == 2.0
-    assert llm["retry_min_wait"] == 2
+    assert llm["retry_min_wait"] == 1
     assert llm["retry_max_wait"] == 4
-    assert llm["timeout"] == 60
+    assert llm["timeout"] == 20
     assert llm["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
@@ -1765,11 +1765,11 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert isinstance(payload, dict)
     assert payload["llm"]["model"] == "openai/gpt-5.6-sol"
     assert payload["llm"]["stream"] is True
-    assert payload["llm"]["num_retries"] == 2
+    assert payload["llm"]["num_retries"] == 5
     assert payload["llm"]["retry_multiplier"] == 2.0
-    assert payload["llm"]["retry_min_wait"] == 2
+    assert payload["llm"]["retry_min_wait"] == 1
     assert payload["llm"]["retry_max_wait"] == 4
-    assert payload["llm"]["timeout"] == 60
+    assert payload["llm"]["timeout"] == 20
     assert payload["llm"]["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
@@ -2000,11 +2000,11 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "api_key": "configured-secret",
             "usage_id": "condenser",
             "stream": True,
-            "num_retries": 2,
+            "num_retries": 5,
             "retry_multiplier": 2.0,
-            "retry_min_wait": 2,
+            "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": 60,
+            "timeout": 20,
             "max_input_tokens": 922000,
         },
         "max_size": 80,
@@ -2129,11 +2129,11 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
             "api_key": "configured-secret",
             "usage_id": "condenser",
             "stream": True,
-            "num_retries": 2,
+            "num_retries": 5,
             "retry_multiplier": 2.0,
-            "retry_min_wait": 2,
+            "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": 60,
+            "timeout": 20,
             "max_input_tokens": 922_000,
         },
         "max_size": 10_000,

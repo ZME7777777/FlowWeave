@@ -540,7 +540,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'finish-action', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'tracker-result', event_name: 'FinishAction', content: '任务跟踪已完成。', timestamp: '2026-08-26T10:03:13Z' } },
           { id: 'finish-observation', event_type: 'COMPLETED', payload: { source: 'environment', parent_id: 'finish-action', event_name: 'FinishObservation', content: '任务跟踪已完成。', timestamp: '2026-08-26T10:03:14Z' } },
           { id: 'failure-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'finish-observation', content: '触发失败', timestamp: '2026-08-26T10:04:00Z' } },
-          { id: 'failure-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'failure-user', content: '模型服务暂时不可用。', error_code: 'ModelUnavailable', timestamp: '2026-08-26T10:04:03Z' } },
+          { id: 'failure-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'failure-user', content: 'upstream connection refused', error_code: 'LLMServiceUnavailableError', timestamp: '2026-08-26T10:04:03Z' } },
           ...(compactionScenario ? [
             { id: 'compaction-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'failure-event', content: '完成压缩后继续检查', timestamp: '2026-08-26T10:10:00Z' } },
             { id: 'before-compaction', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'compaction-user', content: '先整理当前信息。', timestamp: '2026-08-26T10:10:02Z' } },
@@ -884,6 +884,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(finishTurn.getByText('我先把执行步骤整理成任务列表。')).toBeVisible();
   await expect(finishTurn.getByText('任务跟踪已完成。')).toHaveCount(1);
   const failureTurn = page.locator('.conversation-turn').filter({ hasText: '本轮没有生成回复' });
+  await expect(failureTurn).toContainText('网络连接异常，模型服务在 5 次尝试后仍未响应');
+  await expect(failureTurn).not.toContainText('upstream connection refused');
+  await expect(failureTurn.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(failureTurn.locator('.conversation-activity-group').getByText('耗时 3秒')).toBeVisible();
   await expect(failureTurn.locator('.conversation-message.assistant')).toHaveCount(0);
   await expect.poll(() => failureTurn.evaluate(turn => {

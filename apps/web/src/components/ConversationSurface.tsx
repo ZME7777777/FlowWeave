@@ -666,10 +666,21 @@ function AgentReply({ eventId, content, onFork }: { eventId: string; content: st
   </article>;
 }
 
+const NETWORK_ERROR_CODES = new Set([
+  'LLMServiceUnavailableError',
+  'LLMTimeoutError',
+  'LLMNoResponseError',
+  'APIConnectionError',
+  'ReadTimeout',
+  'RequestError',
+]);
+
 function ConversationFailure({ item }: { item: Item }) {
   const code = typeof item.event.payload.error_code === 'string' ? item.event.payload.error_code : '';
   const content = code === 'LLMRateLimitError'
     ? '模型服务拒绝了这次请求：当前配置的账户可用额度已用尽。请选择有可用额度的模型配置后，编辑并重新思考此消息。'
+    : NETWORK_ERROR_CODES.has(code)
+      ? '网络连接异常，模型服务在 5 次尝试后仍未响应。本轮已停止，请检查网络或模型服务后重试。'
     : item.content || 'OpenHands 未能完成这一轮，请检查模型配置后重试。';
   return <article className="conversation-failure" data-turn-terminal="true" data-event-id={item.event.id} role="status">
     <CircleAlert size={15}/><div><b>本轮没有生成回复</b><p>{content}</p>{code && <small>{code}</small>}</div>

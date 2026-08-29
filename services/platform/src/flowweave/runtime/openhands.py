@@ -752,15 +752,16 @@ class OpenHandsRuntime:
             # provider (notably Codex OAuth) does not inherit a callback-less
             # Conversation and get downgraded to a non-streaming request.
             "stream": True,
-            # The SDK defaults to five attempts, 8-64 second backoff, and a
-            # 300 second request timeout. Quota exhaustion and unreachable
-            # gateways would therefore leave a simple turn apparently idle
-            # for several minutes before emitting its formal error event.
-            "num_retries": 2,
+            # Keep network failures bounded while still tolerating short
+            # provider interruptions. OpenHands implements num_retries with
+            # stop_after_attempt, so this is five total calls, not five calls
+            # after the initial request. Exhaustion is emitted as its native
+            # ConversationErrorEvent and terminates the active turn.
+            "num_retries": 5,
             "retry_multiplier": 2.0,
-            "retry_min_wait": 2,
+            "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": 60,
+            "timeout": 20,
         }
         if (window := self._DECLARED_CONTEXT_WINDOWS.get(model)) is not None:
             llm["max_input_tokens"] = window
