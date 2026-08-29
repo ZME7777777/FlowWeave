@@ -260,6 +260,117 @@ def test_openhands_serializes_native_critic_without_invalid_zero_iteration_refin
         assert critic["iterative_refinement"] == expected_refinement
 
 
+def test_openhands_materializes_oracle_profile_with_frozen_binding(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    provider = RuntimeProvider(
+        provider_id="provider-1",
+        base_url="https://provider.example/v1",
+        model="gpt-5.6-sol",
+        api_key="rotatable-secret",
+    )
+    requests: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs))
+        if method == "GET":
+            return {"_flowweave_missing": True}
+        return {"name": "oracle", "message": "saved"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
+        provider,
+        base_url="http://runtime.test:8000",
+        session_api_key="session-key",
+    )
+
+    assert [(method, path) for method, path, _ in requests] == [
+        ("GET", "/api/profiles/oracle"),
+        ("POST", "/api/profiles/oracle"),
+    ]
+    body = requests[1][2]["json"]
+    assert isinstance(body, dict)
+    assert body["include_secrets"] is True
+    assert body["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert body["llm"]["api_key"] == "rotatable-secret"
+    assert body["llm"]["usage_id"].startswith("flowweave-oracle:provider-1:")
+
+
+def test_openhands_refreshes_only_the_same_frozen_oracle_binding(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    provider = RuntimeProvider(
+        provider_id="provider-1",
+        base_url="https://provider.example/v1",
+        model="gpt-5.6-sol",
+        api_key="rotated-secret",
+    )
+    binding_id = runtime._oracle_binding_id(  # pyright: ignore[reportPrivateUsage]
+        provider
+    )
+    methods: list[str] = []
+
+    def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+        methods.append(method)
+        if method == "GET":
+            return {
+                "name": "oracle",
+                "config": {
+                    "model": "openai/gpt-5.6-sol",
+                    "usage_id": binding_id,
+                },
+                "api_key_set": True,
+            }
+        return {"name": "oracle", "message": "saved"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
+        provider, base_url="http://runtime.test:8000", session_api_key="session-key"
+    )
+
+    assert methods == ["GET", "POST"]
+
+
+def test_openhands_refuses_to_overwrite_a_different_oracle_binding(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    provider = RuntimeProvider(
+        provider_id="provider-1",
+        base_url="https://provider.example/v1",
+        model="gpt-5.6-sol",
+        api_key="secret",
+    )
+    methods: list[str] = []
+
+    def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+        methods.append(method)
+        return {
+            "name": "oracle",
+            "config": {
+                "model": "openai/other-model",
+                "usage_id": "flowweave-oracle:other-provider:deadbeef",
+            },
+            "api_key_set": True,
+        }
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    with pytest.raises(DomainError) as raised:
+        runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
+            provider,
+            base_url="http://runtime.test:8000",
+            session_api_key="session-key",
+        )
+
+    assert raised.value.code == "RUNTIME_ORACLE_PROFILE_CONFLICT"
+    assert methods == ["GET"]
+
+
 def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     openhands_settings, monkeypatch
 ):
@@ -2151,6 +2262,10 @@ def test_openhands_projects_native_task_tool_lifecycle_without_fabricating_child
         "task_id": "task_00000001",
         "subagent_type": "reviewer",
         "status": "completed",
+        "outcome": {
+            "is_error": False,
+            "content": [{"type": "text", "text": "Looks good."}],
+        },
     }
 
 
@@ -2222,6 +2337,10 @@ def test_openhands_projects_native_task_error_as_terminal_task_error():
         "task_id": "task_00000002",
         "subagent_type": "reviewer",
         "status": "error",
+        "outcome": {
+            "is_error": True,
+            "content": [{"type": "text", "text": "Budget exceeded."}],
+        },
     }
 
 

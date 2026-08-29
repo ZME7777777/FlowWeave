@@ -140,6 +140,31 @@ def _verify_allocation(allocation: AgentWorkspaceRuntimeAllocation) -> Path:
     return root
 
 
+def _ensure_profile_store(root: Path) -> None:
+    """Safely add the FR-77 profile child to old Workspace allocations."""
+
+    parent = root / "state" / "persistence"
+    parent_metadata = parent.lstat()
+    target = parent / "profiles"
+    try:
+        target.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    metadata = target.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or metadata.st_uid != parent_metadata.st_uid
+        or metadata.st_gid != parent_metadata.st_gid
+    ):
+        raise DomainError(
+            "AGENT_WORKSPACE_ALLOCATION_CONFLICT",
+            "The Agent Workspace profile store permissions are invalid",
+            409,
+        )
+
+
 def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspaceRuntimeAllocation:
     allocation = db.scalar(
         select(AgentWorkspaceRuntimeAllocation)
@@ -147,7 +172,8 @@ def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspace
         .with_for_update()
     )
     if allocation is not None:
-        _verify_allocation(allocation)
+        root = _verify_allocation(allocation)
+        _ensure_profile_store(root)
         return allocation
     root = _host_root(_relative_root().as_posix())
     if root.exists() or root.is_symlink():
@@ -169,6 +195,7 @@ def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspace
             os.close(descriptor)
         for directory in _DIRECTORIES:
             _ensure_directory(root / directory)
+        _ensure_profile_store(root)
         reference = AgentWorkspaceRuntimeSecretReference(
             id=secret_id,
             workspace_id=workspace.id,

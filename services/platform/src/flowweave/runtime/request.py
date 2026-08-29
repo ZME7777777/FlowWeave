@@ -687,12 +687,46 @@ def build_runtime_request(
         if get_settings().runtime_adapter != "mock"
         else None
     )
+    oracle_provider: RuntimeProvider | None = None
+    raw_oracle_profile = frozen_spec.get("oracle_profile")
+    if "ask_oracle" in policy_tool_names:
+        if not isinstance(raw_oracle_profile, dict):
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Oracle profile is missing",
+                409,
+            )
+        oracle_profile = cast(dict[str, object], raw_oracle_profile)
+        asset = cast(dict[str, Any], node.get("asset") or {})
+        executor = cast(dict[str, Any], asset.get("executor") or {})
+        provider_id = str(oracle_profile.get("provider_id") or "")
+        oracle_model = str(oracle_profile.get("model") or "")
+        if (
+            set(oracle_profile) != {"name", "provider_id", "model"}
+            or oracle_profile.get("name") != "oracle"
+            or provider_id != str(executor.get("model_provider_id") or "")
+            or oracle_model != str(executor.get("model_name") or "")
+        ):
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Runtime Oracle profile drifted from the frozen node model",
+                409,
+            )
+        if get_settings().runtime_adapter != "mock":
+            oracle_provider = runtime_provider(db, node, oracle_model)
+    elif raw_oracle_profile is not None:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Runtime Oracle profile is not enabled by the Tool Policy",
+            409,
+        )
     agent_spec = RuntimeAgentSpec(
         schema_version=int(frozen_spec.get("schema_version") or 0),
         agent_kind=cast(Literal["OPENHANDS", "ACP"], frozen_spec.get("agent_kind")),
         runtime_contract=runtime_contract,
         agent_profile=agent_profile,
         provider=provider,
+        oracle_provider=oracle_provider,
         tools=tuple(
             RuntimeTool(name=str(tool["name"]), params=cast(dict[str, Any], tool["params"]))
             for tool in tool_entries

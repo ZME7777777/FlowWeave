@@ -75,6 +75,36 @@ def runtime_manifest_hash(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _oracle_profile(value: object) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Snapshot Runtime Oracle profile is invalid",
+            409,
+        )
+    profile = cast(dict[object, object], value)
+    if (
+        set(map(str, profile)) != {"name", "provider_id", "model"}
+        or profile.get("name") != "oracle"
+        or not isinstance(profile.get("provider_id"), str)
+        or not profile.get("provider_id")
+        or not isinstance(profile.get("model"), str)
+        or not profile.get("model")
+    ):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Snapshot Runtime Oracle profile is invalid",
+            409,
+        )
+    return {
+        "name": "oracle",
+        "provider_id": cast(str, profile["provider_id"]),
+        "model": cast(str, profile["model"]),
+    }
+
+
 def _definition_node(
     definition: dict[str, Any], instance_key: str, snapshot_id: str
 ) -> dict[str, Any]:
@@ -128,6 +158,7 @@ def runtime_node(
             409,
             {"snapshot_id": snapshot_id},
         )
+    runtime_oracle_profile = _oracle_profile(manifest.get("oracle_profile"))
     raw_manifest_node = cast(dict[object, object], raw_nodes).get(instance_key)
     if not isinstance(raw_manifest_node, dict):
         raise DomainError(
@@ -511,6 +542,27 @@ def runtime_node(
         )
     policy_tools = cast(list[dict[str, Any]], normalized_policy["tools"])
     required_tools = tuple(str(item["name"]) for item in policy_tools)
+    raw_oracle_profile = agent_spec.get("oracle_profile")
+    if "ask_oracle" in required_tools:
+        node_oracle_profile = _oracle_profile(raw_oracle_profile)
+        if node_oracle_profile is None:
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Snapshot Oracle profile is missing",
+                409,
+            )
+        if node_oracle_profile != runtime_oracle_profile:
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Snapshot node Oracle profile drifted from its Runtime binding",
+                409,
+            )
+    elif raw_oracle_profile is not None:
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "Snapshot Oracle profile is not enabled by the Tool Policy",
+            409,
+        )
     try:
         normalize_runtime_contract(
             agent_spec.get("runtime_contract"), required_tools=required_tools

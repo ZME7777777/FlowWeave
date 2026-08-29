@@ -21,10 +21,7 @@ OPENHANDS_TOOL_CATALOG: dict[str, dict[str, Any]] = {
         "access": "OPEN_WORLD",
         "confirmation": "REQUIRED",
         "concurrency": "SERIAL_ONLY",
-        "policy_enabled": False,
-        "disabled_reason": (
-            "requires a governed read-at-use LLM profile named oracle; enable in FR-77"
-        ),
+        "policy_enabled": True,
     },
     "file_editor": {
         "module": "openhands.tools.file_editor.definition",
@@ -166,10 +163,18 @@ DEFAULT_TOOL_POLICY_KEY = "flowweave-default-tools"
 
 
 def _catalog_digest() -> str:
+    # ``policy_enabled`` was included when the FR-74 catalog digest was first
+    # published.  It is a FlowWeave rollout decision rather than an upstream
+    # Tool identity field, but changing it now would invalidate every frozen
+    # Tool Policy and historical Snapshot.  Preserve that published baseline
+    # while allowing FR-77 to opt ``ask_oracle`` into the current allowlist.
+    # Future catalog schema revisions must version this compatibility rule
+    # instead of silently rewriting immutable Capability Versions.
     governed_catalog = {
         name: {key: copy.deepcopy(value) for key, value in item.items() if key != "disabled_reason"}
         for name, item in OPENHANDS_TOOL_CATALOG.items()
     }
+    governed_catalog["ask_oracle"]["policy_enabled"] = False
     encoded = json.dumps(
         governed_catalog,
         ensure_ascii=False,

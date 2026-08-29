@@ -119,6 +119,7 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
     """Compile the complete, replayable Agent specification for every node."""
 
     nodes: dict[str, dict[str, Any]] = {}
+    runtime_oracle_profile: dict[str, str] | None = None
     raw_nodes: object = definition.get("nodes", [])
     if not isinstance(raw_nodes, list):
         raise DomainError("SNAPSHOT_INVALID", "Snapshot nodes are invalid", 409)
@@ -251,6 +252,31 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
             for item in cast(list[object], raw_tools)
             if isinstance(item, dict)
         )
+        oracle_profile: dict[str, str] | None = None
+        if "ask_oracle" in required_tools:
+            provider_id = str(executor_config.get("model_provider_id") or "")
+            model_name = str(executor_config.get("model_name") or "")
+            if not provider_id or not model_name:
+                raise DomainError(
+                    "SNAPSHOT_INVALID",
+                    "Oracle requires an explicit frozen model provider and model",
+                    409,
+                    {"instance_key": instance_key},
+                )
+            oracle_profile = {
+                "name": "oracle",
+                "provider_id": provider_id,
+                "model": model_name,
+            }
+            if runtime_oracle_profile is None:
+                runtime_oracle_profile = oracle_profile
+            elif runtime_oracle_profile != oracle_profile:
+                raise DomainError(
+                    "SNAPSHOT_INVALID",
+                    "All Oracle-enabled nodes in one FlowRun must share one frozen model profile",
+                    409,
+                    {"instance_key": instance_key},
+                )
         nodes[instance_key] = {
             "node_asset_id": str(node.get("node_asset_id") or asset.get("id") or ""),
             "capabilities": capabilities,
@@ -264,6 +290,7 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
                 "memory_policy": memory_policies[0],
                 "critic_policy": critic_policies[0],
                 "agent_profile": agent_profiles[0] if agent_profiles else None,
+                "oracle_profile": oracle_profile,
                 "agent_definitions": agent_definitions,
                 "plugins": plugins,
                 "confirmation_policy": str(executor_config.get("confirmation_policy") or "ALWAYS"),
@@ -271,7 +298,44 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
                 "budgets": {"max_iterations": int(executor_config.get("max_iterations") or 100)},
             },
         }
-    return {"schema_version": 2, "openhands_version": OPENHANDS_VERSION, "nodes": nodes}
+    return {
+        "schema_version": 2,
+        "openhands_version": OPENHANDS_VERSION,
+        "oracle_profile": copy.deepcopy(runtime_oracle_profile),
+        "nodes": nodes,
+    }
+
+
+def _preserve_runtime_oracle_profile(
+    current_manifest: dict[str, Any], candidate_manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep the Runtime-global ``oracle`` name immutable for one FlowRun.
+
+    OpenHands 1.44 resolves auxiliary LLM profiles from a Runtime-global store,
+    not from a Conversation-scoped store.  Once any Snapshot binds that name,
+    later Snapshots may stop using the Tool but cannot recycle the name for a
+    different provider/model while historical Conversations remain resumable.
+    """
+
+    current = current_manifest.get("oracle_profile")
+    candidate = candidate_manifest.get("oracle_profile")
+    if current is None:
+        return candidate_manifest
+    if not isinstance(current, dict):
+        raise DomainError(
+            "SNAPSHOT_MANIFEST_INVALID",
+            "The active Snapshot Oracle profile is invalid",
+            409,
+        )
+    current_profile = cast(dict[str, Any], current)
+    if candidate is not None and candidate != current_profile:
+        raise DomainError(
+            "RUNTIME_ORACLE_PROFILE_IMMUTABLE",
+            "The FlowRun Runtime Oracle profile cannot change across Snapshots",
+            409,
+        )
+    candidate_manifest["oracle_profile"] = copy.deepcopy(current_profile)
+    return candidate_manifest
 
 
 def _runtime_node(snapshot: RunSnapshot, instance_key: str) -> dict[str, Any]:
@@ -3181,7 +3245,9 @@ def sync_snapshot(
     if _hash(definition) == current.definition_hash:
         return run_detail(db, run.id)
     action = _action(db, run.id, "SYNC_SNAPSHOT", idempotency_key)
-    runtime_manifest = _compile_runtime_manifest(definition)
+    runtime_manifest = _preserve_runtime_oracle_profile(
+        current.runtime_manifest_json or {}, _compile_runtime_manifest(definition)
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=current.version + 1,
@@ -3403,7 +3469,9 @@ def switch_agent_profile(
             "rollback_profile_version_id": current_profile_id,
         },
     )
-    runtime_manifest = _compile_runtime_manifest(definition)
+    runtime_manifest = _preserve_runtime_oracle_profile(
+        current.runtime_manifest_json or {}, _compile_runtime_manifest(definition)
+    )
     # Compile-time validation must reject a Profile whose compatibility
     # declarations drift from the frozen node policies before anything is
     # persisted or a new Attempt is created.

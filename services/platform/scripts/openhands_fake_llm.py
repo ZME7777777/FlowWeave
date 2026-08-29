@@ -68,6 +68,13 @@ class Handler(BaseHTTPRequestHandler):
                 "subagent_type": "smoke-reviewer",
             }
             call_id = "task-call-1"
+        elif "ask_oracle" in tool_names:
+            name = "ask_oracle"
+            arguments = {
+                "question": "Is the governed Oracle profile reachable?",
+                "context": "Return the deterministic smoke response.",
+            }
+            call_id = "oracle-call-1"
         else:
             name = "terminal"
             arguments = {"command": "printf smoke"}

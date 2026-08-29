@@ -1804,6 +1804,9 @@ def test_tool_policy_catalog_exposes_governed_and_disabled_tools(client):
     catalog = response.json()
     assert catalog["openhands_version"] == "1.44.0"
     assert catalog["catalog_digest"] == OPENHANDS_TOOL_CATALOG_DIGEST
+    assert catalog["catalog_digest"] == (
+        "b053075ebb633d74c96433d57336dab5c22cbc90f0bd1f591f9563a370a19de3"
+    )
     assert catalog["max_tool_concurrency"] == 16
     tools = {item["name"]: item for item in catalog["tools"]}
     assert len(tools) == 16
@@ -1815,8 +1818,8 @@ def test_tool_policy_catalog_exposes_governed_and_disabled_tools(client):
     ]
     assert tools["browser_tool_set"]["policy_enabled"] is False
     assert "SSRF" in tools["browser_tool_set"]["disabled_reason"]
-    assert tools["ask_oracle"]["policy_enabled"] is False
-    assert "FR-77" in tools["ask_oracle"]["disabled_reason"]
+    assert tools["ask_oracle"]["policy_enabled"] is True
+    assert tools["ask_oracle"]["disabled_reason"] is None
 
 
 def test_tool_policy_accepts_enum_string_parameter_without_length_limit(client):

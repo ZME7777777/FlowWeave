@@ -144,6 +144,19 @@ def test_openhands_image_runs_installed_contract_probe() -> None:
     assert "/runtime/contract_check.py" in makefile
 
 
+def test_openhands_acp_providers_are_explicit_allowlisted_build_inputs() -> None:
+    """FR-77: the default image is ACP-free; opt-in packages stay exact."""
+
+    dockerfile = (REPOSITORY / "infra" / "openhands" / "Dockerfile").read_text()
+    assert 'ARG INSTALL_ACP_PROVIDERS=""' in dockerfile
+    assert "for provider in $(echo \"$INSTALL_ACP_PROVIDERS\" | tr ',' ' ')" in dockerfile
+    assert "Unknown ACP provider '$provider'" in dockerfile
+    assert "@agentclientprotocol/claude-agent-acp@0.63.0" in dockerfile
+    assert "@agentclientprotocol/codex-acp@1.1.7" in dockerfile
+    assert "@google/gemini-cli@0.46.0" in dockerfile
+    assert "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed" in dockerfile
+
+
 def test_flowrun_runtime_has_no_shared_agent_server_or_legacy_launch_fallback() -> None:
     """FR-08: every Conversation must route through its FlowRun generation."""
 

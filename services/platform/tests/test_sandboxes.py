@@ -562,6 +562,8 @@ def test_environment_home_preparation_is_networkless_and_migrates_legacy_lark_la
     script = command[-1]
     assert 'mv "$target/$entry" "$target/.lark-cli/$entry"' in script
     assert 'cp -a -n /root/. "$target/"' in script
+    assert 'mkdir -p "$target/.openhands"' in script
+    assert 'chmod 0700 "$target/.openhands"' in script
     assert 'chown -R 10001:10001 "$target"' in script
 
 

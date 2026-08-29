@@ -2,6 +2,7 @@ FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d4
 FROM docker:29.6.1-cli@sha256:862099ada15c669000bef53aa4cb9d821262829f45b0dda2159ccb276443043b AS docker_cli
 
 FROM opensandbox/server@sha256:91717d1821ffdc698fb0885aab58173c4100ea137b98650dfb361431c1fe3373
+ARG INSTALL_ACP_PROVIDERS=""
 USER root
 WORKDIR /runtime
 COPY --from=node_runtime /usr/local/ /usr/local/
@@ -47,6 +48,27 @@ RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
       /opt/openhands-source/openhands-tools \
       /opt/openhands-source/openhands-workspace \
       /opt/openhands-source/openhands-agent-server
+RUN set -eux; \
+    packages=""; \
+    for provider in $(echo "$INSTALL_ACP_PROVIDERS" | tr ',' ' '); do \
+      case "$provider" in \
+        claude-code) \
+          packages="$packages @agentclientprotocol/claude-agent-acp@0.63.0";; \
+        codex) \
+          packages="$packages @agentclientprotocol/codex-acp@1.1.7";; \
+        gemini-cli) \
+          packages="$packages @google/gemini-cli@0.46.0";; \
+        *) \
+          echo "Unknown ACP provider '$provider' in INSTALL_ACP_PROVIDERS" >&2; \
+          exit 1;; \
+      esac; \
+    done; \
+    if [ -n "$packages" ]; then \
+      npm install --global $packages; \
+      npm cache clean --force; \
+    else \
+      echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
+    fi
 RUN /runtime/.venv/bin/python -c \
       "from importlib.metadata import version; expected='1.44.0'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
 COPY infra/openhands/contract_check.py /runtime/contract_check.py

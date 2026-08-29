@@ -331,6 +331,77 @@ def _native_task_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
     return conversation_id
 
 
+def _oracle_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
+    code, saved = _request(
+        base_url,
+        "POST",
+        "/api/profiles/oracle",
+        {
+            "llm": _llm(fake_model_url, "flowweave-oracle-smoke-binding"),
+            "include_secrets": True,
+        },
+    )
+    assert code == 201 and isinstance(saved, dict) and saved.get("name") == "oracle", (
+        code,
+        saved,
+    )
+    code, created = _request(
+        base_url,
+        "POST",
+        "/api/conversations",
+        {
+            "workspace": {
+                "kind": "LocalWorkspace",
+                "working_dir": f"/runtime/workspace/project/oracle-{suffix}",
+            },
+            "max_iterations": 4,
+            "agent": {
+                "kind": "Agent",
+                "llm": _llm(fake_model_url, "oracle-parent-smoke"),
+                "tools": [{"name": "ask_oracle", "params": {}}],
+                "condenser": {"kind": "NoOpCondenser"},
+            },
+            "confirmation_policy": {"kind": "NeverConfirm"},
+            "initial_message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "Consult the Oracle once."}],
+                "run": True,
+            },
+        },
+        timeout=60,
+    )
+    assert code == 201 and isinstance(created, dict), (code, created)
+    conversation_id = str(created["id"])
+    finished = _wait_for(base_url, conversation_id, {"finished"}, timeout=60)
+    observations = [
+        item["observation"]
+        for item in _events(base_url, conversation_id)
+        if item.get("kind") == "ObservationEvent"
+        and isinstance(item.get("observation"), dict)
+        and item["observation"].get("kind") == "AskOracleObservation"
+    ]
+    assert len(observations) == 1, observations
+    observation = observations[0]
+    assert observation.get("is_error") is False, observation
+    content = observation.get("content")
+    assert isinstance(content, list) and any(
+        isinstance(item, dict)
+        and item.get("type") == "text"
+        and "OpenHands smoke conversation summary." in str(item.get("text") or "")
+        for item in content
+    ), observation
+    stats = finished.get("stats")
+    assert isinstance(stats, dict), finished
+    usage_to_metrics = stats.get("usage_to_metrics")
+    assert isinstance(usage_to_metrics, dict), stats
+    oracle_metrics = usage_to_metrics.get("oracle:oracle")
+    assert isinstance(oracle_metrics, dict), usage_to_metrics
+    token_usage = oracle_metrics.get("accumulated_token_usage")
+    assert isinstance(token_usage, dict), oracle_metrics
+    assert int(token_usage.get("prompt_tokens", 0)) > 0, oracle_metrics
+    return conversation_id
+
+
 def _cleanup(server: str, fake: str, network: str) -> None:
     subprocess.run(
         ["docker", "stop", server, fake],
@@ -377,6 +448,8 @@ def _start_server(server: str, network: str, state_root: Path) -> str:
         "OH_BASH_EVENTS_DIR=/runtime/state/bash-events",
         "-e",
         "OH_PERSISTENCE_DIR=/runtime/state/persistence",
+        "-e",
+        "HOME=/home/flowweave",
         "--mount",
         f"type=bind,src={state_root / 'workspace'},dst=/runtime/workspace/project",
         "--mount",
@@ -385,6 +458,13 @@ def _start_server(server: str, network: str, state_root: Path) -> str:
         f"type=bind,src={state_root / 'bash-events'},dst=/runtime/state/bash-events",
         "--mount",
         f"type=bind,src={state_root / 'persistence'},dst=/runtime/state/persistence",
+        "--mount",
+        f"type=bind,src={state_root / 'home'},dst=/home/flowweave",
+        "--mount",
+        (
+            f"type=bind,src={state_root / 'persistence/profiles'},"
+            "dst=/home/flowweave/.openhands/profiles"
+        ),
         IMAGE,
     )
     port_line = _run("docker", "port", server, "8000/tcp", capture=True).splitlines()[0]
@@ -432,8 +512,10 @@ def main() -> None:
     server = f"flowweave-oh-server-{suffix}"
     with tempfile.TemporaryDirectory(prefix="flowweave-openhands-smoke-") as state_dir:
         state_root = Path(state_dir)
-        for name in ("workspace", "conversations", "bash-events", "persistence"):
+        for name in ("workspace", "conversations", "bash-events", "persistence", "home"):
             (state_root / name).mkdir()
+        (state_root / "persistence/profiles").mkdir()
+        (state_root / "home/.openhands").mkdir()
         try:
             _run("docker", "network", "create", network)
             _run(
@@ -470,7 +552,8 @@ def main() -> None:
             confirmation_id = _confirmation_smoke(base_url, fake_model_url, suffix)
             condenser_id = _condenser_smoke(base_url, fake_model_url, suffix)
             native_task_id = _native_task_smoke(base_url, fake_model_url, suffix)
-            conversation_ids = (confirmation_id, condenser_id, native_task_id)
+            oracle_id = _oracle_smoke(base_url, fake_model_url, suffix)
+            conversation_ids = (confirmation_id, condenser_id, native_task_id, oracle_id)
             original_event_ids = {item: _event_ids(base_url, item) for item in conversation_ids}
             _assert_persisted_conversations(state_root, conversation_ids)
 
@@ -498,6 +581,7 @@ def main() -> None:
                         "confirmation_conversation_id": confirmation_id,
                         "condenser_conversation_id": condenser_id,
                         "native_task_conversation_id": native_task_id,
+                        "oracle_conversation_id": oracle_id,
                         "original_id_reload": True,
                     },
                     sort_keys=True,

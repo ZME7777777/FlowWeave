@@ -285,6 +285,31 @@ def _verify_layout(allocation: FlowRunRuntimeAllocation) -> Path:
     return root
 
 
+def _ensure_profile_store(root: Path) -> None:
+    """Safely add the FR-77 profile child to old Runtime allocations."""
+
+    parent = root / "state" / "persistence"
+    parent_metadata = parent.lstat()
+    target = parent / "profiles"
+    try:
+        target.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    metadata = target.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or metadata.st_uid != parent_metadata.st_uid
+        or metadata.st_gid != parent_metadata.st_gid
+    ):
+        raise DomainError(
+            "RUNTIME_ALLOCATION_PERMISSIONS_INVALID",
+            "The Runtime profile store permissions are invalid",
+            409,
+        )
+
+
 def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAllocation:
     """Create one rollback-safe, tenant-scoped external Runtime allocation."""
 
@@ -293,7 +318,8 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
         select(FlowRunRuntimeAllocation).where(FlowRunRuntimeAllocation.flow_run_id == run_id)
     )
     if existing is not None:
-        _verify_layout(existing)
+        root = _verify_layout(existing)
+        _ensure_profile_store(root)
         return RuntimeStorageAllocation(
             existing.id,
             existing.flow_run_id,
@@ -322,6 +348,7 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
         for relative_path, mode in _DIRECTORY_MODES.items():
             root.joinpath(*relative_path.parts).mkdir(mode=mode, parents=True, exist_ok=True)
             root.joinpath(*relative_path.parts).chmod(mode)
+        _ensure_profile_store(root)
         root.chmod(0o700)
         secret_reference = FlowRunRuntimeSecretReference(
             id=secret_reference_id,

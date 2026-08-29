@@ -211,6 +211,8 @@ class DockerSandboxProvider:
 set -eu
 target=/flowweave-home
 mkdir -p "$target"
+mkdir -p "$target/.openhands"
+chmod 0700 "$target/.openhands"
 if [ -f "$target/config.json" ] && [ ! -e "$target/.lark-cli/config.json" ] \
    && { [ -d "$target/cache" ] || [ -d "$target/logs" ] \
         || [ -f "$target/update-state.json" ]; }; then
@@ -1074,6 +1076,7 @@ chmod 0700 "$target"
             "state/conversations": 0o700,
             "state/bash-events": 0o700,
             "state/persistence": 0o700,
+            "state/persistence/profiles": 0o700,
             # The control-plane root stays owner-writable so immutable digest
             # bundles can be published after a FlowRun Runtime starts. Runtime
             # access is read-only at the bind-mount boundary.
@@ -1126,6 +1129,15 @@ chmod 0700 "$target"
             (
                 f"type=bind,src={allocation_root / 'state/persistence'},"
                 "dst=/runtime/state/persistence"
+            ),
+            # OpenHands' Profile API honors OH_PERSISTENCE_DIR while SDK
+            # conversations resolve auxiliary profiles from
+            # $HOME/.openhands/profiles. Map only that child store: mounting
+            # the whole .openhands directory would hide credentials prepared
+            # in the Environment HOME volume.
+            (
+                f"type=bind,src={allocation_root / 'state/persistence/profiles'},"
+                "dst=/home/flowweave/.openhands/profiles"
             ),
             (
                 f"type=bind,src={allocation_root / 'capabilities'},"

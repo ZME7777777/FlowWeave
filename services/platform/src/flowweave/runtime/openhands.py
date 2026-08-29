@@ -825,6 +825,51 @@ class OpenHandsRuntime:
             payload["max_tokens"] = condenser.max_tokens
         return payload
 
+    @staticmethod
+    def _oracle_binding_id(provider: RuntimeProvider) -> str:
+        model_digest = hashlib.sha256(provider.model.encode()).hexdigest()[:16]
+        return f"flowweave-oracle:{provider.provider_id}:{model_digest}"
+
+    def _ensure_oracle_profile(
+        self,
+        provider: RuntimeProvider,
+        *,
+        base_url: str,
+        session_api_key: str,
+    ) -> None:
+        """Materialize the frozen Runtime-wide Oracle profile without model drift."""
+
+        llm = self._llm_payload(provider)
+        binding_id = self._oracle_binding_id(provider)
+        llm["usage_id"] = binding_id
+        existing = self._request(
+            "GET",
+            "/api/profiles/oracle",
+            missing_ok=True,
+            base_url=base_url,
+            session_api_key=session_api_key,
+        )
+        if not existing.get("_flowweave_missing"):
+            config = existing.get("config")
+            config_map = cast(dict[str, Any], config) if isinstance(config, dict) else {}
+            if (
+                not config_map
+                or config_map.get("usage_id") != binding_id
+                or config_map.get("model") != llm["model"]
+            ):
+                raise DomainError(
+                    "RUNTIME_ORACLE_PROFILE_CONFLICT",
+                    "The Runtime Oracle profile is already bound to a different frozen model",
+                    409,
+                )
+        self._request(
+            "POST",
+            "/api/profiles/oracle",
+            base_url=base_url,
+            session_api_key=session_api_key,
+            json={"llm": llm, "include_secrets": True},
+        )
+
     def _workspace_path(self, value: str) -> str:
         path = Path(value)
         try:
@@ -1138,6 +1183,24 @@ class OpenHandsRuntime:
             base_url=target_base_url,
             session_api_key=target_session_key,
         )
+        if spec.oracle_provider is not None:
+            if not any(tool.name == "ask_oracle" for tool in spec.tools):
+                raise DomainError(
+                    "RUNTIME_AGENT_SPEC_INVALID",
+                    "Oracle provider is not enabled by the frozen Tool Policy",
+                    409,
+                )
+            self._ensure_oracle_profile(
+                spec.oracle_provider,
+                base_url=target_base_url,
+                session_api_key=target_session_key,
+            )
+        elif any(tool.name == "ask_oracle" for tool in spec.tools):
+            raise DomainError(
+                "RUNTIME_AGENT_SPEC_INVALID",
+                "Oracle Tool is missing its frozen model profile",
+                409,
+            )
         created = self._request(
             "POST",
             "/api/conversations",
@@ -1689,10 +1752,11 @@ class OpenHandsRuntime:
                 }
             elif kind == "ObservationEvent" and event_name == "TaskObservation":
                 status = str(detail.get("status") or "error").lower()
+                is_error = bool(detail.get("is_error"))
                 payload["runtime_task"] = {
                     "phase": (
                         "COMPLETED"
-                        if status == "completed" and not bool(detail.get("is_error"))
+                        if status == "completed" and not is_error
                         else "ERROR"
                     ),
                     "action_event_id": str(item.get("action_id") or ""),
@@ -1701,6 +1765,10 @@ class OpenHandsRuntime:
                     "task_id": str(detail.get("task_id") or "unknown"),
                     "subagent_type": str(detail.get("subagent") or "unknown"),
                     "status": status,
+                    "outcome": {
+                        "is_error": is_error,
+                        "content": cls._safe_event_detail(detail.get("content") or []),
+                    },
                 }
             elif kind == "ActionEvent" and event_name == "InvokeSkillAction":
                 payload["runtime_skill"] = {

@@ -6,8 +6,12 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from time import sleep
 
+import pytest
 from sqlalchemy import select
 
+from flowweave.modules.orchestration.application.service import (
+    _preserve_runtime_oracle_profile,
+)
 from flowweave.modules.tasks.application.service import (
     claim,
     enqueue,
@@ -15,7 +19,33 @@ from flowweave.modules.tasks.application.service import (
     recover_expired,
     succeed,
 )
+from flowweave.shared.errors import DomainError
 from flowweave.shared.models import BackgroundTask, FlowDefinition, TaskState
+
+
+def test_flow_run_oracle_profile_is_immutable_across_snapshots():
+    frozen = {"name": "oracle", "provider_id": "provider-1", "model": "model-1"}
+    current = {"oracle_profile": frozen}
+
+    disabled = _preserve_runtime_oracle_profile(current, {"oracle_profile": None})
+    assert disabled["oracle_profile"] == frozen
+    assert disabled["oracle_profile"] is not frozen
+
+    same = _preserve_runtime_oracle_profile(current, {"oracle_profile": dict(frozen)})
+    assert same["oracle_profile"] == frozen
+
+    with pytest.raises(DomainError) as raised:
+        _preserve_runtime_oracle_profile(
+            current,
+            {
+                "oracle_profile": {
+                    "name": "oracle",
+                    "provider_id": "provider-2",
+                    "model": "model-2",
+                }
+            },
+        )
+    assert raised.value.code == "RUNTIME_ORACLE_PROFILE_IMMUTABLE"
 
 
 def _run_worker_until(worker, predicate, *, max_steps: int = 12) -> None:
