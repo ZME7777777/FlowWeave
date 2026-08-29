@@ -32,6 +32,10 @@ class AgentConversationBinding(Base):
             "openhands_conversation_id",
             name="uq_agent_conversation_runtime_id",
         ),
+        CheckConstraint(
+            "host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')",
+            name="ck_agent_conversation_host_kind",
+        ),
         UniqueConstraint("create_idempotency_key", name="uq_agent_conversation_create_key"),
         CheckConstraint(
             "working_directory IS NULL OR working_directory = '/runtime/workspace/project' "
@@ -50,11 +54,25 @@ class AgentConversationBinding(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(
+    # ``workspace_id`` remains the default-host compatibility reference.  A
+    # FlowRun node uses the neutral host and lineage fields below instead.
+    workspace_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
     )
-    runtime_session_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspace_runtimes.id", ondelete="RESTRICT"), index=True
+    # Runtime Session identity is host-neutral: Agent Workspace and FlowRun
+    # Runtime Sessions live in separate ownership tables.
+    runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
+    host_kind: Mapped[str] = mapped_column(String(30), default="AGENT_WORKSPACE", index=True)
+    host_id: Mapped[str] = mapped_column(String(36), index=True)
+    conversation_scope_id: Mapped[str] = mapped_column(String(36), index=True)
+    flow_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("flow_runs.id", ondelete="CASCADE"), index=True
+    )
+    node_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("node_runs.id", ondelete="CASCADE"), index=True
+    )
+    node_attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
     )
     work_directory_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_work_directory_versions.id", ondelete="RESTRICT"), index=True
@@ -149,9 +167,11 @@ class AgentConversationCommand(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(
+    workspace_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
     )
+    host_kind: Mapped[str] = mapped_column(String(30), default="AGENT_WORKSPACE", index=True)
+    host_id: Mapped[str] = mapped_column(String(36), index=True)
     binding_id: Mapped[str] = mapped_column(
         ForeignKey("agent_conversation_bindings.id", ondelete="RESTRICT"), index=True
     )

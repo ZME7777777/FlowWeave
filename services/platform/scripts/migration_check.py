@@ -129,6 +129,51 @@ def assert_native_subagent_schema(connection_url: str) -> None:
         }
 
 
+def assert_shared_agent_session_host_schema(connection_url: str) -> None:
+    """Verify the shared session locator supports both product hosts.
+
+    Agent Workspace sessions keep their existing table and compatibility
+    columns, while FlowRun node sessions need a separately authorized host and
+    lineage without a second locator table or a Runtime FK tied to only one
+    host implementation.
+    """
+
+    with psycopg.connect(connection_url) as connection:
+        columns = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' "
+                "AND table_name = 'agent_conversation_bindings'"
+            )
+        }
+        assert {
+            "host_kind",
+            "host_id",
+            "conversation_scope_id",
+            "flow_run_id",
+            "node_run_id",
+            "node_attempt_id",
+        } <= columns
+        foreign_keys = {
+            (str(row[0]), str(row[1]))
+            for row in connection.execute(
+                "SELECT tc.constraint_name, ccu.table_name "
+                "FROM information_schema.table_constraints tc "
+                "JOIN information_schema.constraint_column_usage ccu "
+                "ON tc.constraint_name = ccu.constraint_name "
+                "AND tc.table_schema = ccu.table_schema "
+                "WHERE tc.table_schema = 'public' "
+                "AND tc.table_name = 'agent_conversation_bindings' "
+                "AND tc.constraint_type = 'FOREIGN KEY'"
+            )
+        }
+        assert ("fk_agent_conversation_flow_run", "flow_runs") in foreign_keys
+        assert ("fk_agent_conversation_node_run", "node_runs") in foreign_keys
+        assert ("fk_agent_conversation_node_attempt", "node_attempts") in foreign_keys
+        assert not any(table == "agent_workspace_runtimes" for _, table in foreign_keys)
+
+
 def insert_legacy_capability_snapshot(connection_url: str) -> None:
     """Insert a representative 0028-era Import, node reference, and Snapshot."""
 
@@ -339,7 +384,7 @@ def assert_legacy_capability_snapshot_upgraded(connection_url: str) -> None:
         ).fetchone()
         assert snapshot is not None and len(str(snapshot[1])) == 64
         assert snapshot[0]["schema_version"] == 2
-        assert snapshot[0]["openhands_version"] == "1.42.0"
+        assert snapshot[0]["openhands_version"] == "1.44.0"
         frozen = snapshot[0]["nodes"]["legacy-node"]["capabilities"][0]
         assert frozen["capability_version_id"] == version_id
         assert frozen["digest"] == digest
@@ -355,7 +400,7 @@ def assert_legacy_capability_snapshot_upgraded(connection_url: str) -> None:
         ]
         tool_policy_config = agent_spec["tool_policy"]["runtime_config"]
         assert tool_policy_config["schema_version"] == 2
-        assert tool_policy_config["openhands_version"] == "1.42.0"
+        assert tool_policy_config["openhands_version"] == "1.44.0"
         assert tool_policy_config["unknown_tool"] == "DENY"
         assert tool_policy_config["tool_concurrency_limit"] == 1
         assert tool_policy_config["confirmation_required_tools"] == [
@@ -445,14 +490,17 @@ def check(source_url: str) -> None:
     try:
         command.upgrade(config, "head")
         assert_native_subagent_schema(target_connection_url)
+        assert_shared_agent_session_host_schema(target_connection_url)
         command.downgrade(config, "0005_execution")
         command.upgrade(config, "head")
         assert_native_subagent_schema(target_connection_url)
+        assert_shared_agent_session_host_schema(target_connection_url)
         command.downgrade(config, "0028_condensation_commands")
         insert_legacy_capability_snapshot(target_connection_url)
         command.upgrade(config, "head")
         assert_legacy_capability_snapshot_upgraded(target_connection_url)
         assert_native_subagent_schema(target_connection_url)
+        assert_shared_agent_session_host_schema(target_connection_url)
     finally:
         with psycopg.connect(**admin_parameters, autocommit=True) as connection:
             connection.execute(
