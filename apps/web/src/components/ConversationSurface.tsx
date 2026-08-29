@@ -1,6 +1,7 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileText, GitFork, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { AgentAttachment, OpenHandsConversationEvent } from '../types';
 import './conversation-surface.css';
 
@@ -75,8 +76,13 @@ function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) 
   return <img {...props} className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={src} alt={alt ?? ''} onError={() => setFailed(true)}/>;
 }
 
+function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<'a'>) {
+  const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
+  return <a {...props} href={href} {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}/>;
+}
+
 function MessageMarkdown({ children }: { children: string }) {
-  return <ReactMarkdown components={{ img: MarkdownImage }}>{children}</ReactMarkdown>;
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage }}>{children}</ReactMarkdown>;
 }
 
 function itemsFor(event: OpenHandsConversationEvent): Item[] {

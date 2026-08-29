@@ -1084,6 +1084,23 @@ dispatch 和远程标题生成修复，删除可由 OpenHands 生命周期接管
 目标：以 FlowWeave 冻结的模型 Profile、Tool Policy、预算和审计启用原生 `ask_oracle`，消费结构化 Task Outcome；
 仅在产品明确选择 ACP Agent 时使用上游 `INSTALL_ACP_PROVIDERS` 构建参数，默认 Runtime 不安装或暴露未治理 Provider。
 
+### FR-78 Agent 会话裸链接识别与安全跳转 — DONE
+
+依赖：`FR-77`。
+
+目标：在 Agent 工作台共享的消息 Markdown 渲染层启用 GFM 裸链接识别，使已发送的用户输入、Agent 回复与可见
+过程文本中的 `https://…` 和 `www.…` 可以直接点击跳转。所有外部链接必须以安全的新标签页打开，并保留
+`noopener`/`noreferrer` 隔离；代码块、图片渲染和流式 delta 的纯文本显示保持现有语义，避免在高频 token
+期间反复解析 Markdown。不得修改 OpenHands、Conversation/Event、Runtime 或 FlowRun 契约。
+
+验收：Web ESLint/typecheck/production build、定向浏览器验证用户输入和回复中的裸链接可点击、链接安全属性、
+流式过程不触发 Markdown 重解析，以及 `git diff --check`、任务状态唯一性通过。完成后单独提交并部署 Web。
+
+完成：共享消息渲染使用 `remark-gfm` 自动识别 `https://…` 与 `www.…`，用户输入、回复和可见过程文本
+共用该路径；外部 HTTP(S)/邮件链接统一带 `target="_blank"` 与 `noopener noreferrer`。流式 delta 仍按纯文本
+渲染，只有正式消息回填才解析 Markdown。补充了用户输入与 Agent 回复裸链接的浏览器回归，Web 已无缓存重建并
+替换部署，未重启 API、Worker 或 Agent Runtime。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1100,6 +1117,7 @@ dispatch 和远程标题生成修复，删除可由 OpenHands 生命周期接管
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-78 | Web ESLint/typecheck/production build；源码 Vite 与部署后 Web 的定向 Playwright（用户输入与 Agent 回复中的 `https://…`/`www.…` 裸链接、href、`_blank`、`noopener noreferrer`）；`git diff --check`、任务状态唯一性；Web 无缓存镜像构建、强制替换和 HTTP 200 | PASS：已发送输入、Agent 回复及可见过程文本中的裸链接通过 GFM 自动识别并安全打开新标签页；流式 delta 保持纯文本，避免逐 token Markdown 重解析。部署仅替换 Web 服务，API、Worker 和 Agent Runtime 未重启。 |
 | 2026-08-29 | FR-77 | 固定 OpenHands 1.44.0 Oracle/Profile 正式契约取证；原生 `ask_oracle`、结构化 Task Outcome、可选 ACP 构建与默认无 Provider 回归；最终合并 pytest 259 passed；受影响 Ruff、全量 Pyright 0 errors；Runtime 镜像 build/provenance/contract check；真实 confirmation、Condenser、Task、Oracle 与四会话原 ID reload smoke；部署后 migration、服务健康、Tool Catalog、Agent Runtime generation 26 与历史会话恢复复验；Alembic head、任务状态唯一性及 `git diff --check` | PASS：Oracle 仅由显式 Tool Policy 启用，并冻结 Runtime 级 Provider/Model 绑定；正式 Profile API 持久化到受治理的 `~/.openhands/profiles` 子目录，凭据保持 read-at-use，同名异模型冲突 fail closed，用量归入独立 `oracle:oracle` bucket。Task Observation 保留安全的结构化 Outcome。ACP Provider 默认不安装，仅显式 allowlist 安装固定版本；历史 Tool Catalog digest `b053075e…` 保持不变。部署后 API、Postgres、Runtime Provider、Worker 与 Web 正常，Agent Runtime 从 generation 25 安全滚动至 26，旧 generation 删除，历史 Conversation/Event 按原 ID 可读。 |
 | 2026-08-29 | FR-76 | 固定提交 `9a24f6c8866f353042a57df0514ccc900e3a0691` 的 Profile migration/pre-flight、Provider Connection read-at-use、Secret serializer probe、subscription condenser 与标题源码取证；Runtime 镜像 contract check 行为探针；增强真实 smoke；Runtime/Agent Workspace/架构定向 pytest 142 passed；架构/源码供应 pytest 25 passed；受影响 Ruff、全量 Pyright 0 errors；任务状态唯一性与 `git diff --check` | PASS：删除镜像门禁对 Agent Profile 字段全集和 condenser 默认值表的脆弱镜像，改为实际验证 v1→v2 Profile 迁移、Provider 凭据轮换后重读、嵌套 Secret serializer 识别和 subscription condenser dispatch，并冻结正式预检及 Provider Connection HTTP 方法。FlowWeave 继续保留不可变 Snapshot/供应商引用、权限、独立 condenser 用量和调用边界 Secret Reference。远程标题 Profile 解析、调用上下文与 metadata cache 修复均晚于冻结提交，故保留 `autotitle=false`、独立标题任务、失败投影和手动标题 CAS，并以负向架构门禁防止误删。confirmation、Condenser、Task 与第二容器原 ID reload 继续通过。 |
 | 2026-08-29 | FR-75 | 固定上游提交 `e38e02b38` 与 1.44.0 PubSub/WebSocket 源码取证；Runtime 镜像 contract check 行为探针；增强真实 smoke；Runtime/Agent Workspace/架构定向 pytest 141 passed；架构/源码供应 pytest 24 passed；受影响 Ruff、全量 Pyright 0 errors；任务状态唯一性与 `git diff --check` | PASS：OpenHands 仅向显式 opt-in 的 WebSocket 订阅者投递 `StreamingDeltaEvent`，普通内部订阅者不接收；FlowWeave 保留授权 relay 与隐藏推理过滤，不再承担或声明重复广播隔离。删除镜像门禁对进程级 Tool registry/module qualname 精确映射的耦合，改为实际清空 `FinishTool` 注册项后验证带 `response_schema` 的内置 Tool 仍由正式 built-in resolver 解析。平台未发现自建 Tool spec 展平旁路，故保留 Tool Policy、安全投影和正式事件身份关联。真实 confirmation、Condenser、Task 与第二容器原 ID reload 继续通过。 |

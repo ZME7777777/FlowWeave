@@ -516,8 +516,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
           { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'file-result', timestamp: '2026-08-26T10:00:04Z' } },
           { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'state-empty', content: '工作区已就绪。', timestamp: '2026-08-26T10:02:19Z' } },
-          { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答', timestamp: '2026-08-26T10:03:00Z' } },
-          { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。', timestamp: '2026-08-26T10:03:02Z' } },
+          { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答 https://input.example.test/brief', timestamp: '2026-08-26T10:03:00Z' } },
+          { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。更多信息见 www.output.example.test/result', timestamp: '2026-08-26T10:03:02Z' } },
           { id: 'finish-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'direct-reply', content: '整理任务', timestamp: '2026-08-26T10:03:10Z' } },
           { id: 'tracker-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'finish-user', action_id: 'tracker-action', tool_call_id: 'tracker-call', tool_name: 'task_tracker', event_name: 'TaskTrackerAction', content: '我先把执行步骤整理成任务列表。', thought: '我先把执行步骤整理成任务列表。', summary: '整理并更新执行步骤', details: { command: 'plan', task_list: [{ title: '检查构建', status: 'in_progress' }] }, timestamp: '2026-08-26T10:03:11Z' } },
           { id: 'tracker-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'tracker-action', action_id: 'tracker-action', tool_call_id: 'tracker-call', tool_name: 'task_tracker', event_name: 'TaskTrackerObservation', details: { command: 'plan' }, timestamp: '2026-08-26T10:03:12Z' } },
@@ -573,7 +573,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(bootstrapRequests).toBe(0);
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent$/);
-  await expect(page.getByText('需要我帮你完成什么？', { exact: true })).toBeVisible();
+  await expect(page.getByText('会话已就绪', { exact: true })).toBeVisible();
   expect(bootstrapRequests).toBe(0);
   await expect(page.getByRole('button', { name: '检查工作目录' })).toHaveCount(0);
   await page.getByLabel('发送 Agent 消息').fill('检查工作目录');
@@ -776,6 +776,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '跳转到最新回复' }).click();
   await expect(firstMessageTick).not.toHaveAttribute('aria-current', 'location');
   const directTurn = page.locator('.conversation-turn').filter({ hasText: '直接回复完成。' });
+  const inputLink = directTurn.getByRole('link', { name: 'https://input.example.test/brief' });
+  await expect(inputLink).toHaveAttribute('href', 'https://input.example.test/brief');
+  await expect(inputLink).toHaveAttribute('target', '_blank');
+  await expect(inputLink).toHaveAttribute('rel', 'noopener noreferrer');
+  const outputLink = directTurn.getByRole('link', { name: 'www.output.example.test/result' });
+  await expect(outputLink).toHaveAttribute('href', 'http://www.output.example.test/result');
+  await expect(outputLink).toHaveAttribute('target', '_blank');
+  await expect(outputLink).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
   await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);
   const finishTurn = page.locator('.conversation-turn').filter({ hasText: '任务跟踪已完成。' });

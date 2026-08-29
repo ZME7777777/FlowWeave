@@ -10,6 +10,9 @@
 .conversation-message{font-size:14px;line-height:1.78;overflow-wrap:anywhere}
 .conversation-message p{margin:0 0 10px}
 .conversation-message p:last-child{margin-bottom:0}
+.conversation-surface :is(.conversation-message,.conversation-activity-row) a{color:var(--green);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px}
+.conversation-surface :is(.conversation-message,.conversation-activity-row) a:hover{color:#0f4e39}
+.conversation-surface :is(.conversation-message,.conversation-activity-row) a:focus-visible{outline:2px solid #8eb9a0;outline-offset:2px;border-radius:2px}
 .conversation-message.user{position:relative;width:fit-content;max-width:min(78%,600px);margin:0 0 20px auto;border:1px solid #e6e3df;border-radius:18px 18px 5px 18px;background:#f7f6f4;padding:10px 14px;color:#232824;overflow:visible}
 .conversation-message.assistant{max-width:100%;color:#222722}
 .conversation-message.assistant pre{max-width:100%;overflow:auto;border:1px solid #e5e8e5;border-radius:10px;background:#f7f8f7;padding:11px;font:11px/1.55 'DM Mono',ui-monospace,monospace}

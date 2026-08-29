@@ -857,9 +857,9 @@ function WorkspaceDrawer({
   </aside>{pendingTerminalClose && <div className="agent-terminal-close-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !closingTerminalId) setPendingTerminalClose(undefined); }}><section role="dialog" aria-modal="true" aria-labelledby="agent-terminal-close-title" className="agent-terminal-close-dialog"><header><span className="eyebrow">TERMINAL</span><h2 id="agent-terminal-close-title">关闭此终端？</h2></header><p>关闭后会停止该终端中正在执行的命令，并清除这一个终端会话；其他终端和当前会话不会受影响。</p><footer><button type="button" className="secondary" disabled={Boolean(closingTerminalId)} onClick={() => setPendingTerminalClose(undefined)}>取消</button><button type="button" className="danger" autoFocus disabled={Boolean(closingTerminalId)} onClick={() => { const tab = pendingTerminalClose; setPendingTerminalClose(undefined); void closeTab(tab); }}>{closingTerminalId ? '正在关闭…' : '关闭终端'}</button></footer></section></div>}</>;
 }
 
-interface Props { onNavigate: (path: string, replace?: boolean) => void; onOpenModels: () => void; }
+interface Props { onNavigate: (path: string, replace?: boolean) => void; }
 
-export function AgentWorkbenchPage({ onNavigate, onOpenModels }: Props) {
+export function AgentWorkbenchPage({ onNavigate }: Props) {
   const queryClient = useQueryClient();
   const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery());
   const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? '');
