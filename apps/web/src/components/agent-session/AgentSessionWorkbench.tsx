@@ -6,6 +6,7 @@ import { Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, File
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, randomId } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
+import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface } from '../ConversationSurface';
 import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, AgentWorkspaceMcpReadiness, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
 import '../../pages/agent-workbench.css';
@@ -50,13 +51,17 @@ interface WorkspaceConversationGroupProps {
   onCreateConversation?: () => void;
 }
 
-const BOOTSTRAP_RECOVERY_STORAGE_KEY = 'flowweave.agent.bootstrap-recovery.v1';
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 
 const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
+const AgentSessionHostContext = createContext<AgentSessionHost>(agentWorkspaceSessionHost);
 
 function useAgentSessionGateway(): AgentSessionGateway {
   return useContext(AgentSessionGatewayContext);
+}
+
+function useAgentSessionHost(): AgentSessionHost {
+  return useContext(AgentSessionHostContext);
 }
 
 function WorkspaceConversationGroup({ groupId, label, children, canCreateConversation = false, onCreateConversation }: WorkspaceConversationGroupProps) {
@@ -74,9 +79,9 @@ function WorkspaceConversationGroup({ groupId, label, children, canCreateConvers
   </section>;
 }
 
-function readBootstrapRecovery(): BootstrapRecovery | undefined {
+function readBootstrapRecovery(storageKey: string): BootstrapRecovery | undefined {
   try {
-    const stored = window.sessionStorage.getItem(BOOTSTRAP_RECOVERY_STORAGE_KEY);
+    const stored = window.sessionStorage.getItem(storageKey);
     if (!stored) return undefined;
     const value = JSON.parse(stored) as Partial<BootstrapRecovery>;
     if (!value.draft?.id || !value.message?.scope || value.message.scope !== value.draft.id
@@ -88,10 +93,10 @@ function readBootstrapRecovery(): BootstrapRecovery | undefined {
   }
 }
 
-function writeBootstrapRecovery(recovery: BootstrapRecovery | undefined) {
+function writeBootstrapRecovery(storageKey: string, recovery: BootstrapRecovery | undefined) {
   try {
-    if (recovery) window.sessionStorage.setItem(BOOTSTRAP_RECOVERY_STORAGE_KEY, JSON.stringify(recovery));
-    else window.sessionStorage.removeItem(BOOTSTRAP_RECOVERY_STORAGE_KEY);
+    if (recovery) window.sessionStorage.setItem(storageKey, JSON.stringify(recovery));
+    else window.sessionStorage.removeItem(storageKey);
   } catch {
     // Browser storage is only a recovery aid. The server-side command remains
     // the source of truth and retries still use the stable draft UUID.
@@ -345,11 +350,6 @@ function configuredModelName(provider: ModelProvider | undefined, runtimeModel: 
 
 function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
   return event.nativeEvent.isComposing || event.keyCode === 229;
-}
-
-function bindingIdFromLocation(): string | undefined {
-  const match = window.location.pathname.match(/^\/agent\/conversations\/([^/]+)$/);
-  return match ? decodeURIComponent(match[1]) : undefined;
 }
 
 function conversationName(conversation: AgentConversation) {
@@ -978,22 +978,30 @@ function WorkspaceDrawer({
 export interface AgentSessionWorkbenchProps {
   onNavigate: (path: string, replace?: boolean) => void;
   gateway?: AgentSessionGateway;
+  host?: AgentSessionHost;
 }
 
 /**
  * The sole complete Agent-session surface. Hosts provide navigation and an
  * existing transport gateway; conversation UI and state live here.
  */
-export function AgentSessionWorkbench({ gateway = agentWorkspaceSessionGateway, ...props }: AgentSessionWorkbenchProps) {
+export function AgentSessionWorkbench({
+  gateway = agentWorkspaceSessionGateway,
+  host = agentWorkspaceSessionHost,
+  ...props
+}: AgentSessionWorkbenchProps) {
   return <AgentSessionGatewayContext.Provider value={gateway}>
-    <AgentSessionWorkbenchContent {...props}/>
+    <AgentSessionHostContext.Provider value={host}>
+      <AgentSessionWorkbenchContent {...props}/>
+    </AgentSessionHostContext.Provider>
   </AgentSessionGatewayContext.Provider>;
 }
 
-function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbenchProps, 'gateway'>) {
+function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, subscribe } = useAgentSessionGateway();
+  const host = useAgentSessionHost();
   const queryClient = useQueryClient();
-  const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery());
+  const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery(host.bootstrapRecoveryStorageKey));
   const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? '');
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
@@ -1032,7 +1040,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
-  const selectedBindingId = bindingIdFromLocation();
+  const selectedBindingId = host.bindingIdFromPathname(window.location.pathname);
   const workspaceQuery = useQuery({ queryKey: ['agent-workspace-default'], queryFn: api.defaultAgentWorkspace, retry: false });
   const workspace = workspaceQuery.data;
   const runtimeQuery = useQuery({ queryKey: ['agent-workspace-runtime', workspace?.id], queryFn: () => api.agentWorkspaceRuntime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
@@ -1099,8 +1107,8 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   }, []);
   const clearBootstrapRecovery = useCallback(() => {
     setBootstrapRecovery(undefined);
-    writeBootstrapRecovery(undefined);
-  }, []);
+    writeBootstrapRecovery(host.bootstrapRecoveryStorageKey, undefined);
+  }, [host.bootstrapRecoveryStorageKey]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
@@ -1240,9 +1248,9 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   }, [appendLiveEvent, appendLiveText, clearLiveText, refresh]);
 
   useEffect(() => {
-    if (!conversationDraft && !selectedBindingId && conversations.length) onNavigate(`/agent/conversations/${encodeURIComponent(conversations[0].id)}`, true);
-    if (selectedBindingId && conversations.length && !selected && pendingCreatedId !== selectedBindingId && !conversationsQuery.isFetching) onNavigate('/agent', true);
-  }, [conversationDraft, conversations, conversationsQuery.isFetching, onNavigate, pendingCreatedId, selected, selectedBindingId]);
+    if (!conversationDraft && !selectedBindingId && conversations.length) onNavigate(host.conversationPath(conversations[0].id), true);
+    if (selectedBindingId && conversations.length && !selected && pendingCreatedId !== selectedBindingId && !conversationsQuery.isFetching) onNavigate(host.rootPath, true);
+  }, [conversationDraft, conversations, conversationsQuery.isFetching, host, onNavigate, pendingCreatedId, selected, selectedBindingId]);
   useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribe(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, subscribe, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useEffect(() => {
@@ -1324,7 +1332,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     setOperationError(undefined);
     queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [conversation, ...(current ?? []).filter(item => item.id !== conversation.id)]);
     void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
-    onNavigate(`/agent/conversations/${encodeURIComponent(conversation.id)}`);
+    onNavigate(host.conversationPath(conversation.id));
   }, onError: (error, message) => {
     if (isBootstrapAmbiguous(error)) {
       // React Query can retain a mutation observer from the render that
@@ -1345,7 +1353,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
       };
       setConversationDraft(current => current ?? draftForRecovery);
       setBootstrapRecovery(recovery);
-      writeBootstrapRecovery(recovery);
+      writeBootstrapRecovery(host.bootstrapRecoveryStorageKey, recovery);
       if (recovery.attempts < MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS) {
         setOperationError(undefined);
         return;
@@ -1383,7 +1391,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     setEditing(false);
     refresh();
   }, onError: error => reportOperationError(selected?.id, error) });
-  const remove = useMutation({ mutationFn: () => api.deleteAgentConversation(workspace!.id, selected!.id), onSuccess: () => { setDrawerOpen(false); onNavigate('/agent', true); refresh(); }, onError: error => reportOperationError(selected?.id, error) });
+  const remove = useMutation({ mutationFn: () => api.deleteAgentConversation(workspace!.id, selected!.id), onSuccess: () => { setDrawerOpen(false); onNavigate(host.rootPath, true); refresh(); }, onError: error => reportOperationError(selected?.id, error) });
   const persistModel = useMutation({
     mutationFn: ({ providerId, modelName, effort }: { providerId: string; modelName: string; effort: string | null }) => api.switchAgentConversationModel(workspace!.id, selected!.id, providerId, modelName, effort),
     onSuccess: value => {
@@ -1459,7 +1467,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
       queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
       setPendingMigratedSend({ ...message, bindingId: value.id });
       void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
-      onNavigate(`/agent/conversations/${encodeURIComponent(value.id)}`);
+      onNavigate(host.conversationPath(value.id));
     },
     onError: (error, message) => {
       if (activeComposerScope.current === message.scope) { setDraft(message.content); setAttachments(message.items); }
@@ -1476,7 +1484,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     setPendingCreatedId(value.id);
     queryClient.setQueryData<AgentConversation[]>(['agent-conversations', workspace.id], current => [value, ...(current ?? []).filter(item => item.id !== value.id)]);
     void queryClient.invalidateQueries({ queryKey: ['agent-conversations', workspace.id] });
-    onNavigate(`/agent/conversations/${encodeURIComponent(value.id)}`);
+    onNavigate(host.conversationPath(value.id));
   }, onError: error => reportOperationError(selected?.id, error) });
   const condense = useMutation({
     mutationFn: async () => {
@@ -1593,8 +1601,8 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
     setOptimisticBootstrapTurn(undefined);
     setHiddenEventIds(new Set());
     setTurnState('idle');
-    onNavigate('/agent');
-  }, [clearBootstrapRecovery, clearLiveText, onNavigate]);
+    onNavigate(host.rootPath);
+  }, [clearBootstrapRecovery, clearLiveText, host.rootPath, onNavigate]);
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
     if ((!content && !attachments.length) || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
@@ -1743,7 +1751,7 @@ function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbench
   );
   const selectConversation = (bindingId: string) => {
     setConversationDraft(undefined);
-    onNavigate(`/agent/conversations/${encodeURIComponent(bindingId)}`);
+    onNavigate(host.conversationPath(bindingId));
   };
 
   return <main className="agent-workbench-page">

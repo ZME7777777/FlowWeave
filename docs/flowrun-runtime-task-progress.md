@@ -1283,6 +1283,21 @@ OpenHands identity、FlowRun、节点或 Runtime 行为。此切片不接入节�
 提示词；旧 FlowRun 会话页面与重复服务被列为最终删除对象。后续实现依次收敛共享 binding/host protocol、
 FlowRun adapter、完整 gateway 和共享页面装配，未在本切片修改业务代码。
 
+### FR-91 Agent 会话共享前端宿主路由合同 — DONE
+
+依赖：`FR-90`。
+
+目标：将 `AgentSessionWorkbench` 的绑定 URL 解析、会话 URL 生成、根路径回退与首发恢复存储键从组件
+硬编码的 `/agent` 中抽为可注入的宿主合同；一级 Agent Workspace 使用默认合同且产品行为不变。该合同只
+描述页面路由与浏览器恢复边界，不能承载会话状态或传输逻辑；本切片不新增 FlowRun 页面、路由或节点代码。
+
+验收：受影响 Web ESLint/typecheck/production build、既有 Agent Workspace 首发/URL 恢复定向 Playwright、
+宿主合同依赖扫描与 `git diff --check`。完成后独立提交。
+
+完成：新增 `AgentSessionHost`，共享 Workbench 从宿主读取根路径、会话路径、URL binding 解析和首发恢复
+存储键；所有页面导航和恢复操作不再硬编码 `/agent`。默认 Agent Workspace host 保持原 URL 与
+`sessionStorage` key，工作台状态和传输网关职责不变。本切片未新增 FlowRun 页面、路由或节点代码。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1299,6 +1314,7 @@ FlowRun adapter、完整 gateway 和共享页面装配，未在本切片修改�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-91 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享组件路由依赖扫描与 `git diff --check` | PASS：共享 Workbench 的绑定 URL、根回退和首发恢复均由注入 host 决定；默认 Agent Workspace 仍使用原 `/agent` 路由和恢复键，浏览器回归 2 passed。无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-90 | 当前 Agent Workspace 共享页面/facade/gateway、旧 FlowRun 页面/API/service 与固定 FlowRun Runtime 设计交叉审计；设计文档引用、任务状态唯一性与 `git diff --check` | PASS：设计明确了唯一会话页面和内核、FlowRun 仅为宿主、节点 N 对 N 会话和工作目录隔离、首发提示词与单 Run 单 Runtime；旧平行聊天页和服务不属于最终状态。无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-89 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享传输依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 仍通过默认 Agent Workspace 网关运行完整唯一工作台；共享页面的 API、文件 URL、终端 URL 和事件订阅均可由宿主注入，未复制会话状态或渲染逻辑。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-88 | Agent Workspace 定向 pytest（会话创建、标题、事件流、能力、bootstrap、文件/终端共 26 passed）；受影响 Python `py_compile`、Ruff；全量 Pyright（0 errors）；共享/宿主导入边界扫描；Alembic head 与 `git diff --check` | PASS：会话与标题业务只有 `agent_sessions` 一份实现；旧 Agent Workspace 导入路径为同模块别名，历史 monkeypatch 与公开路由均继续指向共享实现。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
