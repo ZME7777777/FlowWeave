@@ -1248,6 +1248,24 @@ OpenHands identity、FlowRun、节点或 Runtime 行为。此切片不接入节�
 均直接使用共享实现。保留现有路由、API、数据库模型、OpenHands 调用和测试 monkeypatch 语义，未复制任何
 会话业务代码；`agent_sessions.public` 是后续新宿主的唯一入口。
 
+### FR-89 Agent 会话共享前端传输网关 — DONE
+
+依赖：`FR-88`。
+
+目标：将共享 `AgentSessionWorkbench` 对 Agent Workspace 的 API、文件/终端 URL 和事件订阅依赖收敛为一个
+可注入的宿主网关；`/agent` 继续注入现有 Agent Workspace 网关并保持全部产品行为不变。共享组件必须仍独占
+会话草稿、首发 bootstrap、实时流、模型/能力、附件、工作目录、文件与终端渲染及交互；网关仅承接既有传输，
+不得创建第二个页面、复制状态逻辑、改变公开 API、数据库、OpenHands identity、FlowRun、节点或 Runtime 行为。
+本切片不实现 FlowRun/节点网关。
+
+验收：受影响 Web ESLint/typecheck/production build；现有 Agent 工作台首发/URL 恢复和 Runtime 恢复抽屉
+定向 Playwright；`git diff --check`、Alembic head 与任务状态唯一性检查。完成后独立提交。
+
+完成：`AgentSessionWorkbench` 通过 `AgentSessionGateway` 注入完整宿主传输；Agent Workspace 的默认网关
+仅封装现有 API、文件/终端 URL 与事件订阅。会话状态、页面渲染、Composer、事件流、能力、附件、工作目录、
+文件和终端仍只有共享组件一份实现，`/agent` 不传参即保留原有行为。共享组件不再直接引用 Agent Workspace
+传输函数；本切片未新增 FlowRun/节点网关，也未修改其代码。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1264,6 +1282,7 @@ OpenHands identity、FlowRun、节点或 Runtime 行为。此切片不接入节�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-89 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享传输依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 仍通过默认 Agent Workspace 网关运行完整唯一工作台；共享页面的 API、文件 URL、终端 URL 和事件订阅均可由宿主注入，未复制会话状态或渲染逻辑。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-88 | Agent Workspace 定向 pytest（会话创建、标题、事件流、能力、bootstrap、文件/终端共 26 passed）；受影响 Python `py_compile`、Ruff；全量 Pyright（0 errors）；共享/宿主导入边界扫描；Alembic head 与 `git diff --check` | PASS：会话与标题业务只有 `agent_sessions` 一份实现；旧 Agent Workspace 导入路径为同模块别名，历史 monkeypatch 与公开路由均继续指向共享实现。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-87 | Web ESLint/typecheck/production build；定向 Playwright：顶层 Agent 会话首发与 URL 恢复、Runtime 恢复时工作区抽屉；共享模块依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 已只渲染唯一 `AgentSessionWorkbench`，首发 bootstrap/稳定 URL/刷新恢复和 Runtime 恢复抽屉均通过；共享模块只依赖 Agent API、共享渲染器、类型及样式，未引用 FlowRun、Node 或旧节点会话。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-86 | 固定 OpenHands 1.44.0 Finish Tool、事件父链、原生 fork/HEAD 与 send_message 源码取证；OpenHands/Agent Workspace 合并 pytest（124 passed）；Ruff；全量 Pyright（0 errors）；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright（1 passed）；Alembic head、正式事件关联扫描与 `git diff --check` | PASS：最终回复分叉统一落在完整执行边界，创建后强制验证可写；即时 Observation 落盘竞态可正常 fork；既有异常分叉保持 binding/URL 无损幂等恢复并只发送一次，正常分叉不误修复。`FinishObservation` 保留正式关联身份但不重复回复正文。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |

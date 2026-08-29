@@ -3,8 +3,9 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ApiError, agentWorkspaceFileUrl, agentWorkspaceTerminalUrl, api, randomId, subscribeToAgentWorkspaceStream } from '../../api/client';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { ApiError, randomId } from '../../api/client';
+import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { ConversationSurface } from '../ConversationSurface';
 import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspaceCapability, AgentWorkspaceMcpReadiness, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
 import '../../pages/agent-workbench.css';
@@ -51,6 +52,12 @@ interface WorkspaceConversationGroupProps {
 
 const BOOTSTRAP_RECOVERY_STORAGE_KEY = 'flowweave.agent.bootstrap-recovery.v1';
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
+
+const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
+
+function useAgentSessionGateway(): AgentSessionGateway {
+  return useContext(AgentSessionGatewayContext);
+}
 
 function WorkspaceConversationGroup({ groupId, label, children, canCreateConversation = false, onCreateConversation }: WorkspaceConversationGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -176,6 +183,7 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentWorkspaceCapability[]; onClose: () => void;
   onCreateEnhancedConversation?: () => void;
 }) {
+  const { api } = useAgentSessionGateway();
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
@@ -221,7 +229,7 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
       return next;
     });
     return results;
-  }, [workspaceId]);
+  }, [api, workspaceId]);
   useEffect(() => {
     if (selectedMcpIds.length) void checkMcpReadiness(selectedMcpIds);
   }, [checkMcpReadiness, selectedMcpIds]);
@@ -439,6 +447,7 @@ function eventBranchIds(events: OpenHandsConversationEvent[], rootEventId: strin
 }
 
 function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDirectoryId, workingDirectory }: { workspaceId: string; terminalInstanceId: string; bindingId?: string; workDirectoryId?: string; workingDirectory: string }) {
+  const { terminalUrl } = useAgentSessionGateway();
   const host = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<'connecting' | 'connected' | 'unavailable'>('connecting');
   const [detail, setDetail] = useState('正在连接工作区终端…');
@@ -559,7 +568,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
       if (disposed) return;
       setState('connecting');
       setDetail(attempts ? '终端已断开，正在重新连接…' : '正在连接工作区终端…');
-      const current = new WebSocket(agentWorkspaceTerminalUrl(workspaceId, terminal.rows, terminal.cols, { terminalInstanceId, bindingId, workDirectoryId }));
+      const current = new WebSocket(terminalUrl(workspaceId, terminal.rows, terminal.cols, { terminalInstanceId, bindingId, workDirectoryId }));
       socket = current;
       current.binaryType = 'arraybuffer';
       current.onopen = () => {
@@ -592,7 +601,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     resize();
     void document.fonts?.ready.then(resize);
     return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
-  }, [bindingId, terminalInstanceId, workDirectoryId, workingDirectory, workspaceId]);
+  }, [bindingId, terminalInstanceId, terminalUrl, workDirectoryId, workingDirectory, workspaceId]);
 
   return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;
 }
@@ -675,6 +684,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   onClose: () => void;
   onCreated: (directory: AgentWorkDirectory) => void;
 }) {
+  const { api } = useAgentSessionGateway();
   const [displayName, setDisplayName] = useState('');
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -772,6 +782,7 @@ function WorkspaceDrawer({
 }: {
   open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; runtimeAvailable: boolean;
 }) {
+  const { api, fileUrl } = useAgentSessionGateway();
   const [scopeStates, setScopeStates] = useState<Record<string, WorkspaceToolScopeState>>(() => readWorkspaceToolState(workspaceId));
   const [panelWidth, setPanelWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
@@ -927,7 +938,7 @@ function WorkspaceDrawer({
   const selectedAttachment = attachments.find(item => item.path === selectedFile);
   const selectedMimeType = selectedAttachment?.mime_type ?? '';
   const selectedFileUrl = selectedFile
-    ? agentWorkspaceFileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: false })
+    ? fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: false })
     : '';
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
@@ -953,7 +964,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`}>
             <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} onSelect={path => updateScope(current => ({ ...current, selectedFile: path }))}/>
             <div className="agent-file-preview">{selectedFile ? <>
-              <header><span>{relativeWorkspacePath(selectedFile, details.root)}</span><a href={agentWorkspaceFileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
+              <header><span>{relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : isTextPreviewable(selectedFile) ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
@@ -964,13 +975,23 @@ function WorkspaceDrawer({
   </aside>{pendingTerminalClose && <div className="agent-terminal-close-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !closingTerminalId) setPendingTerminalClose(undefined); }}><section role="dialog" aria-modal="true" aria-labelledby="agent-terminal-close-title" className="agent-terminal-close-dialog"><header><span className="eyebrow">TERMINAL</span><h2 id="agent-terminal-close-title">关闭此终端？</h2></header><p>关闭后会停止该终端中正在执行的命令，并清除这一个终端会话；其他终端和当前会话不会受影响。</p><footer><button type="button" className="secondary" disabled={Boolean(closingTerminalId)} onClick={() => setPendingTerminalClose(undefined)}>取消</button><button type="button" className="danger" autoFocus disabled={Boolean(closingTerminalId)} onClick={() => { const tab = pendingTerminalClose; setPendingTerminalClose(undefined); void closeTab(tab); }}>{closingTerminalId ? '正在关闭…' : '关闭终端'}</button></footer></section></div>}</>;
 }
 
-export interface AgentSessionWorkbenchProps { onNavigate: (path: string, replace?: boolean) => void; }
+export interface AgentSessionWorkbenchProps {
+  onNavigate: (path: string, replace?: boolean) => void;
+  gateway?: AgentSessionGateway;
+}
 
 /**
- * The sole complete Agent-session surface. Hosts may only provide navigation;
- * the conversation UI, state and Runtime-facing interactions live here.
+ * The sole complete Agent-session surface. Hosts provide navigation and an
+ * existing transport gateway; conversation UI and state live here.
  */
-export function AgentSessionWorkbench({ onNavigate }: AgentSessionWorkbenchProps) {
+export function AgentSessionWorkbench({ gateway = agentWorkspaceSessionGateway, ...props }: AgentSessionWorkbenchProps) {
+  return <AgentSessionGatewayContext.Provider value={gateway}>
+    <AgentSessionWorkbenchContent {...props}/>
+  </AgentSessionGatewayContext.Provider>;
+}
+
+function AgentSessionWorkbenchContent({ onNavigate }: Omit<AgentSessionWorkbenchProps, 'gateway'>) {
+  const { api, subscribe } = useAgentSessionGateway();
   const queryClient = useQueryClient();
   const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery());
   const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? '');
@@ -1222,7 +1243,7 @@ export function AgentSessionWorkbench({ onNavigate }: AgentSessionWorkbenchProps
     if (!conversationDraft && !selectedBindingId && conversations.length) onNavigate(`/agent/conversations/${encodeURIComponent(conversations[0].id)}`, true);
     if (selectedBindingId && conversations.length && !selected && pendingCreatedId !== selectedBindingId && !conversationsQuery.isFetching) onNavigate('/agent', true);
   }, [conversationDraft, conversations, conversationsQuery.isFetching, onNavigate, pendingCreatedId, selected, selectedBindingId]);
-  useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribeToAgentWorkspaceStream(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, workspace]);
+  useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribe(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, subscribe, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useEffect(() => {
     if (bootstrapTransitionScope.current === composerScope) {
