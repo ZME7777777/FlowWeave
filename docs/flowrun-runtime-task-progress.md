@@ -1266,6 +1266,23 @@ OpenHands identity、FlowRun、节点或 Runtime 行为。此切片不接入节�
 文件和终端仍只有共享组件一份实现，`/agent` 不传参即保留原有行为。共享组件不再直接引用 Agent Workspace
 传输函数；本切片未新增 FlowRun/节点网关，也未修改其代码。
 
+### FR-90 Agent 会话 FlowRun 节点宿主整合设计 — DONE
+
+依赖：`FR-89`。
+
+目标：以现有代码和固定 Runtime 设计为证据，冻结 FlowRun/节点接入唯一 Agent 会话页面和内核的宿主合同、
+数据迁移、API/路由、工作目录隔离、首发提示词、删除边界、实施切片及最终验收；明确旧 FlowRun 聊天页和
+服务必须被替换而不是继续维护。此切片只建立后续实现的可审计边界，不修改业务代码、数据库或部署。
+
+验收：设计覆盖独立 Agent Workspace 不变、同 Run 单 Runtime、节点 N 对 N 会话、节点隔离工作目录、首发
+提示词、稳定 URL、无重复内核与真实部署验收；文档引用、任务状态唯一性和 `git diff --check` 通过。完成后
+独立提交。
+
+完成：新增 `docs/agent-session-flowrun-integration-design.md`，冻结唯一共享 Workbench/网关/内核与两个
+宿主 adapter 的关系。FlowRun 节点只提供 Run Runtime、Attempt 门禁、服务端推导的节点工作目录和可选首发
+提示词；旧 FlowRun 会话页面与重复服务被列为最终删除对象。后续实现依次收敛共享 binding/host protocol、
+FlowRun adapter、完整 gateway 和共享页面装配，未在本切片修改业务代码。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1282,6 +1299,7 @@ OpenHands identity、FlowRun、节点或 Runtime 行为。此切片不接入节�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-90 | 当前 Agent Workspace 共享页面/facade/gateway、旧 FlowRun 页面/API/service 与固定 FlowRun Runtime 设计交叉审计；设计文档引用、任务状态唯一性与 `git diff --check` | PASS：设计明确了唯一会话页面和内核、FlowRun 仅为宿主、节点 N 对 N 会话和工作目录隔离、首发提示词与单 Run 单 Runtime；旧平行聊天页和服务不属于最终状态。无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-89 | Web ESLint、typecheck、production build；定向 Playwright：顶层 Agent 会话首发/URL 恢复、Runtime 恢复时工作区抽屉；共享传输依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 仍通过默认 Agent Workspace 网关运行完整唯一工作台；共享页面的 API、文件 URL、终端 URL 和事件订阅均可由宿主注入，未复制会话状态或渲染逻辑。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-88 | Agent Workspace 定向 pytest（会话创建、标题、事件流、能力、bootstrap、文件/终端共 26 passed）；受影响 Python `py_compile`、Ruff；全量 Pyright（0 errors）；共享/宿主导入边界扫描；Alembic head 与 `git diff --check` | PASS：会话与标题业务只有 `agent_sessions` 一份实现；旧 Agent Workspace 导入路径为同模块别名，历史 monkeypatch 与公开路由均继续指向共享实现。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-87 | Web ESLint/typecheck/production build；定向 Playwright：顶层 Agent 会话首发与 URL 恢复、Runtime 恢复时工作区抽屉；共享模块依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 已只渲染唯一 `AgentSessionWorkbench`，首发 bootstrap/稳定 URL/刷新恢复和 Runtime 恢复抽屉均通过；共享模块只依赖 Agent API、共享渲染器、类型及样式，未引用 FlowRun、Node 或旧节点会话。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
