@@ -440,6 +440,64 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(element);
+    let removeForcedSelectionListeners: (() => void) | undefined;
+    const terminalCellForMouseEvent = (event: MouseEvent) => {
+      const screen = element.querySelector<HTMLElement>('.xterm-screen');
+      if (!screen) return undefined;
+      const bounds = screen.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return undefined;
+      const column = Math.max(0, Math.min(terminal.cols - 1, Math.floor((event.clientX - bounds.left) * terminal.cols / bounds.width)));
+      const viewportRow = Math.max(0, Math.min(terminal.rows - 1, Math.floor((event.clientY - bounds.top) * terminal.rows / bounds.height)));
+      return { column, row: terminal.buffer.active.viewportY + viewportRow };
+    };
+    const forceTextSelection = (event: MouseEvent) => {
+      // tmux enables xterm mouse reporting for its native scroll/copy mode.
+      // xterm then disables its selection service and forwards mouseup to the
+      // PTY, which clears a just-dragged selection. Own a plain left-drag
+      // through xterm's public Buffer/selection APIs so the PTY never sees it.
+      if (event.button !== 0 || event.shiftKey || terminal.modes.mouseTrackingMode === 'none') return;
+      const start = terminalCellForMouseEvent(event);
+      if (!start) return;
+      // The xterm listener is attached after this capture listener. Mark this
+      // pointer sequence as handled before its mouse transport can forward a
+      // press/release into tmux and clear the completed selection.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const document = element.ownerDocument;
+      let selecting = false;
+      const updateSelection = (current: MouseEvent) => {
+        const end = terminalCellForMouseEvent(current);
+        if (!end) return;
+        const startOffset = start.row * terminal.cols + start.column;
+        const endOffset = end.row * terminal.cols + end.column;
+        const first = startOffset <= endOffset ? start : end;
+        terminal.select(first.column, first.row, Math.abs(endOffset - startOffset));
+      };
+      const removeListeners = () => {
+        document.removeEventListener('mousemove', moveSelection, true);
+        document.removeEventListener('mouseup', finishSelection, true);
+        removeForcedSelectionListeners = undefined;
+      };
+      const moveSelection = (current: MouseEvent) => {
+        current.preventDefault();
+        current.stopImmediatePropagation();
+        if (!selecting && Math.hypot(current.clientX - event.clientX, current.clientY - event.clientY) > 2) selecting = true;
+        if (selecting) updateSelection(current);
+      };
+      const finishSelection = (current: MouseEvent) => {
+        current.preventDefault();
+        current.stopImmediatePropagation();
+        if (selecting) updateSelection(current);
+        else terminal.focus();
+        removeListeners();
+      };
+      removeForcedSelectionListeners?.();
+      removeForcedSelectionListeners = removeListeners;
+      document.addEventListener('mousemove', moveSelection, true);
+      document.addEventListener('mouseup', finishSelection, true);
+    };
+    const terminalScreen = element.querySelector<HTMLElement>('.xterm-screen');
+    terminalScreen?.addEventListener('mousedown', forceTextSelection, { capture: true });
     let socket: WebSocket | null = null;
     let disposed = false;
     let reconnectTimer: number | undefined;
@@ -523,7 +581,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     observer.observe(element);
     resize();
     void document.fonts?.ready.then(resize);
-    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); input.dispose(); socket?.close(1000); terminal.dispose(); };
+    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
   }, [bindingId, terminalInstanceId, workDirectoryId, workingDirectory, workspaceId]);
 
   return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;

@@ -685,6 +685,24 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await viewport.dispatchEvent('wheel', { deltaY: -120, deltaMode: 0 });
   await expect.poll(() => terminalInputs.some(data => data.startsWith('\u001b[<64;') && data.endsWith('M'))).toBe(true);
   expect(terminalInputs.some(data => data.includes('\u001b[A') || data.includes('\u001b[B'))).toBe(false);
+  const mouseInputsBeforeSelection = terminalInputs.length;
+  const terminalScreen = page.locator('.agent-workspace-terminal .xterm-screen');
+  const screenBox = await terminalScreen.boundingBox();
+  if (!screenBox) throw new Error('Expected terminal screen');
+  await page.mouse.move(screenBox.x + 18, screenBox.y + 26);
+  await page.mouse.down();
+  await page.mouse.move(screenBox.x + 92, screenBox.y + 26, { steps: 5 });
+  await page.mouse.up();
+  expect(terminalInputs.slice(mouseInputsBeforeSelection).some(data => data.startsWith('\u001b[<'))).toBe(false);
+  const copiedTerminalSelection = await terminalScreen.evaluate(screen => {
+    const terminal = screen.closest('.xterm');
+    if (!terminal) throw new Error('Expected xterm root');
+    const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() });
+    terminal.dispatchEvent(event);
+    return { copied: event.clipboardData?.getData('text/plain'), prevented: event.defaultPrevented };
+  });
+  expect(copiedTerminalSelection.copied).toMatch(/put-\d+/);
+  expect(copiedTerminalSelection.prevented).toBe(true);
   await expect(page.locator('.agent-context-progress')).toHaveCount(0);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;

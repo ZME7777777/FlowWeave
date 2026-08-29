@@ -1117,6 +1117,22 @@ OpenHands、Runtime 或 FlowRun 契约。
 HTTP(S) URL、文件与图片；同一 URL 或路径只出现一次。链接以隔离的新标签页打开，文件与图片继续打开既有
 工作区预览。尚未发送的附件会明确标记为“待发送”，不会与已发送来源混淆；不保存平台来源副本。
 
+### FR-80 Agent 会话终端选择与复制 — DONE
+
+依赖：`FR-79`。
+
+目标：修复 Agent 会话工作区终端在持久 tmux 开启鼠标上报时，拖拽选区会在松开鼠标后被 xterm 当作
+PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 xterm 选区，随后可用系统复制快捷键复制；
+不向 PTY 发送该次选择手势。终端管理页、滚动、右键、显式 Shift 强制选择、键盘输入、tmux 和 Runtime
+协议保持不变。
+
+验收：Agent 工作台定向 Playwright 覆盖启用 xterm 鼠标上报后的普通拖拽选区、复制内容及无 PTY 鼠标
+输入；Web lint/typecheck/production build、`git diff --check`、任务状态唯一性通过；独立提交本切片。
+
+完成：持久 tmux 开启 xterm 鼠标上报时，终端捕获普通左键拖拽，以公开的 Buffer 与 selection API 建立
+选区并拦截整段拖拽事件；松开鼠标后选区仍可由浏览器 `copy` 事件复制，PTY 不再收到这次鼠标按下、移动或
+释放。终端管理页和现有滚轮/键盘语义未修改。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1133,6 +1149,7 @@ HTTP(S) URL、文件与图片；同一 URL 或路径只出现一次。链接以�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-80 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（启用 xterm 鼠标上报后的普通拖拽选区、copy 事件内容、无新增 PTY 鼠标序列）；`git diff --check`、任务状态唯一性 | PASS：会话终端普通拖拽可保留并复制 xterm 选区；tmux 鼠标上报不会再清空选区或接收该拖拽手势。 |
 | 2026-08-29 | FR-79 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（用户 URL、图片来源、类型标记、外部回复 URL 不混入来源）；`git diff --check`、任务状态唯一性 | PASS：右侧环境摘要统一展示用户提供的链接、图片和文件来源；链接可安全打开，图片/文件复用工作区预览，不引入消息或来源持久化。 |
 | 2026-08-29 | FR-78 | Web ESLint/typecheck/production build；源码 Vite 与部署后 Web 的定向 Playwright（用户输入与 Agent 回复中的 `https://…`/`www.…` 裸链接、href、`_blank`、`noopener noreferrer`）；`git diff --check`、任务状态唯一性；Web 无缓存镜像构建、强制替换和 HTTP 200 | PASS：已发送输入、Agent 回复及可见过程文本中的裸链接通过 GFM 自动识别并安全打开新标签页；流式 delta 保持纯文本，避免逐 token Markdown 重解析。部署仅替换 Web 服务，API、Worker 和 Agent Runtime 未重启。 |
 | 2026-08-29 | FR-77 | 固定 OpenHands 1.44.0 Oracle/Profile 正式契约取证；原生 `ask_oracle`、结构化 Task Outcome、可选 ACP 构建与默认无 Provider 回归；最终合并 pytest 259 passed；受影响 Ruff、全量 Pyright 0 errors；Runtime 镜像 build/provenance/contract check；真实 confirmation、Condenser、Task、Oracle 与四会话原 ID reload smoke；部署后 migration、服务健康、Tool Catalog、Agent Runtime generation 26 与历史会话恢复复验；Alembic head、任务状态唯一性及 `git diff --check` | PASS：Oracle 仅由显式 Tool Policy 启用，并冻结 Runtime 级 Provider/Model 绑定；正式 Profile API 持久化到受治理的 `~/.openhands/profiles` 子目录，凭据保持 read-at-use，同名异模型冲突 fail closed，用量归入独立 `oracle:oracle` bucket。Task Observation 保留安全的结构化 Outcome。ACP Provider 默认不安装，仅显式 allowlist 安装固定版本；历史 Tool Catalog digest `b053075e…` 保持不变。部署后 API、Postgres、Runtime Provider、Worker 与 Web 正常，Agent Runtime 从 generation 25 安全滚动至 26，旧 generation 删除，历史 Conversation/Event 按原 ID 可读。 |
