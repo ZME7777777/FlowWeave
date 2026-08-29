@@ -1133,6 +1133,23 @@ PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 
 选区并拦截整段拖拽事件；松开鼠标后选区仍可由浏览器 `copy` 事件复制，PTY 不再收到这次鼠标按下、移动或
 释放。终端管理页和现有滚轮/键盘语义未修改。
 
+### FR-81 Agent 会话当前轮末尾动态运行提示 — DONE
+
+依赖：`FR-80`。
+
+目标：Agent 工作台只要当前轮仍由 OpenHands 正式 readiness 与事件状态判定为运行中，就必须在当前轮可见内容
+末尾持续显示低干扰动态状态，避免已完成工具记录与后续模型思考之间的空白被误认为页面卡住。没有未完成工具时
+显示“正在思考”；正式工具 Action 尚无按 `action_id` / `tool_call_id` 关联的 Observation 时显示对应的后台执行
+状态；收到安全可见流式正文时显示“正在生成回复”。提示随当前轮正式 assistant、FinishAction 或 ERROR 终态
+立即消失，不持久化或伪造思考内容，不修改 OpenHands、Conversation/Event、Runtime 或 FlowRun 契约。
+
+验收：Web ESLint/typecheck/production build；定向 Playwright 覆盖工具完成后仍显示当前轮末尾动态“正在思考”、
+未完成后台命令与正式终态移除提示；Alembic head、任务状态唯一性与 `git diff --check`。完成后独立提交本切片。
+
+完成：当前运行轮在已有工作过程之后持续追加低干扰动态状态。尚无进度或已关联到正式 Observation 的工具全部
+完成时显示“正在思考”；存在尚无正式结果的工具 Action 时显示具体后台状态；安全可见流式正文到达后显示
+“正在生成回复”。正式 assistant、FinishAction 或 ERROR 收束当前轮后提示立即移除；未新增平台状态或事件推断。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1149,6 +1166,7 @@ PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-81 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（未完成命令、工具结果后继续思考、正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：当前轮末尾持续显示灰色动态运行提示；未完成命令显示“正在后台执行命令”，正式 Observation 到达后切换为“正在思考”，FinishAction 到达后提示消失。 |
 | 2026-08-29 | FR-80 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（启用 xterm 鼠标上报后的普通拖拽选区、copy 事件内容、无新增 PTY 鼠标序列）；`git diff --check`、任务状态唯一性 | PASS：会话终端普通拖拽可保留并复制 xterm 选区；tmux 鼠标上报不会再清空选区或接收该拖拽手势。 |
 | 2026-08-29 | FR-79 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（用户 URL、图片来源、类型标记、外部回复 URL 不混入来源）；`git diff --check`、任务状态唯一性 | PASS：右侧环境摘要统一展示用户提供的链接、图片和文件来源；链接可安全打开，图片/文件复用工作区预览，不引入消息或来源持久化。 |
 | 2026-08-29 | FR-78 | Web ESLint/typecheck/production build；源码 Vite 与部署后 Web 的定向 Playwright（用户输入与 Agent 回复中的 `https://…`/`www.…` 裸链接、href、`_blank`、`noopener noreferrer`）；`git diff --check`、任务状态唯一性；Web 无缓存镜像构建、强制替换和 HTTP 200 | PASS：已发送输入、Agent 回复及可见过程文本中的裸链接通过 GFM 自动识别并安全打开新标签页；流式 delta 保持纯文本，避免逐 token Markdown 重解析。部署仅替换 Web 服务，API、Worker 和 Agent Runtime 未重启。 |

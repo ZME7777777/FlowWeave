@@ -64,6 +64,13 @@
 .conversation-activity-row small{margin-left:7px;color:#9ba49e;font-size:10px}
 .conversation-activity-row p{margin:4px 0 0}
 .conversation-activity-row pre{max-height:180px;overflow:auto;margin:7px 0 0;border-radius:7px;background:#f2f4f2;padding:8px;font:10px/1.45 'DM Mono',ui-monospace,monospace}
+.conversation-turn-status{display:flex;align-items:center;gap:5px;min-height:28px;margin:2px 0 0;color:#a0a7a2;font-size:13px;letter-spacing:.01em}
+.conversation-turn-status-dots{display:flex;align-items:center;gap:3px;padding-top:2px}
+.conversation-turn-status-dots i{width:3px;height:3px;border-radius:50%;background:currentColor;animation:conversation-turn-status-dot 1.2s ease-in-out infinite}
+.conversation-turn-status-dots i:nth-child(2){animation-delay:.16s}
+.conversation-turn-status-dots i:nth-child(3){animation-delay:.32s}
+@keyframes conversation-turn-status-dot{0%,65%,100%{opacity:.22;transform:translateY(0)}35%{opacity:.9;transform:translateY(-1px)}}
+@media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i{animation:none;opacity:.55}}
 .conversation-tool-entry{display:grid;gap:4px}
 .conversation-tool-detail{display:block!important;margin:0;border:0}
 .conversation-tool-detail>summary{display:flex;align-items:center;gap:7px;width:fit-content;max-width:100%;cursor:pointer;list-style:none;color:#4b574f}

@@ -888,12 +888,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
+  await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
   await expect(activeProcess.getByText('正在核对上下文。')).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/runtime/workspace/project', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
   await expect(activeProcess.getByText('已运行 pwd')).toBeVisible();
+  await expect(page.locator('.conversation-turn-status')).toHaveText(/正在思考/);
   await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(1);
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail');
   await expect(liveToolDetail).toHaveJSProperty('open', false);
@@ -926,6 +928,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);
   await expect(activeProcess).toHaveJSProperty('open', false);
+  await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   const completedViewport = await page.locator('.conversation-turn').last().evaluate(turn => {
     const surface = turn.closest('.conversation-surface');
     const reply = turn.querySelector('.conversation-message.assistant');

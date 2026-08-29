@@ -425,13 +425,7 @@ function useElapsedSeconds(startedAt: number | undefined, finishedAt: number | u
   return Math.max(0, ((finishedAt ?? now) - startedAt) / 1000);
 }
 
-function activeActivityLabel(entries: ActivityEntry[], waiting: boolean, requestSubmitting: boolean): string {
-  if (requestSubmitting) return '正在提交消息';
-  const current = [...entries].reverse().find(entry => entry.item.kind !== 'thought')?.action
-    ?? [...entries].reverse().find(entry => entry.item.kind !== 'thought')?.item;
-  if (!current || current.kind === 'thought' || waiting) return '正在思考';
-  const eventName = String(current.event.payload.event_name ?? '');
-  if (current.kind === 'condensation') return '正在压缩上下文';
+function activeToolLabel(eventName: string): string {
   if (eventName.includes('Terminal')) return '正在后台执行命令';
   if (eventName.includes('FileEditor')) return '正在处理文件';
   if (eventName.includes('Browser')) return '正在执行浏览器操作';
@@ -439,6 +433,29 @@ function activeActivityLabel(entries: ActivityEntry[], waiting: boolean, request
   if (eventName.includes('Skill')) return '正在使用技能';
   if (eventName.includes('Task')) return '正在处理任务';
   return '正在执行工具';
+}
+
+function activeActivityLabel(entries: ActivityEntry[], requestSubmitting: boolean): string {
+  if (requestSubmitting) return '正在提交消息';
+  const pendingTool = [...entries].reverse().find(entry => entry.action?.kind === 'tool' && entry.results.length === 0)?.action;
+  if (pendingTool) return activeToolLabel(String(pendingTool.event.payload.event_name ?? ''));
+  const latest = entries.at(-1)?.item;
+  if (latest?.kind === 'condensation' && latest.event.event_type === 'CONDENSATION_REQUESTED') return '正在压缩上下文';
+  return '正在思考';
+}
+
+function CurrentTurnStatus({ items, liveText, requestSubmitting }: {
+  items: Item[];
+  liveText: string;
+  requestSubmitting: boolean;
+}) {
+  const label = liveText
+    ? '正在生成回复'
+    : activeActivityLabel(groupedActivities(items), requestSubmitting);
+  return <div className="conversation-turn-status" role="status" aria-label={label}>
+    <span>{label}</span>
+    <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>
+  </div>;
 }
 
 function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting, requestSubmitting }: {
@@ -456,7 +473,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
   const [open, setOpen] = useState(active);
   useEffect(() => { setOpen(active); }, [active]);
   const label = active
-    ? `${activeActivityLabel(entries, Boolean(waiting), Boolean(requestSubmitting))}${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
+    ? `${activeActivityLabel(entries, Boolean(requestSubmitting))}${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
     : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
   const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
   const hasDetails = itemCount > 0 || waiting;
@@ -669,11 +686,12 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
           <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
+          {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={processItems} liveText={liveText} requestSubmitting={requestSubmitting}/>}
           {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} waiting={!liveText} requestSubmitting={requestSubmitting}/>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} waiting={!liveText} requestSubmitting={requestSubmitting}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}
     </section>
     {showJumpToLatest && <button
       type="button"
