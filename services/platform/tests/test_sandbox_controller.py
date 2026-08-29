@@ -656,6 +656,59 @@ async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settin
     assert process.terminated is True
 
 
+@pytest.mark.asyncio
+async def test_runtime_event_stream_forwards_single_event_larger_than_default_reader_limit(
+    settings, monkeypatch
+):
+    payload = {
+        "kind": "ObservationEvent",
+        "content": "x" * (70 * 1024),
+    }
+    stdout = asyncio.StreamReader(limit=controller_module._MAX_REQUEST_BYTES)
+    stdout.feed_data(json.dumps(payload).encode() + b"\n")
+    stdout.feed_eof()
+    stderr = asyncio.StreamReader()
+    stderr.feed_eof()
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode: int | None = None
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+    captured: dict[str, object] = {}
+
+    async def create_process(*_args, **kwargs):
+        captured.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(controller_module.asyncio, "create_subprocess_exec", create_process)
+    records = [
+        json.loads(record)
+        async for record in controller_module._runtime_event_stream(
+            _settings(settings),
+            "immutable-runtime-container-id",
+            "CONVERSATION",
+            "conversation-1",
+            10.0,
+        )
+    ]
+
+    assert captured["limit"] == 2 * 1024 * 1024
+    assert records == [payload]
+
+
 def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, monkeypatch):
     verification: dict[str, object] = {}
 

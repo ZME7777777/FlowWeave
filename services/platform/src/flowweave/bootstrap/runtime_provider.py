@@ -497,6 +497,12 @@ async def _runtime_event_stream(
         str(timeout_seconds),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        # asyncio's default StreamReader limit is 64 KiB. OpenHands permits
+        # WebSocket frames up to 2 MiB, so a valid single-line NDJSON event
+        # (for example a large tool result) must not tear down the relay merely
+        # because docker exec writes it as one line. Keep the same fail-closed
+        # ceiling as the upstream WebSocket and the provider request boundary.
+        limit=_MAX_REQUEST_BYTES,
         env={"PATH": os.defpath},
     )
     assert process.stdout is not None
