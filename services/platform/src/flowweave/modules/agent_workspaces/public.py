@@ -1,5 +1,8 @@
 """Stable public facade for the independent Agent Workspace."""
 
+from flowweave.modules.agent_sessions.application.titles import (
+    process_agent_conversation_title,
+)
 from flowweave.modules.agent_workspaces.application.service import (
     agent_workspace_owner_is_active,
     ensure_default_agent_workspace,
@@ -8,9 +11,6 @@ from flowweave.modules.agent_workspaces.application.service import (
     recover_default_agent_workspace_runtime_task,
     resolve_agent_workspace_runtime_secret,
     runtime_allocation_for_agent_workspace,
-)
-from flowweave.modules.agent_workspaces.application.titles import (
-    process_agent_conversation_title,
 )
 
 __all__ = (

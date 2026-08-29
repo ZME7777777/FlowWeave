@@ -18,11 +18,8 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
-from flowweave.modules.agent_workspaces.application import (
-    conversations,
-    work_directories,
-    workspace,
-)
+from flowweave.modules.agent_sessions.public import conversations
+from flowweave.modules.agent_workspaces.application import work_directories, workspace
 from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for

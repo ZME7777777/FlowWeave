@@ -1231,6 +1231,23 @@ Alembic head 与任务状态唯一性检查。完成后独立提交；后续后�
 均未复制或改写。`/agent` 原有 URL 和 API 调用保持不变。同步修正两条已落后于当前页面的浏览器断言：
 空会话展示“会话已就绪”，Plugin 命令保留原生命名空间 `/lark-tools:summarize`。
 
+### FR-88 Agent 会话后端唯一 facade — DONE
+
+依赖：`FR-87`。
+
+目标：将完整 Agent Workspace Conversation 应用服务迁移到中性 `modules/agent_sessions`，以唯一 facade
+承载 bootstrap、事件安全投影、消息与控制、模型、能力、附件和会话上下文。`agent_workspaces` 仅作为
+当前宿主、模型与 Runtime 适配器，继续保留原有公开路由和响应；不得复制会话逻辑、改变数据库、API、
+OpenHands identity、FlowRun、节点或 Runtime 行为。此切片不接入节点。
+
+验收：Agent Workspace 定向 pytest；受影响 Python Ruff/Pyright；`git diff --check`、Alembic head 与
+任务状态唯一性检查。完成后独立提交。
+
+完成：完整 Conversation 与标题服务已移至 `modules/agent_sessions/application`；
+`agent_workspaces` 的历史导入路径改为指向相同 Python 模块对象的兼容别名，路由、工作区工具与任务处理
+均直接使用共享实现。保留现有路由、API、数据库模型、OpenHands 调用和测试 monkeypatch 语义，未复制任何
+会话业务代码；`agent_sessions.public` 是后续新宿主的唯一入口。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1247,6 +1264,7 @@ Alembic head 与任务状态唯一性检查。完成后独立提交；后续后�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-88 | Agent Workspace 定向 pytest（会话创建、标题、事件流、能力、bootstrap、文件/终端共 26 passed）；受影响 Python `py_compile`、Ruff；全量 Pyright（0 errors）；共享/宿主导入边界扫描；Alembic head 与 `git diff --check` | PASS：会话与标题业务只有 `agent_sessions` 一份实现；旧 Agent Workspace 导入路径为同模块别名，历史 monkeypatch 与公开路由均继续指向共享实现。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-87 | Web ESLint/typecheck/production build；定向 Playwright：顶层 Agent 会话首发与 URL 恢复、Runtime 恢复时工作区抽屉；共享模块依赖扫描；Alembic head 与 `git diff --check` | PASS：`/agent` 已只渲染唯一 `AgentSessionWorkbench`，首发 bootstrap/稳定 URL/刷新恢复和 Runtime 恢复抽屉均通过；共享模块只依赖 Agent API、共享渲染器、类型及样式，未引用 FlowRun、Node 或旧节点会话。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-86 | 固定 OpenHands 1.44.0 Finish Tool、事件父链、原生 fork/HEAD 与 send_message 源码取证；OpenHands/Agent Workspace 合并 pytest（124 passed）；Ruff；全量 Pyright（0 errors）；Web ESLint/typecheck/production build；Agent 工作台定向 Playwright（1 passed）；Alembic head、正式事件关联扫描与 `git diff --check` | PASS：最终回复分叉统一落在完整执行边界，创建后强制验证可写；即时 Observation 落盘竞态可正常 fork；既有异常分叉保持 binding/URL 无损幂等恢复并只发送一次，正常分叉不误修复。`FinishObservation` 保留正式关联身份但不重复回复正文。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |
 | 2026-08-29 | FR-85 | 固定 OpenHands 1.44.0 `stop_after_attempt`、网络异常映射与正式错误事件取证；OpenHands 适配器定向 pytest（6 passed）；Ruff、Pyright；Web ESLint/typecheck/production build；当前源码 Vite 上 Agent 工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：主模型创建、原生模型切换与 condenser 均使用总计最多 5 次、1–4 秒退避和 20 秒单次超时；正式 `LLMServiceUnavailableError` 结束失败轮并移除“正在思考”，页面显示安全网络提示且不泄露原始连接错误。唯一 Alembic head 为 `0070_agent_caps`；无 `CURRENT` 或下一切片。 |

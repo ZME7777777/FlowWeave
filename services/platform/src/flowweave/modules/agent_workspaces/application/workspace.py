@@ -12,10 +12,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_workspaces.application import service, work_directories
-from flowweave.modules.agent_workspaces.application.conversations import (
+from flowweave.modules.agent_sessions.application.conversations import (
     terminal_container_details,
 )
+from flowweave.modules.agent_workspaces.application import service, work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationMessageAttachment,
