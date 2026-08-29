@@ -42,6 +42,16 @@ def __getattr__(name: str) -> Any:
         from flowweave.modules.agent_sessions.application import conversations, titles
 
         return {"conversations": conversations, "titles": titles}[name]
+    if name in {"FlowNodeSessionHost", "resolve_flow_node_session_host"}:
+        from flowweave.modules.agent_sessions.application.flow_node_host import (
+            FlowNodeSessionHost,
+            resolve_flow_node_session_host,
+        )
+
+        return {
+            "FlowNodeSessionHost": FlowNodeSessionHost,
+            "resolve_flow_node_session_host": resolve_flow_node_session_host,
+        }[name]
     raise AttributeError(name)
 
 __all__ = [

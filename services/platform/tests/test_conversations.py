@@ -6,7 +6,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
+from flowweave.modules.agent_sessions.application import flow_node_host
+from flowweave.modules.agent_sessions.application.host import CREATE_SESSIONS, READ_SESSIONS
 from flowweave.modules.conversations.application import locator
+from flowweave.modules.conversations.application import service as conversation_service
 from flowweave.modules.conversations.infrastructure.models import FlowRunConversationBinding
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
@@ -16,8 +19,12 @@ from flowweave.shared.models import (
     FlowRunRuntime,
     FlowRunRuntimeAllocation,
     FlowRunRuntimeSecretReference,
+    NodeAttempt,
+    NodeRun,
+    RunSnapshot,
     TerminalEnvironment,
 )
+from flowweave.shared.schemas import FlowRunConversationCreateWrite
 
 
 def _runtime_context(db: Session) -> tuple[str, str]:
@@ -204,3 +211,172 @@ def test_route_rejects_locator_session_drift(
             )
 
         assert caught.value.code == "RUNTIME_CONVERSATION_SESSION_DRIFT"
+
+
+def _node_session_context(db: Session) -> tuple[str, str, str]:
+    flow_run_id, runtime_session_id = _runtime_context(db)
+    snapshot = RunSnapshot(
+        flow_run_id=flow_run_id,
+        version=1,
+        schema_version=1,
+        definition_json={"nodes": []},
+        definition_hash="a" * 64,
+        runtime_manifest_json={"schema_version": 1, "nodes": {}},
+        runtime_manifest_hash="b" * 64,
+    )
+    node_run = NodeRun(
+        flow_run_id=flow_run_id,
+        flow_node_snapshot_key="node-1",
+        sequence_no=1,
+    )
+    db.add_all((snapshot, node_run))
+    db.flush()
+    attempt = NodeAttempt(
+        node_run_id=node_run.id,
+        attempt_no=1,
+        snapshot_id=snapshot.id,
+        state="WAITING_START_CONFIRMATION",
+        workspace_ref="/runtime/workspace/project/nodes/node-1",
+    )
+    db.add(attempt)
+    db.flush()
+    return flow_run_id, runtime_session_id, attempt.id
+
+
+def test_flow_node_host_resolves_a_frozen_shared_session_context(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "runtime_overview",
+            lambda _db, _flow_run_id: {"rerun_required": False},
+        )
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "active_flow_run_runtime_connection",
+            lambda _db, *, flow_run_id: _connection(runtime_session_id, flow_run_id),
+        )
+        monkeypatch.setattr(
+            flow_node_host,
+            "runtime_node",
+            lambda **_kwargs: {"asset": {"name": "Node Agent"}},
+        )
+
+        host = flow_node_host.resolve_flow_node_session_host(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            require_start_permission=True,
+        )
+
+        assert host.session.host_kind == "FLOW_NODE"
+        assert host.session.host_id == flow_run_id
+        assert host.session.conversation_scope_id == attempt_id
+        assert host.session.runtime_session_id == runtime_session_id
+        assert host.session.working_directory == "/runtime/workspace/project/nodes/node-1"
+        assert host.session.permits(CREATE_SESSIONS)
+        assert host.session.permits(READ_SESSIONS)
+        assert host.node["asset"]["name"] == "Node Agent"
+
+
+def test_flow_node_host_rejects_non_startable_or_unscoped_attempts(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "runtime_overview",
+            lambda _db, _flow_run_id: {"rerun_required": False},
+        )
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "active_flow_run_runtime_connection",
+            lambda _db, *, flow_run_id: _connection(runtime_session_id, flow_run_id),
+        )
+        monkeypatch.setattr(
+            flow_node_host,
+            "runtime_node",
+            lambda **_kwargs: {"asset": {"name": "Node Agent"}},
+        )
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "RUNNING"
+        with pytest.raises(DomainError, match="not ready") as blocked:
+            flow_node_host.resolve_flow_node_session_host(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                require_start_permission=True,
+            )
+        assert blocked.value.code == "NODE_CONVERSATION_NOT_READY"
+
+        attempt.state = "WAITING_START_CONFIRMATION"
+        attempt.workspace_ref = None
+        with pytest.raises(DomainError, match="isolated workspace") as unscoped:
+            flow_node_host.resolve_flow_node_session_host(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                require_start_permission=True,
+            )
+        assert unscoped.value.code == "NODE_WORKSPACE_REQUIRED"
+
+
+def test_flow_run_creation_resolves_the_node_host_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = SimpleNamespace(attempt_id="attempt-1", flow_run_id="run-1")
+    attempt = SimpleNamespace(id="attempt-1", state_version=7)
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        conversation_service.agent_sessions,
+        "resolve_flow_node_session_host",
+        lambda _db, *, flow_run_id, attempt_id, require_start_permission: observed.update(
+            {
+                "flow_run_id": flow_run_id,
+                "attempt_id": attempt_id,
+                "require_start_permission": require_start_permission,
+            }
+        )
+        or host,
+    )
+    monkeypatch.setattr(conversation_service, "_attempt", lambda _db, _attempt_id: attempt)
+    monkeypatch.setattr(
+        conversation_service,
+        "create_conversation",
+        lambda _db, attempt_id, payload, idempotency_key, *, host: observed.update(
+            {
+                "resolved_attempt_id": attempt_id,
+                "state_version": payload.expected_attempt_state_version,
+                "idempotency_key": idempotency_key,
+                "host": host,
+            }
+        )
+        or {"id": "binding-1"},
+    )
+
+    result = conversation_service.create_flow_run_conversation(
+        SimpleNamespace(scalar=lambda _query: None),
+        "run-1",
+        FlowRunConversationCreateWrite(
+            node_attempt_id="attempt-1",
+            title="Node session",
+            model_name="model-1",
+            reasoning_effort="medium",
+        ),
+        "create-1",
+    )
+
+    assert result == {"id": "binding-1"}
+    assert observed == {
+        "flow_run_id": "run-1",
+        "attempt_id": "attempt-1",
+        "require_start_permission": True,
+        "resolved_attempt_id": "attempt-1",
+        "state_version": 7,
+        "idempotency_key": "create-1",
+        "host": host,
+    }

@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.catalog.public import resolve_snapshot_memory
 from flowweave.modules.conversations.application.locator import (
     active_runtime_handle,
@@ -312,6 +313,8 @@ def create_conversation(
     attempt_id: str,
     payload: ConversationCreateWrite,
     idempotency_key: str,
+    *,
+    host: agent_sessions.FlowNodeSessionHost | None = None,
 ) -> dict[str, Any]:
     """Create one OpenHands-native Conversation in the FlowRun Runtime.
 
@@ -338,20 +341,32 @@ def create_conversation(
             expected=payload.expected_attempt_state_version,
             actual=attempt.state_version,
         )
-    node = runtime_node(
-        definition=snapshot.definition_json,
-        manifest=snapshot.runtime_manifest_json or {},
-        expected_hash=snapshot.runtime_manifest_hash,
-        snapshot_id=snapshot.id,
-        instance_key=node_run.flow_node_snapshot_key,
-    )
+    if host is not None:
+        if host.attempt_id != attempt.id or host.flow_run_id != run.id:
+            raise DomainError(
+                "NODE_CONVERSATION_CONTEXT_MISMATCH",
+                "The selected node Attempt does not belong to this FlowRun",
+                409,
+                {"flow_run_id": run.id, "node_attempt_id": attempt.id},
+            )
+        node = host.node
+        workspace_ref = host.working_directory
+    else:
+        node = runtime_node(
+            definition=snapshot.definition_json,
+            manifest=snapshot.runtime_manifest_json or {},
+            expected_hash=snapshot.runtime_manifest_hash,
+            snapshot_id=snapshot.id,
+            instance_key=node_run.flow_node_snapshot_key,
+        )
+        workspace_ref = attempt.workspace_ref or ""
     request_owner_id = str(uuid4())
     return _create_native_conversation(
         db,
         run=run,
         snapshot=snapshot,
         node=node,
-        workspace_ref=attempt.workspace_ref or "",
+        workspace_ref=workspace_ref,
         bindings=_request_bindings(db, attempt, node),
         title=payload.title,
         model_name=payload.model_name,
@@ -377,39 +392,13 @@ def create_flow_run_conversation(
         if binding_id:
             return get_conversation(db, binding_id)
         raise conflict("conversation creation outcome is unavailable")
-    run = db.get(FlowRun, flow_run_id)
-    if run is None:
-        raise not_found("flow_run", flow_run_id)
-    if sandboxes.runtime_overview(db, flow_run_id)["rerun_required"]:
-        raise DomainError(
-            "LEGACY_RUNTIME_INCOMPATIBLE",
-            "Historical FlowRun Runtime data is incompatible; rerun the Flow",
-            409,
-            {"flow_run_id": flow_run_id},
-        )
-    attempt = db.get(NodeAttempt, payload.node_attempt_id)
-    if attempt is None:
-        raise DomainError(
-            "NODE_CONVERSATION_CONTEXT_REQUIRED",
-            "Select and start a FlowRun node before creating a Conversation",
-            422,
-            {"flow_run_id": flow_run_id, "node_attempt_id": payload.node_attempt_id},
-        )
-    node_run = db.get(NodeRun, attempt.node_run_id)
-    if node_run is None or node_run.flow_run_id != flow_run_id:
-        raise DomainError(
-            "NODE_CONVERSATION_CONTEXT_MISMATCH",
-            "The selected node Attempt does not belong to this FlowRun",
-            409,
-            {"flow_run_id": flow_run_id, "node_attempt_id": payload.node_attempt_id},
-        )
-    if attempt.state != "WAITING_START_CONFIRMATION":
-        raise DomainError(
-            "NODE_CONVERSATION_NOT_READY",
-            "The selected node is not ready to start a Conversation",
-            409,
-            {"node_attempt_id": attempt.id, "state": attempt.state},
-        )
+    host = agent_sessions.resolve_flow_node_session_host(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=payload.node_attempt_id,
+        require_start_permission=True,
+    )
+    attempt = _attempt(db, host.attempt_id)
     return create_conversation(
         db,
         attempt.id,
@@ -420,6 +409,7 @@ def create_flow_run_conversation(
             reasoning_effort=payload.reasoning_effort,
         ),
         idempotency_key,
+        host=host,
     )
 
 
