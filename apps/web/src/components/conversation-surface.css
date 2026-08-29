@@ -64,18 +64,14 @@
 .conversation-activity-row small{margin-left:7px;color:#9ba49e;font-size:10px}
 .conversation-activity-row p{margin:4px 0 0}
 .conversation-activity-row pre{max-height:180px;overflow:auto;margin:7px 0 0;border-radius:7px;background:#f2f4f2;padding:8px;font:10px/1.45 'DM Mono',ui-monospace,monospace}
-.conversation-condensation-timeline{display:grid;gap:8px;margin:4px 0 14px}
-.conversation-condensation-notice{display:flex;align-items:flex-start;gap:10px;border:1px solid;border-radius:10px;padding:11px 12px;font-size:12px;line-height:1.55}
-.conversation-condensation-notice>svg{flex:0 0 auto;margin-top:1px}
+.conversation-condensation-timeline{display:grid;gap:2px;margin:5px 0 12px}
+.conversation-condensation-notice{display:flex;align-items:flex-start;gap:8px;border:0;border-left:2px solid #d8ddda;background:transparent;padding:5px 0 5px 10px;color:#858d88;font-size:11px;line-height:1.45}
+.conversation-condensation-notice>svg{width:13px;height:13px;flex:0 0 13px;margin-top:1px;color:#9aa19d}
 .conversation-condensation-notice>div{min-width:0;flex:1}
 .conversation-condensation-notice header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
-.conversation-condensation-notice b{font-size:12px}
+.conversation-condensation-notice b{color:#707873;font-size:11px;font-weight:600}
 .conversation-condensation-notice time{flex:0 0 auto;color:inherit;font:10px/1.4 'DM Mono',ui-monospace,monospace;opacity:.72}
-.conversation-condensation-notice p{margin:3px 0 0}
-.conversation-condensation-notice.triggered{border-color:#ead39a;background:#fff9e9;color:#74581c}
-.conversation-condensation-notice.triggered>svg{color:#b47c12}
-.conversation-condensation-notice.completed{border-color:#bfdbc8;background:#f2faf4;color:#315e3e}
-.conversation-condensation-notice.completed>svg{color:#39804f}
+.conversation-condensation-notice p{margin:2px 0 0;color:#929994}
 .conversation-turn-status{display:flex;align-items:center;gap:5px;min-height:28px;margin:2px 0 0;color:#a0a7a2;font-size:13px;letter-spacing:.01em}
 .conversation-turn-status-dots{display:flex;align-items:center;gap:3px;padding-top:2px}
 .conversation-turn-status-dots i{width:3px;height:3px;border-radius:50%;background:currentColor;animation:conversation-turn-status-dot 1.2s ease-in-out infinite}

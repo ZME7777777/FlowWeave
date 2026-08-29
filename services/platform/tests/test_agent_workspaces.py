@@ -719,7 +719,10 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
             "所有需要保留的代码、配置、文档和用户产物必须写入该目录或其子目录。\n"
             "可按需求或功能自行创建子目录；优先使用相对于项目根的路径。\n"
             "不要将用户项目文件写入项目根以外的位置，例如 /runtime 的其他目录、/tmp 或 HOME。\n"
-            "不要向用户解释宿主机路径、Docker 挂载或容器实现细节；对用户而言，这就是项目根目录。"
+            "不要向用户解释宿主机路径、Docker 挂载或容器实现细节；对用户而言，这就是项目根目录。\n"
+            "多步骤任务必须使用原生任务跟踪器维护目标、未完成项和完成条件；压缩上下文后继续执行时，"
+            "不得把最近一次局部结果误当成用户的最终目标。\n"
+            "只要任务跟踪器仍有未完成项，或用户的完成条件尚未满足，就不得因为上下文压缩而提前收口。"
         )
 
 
@@ -1984,11 +1987,11 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
-def test_agent_workspace_proactively_condenses_at_native_ninety_percent_before_send(
+def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_send(
     settings, db_session_factory, monkeypatch
 ):
     class ProactiveCompactionRuntime(MockRuntime):
-        used_tokens = 89_999
+        used_tokens = 79_999
         fail_compaction = False
         unsafe_summary = False
         calls: list[str] = []
@@ -2105,7 +2108,7 @@ def test_agent_workspace_proactively_condenses_at_native_ninety_percent_before_s
         assert runtime.calls == ["send:below"]
 
         runtime.calls.clear()
-        runtime.used_tokens = 90_000
+        runtime.used_tokens = 80_000
         at_threshold = conversations.message(db, workspace.id, created["id"], "threshold")
         assert at_threshold["compacted"] is True
         assert runtime.calls == ["condense", "send:threshold"]
@@ -2130,7 +2133,7 @@ def test_agent_workspace_proactively_condenses_at_native_ninety_percent_before_s
         assert runtime.calls == ["condense", "navigate:thought-after-first-condensation"]
 
         runtime.fail_compaction = False
-        runtime.used_tokens = 90_000
+        runtime.used_tokens = 80_000
         runtime.unsafe_summary = True
         runtime.calls.clear()
         with pytest.raises(DomainError) as unsafe:
@@ -2152,15 +2155,28 @@ def test_agent_workspace_proactively_condenses_at_native_ninety_percent_before_s
             ),
         )
         refreshed = conversations.conversation_context(db, workspace.id, created["id"])
-        assert refreshed["used_tokens"] == 90_000
+        assert refreshed["used_tokens"] == 80_000
         assert refreshed["usage_current"] is True
 
 
-def test_agent_workspace_rejects_legacy_event_count_policy_before_send(
+def test_agent_workspace_protects_legacy_event_count_policy_before_send(
     settings, db_session_factory, monkeypatch
 ):
     class LegacyPolicyRuntime(MockRuntime):
         sent = False
+        head = "assistant-head"
+        active_events: tuple[RuntimeEvent, ...] = (
+            RuntimeEvent(
+                cursor="initial-user",
+                event_type="MESSAGE",
+                payload={"source": "user", "parent_id": "__root__", "content": "完成任务"},
+            ),
+            RuntimeEvent(
+                cursor="assistant-head",
+                event_type="MESSAGE",
+                payload={"source": "agent", "parent_id": "initial-user", "content": "阶段结果"},
+            ),
+        )
 
         def conversation_context(self, handle):
             del handle
@@ -2169,6 +2185,49 @@ def test_agent_workspace_rejects_legacy_event_count_policy_before_send(
                 "window_tokens": 100_000,
                 "condenser_max_size": 240,
             }
+
+        def reload_conversation(self, handle, *, expected=None):
+            del expected
+            return RuntimeConversationIdentity(
+                conversation_id=handle.conversation_id,
+                workspace_working_dir="/runtime/workspace/project",
+                persistence_dir=(
+                    f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
+                ),
+                event_id=self.head,
+                parent_id=None,
+                action_id=None,
+                tool_call_id=None,
+            )
+
+        def read_active_events(self, handle):
+            del handle
+            return RuntimeEventBatch(events=self.active_events)
+
+        def condense(self, handle):
+            del handle
+            self.active_events += (
+                RuntimeEvent(
+                    cursor="legacy-condensation-request",
+                    event_type="CONDENSATION_REQUESTED",
+                    payload={"parent_id": self.head},
+                ),
+                RuntimeEvent(
+                    cursor="legacy-condensation-completed",
+                    event_type="CONDENSATION_COMPLETED",
+                    payload={
+                        "parent_id": "legacy-condensation-request",
+                        "forgotten_event_ids": ["assistant-head"],
+                        "summary": (
+                            "USER_CONTEXT: 完成任务\n"
+                            "COMPLETED: 已得到阶段结果\n"
+                            "PENDING: 继续完成剩余事项"
+                        ),
+                    },
+                ),
+            )
+            self.head = "legacy-condensation-completed"
+            return RuntimeResult(status="IDLE", cursor=self.head)
 
         def send_message(self, handle, content, image_urls=()):
             del handle, content, image_urls
@@ -2191,18 +2250,11 @@ def test_agent_workspace_rejects_legacy_event_count_policy_before_send(
         created = conversations.create_conversation(
             db, workspace.id, None, workspace.default_model_provider_id, "create-key"
         )
-        with pytest.raises(DomainError) as raised:
-            conversations.message(db, workspace.id, created["id"], "must-not-send")
-        assert raised.value.code == "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED"
-        assert runtime.sent is False
-        with pytest.raises(DomainError) as rewrite_raised:
-            conversations.rewrite_message(
-                db, workspace.id, created["id"], "legacy-user-event", "must-not-rewrite"
-            )
-        assert rewrite_raised.value.code == "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED"
-        with pytest.raises(DomainError) as resume_raised:
-            conversations.resume(db, workspace.id, created["id"])
-        assert resume_raised.value.code == "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED"
+        result = conversations.message(db, workspace.id, created["id"], "continue")
+        assert result["accepted"] is True
+        assert result["compacted"] is True
+        assert runtime.sent is True
+        assert runtime.head == "legacy-condensation-completed"
         context = conversations.conversation_context(db, workspace.id, created["id"])
         assert context["compaction_policy_current"] is False
 
@@ -2325,8 +2377,8 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "model_name": "test-model",
             "reasoning_effort": "medium",
             "usage_current": True,
-            "proactive_compaction_ratio": 0.9,
-            "proactive_compaction_tokens": 115_200,
+            "proactive_compaction_ratio": 0.8,
+            "proactive_compaction_tokens": 102_400,
             "compaction_policy_current": True,
         }
         # Selecting a provider/model is persisted immediately on the individual
@@ -2446,8 +2498,21 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     settings, db_session_factory, monkeypatch
 ):
     class ForkRuntime(MockRuntime):
-        fork_call: tuple[str | None, str] | None = None
+        fork_call: tuple[str | None, str, bool] | None = None
         condensed = False
+        head = "assistant-event"
+        active_events: tuple[RuntimeEvent, ...] = (
+            RuntimeEvent(
+                cursor="source-user",
+                event_type="MESSAGE",
+                payload={"source": "user", "parent_id": "__root__", "content": "源目标"},
+            ),
+            RuntimeEvent(
+                cursor="assistant-event",
+                event_type="MESSAGE",
+                payload={"source": "agent", "parent_id": "source-user", "content": "源回复"},
+            ),
+        )
 
         def reload_conversation(self, handle, *, expected=None):
             del expected
@@ -2457,19 +2522,47 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
                 persistence_dir=(
                     f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
                 ),
-                event_id="assistant-event",
+                event_id=self.head,
                 parent_id=None,
                 action_id=None,
                 tool_call_id=None,
             )
 
         def fork_conversation(self, handle, **kwargs):
-            self.fork_call = (kwargs["from_event_id"], kwargs["expected_source_leaf_event_id"])
+            self.fork_call = (
+                kwargs["from_event_id"],
+                kwargs["expected_source_leaf_event_id"],
+                kwargs["reset_metrics"],
+            )
             return super().fork_conversation(handle, **kwargs)
 
         def condense(self, handle):
+            del handle
             self.condensed = True
-            return super().condense(handle)
+            self.active_events += (
+                RuntimeEvent(
+                    cursor="manual-condensation-request",
+                    event_type="CONDENSATION_REQUESTED",
+                    payload={"parent_id": self.head},
+                ),
+                RuntimeEvent(
+                    cursor="manual-condensation-completed",
+                    event_type="CONDENSATION_COMPLETED",
+                    payload={
+                        "parent_id": "manual-condensation-request",
+                        "forgotten_event_ids": ["assistant-event"],
+                        "summary": (
+                            "USER_CONTEXT: 源目标\nCOMPLETED: 已生成源回复\nPENDING: 等待后续指令"
+                        ),
+                    },
+                ),
+            )
+            self.head = "manual-condensation-completed"
+            return RuntimeResult(status="IDLE", cursor=self.head)
+
+        def read_active_events(self, handle):
+            del handle
+            return RuntimeEventBatch(events=self.active_events)
 
         def can_accept_input(self, handle):
             del handle
@@ -2512,7 +2605,7 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         assert fork["model_name"] == "fork-model"
         assert fork["reasoning_effort"] == "high"
         assert fork["streaming_callback_ready"] is False
-        assert runtime.fork_call == ("assistant-event", "assistant-event")
+        assert runtime.fork_call == ("assistant-event", "assistant-event", True)
         assert (
             conversations.fork_conversation(
                 db, workspace.id, source["id"], "assistant-event", None, "fork-key"

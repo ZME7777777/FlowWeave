@@ -33,6 +33,10 @@ interface ActivityEntry {
   results: Item[];
 }
 
+type TurnProcessBlock =
+  | { kind: 'activity'; id: string; items: Item[]; startedAt?: number; finishedAt?: number; active: boolean }
+  | { kind: 'condensation'; id: string; items: Item[] };
+
 function eventAttachments(event: OpenHandsConversationEvent): AgentAttachment[] {
   return Array.isArray(event.payload.attachments) ? event.payload.attachments : [];
 }
@@ -159,6 +163,16 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       if (!current) {
         current = { id: item.event.id, activity: [] };
         turns.push(current);
+      }
+      // A manual condensation can be requested while the Agent is idle, after
+      // the preceding turn already reached a formal assistant/error terminal.
+      // Keep that audit record standalone instead of attaching it to the old
+      // turn and inventing elapsed work after the terminal. Automatic
+      // condensation during a running turn remains in that turn.
+      if (item.kind === 'condensation' && (current.assistant || current.activity.some(value => value.kind === 'error'))) {
+        current = { id: item.event.id, activity: [item] };
+        turns.push(current);
+        continue;
       }
       if (item.kind === 'assistant') current.assistant = item;
       else current.activity.push(item);
@@ -349,7 +363,10 @@ function ToolDetailPanel({ presentation, eventName }: { presentation: ActivityPr
 }
 
 function eventTime(item?: Item): number | undefined {
-  const raw = item?.event.payload.timestamp;
+  return parsedEventTime(item?.event.payload.timestamp);
+}
+
+function parsedEventTime(raw: unknown): number | undefined {
   if (typeof raw !== 'string' || !raw) return undefined;
   // OpenHands 1.42.0 creates Event.timestamp with datetime.now().isoformat().
   // The Runtime container runs in UTC, but that value has no timezone suffix.
@@ -358,6 +375,90 @@ function eventTime(item?: Item): number | undefined {
   const normalized = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : `${raw}Z`;
   const value = Date.parse(normalized);
   return Number.isFinite(value) ? value : undefined;
+}
+
+function condensationTriggeredAt(item: Item): number | undefined {
+  return parsedEventTime(item.event.payload.condensation_triggered_at) ?? eventTime(item);
+}
+
+function condensationCompletedAt(item: Item): number | undefined {
+  return parsedEventTime(item.event.payload.condensation_completed_at) ?? eventTime(item);
+}
+
+function turnProcessBlocks(
+  items: Item[],
+  startedAt: number | undefined,
+  finishedAt: number | undefined,
+  active: boolean,
+): TurnProcessBlock[] {
+  const hasCondensation = items.some(item => item.kind === 'condensation');
+  if (!hasCondensation) {
+    return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
+  }
+  if (items.every(item => item.kind === 'condensation')) {
+    return [{ kind: 'condensation', id: 'condensation-0', items }];
+  }
+
+  const blocks: TurnProcessBlock[] = [];
+  let activityItems: Item[] = [];
+  let condensationItems: Item[] = [];
+  let segmentStartedAt = startedAt;
+  let compressionPending = false;
+  let sequence = 0;
+  const flushActivity = (segmentFinishedAt: number | undefined, force = false) => {
+    if (!activityItems.length && !force) return;
+    blocks.push({
+      kind: 'activity',
+      id: `activity-${sequence++}`,
+      items: activityItems,
+      startedAt: segmentStartedAt,
+      finishedAt: segmentFinishedAt,
+      active: false,
+    });
+    activityItems = [];
+  };
+  const flushCondensation = () => {
+    if (!condensationItems.length) return;
+    blocks.push({
+      kind: 'condensation',
+      id: `condensation-${sequence++}`,
+      items: condensationItems,
+    });
+    condensationItems = [];
+  };
+
+  for (const item of items) {
+    if (item.kind !== 'condensation') {
+      activityItems.push(item);
+      continue;
+    }
+    if (item.event.event_type === 'CONDENSATION_REQUESTED') {
+      flushActivity(condensationTriggeredAt(item), true);
+      condensationItems.push(item);
+      compressionPending = true;
+      segmentStartedAt = undefined;
+      continue;
+    }
+
+    if (!compressionPending) {
+      flushActivity(condensationTriggeredAt(item), true);
+    }
+    condensationItems.push(item);
+    flushCondensation();
+    compressionPending = false;
+    segmentStartedAt = condensationCompletedAt(item);
+  }
+
+  if (compressionPending) {
+    flushCondensation();
+  } else {
+    flushActivity(finishedAt, true);
+    const latestActivity = [...blocks].reverse().find(
+      (block): block is Extract<TurnProcessBlock, { kind: 'activity' }> => block.kind === 'activity',
+    );
+    if (latestActivity) latestActivity.active = active;
+  }
+  return blocks;
 }
 
 function formatEventTime(raw: unknown): string {
@@ -707,14 +808,26 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
         const failures = turn.activity.filter(item => item.kind === 'error');
-        const condensationItems = turn.activity.filter(item => item.kind === 'condensation');
-        const processItems = turn.activity.filter(item => item.kind !== 'condensation');
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
+        const processBlocks = turnProcessBlocks(
+          turn.activity.filter(item => item.kind !== 'error'),
+          startedAt,
+          finishedAt,
+          isCurrent && !turn.assistant && !failures.length,
+        );
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
-          <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt}/>
-          <CondensationNotices items={condensationItems}/>
+          {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
+            ? <CondensationNotices key={block.id} items={block.items}/>
+            : <ActivityGroup
+              key={block.id}
+              items={block.items}
+              active={block.active}
+              liveText={isCurrent && blockIndex === processBlocks.length - 1 ? liveText : undefined}
+              startedAt={block.startedAt}
+              finishedAt={block.finishedAt}
+            />)}
           {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting}/>}
           {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}

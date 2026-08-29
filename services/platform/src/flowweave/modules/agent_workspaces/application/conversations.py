@@ -60,7 +60,7 @@ _TOOLS = (
 )
 
 _PROJECT_ROOT = "/runtime/workspace/project"
-_PROACTIVE_COMPACTION_RATIO = 0.9
+_PROACTIVE_COMPACTION_RATIO = 0.8
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _COMPACTION_EVENT_WAIT_SECONDS = 10.0
 _SANDBOX_PROJECT_IMAGE = re.compile(
@@ -687,10 +687,10 @@ def _create_native_conversation(
             # Keep OpenHands' native event/token safeguards, but avoid the
             # default 240-event heuristic compacting tool-heavy sessions while
             # their token window is still mostly empty. FlowWeave proactively
-            # invokes the same native condenser at 90% of OpenHands' registered
+            # invokes the same native condenser at 80% of OpenHands' registered
             # context window before accepting the next user message. The first
             # system/user context remains verbatim through OpenHands' standard
-            # ``keep_first=4`` checkpoint boundary. The same 90% policy is
+            # ``keep_first=4`` checkpoint boundary. The same 80% policy is
             # frozen into the native condenser for long tool loops; the very
             # high event limit is only a disaster guard.
             condenser=RuntimeCondenser(
@@ -1542,23 +1542,13 @@ def terminal_container_details(db: Session, workspace_id: str) -> tuple[str, str
     return sandbox.backend_resource_name, sandbox.id, sandbox.backend_resource_id
 
 
-def _require_current_compaction_policy(context: dict[str, Any]) -> None:
+def _uses_legacy_compaction_policy(context: dict[str, Any]) -> bool:
     raw_max_events = context.get("condenser_max_size")
-    if (
+    return (
         isinstance(raw_max_events, int)
         and not isinstance(raw_max_events, bool)
         and raw_max_events < _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
-    ):
-        raise DomainError(
-            "AGENT_CONTEXT_POLICY_MIGRATION_REQUIRED",
-            "此历史会话仍使用旧的事件数压缩策略，继续执行可能再次受错误摘要影响；"
-            "请新建会话，或从错误压缩前的回复分叉后仅用于审计。",
-            409,
-            {
-                "condenser_max_size": raw_max_events,
-                "required_max_size": _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-            },
-        )
+    )
 
 
 def _compaction_summary_is_structured(summary: object) -> bool:
@@ -1751,8 +1741,16 @@ def message(
         ) from exc
     compacted = False
     context = runtime.conversation_context(handle)
-    _require_current_compaction_policy(context)
-    if _proactive_compaction_required(runtime, handle, context):
+    # OpenHands' public fork API deep-copies the source agent and has no field
+    # for replacing its condenser.  A fork of a historical 240-event session
+    # must therefore remain writable without silently trusting that old
+    # automatic summary boundary.  Force the same verified native compaction
+    # used by the current token policy before every new turn.  The verifier
+    # checks durable request/completion ancestry and rolls HEAD back on an
+    # unsafe summary, so the user event is never sent on failed protection.
+    if _uses_legacy_compaction_policy(context) or _proactive_compaction_required(
+        runtime, handle, context
+    ):
         _safe_native_compaction(runtime, handle)
         compacted = True
     try:
@@ -2089,7 +2087,6 @@ def condense_conversation(db: Session, workspace_id: str, binding_id: str) -> di
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
-    _require_current_compaction_policy(runtime.conversation_context(handle))
     cursor = _safe_native_compaction(runtime, handle)
     return {"accepted": True, "cursor": cursor}
 
@@ -2290,7 +2287,7 @@ def rewrite_message(
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
-    _require_current_compaction_policy(runtime.conversation_context(handle))
+    legacy_policy = _uses_legacy_compaction_policy(runtime.conversation_context(handle))
     batch = runtime.read_active_events(handle)
     user_events = [
         event
@@ -2309,6 +2306,11 @@ def rewrite_message(
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     runtime.navigate(handle, parent_id)
+    # Editing the first user message leaves no inherited context to protect.
+    # Other legacy branches are compacted only after navigation so the native
+    # summary is built from the branch the replacement turn will actually use.
+    if legacy_policy and parent_id not in {None, "__root__"}:
+        _safe_native_compaction(runtime, handle)
     try:
         result = runtime.send_message(handle, content.strip())
     except DomainError as exc:
@@ -2324,6 +2326,7 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     runtime = get_runtime()
     handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
-    _require_current_compaction_policy(runtime.conversation_context(handle))
+    if _uses_legacy_compaction_policy(runtime.conversation_context(handle)):
+        _safe_native_compaction(runtime, handle)
     result = runtime.run(handle)
     return {"accepted": True, "cursor": result.cursor}
