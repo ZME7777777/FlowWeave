@@ -458,14 +458,12 @@ function CurrentTurnStatus({ items, liveText, requestSubmitting }: {
   </div>;
 }
 
-function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting, requestSubmitting }: {
+function ActivityGroup({ items, active, liveText, startedAt, finishedAt }: {
   items: Item[];
   active: boolean;
   liveText?: string;
   startedAt?: number;
   finishedAt?: number;
-  waiting?: boolean;
-  requestSubmitting?: boolean;
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
@@ -473,10 +471,10 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
   const [open, setOpen] = useState(active);
   useEffect(() => { setOpen(active); }, [active]);
   const label = active
-    ? `${activeActivityLabel(entries, Boolean(requestSubmitting))}${elapsedSeconds === undefined ? '' : ` · 已耗时 ${formatDuration(elapsedSeconds)}`}`
+    ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
     : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
   const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
-  const hasDetails = itemCount > 0 || waiting;
+  const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
@@ -502,7 +500,6 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, waiting
         </article>;
       })}
       {liveText && <article className="conversation-activity-row live-text"><Sparkles size={14}/><div><b>正在生成回复</b><small>模型输出</small><p className="conversation-live-text-content">{liveText}</p></div></article>}
-      {waiting && <ResponseWait startedAt={startedAt} submitting={Boolean(requestSubmitting)}/>}
     </div>
   </details>;
 }
@@ -511,29 +508,6 @@ function AgentReply({ eventId, content, onFork }: { eventId: string; content: st
   return <article className="conversation-message assistant" data-turn-terminal="true" data-event-id={eventId}>
     {content ? <MessageMarkdown>{content}</MessageMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
     {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
-  </article>;
-}
-
-function ResponseWait({ startedAt, submitting }: { startedAt?: number; submitting: boolean }) {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  useEffect(() => {
-    if (!startedAt) { setElapsedSeconds(0); return; }
-    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
-    update();
-    const timer = window.setInterval(update, 1000);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
-  const delayed = elapsedSeconds >= 8;
-  const title = submitting
-    ? '正在提交消息…'
-    : delayed ? '仍在等待模型响应' : '消息已发送，正在等待模型响应';
-  const detail = submitting
-    ? '正在将请求交给 Agent。'
-    : delayed
-      ? `已等待 ${formatDuration(elapsedSeconds)}。模型服务排队、响应较慢或额度不足时，原因会显示在这里。`
-      : '收到首个文本或工具进度后，会在这里实时显示。';
-  return <article className={`conversation-response-wait${delayed ? ' delayed' : ''}`} role="status">
-    <LoaderCircle size={16}/><div><b>{title}</b><p>{detail}</p></div>
   </article>;
 }
 
@@ -680,18 +654,17 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         const isCurrent = index === turns.length - 1 && isGenerating;
         const failures = turn.activity.filter(item => item.kind === 'error');
         const processItems = turn.activity;
-        const waitingForProgress = isCurrent && !turn.assistant && !liveText && !processItems.length;
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
-          <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt} waiting={waitingForProgress} requestSubmitting={requestSubmitting}/>
+          <ActivityGroup items={processItems} active={isCurrent && !turn.assistant && !failures.length} liveText={isCurrent ? liveText : undefined} startedAt={startedAt} finishedAt={finishedAt}/>
           {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={processItems} liveText={liveText} requestSubmitting={requestSubmitting}/>}
           {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} waiting={!liveText} requestSubmitting={requestSubmitting}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}
     </section>
     {showJumpToLatest && <button
       type="button"

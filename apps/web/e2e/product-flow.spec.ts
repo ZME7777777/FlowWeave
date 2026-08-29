@@ -871,13 +871,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // Reloading during a native turn must restore the formal non-ready state,
   // not leave a static zero-second process card behind.
   await page.reload();
-  await expect(page.getByText(/正在思考 · 已耗时 \d+秒/)).toBeVisible();
-  await expect(page.getByText('仍在等待模型响应')).toBeVisible();
+  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
+  await expect(page.getByText('仍在等待模型响应')).toHaveCount(0);
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
-  await expect(activeProcess).toHaveJSProperty('open', true);
-  await expect(activeProcess.getByText(/正在思考 · 已耗时 \d+秒/)).toBeVisible();
-  await expect(activeProcess.getByText(/正在思考 · 已耗时 .*小时/)).toHaveCount(0);
-  await expect(activeProcess.getByText(/已等待 \d+秒。/)).toBeVisible();
+  await expect(activeProcess).toHaveClass(/summary-only/);
+  await expect(activeProcess.getByText(/已耗时 \d+秒/)).toBeVisible();
+  await expect(activeProcess.getByText(/已耗时 .*小时/)).toHaveCount(0);
+  await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
+  await expect(page.locator('.conversation-turn-status')).toHaveText(/正在思考/);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
   await expect(activeProcess.getByText('正在核对上下文。')).toBeVisible();
@@ -999,7 +1000,8 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
   await expect(page.getByText('修改后的问题', { exact: true })).toBeVisible();
-  await expect(page.getByText(/正在思考 · 已耗时 \d+秒/)).toBeVisible();
+  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
+  await expect(page.locator('.conversation-turn-status')).toHaveText(/正在思考/);
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   if (!releaseRewrite) throw new Error('Expected rerun request');
   releaseRewrite();

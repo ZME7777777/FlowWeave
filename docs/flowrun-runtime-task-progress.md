@@ -1150,6 +1150,22 @@ PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 
 完成时显示“正在思考”；存在尚无正式结果的工具 Action 时显示具体后台状态；安全可见流式正文到达后显示
 “正在生成回复”。正式 assistant、FinishAction 或 ERROR 收束当前轮后提示立即移除；未新增平台状态或事件推断。
 
+### FR-82 Agent 会话运行反馈去重 — DONE
+
+依赖：`FR-81`。
+
+目标：当前轮只在内容末尾保留一处轻量动态状态。删除工作过程内占据大块空间的“等待模型响应”提示卡；运行中
+工作过程标题只显示墙钟耗时，不再重复显示“正在思考”或工具状态。工具明细继续展示各自正式执行状态，当前轮
+末尾继续按 FR-81 显示“正在思考”“正在后台执行命令”或“正在生成回复”。不得改变 OpenHands 正式 readiness、
+事件关联、终态判定或任何持久化契约。
+
+验收：Web ESLint/typecheck/production build；定向 Playwright 覆盖无等待卡、纯耗时标题、唯一末尾动态状态与
+正式终态收束；Alembic head、任务状态唯一性与 `git diff --check`。完成后独立提交本切片。
+
+完成：删除等待模型时的大块提示卡及其延迟警告样式。尚无过程明细时，工作过程只显示不可展开的“已耗时”；
+有正式过程明细时仍可展开核对，但标题不再重复“正在思考”或工具状态。当前运行语义只在轮末轻量动态提示中
+出现一次，正式终态到达后照常移除。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1166,6 +1182,7 @@ PTY 鼠标输入清除的问题。普通左键拖拽必须始终创建并保留 
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-29 | FR-82 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（纯耗时、无等待卡、唯一动态状态、工具过程与正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行中工作过程标题只显示耗时，大块等待模型响应提示已删除；当前状态仅在轮末显示一次，工具和终态切换保持正确。 |
 | 2026-08-29 | FR-81 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（未完成命令、工具结果后继续思考、正式终态）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：当前轮末尾持续显示灰色动态运行提示；未完成命令显示“正在后台执行命令”，正式 Observation 到达后切换为“正在思考”，FinishAction 到达后提示消失。 |
 | 2026-08-29 | FR-80 | Web ESLint/typecheck/production build；源码 Vite 上 Agent Workspace 定向 Playwright（启用 xterm 鼠标上报后的普通拖拽选区、copy 事件内容、无新增 PTY 鼠标序列）；`git diff --check`、任务状态唯一性 | PASS：会话终端普通拖拽可保留并复制 xterm 选区；tmux 鼠标上报不会再清空选区或接收该拖拽手势。 |
 | 2026-08-29 | FR-79 | Web ESLint/typecheck/production build；源码 Vite 上定向 Playwright（用户 URL、图片来源、类型标记、外部回复 URL 不混入来源）；`git diff --check`、任务状态唯一性 | PASS：右侧环境摘要统一展示用户提供的链接、图片和文件来源；链接可安全打开，图片/文件复用工作区预览，不引入消息或来源持久化。 |

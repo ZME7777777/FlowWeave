@@ -107,13 +107,6 @@
 @keyframes conversation-jump-dot{0%,100%{opacity:.24;transform:translateY(0)}
 50%{opacity:1;transform:translateY(-2px)}
 }
-.conversation-response-wait{display:flex;align-items:flex-start;gap:9px;margin:2px 0;border:1px solid #dce7df;border-radius:10px;background:#f7fbf8;padding:11px 12px;color:#496056;font-size:12px;line-height:1.55}
-.conversation-response-wait>svg{flex:0 0 auto;margin-top:2px;color:#4f8c66;animation:conversation-spin 1.1s linear infinite}
-.conversation-response-wait b{font-size:12px}
-.conversation-response-wait p{margin:3px 0 0;color:#6b7a71}
-.conversation-response-wait.delayed{border-color:#ead8aa;background:#fffaf0;color:#705b27}
-.conversation-response-wait.delayed>svg{color:#a47b24}
-.conversation-response-wait.delayed p{color:#887548}
 .conversation-failure{display:flex;align-items:flex-start;gap:9px;margin:0;border:1px solid #f0d8d2;border-radius:10px;background:#fff8f6;padding:11px 12px;color:#79403a;font-size:12px;line-height:1.55}
 .conversation-failure>svg{flex:0 0 auto;margin-top:2px;color:#bd594d}
 .conversation-failure b{font-size:12px}
