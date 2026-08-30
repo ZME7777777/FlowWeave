@@ -66,7 +66,7 @@ export function RunsPage() {
     setDeleting(false);
   };
 
-  return <section className="page runs-page"><div className="page-head"><div><span className="eyebrow">FLOW RUNS</span><h1>流程运行</h1><p>每个 FlowRun 绑定一个 Runtime Session；节点执行与会话共享 Workspace，但保持独立的 OpenHands Conversation 身份。</p></div><button className="primary" disabled={!flows.length} onClick={() => setStarting(flows[0])}><Plus size={16}/>启动流程</button></div>
+  return <section className="page runs-page"><div className="page-action-row"><button className="primary" disabled={!flows.length} onClick={() => setStarting(flows[0])}><Plus size={16}/>启动流程</button></div>
     <div className="runs-page-scroll">
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
     <div className="run-list-tools"><label><Search size={14}/><input aria-label="搜索流程或运行" value={search} placeholder="搜索流程、运行或当前节点" onChange={event => setSearch(event.target.value)}/></label><label><Filter size={14}/><select aria-label="运行状态筛选" value={status} onChange={event => setStatus(event.target.value)}><option value="ALL">全部状态</option>{statuses.map(value => <option key={value} value={value}>{STATUS_LABELS[value] ?? value}</option>)}</select></label><div className="bulk-actions"><button className="secondary" disabled={!visibleIds.length || deleting} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前结果'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个运行`)}><Trash2 size={14}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></div><span>{groups.length} 个流程 · {visibleIds.length} 个运行</span></div>

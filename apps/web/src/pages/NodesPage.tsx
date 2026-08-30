@@ -1,8 +1,9 @@
 import { CheckSquare, ChevronRight, Copy, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { api, ApiError } from '../api/client';
 import { NodeEditor } from '../components/NodeEditor';
+import { Pagination } from '../components/Pagination';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
 import type { BlockedNodeDelete, NodeAsset, NodeAssetWrite, NodeDirectory } from '../types';
@@ -73,9 +74,14 @@ export function NodesPage() {
   const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [blockedAssets, setBlockedAssets] = useState<BlockedAsset[]>([]);
+  const [page, setPage] = useState(1);
   const visible = useMemo(() => nodes.filter(item => (directory === 'all' || item.directory_id === directory) && (!search || `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()))), [nodes, directory, search]);
   const visibleIds = visible.map(item => item.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
+  const pageSize = 24;
+  const pagedVisible = visible.slice((page - 1) * pageSize, page * pageSize);
+  useEffect(() => setPage(1), [directory, search]);
+  useEffect(() => { if (page > Math.max(1, Math.ceil(visible.length / pageSize))) setPage(1); }, [page, visible.length]);
 
   const save = useMutation({
     mutationFn: ({ node, data }: { node?: NodeAsset; data: NodeAssetWrite }) => node ? api.updateNode(node.id, data) : api.createNode(data),
@@ -119,11 +125,11 @@ export function NodesPage() {
   const currentDirectory = directories.find(item => item.id === directory)?.name ?? '全部节点';
   const roots = directories.filter(item => !item.parent_id);
 
-  return <section className="page node-assets-page"><div className="page-head"><div><span className="eyebrow">NODE ASSETS</span><h1>节点资产</h1><p>按目录维护可复用 Agent 节点、提示词和输入输出契约。</p></div><button className="primary" onClick={() => setEditing(null)}><Plus size={16}/>新建节点</button></div>
+  return <section className="page node-assets-page"><div className="page-action-row"><button className="primary" onClick={() => setEditing(null)}><Plus size={16}/>新建节点</button></div>
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
     <div className="asset-layout"><aside className="directory-panel"><header><b>节点目录</b><button title="新建目录" onClick={() => void createDirectory()}><Plus size={14}/></button></header><button className={`folder-row all ${directory === 'all' ? 'active' : ''}`} onClick={() => setDirectory('all')}><span/><Folder size={14}/><span>全部节点</span><small>{nodes.length}</small></button>{roots.map(item => <FolderRow key={item.id} item={item} directories={directories} nodes={nodes} selected={directory} depth={0} onSelect={setDirectory}/>)}</aside>
       <main className="asset-content"><div className="asset-tools"><div><span>节点资产</span><strong>{currentDirectory}</strong><small>{visible.length} 个节点</small></div><div className="bulk-actions"><button className="secondary" disabled={!visible.length || deleting} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前结果'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个节点`)}><Trash2 size={14}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></div><label><Search size={14}/><input aria-label="搜索节点" value={search} placeholder={`搜索 ${currentDirectory}`} onChange={event => setSearch(event.target.value)}/></label></div>
-        {isLoading ? <div className="empty">加载中…</div> : <div className="card-grid">{visible.map(node => <article tabIndex={0} className={`node-card product-card ${selectedIds.has(node.id) ? 'selected' : ''}`} data-testid="node-card" key={node.id} onClick={() => setDetail(node)} onKeyDown={event => { if (event.key === 'Enter') setDetail(node); }}><div className="node-card-head"><label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择节点 ${node.name}`} checked={selectedIds.has(node.id)} onChange={() => toggle(node.id)}/><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span></label><div className="card-actions"><button title="复制" onClick={event => action(event, () => setEditing({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }))}><Copy size={15}/></button><button title="编辑" onClick={event => action(event, () => setEditing(node))}><Pencil size={15}/></button><button title="删除" aria-label={`删除节点资产 ${node.name}`} onClick={event => action(event, () => void removeMany([node.id], `节点“${node.name}”`))}><Trash2 size={15}/></button></div></div><h3>{node.name}</h3><p>{node.description || '暂无说明'}</p><dl><div><dt>Agent 配置</dt><dd>默认工作区</dd></div><div><dt>输入 / 输出</dt><dd>{node.inputs.length} / {node.outputs.length}</dd></div></dl></article>)}</div>}
+        {isLoading ? <div className="empty">加载中…</div> : <><div className="card-grid compact-node-list">{pagedVisible.map(node => <article tabIndex={0} className={`node-card product-card ${selectedIds.has(node.id) ? 'selected' : ''}`} data-testid="node-card" key={node.id} onClick={() => setDetail(node)} onKeyDown={event => { if (event.key === 'Enter') setDetail(node); }}><div className="node-card-head"><label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择节点 ${node.name}`} checked={selectedIds.has(node.id)} onChange={() => toggle(node.id)}/><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span></label><div className="card-actions"><button title="复制" onClick={event => action(event, () => setEditing({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }))}><Copy size={15}/></button><button title="编辑" onClick={event => action(event, () => setEditing(node))}><Pencil size={15}/></button><button title="删除" aria-label={`删除节点资产 ${node.name}`} onClick={event => action(event, () => void removeMany([node.id], `节点“${node.name}”`))}><Trash2 size={15}/></button></div></div><div className="node-list-summary"><h3>{node.name}</h3><p>{node.description || '暂无说明'}</p></div></article>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></>}
         {!isLoading && !visible.length && <div className="empty">当前目录没有匹配节点。</div>}
       </main></div>
     {blockedAssets.length > 0 && <DeleteBlockedDialog assets={blockedAssets} onClose={() => setBlockedAssets([])} onOpenFlows={() => { setBlockedAssets([]); setView('flows'); }}/>}

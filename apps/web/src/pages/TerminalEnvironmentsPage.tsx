@@ -6,6 +6,7 @@ import { Box, LoaderCircle, Play, Plus, Save, Square, Terminal, Trash2, X } from
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, environmentTerminalUrl } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
+import { Pagination } from '../components/Pagination';
 import type { EnvironmentSetupSession, EnvironmentVersion, TerminalEnvironment } from '../types';
 
 function PublishingPanel({ onClose }: { onClose: () => void }) {
@@ -188,6 +189,10 @@ export function TerminalEnvironmentsPage() {
   const [openingEnvironmentId, setOpeningEnvironmentId] = useState<string | null>(null);
   const [deletingEnvironmentId, setDeletingEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const pagedEnvironments = environments.slice((page - 1) * pageSize, page * pageSize);
+  useEffect(() => { if (page > Math.max(1, Math.ceil(environments.length / pageSize))) setPage(1); }, [environments.length, page]);
   const closeTerminal = useCallback(() => setTerminalViewOpen(false), []);
   const discardTerminal = useCallback(() => {
     setTerminal(null);
@@ -309,10 +314,10 @@ export function TerminalEnvironmentsPage() {
     }
   };
 
-  return <main className="page environments-page"><header className="page-head"><div><span className="eyebrow">RUNTIME ENVIRONMENTS</span><h1>终端环境管理</h1><p>在隔离容器中交互安装 CLI、系统包与运行库，发布不可变环境版本，并在创建流程运行时选择使用。</p></div><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建环境</button></header>
+  return <main className="page environments-page"><div className="page-action-row"><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建环境</button></div><div className="environments-page-scroll">
     <div className="environment-warning"><b>凭据风险</b><span>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</span></div>
     {error && <p className="error">{error}</p>}
-    {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <div className="environment-grid">{environments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const latestCompatible = environment.versions.find(item => item.state === 'READY' && item.runtime_compatible); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
+    {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <><div className="environment-grid compact-environment-list">{pagedEnvironments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const latestCompatible = environment.versions.find(item => item.state === 'READY' && item.runtime_compatible); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
       <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3></div><button className="ghost" disabled={deletingEnvironmentId !== null} aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}>{deletingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={15}/> : <Trash2 size={15}/>}</button></header>
       <p>{environment.description || '未填写说明'}</p>
       <dl><div><dt>可运行版本</dt><dd>{environment.versions.filter(item => item.state === 'READY' && item.runtime_compatible).length}</dd></div><div><dt>最新可运行版本</dt><dd>{latestCompatible ? `v${latestCompatible.version_no} · ${latestCompatible.image_digest.slice(0, 19)}…` : '需要重新发布'}</dd></div><div><dt>配置会话</dt><dd>{active ? active.state : '无'}</dd></div></dl>
@@ -327,8 +332,8 @@ export function TerminalEnvironmentsPage() {
         </section>;
       })}</div></details>}
       <footer>{active ? <button className="primary" disabled={deletingEnvironmentId !== null} onClick={() => { setTerminal(active); setTerminalAttached(active.state !== 'PUBLISHING'); setTerminalViewOpen(true); }}>{active.state === 'PUBLISHING' ? <LoaderCircle className="spin" size={14}/> : <Terminal size={14}/>}{active.state === 'PUBLISHING' ? '查看发布进度' : '继续配置'}</button> : <button className="secondary" disabled={openingEnvironmentId !== null || deletingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
-    </article>; })}</div> : <div className="empty">暂无终端环境。新建后可在隔离终端中安装节点需要的命令。</div>}
-    {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label className="wide">名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
+    </article>; })}</div><Pagination page={page} pageSize={pageSize} total={environments.length} onPageChange={setPage}/></> : <div className="empty">暂无终端环境。新建后可在隔离终端中安装节点需要的命令。</div>}
+    </div>{creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label className="wide">名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
     {terminalAttached && terminal && <TerminalPanel
       session={terminal}
       visible={terminalViewOpen && terminal.state !== 'PUBLISHING'}
