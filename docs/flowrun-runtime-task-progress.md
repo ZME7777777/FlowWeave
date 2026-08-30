@@ -1415,6 +1415,14 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 实现的 Workspace 专属目录/能力/附件/模型/删除/fork/rewrite/确认操作，不会回退调用旧 FlowRun API。
 `AgentChatPage`、其 CSS、Zustand `agent-chat` 视图和旧启动路径已删除。
 
+### FR-100 能力仓库与新会话能力选择收口 — DONE
+
+依赖：`FR-99`。
+
+目标：在能力仓库为 MCP 提供与不可变版本模型一致的编辑入口；收紧仓库页面为固定模块导航和标题区、局部数据滚动；将 Skill 组合显示为紧凑的逻辑选择项；新建 Agent 会话默认不冻结任何能力，并允许在会话能力管理中一键展开 Skill 组合。
+
+完成：MCP 编辑会读取冻结配置及本地脚本、禁止更改 Server 身份、经既有校验与对象存储发布新的 MCP Version，且不重绑历史消费者。能力仓库移除了重复的大标题，模块导航和操作头固定于页面视口，只有数据区滚动；Skill 组合改为单行摘要。新会话的能力选择存于浏览器草稿并在 bootstrap 时显式冻结具体 version ID，未选择时传入空集合；组合仅作为紧凑逻辑快捷项，展开并冻结其包含的真实 Skill Version。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1431,6 +1439,7 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-100 | 受影响 Python `py_compile` 与 schema import；Web TypeScript typecheck、ESLint 和 `git diff --check` | PASS：MCP 编辑、局部滚动、紧凑 Skill 组合和草稿级能力冻结均通过静态检查。Agent Workspace/bootstrap 定向 pytest 因本机 Docker daemon 未运行而无法创建 testcontainers PostgreSQL，未将该环境前置条件失败视为代码失败。 |
 | 2026-08-29 | FR-98 | FlowRun locator/节点宿主与 Runtime replacement 定向 pytest（10 passed）；PostgreSQL 空库、回退重升及历史快照迁移矩阵；受影响 Ruff/py_compile、Alembic `0072_flow_node_locator` head 与 `git diff --check` | PASS：FlowRun 的新建、读取、路由、确认、replacement 与删除均使用共享 `agent_conversation_bindings` 的 `FLOW_NODE` 行；旧 locator/无可证明节点 scope 的历史审批被显式淘汰，未保留第二套活跃会话映射。 |
 | 2026-08-29 | FR-93 | FlowRun locator 与节点宿主定向 pytest（7 passed）；共享会话兼容导入与跨模块 public facade 架构 pytest（2 passed）；受影响 Ruff/py_compile；Alembic `0070_agent_caps` head 与 `git diff --check` | PASS：节点会话入口仅通过共享 `agent_sessions` 的 FlowRun/node 宿主解析器验证 Run、Snapshot、节点、Attempt、启动门禁、Runtime 和冻结工作目录；未新建第二套会话页面、binding 或服务。 |
 | 2026-08-29 | FR-97 | Agent Workspace 宿主/标题定向 pytest（6 passed）与 bootstrap、目录、能力、标题定向 pytest（4 passed）；共享 Workbench/facade、宿主合同与跨模块公开 facade 架构 pytest（4 passed）；受影响 Ruff/py_compile；Alembic `0070_agent_caps` head 与 `git diff --check` | PASS：共享会话内核只经默认宿主的 public facade 获取 Workspace 事实，所有跨模块依赖门禁通过；惰性公开导出消除了宿主与核心的导入循环，`/agent` 的会话、目录、能力、标题、附件、文件与终端行为保持已有定向回归。 |

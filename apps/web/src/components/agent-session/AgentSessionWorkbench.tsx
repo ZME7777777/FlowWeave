@@ -2,13 +2,13 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { ApiError, randomId } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface } from '../ConversationSurface';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -21,7 +21,7 @@ interface QueuedMessage {
   items: AgentAttachment[];
 }
 interface BoundQueuedMessage extends QueuedMessage { bindingId: string; }
-interface ConversationDraft { id: string; workDirectoryId?: string; displayName: string; }
+interface ConversationDraft { id: string; workDirectoryId?: string; displayName: string; capabilityVersionIds?: string[]; }
 interface BootstrapRecovery {
   draft: ConversationDraft;
   message: QueuedMessage;
@@ -188,9 +188,9 @@ function ComposerCapabilityAutocomplete({
   </div>;
 }
 
-function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, onClose, onCreateEnhancedConversation }: {
+function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds = [], onClose, onCreateEnhancedConversation }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
-  onCreateEnhancedConversation?: () => void;
+  draftCapabilityIds?: string[]; onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
 }) {
   const { api } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -201,15 +201,11 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
   const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentSessionMcpReadiness | undefined>>({});
   const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
   const catalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities });
-  const enabledQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'host-capabilities', workspaceId),
-    queryFn: () => api.hostCapabilities(workspaceId),
-    enabled: !bindingId,
-  });
+  const collectionsQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-collections'), queryFn: api.capabilityCollections });
   useEffect(() => {
-    const current = bindingId ? conversationCapabilities : enabledQuery.data;
+    const current = bindingId ? conversationCapabilities : draftCapabilityIds.map(id => ({ id }));
     if (current) setSelectedIds(current.map(item => item.id));
-  }, [bindingId, conversationCapabilities, enabledQuery.data]);
+  }, [bindingId, conversationCapabilities, draftCapabilityIds]);
   const capabilities = useMemo(() => (catalogQuery.data ?? []).filter(item =>
     item.is_latest && ['SKILL', 'MCP', 'PLUGIN'].includes(item.capability_type),
   ), [catalogQuery.data]);
@@ -222,6 +218,10 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
   }, [capabilities, kind, query]);
   const byId = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
   const selectedMcpIds = useMemo(() => selectedIds.filter(id => byId.get(id)?.capability_type === 'MCP'), [byId, selectedIds]);
+  const selectableVisibleIds = useMemo(() => visible
+    .filter(item => !bindingId || !(conversationCapabilities ?? []).some(enabled => enabled.id === item.id))
+    .map(item => item.id), [bindingId, conversationCapabilities, visible]);
+  const allVisibleSelected = selectableVisibleIds.length > 0 && selectableVisibleIds.every(id => selectedIds.includes(id));
   const checkMcpReadiness = useCallback(async (ids: string[]) => {
     if (!ids.length) return [] as Array<readonly [string, AgentSessionMcpReadiness]>;
     setCheckingMcpIds(current => new Set([...current, ...ids]));
@@ -253,7 +253,7 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
         const reason = status.error_kind === 'timeout' ? '连接超时' : status.error_kind === 'connection' ? '无法连接' : '暂时不可用';
         throw new Error(`MCP「${capability?.capability_key ?? '未命名'}」${reason}，请重新检测后再保存。`);
       }
-      if (!bindingId) return api.replaceHostCapabilities(workspaceId, selectedIds);
+      if (!bindingId) return selectedIds;
       const loaded = new Set((conversationCapabilities ?? []).map(item => item.id));
       let latest: AgentConversation | undefined;
       for (const capabilityVersionId of selectedIds.filter(id => !loaded.has(id))) {
@@ -262,7 +262,7 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
       return latest;
     },
     onSuccess: value => {
-      if (!bindingId) queryClient.setQueryData<AgentSessionCapability[]>(sessionQueryKey(host, 'host-capabilities', workspaceId), value as AgentSessionCapability[]);
+      if (!bindingId) onCreateEnhancedConversation?.(value as string[]);
       if (bindingId && value) {
         queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspaceId), current =>
           current?.map(item => item.id === bindingId ? value as AgentConversation : item),
@@ -286,14 +286,46 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, o
     if (current.length - sameName.length >= 30) return current;
     return [...current.filter(id => !sameName.includes(id)), item.id];
   });
+  const toggleVisible = () => setSelectedIds(current => {
+    if (allVisibleSelected) return current.filter(id => !selectableVisibleIds.includes(id));
+    return selectableVisibleIds.reduce((next, id) => {
+      if (next.includes(id)) return next;
+      const item = byId.get(id);
+      if (!item) return next;
+      const sameName = next.filter(selectedId => {
+        const selected = byId.get(selectedId);
+        return selected?.capability_type === item.capability_type && selected.capability_key === item.capability_key;
+      });
+      if (next.length - sameName.length >= 30) return next;
+      return [...next.filter(selectedId => !sameName.includes(selectedId)), id];
+    }, current);
+  });
+  const toggleCollection = (collection: CapabilityCollection) => setSelectedIds(current => {
+    const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id));
+    if (!memberIds.length) return current;
+    const isSelected = memberIds.every(id => current.includes(id));
+    if (isSelected) return current.filter(id => !memberIds.includes(id) || (bindingId && (conversationCapabilities ?? []).some(item => item.id === id)));
+    return memberIds.reduce((next, id) => {
+      if (next.includes(id) || next.length >= 30) return next;
+      const item = byId.get(id);
+      if (!item) return next;
+      const sameName = next.filter(selectedId => {
+        const selected = byId.get(selectedId);
+        return selected?.capability_type === item.capability_type && selected.capability_key === item.capability_key;
+      });
+      if (next.length - sameName.length >= 30) return next;
+      return [...next.filter(selectedId => !sameName.includes(selectedId)), id];
+    }, current);
+  });
   return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !save.isPending) onClose(); }}>
     <section className="agent-capability-manager" role="dialog" aria-modal="true" aria-labelledby="agent-capability-title">
-      <header><div><span className="eyebrow">{bindingId ? 'CURRENT AGENT SESSION' : 'AGENT WORKSPACE'}</span><h2 id="agent-capability-title">能力</h2><p>{bindingId ? '为当前会话注册新的已发布能力。Skill、MCP 和 Plugin 会立即通过原生 OpenHands Plugin Loader 生效；已注册能力不能取消或删除。' : '选择新会话默认挂载的已发布能力。每个会话会冻结其创建时的版本。'}</p></div><button type="button" aria-label="关闭插件管理" disabled={save.isPending} onClick={onClose}><X size={18}/></button></header>
-      <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', '全部'], ['PLUGIN', '插件'], ['MCP', 'MCP'], ['SKILL', '技能']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div>
-      <div className="agent-capability-summary"><span>{bindingId ? '已注册' : '已启用'} <b>{selectedIds.length}</b> / 30</span><span>{bindingId ? '可继续注册新能力；已注册能力已锁定，不能取消或删除。' : '全局默认仅作用于后续新会话；可随时重新选择和保存。'}</span></div>
+      <header><div><span className="eyebrow">{bindingId ? 'CURRENT AGENT SESSION' : 'NEW AGENT SESSION'}</span><h2 id="agent-capability-title">能力</h2><p>{bindingId ? '为当前会话注册新的已发布能力。Skill、MCP 和 Plugin 会立即通过原生 OpenHands Plugin Loader 生效；已注册能力不能取消或删除。' : '新会话默认不挂载能力；在这里选择的版本只会冻结到即将创建的这一个会话。'}</p></div><button type="button" aria-label="关闭插件管理" disabled={save.isPending} onClick={onClose}><X size={18}/></button></header>
+      <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', '全部'], ['PLUGIN', '插件'], ['MCP', 'MCP'], ['SKILL', '技能']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><div className="agent-capability-toolbar-actions"><button type="button" className="agent-capability-select-visible" disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果 (${selectableVisibleIds.length})`}</button><label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
+      <div className="agent-capability-summary"><span>{bindingId ? '已注册' : '已选择'} <b>{selectedIds.length}</b> / 30</span><span>{bindingId ? '可继续注册新能力；已注册能力已锁定，不能取消或删除。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span></div>
+      {(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <section className="agent-capability-collections"><span>Skill 组合</span><div>{collectionsQuery.data.map(collection => { const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id)); const selected = memberIds.length > 0 && memberIds.every(id => selectedIds.includes(id)); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><Layers3 size={13}/><b>{collection.name}</b><em>{collection.members.length}</em>{selected && <Check size={13}/>}</button>; })}</div></section> : null}
       <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>没有匹配的已发布能力。</p> : visible.map(item => { const checked = selectedIds.includes(item.id); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); const isMcp = item.capability_type === 'MCP'; const readiness = mcpReadiness[item.id]; const checking = isMcp && checkingMcpIds.has(item.id); const readinessLabel = !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用'; const detail = locked ? '已注册到当前会话，不能取消或删除。' : isMcp && checked && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；不会保存为新会话默认能力。` : item.description || item.filename; return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? `${item.capability_key}（已注册，不能取消）` : undefined} title={locked ? '该能力已注册到当前会话，不能取消或删除。' : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{detail}</small><em className={isMcp && checked ? `mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}` : undefined}>{readinessLabel}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
-      {save.error && <div className="agent-capability-error"><p>{save.error.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。新会话会自动带入当前“新会话默认能力”；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={onCreateEnhancedConversation}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
-      <footer>{selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0 || (!bindingId && enabledQuery.isLoading)} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '保存默认能力'}</button></footer>
+      {save.error && <div className="agent-capability-error"><p>{save.error.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
+      <footer>{selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '用于新建会话'}</button></footer>
     </section>
   </div>;
 }
@@ -1058,17 +1090,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
-  const defaultCapabilitiesQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'host-capabilities', workspace?.id),
-    queryFn: () => api.hostCapabilities(workspace!.id),
-    enabled: Boolean(workspace && features.capabilities),
-  });
   const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const selected = useMemo(() => conversations.find(item => item.id === selectedBindingId), [conversations, selectedBindingId]);
-  const composerCapabilityReferences = useMemo(
-    () => selected?.capabilities ?? (conversationDraft ? defaultCapabilitiesQuery.data ?? [] : []),
-    [conversationDraft, defaultCapabilitiesQuery.data, selected?.capabilities],
-  );
+  const composerCapabilityReferences = useMemo(() => {
+    if (selected?.capabilities) return selected.capabilities;
+    if (!conversationDraft) return [];
+    const catalog = new Map((capabilityCatalogQuery.data ?? []).map(item => [item.id, item]));
+    return (conversationDraft.capabilityVersionIds ?? []).flatMap(id => {
+      const item = catalog.get(id);
+      return item ? [{ id: item.id, capability_type: item.capability_type as AgentSessionCapability['capability_type'], capability_key: item.capability_key, digest: item.content_hash }] : [];
+    });
+  }, [capabilityCatalogQuery.data, conversationDraft, selected?.capabilities]);
   const composerSuggestions = useMemo(() => {
     const catalog = new Map((capabilityCatalogQuery.data ?? []).map(item => [item.id, item]));
     const seen = new Set<string>();
@@ -1325,6 +1357,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
     message.content,
     message.items,
     conversationDraft?.workDirectoryId,
+    conversationDraft?.capabilityVersionIds ?? [],
     conversationDraft!.id,
   ), onSuccess: (value, message) => {
     if (!workspace) return;
@@ -1602,7 +1635,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
   }, [interrupt, rewrite, turnState]);
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
     clearBootstrapRecovery();
-    setConversationDraft({ ...next, id: randomId() });
+    setConversationDraft({ ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] });
     setWorkspaceScopeMigration(undefined);
     setDraft('');
     setAttachments([]);
@@ -1778,7 +1811,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
           {archivedDirectoryConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>保留的历史会话</small></span><ChevronRight size={13}/></button>)}
         </WorkspaceConversationGroup>}
       </div>
-      {features.capabilities && <footer className="agent-workbench-rail-footer"><button type="button" onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>能力</b><small>{selected ? '管理当前会话能力' : '管理新会话默认能力'}</small></span><ChevronRight size={14}/></button></footer>}
+      {features.capabilities && <footer className="agent-workbench-rail-footer"><button type="button" onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>能力</b><small>{selected ? '管理当前会话能力' : '为新会话选择能力'}</small></span><ChevronRight size={14}/></button></footer>}
       {!conversations.length && !conversationDraft && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{features.modelSelection && !connectedProviders.length ? '请先完成至少一个模型供应商的连接测试。' : '在当前节点工作目录中新建会话开始协作。'}</span></div>}
     </aside>
     <section className="agent-workbench-main">
@@ -1812,6 +1845,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
     }}/>}
-    {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={() => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区' }); }}/>}
+    {capabilityManagerOpen && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }}/>}
   </main>;
 }

@@ -58,7 +58,7 @@ from flowweave.shared.models import (
     MCPOAuthSecretReference,
     PluginSourceResolution,
 )
-from flowweave.shared.schemas import CapabilityValidateWrite
+from flowweave.shared.schemas import CapabilityValidateWrite, MCPScriptWrite
 from flowweave.shared.settings import get_settings
 
 SENSITIVE = {"api_key", "apikey", "token", "secret", "password", "authorization"}
@@ -1579,6 +1579,60 @@ def read_skill_source(db: Session, capability_id: str) -> dict[str, Any]:
     }
 
 
+def read_mcp_source(db: Session, capability_id: str) -> dict[str, Any]:
+    """Return one MCP's editable config and its frozen script payloads."""
+
+    published = resolve_version(db, capability_id)
+    if published.package.capability_type != "MCP":
+        raise DomainError("CAPABILITY_NOT_EDITABLE", "Only MCP source can be edited", 422)
+    normalized = dict(published.version.normalized_config_json or {})
+    key = published.package.capability_key
+    try:
+        source = get_artifact_store().read(published.blob.storage_key)
+        scripts: list[dict[str, str]] = []
+        if zipfile.is_zipfile(io.BytesIO(source)):
+            with zipfile.ZipFile(io.BytesIO(source)) as archive:
+                raw = archive.read("config.json")
+                prefix = str(normalized.get("script_archive_prefix") or "")
+                for filename in normalized.get("script_files", []):
+                    if not isinstance(filename, str) or not prefix:
+                        continue
+                    content = archive.read(f"{prefix}/{filename}")
+                    scripts.append(
+                        {
+                            "server": key,
+                            "filename": filename,
+                            "content_base64": base64.b64encode(content).decode("ascii"),
+                        }
+                    )
+        else:
+            raw = source
+        document = json.loads(raw.decode("utf-8"))
+        roots = [name for name in ("mcpServers", "servers") if isinstance(document.get(name), dict)]
+        if len(roots) != 1 or key not in document[roots[0]]:
+            raise KeyError(key)
+        content = json.dumps(
+            {"mcpServers": {key: document[roots[0]][key]}}, ensure_ascii=False, indent=2
+        )
+    except (
+        FileNotFoundError,
+        KeyError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        zipfile.BadZipFile,
+    ) as exc:
+        raise DomainError(
+            "CAPABILITY_SOURCE_UNAVAILABLE", "MCP source is unavailable", 422
+        ) from exc
+    return {
+        "id": capability_id,
+        "capability_key": key,
+        "filename": published.version.source_filename,
+        "content": content,
+        "mcp_scripts": scripts,
+    }
+
+
 def prepare_skill_update(db: Session, capability_id: str, content: str) -> PreparedSkillUpdate:
     published = resolve_version(db, capability_id)
     if published.package.capability_type != "SKILL":
@@ -1643,6 +1697,41 @@ def prepare_skill_update(db: Session, capability_id: str, content: str) -> Prepa
         capability_id=capability_id,
         expected_digest=published.version.digest,
         prepared=replace(prepared, preview=preview),
+    )
+
+
+def prepare_mcp_update(
+    db: Session, capability_id: str, content: str, scripts: list[MCPScriptWrite]
+) -> PreparedSkillUpdate:
+    """Validate a revised single-server MCP and keep its immutable identity."""
+
+    published = resolve_version(db, capability_id)
+    if published.package.capability_type != "MCP":
+        raise DomainError("CAPABILITY_NOT_EDITABLE", "Only MCP source can be edited", 422)
+    payload = CapabilityValidateWrite(
+        capability_type="MCP",
+        filename=published.version.source_filename,
+        content_base64=base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        mcp_scripts=scripts,
+    )
+    prepared = prepare_validation(payload)
+    entries = cast(list[dict[str, Any]], prepared.preview.get("capabilities", []))
+    if len(entries) != 1:
+        raise DomainError("CAPABILITY_SOURCE_INVALID", "MCP editing requires one Server", 422)
+    revised_key = str(entries[0].get("capability_key") or "")
+    if revised_key != published.package.capability_key:
+        raise DomainError(
+            "CAPABILITY_IDENTITY_CHANGED",
+            "Editing an MCP cannot change its Server name",
+            422,
+            {"expected": published.package.capability_key, "actual": revised_key},
+        )
+    if prepared.content_hash == published.blob.content_hash:
+        raise DomainError("CAPABILITY_SOURCE_UNCHANGED", "Capability source has not changed", 422)
+    return PreparedSkillUpdate(
+        capability_id=capability_id,
+        expected_digest=published.version.digest,
+        prepared=replace(prepared, preview={**prepared.preview, "capabilities": entries}),
     )
 
 
@@ -1730,6 +1819,51 @@ def confirm_skill_update(
             payload={"position": 0},
         )
     revised_id = revised.version.id
+    finish(db)
+    return next(item for item in list_versions(db) if item["id"] == revised_id)
+
+
+def confirm_mcp_update(
+    db: Session, update_plan: PreparedSkillUpdate, final_key: str
+) -> dict[str, Any]:
+    """Publish one revised MCP version without rebinding existing consumers."""
+
+    register_rollback_action(db, lambda: get_artifact_store().delete(final_key))
+    baseline = db.scalar(
+        select(CapabilityVersion)
+        .where(CapabilityVersion.id == update_plan.capability_id)
+        .with_for_update()
+    )
+    if (
+        baseline is None
+        or baseline.state != "PUBLISHED"
+        or baseline.digest != update_plan.expected_digest
+    ):
+        raise DomainError(
+            "CAPABILITY_SOURCE_CONFLICT",
+            "Capability source changed while it was being edited",
+            409,
+        )
+    imported = CapabilityImport(
+        token_digest=update_plan.prepared.token_digest,
+        capability_type="MCP",
+        filename=update_plan.prepared.filename,
+        content_hash=update_plan.prepared.content_hash,
+        storage_key=final_key,
+        byte_size=len(update_plan.prepared.content),
+        preview_json=update_plan.prepared.preview,
+        state="COMMITTED",
+        expires_at=update_plan.prepared.expires_at,
+        consumed_at=datetime.now(UTC),
+    )
+    db.add(imported)
+    db.flush()
+    published = publish_import(db, imported)
+    if len(published) != 1 or published[0].package.id != baseline.package_id:
+        raise DomainError(
+            "CAPABILITY_IDENTITY_CHANGED", "Editing an MCP cannot change its identity", 422
+        )
+    revised_id = published[0].version.id
     finish(db)
     return next(item for item in list_versions(db) if item["id"] == revised_id)
 

@@ -21,6 +21,7 @@ import type {
   AgentSessionWorkDirectoryList,
   AgentSessionWorkspaceDetails,
   CapabilityAsset,
+  CapabilityCollection,
   ModelProvider,
   OpenHandsConversationEventBatch,
 } from '../types';
@@ -69,6 +70,7 @@ export interface AgentSessionApi {
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
   readonly providers: () => Promise<ModelProvider[]>;
   readonly capabilities: () => Promise<CapabilityAsset[]>;
+  readonly capabilityCollections: () => Promise<CapabilityCollection[]>;
   readonly hostCapabilities: (hostId: AgentSessionHostId) => Promise<AgentSessionCapability[]>;
   readonly mcpReadiness: (hostId: AgentSessionHostId, capabilityVersionId: string) => Promise<AgentSessionMcpReadiness>;
   readonly replaceHostCapabilities: (hostId: AgentSessionHostId, capabilityVersionIds: string[]) => Promise<AgentSessionCapability[]>;
@@ -77,7 +79,7 @@ export interface AgentSessionApi {
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
   readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<string>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
-  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], workDirectoryId?: AgentSessionWorkDirectoryId, idempotencyKey?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
+  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string) => Promise<OpenHandsConversationEventBatch>;
@@ -120,6 +122,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
     capabilities: api.capabilities,
+    capabilityCollections: api.capabilityCollections,
     hostCapabilities: api.agentWorkspaceCapabilities,
     mcpReadiness: api.agentWorkspaceMcpReadiness,
     replaceHostCapabilities: api.replaceAgentWorkspaceCapabilities,
@@ -179,6 +182,7 @@ export function flowNodeSessionGateway(
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: async () => [],
       capabilities: async () => [],
+      capabilityCollections: async () => [],
       hostCapabilities: async () => [],
       mcpReadiness: async () => unavailable('Capability readiness'),
       replaceHostCapabilities: async () => unavailable('Capability replacement'),
@@ -197,7 +201,7 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, _providerId, modelName, reasoningEffort, content, _attachments, workDirectoryId, idempotencyKey) => {
+      bootstrapConversation: async (_hostId, conversationId, _providerId, modelName, reasoningEffort, content, _attachments, workDirectoryId, _capabilityVersionIds, idempotencyKey) => {
         const conversation = await nodeSessionApi.create(
           flowRunId, attemptId, undefined, modelName || undefined, reasoningEffort, idempotencyKey ?? conversationId, workDirectoryId,
         );

@@ -912,6 +912,7 @@ def bootstrap_conversation(
     reasoning_effort: str | None = None,
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
+    capability_version_ids: tuple[str, ...] = (),
     idempotency_key: str,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
@@ -993,7 +994,7 @@ def bootstrap_conversation(
         )
         db.add(binding)
         db.flush()
-        _freeze_workspace_capabilities(db, workspace, binding)
+        _freeze_capabilities(db, binding, capability_version_ids)
         command = AgentConversationCommand(
             workspace_id=workspace.id,
             host_kind="AGENT_WORKSPACE",

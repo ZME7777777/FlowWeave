@@ -27,6 +27,7 @@ from flowweave.shared.schemas import (
     CapabilityBulkDeleteWrite,
     CapabilityCollectionWrite,
     CapabilityCommitWrite,
+    CapabilityMcpRevisionWrite,
     CapabilitySkillRevisionWrite,
     CapabilityValidateWrite,
     DirectoryWrite,
@@ -557,6 +558,36 @@ async def update_capability_source(
         return await run_sync(
             db,
             lambda session: capability_imports.confirm_skill_update(session, stored, final_key),
+        )
+    except BaseException:
+        if stored.prepared.storage_key is not None:
+            await asyncio.to_thread(capability_imports.discard_validation_source, stored.prepared)
+        raise
+
+
+@router.get("/capabilities/{capability_id}/mcp-source")
+async def mcp_source(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.read_mcp_source(session, capability_id)
+    )
+
+
+@router.put("/capabilities/{capability_id}/mcp-source")
+async def update_mcp_source(
+    capability_id: str, payload: CapabilityMcpRevisionWrite, db: Db
+) -> dict[str, Any]:
+    update_plan = await run_sync(
+        db,
+        lambda session: capability_imports.prepare_mcp_update(
+            session, capability_id, payload.content, payload.mcp_scripts
+        ),
+    )
+    stored = await asyncio.to_thread(capability_imports.store_skill_update_source, update_plan)
+    try:
+        final_key = await asyncio.to_thread(capability_imports.finalize_skill_update_source, stored)
+        return await run_sync(
+            db,
+            lambda session: capability_imports.confirm_mcp_update(session, stored, final_key),
         )
     except BaseException:
         if stored.prepared.storage_key is not None:

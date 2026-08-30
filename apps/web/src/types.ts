@@ -39,6 +39,10 @@ export interface CapabilityCollectionWrite {
 export interface SkillSource {
   id: string; capability_key: string; filename: string; entry: string; content: string;
 }
+export interface McpSource {
+  id: string; capability_key: string; filename: string; content: string;
+  mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>;
+}
 export interface CapabilityImportResult {
   id: string; capability_type: CapabilityAssetType; filename: string;
   content_hash: string; storage_key: string; capabilities: CapabilityAsset[];

@@ -371,6 +371,10 @@ def _empty_mcp_scripts() -> list[MCPScriptWrite]:
     return []
 
 
+class CapabilityMcpRevisionWrite(CapabilitySkillRevisionWrite):
+    mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
+
+
 class HookScriptWrite(ApiModel):
     filename: str = Field(min_length=1, max_length=240)
     content_base64: str = Field(min_length=1)

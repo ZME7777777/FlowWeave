@@ -88,6 +88,7 @@ class AgentConversationBootstrapWrite(_Write):
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
 
 
 class AgentMessageWrite(_Write):
@@ -383,6 +384,7 @@ async def create_agent_conversation(
             reasoning_effort=payload.reasoning_effort,
             content=payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+            capability_version_ids=tuple(payload.capability_version_ids),
             idempotency_key=idempotency_key,
         ),
     )
