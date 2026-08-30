@@ -8,9 +8,12 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from flowweave.modules.agent_sessions.public import AgentConversationMessageAttachment
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversationBinding,
+    AgentConversationCapability,
+    AgentConversationCommand,
     ArtifactVersion,
     AttemptInputBinding,
     BackgroundTask,
@@ -1609,6 +1612,57 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
     (workspace / "execution.log").write_text("temporary workspace")
     task_id = "delete-run-task"
     with db_session_factory() as db:
+        runtime_session_id = db.scalar(
+            select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
+        )
+        assert runtime_session_id is not None
+        conversation = AgentConversationBinding(
+            runtime_session_id=runtime_session_id,
+            host_kind="FLOW_NODE",
+            host_id=run["id"],
+            conversation_scope_id=run["id"],
+            flow_run_id=run["id"],
+            node_run_id=attempt["node_run_id"],
+            node_attempt_id=attempt["id"],
+            working_directory="/runtime/workspace/project",
+            openhands_conversation_id=str(uuid4()),
+            lifecycle="ACTIVE",
+            create_idempotency_key=f"delete-run-binding:{attempt['id']}",
+        )
+        db.add(conversation)
+        db.flush()
+        conversation_id = conversation.id
+        db.add_all(
+            [
+                AgentConversationCapability(
+                    binding_id=conversation_id,
+                    capability_version_id=skill_capability["capability_id"],
+                    capability_type=skill_capability["capability_type"],
+                    capability_key=skill_capability["capability_key"],
+                    digest="d" * 64,
+                    position=0,
+                ),
+                AgentConversationMessageAttachment(
+                    binding_id=conversation_id,
+                    event_id="deletion-test-event",
+                    content="删除时清理",
+                    filename="deletion-test.txt",
+                    mime_type="text/plain",
+                    byte_size=18,
+                    path="/runtime/workspace/project/deletion-test.txt",
+                ),
+                AgentConversationCommand(
+                    workspace_id=None,
+                    host_kind="FLOW_NODE",
+                    host_id=run["id"],
+                    binding_id=conversation_id,
+                    command_type="RENAME",
+                    idempotency_key=f"delete-run-command:{conversation_id}",
+                    state="SUCCEEDED",
+                    attempt_count=1,
+                ),
+            ]
+        )
         db.add(
             BackgroundTask(
                 id=task_id,
@@ -1654,6 +1708,31 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
         )
         assert db.scalars(select(RunEvent).where(RunEvent.flow_run_id == run["id"])).all() == []
         assert db.get(NodeAttempt, attempt["id"]) is None
+        assert db.get(AgentConversationBinding, conversation_id) is None
+        assert (
+            db.scalars(
+                select(AgentConversationCapability).where(
+                    AgentConversationCapability.binding_id == conversation_id
+                )
+            ).all()
+            == []
+        )
+        assert (
+            db.scalars(
+                select(AgentConversationMessageAttachment).where(
+                    AgentConversationMessageAttachment.binding_id == conversation_id
+                )
+            ).all()
+            == []
+        )
+        assert (
+            db.scalars(
+                select(AgentConversationCommand).where(
+                    AgentConversationCommand.binding_id == conversation_id
+                )
+            ).all()
+            == []
+        )
         assert (
             db.scalars(
                 select(AttemptInputBinding).where(AttemptInputBinding.attempt_id == attempt["id"])

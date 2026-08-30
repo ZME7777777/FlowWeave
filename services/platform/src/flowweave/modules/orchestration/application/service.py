@@ -22,7 +22,12 @@ from flowweave.modules.agent_sessions.application.runtime_config import (
     reserve_flow_node_binding,
     resolve_session_config,
 )
-from flowweave.modules.agent_sessions.public import AgentConversationBinding
+from flowweave.modules.agent_sessions.public import (
+    AgentConversationBinding,
+    AgentConversationCapability,
+    AgentConversationCommand,
+    AgentConversationMessageAttachment,
+)
 from flowweave.modules.catalog.public import (
     describe_asset,
     hold_snapshot_memory_references,
@@ -3168,6 +3173,23 @@ def delete_run(db: Session, run_id: str) -> None:
         db.execute(
             delete(BackgroundTask).where(BackgroundTask.aggregate_id.in_(task_aggregate_ids))
         )
+    if conversation_ids:
+        db.execute(
+            delete(AgentConversationMessageAttachment).where(
+                AgentConversationMessageAttachment.binding_id.in_(conversation_ids)
+            )
+        )
+        db.execute(
+            delete(AgentConversationCapability).where(
+                AgentConversationCapability.binding_id.in_(conversation_ids)
+            )
+        )
+        db.execute(
+            delete(AgentConversationCommand).where(
+                AgentConversationCommand.binding_id.in_(conversation_ids)
+            )
+        )
+        db.execute(delete(AgentConversationBinding).where(AgentConversationBinding.id.in_(conversation_ids)))
     if attempt_ids:
         db.execute(
             delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids))
