@@ -189,6 +189,49 @@ test('terminal environment creation keeps the setup image internal', async ({ pa
   });
 });
 
+test('environment publishing reopens as progress instead of reconnecting the terminal', async ({ page }) => {
+  let terminalAttachments = 0;
+  const environment = {
+    id: 'environment-publishing',
+    name: '发布中的终端环境',
+    description: '镜像正在构建',
+    row_version: 1,
+    versions: [{
+      id: 'version-publishing', environment_id: 'environment-publishing', version_no: 1,
+      parent_version_id: null, state: 'PUBLISHING', image_reference: '', image_digest: '',
+      base_image_reference: 'flowweave-openhands-runtime:1', base_image_digest: 'sha256:seed',
+      manifest: {}, error_detail: null, runtime_compatible: false, runtime_incompatibility_reason: null,
+      run_reference_count: 0, reference_count: 0, created_at: new Date().toISOString(),
+    }],
+    active_sessions: [{
+      id: 'setup-session-publishing', environment_id: 'environment-publishing', base_version_id: null,
+      state: 'PUBLISHING', base_image_reference: 'flowweave-openhands-runtime:1',
+      expires_at: new Date(Date.now() + 60_000).toISOString(), error_detail: null,
+    }],
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  await page.route('**/api/v1/terminal-environments**', async route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && pathname.endsWith('/terminal-environments')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([environment]) });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.routeWebSocket('**/api/v1/environment-setup-sessions/*/terminal*', () => { terminalAttachments += 1; });
+
+  await login(page);
+  await page.getByRole('button', { name: '终端环境' }).click();
+  await page.getByRole('button', { name: '查看发布进度' }).click();
+  await expect(page.getByText('环境版本正在后台发布', { exact: true })).toBeVisible();
+  await expect(page.getByText('完成前不能重新连接或停止此终端。', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: '关闭视图' }).click();
+  await page.getByRole('button', { name: '查看发布进度' }).click();
+  await expect(page.getByText('环境版本正在后台发布', { exact: true })).toBeVisible();
+  expect(terminalAttachments).toBe(0);
+});
+
 test('terminal environment delete stops active setup sessions before retrying cleanup', async ({ page }) => {
   let environmentVisible = true;
   let environmentDeleteAttempts = 0;

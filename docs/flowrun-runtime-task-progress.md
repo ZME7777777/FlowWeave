@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：无（节点宿主 gateway 已完成；部署与真实 E2E 仍按后续发布门禁执行）
+> 下一可执行切片：无（环境发布中状态与终端重连隔离已完成；后续发布门禁按独立切片执行）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1423,6 +1423,14 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 完成：MCP 编辑会读取冻结配置及本地脚本、禁止更改 Server 身份、经既有校验与对象存储发布新的 MCP Version，且不重绑历史消费者。能力仓库移除了重复的大标题，模块导航和操作头固定于页面视口，只有数据区滚动；Skill 组合改为单行摘要。新会话的能力选择存于浏览器草稿并在 bootstrap 时显式冻结具体 version ID，未选择时传入空集合；组合仅作为紧凑逻辑快捷项，展开并冻结其包含的真实 Skill Version。
 
+### FR-101 环境发布中状态与终端重连隔离 — DONE
+
+依赖：`FR-100`。
+
+目标：环境配置终端开始发布时，服务端必须先持久化 `PUBLISHING` 会话状态，再执行容器冻结、OpenHands Runtime 打包与契约探针。发布期间不得重新附着终端、创建第二个配置会话或停止并丢弃该会话；关闭视图后重新进入应展示可关闭的后台发布状态，而非误导为终端重连。发布失败时会话恢复为可继续配置的 `RUNNING` 状态，已创建的 Version 仍按既有失败语义保留诊断。不得改变不可变镜像构建链、Runtime digest、OpenHands 或 FlowRun 契约。
+
+验收：环境服务定向测试覆盖发布中状态、禁止终端连接/二次创建/停止、成功完成及失败回退；Web 定向 Playwright 覆盖关闭后重新进入显示发布中、不建立终端 WebSocket；受影响 Python/Web 静态检查、Alembic head、任务状态唯一性和 `git diff --check` 通过。本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1439,6 +1447,7 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-101 | 环境服务定向 pytest（35 passed）；Web ESLint/typecheck；发布中视图定向 Playwright（1 passed）；Alembic head/current；任务状态唯一性与 `git diff --check` | PASS：服务端先持久化 Setup Session 的 `PUBLISHING` 状态后再执行容器冻结、正式 Runtime 打包和契约探针；发布期间禁止 WebSocket 终端附着、二次创建及停止丢弃，发布失败回到 `RUNNING` 并保留失败 Version 诊断。页面关闭并重新进入时展示可关闭的后台发布视图，不会创建终端 WebSocket。唯一 Alembic head/current 均为 `0075_shared_agent_runtime_config`；无 `CURRENT` 或下一切片。 |
 | 2026-08-30 | FR-100 | 受影响 Python `py_compile` 与 schema import；Web TypeScript typecheck、ESLint 和 `git diff --check` | PASS：MCP 编辑、局部滚动、紧凑 Skill 组合和草稿级能力冻结均通过静态检查。Agent Workspace/bootstrap 定向 pytest 因本机 Docker daemon 未运行而无法创建 testcontainers PostgreSQL，未将该环境前置条件失败视为代码失败。 |
 | 2026-08-29 | FR-98 | FlowRun locator/节点宿主与 Runtime replacement 定向 pytest（10 passed）；PostgreSQL 空库、回退重升及历史快照迁移矩阵；受影响 Ruff/py_compile、Alembic `0072_flow_node_locator` head 与 `git diff --check` | PASS：FlowRun 的新建、读取、路由、确认、replacement 与删除均使用共享 `agent_conversation_bindings` 的 `FLOW_NODE` 行；旧 locator/无可证明节点 scope 的历史审批被显式淘汰，未保留第二套活跃会话映射。 |
 | 2026-08-29 | FR-93 | FlowRun locator 与节点宿主定向 pytest（7 passed）；共享会话兼容导入与跨模块 public facade 架构 pytest（2 passed）；受影响 Ruff/py_compile；Alembic `0070_agent_caps` head 与 `git diff --check` | PASS：节点会话入口仅通过共享 `agent_sessions` 的 FlowRun/node 宿主解析器验证 Run、Snapshot、节点、Attempt、启动门禁、Runtime 和冻结工作目录；未新建第二套会话页面、binding 或服务。 |

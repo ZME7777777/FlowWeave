@@ -76,10 +76,7 @@ def _node_payload() -> dict[str, object]:
         "executor": {
             "startup_prompt": "执行任务",
             "context_prompt": "",
-            "timeout_seconds": 120,
-            "max_iterations": 20,
         },
-        "capabilities": [],
     }
 
 
@@ -846,7 +843,10 @@ def test_late_publish_result_after_cancel_is_cleaned_without_becoming_ready(
         del sandbox_id
         assert version_id
         with db_session_factory() as concurrent_db:
-            environment_service.stop_setup_session(concurrent_db, setup["id"])
+            current = concurrent_db.get(EnvironmentSetupSession, setup["id"])
+            assert current is not None
+            current.state = "CANCELLED"
+            concurrent_db.commit()
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",
             digest=digest,
@@ -894,6 +894,83 @@ def test_late_publish_result_after_cancel_is_cleaned_without_becoming_ready(
             "image_reference": f"flowweave/environment-{environment['id']}:v1",
             "image_digest": digest,
         }
+
+
+def test_publish_marks_setup_session_publishing_before_build_and_blocks_mutations(
+    client, db_session_factory, monkeypatch
+):
+    _mock_setup_provider(monkeypatch)
+    environment = client.post(
+        "/api/v1/terminal-environments",
+        json={"name": "发布中状态环境", "description": ""},
+    ).json()
+    setup = client.post(
+        f"/api/v1/terminal-environments/{environment['id']}/setup-sessions", json={}
+    ).json()
+
+    def publish_while_session_is_frozen(
+        _resource_name, *, environment_id, version_id, version_no, **_base
+    ):
+        with db_session_factory() as concurrent_db:
+            current = concurrent_db.get(EnvironmentSetupSession, setup["id"])
+            assert current is not None and current.state == "PUBLISHING"
+            assert (
+                environment_service.terminal_session_details(concurrent_db, setup["id"])[0]
+                == "PUBLISHING"
+            )
+            listed = environment_service.read_environment(concurrent_db, environment["id"])
+            assert listed["active_sessions"][0]["state"] == "PUBLISHING"
+            with pytest.raises(DomainError, match="already has an active") as duplicate:
+                environment_service.create_setup_session(concurrent_db, environment["id"], None)
+            assert duplicate.value.code == "ENVIRONMENT_SETUP_ALREADY_RUNNING"
+            with pytest.raises(DomainError, match="cannot be discarded") as discard:
+                environment_service.stop_setup_session(concurrent_db, setup["id"])
+            assert discard.value.code == "ENVIRONMENT_PUBLISH_IN_PROGRESS"
+        digest = "sha256:" + "c" * 64
+        return PublishedImage(
+            reference=f"flowweave/environment-{environment_id}:v{version_no}",
+            digest=digest,
+            manifest=_runtime_manifest(image_digest=digest, version_id=version_id),
+        )
+
+    monkeypatch.setattr(
+        environment_docker, "publish_setup_container", publish_while_session_is_frozen
+    )
+
+    published = client.post(f"/api/v1/environment-setup-sessions/{setup['id']}/publish")
+
+    assert published.status_code == 201, published.text
+    with db_session_factory() as db:
+        current = db.get(EnvironmentSetupSession, setup["id"])
+        assert current is not None and current.state == "PUBLISHED"
+
+
+def test_publish_failure_returns_setup_session_to_running(client, db_session_factory, monkeypatch):
+    _mock_setup_provider(monkeypatch)
+    environment = client.post(
+        "/api/v1/terminal-environments",
+        json={"name": "发布失败后继续配置", "description": ""},
+    ).json()
+    setup = client.post(
+        f"/api/v1/terminal-environments/{environment['id']}/setup-sessions", json={}
+    ).json()
+
+    def fail_publish(*_args, **_kwargs):
+        raise DomainError("ENVIRONMENT_IMAGE_BUILD_FAILED", "The image build failed", 503)
+
+    monkeypatch.setattr(environment_docker, "publish_setup_container", fail_publish)
+
+    response = client.post(f"/api/v1/environment-setup-sessions/{setup['id']}/publish")
+
+    assert response.status_code == 503, response.text
+    with db_session_factory() as db:
+        current = db.get(EnvironmentSetupSession, setup["id"])
+        assert current is not None
+        assert current.state == "RUNNING"
+        assert current.error_detail == "The image build failed"
+        version = db.get(EnvironmentVersion, current.published_version_id)
+        assert version is not None
+        assert version.state == "FAILED"
 
 
 def test_environment_version_run_reference_is_reported_and_blocks_deletion(
@@ -1258,6 +1335,30 @@ def test_setup_terminal_uses_session_scoped_persistent_tmux(client, monkeypatch)
     assert {item["session_name"] for item in opened} == {f"flowweave-setup-{setup['id']}"}
     assert all(item["rows"] == 30 for item in opened)
     assert all(item["columns"] == 120 for item in opened)
+
+
+def test_setup_terminal_refuses_attachment_while_image_is_publishing(
+    client, db_session_factory, monkeypatch
+):
+    _mock_setup_provider(monkeypatch)
+    environment = client.post(
+        "/api/v1/terminal-environments",
+        json={"name": "发布中终端隔离", "description": ""},
+    ).json()
+    setup = client.post(
+        f"/api/v1/terminal-environments/{environment['id']}/setup-sessions", json={}
+    ).json()
+    with db_session_factory() as db:
+        session = db.get(EnvironmentSetupSession, setup["id"])
+        assert session is not None
+        session.state = "PUBLISHING"
+        db.commit()
+
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect(f"/api/v1/environment-setup-sessions/{setup['id']}/terminal"):
+            pass
+
+    assert closed.value.code == 4409
 
 
 def test_terminal_opens_bash(monkeypatch):

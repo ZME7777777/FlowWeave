@@ -110,7 +110,7 @@ export interface EnvironmentVersion {
 }
 export interface EnvironmentSetupSession {
   id: string; environment_id: string; base_version_id?: string | null;
-  state: 'STARTING' | 'RUNNING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
+  state: 'STARTING' | 'RUNNING' | 'PUBLISHING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
   base_image_reference: string; expires_at: string; error_detail?: string | null;
 }
 export interface TerminalEnvironment {

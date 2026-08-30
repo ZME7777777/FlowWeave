@@ -262,3 +262,5 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 
 /* Create-run dialog controls and compatibility note */
 .start-run-modal>header{align-items:flex-start;gap:18px}.start-run-modal>header>div{min-width:0;flex:1}.start-run-close{display:grid;width:34px;height:34px;flex:0 0 34px;place-items:center;border:1px solid transparent;border-radius:50%;background:transparent;padding:0;color:var(--muted)}.start-run-close:hover{border-color:#d5ded8;background:#f1f5f2;color:var(--ink)}.start-run-close:focus-visible{outline:2px solid #78a98e;outline-offset:2px}.start-run-history-note{margin-top:10px;padding:0 2px;color:var(--muted);font-size:10px;line-height:1.5}.start-run-history-note span{display:block}
+
+.environment-publishing-status{display:flex;flex:1;align-items:center;justify-content:center;gap:16px;min-height:240px;padding:28px;border:1px solid #ead8aa;border-radius:9px;background:#fff9e9;color:#6f571e}.environment-publishing-status>div{max-width:530px}.environment-publishing-status b{font-size:15px}.environment-publishing-status p{margin:8px 0 0;font-size:12px;line-height:1.7}

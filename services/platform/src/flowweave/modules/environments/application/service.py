@@ -530,7 +530,7 @@ def environment_dict(db: Session, item: TerminalEnvironment) -> dict[str, Any]:
             select(EnvironmentSetupSession)
             .where(
                 EnvironmentSetupSession.environment_id == item.id,
-                EnvironmentSetupSession.state.in_(["STARTING", "RUNNING"]),
+                EnvironmentSetupSession.state.in_(["STARTING", "RUNNING", "PUBLISHING"]),
             )
             .order_by(EnvironmentSetupSession.created_at.desc())
         )
@@ -687,7 +687,9 @@ def create_setup_session(
                     active = control_db.scalar(
                         select(EnvironmentSetupSession).where(
                             EnvironmentSetupSession.environment_id == environment.id,
-                            EnvironmentSetupSession.state.in_(["STARTING", "RUNNING"]),
+                            EnvironmentSetupSession.state.in_(
+                                ["STARTING", "RUNNING", "PUBLISHING"]
+                            ),
                         )
                     )
                     if active is not None:
@@ -700,7 +702,9 @@ def create_setup_session(
                     active_count = int(
                         control_db.scalar(
                             select(func.count(EnvironmentSetupSession.id)).where(
-                                EnvironmentSetupSession.state.in_(["STARTING", "RUNNING"])
+                                EnvironmentSetupSession.state.in_(
+                                    ["STARTING", "RUNNING", "PUBLISHING"]
+                                )
                             )
                         )
                         or 0
@@ -839,7 +843,7 @@ def setup_sandbox_owner_is_active(
         or (
             item is not None
             and item.sandbox_id == sandbox_id
-            and item.state in {"STARTING", "RUNNING"}
+            and item.state in {"STARTING", "RUNNING", "PUBLISHING"}
         )
     )
 
@@ -945,6 +949,8 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                 else:
                     version.state = "PUBLISHING"
                     version.error_detail = None
+                item.state = "PUBLISHING"
+                item.error_detail = None
                 resource_name = item.container_id
                 sandbox_id = item.sandbox_id
                 environment_id = item.environment_id
@@ -971,9 +977,13 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
             except DomainError as exc:
                 with Session(bind=connection) as control_db:
                     failed = control_db.get(EnvironmentVersion, version_id)
+                    failed_session = control_db.get(EnvironmentSetupSession, session_id)
                     if failed is not None and failed.state == "PUBLISHING":
                         failed.state = "FAILED"
                         failed.error_detail = exc.message
+                    if failed_session is not None and failed_session.state == "PUBLISHING":
+                        failed_session.state = "RUNNING"
+                        failed_session.error_detail = exc.message
                     if published is not None:
                         _enqueue_image_cleanup(
                             control_db,
@@ -995,7 +1005,7 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                 current_version = control_db.get(EnvironmentVersion, version_id)
                 if (
                     current is None
-                    or current.state != "RUNNING"
+                    or current.state != "PUBLISHING"
                     or current.published_version_id != version_id
                     or current_version is None
                     or current_version.state != "PUBLISHING"
@@ -1032,6 +1042,13 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
 
 def stop_setup_session(db: Session, session_id: str) -> None:
     item = get_setup_session(db, session_id)
+    if item.state == "PUBLISHING":
+        raise DomainError(
+            "ENVIRONMENT_PUBLISH_IN_PROGRESS",
+            "The environment image is publishing and cannot be discarded",
+            409,
+            {"session_id": item.id},
+        )
     if item.state in {"STARTING", "RUNNING"}:
         item.state = "CANCELLED"
     if not item.container_id:
