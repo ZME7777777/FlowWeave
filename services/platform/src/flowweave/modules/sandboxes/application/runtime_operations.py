@@ -98,6 +98,33 @@ def runtime_overview(db: Session, flow_run_id: str) -> dict[str, Any]:
     }
 
 
+def runtime_readiness_by_flow_run(
+    db: Session, flow_run_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Return the list-safe Runtime entry state for known FlowRuns.
+
+    The run list must be able to distinguish a newly persisted FlowRun whose
+    single Runtime is still being provisioned from one that is ready to open.
+    This deliberately exposes only logical lifecycle data, never a generation
+    connection or any physical container detail.
+    """
+
+    if not flow_run_ids:
+        return {}
+    sessions = db.scalars(
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id.in_(flow_run_ids))
+    )
+    return {
+        item.flow_run_id: {
+            "status": item.status,
+            "write_available": item.status == "ACTIVE",
+            "message": item.replacement_error_summary,
+            "updated_at": item.updated_at,
+        }
+        for item in sessions
+    }
+
+
 def request_runtime_replacement(
     db: Session,
     flow_run_id: str,
@@ -151,4 +178,8 @@ def request_runtime_replacement(
     return runtime_overview(db, flow_run_id)
 
 
-__all__ = ("request_runtime_replacement", "runtime_overview")
+__all__ = (
+    "request_runtime_replacement",
+    "runtime_overview",
+    "runtime_readiness_by_flow_run",
+)

@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
-> 当前执行切片：无
-> 下一可执行切片：`FR-106 统一 Agent 工具集并删除 Tool Policy`
+> 当前执行切片：`FR-107 节点 Agent 会话完整功能对等`
+> 下一可执行切片：`FR-108 统一 Agent 工具集并删除 Tool Policy`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1478,9 +1478,43 @@ Attempt 只能列出和操作自己的 binding，节点页显示具体节点名�
 Runtime 已声明的模型窗口显示真实零基线（`Token 0 / window`、`工具 0 / 10k 事件`），首轮完成后按正式
 active `usage_id` bucket 的 `per_turn_token` 更新；不再把 `0` 误判为无上下文数据。
 
-### FR-106 统一 Agent 工具集并删除 Tool Policy — READY
+### FR-106 FlowRun Runtime 初始化门禁与可见状态 — DONE
 
 依赖：`FR-105`。
+
+目标：创建 FlowRun 后立即持久化运行记录并异步预置唯一 Runtime，但浏览器必须留在运行列表。Runtime
+尚未达到可写 ACTIVE 状态时，运行行明确显示“运行环境初始化中”、置灰且不可进入；Runtime 可写后自动变为
+可进入。不得把 Runtime 初始化、节点启动门禁或 OpenHands Conversation 创建笼统显示为“正在创建”。流程运行
+页和节点会话只允许在 Runtime 就绪后进入，因此节点首发不再承担容器冷启动等待。恢复/替换期间沿用明确的
+“运行环境恢复中”不可写状态，不新增容器或改变单 FlowRun 单 Runtime 拓扑。
+
+验收：新建 FlowRun 记录在 Runtime 启动期间可见但不可进入，状态/提示可随轮询或事件刷新；Runtime 变为
+ACTIVE 后可进入流程运行页；运行页及节点启动不再承担冷启动等待。平台与 Web 定向回归、受影响静态检查、
+Alembic head、任务状态唯一性和 `git diff --check` 通过。本切片使用独立 Git commit。
+
+完成：运行摘要以 Runtime 的逻辑状态聚合为只读字段，不泄露 generation 或容器连接信息。创建成功后浏览器留在
+运行列表；`STARTING`、恢复和降级状态的运行行会明确展示状态、置灰并禁止打开，轮询发现可写 `ACTIVE` 后才
+恢复入口。运行环境更新时间也计入摘要更新时间，避免列表继续显示过期时间。
+
+### FR-107 节点 Agent 会话完整功能对等 — CURRENT
+
+依赖：`FR-106`。
+
+目标：节点 Agent 会话与外层 Agent 会话在能力、交互、页面和权限语义上完全一致；唯一允许的差异是其工作
+目录固定为当前 Attempt 的冻结目录。不得以 FlowRun Runtime、节点宿主、gateway feature flag、路由或服务端
+拒绝为由删减任何外层 Agent 会话能力。对照共享 Workbench，节点必须同样支持草稿/正式会话的附件上传、
+图片粘贴和多模态发送、文件与来源、独立终端、会话列表/标题、模型/推理强度、暂停/继续、压缩、重思考、
+分叉、删除及原生 NeverConfirm 交互；唯一额外 UI 为返回节点执行。节点页显示具体节点名称。固定已知模型的
+窗口容量优先于漂移的 usage bucket：`gpt-5.6-sol` 等显示 922k，并在首发前显示真实 0 基线。不得复制第二套
+Workbench、启动第二个容器或改变 OpenHands 正式事件身份。
+
+验收：外层/节点 gateway 全量能力矩阵无非宿主差异；节点附件、粘贴图片、终端、模型、上下文、控制操作与
+共享 Workbench 定向回归；固定 Runtime/正式 API 验证单 Run 单 Runtime；受影响 Python/Web 静态检查、
+Alembic head、任务状态唯一性与 `git diff --check` 通过。本切片使用独立 Git commit。
+
+### FR-108 统一 Agent 工具集并删除 Tool Policy — READY
+
+依赖：`FR-107`。
 
 目标：从能力仓库、导入/发布、节点/Runtime manifest、Agent Profile 引用、运行时契约和前端彻底移除
 `TOOL_POLICY`。节点不再保存、选择或冻结任何 Agent 工具/确认配置。所有 FlowRun 节点与顶层 Agent
@@ -1507,6 +1541,7 @@ active `usage_id` bucket 的 `per_turn_token` 更新；不再把 `0` 误判为�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-106 | FlowRun API 定向 pytest（36 passed）；受影响 Python `py_compile`；Web TypeScript typecheck、ESLint；Alembic head；`git diff --check` 与任务状态唯一性 | PASS：新建 FlowRun 在 Runtime `STARTING` 时返回明确的不可写摘要；运行列表保留创建记录、显示“运行环境初始化中”且禁用进入，只有 Runtime `ACTIVE` 才允许打开。恢复、替换、降级同样不允许进入，未新增 Runtime 或暴露物理容器信息。 |
 | 2026-08-30 | FR-105 | OpenHands 上下文定向 pytest（2 passed）；节点会话作用域/API 定向 pytest（2 passed）；OpenHands、节点会话与 API 合并 pytest（118 passed）；受影响 Ruff 与 Python `py_compile`；Web typecheck/ESLint；源码 Vite 上一级 Agent 会话定向 Playwright（1 passed）；固定 Runtime LiteLLM catalog 探针；`git diff --check` 与任务状态唯一性 | PASS：固定 Runtime 明确给出 Codex 模型窗口（`gpt-5.4` 为 1,050,000，`gpt-5.6-*` 为 922,000）；共享 Workbench 显示可信 `0 / window` 与 `0 / 10k` 基线，正式 active usage bucket 在消息后可替换零值。节点会话复用同一 Runtime，首发模型选择与后续模型切换均冻结到 binding，列表和操作不能越过 Attempt。 |
 | 2026-08-30 | FR-104 | 节点首发 API 定向 pytest（1 passed）；受影响 Python `py_compile`/Ruff；Web TypeScript typecheck、ESLint、production build；Alembic head；`git diff --check` | PASS：节点根路由保持未持久化草稿，首条消息通过 reload 后的原生 cursor 激活 binding/标题，终端仅在 binding 存在后可打开，首发 optimistic user event 不会与正式 event 重复渲染。定向 Playwright 在创建测试节点资产前被现有 `INVALID_COMMAND`（fixture 仍发送已移除的 executor/capabilities 字段）拦截，未进入本切片断言。 |
 | 2026-08-30 | FR-103 | Web TypeScript typecheck、ESLint、production build；源码 Vite 定向 Playwright（2 passed）；`git diff --check` | PASS：关闭环境终端仅以 `display:none` 隐藏视图，保留 xterm 与已有 WebSocket；重新点击“继续配置”不会产生第二次 terminal attachment。发布中的会话继续只显示进度，不建立 terminal WebSocket。 |

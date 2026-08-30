@@ -268,6 +268,8 @@ export interface FlowRunSummary {
   environment_version_id?: string | null;
   current_node_key?: string | null; current_node_name?: string | null;
   current_attempt_state?: AttemptState | null; has_pending_action: boolean;
+  runtime_status?: string | null; runtime_write_available?: boolean;
+  runtime_message?: string | null;
   progress: { accepted: number; terminal: number; active: number };
   started_at: string; updated_at: string; finished_at?: string | null;
 }

@@ -3422,6 +3422,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
         if snapshot_ids
         else []
     )
+    runtime_readiness = sandboxes.runtime_readiness_by_flow_run(db, run_ids)
 
     nodes_by_run: dict[str, list[NodeRun]] = {item.id: [] for item in runs}
     for node_run in node_runs:
@@ -3440,6 +3441,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
 
     result: list[dict[str, Any]] = []
     for run in runs:
+        runtime = runtime_readiness.get(run.id)
         run_nodes = nodes_by_run[run.id]
         current_node = run_nodes[-1] if run_nodes else None
         current_attempts = attempts_by_node.get(current_node.id, []) if current_node else []
@@ -3467,6 +3469,8 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
             item.state in {NodeRunState.ACCEPTED, NodeRunState.CANCELLED} for item in run_nodes
         )
         activity_times = [run.started_at]
+        if runtime and isinstance(runtime.get("updated_at"), datetime):
+            activity_times.append(cast(datetime, runtime["updated_at"]))
         if run.finished_at:
             activity_times.append(run.finished_at)
         activity_times.extend(item.activated_at for item in run_nodes)
@@ -3492,6 +3496,9 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "current_node_key": (current_node.flow_node_snapshot_key if current_node else None),
                 "current_node_name": current_name,
                 "current_attempt_state": current_attempt.state if current_attempt else None,
+                "runtime_status": runtime.get("status") if runtime else "ARCHIVED",
+                "runtime_write_available": bool(runtime and runtime.get("write_available")),
+                "runtime_message": runtime.get("message") if runtime else None,
                 "has_pending_action": bool(
                     current_attempt and current_attempt.state in pending_states
                 ),

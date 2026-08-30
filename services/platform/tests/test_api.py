@@ -1387,6 +1387,9 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     assert summary["current_attempt_state"] == "WAITING_START_CONFIRMATION"
     assert summary["has_pending_action"] is True
     assert summary["progress"] == {"accepted": 0, "terminal": 0, "active": 1}
+    assert summary["runtime_status"] == "STARTING"
+    assert summary["runtime_write_available"] is False
+    assert summary["runtime_message"] is None
     assert summary["updated_at"] >= summary["started_at"]
 
     execution = client.post(

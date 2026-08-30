@@ -15,6 +15,7 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
 )
 from flowweave.modules.sandboxes.application.runtime_operations import (
     request_runtime_replacement,
+    runtime_readiness_by_flow_run,
     runtime_overview,
 )
 from flowweave.modules.sandboxes.application.runtime_replacement import (
@@ -91,6 +92,7 @@ __all__ = (
     "request_delete_durable",
     "resolve_runtime_secret",
     "runtime_allocation_for_flow_run",
+    "runtime_readiness_by_flow_run",
     "runtime_overview",
     "sandbox_dict",
     "sandbox_snapshot",
