@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
@@ -1967,21 +1967,13 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
 def _upload_runtime_input_attachments(
     db: Session,
     request: StartAttemptRequest,
-    *,
-    runtime_resource_id: str,
-    runtime_resource_name: str,
 ) -> StartAttemptRequest:
     """Upload frozen FILE artifacts through OpenHands' formal workspace API."""
 
     binding = agent_sessions.flow_node_binding_for_attempt(
         db, request.attempt_id, require_provisioning=True
     )
-    handle = RuntimeHandle(
-        job_id=f"attempt-inputs:{request.attempt_id}",
-        conversation_id="",
-        runtime_resource_id=runtime_resource_id,
-        runtime_resource_name=runtime_resource_name,
-    )
+    handle = _runtime_input_upload_handle(request)
     runtime = get_runtime()
     attachments: list[dict[str, Any]] = []
     bindings: list[dict[str, Any]] = []
@@ -2036,6 +2028,45 @@ def _upload_runtime_input_attachments(
         request,
         bindings=bindings,
         input_attachments=tuple(attachments),
+    )
+
+
+def _runtime_input_upload_handle(request: StartAttemptRequest) -> RuntimeHandle:
+    """Route pre-start input uploads through the frozen FlowRun generation."""
+
+    try:
+        conversation_id = str(UUID(request.conversation_id or ""))
+    except ValueError as exc:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_ID_INVALID",
+            "The frozen Attempt Conversation identity is invalid",
+            409,
+            {"attempt_id": request.attempt_id},
+        ) from exc
+    if conversation_id != request.conversation_id:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_ID_INVALID",
+            "The frozen Attempt Conversation identity is not canonical",
+            409,
+            {"attempt_id": request.attempt_id},
+        )
+    if request.runtime_resource_name and request.runtime_sandbox_id:
+        return RuntimeHandle(
+            job_id=f"env-exec:{request.runtime_resource_name}",
+            conversation_id=conversation_id,
+            runtime_resource_id=request.runtime_sandbox_id,
+            runtime_resource_name=request.runtime_resource_name,
+        )
+    if get_settings().runtime_adapter == "mock":
+        return RuntimeHandle(
+            job_id=f"mock-job-{request.attempt_id}",
+            conversation_id=conversation_id,
+        )
+    raise DomainError(
+        "RUNTIME_SANDBOX_REQUIRED",
+        "Runtime input attachments require the active FlowRun generation",
+        409,
+        {"attempt_id": request.attempt_id},
     )
 
 
@@ -2133,12 +2164,7 @@ def process_start_runtime(
         cast(dict[str, Any], item.get("artifact") or {}).get("artifact_type") == "FILE"
         for item in request.bindings
     ):
-        request = _upload_runtime_input_attachments(
-            db,
-            request,
-            runtime_resource_id=request.runtime_sandbox_id,
-            runtime_resource_name=request.runtime_resource_name,
-        )
+        request = _upload_runtime_input_attachments(db, request)
     _release_worker_read_transaction(db, lease)
     handle: RuntimeHandle | None = None
     try:

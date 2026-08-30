@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from flowweave.modules.orchestration.application.service import (
     _preserve_runtime_oracle_profile,
+    _runtime_input_upload_handle,
 )
 from flowweave.modules.tasks.application.service import (
     claim,
@@ -16,6 +17,36 @@ from flowweave.modules.tasks.application.service import (
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import BackgroundTask, FlowDefinition, TaskState
+
+
+def test_runtime_input_upload_uses_frozen_flow_run_generation_route(settings):
+    from uuid import uuid4
+
+    from flowweave.runtime.base import StartAttemptRequest
+    from flowweave.runtime.openhands import OpenHandsRuntime
+
+    conversation_id = str(uuid4())
+    request = StartAttemptRequest(
+        attempt_id="attempt-file-input",
+        execution_key="attempt:attempt-file-input:start",
+        node={},
+        bindings=[],
+        workspace_ref="workspace",
+        conversation_id=conversation_id,
+        runtime_sandbox_id="11111111-1111-4111-8111-111111111111",
+        runtime_resource_name="flowweave-run-generation-7",
+    )
+
+    handle = _runtime_input_upload_handle(request)
+
+    assert handle.job_id == "env-exec:flowweave-run-generation-7"
+    assert handle.conversation_id == conversation_id
+    assert handle.runtime_resource_id == request.runtime_sandbox_id
+    assert handle.runtime_resource_name == request.runtime_resource_name
+    assert (
+        OpenHandsRuntime(settings)._base_url_for_handle(handle)
+        == "http://flowweave-run-generation-7:8000"
+    )
 
 
 def test_flow_run_oracle_profile_is_immutable_across_snapshots():
