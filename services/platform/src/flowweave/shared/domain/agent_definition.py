@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from flowweave.shared.domain.tool_policy import normalize_tool_entries
+from flowweave.shared.domain.openhands import normalize_fixed_tool_entries
 
 _FIELDS = frozenset(
     {
@@ -57,10 +57,7 @@ def normalize_agent_definition_document(
     tool_names = [str(item).strip() for item in cast(list[object], raw_tools)]
     if any(not name for name in tool_names):
         raise ValueError("Agent Definition tool names cannot be blank")
-    tool_entries: list[dict[str, Any]] = [
-        {"name": tool_name, "params": {}} for tool_name in tool_names
-    ]
-    tools = normalize_tool_entries(tool_entries)
+    tools = normalize_fixed_tool_entries(tool_names)
     normalized_tools = [str(item["name"]) for item in tools]
     if "task_tool_set" in normalized_tools:
         raise ValueError("Agent Definition cannot recursively enable task_tool_set")

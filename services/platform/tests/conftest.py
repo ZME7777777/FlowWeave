@@ -23,7 +23,7 @@ from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared import models as _models  # noqa: F401
 from flowweave.shared.database import create_sync_session_factory
-from flowweave.shared.domain.tool_policy import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.models import EnvironmentVersion, TerminalEnvironment
 from flowweave.shared.sandbox import sandbox_context
 

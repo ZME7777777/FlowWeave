@@ -1200,7 +1200,7 @@ class OpenHandsRuntime:
             if not any(tool.name == "ask_oracle" for tool in spec.tools):
                 raise DomainError(
                     "RUNTIME_AGENT_SPEC_INVALID",
-                    "Oracle provider is not enabled by the frozen Tool Policy",
+                    "Oracle provider is not enabled by the fixed Runtime tool set",
                     409,
                 )
             self._ensure_oracle_profile(
@@ -1211,7 +1211,7 @@ class OpenHandsRuntime:
         elif any(tool.name == "ask_oracle" for tool in spec.tools):
             raise DomainError(
                 "RUNTIME_AGENT_SPEC_INVALID",
-                "Oracle Tool is missing its frozen model profile",
+                "The fixed ask_oracle Tool requires the session model provider",
                 409,
             )
         created = self._request(

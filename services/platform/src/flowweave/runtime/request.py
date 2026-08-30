@@ -37,13 +37,16 @@ from flowweave.runtime.workspace import (
 )
 from flowweave.shared.domain.agent_definition import normalize_agent_definition_document
 from flowweave.shared.domain.capability_digest import normalized_capability_config
+from flowweave.shared.domain.openhands import (
+    FIXED_RUNTIME_TOOL_NAMES,
+    FIXED_TOOL_CONCURRENCY_LIMIT,
+)
 from flowweave.shared.domain.runtime_policy import (
     normalize_agent_profile_document,
     normalize_context_policy_document,
     normalize_critic_policy_document,
     normalize_memory_policy_document,
 )
-from flowweave.shared.domain.tool_policy import normalize_tool_policy_document
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import ProviderModel
 from flowweave.shared.settings import get_settings
@@ -416,53 +419,19 @@ def build_runtime_request(
             409,
         )
     frozen_spec = cast(dict[str, Any], raw_agent_spec)
-    raw_tool_policy = frozen_spec.get("tool_policy")
-    if not isinstance(raw_tool_policy, dict):
+    # Tool Policy was deliberately removed.  A Snapshot carrying one was
+    # created under the old, restricted execution model and must be rerun;
+    # silently converting it would rewrite its frozen semantics.
+    if "tool_policy" in frozen_spec:
         raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Agent Spec Tool Policy is missing",
+            "SNAPSHOT_TOOL_POLICY_REQUIRES_RERUN",
+            "This historical Snapshot contains a Tool Policy and must be rerun",
             409,
         )
-    raw_policy_config = cast(dict[str, Any], raw_tool_policy).get("runtime_config")
-    if not isinstance(raw_policy_config, dict):
-        raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Agent Spec Tool Policy config is invalid",
-            409,
-        )
-    try:
-        policy_key, normalized_tool_policy = normalize_tool_policy_document(
-            normalized_capability_config(cast(dict[str, Any], raw_policy_config)),
-            fallback_key=str(cast(dict[str, Any], raw_tool_policy).get("capability_key") or ""),
-        )
-        tool_entries = cast(list[dict[str, Any]], normalized_tool_policy["tools"])
-    except ValueError as exc:
-        raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Agent Spec Tool Policy is invalid",
-            409,
-            {"reason": str(exc)},
-        ) from exc
-    if policy_key != cast(dict[str, Any], raw_tool_policy).get("capability_key"):
-        raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Agent Spec Tool Policy identity drifted",
-            409,
-        )
-    if (
-        normalized_capability_config(cast(dict[str, Any], raw_policy_config))
-        != normalized_tool_policy
-    ):
-        raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Agent Spec Tool Policy predates the governed catalog",
-            409,
-        )
-    policy_tool_names = {str(item["name"]) for item in tool_entries}
     try:
         runtime_contract: RuntimeContract = normalize_runtime_contract(
             frozen_spec.get("runtime_contract"),
-            required_tools=tuple(str(item["name"]) for item in tool_entries),
+            required_tools=FIXED_RUNTIME_TOOL_NAMES,
         )
     except ValueError as exc:
         raise DomainError(
@@ -594,13 +563,10 @@ def build_runtime_request(
                 {"reason": str(exc)},
             ) from exc
         definition_tools = tuple(cast(list[str], definition["tools"]))
-        if (
-            "task_tool_set" not in policy_tool_names
-            or not set(definition_tools) <= policy_tool_names
-        ):
+        if not set(definition_tools) <= set(FIXED_RUNTIME_TOOL_NAMES):
             raise DomainError(
                 "SNAPSHOT_MANIFEST_INVALID",
-                "Runtime Agent Definition exceeds the frozen Tool Policy",
+                "Runtime Agent Definition exceeds the fixed Runtime tool set",
                 409,
                 {"name": name},
             )
@@ -616,11 +582,10 @@ def build_runtime_request(
                 max_budget_per_run=cast(float | None, definition["max_budget_per_run"]),
             )
         )
-    confirmation = str(frozen_spec.get("confirmation_policy") or "")
-    if confirmation not in {"ALWAYS", "NEVER"}:
+    if frozen_spec.get("confirmation_policy") not in (None, "NEVER"):
         raise DomainError(
             "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Agent Spec confirmation policy is invalid",
+            "Runtime Agent Spec must use NeverConfirm",
             409,
         )
     raw_condenser_value = frozen_spec.get("condenser")
@@ -678,9 +643,6 @@ def build_runtime_request(
                 {"reason": str(exc)},
             ) from exc
         expected_references = {
-            "tool_policy_version_id": str(
-                cast(dict[str, Any], raw_tool_policy).get("capability_version_id") or ""
-            ),
             "context_policy_version_id": str(context_entry.get("capability_version_id") or ""),
             "memory_policy_version_id": str(memory_entry.get("capability_version_id") or ""),
             "critic_policy_version_id": str(critic_entry.get("capability_version_id") or ""),
@@ -720,37 +682,10 @@ def build_runtime_request(
         if get_settings().runtime_adapter != "mock"
         else None
     )
-    oracle_provider: RuntimeProvider | None = None
-    raw_oracle_profile = frozen_spec.get("oracle_profile")
-    if "ask_oracle" in policy_tool_names:
-        if not isinstance(raw_oracle_profile, dict):
-            raise DomainError(
-                "SNAPSHOT_MANIFEST_INVALID",
-                "Runtime Oracle profile is missing",
-                409,
-            )
-        oracle_profile = cast(dict[str, object], raw_oracle_profile)
-        asset = cast(dict[str, Any], node.get("asset") or {})
-        executor = cast(dict[str, Any], asset.get("executor") or {})
-        provider_id = str(oracle_profile.get("provider_id") or "")
-        oracle_model = str(oracle_profile.get("model") or "")
-        if (
-            set(oracle_profile) != {"name", "provider_id", "model"}
-            or oracle_profile.get("name") != "oracle"
-            or provider_id != str(executor.get("model_provider_id") or "")
-            or oracle_model != str(executor.get("model_name") or "")
-        ):
-            raise DomainError(
-                "SNAPSHOT_MANIFEST_INVALID",
-                "Runtime Oracle profile drifted from the frozen node model",
-                409,
-            )
-        if get_settings().runtime_adapter != "mock":
-            oracle_provider = runtime_provider(db, node, oracle_model)
-    elif raw_oracle_profile is not None:
+    if frozen_spec.get("oracle_profile") is not None:
         raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "Runtime Oracle profile is not enabled by the Tool Policy",
+            "SNAPSHOT_TOOL_POLICY_REQUIRES_RERUN",
+            "This historical Snapshot contains an Oracle Tool Policy binding and must be rerun",
             409,
         )
     agent_spec = RuntimeAgentSpec(
@@ -759,12 +694,9 @@ def build_runtime_request(
         runtime_contract=runtime_contract,
         agent_profile=agent_profile,
         provider=provider,
-        oracle_provider=oracle_provider,
-        tools=tuple(
-            RuntimeTool(name=str(tool["name"]), params=cast(dict[str, Any], tool["params"]))
-            for tool in tool_entries
-        ),
-        tool_concurrency_limit=int(normalized_tool_policy["tool_concurrency_limit"]),
+        oracle_provider=provider,
+        tools=tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES),
+        tool_concurrency_limit=FIXED_TOOL_CONCURRENCY_LIMIT,
         agent_context=RuntimeAgentContext(
             system_message_suffix=str(context_config["system_message_suffix"]),
             user_message_suffix=str(context_config["user_message_suffix"]),
@@ -781,7 +713,7 @@ def build_runtime_request(
         skills=skills,
         mcp_servers=mcp_servers,
         hook_config=hook_config,
-        confirmation_policy=cast(Literal["ALWAYS", "NEVER"], confirmation),
+        confirmation_policy="NEVER",
         condenser=condenser,
         condenser_provider=condenser_provider,
         critic=critic,

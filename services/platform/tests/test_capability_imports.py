@@ -3,22 +3,17 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
-import pytest
 from sqlalchemy import select
 
 from flowweave.modules.catalog.application.capability_repository import (
     publish_dependency_build,
     resolve_version,
 )
-from flowweave.shared.domain.tool_policy import OPENHANDS_TOOL_CATALOG_DIGEST
 from flowweave.shared.models import (
     CapabilityBlob,
     CapabilityImport,
     CapabilityVersion,
-    NodeAsset,
-    NodeCapabilityRef,
 )
 
 
@@ -246,9 +241,7 @@ def test_skill_import_rejects_invalid_codex_metadata(client):
     assert response.json()["error"]["code"] == "IMPORT_REJECTED"
 
 
-def test_dependency_build_publishes_derived_version_without_rebinding_node(
-    client, db_session_factory
-):
+def test_dependency_build_publishes_derived_version(client, db_session_factory):
     validated = client.post(
         "/api/v1/capability-imports/validate",
         json={
@@ -275,22 +268,6 @@ def test_dependency_build_publishes_derived_version_without_rebinding_node(
 
     with db_session_factory() as db:
         source = resolve_version(db, source_id)
-        # Simulate a consumer persisted before dependency builds became a
-        # publish-new-version operation. New API requests correctly reject
-        # PENDING dependency versions, but existing references must not drift.
-        node = NodeAsset(name="Pinned dependency node")
-        db.add(node)
-        db.flush()
-        db.add(
-            NodeCapabilityRef(
-                node_asset_id=node.id,
-                capability_type=source.package.capability_type,
-                capability_key=source.package.capability_key,
-                capability_version_id=source.version.id,
-                normalized_config=source.runtime_config(),
-            )
-        )
-        db.flush()
         ready_config = {
             **source.version.normalized_config_json,
             "dependency_build_state": "READY",
@@ -307,17 +284,15 @@ def test_dependency_build_publishes_derived_version_without_rebinding_node(
     with db_session_factory() as db:
         source = db.get(CapabilityVersion, source_id)
         derived = db.get(CapabilityVersion, derived_id)
-        node_ref = db.scalar(select(NodeCapabilityRef))
-        assert source is not None and derived is not None and node_ref is not None
+        assert source is not None and derived is not None
         assert source.normalized_config_json["dependency_build_state"] == "PENDING"
         assert derived.normalized_config_json["dependency_build_state"] == "READY"
         assert derived.package_id == source.package_id
         assert derived.blob_id == source.blob_id
         assert derived.version_no == source.version_no + 1
-        assert node_ref.capability_version_id == source_id
 
 
-def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
+def test_skill_zip_imports_multiple_skills_and_mcp(client):
     encoded = _zip_content(
         {
             "skills/requirements-analysis/SKILL.md": (
@@ -383,61 +358,11 @@ def test_skill_zip_imports_multiple_skills_and_saves_them_to_one_node(client):
     )
     assert mcp_committed.status_code == 201, mcp_committed.text
     capabilities = [*capabilities, *mcp_committed.json()["capabilities"]]
-
-    saved = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "batch imported skills",
-            "executor": {},
-            "capabilities": capabilities,
-        },
-    )
-    assert saved.status_code == 201, saved.text
-    assert [item["capability_key"] for item in saved.json()["capabilities"]] == [
+    assert [item["capability_key"] for item in capabilities] == [
         "requirements-analysis",
         "technical-design",
         "local-review",
-        "flowweave-default-tools",
-        "flowweave-default-context",
-        "flowweave-memory-disabled",
-        "flowweave-critic-disabled",
     ]
-    assert [item["capability_type"] for item in saved.json()["capabilities"][-4:]] == [
-        "TOOL_POLICY",
-        "CONTEXT_POLICY",
-        "MEMORY_POLICY",
-        "CRITIC_POLICY",
-    ]
-    workspace = (
-        Path(client.app.state.container.settings.workspace_root) / saved.json()["workspace_ref"]
-    )
-    assert (workspace / "skills/requirements-analysis/references/checklist.md").read_text() == (
-        "# Checklist\n"
-    )
-    assert (workspace / "skills/technical-design/scripts/validate.py").read_text() == (
-        "print('ok')\n"
-    )
-    assert (workspace / "skills/technical-design/scripts/check.sh").stat().st_mode & 0o111
-    managed = (
-        Path(client.app.state.container.settings.workspace_root)
-        / ".managed-assets"
-        / saved.json()["workspace_ref"]
-    )
-    mcp_config = (managed / "mcp/local-review/config.json").read_text()
-    assert '"command": "python"' in mcp_config
-    assert '"cwd": "/runtime/capabilities/nodes/' in mcp_config
-    assert (workspace / "files").is_dir()
-    assert (workspace / "repositories").is_dir()
-
-    duplicate = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "duplicate capability refs",
-            "executor": {},
-            "capabilities": [capabilities[0], capabilities[0]],
-        },
-    )
-    assert duplicate.status_code == 422, duplicate.text
 
 
 def test_mcp_config_normalizes_flowweave_transports(client):
@@ -524,7 +449,7 @@ def test_mcp_config_rejects_invalid_transport_contracts(client):
         assert response.json()["error"]["code"] == "IMPORT_REJECTED"
 
 
-def test_stdio_mcp_persists_multiple_scripts_and_materializes_them(client):
+def test_stdio_mcp_persists_multiple_scripts(client):
     payload = _validate_payload(
         "MCP",
         "mcp.json",
@@ -578,29 +503,6 @@ def test_stdio_mcp_persists_multiple_scripts_and_materializes_them(client):
         "settings.json",
     }
 
-    saved = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "scripted MCP node",
-            "executor": {},
-            "capabilities": [local_capability],
-        },
-    )
-    assert saved.status_code == 201, saved.text
-    managed = (
-        Path(client.app.state.container.settings.workspace_root)
-        / ".managed-assets"
-        / saved.json()["workspace_ref"]
-    )
-    mcp_root = managed / "mcp/local-tools"
-    assert (mcp_root / "scripts/server.py").read_text() == "print('server')\n"
-    assert (mcp_root / "scripts/settings.json").read_text() == '{"mode": "readonly"}\n'
-    config = json.loads((mcp_root / "config.json").read_text())
-    assert config["command"] == "python"
-    assert config["args"] == ["scripts/server.py"]
-    expected_cwd = f"/runtime/capabilities/nodes/{saved.json()['id']}/mcp/local-tools"
-    assert config["cwd"] == expected_cwd
-
 
 def test_mcp_scripts_reject_remote_server_and_unsafe_filename(client):
     config = json.dumps(
@@ -633,7 +535,7 @@ def test_mcp_scripts_reject_remote_server_and_unsafe_filename(client):
         assert response.json()["error"]["code"] == "IMPORT_REJECTED"
 
 
-def test_hook_config_normalizes_form_json_and_binds_to_node(client):
+def test_hook_config_normalizes_form_json(client):
     response = client.post(
         "/api/v1/capability-imports/validate",
         json=_validate_payload(
@@ -700,17 +602,9 @@ def test_hook_config_normalizes_form_json_and_binds_to_node(client):
         json={"import_token": response.json()["import_token"]},
     )
     assert committed.status_code == 201, committed.text
-    saved = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "hook-enabled node",
-            "executor": {},
-            "capabilities": committed.json()["capabilities"],
-        },
-    )
-    assert saved.status_code == 201, saved.text
-    assert saved.json()["capabilities"][0]["capability_type"] == "HOOK"
-    assert "pre_tool_use" in saved.json()["capabilities"][0]["normalized_config"]
+    hook = committed.json()["capabilities"][0]
+    assert hook["capability_type"] == "HOOK"
+    assert "pre_tool_use" in hook["normalized_config"]
 
 
 def test_hook_config_rejects_async_blocking_action(client):
@@ -836,7 +730,7 @@ def test_hook_script_upload_rejects_unused_and_non_executable_files(client):
         assert response.json()["error"]["code"] == "IMPORT_REJECTED"
 
 
-def test_editing_one_skill_saves_in_place_and_refreshes_bound_node(client):
+def test_editing_one_skill_saves_in_place(client):
     encoded = _zip_content(
         {
             "skills/requirements-analysis/SKILL.md": (
@@ -871,29 +765,6 @@ def test_editing_one_skill_saves_in_place_and_refreshes_bound_node(client):
     )
     design = next(item for item in initial if item["capability_key"] == "technical-design")
 
-    bound_node = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "使用需求分析能力的节点",
-            "executor": {},
-            "capabilities": [
-                {
-                    "capability_id": requirements["id"],
-                    "capability_type": "SKILL",
-                    "capability_key": "requirements-analysis",
-                    "normalized_config": {},
-                }
-            ],
-        },
-    )
-    assert bound_node.status_code == 201, bound_node.text
-    workspace = (
-        Path(client.app.state.container.settings.workspace_root)
-        / bound_node.json()["workspace_ref"]
-    )
-    skill_file = workspace / "skills/requirements-analysis/SKILL.md"
-    assert "v1" in skill_file.read_text()
-
     source = client.get(f"/api/v1/capabilities/{requirements['id']}/source")
     assert source.status_code == 200, source.text
     revised_content = source.json()["content"].replace("v1", "v2")
@@ -920,14 +791,6 @@ def test_editing_one_skill_saves_in_place_and_refreshes_bound_node(client):
     assert {item["is_latest"] for item in revisions} == {False, True}
     assert "v1" in client.get(f"/api/v1/capabilities/{requirements['id']}/source").json()["content"]
     assert "v2" in client.get(f"/api/v1/capabilities/{saved.json()['id']}/source").json()["content"]
-
-    persisted_node = client.get(f"/api/v1/node-assets/{bound_node.json()['id']}").json()
-    assert persisted_node["capabilities"][0]["capability_id"] == requirements["id"]
-    assert (
-        persisted_node["capabilities"][0]["normalized_config"]["content_hash"]
-        == requirements["content_hash"]
-    )
-    assert "v1" in skill_file.read_text()
 
     unchanged = client.put(
         f"/api/v1/capabilities/{saved.json()['id']}/source",
@@ -1000,11 +863,11 @@ def test_import_rejects_secrets_and_unsafe_filenames(client):
     assert unsafe.status_code == 422
 
 
-def test_node_asset_rejects_forged_or_tampered_capability_import(client):
-    forged = client.post(
+def test_node_asset_rejects_agent_capability_configuration(client):
+    request = client.post(
         "/api/v1/node-assets",
         json={
-            "name": "forged capability",
+            "name": "Agent configuration is not a node property",
             "executor": {},
             "capabilities": [
                 {
@@ -1015,28 +878,8 @@ def test_node_asset_rejects_forged_or_tampered_capability_import(client):
             ],
         },
     )
-    assert forged.status_code == 422
-    assert forged.json()["error"]["code"] == "CAPABILITY_VERSION_REQUIRED"
-
-    validated = client.post(
-        "/api/v1/capability-imports/validate",
-        json={"capability_type": "SKILL", "filename": "sample.zip", "content_base64": skill_zip()},
-    ).json()
-    committed = client.post(
-        "/api/v1/capability-imports", json={"import_token": validated["import_token"]}
-    ).json()
-    capability = committed["capabilities"][0]
-    capability["capability_key"] = "tampered"
-    tampered = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "tampered capability",
-            "executor": {},
-            "capabilities": [capability],
-        },
-    )
-    assert tampered.status_code == 422
-    assert tampered.json()["error"]["code"] == "CAPABILITY_REFERENCE_INVALID"
+    assert request.status_code == 422
+    assert request.json()["error"]["code"] == "INVALID_COMMAND"
 
 
 def _zip_content(entries: dict[str, bytes | str]) -> str:
@@ -1090,7 +933,7 @@ def _plugin_zip() -> str:
     )
 
 
-def test_plugin_import_freezes_manifest_contributions_and_node_binding(client):
+def test_plugin_import_freezes_manifest_contributions(client):
     validated = client.post(
         "/api/v1/capability-imports/validate",
         json={
@@ -1128,19 +971,6 @@ def test_plugin_import_freezes_manifest_contributions_and_node_binding(client):
     assert plugin["capability_key"] == "governed-review"
     assert len(plugin["capability_id"]) == 36
     assert len(plugin["normalized_config"]["digest"]) == 64
-
-    saved = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "plugin governed node",
-            "executor": {},
-            "capabilities": [plugin],
-        },
-    )
-    assert saved.status_code == 201, saved.text
-    by_type = {item["capability_type"]: item for item in saved.json()["capabilities"]}
-    assert by_type["PLUGIN"]["capability_id"] == plugin["capability_id"]
-    assert by_type["TOOL_POLICY"]["capability_key"] == "flowweave-default-tools"
 
 
 def test_plugin_import_rejects_multiple_roots_and_special_files(client):
@@ -1228,313 +1058,23 @@ def _validate_payload(capability_type: str, filename: str, content: bytes | str)
     }
 
 
-def _import_tool_policy(
-    client, name: str, tools: list[str], *, tool_concurrency_limit: int = 1
-) -> dict:
-    validated = client.post(
+def test_tool_policy_is_not_an_importable_or_node_capability(client):
+    response = client.post(
         "/api/v1/capability-imports/validate",
         json=_validate_payload(
             "TOOL_POLICY",
-            f"{name}.json",
-            json.dumps(
-                {
-                    "name": name,
-                    "description": f"Policy {name}",
-                    "tool_concurrency_limit": tool_concurrency_limit,
-                    "tools": [{"name": tool, "params": {}} for tool in tools],
-                }
-            ),
+            "retired-tool-policy.json",
+            '{"name":"retired","tools":[{"name":"terminal","params":{}}]}',
         ),
     )
-    assert validated.status_code == 200, validated.text
-    committed = client.post(
-        "/api/v1/capability-imports",
-        json={"import_token": validated.json()["import_token"]},
-    )
-    assert committed.status_code == 201, committed.text
-    return committed.json()["capabilities"][0]
+    assert response.status_code == 422
 
-
-def _import_agent_definition(client, name: str, *, tools: list[str]) -> dict:
-    validated = client.post(
-        "/api/v1/capability-imports/validate",
-        json=_validate_payload(
-            "AGENT_DEFINITION",
-            f"{name}.json",
-            json.dumps(
-                {
-                    "name": name,
-                    "description": f"Agent {name}",
-                    "tools": tools,
-                    "system_prompt": "Complete the delegated task and report evidence.",
-                    "permission_mode": "never_confirm",
-                }
-            ),
-        ),
-    )
-    assert validated.status_code == 200, validated.text
-    committed = client.post(
-        "/api/v1/capability-imports",
-        json={"import_token": validated.json()["import_token"]},
-    )
-    assert committed.status_code == 201, committed.text
-    return committed.json()["capabilities"][0]
-
-
-def test_agent_profile_requires_complete_policy_refs_and_materializes_exactly(client):
-    baseline = client.post(
+    node = client.post(
         "/api/v1/node-assets",
-        json={"name": "profile policy baseline", "executor": {}, "capabilities": []},
+        json={"name": "No Agent configuration", "executor": {}},
     )
-    assert baseline.status_code == 201, baseline.text
-    policies = {
-        item["capability_type"]: item
-        for item in baseline.json()["capabilities"]
-        if item["capability_type"].endswith("_POLICY")
-    }
-    assert set(policies) == {
-        "TOOL_POLICY",
-        "CONTEXT_POLICY",
-        "MEMORY_POLICY",
-        "CRITIC_POLICY",
-    }
-
-    incomplete = client.post(
-        "/api/v1/capability-imports/validate",
-        json=_validate_payload(
-            "AGENT_PROFILE",
-            "incomplete-profile.json",
-            json.dumps(
-                {
-                    "name": "incomplete-profile",
-                    "tool_policy_version_id": policies["TOOL_POLICY"]["capability_id"],
-                }
-            ),
-        ),
-    )
-    assert incomplete.status_code == 422, incomplete.text
-    assert incomplete.json()["error"]["code"] == "IMPORT_REJECTED"
-
-    document = {
-        "name": "governed-profile",
-        "description": "Fully materialized OpenHands profile",
-        "agent_kind": "OPENHANDS",
-        "model": "inherit",
-        "tool_policy_version_id": policies["TOOL_POLICY"]["capability_id"],
-        "context_policy_version_id": policies["CONTEXT_POLICY"]["capability_id"],
-        "memory_policy_version_id": policies["MEMORY_POLICY"]["capability_id"],
-        "critic_policy_version_id": policies["CRITIC_POLICY"]["capability_id"],
-        "confirmation_policy": "ALWAYS",
-        "max_iterations": 100,
-    }
-    validated = client.post(
-        "/api/v1/capability-imports/validate",
-        json=_validate_payload("AGENT_PROFILE", "governed-profile.json", json.dumps(document)),
-    )
-    assert validated.status_code == 200, validated.text
-    committed = client.post(
-        "/api/v1/capability-imports",
-        json={"import_token": validated.json()["import_token"]},
-    )
-    assert committed.status_code == 201, committed.text
-    profile = committed.json()["capabilities"][0]
-
-    saved = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "profile governed node",
-            "executor": {"confirmation_policy": "ALWAYS", "max_iterations": 100},
-            "capabilities": [profile],
-        },
-    )
-    assert saved.status_code == 201, saved.text
-    assert saved.json()["executor"]["confirmation_policy"] == "NEVER"
-    bound = {item["capability_type"]: item for item in saved.json()["capabilities"]}
-    assert bound["AGENT_PROFILE"]["capability_id"] == profile["capability_id"]
-    for field, capability_type in (
-        ("tool_policy_version_id", "TOOL_POLICY"),
-        ("context_policy_version_id", "CONTEXT_POLICY"),
-        ("memory_policy_version_id", "MEMORY_POLICY"),
-        ("critic_policy_version_id", "CRITIC_POLICY"),
-    ):
-        assert profile["normalized_config"][field] == bound[capability_type]["capability_id"]
-
-    mismatch = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "profile executor mismatch",
-            "executor": {"confirmation_policy": "NEVER", "max_iterations": 99},
-            "capabilities": [profile],
-        },
-    )
-    assert mismatch.status_code == 422, mismatch.text
-    assert mismatch.json()["error"]["code"] == "AGENT_PROFILE_EXECUTOR_MISMATCH"
-
-
-@pytest.mark.parametrize("permission_mode", [None, "always_confirm", "confirm_risky"])
-def test_agent_definition_rejects_confirmation_modes_without_server_callback(
-    client, permission_mode
-):
-    document = {
-        "name": "unsafe-confirmation-agent",
-        "description": "Must not silently approve governed actions",
-        "tools": ["terminal"],
-        "system_prompt": "Inspect the workspace and report evidence.",
-    }
-    if permission_mode is not None:
-        document["permission_mode"] = permission_mode
-    rejected = client.post(
-        "/api/v1/capability-imports/validate",
-        json=_validate_payload(
-            "AGENT_DEFINITION",
-            "unsafe-confirmation-agent.json",
-            json.dumps(document),
-        ),
-    )
-    assert rejected.status_code == 422, rejected.text
-    assert rejected.json()["error"]["code"] == "IMPORT_REJECTED"
-    assert "must be never_confirm" in rejected.json()["error"]["message"]
-
-
-def test_tool_policy_import_is_strict_and_node_binds_exactly_one_version(client):
-    rejected = client.post(
-        "/api/v1/capability-imports/validate",
-        json=_validate_payload(
-            "TOOL_POLICY",
-            "unsafe.json",
-            '{"name":"unsafe","tools":[{"name":"browser","params":{}}]}',
-        ),
-    )
-    assert rejected.status_code == 422, rejected.text
-    assert rejected.json()["error"]["code"] == "IMPORT_REJECTED"
-
-    unsafe_parallel = client.post(
-        "/api/v1/capability-imports/validate",
-        json=_validate_payload(
-            "TOOL_POLICY",
-            "unsafe-parallel.json",
-            json.dumps(
-                {
-                    "name": "unsafe-parallel",
-                    "tool_concurrency_limit": 2,
-                    "tools": [{"name": "terminal", "params": {}}],
-                }
-            ),
-        ),
-    )
-    assert unsafe_parallel.status_code == 422, unsafe_parallel.text
-    assert unsafe_parallel.json()["error"]["code"] == "IMPORT_REJECTED"
-
-    read_only_parallel = _import_tool_policy(
-        client,
-        "read-only-parallel",
-        ["grep", "glob", "list_directory", "read_file"],
-        tool_concurrency_limit=4,
-    )
-    frozen = read_only_parallel["normalized_config"]
-    assert frozen["unknown_tool"] == "DENY"
-    assert frozen["openhands_version"] == "1.44.0"
-    assert frozen["tool_concurrency_limit"] == 4
-    assert frozen["confirmation_required_tools"] == []
-    assert {tool["access"] for tool in frozen["tools"]} == {"READ_ONLY"}
-    assert all(tool["source"]["version"] == "1.44.0" for tool in frozen["tools"])
-
-    no_confirmation = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "mutating tools without confirmation",
-            "executor": {"confirmation_policy": "NEVER"},
-            "capabilities": [_import_tool_policy(client, "mutating-policy", ["file_editor"])],
-        },
-    )
-    assert no_confirmation.status_code == 201, no_confirmation.text
-    assert no_confirmation.json()["executor"]["confirmation_policy"] == "NEVER"
-    governed_policy = next(
-        item
-        for item in no_confirmation.json()["capabilities"]
-        if item["capability_type"] == "TOOL_POLICY"
-    )
-    assert governed_policy["normalized_config"]["confirmation_required_tools"] == ["file_editor"]
-
-    terminal_only = _import_tool_policy(client, "terminal-only", ["terminal"])
-    file_only = _import_tool_policy(client, "file-only", ["file_editor"])
-    saved = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "terminal governed node",
-            "executor": {},
-            "capabilities": [terminal_only],
-        },
-    )
-    assert saved.status_code == 201, saved.text
-    saved_capabilities = saved.json()["capabilities"]
-    assert [
-        item["capability_id"]
-        for item in saved_capabilities
-        if item["capability_type"] == "TOOL_POLICY"
-    ] == [terminal_only["capability_id"]]
-    assert [
-        item["capability_key"]
-        for item in saved_capabilities
-        if item["capability_type"] == "CONTEXT_POLICY"
-    ] == ["flowweave-default-context"]
-
-    conflicting = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "conflicting policies",
-            "executor": {},
-            "capabilities": [terminal_only, file_only],
-        },
-    )
-    assert conflicting.status_code == 422, conflicting.text
-    assert conflicting.json()["error"]["code"] == "TOOL_POLICY_CONFLICT"
-
-
-def test_agent_definition_is_immutable_and_requires_governed_task_tools(client):
-    nested = client.post(
-        "/api/v1/capability-imports/validate",
-        json=_validate_payload(
-            "AGENT_DEFINITION",
-            "unsafe.json",
-            json.dumps(
-                {
-                    "name": "unsafe",
-                    "tools": ["terminal"],
-                    "skills": ["floating-skill"],
-                    "system_prompt": "Do work.",
-                }
-            ),
-        ),
-    )
-    assert nested.status_code == 422, nested.text
-    assert nested.json()["error"]["code"] == "IMPORT_REJECTED"
-
-    definition = _import_agent_definition(client, "reviewer", tools=["terminal"])
-    missing_task_tool = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "missing native task tool",
-            "executor": {},
-            "capabilities": [definition],
-        },
-    )
-    assert missing_task_tool.status_code == 422, missing_task_tool.text
-    assert missing_task_tool.json()["error"]["code"] == "AGENT_DEFINITION_TASK_TOOL_REQUIRED"
-
-    policy = _import_tool_policy(client, "native-subagents", ["terminal", "task_tool_set"])
-    saved = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "native subagent node",
-            "executor": {},
-            "capabilities": [definition, policy],
-        },
-    )
-    assert saved.status_code == 201, saved.text
-    by_type = {item["capability_type"]: item for item in saved.json()["capabilities"]}
-    assert by_type["AGENT_DEFINITION"]["capability_id"] == definition["capability_id"]
-    assert by_type["TOOL_POLICY"]["capability_id"] == policy["capability_id"]
+    assert node.status_code == 201, node.text
+    assert "capabilities" not in node.json()
 
 
 def test_skill_import_rejects_nested_archives_extensions_depth_and_large_files(client):
@@ -1709,20 +1249,7 @@ def test_expired_import_cleanup_task_deletes_only_uncommitted_source(
     assert committed_source.is_file()
 
 
-def test_capability_bulk_delete_skips_active_references_and_ignores_deleted_nodes(
-    client, skill_capability
-):
-    referenced_asset = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "引用能力的节点",
-            "executor": {},
-            "capabilities": [skill_capability],
-        },
-    )
-    assert referenced_asset.status_code == 201, referenced_asset.text
-    referenced_asset = referenced_asset.json()
-
+def test_capability_bulk_delete_remains_independent_from_nodes(client, skill_capability):
     second_validate = client.post(
         "/api/v1/capability-imports/validate",
         json={
@@ -1740,105 +1267,14 @@ def test_capability_bulk_delete_skips_active_references_and_ignores_deleted_node
 
     capabilities = client.get("/api/v1/capabilities").json()
     skills = [item for item in capabilities if item["capability_type"] == "SKILL"]
-    referenced = next(item for item in skills if item["reference_count"] == 1)
-    unreferenced = next(item for item in skills if item["reference_count"] == 0)
+    assert all(item["reference_count"] == 0 for item in skills)
     result = client.request(
         "DELETE",
         "/api/v1/capabilities",
-        json={"ids": [referenced["id"], unreferenced["id"]]},
+        json={"ids": [item["id"] for item in skills]},
     )
     assert result.status_code == 200, result.text
-    assert result.json() == {
-        "deleted_ids": [unreferenced["id"]],
-        "blocked": [
-            {
-                "id": referenced["id"],
-                "name": referenced["capability_key"],
-                "relation": "NODE_CAPABILITY",
-                "nodes": [{"id": referenced_asset["id"], "name": referenced_asset["name"]}],
-            }
-        ],
-    }
-
-    assert client.delete(f"/api/v1/node-assets/{referenced_asset['id']}").status_code == 204
-    capabilities = client.get("/api/v1/capabilities").json()
-    skills = [item for item in capabilities if item["capability_type"] == "SKILL"]
-    assert skills == [{**referenced, "reference_count": 0}]
-    deleted = client.request(
-        "DELETE",
-        "/api/v1/capabilities",
-        json={"ids": [referenced["id"]]},
-    )
-    assert deleted.status_code == 200, deleted.text
-    assert deleted.json() == {"deleted_ids": [referenced["id"]], "blocked": []}
+    assert set(result.json()["deleted_ids"]) == {item["id"] for item in skills}
+    assert result.json()["blocked"] == []
     capabilities = client.get("/api/v1/capabilities").json()
     assert [item for item in capabilities if item["capability_type"] == "SKILL"] == []
-    builtin = next(
-        item
-        for item in capabilities
-        if item["capability_type"] == "TOOL_POLICY"
-        and item["capability_key"] == "flowweave-default-tools"
-    )
-    protected = client.request(
-        "DELETE",
-        "/api/v1/capabilities",
-        json={"ids": [builtin["id"]]},
-    )
-    assert protected.status_code == 200, protected.text
-    assert protected.json() == {
-        "deleted_ids": [],
-        "blocked": [
-            {
-                "id": builtin["id"],
-                "name": "flowweave-default-tools",
-                "relation": "BUILTIN_CAPABILITY",
-                "nodes": [],
-            }
-        ],
-    }
-
-
-def test_tool_policy_catalog_exposes_governed_and_disabled_tools(client):
-    response = client.get("/api/v1/tool-policy-catalog")
-    assert response.status_code == 200
-    catalog = response.json()
-    assert catalog["openhands_version"] == "1.44.0"
-    assert catalog["catalog_digest"] == OPENHANDS_TOOL_CATALOG_DIGEST
-    assert catalog["catalog_digest"] == (
-        "b053075ebb633d74c96433d57336dab5c22cbc90f0bd1f591f9563a370a19de3"
-    )
-    assert catalog["max_tool_concurrency"] == 16
-    tools = {item["name"]: item for item in catalog["tools"]}
-    assert len(tools) == 16
-    assert tools["terminal"]["policy_enabled"] is True
-    assert tools["terminal"]["params"]["terminal_type"]["enum"] == [
-        "tmux",
-        "subprocess",
-        "powershell",
-    ]
-    assert tools["browser_tool_set"]["policy_enabled"] is False
-    assert "SSRF" in tools["browser_tool_set"]["disabled_reason"]
-    assert tools["ask_oracle"]["policy_enabled"] is True
-    assert tools["ask_oracle"]["disabled_reason"] is None
-
-
-def test_tool_policy_accepts_enum_string_parameter_without_length_limit(client):
-    payload = {
-        "name": "terminal-subprocess-policy",
-        "description": "Use the governed subprocess terminal implementation",
-        "tool_concurrency_limit": 1,
-        "tools": [
-            {"name": "terminal", "params": {"terminal_type": "subprocess"}},
-        ],
-    }
-    response = client.post(
-        "/api/v1/capability-imports/validate",
-        json={
-            "capability_type": "TOOL_POLICY",
-            "filename": "tool-policy.json",
-            "content_base64": base64.b64encode(json.dumps(payload).encode()).decode(),
-        },
-    )
-    assert response.status_code == 200, response.text
-    preview = response.json()["preview"]["capabilities"]
-    assert preview[0]["normalized_config"]["tools"][0]["params"] == {"terminal_type": "subprocess"}

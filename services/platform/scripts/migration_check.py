@@ -25,7 +25,6 @@ LEGACY_FLOW_ID = "10000000-0000-4000-8000-000000000004"
 LEGACY_RUN_ID = "10000000-0000-4000-8000-000000000005"
 LEGACY_SNAPSHOT_ID = "10000000-0000-4000-8000-000000000006"
 LEGACY_CONTENT_HASH = "a" * 64
-DEFAULT_TOOL_POLICY_KEY = "flowweave-default-tools"
 DEFAULT_CONTEXT_POLICY_KEY = "flowweave-default-context"
 
 
@@ -360,22 +359,17 @@ def assert_legacy_capability_snapshot_upgraded(connection_url: str) -> None:
         assert frozen["runtime_config"]["capability_version_id"] == version_id
         agent_spec = snapshot[0]["nodes"]["legacy-node"]["agent_spec"]
         assert agent_spec["schema_version"] == 1
-        assert agent_spec["tool_policy"]["capability_key"] == DEFAULT_TOOL_POLICY_KEY
-        assert [item["name"] for item in agent_spec["tool_policy"]["runtime_config"]["tools"]] == [
-            "terminal",
-            "file_editor",
-            "task_tracker",
-        ]
+        # The historical Snapshot is immutable: 0076 must not rewrite its
+        # restricted Tool Policy into the new fixed Runtime tool set.  The
+        # runtime rejects it with SNAPSHOT_TOOL_POLICY_REQUIRES_RERUN instead.
+        assert agent_spec["tool_policy"]["capability_key"] == "flowweave-default-tools"
         tool_policy_config = agent_spec["tool_policy"]["runtime_config"]
-        assert tool_policy_config["schema_version"] == 2
-        assert tool_policy_config["openhands_version"] == "1.44.0"
-        assert tool_policy_config["unknown_tool"] == "DENY"
-        assert tool_policy_config["tool_concurrency_limit"] == 1
-        assert tool_policy_config["confirmation_required_tools"] == [
-            "file_editor",
-            "task_tracker",
-            "terminal",
-        ]
+        assert isinstance(tool_policy_config, dict)
+        assert tool_policy_config
+        remaining_tool_policies = connection.execute(
+            "SELECT count(*) FROM capability_packages WHERE capability_type = 'TOOL_POLICY'"
+        ).fetchone()
+        assert remaining_tool_policies is not None and int(remaining_tool_policies[0]) == 0
         assert agent_spec["context_policy"]["capability_key"] == DEFAULT_CONTEXT_POLICY_KEY
         context_config = agent_spec["context_policy"]["runtime_config"]
         assert context_config["load_user_skills"] is False

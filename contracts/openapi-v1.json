@@ -71,6 +71,2127 @@
         }
       }
     },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/host": {
+      "get": {
+        "summary": "Node Session Host",
+        "operationId": "node_session_host_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_host_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Session Host Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Host Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/runtime": {
+      "get": {
+        "summary": "Node Session Runtime",
+        "operationId": "node_session_runtime_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_runtime_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Session Runtime Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Runtime Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/capabilities": {
+      "get": {
+        "summary": "Node Session Capabilities",
+        "operationId": "node_session_capabilities_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_capabilities_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "title": "Response Node Session Capabilities Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Capabilities Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Replace Node Session Capabilities",
+        "operationId": "replace_node_session_capabilities_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_capabilities_put",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeCapabilitySelectionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "title": "Response Replace Node Session Capabilities Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Capabilities Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/capabilities/{capability_version_id}/mcp-readiness": {
+      "post": {
+        "summary": "Node Session Mcp Readiness",
+        "operationId": "node_session_mcp_readiness_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_capabilities__capability_version_id__mcp_readiness_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "capability_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Session Mcp Readiness Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Capabilities  Capability Version Id  Mcp Readiness Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/capabilities": {
+      "post": {
+        "summary": "Add Node Session Capability",
+        "operationId": "add_node_session_capability_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__capabilities_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeCapabilityAddWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Add Node Session Capability Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Capabilities Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions": {
+      "get": {
+        "summary": "List Node Sessions",
+        "operationId": "list_node_sessions_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Node Sessions Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Node Session",
+        "operationId": "create_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionCreateWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/bootstrap": {
+      "post": {
+        "summary": "Bootstrap Node Session",
+        "operationId": "bootstrap_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_bootstrap_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionBootstrapFullWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Bootstrap Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Bootstrap Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/workspace": {
+      "get": {
+        "summary": "Node Session Workspace",
+        "operationId": "node_session_workspace_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_workspace_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Session Workspace Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Workspace Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/workspace/file": {
+      "get": {
+        "summary": "Node Session Workspace File",
+        "operationId": "node_session_workspace_file_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_workspace_file_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/work-directories": {
+      "get": {
+        "summary": "List Flow Run Work Directories",
+        "operationId": "list_flow_run_work_directories_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_work_directories_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Flow Run Work Directories Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Work Directories Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Flow Run Work Directory",
+        "operationId": "create_flow_run_work_directory_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_work_directories_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowRunWorkDirectoryCreateWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Flow Run Work Directory Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Work Directories Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}": {
+      "get": {
+        "summary": "Get Node Session",
+        "operationId": "get_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch Node Session",
+        "operationId": "patch_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__patch",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationPatchWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Patch Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Node Session",
+        "operationId": "delete_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__delete",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/events": {
+      "get": {
+        "summary": "Node Session Events",
+        "operationId": "node_session_events_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__events_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Session Events Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Events Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/input-readiness": {
+      "get": {
+        "summary": "Node Session Input Readiness",
+        "operationId": "node_session_input_readiness_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__input_readiness_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Node Session Input Readiness Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Input Readiness Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/context": {
+      "get": {
+        "summary": "Node Session Context",
+        "operationId": "node_session_context_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__context_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Session Context Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Context Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/pending-confirmation": {
+      "get": {
+        "summary": "Node Pending Confirmation",
+        "operationId": "node_pending_confirmation_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__pending_confirmation_get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Pending Confirmation Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Pending Confirmation Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/pending-confirmation/decision": {
+      "post": {
+        "summary": "Decide Node Confirmation",
+        "operationId": "decide_node_confirmation_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__pending_confirmation_decision_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeConfirmationDecisionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Decide Node Confirmation Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Pending Confirmation Decision Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/model": {
+      "post": {
+        "summary": "Switch Node Session Model",
+        "operationId": "switch_node_session_model_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__model_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionModelWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Switch Node Session Model Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Model Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/messages": {
+      "post": {
+        "summary": "Node Session Message",
+        "operationId": "node_session_message_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__messages_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionMessageWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Node Session Message Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Messages Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/messages/{event_id}/rerun": {
+      "post": {
+        "summary": "Rerun Node Message",
+        "operationId": "rerun_node_message_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__messages__event_id__rerun_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionMessageWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Rerun Node Message Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Messages  Event Id  Rerun Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/fork": {
+      "post": {
+        "summary": "Fork Node Session",
+        "operationId": "fork_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__fork_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeForkWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Fork Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Fork Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/streaming-migration": {
+      "post": {
+        "summary": "Migrate Node Session",
+        "operationId": "migrate_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__streaming_migration_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionModelWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Migrate Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Streaming Migration Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/attachments": {
+      "post": {
+        "summary": "Upload Node Attachment",
+        "operationId": "upload_node_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__attachments_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_node_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__attachments_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload Node Attachment Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Attachments Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/attachments": {
+      "post": {
+        "summary": "Upload Node Draft Attachment",
+        "operationId": "upload_node_draft_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 36,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_node_draft_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload Node Draft Attachment Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Attachments Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/condense": {
+      "post": {
+        "summary": "Condense Node Session",
+        "operationId": "condense_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__condense_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Condense Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Condense Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/interrupt": {
+      "post": {
+        "summary": "Interrupt Node Session",
+        "operationId": "interrupt_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__interrupt_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Interrupt Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Interrupt Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/resume": {
+      "post": {
+        "summary": "Resume Node Session",
+        "operationId": "resume_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__resume_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Resume Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Resume Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/stop": {
+      "post": {
+        "summary": "Stop Node Session",
+        "operationId": "stop_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__stop_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Stop Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Stop Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent-workspaces/default": {
       "get": {
         "summary": "Get Default Agent Workspace",
@@ -1539,7 +3660,13 @@
                         "type": "integer"
                       },
                       {
+                        "type": "number"
+                      },
+                      {
                         "type": "string"
+                      },
+                      {
+                        "type": "boolean"
                       },
                       {
                         "type": "null"
@@ -2199,50 +4326,6 @@
                     "additionalProperties": true
                   },
                   "title": "Response Agent Profile Versions Api V1 Agent Profile Packages  Package Id  Versions Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/agent-profiles/{version_id}/bindings": {
-      "get": {
-        "summary": "Agent Profile Bindings",
-        "operationId": "agent_profile_bindings_api_v1_agent_profiles__version_id__bindings_get",
-        "parameters": [
-          {
-            "name": "version_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Version Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
-                  "title": "Response Agent Profile Bindings Api V1 Agent Profiles  Version Id  Bindings Get"
                 }
               }
             }
@@ -3755,26 +5838,6 @@
         }
       }
     },
-    "/api/v1/tool-policy-catalog": {
-      "get": {
-        "summary": "Governed Tool Policy Catalog",
-        "operationId": "governed_tool_policy_catalog_api_v1_tool_policy_catalog_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Governed Tool Policy Catalog Api V1 Tool Policy Catalog Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/capabilities/{capability_id}/mcp-oauth-secret-references": {
       "post": {
         "summary": "Create Mcp Oauth Secret Reference",
@@ -4236,6 +6299,96 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Update Capability Source Api V1 Capabilities  Capability Id  Source Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{capability_id}/mcp-source": {
+      "get": {
+        "summary": "Mcp Source",
+        "operationId": "mcp_source_api_v1_capabilities__capability_id__mcp_source_get",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Mcp Source Api V1 Capabilities  Capability Id  Mcp Source Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Mcp Source",
+        "operationId": "update_mcp_source_api_v1_capabilities__capability_id__mcp_source_put",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityMcpRevisionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Mcp Source Api V1 Capabilities  Capability Id  Mcp Source Put"
                 }
               }
             }
@@ -6448,132 +8601,6 @@
         }
       }
     },
-    "/api/v1/flow-runs/{run_id}/agent-profile-switch-preview": {
-      "get": {
-        "summary": "Agent Profile Switch Preview",
-        "operationId": "agent_profile_switch_preview_api_v1_flow_runs__run_id__agent_profile_switch_preview_get",
-        "parameters": [
-          {
-            "name": "run_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Run Id"
-            }
-          },
-          {
-            "name": "flow_node_key",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Flow Node Key"
-            }
-          },
-          {
-            "name": "profile_version_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Profile Version Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Agent Profile Switch Preview Api V1 Flow Runs  Run Id  Agent Profile Switch Preview Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/flow-runs/{run_id}/agent-profile-switch": {
-      "post": {
-        "summary": "Agent Profile Switch",
-        "operationId": "agent_profile_switch_api_v1_flow_runs__run_id__agent_profile_switch_post",
-        "parameters": [
-          {
-            "name": "run_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Run Id"
-            }
-          },
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AgentProfileSwitchWrite"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Agent Profile Switch Api V1 Flow Runs  Run Id  Agent Profile Switch Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/flow-runs/{run_id}/complete": {
       "post": {
         "summary": "Complete",
@@ -7394,6 +9421,14 @@
             "type": "array",
             "maxItems": 10,
             "title": "Attachments"
+          },
+          "capability_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Capability Version Ids"
           }
         },
         "additionalProperties": false,
@@ -7575,68 +9610,6 @@
           "document"
         ],
         "title": "AgentProfileRevisionWrite"
-      },
-      "AgentProfileSwitchWrite": {
-        "properties": {
-          "expected_active_version": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Expected Active Version"
-          },
-          "flow_node_key": {
-            "type": "string",
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Flow Node Key"
-          },
-          "profile_version_id": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            "title": "Profile Version Id"
-          },
-          "source_profile_version_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Profile Version Id"
-          },
-          "expected_profile_digest": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Expected Profile Digest"
-          },
-          "copy_input_bindings_from_attempt_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Copy Input Bindings From Attempt Id"
-          },
-          "model_cost_comparison": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Model Cost Comparison"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "expected_active_version",
-          "flow_node_key",
-          "profile_version_id",
-          "expected_profile_digest"
-        ],
-        "title": "AgentProfileSwitchWrite"
       },
       "AgentStreamingMigrationWrite": {
         "properties": {
@@ -7905,30 +9878,6 @@
               }
             ],
             "title": "Prompt"
-          },
-          "model_name": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 240
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Name"
-          },
-          "reasoning_effort": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 30
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reasoning Effort"
           }
         },
         "additionalProperties": false,
@@ -7980,6 +9929,34 @@
           "file"
         ],
         "title": "Body_agent_workspace_attachment_api_v1_agent_workspaces__workspace_id__attachments_post"
+      },
+      "Body_upload_node_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__attachments_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_node_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__attachments_post"
+      },
+      "Body_upload_node_draft_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_node_draft_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_post"
       },
       "CapabilityBulkDeleteWrite": {
         "properties": {
@@ -8064,6 +10041,30 @@
         ],
         "title": "CapabilityCommitWrite"
       },
+      "CapabilityMcpRevisionWrite": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 1048576,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "mcp_scripts": {
+            "items": {
+              "$ref": "#/components/schemas/MCPScriptWrite"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Mcp Scripts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "CapabilityMcpRevisionWrite"
+      },
       "CapabilitySkillRevisionWrite": {
         "properties": {
           "content": {
@@ -8089,7 +10090,6 @@
               "PLUGIN",
               "MCP",
               "HOOK",
-              "TOOL_POLICY",
               "AGENT_DEFINITION",
               "CONTEXT_POLICY",
               "MEMORY_POLICY",
@@ -8131,157 +10131,6 @@
           "content_base64"
         ],
         "title": "CapabilityValidateWrite"
-      },
-      "CapabilityWrite": {
-        "properties": {
-          "capability_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Capability Id"
-          },
-          "capability_type": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "SKILL",
-                  "PLUGIN",
-                  "MCP",
-                  "HOOK",
-                  "TOOL_POLICY",
-                  "AGENT_DEFINITION",
-                  "CONTEXT_POLICY",
-                  "MEMORY_POLICY",
-                  "CRITIC_POLICY",
-                  "AGENT_PROFILE"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Capability Type"
-          },
-          "capability_key": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 200
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Capability Key"
-          },
-          "normalized_config": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Normalized Config"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "CapabilityWrite"
-      },
-      "CondenserWrite": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "NO_OP",
-              "LLM_SUMMARIZING"
-            ],
-            "title": "Kind",
-            "default": "LLM_SUMMARIZING"
-          },
-          "model_provider_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Provider Id"
-          },
-          "model_name": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 240
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Name"
-          },
-          "max_size": {
-            "type": "integer",
-            "maximum": 10000.0,
-            "minimum": 20.0,
-            "title": "Max Size",
-            "default": 240
-          },
-          "max_tokens": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Tokens"
-          },
-          "keep_first": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Keep First",
-            "default": 2
-          },
-          "minimum_progress": {
-            "type": "number",
-            "exclusiveMaximum": 1.0,
-            "exclusiveMinimum": 0.0,
-            "title": "Minimum Progress",
-            "default": 0.1
-          },
-          "hard_context_reset_max_retries": {
-            "type": "integer",
-            "maximum": 100.0,
-            "minimum": 1.0,
-            "title": "Hard Context Reset Max Retries",
-            "default": 5
-          },
-          "hard_context_reset_context_scaling": {
-            "type": "number",
-            "exclusiveMaximum": 1.0,
-            "exclusiveMinimum": 0.0,
-            "title": "Hard Context Reset Context Scaling",
-            "default": 0.8
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "CondenserWrite"
       },
       "ConversationPatchWrite": {
         "properties": {
@@ -8385,28 +10234,6 @@
       },
       "ExecutorWrite": {
         "properties": {
-          "model_provider_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Provider Id"
-          },
-          "model_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Name"
-          },
           "startup_prompt": {
             "type": "string",
             "title": "Startup Prompt",
@@ -8416,32 +10243,6 @@
             "type": "string",
             "title": "Context Prompt",
             "default": ""
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "maximum": 86400.0,
-            "minimum": 1.0,
-            "title": "Timeout Seconds",
-            "default": 900
-          },
-          "max_iterations": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 1.0,
-            "title": "Max Iterations",
-            "default": 100
-          },
-          "confirmation_policy": {
-            "type": "string",
-            "enum": [
-              "ALWAYS",
-              "NEVER"
-            ],
-            "title": "Confirmation Policy",
-            "default": "NEVER"
-          },
-          "condenser": {
-            "$ref": "#/components/schemas/CondenserWrite"
           }
         },
         "additionalProperties": false,
@@ -8546,29 +10347,18 @@
             ],
             "title": "Title"
           },
-          "model_name": {
+          "work_directory_id": {
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 240
+                "maxLength": 36,
+                "minLength": 1
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Model Name"
-          },
-          "reasoning_effort": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 30
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reasoning Effort"
+            "title": "Work Directory Id"
           }
         },
         "additionalProperties": false,
@@ -8577,6 +10367,32 @@
           "node_attempt_id"
         ],
         "title": "FlowRunConversationCreateWrite"
+      },
+      "FlowRunWorkDirectoryCreateWrite": {
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "selected_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Selected Paths"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "display_name",
+          "selected_paths"
+        ],
+        "title": "FlowRunWorkDirectoryCreateWrite"
       },
       "FlowWrite": {
         "properties": {
@@ -8760,30 +10576,6 @@
             "type": "string",
             "minLength": 1,
             "title": "Content"
-          },
-          "model_name": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 240
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Name"
-          },
-          "reasoning_effort": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 30
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reasoning Effort"
           }
         },
         "additionalProperties": false,
@@ -9594,13 +11386,6 @@
           },
           "executor": {
             "$ref": "#/components/schemas/ExecutorWrite"
-          },
-          "capabilities": {
-            "items": {
-              "$ref": "#/components/schemas/CapabilityWrite"
-            },
-            "type": "array",
-            "title": "Capabilities"
           }
         },
         "additionalProperties": false,
@@ -9609,6 +11394,158 @@
           "name"
         ],
         "title": "NodeAssetWrite"
+      },
+      "NodeAttachmentReference": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Path"
+          },
+          "image_data_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 35000000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Data Url"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "byte_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 26214400.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Byte Size"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "NodeAttachmentReference"
+      },
+      "NodeCapabilityAddWrite": {
+        "properties": {
+          "capability_version_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Capability Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capability_version_id"
+        ],
+        "title": "NodeCapabilityAddWrite"
+      },
+      "NodeCapabilitySelectionWrite": {
+        "properties": {
+          "capability_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Capability Version Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NodeCapabilitySelectionWrite"
+      },
+      "NodeConfirmationDecisionWrite": {
+        "properties": {
+          "expected_pending_digest": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Pending Digest"
+          },
+          "accept": {
+            "type": "boolean",
+            "title": "Accept"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_pending_digest",
+          "accept",
+          "reason"
+        ],
+        "title": "NodeConfirmationDecisionWrite"
+      },
+      "NodeForkWrite": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Event Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_id"
+        ],
+        "title": "NodeForkWrite"
       },
       "NodeRunStart": {
         "properties": {
@@ -9630,6 +11567,203 @@
         "additionalProperties": false,
         "type": "object",
         "title": "NodeRunStart"
+      },
+      "NodeSessionBootstrapFullWrite": {
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 36
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "client_question_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Question Id"
+          },
+          "model_provider_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Model Provider Id"
+          },
+          "model_name": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Model Name"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 30
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          },
+          "work_directory_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Directory Id"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            ],
+            "maxLength": 200000,
+            "title": "Content"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/NodeAttachmentReference"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Attachments"
+          },
+          "capability_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Capability Version Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "model_provider_id",
+          "model_name",
+          "content"
+        ],
+        "title": "NodeSessionBootstrapFullWrite"
+      },
+      "NodeSessionCreateWrite": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "work_directory_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Directory Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NodeSessionCreateWrite"
+      },
+      "NodeSessionMessageWrite": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 200000,
+            "title": "Content"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/NodeAttachmentReference"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Attachments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "NodeSessionMessageWrite"
+      },
+      "NodeSessionModelWrite": {
+        "properties": {
+          "model_provider_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Model Provider Id"
+          },
+          "model_name": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Model Name"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 30
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "model_provider_id",
+          "model_name"
+        ],
+        "title": "NodeSessionModelWrite"
       },
       "PluginProbeWrite": {
         "properties": {

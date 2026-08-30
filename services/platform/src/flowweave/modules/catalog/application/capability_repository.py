@@ -19,10 +19,6 @@ from flowweave.shared.domain.runtime_policy import (
     DEFAULT_MEMORY_POLICY_CONFIG,
     DEFAULT_MEMORY_POLICY_KEY,
 )
-from flowweave.shared.domain.tool_policy import (
-    DEFAULT_TOOL_POLICY_CONFIG,
-    DEFAULT_TOOL_POLICY_KEY,
-)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentWorkspaceCapability,
@@ -57,94 +53,6 @@ class PublishedCapability:
 
 def _builtin_id(kind: str, value: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"flowweave:{kind}:{value}"))
-
-
-def ensure_default_tool_policy(db: Session) -> PublishedCapability:
-    """Return the current immutable built-in Tool Policy.
-
-    Application code may repair a freshly constructed test database, but it
-    never synthesizes policy inside a Runtime request. Every node and Snapshot
-    references this concrete repository Version.
-    """
-
-    content = json.dumps(
-        DEFAULT_TOOL_POLICY_CONFIG,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    content_hash = hashlib.sha256(content).hexdigest()
-    blob_id = _builtin_id("blob", content_hash)
-    package_id = _builtin_id("package", f"TOOL_POLICY:{DEFAULT_TOOL_POLICY_KEY}")
-    digest = version_digest(
-        "TOOL_POLICY", DEFAULT_TOOL_POLICY_KEY, content_hash, DEFAULT_TOOL_POLICY_CONFIG
-    )
-    blob = db.get(CapabilityBlob, blob_id)
-    if blob is None:
-        blob = CapabilityBlob(
-            id=blob_id,
-            content_hash=content_hash,
-            storage_key=f"builtin://tool-policies/{content_hash}.json",
-            byte_size=len(content),
-            media_type="application/json",
-        )
-        db.add(blob)
-    package = db.get(CapabilityPackage, package_id)
-    if package is None:
-        package = CapabilityPackage(
-            id=package_id,
-            capability_type="TOOL_POLICY",
-            capability_key=DEFAULT_TOOL_POLICY_KEY,
-            display_name="FlowWeave Default Tools",
-            description=str(DEFAULT_TOOL_POLICY_CONFIG["description"]),
-        )
-        db.add(package)
-    # The mappings intentionally do not expose cross-aggregate ORM
-    # relationships. Flush repository parents explicitly so PostgreSQL can
-    # enforce the immutable Version foreign keys without relying on ORM
-    # instance dependency ordering.
-    db.flush()
-    version = db.scalar(
-        select(CapabilityVersion).where(
-            CapabilityVersion.package_id == package_id,
-            CapabilityVersion.digest == digest,
-        )
-    )
-    if version is None:
-        # Empty databases may already have the compatible content in v3 because
-        # historical migrations import the current frozen document.  Deployed
-        # databases instead retain a provenance-drifted v3, so the v4 migration
-        # publishes this explicit immutable successor before application code
-        # can select it.
-        version_id = _builtin_id("version", f"builtin:{DEFAULT_TOOL_POLICY_KEY}:4")
-        version = CapabilityVersion(
-            id=version_id,
-            package_id=package_id,
-            blob_id=blob_id,
-            version_no=4,
-            digest=digest,
-            normalized_config_json=dict(DEFAULT_TOOL_POLICY_CONFIG),
-            source_filename="flowweave-default-tools-v4.json",
-            state="PUBLISHED",
-        )
-        db.add(version)
-        db.flush()
-        db.add(
-            CapabilityValidation(
-                id=_builtin_id("validation", version_id),
-                capability_version_id=version_id,
-                validator="flowweave-builtin-v4",
-                status="PASSED",
-                report_json={
-                    "builtin": True,
-                    "openhands_version": "1.44.0",
-                    "source_commit": DEFAULT_TOOL_POLICY_CONFIG["source_commit"],
-                    "catalog_digest": DEFAULT_TOOL_POLICY_CONFIG["catalog_digest"],
-                },
-            )
-        )
-    db.flush()
-    return PublishedCapability(package, version, blob)
 
 
 def ensure_context_policy(db: Session) -> PublishedCapability:
@@ -663,10 +571,7 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for version, package, blob in rows:
         normalized = cast(dict[str, Any], version.normalized_config_json or {})
-        is_builtin = (
-            package.capability_type == "TOOL_POLICY"
-            and package.capability_key == DEFAULT_TOOL_POLICY_KEY
-        )
+        is_builtin = False
         result.append(
             {
                 "id": version.id,

@@ -30,9 +30,7 @@ def upgrade() -> None:
             name="ck_agent_workspace_capability_type",
         ),
         sa.CheckConstraint("position >= 0", name="ck_agent_workspace_capability_position"),
-        sa.ForeignKeyConstraint(
-            ["workspace_id"], ["agent_workspaces.id"], ondelete="RESTRICT"
-        ),
+        sa.ForeignKeyConstraint(["workspace_id"], ["agent_workspaces.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
             ["capability_version_id"], ["capability_versions.id"], ondelete="RESTRICT"
         ),

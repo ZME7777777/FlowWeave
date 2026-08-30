@@ -33,7 +33,6 @@ from flowweave.runtime.base import (
     RuntimeHandle,
     RuntimeMCPProbeRequest,
     RuntimeProvider,
-    RuntimeTool,
     StartAttemptRequest,
 )
 from flowweave.runtime.dependencies import get_runtime
@@ -46,12 +45,6 @@ from flowweave.runtime.workspace import (
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.settings import get_settings
-
-_TOOLS = (
-    RuntimeTool(name="terminal"),
-    RuntimeTool(name="file_editor"),
-    RuntimeTool(name="task_tracker"),
-)
 
 _PROJECT_ROOT = "/runtime/workspace/project"
 _PROACTIVE_COMPACTION_RATIO = 0.8
@@ -2316,3 +2309,17 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
         _safe_native_compaction(runtime, handle)
     result = runtime.run(handle)
     return {"accepted": True, "cursor": result.cursor}
+
+
+# Shared FlowRun-node conversations use these helpers while retaining one
+# implementation for native Agent Workspace conversations.  Public aliases
+# keep that dependency explicit without exposing underscore-prefixed details.
+PROACTIVE_COMPACTION_RATIO = _PROACTIVE_COMPACTION_RATIO
+AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
+ATTACHMENT_PATH = _ATTACHMENT_PATH
+enqueue_title_task = _enqueue_title_task
+frozen_runtime_capability = _frozen_runtime_capability
+initial_user_event_id = _initial_user_event_id
+message_payload = _message_payload
+record_message_attachments = _record_message_attachments
+validate_attachment_owners = _validate_attachment_owners

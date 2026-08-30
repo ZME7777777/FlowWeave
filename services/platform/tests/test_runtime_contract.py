@@ -20,7 +20,7 @@ from flowweave.runtime.contract import (
     normalize_runtime_contract,
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
-from flowweave.shared.domain.tool_policy import OPENHANDS_SOURCE_COMMIT, OPENHANDS_VERSION
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT, OPENHANDS_VERSION
 from flowweave.shared.errors import DomainError
 
 

@@ -392,12 +392,15 @@ def _bound_attachment_entries(
 def _is_bound_attachment(db: Session, binding_id: str | None, path: str) -> bool:
     if binding_id is None:
         return False
-    return db.scalar(
-        select(AgentConversationMessageAttachment.id).where(
-            AgentConversationMessageAttachment.binding_id == binding_id,
-            AgentConversationMessageAttachment.path == path,
+    return (
+        db.scalar(
+            select(AgentConversationMessageAttachment.id).where(
+                AgentConversationMessageAttachment.binding_id == binding_id,
+                AgentConversationMessageAttachment.path == path,
+            )
         )
-    ) is not None
+        is not None
+    )
 
 
 _PRIVATE_ATTACHMENT_PATH = re.compile(
@@ -500,10 +503,13 @@ def details(
         "working_directory": working_directory,
         "work_directory": directory,
         "files": list(
-            {entry["path"]: entry for entry in (
-                _scoped_workspace_entries(project_root, working_directory, file_roots)
-                + _bound_attachment_entries(db, binding_id, project_root)
-            )}.values()
+            {
+                entry["path"]: entry
+                for entry in (
+                    _scoped_workspace_entries(project_root, working_directory, file_roots)
+                    + _bound_attachment_entries(db, binding_id, project_root)
+                )
+            }.values()
         ),
         "repositories": repositories,
         "runtime": {"container_id": container_short_id},

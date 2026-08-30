@@ -40,10 +40,6 @@ from flowweave.shared.domain.runtime_policy import (
     normalize_critic_policy_document,
     normalize_memory_policy_document,
 )
-from flowweave.shared.domain.tool_policy import (
-    DEFAULT_TOOL_POLICY_KEY,
-    normalize_tool_policy_document,
-)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentWorkspace,
@@ -1247,14 +1243,6 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
         capabilities = _mcp_capabilities(parsed)
     elif payload.capability_type == "HOOK":
         capabilities = _hook_capabilities(parsed, Path(filename).stem)
-    elif payload.capability_type == "TOOL_POLICY":
-        try:
-            capability_key, normalized = normalize_tool_policy_document(
-                parsed, fallback_key=Path(filename).stem
-            )
-        except ValueError as exc:
-            raise _reject(str(exc)) from exc
-        capabilities = [{"capability_key": capability_key, "normalized_config": normalized}]
     elif payload.capability_type == "AGENT_DEFINITION":
         try:
             capability_key, normalized = normalize_agent_definition_document(
@@ -1440,7 +1428,6 @@ def prepare_commit(db: Session, token: str) -> CapabilityCommitPlan:
         "PLUGIN",
         "MCP",
         "HOOK",
-        "TOOL_POLICY",
         "AGENT_DEFINITION",
         "CONTEXT_POLICY",
         "MEMORY_POLICY",
@@ -2016,30 +2003,13 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
     deletable: list[CapabilityVersion] = []
     for capability_id in unique_ids:
         published = resolve_version(db, capability_id)
-        if (
-            published.package.capability_type == "TOOL_POLICY"
-            and published.package.capability_key == DEFAULT_TOOL_POLICY_KEY
-        ):
-            blocked.append(
-                {
-                    "id": capability_id,
-                    "name": published.package.capability_key,
-                    "relation": "BUILTIN_CAPABILITY",
-                    "nodes": [],
-                }
-            )
-            continue
         workspaces = _workspace_references(db, capability_id)
         governance = _governance_references(db, capability_id)
         if workspaces or governance:
             reference: dict[str, Any] = {
                 "id": capability_id,
                 "name": published.package.capability_key,
-                "relation": (
-                    "AGENT_WORKSPACE"
-                    if workspaces
-                    else "CAPABILITY_GOVERNANCE"
-                ),
+                "relation": ("AGENT_WORKSPACE" if workspaces else "CAPABILITY_GOVERNANCE"),
                 "workspaces": workspaces,
             }
             if governance:
@@ -2048,9 +2018,7 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
         else:
             deletable.append(published.version)
 
-    collection_changes = _detach_collection_members(
-        db, [version.id for version in deletable]
-    )
+    collection_changes = _detach_collection_members(db, [version.id for version in deletable])
     deleted_ids: list[str] = []
     for version in deletable:
         version_id = version.id

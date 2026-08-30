@@ -12,7 +12,7 @@ from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared.application.transactions import finish
-from flowweave.shared.domain.tool_policy import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     BackgroundTask,

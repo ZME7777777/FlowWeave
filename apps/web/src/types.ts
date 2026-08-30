@@ -12,7 +12,7 @@ export interface ExecutorConfig {
   startup_prompt: string; context_prompt: string;
 }
 export type CapabilityAssetType =
-  | 'SKILL' | 'PLUGIN' | 'MCP' | 'HOOK' | 'TOOL_POLICY' | 'AGENT_DEFINITION'
+  | 'SKILL' | 'PLUGIN' | 'MCP' | 'HOOK' | 'AGENT_DEFINITION'
   | 'CONTEXT_POLICY' | 'MEMORY_POLICY' | 'CRITIC_POLICY' | 'AGENT_PROFILE';
 export interface CapabilityRef {
   id?: string; capability_id?: string; capability_type: CapabilityAssetType; capability_key: string;
@@ -46,19 +46,6 @@ export interface McpSource {
 export interface CapabilityImportResult {
   id: string; capability_type: CapabilityAssetType; filename: string;
   content_hash: string; storage_key: string; capabilities: CapabilityAsset[];
-}
-export interface ToolPolicyParameter {
-  type: 'string' | 'integer'; max_length?: number; minimum?: number; maximum?: number; enum?: string[];
-}
-export interface ToolPolicyCatalogItem {
-  name: string; module: string; params: Record<string, ToolPolicyParameter>;
-  access: 'READ_ONLY' | 'READ_WRITE' | 'CONTROL' | 'OPEN_WORLD';
-  confirmation: 'NONE' | 'REQUIRED'; concurrency: 'READ_ONLY' | 'RESOURCE_LOCKED' | 'SERIAL_ONLY';
-  policy_enabled: boolean; disabled_reason?: string | null;
-}
-export interface ToolPolicyCatalog {
-  schema_version: number; openhands_version: string; source_commit: string; catalog_digest: string;
-  max_tool_concurrency: number; tools: ToolPolicyCatalogItem[];
 }
 export interface PluginSourceResolution {
   id: string; source_kind: 'GIT' | 'MARKETPLACE'; source_url: string; requested_commit: string; repo_path?: string | null;

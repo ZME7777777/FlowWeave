@@ -61,6 +61,31 @@ def __getattr__(name: str) -> Any:
             "flow_node_workspace": flow_node_workspace,
             "titles": titles,
         }[name]
+    if name in {
+        "build_agent_spec",
+        "config_from_binding",
+        "flow_node_binding_for_attempt",
+        "provider_for_config",
+        "reserve_flow_node_binding",
+        "resolve_session_config",
+    }:
+        from flowweave.modules.agent_sessions.application.runtime_config import (
+            build_agent_spec,
+            config_from_binding,
+            flow_node_binding_for_attempt,
+            provider_for_config,
+            reserve_flow_node_binding,
+            resolve_session_config,
+        )
+
+        return {
+            "build_agent_spec": build_agent_spec,
+            "config_from_binding": config_from_binding,
+            "flow_node_binding_for_attempt": flow_node_binding_for_attempt,
+            "provider_for_config": provider_for_config,
+            "reserve_flow_node_binding": reserve_flow_node_binding,
+            "resolve_session_config": resolve_session_config,
+        }[name]
     if name in {"FlowNodeSessionHost", "resolve_flow_node_session_host"}:
         from flowweave.modules.agent_sessions.application.flow_node_host import (
             FlowNodeSessionHost,

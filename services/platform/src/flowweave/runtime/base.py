@@ -284,8 +284,8 @@ class RuntimeContract:
 
     The contract is compiled by FlowWeave, not inferred by the adapter.  It is
     intentionally limited to public Agent Server details, OpenAPI operations,
-    request fields, declared capabilities, and the tools actually enabled by
-    the node's immutable Tool Policy.
+    request fields, declared capabilities, and the fixed tools enabled for
+    every Agent session.
     """
 
     schema_version: int

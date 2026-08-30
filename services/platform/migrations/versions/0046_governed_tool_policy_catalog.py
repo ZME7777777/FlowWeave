@@ -15,11 +15,13 @@ import sqlalchemy as sa
 from alembic import op
 
 from flowweave.shared.domain.capability_digest import capability_version_digest
-from flowweave.shared.domain.tool_policy import (
-    DEFAULT_TOOL_POLICY_CONFIG,
-    DEFAULT_TOOL_POLICY_KEY,
-    OPENHANDS_VERSION,
+from flowweave.shared.domain.legacy_migration_data import (
+    RETIRED_AGENT_CONFIG as DEFAULT_TOOL_POLICY_CONFIG,
 )
+from flowweave.shared.domain.legacy_migration_data import (
+    RETIRED_AGENT_CONFIG_KEY as DEFAULT_TOOL_POLICY_KEY,
+)
+from flowweave.shared.domain.openhands import OPENHANDS_VERSION
 
 revision = "0046_tool_policy_catalog"
 down_revision = "0045_runtime_conversation_forks"

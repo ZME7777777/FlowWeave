@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 from fastapi import (
@@ -64,13 +64,17 @@ class NodeSessionBootstrapFullWrite(_Write):
     reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
     content: str | list[dict[str, Any]] = Field(max_length=200_000)
-    attachments: list[NodeAttachmentReference] = Field(default_factory=list, max_length=10)
+    attachments: list[NodeAttachmentReference] = cast(
+        list[NodeAttachmentReference], Field(default_factory=list, max_length=10)
+    )
     capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
 
 
 class NodeSessionMessageWrite(_Write):
     content: str = Field(max_length=200_000)
-    attachments: list[NodeAttachmentReference] = Field(default_factory=list, max_length=10)
+    attachments: list[NodeAttachmentReference] = cast(
+        list[NodeAttachmentReference], Field(default_factory=list, max_length=10)
+    )
 
 
 class NodeConfirmationDecisionWrite(_Write):
@@ -326,7 +330,10 @@ async def bootstrap_node_session(
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             content=content,
-            attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+            attachments=tuple(
+                cast(dict[str, str | int], item.model_dump(exclude_none=True))
+                for item in payload.attachments
+            ),
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,
@@ -607,7 +614,10 @@ async def node_session_message(
             attempt_id=attempt_id,
             binding_id=binding_id,
             content=payload.content,
-            attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+            attachments=tuple(
+                cast(dict[str, str | int], item.model_dump(exclude_none=True))
+                for item in payload.attachments
+            ),
         ),
     )
 

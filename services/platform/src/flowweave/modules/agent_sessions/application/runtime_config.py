@@ -30,17 +30,14 @@ from flowweave.runtime.workspace import (
     materialize_agent_workspace_capabilities,
     materialize_agent_workspace_capability_marketplace,
 )
+from flowweave.shared.domain.openhands import FIXED_RUNTIME_TOOL_NAMES
 from flowweave.shared.errors import DomainError
 from flowweave.shared.settings import get_settings
 
 AgentWorkspace = agent_workspace_host.AgentWorkspace
 AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
 
-TOOLS = (
-    RuntimeTool(name="terminal"),
-    RuntimeTool(name="file_editor"),
-    RuntimeTool(name="task_tracker"),
-)
+TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
 PROJECT_ROOT = "/runtime/workspace/project"
 PROACTIVE_COMPACTION_RATIO = 0.8
 CONDENSER_MAX_EVENTS = 10_000
@@ -347,6 +344,7 @@ def build_agent_spec(
     )
     return RuntimeAgentSpec(
         provider=provider,
+        oracle_provider=provider,
         confirmation_policy="NEVER",
         agent_context=RuntimeAgentContext(
             system_message_suffix=system_context(working_directory),

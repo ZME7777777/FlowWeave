@@ -390,7 +390,6 @@ class CapabilityValidateWrite(ApiModel):
         "PLUGIN",
         "MCP",
         "HOOK",
-        "TOOL_POLICY",
         "AGENT_DEFINITION",
         "CONTEXT_POLICY",
         "MEMORY_POLICY",

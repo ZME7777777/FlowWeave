@@ -15,7 +15,7 @@ from typing import cast
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.runtime.auth import derive_runtime_session_key
-from flowweave.shared.domain.tool_policy import (
+from flowweave.shared.domain.openhands import (
     OPENHANDS_SOURCE_COMMIT,
     OPENHANDS_VERSION,
 )

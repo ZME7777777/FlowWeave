@@ -45,9 +45,7 @@ def resolve_agent_workspace_session_host(
     if workspace is None:
         raise not_found("agent_workspace", workspace_id)
     runtime = db.scalar(
-        select(AgentWorkspaceRuntime).where(
-            AgentWorkspaceRuntime.workspace_id == workspace.id
-        )
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )
     if runtime is None:
         raise DomainError(

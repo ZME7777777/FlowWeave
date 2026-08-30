@@ -14,14 +14,6 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application.runtime_config import (
-    build_agent_spec,
-    config_from_binding,
-    flow_node_binding_for_attempt,
-    provider_for_config,
-    reserve_flow_node_binding,
-    resolve_session_config,
-)
 from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -77,7 +69,7 @@ from flowweave.shared.application.transactions import (
     register_rollback_action,
 )
 from flowweave.shared.artifact_store import get_artifact_store
-from flowweave.shared.domain.tool_policy import OPENHANDS_VERSION
+from flowweave.shared.domain.openhands import OPENHANDS_VERSION
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.models import (
     ArtifactVersion,
@@ -1547,7 +1539,7 @@ def confirm_start(
         attempt_id=current.id,
         require_start_permission=True,
     )
-    session_config = resolve_session_config(db)
+    session_config = agent_sessions.resolve_session_config(db)
     if payload.startup_mode == "SKILL" and not any(
         item.capability_type == "SKILL" and item.capability_key == payload.capability_key
         for item in session_config.capabilities
@@ -1571,7 +1563,7 @@ def confirm_start(
     attempt.startup_prompt = payload.prompt
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    reserve_flow_node_binding(
+    agent_sessions.reserve_flow_node_binding(
         db,
         runtime_session_id=host.runtime_session_id,
         flow_run_id=run.id,
@@ -1850,9 +1842,11 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     node = _runtime_node(snapshot, node_run.flow_node_snapshot_key)
-    session_binding = flow_node_binding_for_attempt(db, attempt.id, require_provisioning=True)
-    session_config = config_from_binding(db, session_binding)
-    provider = provider_for_config(db, session_config)
+    session_binding = agent_sessions.flow_node_binding_for_attempt(
+        db, attempt.id, require_provisioning=True
+    )
+    session_config = agent_sessions.config_from_binding(db, session_binding)
+    provider = agent_sessions.provider_for_config(db, session_config)
     host_root = sandboxes.flow_run_capability_path(
         run.id, snapshot.runtime_manifest_hash, "conversations", session_binding.id
     )
@@ -1861,7 +1855,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
             snapshot.runtime_manifest_hash, "conversations", session_binding.id
         )
     )
-    agent_spec = build_agent_spec(
+    agent_spec = agent_sessions.build_agent_spec(
         session_config,
         provider=provider,
         binding_id=session_binding.id,
@@ -3189,7 +3183,11 @@ def delete_run(db: Session, run_id: str) -> None:
                 AgentConversationCommand.binding_id.in_(conversation_ids)
             )
         )
-        db.execute(delete(AgentConversationBinding).where(AgentConversationBinding.id.in_(conversation_ids)))
+        db.execute(
+            delete(AgentConversationBinding).where(
+                AgentConversationBinding.id.in_(conversation_ids)
+            )
+        )
     if attempt_ids:
         db.execute(
             delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids))

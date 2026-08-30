@@ -1,7 +1,7 @@
 import type {
   AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -232,7 +232,6 @@ export const api = {
   publishPluginSourceResolution: (id: string, expectedStateVersion: number) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}/publish`, json('POST', { expected_state_version: expectedStateVersion })),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
-  toolPolicyCatalog: () => request<ToolPolicyCatalog>('/tool-policy-catalog'),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
   mcpSource: (id: string) => request<McpSource>(`/capabilities/${encodeURIComponent(id)}/mcp-source`),
   updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>) =>

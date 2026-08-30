@@ -16,7 +16,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerSandboxProvider,
 )
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
-from flowweave.shared.domain.tool_policy import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     BackgroundTask,

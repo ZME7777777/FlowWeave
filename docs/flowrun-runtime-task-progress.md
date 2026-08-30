@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
-> 当前执行切片：`FR-108 统一 Agent 工具集并删除 Tool Policy`
+> 当前执行切片：无
 > 下一可执行切片：无
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -1519,7 +1519,7 @@ OpenHands 原生 Runtime：附件上传/图片粘贴、草稿附件、会话删�
 已知 Runtime 模型以固定 catalog 窗口优先，`gpt-5.6-sol` 的界面容量稳定为 922k；token 用量仍读取同一
 active OpenHands usage bucket。
 
-### FR-108 统一 Agent 工具集并删除 Tool Policy — CURRENT
+### FR-108 统一 Agent 工具集并删除 Tool Policy — DONE
 
 依赖：`FR-107`。
 
@@ -1531,6 +1531,12 @@ active OpenHands usage bucket。
 
 验收：固定 Runtime 的可用 Tool 集探针、创建/恢复/发送的正式 Agent payload、删除/拒绝旧 Tool Policy API
 和能力仓库 UI 定向回归；受影响 Python/Web 静态检查、迁移和 `git diff --check` 通过。本切片使用独立 Git commit。
+
+完成：Tool Policy 已从能力类型、导入/发布、前端能力仓库、API、节点 Runtime manifest、Agent Profile
+关联和运行时编译中删除。顶层与节点会话共同使用固定 OpenHands 1.44.0 全工具集合
+(`ask_oracle`、`file_editor`、`task`、`task_tool_set`、`task_tracker`、`terminal`、`workflow`、
+`workflow_tool_set`)，统一传入正式 `NeverConfirm`；不再存在按节点、容器或宿主原因产生的工具差异。
+历史包含已移除配置的 Snapshot fail-closed 并要求重跑，不转换其冻结语义。
 
 ## 7. 恢复工作检查表
 
@@ -1548,6 +1554,7 @@ active OpenHands usage bucket。
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-108 | 固定工具集、Runtime 契约、会话与 replacement 定向 pytest（20 passed）；环境定向 pytest（35 passed）；受影响 Ruff/格式检查；Web TypeScript、ESLint、production build；Alembic fresh upgrade/head/current、`git diff --check` | PASS：能力仓库与 `/tool-policy-catalog` 已移除，所有新会话共享完整固定 Runtime Tool 集和 `NeverConfirm`。旧 Snapshot 不进行猜测迁移，明确要求重跑；部署迁移删除已废弃能力记录而不重写历史 Snapshot。 |
 | 2026-08-30 | FR-107 | FlowRun 节点附件/API、OpenHands 上下文与共享会话定向 pytest（118 passed）；受影响 Ruff/`py_compile`；Web ESLint、TypeScript、production build；Alembic head/current、`git diff --check` 与任务状态唯一性 | PASS：节点会话 gateway 不再保留任何功能禁用；附件与图片粘贴、草稿终端、删除、原生确认、分叉、重思考、暂停/恢复、压缩、模型及能力入口均由同一 OpenHands Runtime 提供。节点文件范围和工作目录严格固定为当前 Attempt；固定 catalog 将 `gpt-5.6-sol` 显示为 922k，活跃 usage bucket 仍提供 token 用量。 |
 | 2026-08-30 | FR-106 | FlowRun API 定向 pytest（36 passed）；受影响 Python `py_compile`；Web TypeScript typecheck、ESLint；Alembic head；`git diff --check` 与任务状态唯一性 | PASS：新建 FlowRun 在 Runtime `STARTING` 时返回明确的不可写摘要；运行列表保留创建记录、显示“运行环境初始化中”且禁用进入，只有 Runtime `ACTIVE` 才允许打开。恢复、替换、降级同样不允许进入，未新增 Runtime 或暴露物理容器信息。 |
 | 2026-08-30 | FR-105 | OpenHands 上下文定向 pytest（2 passed）；节点会话作用域/API 定向 pytest（2 passed）；OpenHands、节点会话与 API 合并 pytest（118 passed）；受影响 Ruff 与 Python `py_compile`；Web typecheck/ESLint；源码 Vite 上一级 Agent 会话定向 Playwright（1 passed）；固定 Runtime LiteLLM catalog 探针；`git diff --check` 与任务状态唯一性 | PASS：固定 Runtime 明确给出 Codex 模型窗口（`gpt-5.4` 为 1,050,000，`gpt-5.6-*` 为 922,000）；共享 Workbench 显示可信 `0 / window` 与 `0 / 10k` 基线，正式 active usage bucket 在消息后可替换零值。节点会话复用同一 Runtime，首发模型选择与后续模型切换均冻结到 binding，列表和操作不能越过 Attempt。 |

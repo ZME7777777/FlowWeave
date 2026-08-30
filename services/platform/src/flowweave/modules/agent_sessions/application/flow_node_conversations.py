@@ -12,15 +12,16 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application.conversations import (
-    _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-    _PROACTIVE_COMPACTION_RATIO,
-    _enqueue_title_task,
-    _frozen_runtime_capability,
-    _initial_user_event_id,
-    _message_payload,
-    _record_message_attachments,
-    _validate_attachment_owners,
+    AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+    ATTACHMENT_PATH,
+    PROACTIVE_COMPACTION_RATIO,
+    enqueue_title_task,
+    frozen_runtime_capability,
+    initial_user_event_id,
+    message_payload,
     normalized_first_sentence,
+    record_message_attachments,
+    validate_attachment_owners,
 )
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
@@ -845,7 +846,7 @@ def bootstrap_node_conversation(
     initial_event_id = (
         binding.initial_user_event_id
         or cast(str | None, delivered.get("cursor"))
-        or _initial_user_event_id(handle, previous_event_id)
+        or initial_user_event_id(handle, previous_event_id)
     )
     if initial_event_id is None:
         initial_event_id = get_runtime().reload_conversation(handle).event_id
@@ -861,7 +862,7 @@ def bootstrap_node_conversation(
         binding.display_title = normalized_first_sentence(text)
         binding.title_state = "PENDING"
         binding.updated_at = now()
-        _enqueue_title_task(db, binding, text)
+        enqueue_title_task(db, binding, text)
         finish(db)
     return {
         "conversation": _node_session_dict(db, binding),
@@ -1089,8 +1090,8 @@ def send_node_message(
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
-    _validate_attachment_owners(binding.id, attachments)
-    prompt, image_urls = _message_payload(content, attachments)
+    validate_attachment_owners(binding.id, attachments)
+    prompt, image_urls = message_payload(content, attachments)
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
@@ -1100,7 +1101,7 @@ def send_node_message(
         runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, prompt, image_urls)
     if result.cursor:
-        _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+        record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     binding.last_connected_at = now()
     finish(db)
     return {"accepted": True, "cursor": result.cursor, "compacted": False}
@@ -1157,9 +1158,7 @@ def upload_node_attachment(
         content=content,
         attachment_owner_id=owner_id,
     )
-    from flowweave.modules.agent_sessions.application.conversations import _ATTACHMENT_PATH
-
-    if (matched := _ATTACHMENT_PATH.fullmatch(path)) is None or matched.group("owner") != owner_id:
+    if (matched := ATTACHMENT_PATH.fullmatch(path)) is None or matched.group("owner") != owner_id:
         raise DomainError("RUNTIME_PROTOCOL_ERROR", "OpenHands 返回了无效附件路径", 502)
     if bound is not None:
         db.add(
@@ -1242,7 +1241,7 @@ def add_node_conversation_capability(
     )
     marketplace_name = agent_workspace_capability_marketplace_name(binding.id)
     plugin_name = materialize_agent_workspace_capability_marketplace(
-        _frozen_runtime_capability(db, published, capability_type),
+        frozen_runtime_capability(db, published, capability_type),
         host_root=host_root,
         runtime_root=runtime_root,
         marketplace_name=marketplace_name,
@@ -1410,6 +1409,8 @@ def fork_node_conversation(
         work_directory_version_id=source.work_directory_version_id,
         config=config,
     )
+    if source_identity.event_id is None:
+        raise DomainError("AGENT_CONVERSATION_EVENT_NOT_FOUND", "分叉来源事件不存在", 404)
     provider = provider_for_config(db, config)
     result = runtime.fork_conversation(
         source_handle,
@@ -1420,8 +1421,8 @@ def fork_node_conversation(
         reset_metrics=True,
         condenser=RuntimeCondenser(
             kind="LLM_SUMMARIZING",
-            max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-            max_tokens_ratio=_PROACTIVE_COMPACTION_RATIO,
+            max_size=AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+            max_tokens_ratio=PROACTIVE_COMPACTION_RATIO,
             keep_first=4,
         ),
         condenser_provider=provider,

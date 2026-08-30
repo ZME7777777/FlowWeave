@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any, cast
 
+from flowweave.shared.domain.openhands import (
+    FIXED_RUNTIME_TOOL_NAMES,
+    FIXED_TOOL_CONCURRENCY_LIMIT,
+)
+
 _UUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -25,14 +30,14 @@ OPENHANDS_AGENT_PROFILE_FIELD_MATRIX: dict[str, str] = {
     "agent_kind": "OPENHANDS_ONLY",
     "llm_profile_ref": "FLOWWEAVE_MODEL_SELECTION",
     "agent": "CODE_ACT_AGENT_ONLY",
-    "tools": "MATCH_FROZEN_TOOL_POLICY",
+    "tools": "MATCH_FIXED_RUNTIME_TOOL_SET",
     "system_message_suffix": "MATCH_FROZEN_CONTEXT_POLICY",
     "disabled_skills": "MATCH_FROZEN_CONTEXT_POLICY",
     "condenser": "MATCH_FROZEN_EXECUTOR_POLICY",
     "verification": "MATCH_FROZEN_CRITIC_POLICY",
     "enable_sub_agents": "MATCH_FROZEN_AGENT_DEFINITIONS",
     "enable_switch_llm_tool": "DISABLED_MUTABLE_LLM_STORE",
-    "tool_concurrency_limit": "MATCH_FROZEN_TOOL_POLICY",
+    "tool_concurrency_limit": "FIXED_RUNTIME_DEFAULT",
 }
 
 DEFAULT_CONTEXT_POLICY_KEY = "flowweave-default-context"
@@ -345,7 +350,6 @@ def normalize_agent_profile_document(
             "enable_switch_llm_tool",
             "tool_concurrency_limit",
             "compatibility_matrix",
-            "tool_policy_version_id",
             "context_policy_version_id",
             "memory_policy_version_id",
             "critic_policy_version_id",
@@ -389,26 +393,11 @@ def normalize_agent_profile_document(
         else sorted({str(item).strip() for item in cast(list[object], raw_mcp_refs)})
     )
     raw_tools = document.get("tools", None)
-    tools: list[dict[str, Any]] | None = None
-    if raw_tools is not None:
-        if not isinstance(raw_tools, list):
-            raise ValueError("Agent Profile tools must be null or a list")
-        tools = []
-        seen_tools: set[str] = set()
-        for raw_tool in cast(list[object], raw_tools):
-            if not isinstance(raw_tool, dict):
-                raise ValueError("Agent Profile tools must contain objects")
-            tool = cast(dict[object, object], raw_tool)
-            if set(map(str, tool)) - {"name", "params"}:
-                raise ValueError("Agent Profile Tool contains unsupported fields")
-            tool_name = str(tool.get("name") or "").strip()
-            params = tool.get("params", {})
-            if not tool_name or len(tool_name) > 200 or tool_name in seen_tools:
-                raise ValueError("Agent Profile Tool names must be unique and bounded")
-            if not isinstance(params, dict):
-                raise ValueError("Agent Profile Tool params must be an object")
-            seen_tools.add(tool_name)
-            tools.append({"name": tool_name, "params": cast(dict[str, Any], params)})
+    if raw_tools not in (None, list(FIXED_RUNTIME_TOOL_NAMES)):
+        raise ValueError("Agent Profile tools must use the fixed Runtime tool set")
+    tools: list[dict[str, object]] = [
+        {"name": name, "params": {}} for name in FIXED_RUNTIME_TOOL_NAMES
+    ]
     raw_disabled = document.get("disabled_skills", [])
     if not isinstance(raw_disabled, list) or any(
         not isinstance(item, str) or not item.strip() or len(item) > 200
@@ -461,16 +450,11 @@ def normalize_agent_profile_document(
             "Agent Profile enable_switch_llm_tool must be false because "
             "mutable LLM stores are disabled"
         )
-    tool_concurrency_limit = document.get("tool_concurrency_limit", 1)
-    if (
-        not isinstance(tool_concurrency_limit, int)
-        or isinstance(tool_concurrency_limit, bool)
-        or not 1 <= tool_concurrency_limit <= 64
-    ):
-        raise ValueError("Agent Profile tool_concurrency_limit must be between 1 and 64")
+    tool_concurrency_limit = document.get("tool_concurrency_limit", FIXED_TOOL_CONCURRENCY_LIMIT)
+    if tool_concurrency_limit != FIXED_TOOL_CONCURRENCY_LIMIT:
+        raise ValueError("Agent Profile tool_concurrency_limit is fixed by the Runtime")
     policy_references: dict[str, str] = {}
     for field in (
-        "tool_policy_version_id",
         "context_policy_version_id",
         "memory_policy_version_id",
         "critic_policy_version_id",
@@ -480,8 +464,8 @@ def normalize_agent_profile_document(
             raise ValueError(f"Agent Profile must reference {field}")
         policy_references[field] = version_id
     confirmation = str(document.get("confirmation_policy") or "NEVER")
-    if confirmation not in {"ALWAYS", "NEVER"}:
-        raise ValueError("Agent Profile confirmation_policy is invalid")
+    if confirmation != "NEVER":
+        raise ValueError("Agent Profile confirmation_policy must be NEVER")
     iterations = document.get("max_iterations", 100)
     if (
         not isinstance(iterations, int)
@@ -517,7 +501,6 @@ def normalize_agent_profile_document(
 def validate_agent_profile_materialization(
     profile: dict[str, Any],
     *,
-    tool_policy: dict[str, Any],
     context_policy: dict[str, Any],
     critic_policy: dict[str, Any],
     mcp_server_names: set[str],
@@ -530,12 +513,10 @@ def validate_agent_profile_materialization(
     verifies that they describe the already-selected immutable policies.
     """
 
-    declared_tools = profile.get("tools")
-    frozen_tools = tool_policy.get("tools")
-    if declared_tools is not None and declared_tools != frozen_tools:
-        raise ValueError("Agent Profile tools must match its frozen Tool Policy")
-    if profile.get("tool_concurrency_limit") != tool_policy.get("tool_concurrency_limit"):
-        raise ValueError("Agent Profile concurrency must match its frozen Tool Policy")
+    if profile.get("tools") != [{"name": name, "params": {}} for name in FIXED_RUNTIME_TOOL_NAMES]:
+        raise ValueError("Agent Profile tools must match the fixed Runtime tool set")
+    if profile.get("tool_concurrency_limit") != FIXED_TOOL_CONCURRENCY_LIMIT:
+        raise ValueError("Agent Profile concurrency must match the fixed Runtime default")
 
     declared_mcp = profile.get("mcp_server_refs")
     if declared_mcp is not None and set(cast(list[str], declared_mcp)) != mcp_server_names:

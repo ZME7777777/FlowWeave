@@ -339,15 +339,11 @@ def test_default_agent_workspace_has_external_storage_and_no_flow_owner(
         db.commit()
 
 
-def test_agent_workspace_resolves_the_shared_session_host_context(
-    settings, db_session_factory
-):
+def test_agent_workspace_resolves_the_shared_session_host_context(settings, db_session_factory):
     with settings_context(settings), db_session_factory() as db:
         workspace = ensure_default_agent_workspace(db)
         runtime = db.scalar(
-            select(AgentWorkspaceRuntime).where(
-                AgentWorkspaceRuntime.workspace_id == workspace.id
-            )
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
         )
         assert runtime is not None
         runtime.status = "ACTIVE"

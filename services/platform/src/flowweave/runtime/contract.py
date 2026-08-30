@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from flowweave.runtime.base import RuntimeContract
-from flowweave.shared.domain.tool_policy import (
+from flowweave.shared.domain.openhands import (
     OPENHANDS_SOURCE_COMMIT,
     OPENHANDS_VERSION,
 )

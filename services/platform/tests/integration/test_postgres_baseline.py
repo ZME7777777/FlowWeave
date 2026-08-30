@@ -260,7 +260,6 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
                 }
             ],
             "executor": {"startup_prompt": "生成方案"},
-            "capabilities": [skill_capability],
         },
     )
     assert asset_response.status_code == 201, asset_response.text
