@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：无（环境发布中状态与终端重连隔离已完成；后续发布门禁按独立切片执行）
+> 下一可执行切片：无（页面局部滚动与 Skill 组合删除已完成；后续发布门禁按独立切片执行）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1431,6 +1431,16 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 验收：环境服务定向测试覆盖发布中状态、禁止终端连接/二次创建/停止、成功完成及失败回退；Web 定向 Playwright 覆盖关闭后重新进入显示发布中、不建立终端 WebSocket；受影响 Python/Web 静态检查、Alembic head、任务状态唯一性和 `git diff --check` 通过。本切片使用独立 Git commit。
 
+### FR-102 页面局部滚动与 Skill 组合删除 — DONE
+
+依赖：`FR-101`。
+
+目标：大模型配置、流程编排和流程运行均固定页面标题和操作区，只允许其数据区域滚动；流程编排的资源库、画布和配置器分别使用独立滚动边界。Skill 组合仅为逻辑选择模板，删除未被运行时消费者引用的 Skill 时应自动从组合移除该版本，并在组合清空后删除该空模板；页面应刷新组合状态并说明变更。不得放宽 Agent Workspace、治理记录或系统内置策略的删除保护。
+
+验收：受影响 Web typecheck/lint/build；Skill 组合定向 pytest 覆盖删除自动解除逻辑组合关系；`git diff --check`、任务状态唯一性和独立提交通过。
+
+完成：模型配置与流程运行将标题/操作区固定在视口内，只有其数据区滚动；流程编排的资源库、画布和配置器在固定标题下各自占用独立滚动区域。删除 Skill 会同步移除组合中的逻辑成员，自动清理空组合，并刷新组合列表和提示信息；真实工作区、治理与内置策略引用仍继续阻止删除。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1447,6 +1457,7 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-102 | Skill 组合定向 pytest（4 passed）；Web TypeScript typecheck、ESLint、production build；受影响 Python `py_compile` 与 `git diff --check` | PASS：三页局部滚动布局通过编译；Skill 删除不再被逻辑组合引用阻塞，自动解除组合成员并清理空组合，真实受保护引用仍保留。 |
 | 2026-08-30 | FR-101 | 环境服务定向 pytest（35 passed）；Web ESLint/typecheck；发布中视图定向 Playwright（1 passed）；Alembic head/current；任务状态唯一性与 `git diff --check` | PASS：服务端先持久化 Setup Session 的 `PUBLISHING` 状态后再执行容器冻结、正式 Runtime 打包和契约探针；发布期间禁止 WebSocket 终端附着、二次创建及停止丢弃，发布失败回到 `RUNNING` 并保留失败 Version 诊断。页面关闭并重新进入时展示可关闭的后台发布视图，不会创建终端 WebSocket。唯一 Alembic head/current 均为 `0075_shared_agent_runtime_config`；无 `CURRENT` 或下一切片。 |
 | 2026-08-30 | FR-100 | 受影响 Python `py_compile` 与 schema import；Web TypeScript typecheck、ESLint 和 `git diff --check` | PASS：MCP 编辑、局部滚动、紧凑 Skill 组合和草稿级能力冻结均通过静态检查。Agent Workspace/bootstrap 定向 pytest 因本机 Docker daemon 未运行而无法创建 testcontainers PostgreSQL，未将该环境前置条件失败视为代码失败。 |
 | 2026-08-29 | FR-98 | FlowRun locator/节点宿主与 Runtime replacement 定向 pytest（10 passed）；PostgreSQL 空库、回退重升及历史快照迁移矩阵；受影响 Ruff/py_compile、Alembic `0072_flow_node_locator` head 与 `git diff --check` | PASS：FlowRun 的新建、读取、路由、确认、replacement 与删除均使用共享 `agent_conversation_bindings` 的 `FLOW_NODE` 行；旧 locator/无可证明节点 scope 的历史审批被显式淘汰，未保留第二套活跃会话映射。 |

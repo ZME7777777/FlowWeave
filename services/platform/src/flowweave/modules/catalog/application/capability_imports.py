@@ -14,7 +14,7 @@ from secrets import token_urlsafe
 from typing import Any, cast
 
 import yaml
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.catalog.application.capability_repository import (
@@ -1944,17 +1944,54 @@ def _workspace_references(db: Session, capability_version_id: str) -> list[dict[
     return [{"id": workspace_id, "name": name} for workspace_id, name in rows]
 
 
-def _collection_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
-    rows = db.execute(
+def _detach_collection_members(
+    db: Session, capability_version_ids: list[str]
+) -> dict[str, list[str]]:
+    """Remove deleted versions from logical Skill collection shortcuts.
+
+    Collections are selection templates, not runtime consumers.  Keeping a
+    deleted immutable version in one would turn a harmless Skill deletion into
+    a foreign-key conflict and leave an unusable shortcut behind.
+    """
+
+    if not capability_version_ids:
+        return {"updated": [], "deleted": []}
+    collection_rows = db.execute(
         select(CapabilityCollection.id, CapabilityCollection.name)
         .join(
             CapabilityCollectionItem,
             CapabilityCollectionItem.collection_id == CapabilityCollection.id,
         )
-        .where(CapabilityCollectionItem.capability_version_id == capability_version_id)
+        .where(CapabilityCollectionItem.capability_version_id.in_(capability_version_ids))
         .order_by(CapabilityCollection.name, CapabilityCollection.id)
     ).all()
-    return [{"id": collection_id, "name": name} for collection_id, name in rows]
+    collection_names = {collection_id: name for collection_id, name in collection_rows}
+    if not collection_names:
+        return {"updated": [], "deleted": []}
+
+    db.execute(
+        delete(CapabilityCollectionItem).where(
+            CapabilityCollectionItem.capability_version_id.in_(capability_version_ids)
+        )
+    )
+    db.flush()
+
+    updated: list[str] = []
+    deleted: list[str] = []
+    for collection_id, name in collection_names.items():
+        has_members = db.scalar(
+            select(CapabilityCollectionItem.id)
+            .where(CapabilityCollectionItem.collection_id == collection_id)
+            .limit(1)
+        )
+        if has_members is None:
+            collection = db.get(CapabilityCollection, collection_id)
+            if collection is not None:
+                db.delete(collection)
+            deleted.append(name)
+        else:
+            updated.append(name)
+    return {"updated": updated, "deleted": deleted}
 
 
 def _governance_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
@@ -1993,31 +2030,27 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
             )
             continue
         workspaces = _workspace_references(db, capability_id)
-        collections = _collection_references(db, capability_id)
         governance = _governance_references(db, capability_id)
-        if workspaces or collections or governance:
+        if workspaces or governance:
             reference: dict[str, Any] = {
                 "id": capability_id,
                 "name": published.package.capability_key,
                 "relation": (
                     "AGENT_WORKSPACE"
                     if workspaces
-                    else "CAPABILITY_COLLECTION"
-                    if collections
                     else "CAPABILITY_GOVERNANCE"
                 ),
                 "workspaces": workspaces,
             }
-            # Preserve the existing node-only response shape while exposing
-            # collection references when they actually block deletion.
-            if collections:
-                reference["collections"] = collections
             if governance:
                 reference["governance"] = governance
             blocked.append(reference)
         else:
             deletable.append(published.version)
 
+    collection_changes = _detach_collection_members(
+        db, [version.id for version in deletable]
+    )
     deleted_ids: list[str] = []
     for version in deletable:
         version_id = version.id
@@ -2057,4 +2090,5 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
     return {
         "deleted_ids": deleted_ids,
         "blocked": blocked,
+        "collection_changes": collection_changes,
     }

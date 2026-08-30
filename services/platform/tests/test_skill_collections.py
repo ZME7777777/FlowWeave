@@ -3,7 +3,6 @@ from sqlalchemy import select
 from flowweave.shared.models import (
     CapabilityCollection,
     CapabilityCollectionItem,
-    NodeCapabilityRef,
 )
 
 
@@ -19,7 +18,7 @@ def _collection_payload(*capability_ids: str, row_version: int | None = None) ->
     return payload
 
 
-def test_capability_collection_expands_to_real_node_capability_refs(
+def test_capability_collection_is_a_logical_skill_selection_template(
     client, skill_capability, db_session_factory
 ):
     created = client.post(
@@ -31,28 +30,9 @@ def test_capability_collection_expands_to_real_node_capability_refs(
     assert collection["category"] == "产品"
     assert [member["id"] for member in collection["members"]] == [skill_capability["capability_id"]]
 
-    node = client.post(
-        "/api/v1/node-assets",
-        json={
-            "name": "组合展开节点",
-            "executor": {},
-            "capabilities": [{"capability_id": member["id"]} for member in collection["members"]],
-        },
-    )
-    assert node.status_code == 201, node.text
-    node_skills = [
-        item for item in node.json()["capabilities"] if item["capability_type"] == "SKILL"
-    ]
-    assert [item["capability_id"] for item in node_skills] == [skill_capability["capability_id"]]
-
     with db_session_factory() as db:
         assert db.scalar(select(CapabilityCollection)).id == collection["id"]
         assert db.scalar(select(CapabilityCollectionItem)).collection_id == collection["id"]
-        refs = db.scalars(select(NodeCapabilityRef)).all()
-        skill_refs = [item for item in refs if item.capability_type == "SKILL"]
-        assert len(skill_refs) == 1
-        assert skill_refs[0].normalized_config["capability_id"] == skill_capability["capability_id"]
-        assert "collection_id" not in skill_refs[0].normalized_config
 
     updated = client.put(
         f"/api/v1/capability-collections/{collection['id']}",
@@ -63,11 +43,10 @@ def test_capability_collection_expands_to_real_node_capability_refs(
         },
     )
     assert updated.status_code == 200, updated.text
-    persisted = client.get(f"/api/v1/node-assets/{node.json()['id']}").json()
-    persisted_skills = [
-        item for item in persisted["capabilities"] if item["capability_type"] == "SKILL"
+    assert updated.json()["name"] == "产品分析组合（更新）"
+    assert [member["id"] for member in updated.json()["members"]] == [
+        skill_capability["capability_id"]
     ]
-    assert persisted_skills[0]["capability_id"] == skill_capability["capability_id"]
 
 
 def test_skill_collection_rejects_non_skill_members(client, skill_capability):
@@ -97,6 +76,18 @@ def test_skill_collection_rejects_non_skill_members(client, skill_capability):
     error = rejected.json()["error"]
     assert error["code"] == "SKILL_COLLECTION_TYPE_REQUIRED"
     assert error["details"] == {"capability_ids": [committed["capabilities"][0]["capability_id"]]}
+    assert client.get("/api/v1/capability-collections").json() == []
+
+
+def test_deleting_skill_detaches_logical_collection_shortcut(client, skill_capability):
+    created = client.post(
+        "/api/v1/capability-collections",
+        json=_collection_payload(skill_capability["capability_id"]),
+    )
+    assert created.status_code == 201, created.text
+
+    deleted = client.delete(f"/api/v1/capabilities/{skill_capability['capability_id']}")
+    assert deleted.status_code == 204, deleted.text
     assert client.get("/api/v1/capability-collections").json() == []
 
 

@@ -174,9 +174,11 @@ function blockedCapabilityMessage(blocked: BlockedCapabilityDelete[]): string {
   const unique = [...new Map(blocked.map(item => [`${item.relation}:${item.name}`, item])).values()];
   return `以下能力无法删除，已跳过：${unique.map(item => {
     if (item.relation === 'BUILTIN_CAPABILITY') return `“${item.name}”是系统内置能力，承担节点默认运行策略，不能删除`;
-    const nodes = item.nodes.length ? `节点 ${item.nodes.map(node => `“${node.name}”`).join('、')}` : '';
+    const nodes = item.nodes?.length ? `节点 ${item.nodes.map(node => `“${node.name}”`).join('、')}` : '';
     const collections = item.collections?.length ? `Skill 组合 ${item.collections.map(collection => `“${collection.name}”`).join('、')}` : '';
-    return `“${item.name}”被${[nodes, collections].filter(Boolean).join('、')}引用`;
+    const workspaces = item.workspaces?.length ? `Agent 工作区 ${item.workspaces.map(workspace => `“${workspace.name}”`).join('、')}` : '';
+    const governance = item.governance?.length ? '治理记录' : '';
+    return `“${item.name}”被${[nodes, collections, workspaces, governance].filter(Boolean).join('、')}引用`;
   }).join('；')}。`;
 }
 function groupCapabilities(capabilities: CapabilityAsset[]): CapabilityLineage[] {
@@ -484,10 +486,14 @@ export function CapabilitiesPage() {
       const ids = groups.flatMap(group => group.versions.map(item => item.id));
       const deletedIds: string[] = [];
       const blocked: BlockedCapabilityDelete[] = [];
+      const updatedCollections = new Set<string>();
+      const deletedCollections = new Set<string>();
       for (let start = 0; start < ids.length; start += 100) {
         const result = await api.deleteCapabilities(ids.slice(start, start + 100));
         deletedIds.push(...result.deleted_ids);
         blocked.push(...result.blocked);
+        result.collection_changes.updated.forEach(name => updatedCollections.add(name));
+        result.collection_changes.deleted.forEach(name => deletedCollections.add(name));
       }
       const blockedIds = new Set(blocked.map(item => item.id));
       setSelectedLineageIds(old => {
@@ -496,8 +502,17 @@ export function CapabilitiesPage() {
         if (retainBlockedSelection) groups.filter(group => group.versions.some(item => blockedIds.has(item.id))).forEach(group => next.add(group.id));
         return next;
       });
-      await qc.invalidateQueries({ queryKey: ['capabilities'] });
-      if (deletedIds.length) setNotice(`已删除 ${deletedIds.length} 条无关联能力记录。`);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['capabilities'] }),
+        qc.invalidateQueries({ queryKey: ['capability-collections'] }),
+      ]);
+      if (deletedIds.length) {
+        const collectionNote = [
+          updatedCollections.size ? `已从 ${updatedCollections.size} 个 Skill 组合移除` : '',
+          deletedCollections.size ? `已清理 ${deletedCollections.size} 个空 Skill 组合` : '',
+        ].filter(Boolean).join('；');
+        setNotice(`已删除 ${deletedIds.length} 条无关联能力记录。${collectionNote ? ` ${collectionNote}。` : ''}`);
+      }
       if (blocked.length) setError(blockedCapabilityMessage(blocked));
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };

@@ -88,8 +88,9 @@ export interface AgentProfileVersion {
 }
 export interface NamedDeleteReference { id: string; name: string }
 export interface BlockedCapabilityDelete {
-  id: string; name: string; relation: 'NODE_CAPABILITY' | 'CAPABILITY_COLLECTION' | 'BUILTIN_CAPABILITY';
-  nodes: NamedDeleteReference[]; collections?: NamedDeleteReference[];
+  id: string; name: string; relation: 'NODE_CAPABILITY' | 'CAPABILITY_COLLECTION' | 'BUILTIN_CAPABILITY' | 'AGENT_WORKSPACE' | 'CAPABILITY_GOVERNANCE';
+  nodes?: NamedDeleteReference[]; collections?: NamedDeleteReference[];
+  workspaces?: NamedDeleteReference[]; governance?: Array<{ id: string; relation: string }>;
 }
 export interface BlockedNodeDelete {
   id: string; name: string; relation: 'FLOW_NODE';
@@ -99,6 +100,9 @@ export interface BlockedProviderDelete {
   id: string; name: string; relation: 'AGENT_CONFIGURATION'; nodes: NamedDeleteReference[];
 }
 export interface BulkDeleteResult<T> { deleted_ids: string[]; blocked: T[] }
+export interface CapabilityBulkDeleteResult extends BulkDeleteResult<BlockedCapabilityDelete> {
+  collection_changes: { updated: string[]; deleted: string[] };
+}
 export interface EnvironmentVersion {
   id: string; environment_id: string; version_no: number; parent_version_id?: string | null;
   state: 'PUBLISHING' | 'READY' | 'FAILED'; image_reference: string; image_digest: string;
