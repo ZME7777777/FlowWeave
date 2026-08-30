@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, File, Form, Header, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -90,6 +90,33 @@ async def node_run(run_id: str, node_run_id: str, db: Db) -> dict[str, Any]:
 async def add_artifact(run_id: str, payload: ArtifactWrite, db: Db) -> dict[str, Any]:
     await db.rollback()
     prepared = await asyncio.to_thread(service.prepare_artifact, payload)
+    try:
+        return await run_sync(
+            db, lambda session: service.create_artifact(session, run_id, prepared)
+        )
+    except BaseException:
+        await asyncio.to_thread(service.discard_prepared_artifacts, [prepared])
+        raise
+
+
+@router.post("/flow-runs/{run_id}/artifacts/upload", status_code=201)
+async def upload_artifact(
+    run_id: str,
+    db: Db,
+    field_key: Annotated[str, Form(min_length=1, max_length=100)],
+    file: Annotated[UploadFile, File()],
+    display_name: Annotated[str, Form(max_length=240)] = "",
+) -> dict[str, Any]:
+    content = await file.read(25 * 1024 * 1024 + 1)
+    await db.rollback()
+    prepared = await asyncio.to_thread(
+        service.prepare_file_artifact,
+        field_key=field_key,
+        filename=file.filename or "attachment",
+        mime_type=file.content_type or "application/octet-stream",
+        content=content,
+        metadata={"source": "HUMAN_INPUT", "display_name": display_name.strip() or field_key},
+    )
     try:
         return await run_sync(
             db, lambda session: service.create_artifact(session, run_id, prepared)

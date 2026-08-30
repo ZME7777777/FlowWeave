@@ -191,7 +191,6 @@ def test_late_worker_success_rolls_back_uncommitted_business_writes(db_session_f
     with db_session_factory() as db:
         flow = FlowDefinition(
             name="before-lost-lease",
-            lark_root_folder_url=("https://example.feishu.cn/drive/folder/before-lost-lease-root"),
         )
         db.add(flow)
         task = enqueue(
@@ -290,7 +289,6 @@ def _prepare_starting_attempt(worker_client, worker_container, _skill=None):
         json={
             "name": "Worker 恢复流程",
             "environment_version_id": worker_client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -420,7 +418,6 @@ def test_cancelled_run_stops_started_runtime_through_worker(
         json={
             "name": "取消 Runtime 流程",
             "environment_version_id": worker_client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -486,7 +483,6 @@ def test_cancel_attempt_stops_only_current_node_runtime(
         json={
             "name": "停止当前节点 Runtime",
             "environment_version_id": worker_client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -566,7 +562,6 @@ def test_worker_rolls_back_business_result_when_task_success_is_fenced(
         json={
             "name": "Worker 原子提交流程",
             "environment_version_id": worker_client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -645,7 +640,6 @@ def test_late_poll_result_is_discarded_after_concurrent_cancel(
         json={
             "name": "Runtime CAS 迟到结果流程",
             "environment_version_id": worker_client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -804,7 +798,6 @@ def test_worker_runtime_io_runs_without_database_transaction(
         json={
             "name": "Runtime 短事务流程",
             "environment_version_id": worker_client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },
@@ -914,7 +907,6 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
         json={
             "name": "Gate CAS 短事务流程",
             "environment_version_id": worker_client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/task-root",
             "default_entry_key": "design",
             "nodes": [
                 {

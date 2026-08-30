@@ -62,7 +62,6 @@ async def test_run_event_trigger_notifies_after_commit(container, db_session_fac
     with db_session_factory() as db:
         flow = FlowDefinition(
             name="notify-flow",
-            lark_root_folder_url="https://example.feishu.cn/drive/folder/notify-root",
         )
         db.add(flow)
         db.flush()
@@ -100,7 +99,6 @@ def test_run_event_cursor_compensation_and_bounded_batches(db_session_factory) -
     with db_session_factory() as db:
         flow = FlowDefinition(
             name="cursor-flow",
-            lark_root_folder_url="https://example.feishu.cn/drive/folder/cursor-root",
         )
         db.add(flow)
         db.flush()
@@ -155,7 +153,6 @@ async def test_slow_sse_consumer_does_not_block_fast_cursor_compensation(
     with db_session_factory() as db:
         flow = FlowDefinition(
             name="slow-consumer-flow",
-            lark_root_folder_url="https://example.feishu.cn/drive/folder/slow-root",
         )
         db.add(flow)
         db.flush()
@@ -269,7 +266,6 @@ def test_attempt_confirmation_cas_allows_only_one_transaction(
         json={
             "name": "CAS 并发流程",
             "environment_version_id": client.environment_version_id,
-            "lark_root_folder_url": ("https://example.feishu.cn/drive/folder/cas-root"),
             "default_entry_key": "design",
             "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
         },

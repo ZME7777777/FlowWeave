@@ -66,7 +66,6 @@ async def test_lark_url_artifacts_never_touch_object_storage(
     with db_session_factory() as db:
         flow = FlowDefinition(
             name="artifact-store-uow-flow",
-            lark_root_folder_url=("https://example.feishu.cn/drive/folder/artifact-store-uow-root"),
         )
         db.add(flow)
         db.flush()

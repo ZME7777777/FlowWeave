@@ -26,7 +26,6 @@ class FlowDefinition(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     default_entry_key: Mapped[str | None] = mapped_column(String(100))
-    lark_root_folder_url: Mapped[str] = mapped_column(Text)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

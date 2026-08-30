@@ -18,34 +18,15 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
-def _lark_path(value: str, kind: Literal["docx", "folder", "wiki", "document", "root"]) -> str:
+def _http_url(value: str, label: str) -> str:
     parsed = urlparse(value.strip())
-    expected_by_kind = {
-        "docx": ("/docx/",),
-        "folder": ("/drive/folder/",),
-        "wiki": ("/wiki/",),
-        "document": ("/docx/", "/wiki/"),
-        "root": ("/wiki/", "/drive/folder/"),
-    }
-    expected_paths = expected_by_kind[kind]
-    hostname = (parsed.hostname or "").lower().rstrip(".")
-    is_lark_host = any(
-        hostname == suffix or hostname.endswith(f".{suffix}")
-        for suffix in ("feishu.cn", "larksuite.com", "larkoffice.com")
-    )
-    expected = next((path for path in expected_paths if path in parsed.path), None)
-    if parsed.scheme != "https" or not is_lark_host or expected is None:
-        label = {
-            "docx": "docx document",
-            "folder": "Drive folder",
-            "wiki": "Wiki node",
-            "document": "docx document or Wiki node",
-            "root": "Wiki node or legacy Drive folder",
-        }[kind]
-        raise ValueError(f"value must be a Lark {label} URL")
-    token = parsed.path.split(expected, 1)[1].split("/", 1)[0]
-    if not token:
-        raise ValueError("Lark URL token is missing")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError(f"{label} must be an HTTP(S) URL without credentials")
     return value.strip()
 
 
@@ -58,7 +39,7 @@ class DirectoryWrite(ApiModel):
 class IOFieldWrite(ApiModel):
     field_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
     display_name: str = Field(default="", max_length=160)
-    data_type: Literal["URL"] = "URL"
+    data_type: Literal["URL", "FILE"] = "URL"
     description: str = ""
     template_url: str = ""
 
@@ -66,7 +47,7 @@ class IOFieldWrite(ApiModel):
     def validate_template(self) -> IOFieldWrite:
         self.template_url = self.template_url.strip()
         if self.template_url:
-            self.template_url = _lark_path(self.template_url, "docx")
+            self.template_url = _http_url(self.template_url, "template_url")
         return self
 
 
@@ -253,21 +234,14 @@ class FlowWrite(ApiModel):
     # Flow Definitions never persist or use this legacy Runtime selection.
     environment_version_id: str | None = Field(default=None, min_length=1, max_length=36)
     default_entry_key: str | None = None
-    lark_root_folder_url: str = Field(min_length=1)
     row_version: int | None = None
     nodes: list[FlowNodeWrite] = Field(min_length=1)
     edges: list[FlowEdgeWrite] = Field(default_factory=_empty_edges)
     port_mappings: list[PortMappingWrite] = Field(default_factory=_empty_port_mappings)
 
-    @model_validator(mode="after")
-    def validate_lark_root(self) -> FlowWrite:
-        self.lark_root_folder_url = _lark_path(self.lark_root_folder_url, "root")
-        return self
-
-
 class ArtifactWrite(ApiModel):
     field_key: str = Field(min_length=1, max_length=100)
-    artifact_type: Literal["URL"] = "URL"
+    artifact_type: Literal["URL", "FILE"] = "URL"
     inline_content: str | None = None
     uri: str | None = None
     mime_type: str = "text/plain"
@@ -275,15 +249,25 @@ class ArtifactWrite(ApiModel):
 
     @model_validator(mode="after")
     def has_content(self) -> ArtifactWrite:
-        if self.inline_content is not None:
-            raise ValueError("URL artifacts must use uri, not inline_content")
-        if self.uri is None:
-            raise ValueError("artifact requires a URL")
-        parsed = urlparse(self.uri.strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("artifact uri must be an HTTP(S) URL")
-        self.uri = self.uri.strip()
-        self.mime_type = "text/uri-list"
+        if self.artifact_type == "URL":
+            if self.inline_content is not None:
+                raise ValueError("URL artifacts must use uri, not inline_content")
+            if self.uri is None:
+                raise ValueError("URL artifact requires a URL")
+            self.uri = _http_url(self.uri, "artifact uri")
+            self.mime_type = "text/uri-list"
+            return self
+        if self.uri is not None:
+            raise ValueError("FILE artifacts must upload content, not use uri")
+        if self.inline_content is None or not self.inline_content:
+            raise ValueError("FILE artifact requires uploaded or inline content")
+        filename = str(self.metadata.get("filename") or "").strip()
+        if (
+            not filename
+            or filename != filename.split("/")[-1]
+            or filename != filename.split("\\")[-1]
+        ):
+            raise ValueError("FILE artifact requires a safe filename")
         return self
 
 
@@ -309,10 +293,7 @@ class NodeRunStart(ApiModel):
     def validate_input_urls(self) -> NodeRunStart:
         normalized: dict[str, str] = {}
         for field_key, value in self.input_urls.items():
-            parsed = urlparse(value.strip())
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError(f"input URL for {field_key} must be HTTP(S)")
-            normalized[field_key] = value.strip()
+            normalized[field_key] = _http_url(value, f"input URL for {field_key}")
         self.input_urls = normalized
         return self
 

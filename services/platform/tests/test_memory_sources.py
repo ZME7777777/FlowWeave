@@ -555,7 +555,6 @@ def test_snapshot_reference_requires_matching_frozen_memory_source(client, db_se
     with db_session_factory() as db:
         flow = FlowDefinition(
             name=f"memory-reference-{identity}",
-            lark_root_folder_url="",
         )
         db.add(flow)
         db.flush()

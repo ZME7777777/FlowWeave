@@ -17,6 +17,10 @@ def _empty_semantic_history() -> tuple[dict[str, str], ...]:
     return ()
 
 
+def _empty_input_attachments() -> tuple[dict[str, Any], ...]:
+    return ()
+
+
 def _empty_headers() -> dict[str, str]:
     return {}
 
@@ -342,6 +346,7 @@ class StartAttemptRequest:
     startup_prompt: str | None = None
     startup_capability_key: str | None = None
     semantic_history: tuple[dict[str, str], ...] = field(default_factory=_empty_semantic_history)
+    input_attachments: tuple[dict[str, Any], ...] = field(default_factory=_empty_input_attachments)
     output_targets: dict[str, dict[str, str]] = field(default_factory=_empty_output_targets)
     environment_image: str = ""
     environment_id: str = ""

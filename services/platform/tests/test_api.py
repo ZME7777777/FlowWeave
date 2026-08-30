@@ -132,9 +132,56 @@ def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
     assert confirmed.status_code == 200, confirmed.text
     target = confirmed.json()["output_targets"]["design"]
     assert target["template_url"] == ""
-    assert target["root_url"] == flow["lark_root_folder_url"]
     assert target["run_name"]
     assert "url" not in target
+
+
+def test_file_input_form_upload_and_file_output_round_trip(client):
+    payload = asset_payload("文件输入输出节点")
+    payload["inputs"][0].update(
+        {"data_type": "FILE", "display_name": "需求附件", "template_url": ""}
+    )
+    payload["outputs"][0].update(
+        {"data_type": "FILE", "display_name": "结果附件", "template_url": ""}
+    )
+    created = client.post("/api/v1/node-assets", json=payload)
+    assert created.status_code == 201, created.text
+    flow = create_flow(client, created.json()["id"])
+    started = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert started.status_code == 201, started.text
+    run = started.json()
+
+    uploaded = client.post(
+        f"/api/v1/flow-runs/{run['id']}/artifacts/upload",
+        data={"field_key": "prd", "display_name": "产品说明"},
+        files={"file": ("requirements.pdf", b"%PDF-flowweave", "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    input_artifact = uploaded.json()
+    assert input_artifact["artifact_type"] == "FILE"
+    assert input_artifact["metadata"]["filename"] == "requirements.pdf"
+    assert input_artifact["storage_key"]
+
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"artifact_ids": {"prd": input_artifact["id"]}},
+    )
+    assert activated.status_code == 201, activated.text
+    attempt = activated.json()["attempts"][-1]
+    confirmed = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
+        json={"expected_state_version": attempt["state_version"], "prompt": "处理附件"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    output = confirmed.json()["artifacts"][0]
+    assert output["artifact_type"] == "FILE"
+    assert output["metadata"]["filename"] == "design.txt"
+    downloaded = client.get(f"/api/v1/artifact-versions/{output['id']}/content?download=true")
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"mock workspace file\n"
 
 
 def flow_payload(asset_id, name="需求到方案", *, environment_version_id=None):
@@ -176,7 +223,6 @@ def flow_payload(asset_id, name="需求到方案", *, environment_version_id=Non
     payload = {
         "name": name,
         "description": "同一资产放置两次，映射显式产物",
-        "lark_root_folder_url": "https://example.feishu.cn/drive/folder/flow-root",
         "default_entry_key": "design_a",
         "nodes": [
             {
@@ -607,7 +653,6 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
         json={
             "name": "分支与汇聚流程",
             "environment_version_id": client.environment_version_id,
-            "lark_root_folder_url": "https://example.feishu.cn/drive/folder/branch-root",
             "nodes": [
                 {"instance_key": "source_a", "node_asset_id": source["id"]},
                 {"instance_key": "source_b", "node_asset_id": source["id"]},
@@ -1420,7 +1465,7 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     assert attempt1["startup_capability_key"] is None
     assert attempt1["artifacts"][0]["field_key"] == "design"
     assert attempt1["artifacts"][0]["artifact_type"] == "URL"
-    assert attempt1["artifacts"][0]["uri"] == ("https://example.feishu.cn/docx/mock-docx-design")
+    assert attempt1["artifacts"][0]["uri"] == "https://example.test/outputs/design"
     assert "url" not in attempt1["output_targets"]["design"]
     assert attempt1["artifacts"][0]["inline_content"] is None
     assert [x["stage"] for x in attempt1["gate_evaluations"]] == ["END", "START", "START"]

@@ -3,7 +3,7 @@ export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'models' | 'f
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
 }
-export type ArtifactDataType = 'URL';
+export type ArtifactDataType = 'URL' | 'FILE';
 export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
   description: string; template_url: string; position?: number;
@@ -175,13 +175,11 @@ export interface FlowPortMapping {
 }
 export interface FlowDefinition {
   id: string; name: string; description: string; default_entry_key?: string | null;
-  lark_root_folder_url: string;
   row_version: number; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
   created_at: string; updated_at: string;
 }
 export interface FlowWrite {
   name: string; description: string; default_entry_key?: string | null;
-  lark_root_folder_url: string;
   row_version?: number | null; nodes: FlowNode[]; edges: FlowEdge[]; port_mappings: FlowPortMapping[];
 }
 

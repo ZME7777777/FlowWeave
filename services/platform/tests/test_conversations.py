@@ -53,7 +53,6 @@ def _runtime_context(db: Session) -> tuple[str, str]:
         name=f"flow-{uuid4()}",
         description="",
         default_entry_key=None,
-        lark_root_folder_url="",
     )
     db.add_all((version, flow))
     db.flush()

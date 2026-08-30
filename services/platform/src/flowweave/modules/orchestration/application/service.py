@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
 import shutil
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import uuid4
 
@@ -358,6 +359,9 @@ class ArtifactContentReference:
     filename: str
 
 
+_MAX_ARTIFACT_FILE_BYTES = 25 * 1024 * 1024
+
+
 def prepare_artifact(payload: ArtifactWrite, artifact_id: str | None = None) -> PreparedArtifact:
     """Write large content before the database transaction and freeze its metadata."""
 
@@ -375,6 +379,58 @@ def prepare_artifact(payload: ArtifactWrite, artifact_id: str | None = None) -> 
         storage_key=storage_key,
         content_hash=hashlib.sha256(encoded).hexdigest(),
         byte_size=len(encoded),
+    )
+
+
+def prepare_file_artifact(
+    *,
+    field_key: str,
+    filename: str,
+    mime_type: str,
+    content: bytes,
+    metadata: dict[str, Any] | None = None,
+    artifact_id: str | None = None,
+) -> PreparedArtifact:
+    """Freeze one arbitrary uploaded file without trusting a client path."""
+
+    safe_name = filename.strip()
+    if (
+        not safe_name
+        or len(safe_name) > 240
+        or "\x00" in safe_name
+        or Path(safe_name).name != safe_name
+        or "\\" in safe_name
+    ):
+        raise DomainError("ARTIFACT_FILE_INVALID", "Artifact filename is invalid", 422)
+    if not content or len(content) > _MAX_ARTIFACT_FILE_BYTES:
+        raise DomainError(
+            "ARTIFACT_FILE_TOO_LARGE",
+            "Artifact file must be between 1 byte and 25 MiB",
+            422,
+            {"max_bytes": _MAX_ARTIFACT_FILE_BYTES},
+        )
+    normalized_mime = mime_type.lower().strip() or "application/octet-stream"
+    if len(normalized_mime) > 100:
+        raise DomainError("ARTIFACT_FILE_INVALID", "Artifact MIME type is invalid", 422)
+    identifier = artifact_id or str(uuid4())
+    storage_key = get_artifact_store().put(f"artifacts/versions/{identifier}", content)
+    merged_metadata = dict(metadata or {})
+    merged_metadata["filename"] = safe_name
+    payload = ArtifactWrite.model_construct(
+        field_key=field_key,
+        artifact_type="FILE",
+        inline_content=None,
+        uri=None,
+        mime_type=normalized_mime,
+        metadata=merged_metadata,
+    )
+    return PreparedArtifact(
+        id=identifier,
+        payload=payload,
+        inline_content=None,
+        storage_key=storage_key,
+        content_hash=hashlib.sha256(content).hexdigest(),
+        byte_size=len(content),
     )
 
 
@@ -1611,25 +1667,14 @@ def confirm_start(
 def _create_output_targets(
     db: Session, run: FlowRun, attempt: NodeAttempt, node: dict[str, Any]
 ) -> dict[str, dict[str, str]]:
-    """Describe outputs for the environment-local Lark CLI.
+    """Freeze the node's declared output fields and their exact artifact types."""
 
-    FlowWeave intentionally does not acquire an account token or create remote
-    resources here. The Agent creates each document with the terminal
-    environment's isolated Lark CLI login and returns the resulting URL.
-    """
+    del db, attempt
 
     asset = cast(dict[str, Any], node.get("asset") or {})
     raw_outputs = cast(list[object], asset.get("outputs") or [])
     if not raw_outputs:
         return {}
-    snapshot = _snapshot(db, attempt.snapshot_id)
-    root_url = str(snapshot.definition_json.get("lark_root_folder_url") or "")
-    if not root_url:
-        raise DomainError(
-            "LARK_ROOT_REQUIRED",
-            "The flow must configure a Lark root before creating outputs",
-            422,
-        )
     targets: dict[str, dict[str, str]] = {}
     node_name = str(node.get("alias") or asset.get("name") or "Node")
     for raw in raw_outputs:
@@ -1643,12 +1688,12 @@ def _create_output_targets(
         title = f"{node_name} · {display_name}"
         template_url = str(output.get("template_url") or "")
         targets[field_key] = {
-            "root_url": root_url,
             "run_name": run.name,
             "title": title,
             "display_name": display_name,
             "description": str(output.get("description") or ""),
             "template_url": template_url,
+            "artifact_type": str(output.get("data_type") or "URL"),
         }
     return targets
 
@@ -1919,6 +1964,81 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     return request
 
 
+def _upload_runtime_input_attachments(
+    db: Session,
+    request: StartAttemptRequest,
+    *,
+    runtime_resource_id: str,
+    runtime_resource_name: str,
+) -> StartAttemptRequest:
+    """Upload frozen FILE artifacts through OpenHands' formal workspace API."""
+
+    binding = agent_sessions.flow_node_binding_for_attempt(
+        db, request.attempt_id, require_provisioning=True
+    )
+    handle = RuntimeHandle(
+        job_id=f"attempt-inputs:{request.attempt_id}",
+        conversation_id="",
+        runtime_resource_id=runtime_resource_id,
+        runtime_resource_name=runtime_resource_name,
+    )
+    runtime = get_runtime()
+    attachments: list[dict[str, Any]] = []
+    bindings: list[dict[str, Any]] = []
+    for original in request.bindings:
+        item = copy.deepcopy(original)
+        artifact = cast(dict[str, Any], item.get("artifact") or {})
+        if artifact.get("artifact_type") != "FILE":
+            bindings.append(item)
+            continue
+        storage_key = str(artifact.get("storage_key") or "")
+        inline_content = artifact.get("inline_content")
+        if storage_key:
+            try:
+                content = get_artifact_store().read(storage_key)
+            except FileNotFoundError as exc:
+                raise DomainError(
+                    "ARTIFACT_UNAVAILABLE", "A bound file artifact is unavailable", 409
+                ) from exc
+        elif isinstance(inline_content, str):
+            content = inline_content.encode()
+        else:
+            raise DomainError(
+                "ARTIFACT_UNAVAILABLE", "A bound file artifact has no content", 409
+            )
+        metadata = cast(dict[str, Any], artifact.get("metadata") or {})
+        filename = str(metadata.get("filename") or f"{item.get('field_key')}.bin")
+        mime_type = str(artifact.get("mime_type") or "application/octet-stream")
+        path = runtime.upload_workspace_file(
+            handle,
+            filename=filename,
+            content_type=mime_type,
+            content=content,
+            attachment_owner_id=binding.id,
+        )
+        attachment: dict[str, Any] = {
+            "path": path,
+            "filename": filename,
+            "mime_type": mime_type,
+            "byte_size": len(content),
+        }
+        if mime_type.startswith("image/"):
+            attachment["image_data_url"] = (
+                f"data:{mime_type};base64,{base64.b64encode(content).decode()}"
+            )
+        attachments.append(attachment)
+        artifact["runtime_path"] = path
+        artifact.pop("storage_key", None)
+        artifact.pop("inline_content", None)
+        item["artifact"] = artifact
+        bindings.append(item)
+    return replace(
+        request,
+        bindings=bindings,
+        input_attachments=tuple(attachments),
+    )
+
+
 def _release_worker_read_transaction(db: Session, lease: Lease | None) -> None:
     """End a worker read transaction before potentially slow external runtime I/O.
 
@@ -2009,6 +2129,16 @@ def process_start_runtime(
             runtime_resource_name=allocation.resource_name,
             runtime_base_url=allocation.base_url,
         )
+    if request.input_attachments or any(
+        cast(dict[str, Any], item.get("artifact") or {}).get("artifact_type") == "FILE"
+        for item in request.bindings
+    ):
+        request = _upload_runtime_input_attachments(
+            db,
+            request,
+            runtime_resource_id=request.runtime_sandbox_id,
+            runtime_resource_name=request.runtime_resource_name,
+        )
     _release_worker_read_transaction(db, lease)
     handle: RuntimeHandle | None = None
     try:
@@ -2042,6 +2172,16 @@ def process_start_runtime(
         display_label=f"运行 {claimed.id}",
         allow_inactive_session=get_settings().runtime_adapter == "mock",
     )
+    input_event_id = handle.cursor
+    if request.input_attachments and not input_event_id:
+        input_event_id = get_runtime().reload_conversation(handle).event_id
+    if request.input_attachments and input_event_id:
+        agent_sessions.flow_node_conversations.record_attempt_input_attachments(
+            db,
+            attempt_id=claimed.id,
+            event_id=input_event_id,
+            attachments=request.input_attachments,
+        )
     if _inline_execution():
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
     else:
@@ -2124,7 +2264,7 @@ def _apply_runtime_result(
 
 
 def _prepare_runtime_outputs(
-    result: RuntimeResult, output_targets: dict[str, Any]
+    result: RuntimeResult, output_targets: dict[str, Any], handle: RuntimeHandle
 ) -> list[PreparedArtifact]:
     if result.status != "COMPLETED":
         return []
@@ -2132,30 +2272,69 @@ def _prepare_runtime_outputs(
     if missing:
         raise DomainError(
             "RUNTIME_OUTPUT_MISSING",
-            "The Agent completed without returning every required output URL",
+            "The Agent completed without returning every required output",
             422,
             {"fields": missing},
         )
     prepared: list[PreparedArtifact] = []
-    for field_key in output_targets:
-        artifact_type, content = result.outputs[field_key]
-        if artifact_type != "URL" or not content.strip():
-            raise DomainError(
-                "RUNTIME_OUTPUT_INVALID",
-                "The Agent returned an invalid output URL",
-                422,
-                {"field": field_key},
+    try:
+        for field_key in output_targets:
+            artifact_type, content = result.outputs[field_key]
+            expected_type = str(
+                cast(dict[str, Any], output_targets.get(field_key) or {}).get("artifact_type")
+                or "URL"
             )
-        prepared.append(
-            prepare_artifact(
-                ArtifactWrite(
+            if artifact_type != expected_type or not content.strip():
+                raise DomainError(
+                    "RUNTIME_OUTPUT_INVALID",
+                    "The Agent returned an invalid output type or value",
+                    422,
+                    {"field": field_key},
+                )
+            if artifact_type == "URL":
+                prepared.append(
+                    prepare_artifact(
+                        ArtifactWrite(
+                            field_key=field_key,
+                            artifact_type="URL",
+                            uri=content.strip(),
+                            metadata={"runtime_artifact_type": "URL"},
+                        )
+                    )
+                )
+                continue
+            if artifact_type != "FILE":
+                raise DomainError(
+                    "RUNTIME_OUTPUT_INVALID", "Unsupported runtime output type", 422
+                )
+            path = content.strip()
+            workspace_path = PurePosixPath(path)
+            nodes_root = PurePosixPath("/runtime/workspace/nodes")
+            if (
+                not workspace_path.is_absolute()
+                or ".." in workspace_path.parts
+                or not workspace_path.is_relative_to(nodes_root)
+                or workspace_path == nodes_root
+            ):
+                raise DomainError(
+                    "RUNTIME_OUTPUT_INVALID",
+                    "The Agent returned a file outside the managed node workspace",
+                    422,
+                    {"field": field_key},
+                )
+            workspace_file = get_runtime().download_workspace_file(handle, path)
+            prepared.append(
+                prepare_file_artifact(
                     field_key=field_key,
-                    artifact_type="URL",
-                    uri=content.strip(),
-                    metadata={"runtime_artifact_type": "URL"},
+                    filename=workspace_file.filename,
+                    mime_type=workspace_file.content_type,
+                    content=workspace_file.content,
+                    metadata={"runtime_artifact_type": "FILE", "runtime_path": path},
                 )
             )
-        )
+    except BaseException:
+        discard_prepared_artifacts(prepared)
+        raise
     return prepared
 
 
@@ -2199,7 +2378,9 @@ def process_poll_runtime(
     )
     if claimed is None:
         return
-    prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {})
+    prepared_outputs = _prepare_runtime_outputs(
+        result, claimed.output_targets_json or {}, handle
+    )
     failure_code = "RUNTIME_FAILED"
     if result.cursor is None and batch.cursor is not None:
         result = RuntimeResult(
@@ -2542,7 +2723,9 @@ def process_resume_runtime(
     )
     if claimed is None:
         return
-    prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {})
+    prepared_outputs = _prepare_runtime_outputs(
+        result, claimed.output_targets_json or {}, handle
+    )
     action.payload_json = {
         "content_digest": hashlib.sha256(content.encode()).hexdigest(),
         "content_length": len(content),

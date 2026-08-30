@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Any, Literal
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from flowweave.runtime.base import (
@@ -118,10 +117,9 @@ class MockRuntime:
                 field_key = str(field["field_key"])
                 data_type = str(field["data_type"])
                 if data_type == "URL":
-                    target = request.output_targets.get(field_key, {})
-                    root = urlparse(str(target.get("root_url") or ""))
-                    host = root.netloc or "example.feishu.cn"
-                    content = f"https://{host}/docx/mock-docx-{field_key}"
+                    content = f"https://example.test/outputs/{field_key}"
+                elif data_type == "FILE":
+                    content = f"{request.node_workspace_ref.rstrip('/')}/{field_key}.txt"
                 else:
                     content = (
                         f"Mock output for "

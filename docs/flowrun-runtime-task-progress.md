@@ -1538,6 +1538,24 @@ active OpenHands usage bucket。
 `workflow_tool_set`)，统一传入正式 `NeverConfirm`；不再存在按节点、容器或宿主原因产生的工具差异。
 历史包含已移除配置的 Snapshot fail-closed 并要求重跑，不转换其冻结语义。
 
+### FR-109 通用节点输入输出与流程编排体验 — DONE
+
+依赖：`FR-108`。
+
+目标：节点资产输入输出定义从仅支持飞书 URL 扩展为正式的 `URL` 与 `FILE` 类型；运行节点时严格按照
+冻结节点定义生成逐字段表单，允许绑定同类型已有产物、输入安全 HTTP(S) URL 或上传任意受大小、文件名和
+MIME 约束的文件。自动提示词启动必须把字段名、类型和输入来源写入首条正式用户消息，图片继续使用
+OpenHands 正式多模态内容，附件使用 Runtime 工作区上传路径，使共享 Agent Workbench 的来源区自然投影
+URL、图片和文件。节点运行页新增清晰的本轮输出区，URL 可打开、文件可预览或下载，文案不再绑定飞书。
+Flow Definition 删除历史飞书 Wiki 根节点字段及数据库列；流程设计器默认进入流程走向模式，同时保留独立的
+流程边和端口映射边，避免将控制流错误地从数据映射猜测出来。只修改 FlowWeave，不改变单 FlowRun 单
+Runtime、Snapshot 冻结和 OpenHands 正式事件/API 边界。
+
+验收：Flow/Node Asset/Artifact schema 与迁移 upgrade/downgrade、URL 安全校验、文件上传与 Artifact Store、
+节点人工/自动启动输入上下文、Runtime 输入输出契约和节点输出展示的定向回归通过；Web TypeScript、ESLint、
+production build、相关 Playwright、受影响 Python 静态检查与 pytest、Alembic 唯一 head、任务状态唯一性和
+`git diff --check` 通过。本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1554,6 +1572,7 @@ active OpenHands usage bucket。
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-31 | FR-109 | 通用节点 IO、Artifact Store、OpenHands 首发/输出与 FlowRun 相关 pytest（205 passed）；PostgreSQL 对象存储/基线集成 pytest（9 passed）；0077 空库与历史状态 upgrade/downgrade/upgrade；受影响 Ruff/`py_compile`；OpenAPI；Web TypeScript、ESLint、production build；源码 Vite 新增流程编排断言在部署前旧 API 保存边界前通过；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：节点 IO 正式支持安全 HTTP(S) URL 与 25 MiB 内任意文件/图片附件；运行表单严格来自冻结字段定义，自动启动首条正式用户消息携带字段与来源，图片使用 OpenHands 正式多模态内容，文件使用正式 Workspace API 并投影到共享来源区。节点输出区可打开 URL、预览/下载文件；流程删除飞书根节点约束并默认显示流程走向，同时保留独立控制流与产物映射。唯一 Alembic head 为 `0077_generalized_node_io`；无 `CURRENT` 或下一切片。 |
 | 2026-08-30 | FR-108 | 固定工具集、Runtime 契约、会话与 replacement 定向 pytest（20 passed）；环境定向 pytest（35 passed）；受影响 Ruff/格式检查；Web TypeScript、ESLint、production build；Alembic fresh upgrade/head/current、`git diff --check` | PASS：能力仓库与 `/tool-policy-catalog` 已移除，所有新会话共享完整固定 Runtime Tool 集和 `NeverConfirm`。旧 Snapshot 不进行猜测迁移，明确要求重跑；部署迁移删除已废弃能力记录而不重写历史 Snapshot。 |
 | 2026-08-30 | FR-107 | FlowRun 节点附件/API、OpenHands 上下文与共享会话定向 pytest（118 passed）；受影响 Ruff/`py_compile`；Web ESLint、TypeScript、production build；Alembic head/current、`git diff --check` 与任务状态唯一性 | PASS：节点会话 gateway 不再保留任何功能禁用；附件与图片粘贴、草稿终端、删除、原生确认、分叉、重思考、暂停/恢复、压缩、模型及能力入口均由同一 OpenHands Runtime 提供。节点文件范围和工作目录严格固定为当前 Attempt；固定 catalog 将 `gpt-5.6-sol` 显示为 922k，活跃 usage bucket 仍提供 token 用量。 |
 | 2026-08-30 | FR-106 | FlowRun API 定向 pytest（36 passed）；受影响 Python `py_compile`；Web TypeScript typecheck、ESLint；Alembic head；`git diff --check` 与任务状态唯一性 | PASS：新建 FlowRun 在 Runtime `STARTING` 时返回明确的不可写摘要；运行列表保留创建记录、显示“运行环境初始化中”且禁用进入，只有 Runtime `ACTIVE` 才允许打开。恢复、替换、降级同样不允许进入，未新增 Runtime 或暴露物理容器信息。 |

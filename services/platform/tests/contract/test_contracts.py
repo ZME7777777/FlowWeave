@@ -41,7 +41,6 @@ def test_persisted_run_event_matches_schema_and_rejects_drift(db_session_factory
     with db_session_factory() as db:
         flow = FlowDefinition(
             name="contract-flow",
-            lark_root_folder_url="https://example.feishu.cn/drive/folder/contract-root",
         )
         db.add(flow)
         db.flush()

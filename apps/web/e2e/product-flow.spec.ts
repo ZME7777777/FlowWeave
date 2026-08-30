@@ -90,7 +90,6 @@ async function createFlow(request: APIRequestContext, assetId: string, name: str
   return post(request, '/flows', {
     name,
     description: '同一资产重复放置并显式映射产物',
-    lark_root_folder_url: 'https://example.feishu.cn/drive/folder/e2e-flow-root',
     default_entry_key: 'design_a',
     nodes: [
       { instance_key: 'design_a', node_asset_id: assetId, alias: '首轮方案', position_x: 100, position_y: 160, config_override: {}, gates },
@@ -1600,61 +1599,7 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
   await login(page);
 
-  const providerName = `UI模型服务-${suffix}`;
-  await page.getByRole('button', { name: '大模型配置' }).click();
-  await page.getByRole('button', { name: '新增模型服务' }).click();
-  const providerEditor = page.locator('form.model-editor');
-  await providerEditor.getByLabel('服务名称').fill(providerName);
-  await providerEditor.getByLabel('Base URL').fill('https://models.example.test/v1');
-  await providerEditor.getByLabel('API Key').fill('e2e-placeholder-key');
-  await page.route('**/api/v1/model-providers/discover-models', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ models: ['gpt-e2e', 'gpt-other'] }),
-  }));
-  await providerEditor.getByRole('button', { name: '拉取模型' }).click();
-  const discoveredModel = providerEditor.getByRole('button', { name: 'gpt-e2e', exact: true });
-  const unselectedModel = providerEditor.getByRole('button', { name: 'gpt-other', exact: true });
-  await expect(discoveredModel).toHaveAttribute('aria-pressed', 'false');
-  await expect(unselectedModel).toHaveAttribute('aria-pressed', 'false');
-  await expect(providerEditor.locator('.provider-model-row')).toHaveCount(0);
-  await discoveredModel.click();
-  await expect(discoveredModel).toHaveAttribute('aria-pressed', 'true');
-  await expect(unselectedModel).toHaveAttribute('aria-pressed', 'false');
-  await expect(providerEditor.getByLabel('模型 1')).toHaveValue('gpt-e2e');
-  await expect(providerEditor.getByRole('checkbox', { name: '启用' })).toBeChecked();
-  await page.unroute('**/api/v1/model-providers/discover-models');
-  await providerEditor.getByRole('button', { name: '保存模型服务' }).click();
-  const providerCard = page.locator('.model-config-card').filter({ hasText: providerName });
-  await expect(providerCard).toContainText('可用于节点');
-  await expect(providerCard).toContainText('0 个');
-  await page.route('**/api/v1/model-providers/*/test', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ connection_state: 'CONNECTED', model_count: 1 }),
-  }));
-  await providerCard.getByRole('button', { name: '测试连接' }).click();
-  await expect(providerCard.getByRole('status')).toContainText('连接成功，服务返回 1 个模型');
-  await page.unroute('**/api/v1/model-providers/*/test');
-
-  await page.getByRole('button', { name: '能力仓库' }).click();
-  await expect(page.getByRole('heading', { name: '能力仓库', exact: true })).toBeVisible();
-  const skillInput = page.locator('label.file-button').filter({ hasText: '上传 Skill ZIP' }).locator('input');
-  await skillInput.setInputFiles({
-    name: 'ui-product-skill.zip',
-    mimeType: 'application/zip',
-    buffer: skillArchive,
-  });
-  const importDialog = page.getByRole('alertdialog', { name: '确认导入 ui-product-skill.zip' });
-  await expect(importDialog).toContainText('识别到 1 个 Skill');
-  const committedImport = page.waitForResponse(response => response.url().endsWith('/api/v1/capability-imports') && response.request().method() === 'POST');
-  await importDialog.getByRole('button', { name: '导入 1 项能力', exact: true }).click();
-  expect((await committedImport).ok()).toBeTruthy();
-  await expect(page.getByRole('status')).toContainText('已从 ui-product-skill.zip 导入 1 项 Skill 能力');
-  await expect(page.locator('.capability-card').filter({ hasText: 'ui-product-skill' }).first()).toBeVisible();
-
   await page.getByRole('button', { name: '节点资产' }).click();
-  await expect(page.getByRole('heading', { name: '节点资产', exact: true })).toBeVisible();
 
   const assetName = `UI节点资产-${suffix}`;
   await page.getByRole('button', { name: '新建节点' }).click();
@@ -1662,16 +1607,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByLabel('节点名称').fill(assetName);
   await editor.getByLabel('节点说明').fill('四步节点资产编辑器验收');
   await editor.getByRole('button', { name: '下一步' }).click();
-  await editor.getByLabel('模型服务', { exact: true }).selectOption({ label: providerName });
-  await editor.getByLabel('模型', { exact: true }).selectOption('gpt-e2e');
-  await expect(editor.getByLabel('工具确认策略')).toBeDisabled();
-  await expect(editor.getByLabel('工具确认策略')).toHaveValue('NEVER');
-  await expect(editor.getByLabel('上下文压缩策略')).toHaveValue('LLM_SUMMARIZING');
   await editor.getByLabel('启动触发提示词').fill('读取输入并执行节点任务');
-  await editor.getByRole('button', { name: '下一步' }).click();
-  const selectedSkill = editor.getByLabel('选择能力 ui-product-skill').first();
-  await selectedSkill.check();
-  await expect(selectedSkill).toBeChecked();
   await editor.getByRole('button', { name: '下一步' }).click();
   await expect(editor.getByRole('heading', { name: '输入定义' })).toBeVisible();
   await expect(editor.getByRole('heading', { name: '输出定义' })).toBeVisible();
@@ -1680,6 +1616,11 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByRole('button', { name: '添加输出' }).click();
   await expect(editor.getByLabel('inputs key 0')).toHaveValue('input_1');
   await expect(editor.getByLabel('outputs key 0')).toHaveValue('output_1');
+  await expect(editor.getByLabel('inputs type 0')).toHaveValue('URL');
+  await editor.getByLabel('inputs type 0').selectOption('FILE');
+  await expect(editor.getByLabel('inputs type 0')).toHaveValue('FILE');
+  await editor.getByLabel('inputs type 0').selectOption('URL');
+  await expect(editor.getByLabel('outputs type 0')).toHaveValue('URL');
   await editor.getByLabel('inputs name 0').fill('输入产物');
   await editor.getByLabel('outputs name 0').fill('输出产物');
   const card = page.getByTestId('node-card').filter({ hasText: assetName }).last();
@@ -1687,18 +1628,11 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.evaluate((form: HTMLFormElement) => form.requestSubmit());
   const savedResponse = await saved;
   expect(savedResponse.ok()).toBeTruthy();
-  const savedAsset = await savedResponse.json();
-  expect(savedAsset.executor.confirmation_policy).toBe('NEVER');
-  expect(savedAsset.executor.condenser.kind).toBe('LLM_SUMMARIZING');
   await expect(card).toBeVisible();
   await card.click();
   const detail = page.getByRole('dialog', { name: `节点详情 ${assetName}` });
-  await expect(detail).toContainText('ui-product-skill');
+  await expect(detail).toContainText('读取输入并执行节点任务');
   await detail.getByRole('button', { name: '关闭节点详情' }).click();
-
-  await page.getByRole('button', { name: '大模型配置' }).click();
-  await expect(providerCard).toContainText('1 个');
-  await expect(providerCard).toContainText('可用于节点');
 
   await page.getByRole('button', { name: '流程编排' }).click();
   await page.getByRole('button', { name: '新建流程' }).click();
@@ -1706,6 +1640,8 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   const assetButton = library.getByRole('button', { name: assetName, exact: true }).last();
   const canvas = page.getByTestId('flow-designer');
   await expect(canvas.locator('.react-flow__pane')).toBeVisible();
+  await expect(canvas.getByRole('button', { name: '流程走向' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByLabel('飞书 Wiki 根节点')).toHaveCount(0);
   await dropAsset(page, assetButton, canvas, { x: 320, y: 260 });
   await expect(canvas.locator('.react-flow__node')).toHaveCount(1);
   await dropAsset(page, assetButton, canvas, { x: 700, y: 360 });
@@ -1737,7 +1673,6 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await dropAsset(page, assetButton, canvas, { x: 320, y: 260 });
   await expect(canvas.locator('.react-flow__node')).toHaveCount(2);
   await page.getByLabel('流程名称').fill(`UI流程-${suffix}`);
-  await page.getByLabel('飞书 Wiki 根节点').fill('https://example.feishu.cn/wiki/e2e-ui-root');
   await expect(page.getByLabel('运行环境版本')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '保存流程' })).toBeEnabled();
   const flowSaved = page.waitForResponse(response => response.url().endsWith('/api/v1/flows') && response.request().method() === 'POST');
@@ -1781,12 +1716,13 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await expect(nodeConsole).toContainText('发送启动提示词');
   await expect(nodeConsole).toContainText('仅创建会话启动');
 
-  await nodeConsole.getByText('新建输入产物', { exact: true }).click();
+  await expect(nodeConsole.getByRole('heading', { name: '本次输入' })).toBeVisible();
+  await expect(nodeConsole.getByText('prd · URL', { exact: true })).toBeVisible();
   await nodeConsole.getByLabel('新建产物名称 prd').fill(`需求文档-${suffix}`);
-  await nodeConsole.getByLabel('新建产物 URL prd').fill(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
-  await nodeConsole.getByRole('button', { name: '保存到产物池' }).click();
+  await nodeConsole.getByLabel('新建产物 URL prd').fill(`https://files.example.test/e2e-input-${suffix}`);
+  await nodeConsole.getByRole('button', { name: '使用这个输入' }).click();
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`需求文档-${suffix}`);
-  await expect(nodeConsole.locator('.selected-artifact')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
+  await expect(nodeConsole.locator('.selected-artifact')).toContainText(`https://files.example.test/e2e-input-${suffix}`);
   await nodeConsole.getByRole('button', { name: '启动节点会话' }).click();
   const nodeSessionUrl = new RegExp(`/flow-runs/${createdRun.id}/nodes/[^/]+/attempts/[^/]+/agent-sessions$`);
   await expect(page).toHaveURL(nodeSessionUrl);
@@ -1827,14 +1763,14 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
       && (session.compareDocumentPosition(frozenInputs) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBeTruthy();
   await expect(attemptControl.locator('.attempt-input-card')).toContainText(`需求文档-${suffix}`);
-  await expect(attemptControl.locator('.attempt-input-card')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
+  await expect(attemptControl.locator('.attempt-input-card')).toContainText(`https://files.example.test/e2e-input-${suffix}`);
+  await expect(attemptControl.getByRole('region', { name: '节点输出' })).toContainText('本轮尚无输出');
   await expect(attemptControl.locator('.gate-results')).toContainText('START');
 
   const changedFlow = await request.put(`${apiBase}/api/v1/flows/${flow.id}`, {
     data: {
       name: flow.name,
       description: '运行中发布的新流程配置',
-      lark_root_folder_url: flow.lark_root_folder_url,
       default_entry_key: flow.default_entry_key,
       row_version: flow.row_version,
       nodes: flow.nodes.map((node: { instance_key: string; node_asset_id: string; alias?: string | null; position_x: number; position_y: number; config_override: Record<string, unknown>; gates: Array<{ stage: string; position: number; gate_type: string; enabled: boolean; timeout_seconds: number; config: Record<string, unknown> }> }) => ({
@@ -1895,7 +1831,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   expect(run.environment_version?.image_digest).toMatch(/^sha256:/);
   expect(run.artifacts).toEqual(expect.arrayContaining([expect.objectContaining({
     field_key: 'prd',
-    uri: `https://example.feishu.cn/docx/e2e-input-${suffix}`,
+    uri: `https://files.example.test/e2e-input-${suffix}`,
     source: 'HUMAN',
     metadata: expect.objectContaining({
       source: 'HUMAN_INPUT',

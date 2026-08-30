@@ -7815,6 +7815,57 @@
         }
       }
     },
+    "/api/v1/flow-runs/{run_id}/artifacts/upload": {
+      "post": {
+        "summary": "Upload Artifact",
+        "operationId": "upload_artifact_api_v1_flow_runs__run_id__artifacts_upload_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_artifact_api_v1_flow_runs__run_id__artifacts_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload Artifact Api V1 Flow Runs  Run Id  Artifacts Upload Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs/{run_id}/artifacts/{artifact_id}": {
       "delete": {
         "summary": "Delete Artifact",
@@ -9762,7 +9813,10 @@
           },
           "artifact_type": {
             "type": "string",
-            "const": "URL",
+            "enum": [
+              "URL",
+              "FILE"
+            ],
             "title": "Artifact Type",
             "default": "URL"
           },
@@ -9929,6 +9983,33 @@
           "file"
         ],
         "title": "Body_agent_workspace_attachment_api_v1_agent_workspaces__workspace_id__attachments_post"
+      },
+      "Body_upload_artifact_api_v1_flow_runs__run_id__artifacts_upload_post": {
+        "properties": {
+          "field_key": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Field Key"
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 240,
+            "title": "Display Name",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "field_key",
+          "file"
+        ],
+        "title": "Body_upload_artifact_api_v1_flow_runs__run_id__artifacts_upload_post"
       },
       "Body_upload_node_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__attachments_post": {
         "properties": {
@@ -10431,11 +10512,6 @@
             ],
             "title": "Default Entry Key"
           },
-          "lark_root_folder_url": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Lark Root Folder Url"
-          },
           "row_version": {
             "anyOf": [
               {
@@ -10474,7 +10550,6 @@
         "type": "object",
         "required": [
           "name",
-          "lark_root_folder_url",
           "nodes"
         ],
         "title": "FlowWrite"
@@ -10601,7 +10676,10 @@
           },
           "data_type": {
             "type": "string",
-            "const": "URL",
+            "enum": [
+              "URL",
+              "FILE"
+            ],
             "title": "Data Type",
             "default": "URL"
           },

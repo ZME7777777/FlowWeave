@@ -816,6 +816,31 @@ def bootstrap_node_conversation(
     }
 
 
+def record_attempt_input_attachments(
+    db: Session,
+    *,
+    attempt_id: str,
+    event_id: str,
+    attachments: tuple[dict[str, Any], ...],
+) -> None:
+    """Project automatic-start FILE inputs onto the formal initial user event."""
+
+    binding = agent_sessions.flow_node_binding_for_attempt(
+        db, attempt_id, require_provisioning=False
+    )
+    normalized = tuple(
+        {
+            "path": str(item.get("path") or ""),
+            "filename": str(item.get("filename") or "attachment"),
+            "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+            "byte_size": int(item.get("byte_size") or 0),
+        }
+        for item in attachments
+    )
+    validate_attachment_owners(binding.id, normalized)
+    record_message_attachments(db, binding, event_id, "", normalized)
+
+
 def _handle(db: Session, binding_id: str, *, cursor: str | None = None) -> RuntimeHandle:
     locator = binding_locator(db, binding_id)
     return active_runtime_handle(

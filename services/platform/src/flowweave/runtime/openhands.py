@@ -934,6 +934,7 @@ class OpenHandsRuntime:
     @staticmethod
     def _artifact_input(binding: dict[str, Any]) -> dict[str, Any]:
         artifact = cast(dict[str, Any], binding.get("artifact") or {})
+        metadata = cast(dict[str, Any], artifact.get("metadata") or {})
         return {
             "field_key": binding.get("field_key"),
             "display_name": binding.get("display_name"),
@@ -942,7 +943,10 @@ class OpenHandsRuntime:
             "artifact_type": artifact.get("artifact_type"),
             "inline_content": artifact.get("inline_content"),
             "uri": artifact.get("uri"),
-            "metadata": artifact.get("metadata", {}),
+            "runtime_path": artifact.get("runtime_path"),
+            "mime_type": artifact.get("mime_type"),
+            "filename": metadata.get("filename"),
+            "metadata": metadata,
         }
 
     @staticmethod
@@ -952,13 +956,13 @@ class OpenHandsRuntime:
         return [
             {
                 "field_key": field_key,
-                "artifact_type": "URL",
-                "root_url": target.get("root_url", ""),
+                "artifact_type": target.get("artifact_type", "URL"),
                 "run_name": target.get("run_name", ""),
                 "title": target.get("title", field_key),
                 "display_name": target.get("display_name", field_key),
                 "description": target.get("description", ""),
                 "template_url": target.get("template_url", ""),
+                "workspace_root": request.node_workspace_ref,
             }
             for field_key, target in request.output_targets.items()
         ]
@@ -969,7 +973,30 @@ class OpenHandsRuntime:
         startup = str(request.startup_prompt or executor.get("startup_prompt") or "").strip()
         if request.startup_capability_key:
             startup = f"${request.startup_capability_key}\n{startup}".strip()
-        return startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}"
+        task = startup or f"执行节点：{asset.get('name') or request.node.get('instance_key')}"
+        if not request.bindings:
+            return task
+        lines = [task, "", "本次节点输入："]
+        for binding in request.bindings:
+            item = self._artifact_input(binding)
+            value = item.get("uri") or item.get("runtime_path") or item.get("inline_content")
+            lines.append(
+                f"- {item.get('display_name') or item.get('field_key')} "
+                f"[{item.get('field_key')} · {item.get('artifact_type')}]: {value}"
+            )
+        return "\n".join(lines)
+
+    def _initial_content(self, request: StartAttemptRequest) -> list[dict[str, Any]]:
+        parts: list[dict[str, Any]] = [{"type": "text", "text": self._initial_text(request)}]
+        image_urls = [
+            str(item.get("image_data_url"))
+            for item in request.input_attachments
+            if str(item.get("mime_type") or "").startswith("image/")
+            and str(item.get("image_data_url") or "").startswith("data:image/")
+        ]
+        if image_urls:
+            parts.append({"type": "image", "image_urls": image_urls})
+        return parts
 
     def _context_text(self, request: StartAttemptRequest) -> str:
         asset = cast(dict[str, Any], request.node.get("asset") or {})
@@ -1031,17 +1058,17 @@ class OpenHandsRuntime:
         sections.append(f"{input_heading}：\n{rendered_inputs}")
         if inputs and not collaboration:
             sections.append(
-                "输入项中的 uri 是本次运行实际读取的飞书文档；非空的 template_url 是节点定义时"
-                "指定的可选格式与结构参考。请以实际输入内容为事实来源；有模板时参考其组织方式，"
-                "没有模板时按 description 和任务要求处理。不得修改输入文档或输入模板。"
+                "输入项中的 uri 或 runtime_path 是本次运行的实际来源；非空 template_url 只是"
+                "节点定义时指定的格式与结构参考。请以实际输入为事实来源，不得修改输入来源。"
             )
         if outputs:
             sections.append(
-                "平台不会持有或注入飞书账号凭据。请使用本终端环境内已登录的 lark-cli，"
-                "在 root_url 下按 run_name/标题创建并编辑下列输出文档；有 template_url 时复制模板，"
-                "否则创建空白文档。完成后调用 finish，并把 message 严格写成 JSON："
-                '{"outputs":{"字段标识":{"artifact_type":"URL","uri":"https://..."}}}'
-                "。不得把 token、cookie 或本地凭据文件写入消息。\n"
+                "请严格按下列字段和 artifact_type 生成输出。URL 输出返回安全 HTTP(S) uri；"
+                "FILE 输出必须先写入节点持久工作目录，再返回该文件的绝对 path。完成后调用 finish，"
+                "并把 message 严格写成 JSON，例如："
+                '{"outputs":{"link":{"artifact_type":"URL","uri":"https://..."},'
+                '"report":{"artifact_type":"FILE","path":"/runtime/workspace/nodes/.../report.pdf"}}}'
+                "。不得返回工作目录外的文件，也不得写入 token、cookie 或凭据。\n"
                 + json.dumps(outputs, ensure_ascii=False)
             )
         return "\n\n".join(sections)
@@ -1188,7 +1215,7 @@ class OpenHandsRuntime:
         if run:
             payload["initial_message"] = {
                 "role": "user",
-                "content": [{"type": "text", "text": self._initial_text(request)}],
+                "content": self._initial_content(request),
                 "run": True,
             }
         if not request.environment_image or not (
@@ -2086,7 +2113,9 @@ class OpenHandsRuntime:
         return RuntimeResult(status="RUNNING", cursor=pending.cursor)
 
     def _outputs(self, conversation_id: str, text: str) -> dict[str, tuple[str, str]]:
-        expected = {item["field_key"] for item in self._contracts.get(conversation_id, [])}
+        expected = {
+            item["field_key"]: item for item in self._contracts.get(conversation_id, [])
+        }
         candidate = text.strip()
         if candidate.startswith("```"):
             lines = candidate.splitlines()
@@ -2109,23 +2138,34 @@ class OpenHandsRuntime:
         outputs: dict[str, tuple[str, str]] = {}
         for field_key, raw in cast(dict[object, object], raw_outputs).items():
             key = str(field_key)
-            if key not in expected:
+            contract = expected.get(key)
+            if contract is None:
                 continue
             if isinstance(raw, str):
-                uri = raw
+                value = raw
             elif isinstance(raw, dict):
                 item = cast(dict[object, object], raw)
-                uri = str(item.get("uri") or item.get("url") or "")
+                value = str(item.get("uri") or item.get("url") or item.get("path") or "")
             else:
                 continue
-            parsed = urlparse(uri)
-            host = (parsed.hostname or "").lower()
-            if parsed.scheme != "https" or not any(
-                host == suffix or host.endswith(f".{suffix}")
-                for suffix in ("feishu.cn", "larksuite.com", "larkoffice.com")
-            ):
+            artifact_type = contract.get("artifact_type", "URL")
+            if artifact_type == "URL":
+                parsed = urlparse(value)
+                if (
+                    parsed.scheme not in {"http", "https"}
+                    or not parsed.netloc
+                    or parsed.username is not None
+                    or parsed.password is not None
+                ):
+                    continue
+            elif artifact_type == "FILE":
+                path = PurePosixPath(value)
+                root = PurePosixPath(contract.get("workspace_root") or "/invalid")
+                if not path.is_absolute() or ".." in path.parts or not path.is_relative_to(root):
+                    continue
+            else:
                 continue
-            outputs[key] = ("URL", uri)
+            outputs[key] = (artifact_type, value)
         return outputs
 
     def _result_from_events(

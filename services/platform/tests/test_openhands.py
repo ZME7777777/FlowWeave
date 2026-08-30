@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -433,7 +434,8 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     assert payload["agent"]["condenser"] == {"kind": "NoOpCondenser"}
     assert payload["agent"]["tool_concurrency_limit"] == 1
     initial_text = payload["initial_message"]["content"][0]["text"]
-    assert initial_text == "生成技术方案"
+    assert initial_text.startswith("生成技术方案\n\n本次节点输入：")
+    assert "https://example.feishu.cn/docx/prd-input" in initial_text
     system_context = payload["agent"]["agent_context"]["system_message_suffix"]
     assert system_context.startswith("Frozen organization policy\n\n")
     assert payload["agent"]["agent_context"] | {"skills": []} == {
@@ -450,11 +452,10 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     }
     assert "https://example.feishu.cn/docx/prd-input" in system_context
     assert "https://example.feishu.cn/docx/prd-template" in system_context
-    assert "实际读取的飞书文档" in system_context
-    assert "https://example.feishu.cn/drive/folder/root" in system_context
+    assert "uri 或 runtime_path" in system_context
     assert "Run 1" in system_context
-    assert "平台不会持有或注入飞书账号凭据" in system_context
-    assert "不得把 token、cookie 或本地凭据文件写入消息" in system_context
+    assert "URL 输出返回安全 HTTP(S) uri" in system_context
+    assert "不得写入 token、cookie 或凭据" in system_context
     assert payload["agent"]["llm"] == {
         "model": "openai/gpt-5.6-sol",
         "base_url": "http://host.docker.internal:1234/v1",
@@ -468,6 +469,52 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "timeout": 20,
         "max_input_tokens": 922000,
     }
+
+
+def test_openhands_initial_user_message_carries_file_and_image_inputs(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000002", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    request = replace(
+        _request(),
+        bindings=[
+            {
+                "field_key": "reference",
+                "display_name": "参考图片",
+                "artifact": {
+                    "artifact_type": "FILE",
+                    "runtime_path": "/runtime/workspace/project/uploads/input-image",
+                    "mime_type": "image/png",
+                    "metadata": {"filename": "reference.png"},
+                },
+            }
+        ],
+        input_attachments=(
+            {
+                "path": "/runtime/workspace/project/uploads/input-image",
+                "filename": "reference.png",
+                "mime_type": "image/png",
+                "byte_size": 3,
+                "image_data_url": "data:image/png;base64,UE5H",
+            },
+        ),
+    )
+
+    runtime.start(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    content = payload["initial_message"]["content"]
+    system_context = payload["agent"]["agent_context"]["system_message_suffix"]
+    assert "/runtime/workspace/project/uploads/input-image" in content[0]["text"]
+    assert content[1] == {"type": "image", "image_urls": ["data:image/png;base64,UE5H"]}
     assert [tool["name"] for tool in payload["agent"]["tools"]] == [
         "terminal",
         "file_editor",
@@ -1149,13 +1196,14 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(
         ("https://example.feishu.cn/docx/output", True),
         ("https://example.larksuite.com/docx/output", True),
         ("https://example.larkoffice.com/docx/output", True),
-        ("http://example.feishu.cn/docx/output", False),
-        ("https://feishu.cn.attacker.example/docx/output", False),
-        ("https://example.com/docx/output", False),
+        ("http://example.feishu.cn/docx/output", True),
+        ("https://feishu.cn.attacker.example/docx/output", True),
+        ("https://example.com/docx/output", True),
+        ("https://user:secret@example.com/private", False),
         ("javascript:alert(1)", False),
     ),
 )
-def test_openhands_accepts_only_declared_official_https_output_urls(
+def test_openhands_accepts_declared_safe_http_output_urls(
     openhands_settings, uri, accepted
 ):
     runtime = OpenHandsRuntime(openhands_settings)
@@ -1168,6 +1216,37 @@ def test_openhands_accepts_only_declared_official_https_output_urls(
     )
 
     expected = {"design": ("URL", uri)} if accepted else {}
+    assert outputs == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "accepted"),
+    (
+        ("/runtime/workspace/nodes/asset/attempt/report.pdf", True),
+        ("/runtime/workspace/nodes/asset/other/report.pdf", False),
+        ("/runtime/workspace/nodes/asset/attempt/../secret.txt", False),
+        ("relative/report.pdf", False),
+    ),
+)
+def test_openhands_accepts_file_outputs_only_inside_declared_node_workspace(
+    openhands_settings, path, accepted
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    conversation_id = "10000000-0000-4000-8000-000000000002"
+    runtime._contracts[conversation_id] = [
+        {
+            "field_key": "report",
+            "artifact_type": "FILE",
+            "workspace_root": "/runtime/workspace/nodes/asset/attempt",
+        }
+    ]
+
+    outputs = runtime._outputs(
+        conversation_id,
+        json.dumps({"outputs": {"report": {"artifact_type": "FILE", "path": path}}}),
+    )
+
+    expected = {"report": ("FILE", path)} if accepted else {}
     assert outputs == expected
 
 

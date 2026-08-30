@@ -994,7 +994,6 @@ def test_environment_version_run_reference_is_reported_and_blocks_deletion(
         flow = FlowDefinition(
             name="environment-run-reference",
             description="",
-            lark_root_folder_url="https://example.feishu.cn/drive/folder/root",
         )
         db.add_all([version, flow])
         db.flush()

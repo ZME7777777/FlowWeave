@@ -91,7 +91,6 @@ def flow_dict(db: Session, item: FlowDefinition) -> dict[str, Any]:
         "name": item.name,
         "description": item.description,
         "default_entry_key": item.default_entry_key,
-        "lark_root_folder_url": item.lark_root_folder_url,
         "row_version": item.row_version,
         "nodes": [
             {
@@ -179,14 +178,12 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
             name=payload.name,
             description=payload.description,
             default_entry_key=payload.default_entry_key,
-            lark_root_folder_url=payload.lark_root_folder_url,
         )
         db.add(item)
         db.flush()
     item.name = payload.name
     item.description = payload.description
     item.default_entry_key = payload.default_entry_key
-    item.lark_root_folder_url = payload.lark_root_folder_url
     by_key: dict[str, FlowNode] = {}
     for node in payload.nodes:
         values = node.model_dump(exclude={"gates"})

@@ -65,7 +65,6 @@ def _seed_active_runtime(db: Session, *, with_conversation: bool = True) -> tupl
         name=f"replacement-flow-{uuid4()}",
         description="",
         default_entry_key=None,
-        lark_root_folder_url="",
     )
     db.add_all((version, flow))
     db.flush()
