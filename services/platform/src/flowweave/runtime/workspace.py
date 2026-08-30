@@ -14,8 +14,10 @@ from uuid import uuid4
 
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     flow_run_capability_path,
+    flow_run_workspace_nodes_path,
     flow_run_workspace_project_path,
     openhands_flow_run_capability_path,
+    openhands_flow_run_nodes_path,
     openhands_flow_run_project_path,
 )
 from flowweave.runtime.base import RuntimeMCP, RuntimePlugin, RuntimeSkill
@@ -127,11 +129,11 @@ def openhands_managed_node_assets_path(asset_id: str) -> Path:
 
 
 def flow_run_node_workspace_path(flow_run_id: str, asset_id: str) -> Path:
-    return flow_run_workspace_project_path(flow_run_id) / node_workspace_relative(asset_id)
+    return flow_run_workspace_nodes_path(flow_run_id) / _segment(asset_id, "node")
 
 
 def openhands_flow_run_node_workspace_path(asset_id: str) -> Path:
-    return Path(openhands_flow_run_project_path()) / node_workspace_relative(asset_id)
+    return Path(openhands_flow_run_nodes_path()) / _segment(asset_id, "node")
 
 
 def flow_run_managed_node_assets_path(
@@ -166,6 +168,7 @@ def ensure_flow_run_attempt_workspace(
 ) -> Path:
     """Materialize only the server-derived Attempt path without following links."""
 
+    nodes_root = flow_run_workspace_nodes_path(flow_run_id)
     node_root = flow_run_node_workspace_path(flow_run_id, asset_id)
     candidate = Path(workspace_ref)
     if not candidate.is_absolute():
@@ -192,8 +195,33 @@ def ensure_flow_run_attempt_workspace(
             "The Attempt workspace does not match its server-derived layout",
             422,
         )
-    cursor = node_root
-    for part in relative.parts:
+    try:
+        nodes_root.lstat()
+    except OSError as exc:
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The FlowRun node workspace is unavailable",
+            409,
+        ) from exc
+    if nodes_root.is_symlink() or not nodes_root.is_dir():
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The FlowRun node workspace is not a plain directory",
+            409,
+        )
+    # A browser can inspect a waiting Attempt before a Runtime request is
+    # built. Create the complete server-derived tree here rather than relying
+    # on capability materialization to have created the node directory first.
+    try:
+        node_relative = node_root.relative_to(nodes_root)
+    except ValueError as exc:  # Defensive: both paths are server-derived.
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The FlowRun node workspace escaped its node directory",
+            422,
+        ) from exc
+    cursor = nodes_root
+    for part in (*node_relative.parts, *relative.parts):
         cursor = cursor / part
         if cursor.is_symlink():
             raise DomainError(
@@ -207,7 +235,14 @@ def ensure_flow_run_attempt_workspace(
                 "The Attempt workspace path is not a directory",
                 422,
             )
-        cursor.mkdir(mode=0o700, exist_ok=True)
+        try:
+            cursor.mkdir(mode=0o700, exist_ok=True)
+        except OSError as exc:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Attempt workspace could not be materialized",
+                409,
+            ) from exc
     return candidate
 
 
@@ -357,7 +392,7 @@ def isolated_runtime_workspace_paths(
             "The Runtime workspace roots must be absolute",
             422,
         )
-    flow_run_runtime_root = openhands_flow_run_project_path()
+    flow_run_runtime_root = openhands_flow_run_nodes_path()
     if runtime_node.is_relative_to(flow_run_runtime_root):
         relative = runtime_node.relative_to(flow_run_runtime_root)
         allocations_root = host_root / ".flow-run-runtimes"
@@ -371,11 +406,11 @@ def isolated_runtime_workspace_paths(
             ) from exc
         if len(allocation_relative.parts) < 7 or allocation_relative.parts[2:4] != (
             "workspace",
-            "project",
+            "nodes",
         ):
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",
-                "The Attempt workspace does not match the FlowRun project layout",
+                "The Attempt workspace does not match the FlowRun node layout",
                 422,
             )
         host_project = allocations_root.joinpath(*allocation_relative.parts[:4])
@@ -1091,9 +1126,9 @@ def materialize_node_workspace(
         else openhands_managed_node_assets_path(asset_id)
     )
     if flow_run_id:
-        project_root = flow_run_workspace_project_path(flow_run_id)
+        nodes_root = flow_run_workspace_nodes_path(flow_run_id)
         capability_root = flow_run_capability_path(flow_run_id, manifest_digest)
-        _ensure_plain_directory_tree(project_root, host_root)
+        _ensure_plain_directory_tree(nodes_root, host_root)
         _ensure_plain_directory_tree(capability_root, managed_root)
     else:
         managed_root.mkdir(parents=True, exist_ok=True)

@@ -129,6 +129,12 @@ def flow_run_workspace_project_path(flow_run_id: str) -> Path:
     return _host_root(_relative_root(flow_run_id)) / "workspace" / "project"
 
 
+def flow_run_workspace_nodes_path(flow_run_id: str) -> Path:
+    """Return the sibling data tree for one FlowRun's node Attempts."""
+
+    return _host_root(_relative_root(flow_run_id)) / "workspace" / "nodes"
+
+
 def flow_run_capability_path(flow_run_id: str, manifest_digest: str, *relative_parts: str) -> Path:
     """Return a digest-scoped capability path after validating every segment."""
 
@@ -155,6 +161,10 @@ def flow_run_capability_path(flow_run_id: str, manifest_digest: str, *relative_p
 
 def openhands_flow_run_project_path() -> PurePosixPath:
     return PurePosixPath("/runtime/workspace/project")
+
+
+def openhands_flow_run_nodes_path() -> PurePosixPath:
+    return PurePosixPath("/runtime/workspace/nodes")
 
 
 def openhands_flow_run_capability_path(manifest_digest: str, *relative_parts: str) -> PurePosixPath:
@@ -263,6 +273,12 @@ def _verify_layout(allocation: FlowRunRuntimeAllocation) -> Path:
         try:
             metadata = path.lstat()
         except FileNotFoundError as exc:
+            # ``workspace/nodes`` was introduced after the original FlowRun
+            # allocation layout.  It is safe to add because it is an empty
+            # sibling of the existing project mount and will immediately be
+            # created and ownership-checked by ``_ensure_nodes_store``.
+            if relative == PurePosixPath("workspace/nodes"):
+                continue
             raise DomainError(
                 "RUNTIME_ALLOCATION_MISSING",
                 "The FlowRun Runtime allocation is incomplete",
@@ -310,6 +326,31 @@ def _ensure_profile_store(root: Path) -> None:
         )
 
 
+def _ensure_nodes_store(root: Path) -> None:
+    """Backfill the sibling node store for allocations created before it."""
+
+    workspace = root / "workspace"
+    nodes = workspace / "nodes"
+    try:
+        nodes.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    metadata = nodes.lstat()
+    parent_metadata = workspace.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or metadata.st_uid != parent_metadata.st_uid
+        or metadata.st_gid != parent_metadata.st_gid
+    ):
+        raise DomainError(
+            "RUNTIME_ALLOCATION_PERMISSIONS_INVALID",
+            "The Runtime node store permissions are invalid",
+            409,
+        )
+
+
 def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAllocation:
     """Create one rollback-safe, tenant-scoped external Runtime allocation."""
 
@@ -320,6 +361,7 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
     if existing is not None:
         root = _verify_layout(existing)
         _ensure_profile_store(root)
+        _ensure_nodes_store(root)
         return RuntimeStorageAllocation(
             existing.id,
             existing.flow_run_id,
@@ -419,7 +461,11 @@ def runtime_allocation_for_flow_run(
             409,
             {"flow_run_id": flow_run_id},
         )
-    _verify_layout(allocation)
+    # Allocations created before the node/project split do not contain this
+    # sibling directory. Validate the existing allocation first, then create
+    # and validate the backward-compatible node store.
+    root = _verify_layout(allocation)
+    _ensure_nodes_store(root)
     if manifest_digest is not None:
         with capability_materialization_lock(allocation):
             manifest_path = _host_root(allocation.relative_root) / "capabilities" / manifest_digest
@@ -598,8 +644,10 @@ __all__ = (
     "delete_flow_run_runtime_allocation",
     "ensure_capability_manifest_directory",
     "flow_run_capability_path",
+    "flow_run_workspace_nodes_path",
     "flow_run_workspace_project_path",
     "openhands_flow_run_capability_path",
+    "openhands_flow_run_nodes_path",
     "openhands_flow_run_project_path",
     "resolve_runtime_secret",
     "runtime_allocation_for_flow_run",

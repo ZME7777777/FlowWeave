@@ -238,6 +238,17 @@ def _ensure_replacement_state(
                             409,
                             {"runtime_session_id": session.id},
                         )
+                    # The active-Runtime uniqueness constraint is keyed to
+                    # desired state.  Fence the old provider before inserting
+                    # N+1 so the durable replacement record can coexist with
+                    # the still-running source container.  The container is
+                    # deliberately drained later, after N+1 has prewarmed;
+                    # this only prevents reconciliation from restarting the
+                    # fenced writer in the interim.
+                    source_runtime.desired_state = "DELETED"
+                    source_runtime.observed_state = "DELETING"
+                    source_runtime.next_reconcile_at = datetime.now(UTC) + timedelta(seconds=60)
+                    control_db.flush()
                     generation_number = next_runtime_generation_number(
                         control_db,
                         session.id,

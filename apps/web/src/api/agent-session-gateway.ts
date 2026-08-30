@@ -166,10 +166,10 @@ export function flowNodeSessionGateway(
 ): AgentSessionGateway {
   return {
     id: `flow-node:${flowRunId}:${attemptId}`,
-    // A FlowRun node is a host scope, not a reduced Agent product.  Its
-    // Attempt directory is server-fixed; every interactive capability is the
-    // same as the default Agent workspace.
-    features: { ...fullSessionFeatures, workDirectories: false },
+    // A FlowRun node is a host scope, not a reduced Agent product. Logical
+    // work directories are owned by the FlowRun and can be selected by every
+    // node entry that belongs to it.
+    features: fullSessionFeatures,
     api: {
       defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),

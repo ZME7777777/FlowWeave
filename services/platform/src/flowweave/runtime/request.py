@@ -362,6 +362,38 @@ def build_runtime_request(
     agent_spec: RuntimeAgentSpec | None = None,
     conversation_id: str | None = None,
 ) -> StartAttemptRequest:
+    # Interactive Agent conversations are only hosted by the selected node
+    # Attempt. They deliberately do not inherit that node's execution
+    # contract, inputs, startup prompt, output targets, memory, hooks, or
+    # capabilities. The supplied Agent spec is the same shared session spec
+    # used outside FlowRun; the FlowRun contributes only its Runtime and
+    # workspace mount. Keep this fast path before all node materialization.
+    if interaction_mode == "COLLABORATION" and agent_spec is not None:
+        return StartAttemptRequest(
+            attempt_id=attempt_id,
+            execution_key=execution_key,
+            node={},
+            bindings=[],
+            workspace_ref=workspace_ref,
+            conversation_id=conversation_id,
+            agent_spec=agent_spec,
+            node_workspace_ref="",
+            interaction_mode="COLLABORATION",
+            startup_prompt=None,
+            startup_capability_key=None,
+            semantic_history=(),
+            output_targets={},
+            environment_image=environment_image or "",
+            environment_id=environment_id or "",
+            environment_version_id=environment_version_id or "",
+            environment_version_no=environment_version_no or 0,
+            runtime_workspace_relative="",
+            runtime_working_dir_relative="",
+            memory_enabled=False,
+            runtime_sandbox_id=runtime_sandbox_id,
+            runtime_resource_name=runtime_resource_name,
+            runtime_base_url=runtime_base_url,
+        )
     runtime_allocation = runtime_allocation_for_flow_run(
         db, flow_run_id, manifest_digest=runtime_manifest_hash
     )

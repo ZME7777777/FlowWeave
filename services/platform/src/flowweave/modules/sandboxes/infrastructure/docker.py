@@ -1073,6 +1073,7 @@ chmod 0700 "$target"
         validation_allocation_root = validation_root.joinpath(*relative.parts)
         paths = {
             "workspace/project": 0o700,
+            "workspace/nodes": 0o700,
             "state/conversations": 0o700,
             "state/bash-events": 0o700,
             "state/persistence": 0o700,
@@ -1117,6 +1118,10 @@ chmod 0700 "$target"
             (
                 f"type=bind,src={allocation_root / 'workspace/project'},"
                 "dst=/runtime/workspace/project"
+            ),
+            (
+                f"type=bind,src={allocation_root / 'workspace/nodes'},"
+                "dst=/runtime/workspace/nodes"
             ),
             (
                 f"type=bind,src={allocation_root / 'state/conversations'},"

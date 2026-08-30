@@ -50,7 +50,6 @@ from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.base import RuntimeCondenser, RuntimeEventBatch, RuntimeHandle, RuntimeResult
 from flowweave.runtime.dependencies import get_runtime
-from flowweave.runtime.manifest import runtime_node
 from flowweave.runtime.request import (
     build_runtime_request,
     runtime_provider,
@@ -64,8 +63,6 @@ from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     AgentWorkDirectoryVersion,
-    ArtifactVersion,
-    AttemptInputBinding,
     FlowRun,
     HumanAction,
     NodeAttempt,
@@ -105,22 +102,10 @@ _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 
 
 def _runtime_working_directory(request: Any) -> str:
-    """Return the mounted Attempt directory from a validated Runtime request."""
+    """Return the shared Agent project, never a node Attempt data path."""
 
-    node_root = PurePosixPath(request.node_workspace_ref)
-    relative = PurePosixPath(request.runtime_working_dir_relative)
-    result = node_root.joinpath(*relative.parts)
-    if (
-        not node_root.is_absolute()
-        or not result.is_relative_to(_RUNTIME_PROJECT)
-        or any(part in {"", ".", ".."} for part in relative.parts)
-    ):
-        raise DomainError(
-            "RUNTIME_WORKSPACE_INVALID",
-            "The Runtime request did not resolve an isolated mounted working directory",
-            409,
-        )
-    return str(result)
+    del request
+    return str(_RUNTIME_PROJECT)
 
 
 def _binding(db: Session, binding_id: str, *, lock: bool = False) -> AgentConversationBinding:
@@ -316,7 +301,11 @@ def list_node_session_views(
             AgentConversationBinding.node_attempt_id == attempt_id,
             AgentConversationBinding.lifecycle != "DELETED",
         )
-        .order_by(AgentConversationBinding.created_at)
+        .order_by(
+            AgentConversationBinding.updated_at.desc(),
+            AgentConversationBinding.created_at.desc(),
+            AgentConversationBinding.id.desc(),
+        )
     )
     return [_node_session_dict(db, item) for item in items]
 
@@ -343,7 +332,11 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == run.id,
         )
-        .order_by(AgentConversationBinding.created_at)
+        .order_by(
+            AgentConversationBinding.updated_at.desc(),
+            AgentConversationBinding.created_at.desc(),
+            AgentConversationBinding.id.desc(),
+        )
     )
     return [_binding_dict(item) for item in items]
 
@@ -365,7 +358,11 @@ def list_node_conversations(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
         )
-        .order_by(AgentConversationBinding.created_at)
+        .order_by(
+            AgentConversationBinding.updated_at.desc(),
+            AgentConversationBinding.created_at.desc(),
+            AgentConversationBinding.id.desc(),
+        )
     )
     return [_binding_dict(item) for item in items]
 
@@ -409,7 +406,11 @@ def list_flow_run_conversations(db: Session, flow_run_id: str) -> list[dict[str,
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
         )
-        .order_by(AgentConversationBinding.created_at)
+        .order_by(
+            AgentConversationBinding.updated_at.desc(),
+            AgentConversationBinding.created_at.desc(),
+            AgentConversationBinding.id.desc(),
+        )
     )
     return [_binding_dict(item) for item in items]
 
@@ -443,50 +444,11 @@ def patch_flow_run_conversation(
     return patch_conversation(db, binding_id, title)
 
 
-def _request_bindings(
-    db: Session, attempt: NodeAttempt, node: dict[str, Any]
-) -> list[dict[str, Any]]:
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    input_contracts = {
-        str(item.get("field_key") or ""): item
-        for raw in cast(list[object], asset.get("inputs") or [])
-        if isinstance(raw, dict)
-        for item in [cast(dict[str, Any], raw)]
-    }
-    result: list[dict[str, Any]] = []
-    for binding in db.scalars(
-        select(AttemptInputBinding).where(AttemptInputBinding.attempt_id == attempt.id)
-    ):
-        artifact = db.get(ArtifactVersion, binding.artifact_version_id)
-        if artifact is None:
-            continue
-        contract = input_contracts.get(binding.input_field_key, {})
-        result.append(
-            {
-                "field_key": binding.input_field_key,
-                "display_name": contract.get("display_name"),
-                "description": contract.get("description"),
-                "template_url": contract.get("template_url"),
-                "artifact": {
-                    "id": artifact.id,
-                    "artifact_type": artifact.artifact_type,
-                    "uri": artifact.uri,
-                    "inline_content": artifact.inline_content,
-                    "metadata": artifact.metadata_json,
-                },
-            }
-        )
-    return result
-
-
 def _create_native_conversation(
     db: Session,
     *,
     run: FlowRun,
     snapshot: RunSnapshot,
-    node: dict[str, Any],
-    workspace_ref: str,
-    bindings: list[dict[str, Any]],
     title: str | None,
     idempotency_key: str,
     binding_id: str,
@@ -570,9 +532,9 @@ def _create_native_conversation(
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=binding_id,
         execution_key=f"flow-run:{run.id}:conversation:create",
-        node=node,
-        bindings=bindings,
-        workspace_ref=workspace_ref,
+        node={},
+        bindings=[],
+        workspace_ref=working_directory,
         interaction_mode="COLLABORATION",
         environment_image=environment.image_digest,
         environment_id=environment.environment_id,
@@ -659,35 +621,19 @@ def create_conversation(
                 409,
                 {"flow_run_id": run.id, "node_attempt_id": attempt.id},
             )
-        node = host.node
-        workspace_ref = host.working_directory
-    else:
-        node = runtime_node(
-            definition=snapshot.definition_json,
-            manifest=snapshot.runtime_manifest_json or {},
-            expected_hash=snapshot.runtime_manifest_hash,
-            snapshot_id=snapshot.id,
-            instance_key=node_run.flow_node_snapshot_key,
+    # The Attempt is authorization and routing context only. Its node payload,
+    # inputs, startup prompt, outputs, and capabilities do not enter the Agent
+    # conversation. FlowRun contributes only the selected shared workspace.
+    work_directory_version_id, runtime_working_directory = (
+        agent_workspace_host.flow_run_conversation_work_directory_context(
+            db, run.id, payload.work_directory_id
         )
-        workspace_ref = attempt.workspace_ref or ""
-    if host is not None:
-        # Node sessions never select a logical workspace: their one permitted
-        # directory is the server-frozen Attempt mount.
-        work_directory_version_id, runtime_working_directory = None, host.session.working_directory
-    else:
-        work_directory_version_id, runtime_working_directory = (
-            agent_workspace_host.flow_run_conversation_work_directory_context(
-                db, run.id, payload.work_directory_id
-            )
-        )
+    )
     request_owner_id = str(uuid4())
     return _create_native_conversation(
         db,
         run=run,
         snapshot=snapshot,
-        node=node,
-        workspace_ref=workspace_ref,
-        bindings=_request_bindings(db, attempt, node),
         title=payload.title,
         idempotency_key=idempotency_key,
         binding_id=request_owner_id,
@@ -791,21 +737,20 @@ def bootstrap_node_conversation(
         binding_id = str(UUID(conversation_id)) if conversation_id else str(uuid4())
     except ValueError as exc:
         raise DomainError("AGENT_CONVERSATION_ID_INVALID", "会话标识无效", 422) from exc
-    host = agent_sessions.resolve_flow_node_session_host(
+    agent_sessions.resolve_flow_node_session_host(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=True
     )
     attempt = _attempt(db, attempt_id)
     node_run, run, snapshot = _attempt_context(db, attempt)
-    if work_directory_id:
-        raise DomainError("NODE_WORK_DIRECTORY_FIXED", "节点会话固定使用当前 Attempt 工作目录", 409)
-    work_directory_version_id, working_directory = None, host.session.working_directory
+    work_directory_version_id, working_directory = (
+        agent_workspace_host.flow_run_conversation_work_directory_context(
+            db, run.id, work_directory_id
+        )
+    )
     created = _create_native_conversation(
         db,
         run=run,
         snapshot=snapshot,
-        node=host.node,
-        workspace_ref=host.working_directory,
-        bindings=_request_bindings(db, attempt, host.node),
         title=None,
         idempotency_key=idempotency_key,
         binding_id=str(uuid4()),
@@ -903,7 +848,7 @@ def flow_run_runtime_stream_details(
     return get_settings().runtime_adapter, _flow_run_handle(db, flow_run_id, binding_id)
 
 
-def terminal_resource_details(db: Session, binding_id: str) -> tuple[str, str, str]:
+def terminal_resource_details(db: Session, binding_id: str) -> tuple[str, str]:
     handle = _handle(db, binding_id)
     if not handle.runtime_resource_id or not handle.runtime_resource_name:
         raise DomainError(
@@ -911,22 +856,15 @@ def terminal_resource_details(db: Session, binding_id: str) -> tuple[str, str, s
             "This FlowRun Conversation has no active managed Runtime",
             409,
         )
-    sandbox = sandboxes.sandbox_snapshot(db, handle.runtime_resource_id)
-    raw_spec = sandbox.get("spec") if sandbox is not None else None
-    spec = cast(dict[str, Any], raw_spec) if isinstance(raw_spec, dict) else {}
-    environment_id = str(spec.get("environment_id") or "")
-    if not environment_id:
-        raise DomainError(
-            "AGENT_TERMINAL_UNAVAILABLE",
-            "This FlowRun Runtime has no Environment binding",
-            409,
-        )
-    return handle.runtime_resource_name, handle.runtime_resource_id, environment_id
+    # This is an Agent Runtime, not an Environment setup container. Supplying
+    # its Environment id switches the terminal controller to the setup
+    # contract and rejects the required Runtime working directory.
+    return handle.runtime_resource_name, handle.runtime_resource_id
 
 
 def flow_run_terminal_resource_details(
     db: Session, flow_run_id: str, binding_id: str
-) -> tuple[str, str, str]:
+) -> tuple[str, str]:
     _binding_for_run(db, flow_run_id, binding_id)
     return terminal_resource_details(db, binding_id)
 
@@ -1466,31 +1404,23 @@ def node_runtime_stream_details(
 
 def node_terminal_resource_details(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
-) -> tuple[str, str, str]:
+) -> tuple[str, str]:
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return flow_run_terminal_resource_details(db, flow_run_id, binding_id)
 
 
 def node_draft_terminal_resource_details(
     db: Session, *, flow_run_id: str, attempt_id: str
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str]:
     """Open a terminal before first message in the Attempt's fixed directory."""
 
     host = agent_sessions.resolve_flow_node_session_host(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
     )
     connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
-    sandbox = sandboxes.sandbox_snapshot(db, connection.managed_runtime_id)
-    spec = cast(dict[str, Any], sandbox.get("spec") if sandbox else {})
-    environment_id = str(spec.get("environment_id") or "")
-    if not environment_id:
-        raise DomainError(
-            "AGENT_TERMINAL_UNAVAILABLE", "This FlowRun Runtime has no Environment binding", 409
-        )
     return (
         connection.resource_name,
         connection.managed_runtime_id,
-        environment_id,
         host.session.working_directory,
     )
 

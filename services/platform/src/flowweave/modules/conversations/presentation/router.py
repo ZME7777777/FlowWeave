@@ -222,7 +222,7 @@ async def conversation_terminal(
             rows, columns = 24, 80
         async with container.database.session() as db:
             try:
-                resource_name, runtime_id, environment_id = await db.run_sync(
+                resource_name, runtime_id = await db.run_sync(
                     lambda session: conversations.flow_run_terminal_resource_details(
                         session, flow_run_id, binding_id
                     )
@@ -234,8 +234,8 @@ async def conversation_terminal(
             environments.open_managed_terminal,
             resource_name,
             resource_id=runtime_id,
-            environment_id=environment_id,
             session_name=f"flowweave-{binding_id}",
+            working_dir="/runtime/workspace/project",
             rows=rows,
             columns=columns,
         )

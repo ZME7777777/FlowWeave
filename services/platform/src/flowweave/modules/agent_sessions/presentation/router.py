@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
@@ -404,19 +405,13 @@ async def list_flow_run_work_directories(
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: {
-            "root": {
-                "kind": "ROOT",
-                "display_name": "节点工作目录",
-                "working_directory": agent_sessions.resolve_flow_node_session_host(
-                    session,
-                    flow_run_id=flow_run_id,
-                    attempt_id=attempt_id,
-                    require_start_permission=False,
-                ).session.working_directory,
-            },
-            "items": [],
-        },
+        lambda session: (
+            agent_sessions.resolve_flow_node_session_host(
+                session, flow_run_id=flow_run_id, attempt_id=attempt_id,
+                require_start_permission=False,
+            ),
+            agent_workspace_host.list_flow_run_work_directories(session, flow_run_id),
+        )[1],
     )
 
 
@@ -434,7 +429,9 @@ async def create_flow_run_work_directory(
             attempt_id=attempt_id,
             require_start_permission=False,
         )
-        raise DomainError("NODE_WORK_DIRECTORY_FIXED", "节点会话固定使用当前 Attempt 工作目录", 409)
+        return agent_workspace_host.create_flow_run_work_directory(
+            session, flow_run_id, payload.display_name, tuple(payload.selected_paths)
+        )
 
     return await run_sync(db, create)
 
@@ -844,7 +841,7 @@ async def node_session_terminal(
         async with container.database.session() as db:
             try:
 
-                def terminal_details(session: Any) -> tuple[str, str, str, str]:
+                def terminal_details(session: Any) -> tuple[str, str, str]:
                     if binding_id:
                         return (
                             *agent_sessions.flow_node_conversations.node_terminal_resource_details(
@@ -868,9 +865,7 @@ async def node_session_terminal(
                         )
                     )
 
-                resource_name, runtime_id, environment_id, working_directory = await db.run_sync(
-                    terminal_details
-                )
+                resource_name, runtime_id, working_directory = await db.run_sync(terminal_details)
             except DomainError as exc:
                 await websocket.close(code=4409, reason=exc.message)
                 return
@@ -878,7 +873,6 @@ async def node_session_terminal(
             environments.open_managed_terminal,
             resource_name,
             resource_id=runtime_id,
-            environment_id=environment_id,
             session_name=f"flowweave-node-{binding_id or 'draft'}",
             working_dir=working_directory,
             rows=rows,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, cast
 
@@ -56,7 +57,11 @@ def _chat_title(snapshot: TitleProviderSnapshot, first_message: str) -> str:
 def _responses_title(snapshot: TitleProviderSnapshot, first_message: str) -> str:
     payload = {
         "model": snapshot.model,
-        "stream": False,
+        # The Codex subscription endpoint supports Responses streaming only.
+        # Title generation remains isolated from the Agent conversation; this
+        # client consumes the short SSE response synchronously in its worker.
+        "stream": True,
+        "store": False,
         "reasoning": {"effort": "low"},
         "input": [
             {
@@ -69,16 +74,43 @@ def _responses_title(snapshot: TitleProviderSnapshot, first_message: str) -> str
             },
         ],
     }
+    deltas: list[str] = []
+    completed: dict[str, Any] | None = None
     with httpx.Client(timeout=20, follow_redirects=False) as client:
-        response = client.post(
-            f"{snapshot.base_url}/responses", headers=snapshot.headers, json=payload
-        )
-        response.raise_for_status()
-    body = cast(dict[str, Any], response.json())
-    direct = body.get("output_text")
+        with client.stream(
+            "POST",
+            f"{snapshot.base_url}/responses",
+            headers={**snapshot.headers, "Accept": "text/event-stream"},
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line.removeprefix("data:").strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                event = cast(dict[str, Any], json.loads(raw))
+                event_type = event.get("type")
+                if event_type == "response.output_text.delta":
+                    delta = event.get("delta")
+                    if isinstance(delta, str):
+                        deltas.append(delta)
+                elif event_type == "response.completed":
+                    value = event.get("response")
+                    if isinstance(value, dict):
+                        completed = cast(dict[str, Any], value)
+                elif event_type in {"error", "response.failed"}:
+                    error = event.get("error") or event.get("response") or event
+                    raise ValueError(f"Responses title request failed: {error}")
+    if deltas:
+        return "".join(deltas)
+    if completed is None:
+        raise ValueError("Responses title response did not complete")
+    direct = completed.get("output_text")
     if isinstance(direct, str):
         return direct
-    output = body.get("output")
+    output = completed.get("output")
     if not isinstance(output, list):
         raise ValueError("Responses title response did not contain output text")
     for raw_item in cast(list[object], output):

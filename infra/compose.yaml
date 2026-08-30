@@ -50,7 +50,7 @@ services:
     volumes:
       - artifacts:/data/artifacts
       - type: bind
-        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
         target: /data/workspaces
     restart: "no"
 
@@ -90,7 +90,7 @@ services:
       OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OPENHANDS_WORKSPACE_ROOT: /workspaces
       FLOW_RUN_RUNTIME_VALIDATION_ROOT: /runtime-storage
-      RUNTIME_HOST_WORKSPACE_ROOT: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
+      RUNTIME_HOST_WORKSPACE_ROOT: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
       DEPENDENCY_BUILDER_BACKEND: docker
       DEPENDENCY_BUILDER_IMAGE: ${DEPENDENCY_BUILDER_IMAGE:-flowweave-dependency-builder:1}
       DEPENDENCY_BUILDER_TIMEOUT_SECONDS: ${DEPENDENCY_BUILDER_TIMEOUT_SECONDS:-300}
@@ -118,7 +118,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - type: bind
-        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
         target: /runtime-storage
         read_only: true
     depends_on:
@@ -147,7 +147,7 @@ services:
     volumes:
       - artifacts:/data/artifacts
       - type: bind
-        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
         target: /data/workspaces
     depends_on:
       migration: { condition: service_completed_successfully }
@@ -176,7 +176,7 @@ services:
     volumes:
       - artifacts:/data/artifacts
       - type: bind
-        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:-${PWD}/var/workspaces}
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
         target: /data/workspaces
     depends_on:
       migration: { condition: service_completed_successfully }

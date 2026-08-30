@@ -21,6 +21,7 @@ from flowweave.modules.agent_sessions.application.flow_node_host import (
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
+from flowweave.runtime.workspace import ensure_flow_run_attempt_workspace
 from flowweave.shared.errors import DomainError
 
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
@@ -33,12 +34,25 @@ AgentWorkDirectoryVersion = agent_workspace_host.AgentWorkDirectoryVersion
 
 
 def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
-    resolve_flow_node_session_host(
+    host = resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         require_start_permission=False,
     )
+    # A waiting Attempt is inspectable before a Conversation/Runtime request
+    # exists. Backfill the same strictly server-derived directory tree used by
+    # Runtime startup so the workspace drawer has no lifecycle gap.
+    node = getattr(host, "node", None)
+    asset = node.get("asset") if isinstance(node, dict) else None
+    asset_id = str(asset.get("id") or "") if isinstance(asset, dict) else ""
+    working_directory = getattr(host, "working_directory", "")
+    if asset_id and working_directory:
+        ensure_flow_run_attempt_workspace(
+            flow_run_id=flow_run_id,
+            asset_id=asset_id,
+            workspace_ref=working_directory,
+        )
     root = sandboxes.flow_run_workspace_project_path(flow_run_id)
     try:
         metadata = root.lstat()
@@ -113,8 +127,13 @@ def _scope(
         roots = tuple(str(_RUNTIME_PROJECT / path) for path in paths)
         return binding.working_directory or str(_RUNTIME_PROJECT), details, roots
     if work_directory_id:
-        raise DomainError("NODE_WORK_DIRECTORY_FIXED", "节点会话固定使用当前 Attempt 工作目录", 409)
-    return attempt_root, None, (attempt_root,)
+        directory = agent_workspace_host.get_flow_run_work_directory(
+            db, flow_run_id, work_directory_id
+        )
+        paths = tuple(directory["current_version"]["selected_paths"])
+        roots = tuple(str(_RUNTIME_PROJECT / path) for path in paths)
+        return directory["current_version"]["working_directory"], directory, roots
+    return str(_RUNTIME_PROJECT), None, (str(_RUNTIME_PROJECT),)
 
 
 def _runtime_path(project_root: Path, candidate: Path) -> str:
@@ -264,6 +283,7 @@ def details(
             "display_name": directory["display_name"],
         }
     )
+    runtime = sandboxes.runtime_overview(db, flow_run_id)
     return {
         "root": str(_RUNTIME_PROJECT),
         "scope": scope,
@@ -271,7 +291,12 @@ def details(
         "work_directory": directory,
         "files": _entries(project_root, roots),
         "repositories": [],
-        "runtime": {"container_id": None},
+        # Physical container identifiers are deliberately never sent to the
+        # browser. Project the FlowRun Runtime lifecycle instead.
+        "runtime": {
+            "state": runtime["status"],
+            "write_available": runtime["write_available"],
+        },
         "ide": {
             "workspace_path": working_directory,
             "gateway": {
@@ -319,15 +344,12 @@ def conversation_working_directory(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> str:
     project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
-    working_directory, _, roots = _scope(
-        db,
-        flow_run_id=flow_run_id,
-        attempt_id=attempt_id,
-        binding_id=binding_id,
-        work_directory_id=None,
-    )
-    _validate_scope_roots(project_root, roots)
-    return working_directory
+    # A node Attempt grants access to a FlowRun session, but must never move
+    # the interactive terminal out of the shared Agent project. Existing
+    # bindings can contain the old nested Attempt path; ignore it here.
+    del binding_id
+    _validate_scope_roots(project_root, (str(_RUNTIME_PROJECT),))
+    return str(_RUNTIME_PROJECT)
 
 
 __all__ = ("conversation_working_directory", "details", "read_file")

@@ -14,11 +14,16 @@ OPENHANDS_SOURCE_COMMIT = "9a24f6c8866f353042a57df0514ccc900e3a0691"
 FIXED_RUNTIME_TOOL_NAMES: tuple[str, ...] = (
     "ask_oracle",
     "file_editor",
-    "task",
+    # ``task`` is the executor-backed child Tool returned by TaskToolSet and
+    # is not a public factory: resolving it directly makes the SDK inject
+    # ``conv_state`` into TaskTool.create(), which is an explicit TypeError.
+    # Conversations must request the registered factory instead.
     "task_tool_set",
     "task_tracker",
     "terminal",
-    "workflow",
+    # ``workflow_tool_set`` resolves to the executable tool named
+    # ``workflow``. Configuring both names resolves the same executable twice
+    # and OpenHands rejects the Agent because tool names must be unique.
     "workflow_tool_set",
 )
 FIXED_TOOL_CONCURRENCY_LIMIT = 1

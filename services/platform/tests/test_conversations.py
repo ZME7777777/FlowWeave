@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -272,7 +273,9 @@ def test_flow_node_host_resolves_a_frozen_shared_session_context(
         assert host.session.host_id == flow_run_id
         assert host.session.conversation_scope_id == attempt_id
         assert host.session.runtime_session_id == runtime_session_id
-        assert host.session.working_directory == "/runtime/workspace/project/nodes/node-1"
+        # The Attempt remains the server-side authorization provenance, while
+        # all interactive node sessions share the mounted FlowRun project.
+        assert host.session.working_directory == "/runtime/workspace/project"
         assert host.session.permits(CREATE_SESSIONS)
         assert host.session.permits(READ_SESSIONS)
         assert host.node["asset"]["name"] == "Node Agent"
@@ -399,10 +402,90 @@ def test_node_session_scope_keeps_bindings_with_the_authorized_attempt(
         assert isolated.value.code == "RESOURCE_NOT_FOUND"
 
 
-def test_node_workspace_projection_is_flow_run_scoped(
+def test_node_session_list_orders_recent_activity_first(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node session navigation follows the Agent Workspace ordering contract."""
+
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        baseline = datetime(2026, 1, 1, tzinfo=UTC)
+        oldest_but_recently_active = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="recently-active-conversation",
+            display_title="最近活动",
+            lifecycle="ACTIVE",
+            create_idempotency_key="recently-active",
+            created_at=baseline,
+            updated_at=baseline + timedelta(hours=3),
+        )
+        newest = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="newest-conversation",
+            display_title="最新创建",
+            lifecycle="ACTIVE",
+            create_idempotency_key="newest",
+            created_at=baseline + timedelta(hours=2),
+            updated_at=baseline + timedelta(hours=2),
+        )
+        oldest = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="oldest-conversation",
+            display_title="最早会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="oldest",
+            created_at=baseline + timedelta(hours=1),
+            updated_at=baseline + timedelta(hours=1),
+        )
+        db.add_all((oldest, newest, oldest_but_recently_active))
+        db.flush()
+        monkeypatch.setattr(
+            conversation_service.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+
+        items = conversation_service.list_node_session_views(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+
+        assert [item["id"] for item in items] == [
+            oldest_but_recently_active.id,
+            newest.id,
+            oldest.id,
+        ]
+
+
+def test_node_workspace_projection_supports_flow_run_work_directories(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each node entry is confined to its own frozen Attempt directory."""
+    """Node entries can browse the FlowRun root or a frozen logical directory."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
         flow_run_workspace_project_path,
@@ -452,8 +535,10 @@ def test_node_workspace_projection_is_flow_run_scoped(
         paths = {item["path"] for item in details["files"]}
         first_runtime_path = "/runtime/workspace/project/nodes/one/sessions/first/1/first.txt"
         second_runtime_path = "/runtime/workspace/project/nodes/two/sessions/second/1/second.txt"
+        # With no selected logical work directory, the node page exposes the
+        # shared FlowRun project root.
         assert first_runtime_path in paths
-        assert second_runtime_path not in paths
+        assert second_runtime_path in paths
         content, _content_type, filename = flow_node_workspace.read_file(
             db,
             flow_run_id=flow_run_id,
@@ -467,14 +552,20 @@ def test_node_workspace_projection_is_flow_run_scoped(
         directory = work_directories.create_flow_run_work_directory(
             db, flow_run_id, "节点一目录", ("nodes/one",)
         )
-        with pytest.raises(DomainError) as fixed_directory:
-            flow_node_workspace.details(
-                db,
-                flow_run_id=flow_run_id,
-                attempt_id=first_attempt_id,
-                work_directory_id=str(directory["id"]),
-            )
-        assert fixed_directory.value.code == "NODE_WORK_DIRECTORY_FIXED"
+        scoped = flow_node_workspace.details(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=first_attempt_id,
+            work_directory_id=str(directory["id"]),
+        )
+        scoped_paths = {item["path"] for item in scoped["files"]}
+        assert scoped["scope"] == {
+            "kind": "WORK_DIRECTORY",
+            "id": directory["id"],
+            "display_name": "节点一目录",
+        }
+        assert first_runtime_path in scoped_paths
+        assert second_runtime_path not in scoped_paths
 
 
 def test_flow_run_creation_resolves_the_node_host_once(

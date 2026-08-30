@@ -51,12 +51,13 @@ _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 
 
 def _runtime_working_directory(*, flow_run_id: str, workspace_ref: str) -> str:
-    """Project a server-owned Attempt path into the Runtime mount.
+    """Authorize an Attempt path while using the shared Runtime project root.
 
     ``NodeAttempt.workspace_ref`` is an absolute host path under the FlowRun
-    allocation.  Shared session records and browser DTOs must never expose
-    that host path: OpenHands sees the same project through its stable mount.
-    Test fixtures may already provide that mounted path, which remains valid.
+    allocation.  It remains the server-side provenance and materialization
+    path, but it is not an OpenHands working directory.  Every interactive
+    node session, terminal, and workspace view uses the one project mount so
+    agents can collaborate on the complete FlowRun project.
     """
 
     raw = workspace_ref.strip()
@@ -66,10 +67,14 @@ def _runtime_working_directory(*, flow_run_id: str, workspace_ref: str) -> str:
         and runtime_path.is_relative_to(_RUNTIME_PROJECT)
         and runtime_path.as_posix() == raw
     ):
-        return raw
-    project_root = sandboxes.flow_run_workspace_project_path(flow_run_id)
+        return str(_RUNTIME_PROJECT)
+    # Attempt data is deliberately a sibling of the shared project mount:
+    # ``workspace/nodes/...`` maps to ``/runtime/workspace/nodes/...``.  It
+    # remains an authorization/provenance path only; the returned Agent cwd
+    # below is still the shared project root.
+    nodes_root = sandboxes.flow_run_workspace_nodes_path(flow_run_id)
     try:
-        relative = Path(raw).relative_to(project_root)
+        relative = Path(raw).relative_to(nodes_root)
     except ValueError as exc:
         raise DomainError(
             "NODE_WORKSPACE_INVALID",
@@ -84,7 +89,7 @@ def _runtime_working_directory(*, flow_run_id: str, workspace_ref: str) -> str:
             409,
             {"flow_run_id": flow_run_id},
         )
-    return str(_RUNTIME_PROJECT.joinpath(*relative.parts))
+    return str(_RUNTIME_PROJECT)
 
 
 def resolve_flow_node_session_host(

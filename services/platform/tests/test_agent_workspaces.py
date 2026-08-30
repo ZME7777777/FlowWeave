@@ -1583,6 +1583,64 @@ def test_agent_workspace_title_task_uses_independent_provider_and_redacts_seed(
         assert task.payload_json == {"title_generation": 1}
 
 
+def test_responses_title_uses_streaming_codex_protocol(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            return iter(
+                (
+                    'event: response.output_text.delta',
+                    'data: {"type":"response.output_text.delta","delta":"问候"}',
+                    'data: {"type":"response.output_text.delta","delta":"与协助"}',
+                    'data: {"type":"response.completed","response":{"output":[]}}',
+                    'data: [DONE]',
+                )
+            )
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def stream(self, method, url, **kwargs):
+            captured.update({"method": method, "url": url, **kwargs})
+            return Response()
+
+    monkeypatch.setattr(titles.httpx, "Client", Client)
+
+    generated = titles.generate_title(
+        TitleProviderSnapshot(
+            "https://chatgpt.example.test/backend-api/codex",
+            {"Authorization": "Bearer token", "Accept": "application/json"},
+            "gpt-5.6-terra",
+            "RESPONSES",
+        ),
+        "你好",
+    )
+
+    assert generated == "问候与协助"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://chatgpt.example.test/backend-api/codex/responses"
+    assert captured["headers"]["Accept"] == "text/event-stream"
+    assert captured["json"]["stream"] is True
+    assert captured["json"]["store"] is False
+
+
 def test_agent_workspace_manual_title_wins_over_late_title_task(
     settings, db_session_factory, monkeypatch
 ):
@@ -1783,6 +1841,54 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         assert conversations.list_conversations(db, workspace.id) == []
 
 
+def test_agent_workspace_bootstrap_explicit_openhands_500_is_not_ambiguous(
+    settings, db_session_factory, monkeypatch
+):
+    class RejectedBootstrapRuntime(MockRuntime):
+        deleted = 0
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            raise DomainError(
+                "OPENHANDS_REQUEST_FAILED",
+                "OpenHands rejected the event",
+                502,
+                {"status_code": 500, "outcome_unknown": False},
+            )
+
+        def delete_conversation(self, handle):
+            del handle
+            self.deleted += 1
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = RejectedBootstrapRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        with pytest.raises(DomainError) as raised:
+            conversations.bootstrap_conversation(
+                db,
+                workspace.id,
+                work_directory_id=None,
+                model_provider_id=workspace.default_model_provider_id,
+                content="会失败",
+                idempotency_key="draft-explicit-openhands-500",
+            )
+        assert raised.value.code == "OPENHANDS_REQUEST_FAILED"
+        assert db.scalar(select(AgentConversationBinding)) is None
+        assert db.scalar(select(AgentConversationCommand)) is None
+        assert runtime.deleted == 1
+        assert conversations.list_conversations(db, workspace.id) == []
+
+
 def test_agent_workspace_bootstrap_mcp_initialization_failure_is_not_ambiguous(
     settings, db_session_factory, monkeypatch
 ):
@@ -1837,7 +1943,12 @@ def test_agent_workspace_bootstrap_ambiguous_delivery_never_resends(
         def send_message(self, handle, content, image_urls=()):
             del handle, content, image_urls
             self.sent += 1
-            raise DomainError("EXECUTOR_UNAVAILABLE", "temporary network failure", 503)
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "temporary network failure",
+                503,
+                {"outcome_unknown": True},
+            )
 
     monkeypatch.setattr(
         conversations,
@@ -1878,7 +1989,12 @@ def test_agent_workspace_bootstrap_reconciles_ambiguous_delivery_by_native_event
         def send_message(self, handle, content, image_urls=()):
             del handle, content, image_urls
             self.sent += 1
-            raise DomainError("EXECUTOR_UNAVAILABLE", "response lost", 503)
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "response lost",
+                503,
+                {"outcome_unknown": True},
+            )
 
         def read_active_events(self, handle):
             del handle
@@ -1928,7 +2044,12 @@ def test_agent_workspace_bootstrap_retries_ambiguous_creation_with_original_uuid
         def create_conversation(self, request):
             self.created += 1
             super().create_conversation(request)
-            raise DomainError("EXECUTOR_UNAVAILABLE", "create response lost", 503)
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "create response lost",
+                503,
+                {"outcome_unknown": True},
+            )
 
         def send_message(self, handle, content, image_urls=()):
             self.sent += 1

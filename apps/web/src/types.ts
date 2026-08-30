@@ -417,7 +417,7 @@ export interface AgentSessionWorkspaceDetails {
   work_directory?: AgentSessionWorkDirectory | null;
   files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
   repositories: Array<{ path: string; remote?: string; branch?: string; head?: string }>;
-  runtime: { container_id?: string | null };
+  runtime: { container_id?: string | null; state?: string; write_available?: boolean };
   ide: { workspace_path: string; gateway: { supported: boolean; status: string; note: string } };
 }
 export type AgentWorkspaceDetails = AgentSessionWorkspaceDetails;

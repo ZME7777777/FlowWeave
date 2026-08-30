@@ -32,6 +32,7 @@ from flowweave.runtime.base import (
     StartAttemptRequest,
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
+from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import DockerControllerClient
 
@@ -177,6 +178,42 @@ def _request() -> StartAttemptRequest:
         runtime_resource_name="fw-sbx-flow-run-1",
         runtime_base_url="http://runtime.test:8000",
     )
+
+
+def test_collaboration_request_drops_all_node_execution_business_context():
+    shared_spec = RuntimeAgentSpec(tools=(RuntimeTool(name="terminal"),))
+
+    request = build_runtime_request(
+        None,  # type: ignore[arg-type]
+        flow_run_id="flow-run-1",
+        runtime_manifest_hash="manifest-1",
+        attempt_id="attempt-1",
+        execution_key="conversation:create",
+        node=_request().node,
+        bindings=_request().bindings,
+        workspace_ref="/runtime/workspace/project",
+        interaction_mode="COLLABORATION",
+        startup_prompt="must not leak",
+        startup_capability_key="node-skill",
+        semantic_history=({"role": "user", "content": "must not leak"},),
+        output_targets=_request().output_targets,
+        environment_image="sha256:" + "1" * 64,
+        environment_id="environment-1",
+        environment_version_id="environment-version-1",
+        environment_version_no=1,
+        agent_spec=shared_spec,
+        conversation_id="10000000-0000-4000-8000-000000000004",
+    )
+
+    assert request.node == {}
+    assert request.bindings == []
+    assert request.workspace_ref == "/runtime/workspace/project"
+    assert request.node_workspace_ref == ""
+    assert request.startup_prompt is None
+    assert request.startup_capability_key is None
+    assert request.semantic_history == ()
+    assert request.output_targets == {}
+    assert request.agent_spec is shared_spec
 
 
 def _handle(cursor: str | None = None) -> RuntimeHandle:
@@ -908,6 +945,22 @@ def test_openhands_disables_autotitle_for_agent_workspace(openhands_settings, mo
         execution_key="agent-workspace:workspace-1:conversation:binding-1",
     )
     runtime.create_conversation(request)
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["autotitle"] is False
+
+
+def test_openhands_disables_autotitle_for_collaboration(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000004", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    runtime.create_conversation(replace(_request(), interaction_mode="COLLABORATION"))
 
     payload = captured["json"]
     assert isinstance(payload, dict)

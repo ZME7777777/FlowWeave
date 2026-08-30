@@ -1045,7 +1045,7 @@ def bootstrap_conversation(
             )
             _record_bootstrap_failure(db, binding, command, error)
             raise error from exc
-        if exc.status >= 500:
+        if exc.details.get("outcome_unknown") is True:
             command.last_error_code = exc.code
             command.failure_summary = "Conversation creation requires retry with the original UUID"
             db.commit()
@@ -1059,7 +1059,7 @@ def bootstrap_conversation(
     try:
         delivered = get_runtime().send_message(handle, prompt, image_urls)
     except DomainError as exc:
-        if exc.status >= 500:
+        if exc.details.get("outcome_unknown") is True:
             try:
                 reconciled = _initial_user_event_id(handle, previous_event_id)
             except DomainError:

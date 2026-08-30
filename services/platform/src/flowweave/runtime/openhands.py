@@ -195,16 +195,27 @@ class OpenHandsRuntime:
                     {"status_code": 404, "path": path},
                 ) from exc
             raise DomainError(
-                "EXECUTOR_UNAVAILABLE",
-                "OpenHands Agent Server is unavailable or rejected the request",
-                503,
-                {"status_code": exc.response.status_code},
+                "OPENHANDS_REQUEST_FAILED",
+                "OpenHands Agent Server rejected the request",
+                502,
+                {
+                    "status_code": exc.response.status_code,
+                    "outcome_unknown": False,
+                },
             ) from exc
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
-                "OpenHands Agent Server is unavailable or rejected the request",
+                "OpenHands Agent Server connection was interrupted before a response",
                 503,
+                {"outcome_unknown": True},
+            ) from exc
+        except ValueError as exc:
+            raise DomainError(
+                "OPENHANDS_RESPONSE_INVALID",
+                "OpenHands Agent Server returned an invalid response",
+                502,
+                {"outcome_unknown": False},
             ) from exc
 
     @staticmethod
@@ -907,7 +918,7 @@ class OpenHandsRuntime:
                 return request.workspace_ref
         if (
             request.runtime_sandbox_id
-            and request.node_workspace_ref.startswith("/runtime/workspace/project/")
+            and request.node_workspace_ref.startswith("/runtime/workspace/nodes/")
             and request.runtime_working_dir_relative
         ):
             working = Path(request.runtime_working_dir_relative)
@@ -1130,13 +1141,15 @@ class OpenHandsRuntime:
                     "The requested Conversation identity is invalid",
                     422,
                 ) from exc
-        if request.execution_key.startswith("agent-workspace:"):
-            # Agent Workspace owns the optional display label in its durable
-            # binding.  Do not make a second, hidden LLM call merely to derive
-            # an OpenHands title: the Codex subscription endpoint requires
-            # streaming while upstream title generation intentionally runs
-            # non-streaming.  This is the documented OpenHands `autotitle`
-            # field, not a prompt or protocol workaround.
+        if (
+            request.execution_key.startswith("agent-workspace:")
+            or request.interaction_mode == "COLLABORATION"
+        ):
+            # FlowWeave owns the display title for every interactive Agent
+            # conversation, including conversations hosted by a Flow node.
+            # OpenHands autotitle is a second hidden model call; failures from
+            # that call are emitted as ConversationErrorEvent and can falsely
+            # make a successfully completed turn look failed in the UI.
             payload["autotitle"] = False
         if spec.agent_profile is not None:
             # The immutable FlowWeave Profile has already been materialized in

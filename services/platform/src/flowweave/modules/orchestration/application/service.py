@@ -62,6 +62,7 @@ from flowweave.runtime.request import (
 from flowweave.runtime.routing import runtime_for
 from flowweave.runtime.workspace import (
     attempt_workspace_path,
+    ensure_flow_run_attempt_workspace,
 )
 from flowweave.shared.application.transactions import (
     finish,
@@ -1201,6 +1202,9 @@ def _create_node_run(
         )
         db.add(attempt)
         db.flush()
+        ensure_flow_run_attempt_workspace(
+            flow_run_id=run.id, asset_id=asset_id, workspace_ref=attempt.workspace_ref or ""
+        )
         for field_key, artifact_id in artifact_ids.items():
             db.add(
                 AttemptInputBinding(
@@ -1247,6 +1251,9 @@ def _create_node_run(
     )
     db.add(attempt)
     db.flush()
+    ensure_flow_run_attempt_workspace(
+        flow_run_id=run.id, asset_id=asset_id, workspace_ref=attempt.workspace_ref or ""
+    )
     for field_key, artifact_id in artifact_ids.items():
         db.add(
             AttemptInputBinding(
@@ -2923,6 +2930,9 @@ def reject_attempt(
     )
     db.add(next_attempt)
     db.flush()
+    ensure_flow_run_attempt_workspace(
+        flow_run_id=run.id, asset_id=next_asset_id, workspace_ref=next_attempt.workspace_ref or ""
+    )
     if payload.copy_input_bindings:
         for binding in _bindings(db, attempt.id):
             db.add(
