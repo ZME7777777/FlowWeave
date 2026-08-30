@@ -2419,6 +2419,32 @@ def test_openhands_conversation_context_reads_the_active_native_usage_bucket(
     }
 
 
+def test_openhands_conversation_context_exposes_zero_token_baseline_for_pinned_codex_model(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: _state(
+            agent={
+                "llm": {
+                    "model": "openai/gpt-5.4",
+                    "usage_id": "flowweave:provider-1",
+                    "max_input_tokens": 1_050_000,
+                }
+            },
+            stats={"usage_to_metrics": {}},
+        ),
+    )
+
+    context = runtime.conversation_context(_handle())
+
+    assert context["used_tokens"] == 0
+    assert context["window_tokens"] == 1_050_000
+    assert context["cumulative_tokens"] is None
+
+
 @pytest.mark.parametrize(
     "metrics",
     [

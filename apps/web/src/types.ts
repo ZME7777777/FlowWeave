@@ -142,6 +142,7 @@ export interface NodeAssetWrite {
 export interface ProviderModel {
   id?: string; model_name: string; enabled: boolean; is_default: boolean;
   default_reasoning_effort?: string | null; supported_reasoning_efforts?: string[];
+  context_window?: number | null;
 }
 export interface ModelProvider {
   id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'CODEX_OAUTH';

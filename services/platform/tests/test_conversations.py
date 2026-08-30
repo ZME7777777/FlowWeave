@@ -322,10 +322,10 @@ def test_flow_node_host_rejects_non_startable_or_unscoped_attempts(
         assert unscoped.value.code == "NODE_WORKSPACE_REQUIRED"
 
 
-def test_node_session_scope_shares_flow_run_bindings_across_attempt_entries(
+def test_node_session_scope_keeps_bindings_with_the_authorized_attempt(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A node Attempt authorizes entry; its FlowRun owns the shared sessions."""
+    """A FlowRun shares one Runtime, but node sessions remain attempt-scoped."""
 
     with db_session_factory() as db:
         flow_run_id, runtime_session_id, first_attempt_id = _node_session_context(db)
@@ -379,7 +379,7 @@ def test_node_session_scope_shares_flow_run_bindings_across_attempt_entries(
         first_items = conversation_service.list_node_session_views(
             db, flow_run_id=flow_run_id, attempt_id=first_attempt_id
         )
-        assert [item["id"] for item in first_items] == [first_binding.id, second_binding.id]
+        assert [item["id"] for item in first_items] == [first_binding.id]
         assert (
             conversation_service.get_node_conversation(
                 db,
@@ -389,15 +389,14 @@ def test_node_session_scope_shares_flow_run_bindings_across_attempt_entries(
             )["id"]
             == first_binding.id
         )
-        assert (
+        with pytest.raises(DomainError) as isolated:
             conversation_service.get_node_conversation(
                 db,
                 flow_run_id=flow_run_id,
                 attempt_id=first_attempt_id,
                 binding_id=second_binding.id,
-            )["id"]
-            == second_binding.id
-        )
+            )
+        assert isolated.value.code == "RESOURCE_NOT_FOUND"
 
 
 def test_node_workspace_projection_is_flow_run_scoped(

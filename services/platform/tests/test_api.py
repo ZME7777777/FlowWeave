@@ -353,16 +353,32 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     assert attempt["state"] == "WAITING_START_CONFIRMATION"
     scope = f"/api/v1/flow-runs/{run['id']}/node-attempts/{attempt['id']}/agent-sessions"
     assert client.get(scope).json() == []
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "节点会话测试模型",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "node-session-secret",
+            "models": [{"model_name": "gpt-node", "enabled": True, "is_default": True}],
+        },
+    ).json()
     conversation = client.post(
-        scope,
-        json={"title": "首个会话"},
+        f"{scope}/bootstrap",
+        json={
+            "client_question_id": "selected-node-first-message",
+            "content": [{"type": "text", "text": "首条节点消息"}],
+            "model_provider_id": provider["id"],
+            "model_name": "gpt-node",
+            "reasoning_effort": None,
+        },
         headers={"Idempotency-Key": "selected-node-first-conversation"},
     )
     assert conversation.status_code == 201, conversation.text
-    assert conversation.json()["id"]
+    assert conversation.json()["conversation"]["id"]
+    assert conversation.json()["conversation"]["display_title"] == "首条节点消息"
     listed = client.get(scope)
     assert listed.status_code == 200, listed.text
-    assert [item["id"] for item in listed.json()] == [conversation.json()["id"]]
+    assert [item["id"] for item in listed.json()] == [conversation.json()["conversation"]["id"]]
     with db_session_factory() as db:
         allocation = db.scalar(
             select(FlowRunRuntimeAllocation).where(

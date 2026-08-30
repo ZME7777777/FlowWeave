@@ -43,6 +43,5 @@ export function FlowNodeSessionPage({
     onNavigate={onNavigate}
     onReturnToSource={returnToNodeAttempt}
     autoOpenDraft
-    hideDraftTitle
   />;
 }

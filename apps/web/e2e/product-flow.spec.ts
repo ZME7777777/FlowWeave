@@ -587,7 +587,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         proactive_compaction_ratio: 0.8, proactive_compaction_tokens: 737_600, compaction_policy_current: true,
         condenser_max_size: 10_000,
       } : {
-        used_tokens: null, window_tokens: null, cumulative_tokens: 12_716,
+        used_tokens: 0, window_tokens: 922_000, cumulative_tokens: 12_716,
         model_name: 'gpt-test', reasoning_effort: 'high',
       }) });
       return;
@@ -807,7 +807,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   });
   expect(copiedTerminalSelection.copied).toMatch(/put-\d+/);
   expect(copiedTerminalSelection.prevented).toBe(true);
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token待首次调用');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922k');
   await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;
@@ -985,7 +985,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
   await expect(page.getByLabel('历史压缩策略兼容保护')).toBeVisible();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token待首次调用 / 922k');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922k');
   await expect(page.locator('.agent-context-progress.activity')).toContainText(/工具\d+ 次 · \d+ \/ 240 事件/);
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();
@@ -1770,18 +1770,11 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await nodeConsole.getByRole('button', { name: '保存到产物池' }).click();
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`需求文档-${suffix}`);
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`https://example.feishu.cn/docx/e2e-input-${suffix}`);
-  const createdNodeSession = page.waitForResponse(response =>
-    response.url().includes('/agent-sessions') && response.request().method() === 'POST',
-  );
   await nodeConsole.getByRole('button', { name: '启动节点会话' }).click();
-  const nodeSessionResponse = await createdNodeSession;
-  expect(nodeSessionResponse.ok(), await nodeSessionResponse.text()).toBeTruthy();
-  const nodeSession = await nodeSessionResponse.json() as { id: string };
-  const nodeSessionUrl = new RegExp(
-    `/flow-runs/${createdRun.id}/nodes/[^/]+/attempts/[^/]+/agent-sessions/${nodeSession.id}$`,
-  );
+  const nodeSessionUrl = new RegExp(`/flow-runs/${createdRun.id}/nodes/[^/]+/attempts/[^/]+/agent-sessions$`);
   await expect(page).toHaveURL(nodeSessionUrl);
-  await expect(page.getByRole('heading', { name: 'FlowRun 会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首轮方案', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '新会话', exact: true })).toHaveCount(0);
   await expect(page.getByRole('navigation').getByRole('button', { name: '流程运行' })).toHaveClass(/active/);
   await expect(page.getByRole('navigation').getByRole('button', { name: 'Agent 会话' })).not.toHaveClass(/active/);
   await expect(page.getByRole('button', { name: '返回节点执行' })).toBeVisible();
@@ -1791,7 +1784,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await expect(page.getByLabel('添加附件')).toHaveCount(0);
   await page.reload();
   await expect(page).toHaveURL(nodeSessionUrl);
-  await expect(page.getByRole('heading', { name: 'FlowRun 会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首轮方案', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '返回节点执行' }).click();
   await expect(page.locator('.attempt-control')).toBeVisible();
 

@@ -15,6 +15,7 @@ from flowweave.modules.model_providers.infrastructure.codex_oauth import (
     OAuthTokens,
     refresh_access_token,
 )
+from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import conflict, not_found
 from flowweave.shared.models import (
@@ -100,6 +101,9 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
                 "is_default": x.is_default,
                 "default_reasoning_effort": x.default_reasoning_effort,
                 "supported_reasoning_efforts": list(x.supported_reasoning_efforts or []),
+                # The pinned Runtime catalog owns these exact model limits;
+                # unknown custom names stay ``null`` rather than guessed.
+                "context_window": declared_context_window(x.model_name),
             }
             for x in models
         ],

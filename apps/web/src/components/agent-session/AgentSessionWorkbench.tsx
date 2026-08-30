@@ -1707,18 +1707,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     ?? conversationProviderInfo?.models.find(model => model.enabled && model.is_default);
   const availableConversationModels = conversationProviderInfo?.models.filter(model => model.enabled) ?? [];
   const supportedEfforts = conversationModel?.supported_reasoning_efforts ?? [];
-  const contextProgress = contextQuery.data
-    && typeof contextQuery.data.used_tokens === 'number' && contextQuery.data.used_tokens > 0
-    && typeof contextQuery.data.window_tokens === 'number' && contextQuery.data.window_tokens > 0
+  const visibleContextWindow = typeof contextQuery.data?.window_tokens === 'number' && contextQuery.data.window_tokens > 0
+    ? contextQuery.data.window_tokens
+    : conversationDraft
+      ? draftConversationModel?.context_window
+      : conversationModel?.context_window;
+  const contextUsagePending = Boolean(selected && contextQuery.data?.usage_current === false);
+  const visibleContextTokens = typeof contextQuery.data?.used_tokens === 'number' && contextQuery.data.used_tokens >= 0
+    ? contextQuery.data.used_tokens
+    : contextUsagePending ? undefined : 0;
+  const contextProgress = typeof visibleContextWindow === 'number' && visibleContextWindow > 0
+    && typeof visibleContextTokens === 'number'
     ? {
-      used: contextQuery.data.used_tokens,
-      window: contextQuery.data.window_tokens,
-      usedLabel: compactTokenCount(contextQuery.data.used_tokens),
-      windowLabel: compactTokenCount(contextQuery.data.window_tokens),
-      percentage: Math.min(100, Math.round((contextQuery.data.used_tokens / contextQuery.data.window_tokens) * 100)),
+      used: visibleContextTokens,
+      window: visibleContextWindow,
+      usedLabel: compactTokenCount(visibleContextTokens),
+      windowLabel: compactTokenCount(visibleContextWindow),
+      percentage: Math.min(100, Math.round((visibleContextTokens / visibleContextWindow) * 100)),
     }
     : undefined;
-  const contextUsagePending = Boolean(selected && contextQuery.data?.usage_current === false);
   const forgottenEventIds = new Set(displayedEvents.flatMap(event =>
     event.event_type === 'CONDENSATION_COMPLETED' && Array.isArray(event.payload.forgotten_event_ids)
       ? event.payload.forgotten_event_ids.filter((id): id is string => typeof id === 'string')
@@ -1730,7 +1737,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const eventLimit = typeof contextQuery.data?.condenser_max_size === 'number'
     && contextQuery.data.condenser_max_size > 0
     ? contextQuery.data.condenser_max_size
-    : undefined;
+    : 10_000;
   const eventProgress = eventLimit
     ? Math.min(100, Math.round((activeEventCount / eventLimit) * 100))
     : 0;
@@ -1743,12 +1750,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
       ? '暂不可用'
       : contextUsagePending
         ? '待模型更新'
-        : typeof contextQuery.data?.window_tokens === 'number' && contextQuery.data.window_tokens > 0
-          ? `待首次调用 / ${compactTokenCount(contextQuery.data.window_tokens)}`
-          : '待首次调用';
+        : '模型窗口未知';
   const tokenPendingTitle = contextUsagePending
     ? 'OpenHands 已完成原生压缩；下一次主模型调用后会产生当前 View 的新 Token 用量。'
-    : '此会话尚未产生当前 Fork 的 Token 统计。Fork 会继承事件上下文，但 OpenHands 默认从零开始记录新分支的费用与 Token 指标。';
+    : '当前模型尚未提供可验证的上下文窗口；不会显示估算值。';
   const activityTitle = `工具调用：当前活动事件树中 ${toolCallCount.toLocaleString()} 次；事件规模 ${activeEventCount.toLocaleString()} / ${eventLimit?.toLocaleString() ?? 'OpenHands 自身上限'}。OpenHands 按事件规模而非工具次数触发兜底压缩。`;
   const composerStatus = bootstrapRecovery
     ? bootstrapRecovery.attempts < MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS ? '正在安全核对首条消息' : '首条消息待安全核对'
@@ -1802,7 +1807,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
 
   return <main className="agent-workbench-page">
     <aside className="agent-workbench-rail">
-      <header><div><span className="eyebrow">{onReturnToSource ? 'FLOWRUN WORKSPACE' : features.workDirectories ? 'AGENT WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? 'FlowRun 会话' : features.workDirectories ? 'Agent 会话' : '节点会话'}</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
+      <header><div><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : features.workDirectories ? 'AGENT WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : features.workDirectories ? 'Agent 会话' : '节点会话'}</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
         <WorkspaceConversationGroup groupId="root" label="根工作区" canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
           {rootConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
@@ -1830,8 +1835,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
         <footer>
           <div className="agent-composer-context">
             {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
-            {contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%，80% 时主动压缩`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : selected && <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>}
-            {selected && <span className="agent-context-progress activity" title={activityTitle} aria-label={`工具调用 ${toolCallCount} 次，当前活动事件 ${activeEventCount} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>工具</small>{toolCallCount} 次 · {activeEventCount}{eventLimit ? ` / ${compactTokenCount(eventLimit)}` : ''} 事件</em></span>}
+            {contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%，80% 时主动压缩`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : (selected || conversationDraft) && <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>}
+            {(selected || conversationDraft) && <span className="agent-context-progress activity" title={activityTitle} aria-label={`工具调用 ${toolCallCount} 次，当前活动事件 ${activeEventCount} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>工具</small>{toolCallCount} 次 · {activeEventCount} / {compactTokenCount(eventLimit)} 事件</em></span>}
             {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}
           </div>

@@ -1,9 +1,9 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`COMPLETE`
+> 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：无（节点会话草稿首发与工作台一致性已完成；后续发布门禁按独立切片执行）
+> 下一可执行切片：`FR-106 统一 Agent 工具集并删除 Tool Policy`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1459,6 +1459,38 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 完成：节点入口不再在进入页面时创建 binding；共享 Workbench 在节点根路径立即创建仅浏览器可见的草稿，并隐藏草稿标题。首条消息经过节点原子 bootstrap 路由，在原生 Conversation reload 后发送、以正式 cursor 完成身份确认，再持久化标题和启用绑定终端。首发 optimistic bubble 在路由切换后清除，只由正式事件渲染；返回按钮采用文字按钮尺寸，不再被通用图标动作样式压缩。
 
+### FR-105 节点会话模型与会话可见性一致性 — DONE
+
+依赖：`FR-104`。
+
+目标：节点会话继续装配唯一共享 Agent 工作台，并补回与一级 Agent 会话相同的模型选择、会话标题、会话列表和
+OpenHands 原生上下文信息。首条消息必须将用户所选的已连接模型供应商、模型和推理强度冻结到该节点 binding，
+而非静默忽略浏览器选择或回退到其他 Workspace；同一节点 Attempt 只列出、打开和操作自己的会话。节点标题由
+服务端解析的节点名称提供，不显示泛化的“FlowRun 会话”。所有会话仍复用创建 FlowRun 时预置的唯一 Runtime，
+并固定在节点 Attempt 的服务端工作目录；不修改 OpenHands、不会启动新容器，也不恢复旧聊天页面。
+
+验收：节点会话服务与共享 Workbench 的定向回归覆盖节点名称、模型首发冻结、节点作用域列表、上下文读取和
+消息发送；受影响 Python/Web 静态检查、Alembic head、任务状态唯一性与 `git diff --check` 通过。本切片使用
+独立 Git commit。
+
+完成：节点侧恢复了与一级会话相同的模型选择和模型切换，首发冻结选中的 provider/model/reasoning；同一
+Attempt 只能列出和操作自己的 binding，节点页显示具体节点名称。共享 Workbench 以固定 OpenHands 1.44.0
+Runtime 已声明的模型窗口显示真实零基线（`Token 0 / window`、`工具 0 / 10k 事件`），首轮完成后按正式
+active `usage_id` bucket 的 `per_turn_token` 更新；不再把 `0` 误判为无上下文数据。
+
+### FR-106 统一 Agent 工具集并删除 Tool Policy — READY
+
+依赖：`FR-105`。
+
+目标：从能力仓库、导入/发布、节点/Runtime manifest、Agent Profile 引用、运行时契约和前端彻底移除
+`TOOL_POLICY`。节点不再保存、选择或冻结任何 Agent 工具/确认配置。所有 FlowRun 节点与顶层 Agent
+会话都使用同一固定的 OpenHands 1.44.0 可用 Tool 集，并在正式 `NeverConfirm` 策略下执行；不复制工具执行器，
+不以 FlowWeave 私有规则模拟确认。历史含 Tool Policy 的 Snapshot 保持只读可审计或要求显式重跑，绝不猜测
+转换为新的运行配置。
+
+验收：固定 Runtime 的可用 Tool 集探针、创建/恢复/发送的正式 Agent payload、删除/拒绝旧 Tool Policy API
+和能力仓库 UI 定向回归；受影响 Python/Web 静态检查、迁移和 `git diff --check` 通过。本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1475,6 +1507,7 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-105 | OpenHands 上下文定向 pytest（2 passed）；节点会话作用域/API 定向 pytest（2 passed）；OpenHands、节点会话与 API 合并 pytest（118 passed）；受影响 Ruff 与 Python `py_compile`；Web typecheck/ESLint；源码 Vite 上一级 Agent 会话定向 Playwright（1 passed）；固定 Runtime LiteLLM catalog 探针；`git diff --check` 与任务状态唯一性 | PASS：固定 Runtime 明确给出 Codex 模型窗口（`gpt-5.4` 为 1,050,000，`gpt-5.6-*` 为 922,000）；共享 Workbench 显示可信 `0 / window` 与 `0 / 10k` 基线，正式 active usage bucket 在消息后可替换零值。节点会话复用同一 Runtime，首发模型选择与后续模型切换均冻结到 binding，列表和操作不能越过 Attempt。 |
 | 2026-08-30 | FR-104 | 节点首发 API 定向 pytest（1 passed）；受影响 Python `py_compile`/Ruff；Web TypeScript typecheck、ESLint、production build；Alembic head；`git diff --check` | PASS：节点根路由保持未持久化草稿，首条消息通过 reload 后的原生 cursor 激活 binding/标题，终端仅在 binding 存在后可打开，首发 optimistic user event 不会与正式 event 重复渲染。定向 Playwright 在创建测试节点资产前被现有 `INVALID_COMMAND`（fixture 仍发送已移除的 executor/capabilities 字段）拦截，未进入本切片断言。 |
 | 2026-08-30 | FR-103 | Web TypeScript typecheck、ESLint、production build；源码 Vite 定向 Playwright（2 passed）；`git diff --check` | PASS：关闭环境终端仅以 `display:none` 隐藏视图，保留 xterm 与已有 WebSocket；重新点击“继续配置”不会产生第二次 terminal attachment。发布中的会话继续只显示进度，不建立 terminal WebSocket。 |
 | 2026-08-30 | FR-102 | Skill 组合定向 pytest（4 passed）；Web TypeScript typecheck、ESLint、production build；受影响 Python `py_compile` 与 `git diff --check` | PASS：三页局部滚动布局通过编译；Skill 删除不再被逻辑组合引用阻塞，自动解除组合成员并清理空组合，真实受保护引用仍保留。 |

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
@@ -41,7 +42,16 @@ class NodeSessionCreateWrite(_Write):
 
 
 class NodeSessionBootstrapWrite(ConversationQuestionWrite):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+
+class NodeSessionModelWrite(_Write):
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 class FlowRunWorkDirectoryCreateWrite(_Write):
@@ -170,6 +180,12 @@ async def bootstrap_node_session(
             attempt_id=attempt_id,
             payload=payload,
             work_directory_id=payload.work_directory_id,
+            session_config=resolve_session_config(
+                session,
+                model_provider_id=payload.model_provider_id,
+                model_name=payload.model_name,
+                reasoning_effort=payload.reasoning_effort,
+            ),
             idempotency_key=_key(idempotency_key, "bootstrap-node-agent-session", attempt_id),
             actor=actor,
         ),
@@ -348,6 +364,28 @@ async def node_session_context(
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/model")
+async def switch_node_session_model(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: NodeSessionModelWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.switch_node_conversation_model(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            model_provider_id=payload.model_provider_id,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
         ),
     )
 

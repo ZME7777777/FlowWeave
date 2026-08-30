@@ -22,6 +22,7 @@ from flowweave.modules.agent_sessions.application.flow_node_locator import (
     binding_locator,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
+    FrozenSessionConfig,
     build_agent_spec,
     config_from_binding,
     provider_for_config,
@@ -36,12 +37,14 @@ from flowweave.modules.environments.public import (
     lock_referenceable_version,
     validate_runtime_manifest,
 )
+from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.base import RuntimeEventBatch, RuntimeHandle, RuntimeResult
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import runtime_node
 from flowweave.runtime.request import (
     build_runtime_request,
+    runtime_provider,
 )
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
@@ -142,7 +145,10 @@ def _binding_for_attempt(
     agent_sessions.resolve_flow_node_session_host(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
     )
-    return _binding_for_run(db, flow_run_id, binding_id, lock=lock)
+    item = _binding_for_run(db, flow_run_id, binding_id, lock=lock)
+    if item.node_attempt_id != attempt_id:
+        raise not_found("flow_run_conversation_binding", binding_id)
+    return item
 
 
 def node_conversation_binding(
@@ -231,17 +237,25 @@ def node_host_details(db: Session, *, flow_run_id: str, attempt_id: str) -> dict
     host path.  The attempt id is the only host id a node Workbench needs.
     """
 
-    agent_sessions.resolve_flow_node_session_host(
+    host = agent_sessions.resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         require_start_permission=False,
     )
     overview = sandboxes.runtime_overview(db, flow_run_id)
-    run = db.get(FlowRun, flow_run_id)
+    asset = cast(dict[str, Any], host.node.get("asset") or {})
+    node_name = str(
+        host.node.get("display_name")
+        or host.node.get("name")
+        or asset.get("display_name")
+        or asset.get("name")
+        or host.node.get("instance_key")
+        or "节点"
+    ).strip()
     return {
         "id": flow_run_id,
-        "display_name": f"{run.name if run else 'FlowRun'} 会话",
+        "display_name": node_name or "节点会话",
         "default_model_provider_id": None,
         "desired_state": "RUNNING" if overview["write_available"] else "MAINTENANCE",
         "updated_at": now().isoformat(),
@@ -286,6 +300,7 @@ def list_node_session_views(
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
+            AgentConversationBinding.node_attempt_id == attempt_id,
             AgentConversationBinding.lifecycle != "DELETED",
         )
         .order_by(AgentConversationBinding.created_at)
@@ -466,6 +481,7 @@ def _create_native_conversation(
     attempt_id: str | None = None,
     work_directory_version_id: str | None = None,
     runtime_working_directory: str | None = None,
+    session_config: FrozenSessionConfig | None = None,
 ) -> dict[str, Any]:
     if run.state in {"COMPLETED", "CANCELLED"}:
         raise DomainError(
@@ -513,6 +529,7 @@ def _create_native_conversation(
         create_idempotency_key=idempotency_key,
         display_title=title,
         work_directory_version_id=work_directory_version_id,
+        config=session_config,
     )
     config = config_from_binding(db, item)
     provider = provider_for_config(db, config)
@@ -592,6 +609,7 @@ def create_conversation(
     idempotency_key: str,
     *,
     host: agent_sessions.FlowNodeSessionHost | None = None,
+    session_config: FrozenSessionConfig | None = None,
 ) -> dict[str, Any]:
     """Create one OpenHands-native Conversation in the FlowRun Runtime.
 
@@ -657,6 +675,7 @@ def create_conversation(
         attempt_id=attempt.id,
         work_directory_version_id=work_directory_version_id,
         runtime_working_directory=runtime_working_directory,
+        session_config=session_config,
     )
 
 
@@ -665,6 +684,8 @@ def create_flow_run_conversation(
     flow_run_id: str,
     payload: FlowRunConversationCreateWrite,
     idempotency_key: str,
+    *,
+    session_config: FrozenSessionConfig | None = None,
 ) -> dict[str, Any]:
     """Create a Conversation only from an explicitly selected node Attempt."""
 
@@ -681,6 +702,9 @@ def create_flow_run_conversation(
         require_start_permission=True,
     )
     attempt = _attempt(db, host.attempt_id)
+    create_kwargs: dict[str, Any] = {"host": host}
+    if session_config is not None:
+        create_kwargs["session_config"] = session_config
     return create_conversation(
         db,
         attempt.id,
@@ -690,7 +714,7 @@ def create_flow_run_conversation(
             work_directory_id=payload.work_directory_id,
         ),
         idempotency_key,
-        host=host,
+        **create_kwargs,
     )
 
 
@@ -702,6 +726,7 @@ def create_node_conversation(
     title: str | None,
     work_directory_id: str | None,
     idempotency_key: str,
+    session_config: FrozenSessionConfig | None = None,
 ) -> dict[str, Any]:
     """Create through the node-host route contract."""
 
@@ -714,6 +739,7 @@ def create_node_conversation(
             work_directory_id=work_directory_id,
         ),
         idempotency_key,
+        session_config=session_config,
     )
 
 
@@ -726,6 +752,7 @@ def bootstrap_node_conversation(
     work_directory_id: str | None,
     idempotency_key: str,
     actor: str | None,
+    session_config: FrozenSessionConfig | None = None,
 ) -> dict[str, Any]:
     """Create a node binding only while delivering its first user event.
 
@@ -745,6 +772,7 @@ def bootstrap_node_conversation(
         title=None,
         work_directory_id=work_directory_id,
         idempotency_key=idempotency_key,
+        session_config=session_config,
     )
     binding_id = str(created["id"])
     binding = _binding_for_attempt(
@@ -928,7 +956,14 @@ def send_question(
     # Decode once at the trust boundary so malformed input never reaches the Runtime.
     for value in image_urls:
         base64.b64decode(value.partition(",")[2], validate=True)
-    result = get_runtime().send_message(_handle(db, binding_id), text, image_urls)
+    handle = _handle(db, binding_id)
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理上一条消息，请稍候", 409)
+    provider = provider_for_config(db, config_from_binding(db, item))
+    if provider is not None:
+        runtime.switch_model(handle, provider)
+    result = runtime.send_message(handle, text, image_urls)
     db.add(
         HumanAction(
             flow_run_id=item.flow_run_id,
@@ -1053,6 +1088,56 @@ def node_conversation_context(
     )
 
 
+def switch_node_conversation_model(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    model_provider_id: str,
+    model_name: str,
+    reasoning_effort: str | None,
+) -> dict[str, str | None]:
+    """Apply and freeze a selected model for one scoped FlowRun session."""
+
+    binding = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
+    if not has_connected_default_model(db, model_provider_id):
+        raise DomainError(
+            "AGENT_MODEL_CONFIGURATION_REQUIRED",
+            "请选择已测试成功且存在启用默认模型的模型供应商",
+            409,
+        )
+    handle = _node_handle(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后切换模型", 409)
+    provider = runtime_provider(
+        db,
+        {"asset": {"executor": {"model_provider_id": model_provider_id}}},
+        model_name=model_name,
+        reasoning_effort=reasoning_effort,
+    )
+    runtime.switch_model(handle, provider)
+    binding.model_provider_id = provider.provider_id
+    binding.model_name = provider.model
+    binding.reasoning_effort = provider.reasoning_effort
+    binding.updated_at = now()
+    finish(db)
+    return {
+        "model_provider_id": provider.provider_id,
+        "model_name": provider.model,
+        "reasoning_effort": provider.reasoning_effort,
+    }
+
+
 def condense_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
@@ -1157,5 +1242,6 @@ __all__ = (
     "condense_node_conversation",
     "interrupt_node_conversation",
     "resume_node_conversation",
+    "switch_node_conversation_model",
     "terminal_resource_details",
 )

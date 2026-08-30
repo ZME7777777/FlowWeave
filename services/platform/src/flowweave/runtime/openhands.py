@@ -52,6 +52,7 @@ from flowweave.runtime.base import (
     RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
+from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -62,10 +63,6 @@ from flowweave.shared.infrastructure.docker_controller import (
 
 
 class OpenHandsRuntime:
-    # LiteLLM's fixed catalog reports this limit for the model used by the
-    # Codex OAuth integration.  Keep the value narrow and explicit: unknown
-    # provider models remain unknown rather than receiving a guessed window.
-    _DECLARED_CONTEXT_WINDOWS = {"openai/gpt-5.6-sol": 922_000}
     """OpenHands Agent Server adapter backed by the node's configured model provider."""
 
     def __init__(self, settings: Settings) -> None:
@@ -764,7 +761,11 @@ class OpenHandsRuntime:
             "retry_max_wait": 4,
             "timeout": 20,
         }
-        if (window := self._DECLARED_CONTEXT_WINDOWS.get(model)) is not None:
+        # This is pinned Runtime catalog metadata, not a platform estimate.
+        # Supplying it before the first request makes OpenHands initialize the
+        # zero-token metric with the same bound shown by the product UI.
+        window = declared_context_window(model)
+        if window is not None:
             llm["max_input_tokens"] = window
         if provider.auth_type == "CODEX_OAUTH":
             extra_body: dict[str, Any] = {"store": False}
@@ -2952,7 +2953,7 @@ class OpenHandsRuntime:
         if window is None:
             model = llm.get("model")
             if isinstance(model, str):
-                window = self._DECLARED_CONTEXT_WINDOWS.get(model)
+                window = declared_context_window(model)
         cumulative = 0
         found = False
         for usage in self._usage_snapshots(state):
@@ -2968,11 +2969,12 @@ class OpenHandsRuntime:
         # LLM request's current View usage.  It is not an accumulated total and
         # is only taken from this Conversation's active LLM usage bucket.
         return {
+            # A configured View starts at exactly zero.  Returning ``None``
+            # hid that truthful baseline in the product until the first
+            # completion, although its formal context window was known.
             "used_tokens": (
-                active_usage.per_turn_tokens
-                if active_usage is not None and active_usage.per_turn_tokens > 0
-                else None
-            ),
+                active_usage.per_turn_tokens if active_usage is not None else 0
+            ) if window is not None else None,
             "window_tokens": window,
             "cumulative_tokens": cumulative if found else None,
             "provider_id": provider_id,

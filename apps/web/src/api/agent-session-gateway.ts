@@ -172,7 +172,7 @@ export function flowNodeSessionGateway(
     id: `flow-node:${flowRunId}:${attemptId}`,
     features: {
       workDirectories: true, capabilities: false, attachments: false,
-      modelSelection: false, conversationDeletion: false, fork: false,
+      modelSelection: true, conversationDeletion: false, fork: false,
       rewrite: false, confirmations: false, terminalRequiresConversation: true,
     },
     api: {
@@ -180,7 +180,7 @@ export function flowNodeSessionGateway(
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: () => nodeSessionApi.conversations(flowRunId, attemptId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
-      providers: async () => [],
+      providers: api.providers,
       capabilities: async () => [],
       capabilityCollections: async () => [],
       hostCapabilities: async () => [],
@@ -201,11 +201,9 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, _providerId, modelName, reasoningEffort, content, _attachments, workDirectoryId, _capabilityVersionIds, idempotencyKey) => {
-        void modelName;
-        void reasoningEffort;
+      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, _attachments, workDirectoryId, _capabilityVersionIds, idempotencyKey) => {
         return nodeSessionApi.bootstrap(
-          flowRunId, attemptId, content, workDirectoryId, idempotencyKey ?? conversationId,
+          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, workDirectoryId, idempotencyKey ?? conversationId,
         );
       },
       updateConversation: (_hostId, bindingId, title) =>
@@ -234,7 +232,8 @@ export function flowNodeSessionGateway(
         nodeSessionApi.resume(flowRunId, attemptId, bindingId),
       decideConfirmation: async () => unavailable('Tool confirmations'),
       rerunMessage: async () => unavailable('Message rewriting'),
-      switchConversationModel: async () => unavailable('Model switching'),
+      switchConversationModel: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
+        nodeSessionApi.switchModel(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
     },
     terminalUrl: (_hostId, rows, columns, options) => {
       if (!options.bindingId) return unavailable('Node terminal without a conversation');
