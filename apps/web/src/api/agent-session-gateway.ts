@@ -155,10 +155,6 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
   subscribe: subscribeToAgentWorkspaceStream,
 };
 
-const unavailable = (operation: string): never => {
-  throw new Error(`${operation} is unavailable for a FlowRun node session`);
-};
-
 /**
  * Transport for one immutable FlowRun node-Attempt scope. Every browser
  * request carries the same server-authorized Run/Attempt lineage; binding IDs
@@ -170,23 +166,22 @@ export function flowNodeSessionGateway(
 ): AgentSessionGateway {
   return {
     id: `flow-node:${flowRunId}:${attemptId}`,
-    features: {
-      workDirectories: true, capabilities: false, attachments: false,
-      modelSelection: true, conversationDeletion: false, fork: false,
-      rewrite: false, confirmations: false, terminalRequiresConversation: true,
-    },
+    // A FlowRun node is a host scope, not a reduced Agent product.  Its
+    // Attempt directory is server-fixed; every interactive capability is the
+    // same as the default Agent workspace.
+    features: { ...fullSessionFeatures, workDirectories: false },
     api: {
       defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: () => nodeSessionApi.conversations(flowRunId, attemptId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
-      capabilities: async () => [],
-      capabilityCollections: async () => [],
-      hostCapabilities: async () => [],
-      mcpReadiness: async () => unavailable('Capability readiness'),
-      replaceHostCapabilities: async () => unavailable('Capability replacement'),
-      addConversationCapability: async () => unavailable('Conversation capability registration'),
+      capabilities: api.capabilities,
+      capabilityCollections: api.capabilityCollections,
+      hostCapabilities: () => nodeSessionApi.capabilities(flowRunId, attemptId),
+      mcpReadiness: (_hostId, capabilityVersionId) => nodeSessionApi.mcpReadiness(flowRunId, attemptId, capabilityVersionId),
+      replaceHostCapabilities: (_hostId, capabilityVersionIds) => nodeSessionApi.replaceCapabilities(flowRunId, attemptId, capabilityVersionIds),
+      addConversationCapability: (_hostId, bindingId, capabilityVersionId) => nodeSessionApi.addCapability(flowRunId, attemptId, bindingId, capabilityVersionId),
       workspaceDetails: (_hostId, options) =>
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
       createWorkDirectory: async (_hostId, displayName, selectedPaths) =>
@@ -201,42 +196,44 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, _attachments, workDirectoryId, _capabilityVersionIds, idempotencyKey) => {
+      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, workDirectoryId, capabilityVersionIds, idempotencyKey) => {
         return nodeSessionApi.bootstrap(
-          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, workDirectoryId, idempotencyKey ?? conversationId,
+          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, workDirectoryId, capabilityVersionIds, idempotencyKey ?? conversationId,
         );
       },
       updateConversation: (_hostId, bindingId, title) =>
         nodeSessionApi.update(flowRunId, attemptId, bindingId, title),
-      deleteConversation: async () => unavailable('Conversation deletion'),
+      deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
       conversationEvents: (_hostId, bindingId, cursor) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor),
       inputReadiness: (_hostId, bindingId) =>
         nodeSessionApi.inputReadiness(flowRunId, attemptId, bindingId),
       conversationContext: (_hostId, bindingId) =>
         nodeSessionApi.context(flowRunId, attemptId, bindingId),
-      pendingConfirmation: async () => ({ pending: false }),
-      sendMessage: async (_hostId, bindingId, content, attachments = []) => {
-        if (attachments.length) unavailable('Conversation attachments');
-        return nodeSessionApi.message(flowRunId, attemptId, bindingId, content);
-      },
-      migrateStreamingConversation: async () => unavailable('Streaming migration'),
-      uploadConversationAttachment: async () => unavailable('Conversation attachments'),
-      uploadDraftAttachment: async () => unavailable('Draft attachments'),
-      forkConversation: async () => unavailable('Conversation forks'),
+      pendingConfirmation: (_hostId, bindingId) => nodeSessionApi.pendingConfirmation(flowRunId, attemptId, bindingId),
+      sendMessage: (_hostId, bindingId, content, attachments = []) =>
+        nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments),
+      migrateStreamingConversation: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
+        nodeSessionApi.migrate(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
+      uploadConversationAttachment: (_hostId, bindingId, file) =>
+        nodeSessionApi.uploadAttachment(flowRunId, attemptId, bindingId, file),
+      uploadDraftAttachment: (_hostId, file, workDirectoryId, conversationId) =>
+        nodeSessionApi.uploadDraftAttachment(flowRunId, attemptId, file, workDirectoryId, conversationId),
+      forkConversation: (_hostId, bindingId, eventId) => nodeSessionApi.fork(flowRunId, attemptId, bindingId, eventId),
       condenseConversation: (_hostId, bindingId) =>
         nodeSessionApi.condense(flowRunId, attemptId, bindingId),
       interruptConversation: (_hostId, bindingId) =>
         nodeSessionApi.interrupt(flowRunId, attemptId, bindingId),
       resumeConversation: (_hostId, bindingId) =>
         nodeSessionApi.resume(flowRunId, attemptId, bindingId),
-      decideConfirmation: async () => unavailable('Tool confirmations'),
-      rerunMessage: async () => unavailable('Message rewriting'),
+      decideConfirmation: (_hostId, bindingId, digest, accept, reason) =>
+        nodeSessionApi.decideConfirmation(flowRunId, attemptId, bindingId, digest, accept, reason),
+      rerunMessage: (_hostId, bindingId, eventId, content) =>
+        nodeSessionApi.rerun(flowRunId, attemptId, bindingId, eventId, content),
       switchConversationModel: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
         nodeSessionApi.switchModel(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
     },
     terminalUrl: (_hostId, rows, columns, options) => {
-      if (!options.bindingId) return unavailable('Node terminal without a conversation');
       return nodeSessionApi.terminal(flowRunId, attemptId, options.bindingId, rows, columns);
     },
     fileUrl: (_hostId, path, options) =>

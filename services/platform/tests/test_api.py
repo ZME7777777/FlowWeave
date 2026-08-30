@@ -376,6 +376,18 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     assert conversation.status_code == 201, conversation.text
     assert conversation.json()["conversation"]["id"]
     assert conversation.json()["conversation"]["display_title"] == "首条节点消息"
+    binding_id = conversation.json()["conversation"]["id"]
+    uploaded = client.post(
+        f"{scope}/{binding_id}/attachments",
+        files={"file": ("node-note.txt", b"node attachment", "text/plain")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    follow_up = client.post(
+        f"{scope}/{binding_id}/messages",
+        json={"content": "请读取附件", "attachments": [uploaded.json()]},
+    )
+    assert follow_up.status_code == 202, follow_up.text
+    assert client.get(f"{scope}/{binding_id}/pending-confirmation").json() == {"pending": False}
     listed = client.get(scope)
     assert listed.status_code == 200, listed.text
     assert [item["id"] for item in listed.json()] == [conversation.json()["conversation"]["id"]]

@@ -104,6 +104,7 @@ def resolve_session_config(
     model_provider_id: str | None = None,
     model_name: str | None = None,
     reasoning_effort: str | None = None,
+    capability_version_ids: tuple[str, ...] | None = None,
 ) -> FrozenSessionConfig:
     """Resolve the one default Agent configuration used by every host."""
 
@@ -129,7 +130,21 @@ def resolve_session_config(
         )
 
     frozen: list[FrozenSessionCapability] = []
-    if workspace is not None:
+    if capability_version_ids is not None:
+        references = [
+            (resolve_version(db, version_id), None) for version_id in capability_version_ids
+        ]
+        for published, _ in references:
+            frozen.append(
+                FrozenSessionCapability(
+                    version_id=published.version.id,
+                    capability_type=published.package.capability_type,
+                    capability_key=published.package.capability_key,
+                    digest=published.version.digest,
+                    runtime_config=published.runtime_config(),
+                )
+            )
+    elif workspace is not None:
         for reference in db.scalars(
             select(AgentWorkspaceCapability)
             .where(AgentWorkspaceCapability.workspace_id == workspace.id)
@@ -192,6 +207,7 @@ def reserve_flow_node_binding(
     display_title: str | None = None,
     work_directory_version_id: str | None = None,
     config: FrozenSessionConfig | None = None,
+    binding_id: str | None = None,
 ) -> AgentConversationBinding:
     """Reserve and freeze one FlowNode Conversation before Runtime I/O."""
 
@@ -210,6 +226,7 @@ def reserve_flow_node_binding(
         return existing
     config = config or resolve_session_config(db)
     binding = AgentConversationBinding(
+        id=binding_id or str(uuid4()),
         workspace_id=None,
         runtime_session_id=runtime_session_id,
         host_kind="FLOW_NODE",

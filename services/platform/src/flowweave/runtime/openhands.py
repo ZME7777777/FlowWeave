@@ -2942,18 +2942,24 @@ class OpenHandsRuntime:
             ),
             None,
         )
+        model = llm.get("model")
+        # The fixed Runtime catalog is product truth for known models.  The
+        # active usage bucket is still the sole source of token consumption,
+        # but providers may report a larger, drifting generic context window
+        # (for example 1.1m for gpt-5.6-sol) and must not change this display.
+        catalog_window = declared_context_window(model) if isinstance(model, str) else None
         raw_window = llm.get("max_input_tokens")
-        window = (
+        configured_window = (
             raw_window
             if isinstance(raw_window, int) and not isinstance(raw_window, bool) and raw_window > 0
             else None
         )
-        if active_usage is not None and active_usage.context_window > 0:
-            window = active_usage.context_window
-        if window is None:
-            model = llm.get("model")
-            if isinstance(model, str):
-                window = declared_context_window(model)
+        usage_window = (
+            active_usage.context_window
+            if active_usage is not None and active_usage.context_window > 0
+            else None
+        )
+        window = catalog_window or configured_window or usage_window
         cumulative = 0
         found = False
         for usage in self._usage_snapshots(state):
@@ -2972,9 +2978,9 @@ class OpenHandsRuntime:
             # A configured View starts at exactly zero.  Returning ``None``
             # hid that truthful baseline in the product until the first
             # completion, although its formal context window was known.
-            "used_tokens": (
-                active_usage.per_turn_tokens if active_usage is not None else 0
-            ) if window is not None else None,
+            "used_tokens": (active_usage.per_turn_tokens if active_usage is not None else 0)
+            if window is not None
+            else None,
             "window_tokens": window,
             "cumulative_tokens": cumulative if found else None,
             "provider_id": provider_id,

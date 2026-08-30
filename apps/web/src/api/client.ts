@@ -493,8 +493,8 @@ export const nodeSessionApi = {
   conversations: (flowRunId: string, attemptId: string) => request<import('../types').AgentConversation[]>(nodeSessionBase(flowRunId, attemptId)),
   create: (flowRunId: string, attemptId: string, title?: string, model_name?: string, reasoning_effort?: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
     request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
-  bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, work_directory_id?: string, idempotencyKey = randomId()) =>
-    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { client_question_id: idempotencyKey, content: [{ type: 'text', text: content }], model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
+  bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], work_directory_id?: string, capability_version_ids: string[] = [], idempotencyKey = randomId()) =>
+    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), model_provider_id, model_name, reasoning_effort, work_directory_id, capability_version_ids }, idempotencyKey)),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string) =>
@@ -505,14 +505,45 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversationContext>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/context`),
   switchModel: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
-  message: (flowRunId: string, attemptId: string, bindingId: string, content: string, idempotencyKey = randomId()) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { client_question_id: randomId(), content: [{ type: 'text', text: content }] }, idempotencyKey)),
+  remove: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+  message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], idempotencyKey = randomId()) =>
+    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments) }, idempotencyKey)),
+  pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<import('../types').AgentPendingConfirmation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation`),
+  decideConfirmation: (flowRunId: string, attemptId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  uploadAttachment: async (flowRunId: string, attemptId: string, bindingId: string, file: File): Promise<AgentAttachment> => {
+    const body = new FormData(); body.append('file', file, file.name);
+    const response = await fetch(`${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments`, { method: 'POST', body });
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<AgentAttachment>;
+  },
+  uploadDraftAttachment: async (flowRunId: string, attemptId: string, file: File, workDirectoryId?: string, conversationId?: string): Promise<AgentAttachment> => {
+    const body = new FormData(); body.append('file', file, file.name);
+    const query = new URLSearchParams();
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (conversationId) query.set('conversation_id', conversationId);
+    const response = await fetch(`${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/attachments${query.size ? `?${query}` : ''}`, { method: 'POST', body });
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<AgentAttachment>;
+  },
   condense: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST')),
   interrupt: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   resume: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/resume`, json('POST')),
+  fork: (flowRunId: string, attemptId: string, bindingId: string, event_id: string) =>
+    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
+  migrate: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name?: string | null, reasoning_effort?: string | null) =>
+    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
+  rerun: (flowRunId: string, attemptId: string, bindingId: string, eventId: string, content: string) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content })),
+  capabilities: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionCapability[]>(`${nodeSessionBase(flowRunId, attemptId)}/capabilities`),
+  replaceCapabilities: (flowRunId: string, attemptId: string, capability_version_ids: string[]) => request<import('../types').AgentSessionCapability[]>(`${nodeSessionBase(flowRunId, attemptId)}/capabilities`, json('PUT', { capability_version_ids })),
+  mcpReadiness: (flowRunId: string, attemptId: string, capabilityVersionId: string) => request<import('../types').AgentSessionMcpReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
+  addCapability: (flowRunId: string, attemptId: string, bindingId: string, capability_version_id: string) => request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   workDirectories: (flowRunId: string, attemptId: string) =>
     request<import('../types').AgentSessionWorkDirectoryList>(`${nodeSessionBase(flowRunId, attemptId)}/work-directories`),
   createWorkDirectory: (flowRunId: string, attemptId: string, display_name: string, selected_paths: string[]) =>
@@ -530,9 +561,10 @@ export const nodeSessionApi = {
     if (download) query.set('download', 'true');
     return `${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/workspace/file?${query}`;
   },
-  terminal: (flowRunId: string, attemptId: string, bindingId: string, rows = 24, columns = 80) => {
+  terminal: (flowRunId: string, attemptId: string, bindingId: string | undefined, rows = 24, columns = 80) => {
     const base = API_BASE || window.location.origin;
-    const url = new URL(`${ROOT}${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/terminal`, base);
+    const suffix = bindingId ? `/${encodeURIComponent(bindingId)}/terminal` : '/terminal';
+    const url = new URL(`${ROOT}${nodeSessionBase(flowRunId, attemptId)}${suffix}`, base);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     url.searchParams.set('rows', String(rows));
     url.searchParams.set('columns', String(columns));

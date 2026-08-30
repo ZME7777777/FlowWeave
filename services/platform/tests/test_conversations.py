@@ -402,7 +402,7 @@ def test_node_session_scope_keeps_bindings_with_the_authorized_attempt(
 def test_node_workspace_projection_is_flow_run_scoped(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every node entry projects the shared FlowRun project root."""
+    """Each node entry is confined to its own frozen Attempt directory."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
         flow_run_workspace_project_path,
@@ -434,7 +434,16 @@ def test_node_workspace_projection_is_flow_run_scoped(
         monkeypatch.setattr(
             flow_node_workspace,
             "resolve_flow_node_session_host",
-            lambda _db, **_kwargs: SimpleNamespace(attempt_id=_kwargs["attempt_id"]),
+            lambda _db, **_kwargs: SimpleNamespace(
+                attempt_id=_kwargs["attempt_id"],
+                session=SimpleNamespace(
+                    working_directory=(
+                        "/runtime/workspace/project/nodes/one/sessions/first/1"
+                        if _kwargs["attempt_id"] == first_attempt_id
+                        else "/runtime/workspace/project/nodes/two/sessions/second/1"
+                    )
+                ),
+            ),
         )
 
         details = flow_node_workspace.details(
@@ -444,7 +453,7 @@ def test_node_workspace_projection_is_flow_run_scoped(
         first_runtime_path = "/runtime/workspace/project/nodes/one/sessions/first/1/first.txt"
         second_runtime_path = "/runtime/workspace/project/nodes/two/sessions/second/1/second.txt"
         assert first_runtime_path in paths
-        assert second_runtime_path in paths
+        assert second_runtime_path not in paths
         content, _content_type, filename = flow_node_workspace.read_file(
             db,
             flow_run_id=flow_run_id,
@@ -455,53 +464,17 @@ def test_node_workspace_projection_is_flow_run_scoped(
         )
         assert content == b"first"
         assert filename == "first.txt"
-        content, _content_type, filename = flow_node_workspace.read_file(
-            db,
-            flow_run_id=flow_run_id,
-            attempt_id=first_attempt_id,
-            binding_id=None,
-            work_directory_id=None,
-            path=second_runtime_path,
-        )
-        assert content == b"second"
-        assert filename == "second.txt"
-
         directory = work_directories.create_flow_run_work_directory(
             db, flow_run_id, "节点一目录", ("nodes/one",)
         )
-        scoped = flow_node_workspace.details(
-            db,
-            flow_run_id=flow_run_id,
-            attempt_id=first_attempt_id,
-            work_directory_id=str(directory["id"]),
-        )
-        scoped_paths = {item["path"] for item in scoped["files"]}
-        assert first_runtime_path in scoped_paths
-        assert second_runtime_path not in scoped_paths
-        with pytest.raises(DomainError) as outside_scope:
-            flow_node_workspace.read_file(
-                db,
-                flow_run_id=flow_run_id,
-                attempt_id=first_attempt_id,
-                binding_id=None,
-                work_directory_id=str(directory["id"]),
-                path=second_runtime_path,
-            )
-        assert outside_scope.value.code == "FLOW_RUN_WORKSPACE_PATH_INVALID"
-
-        # Immutable database selection is not sufficient by itself: reject a
-        # later filesystem swap that turns the selected directory into a link.
-        selected_root = project_root / "nodes" / "one"
-        selected_root.rename(project_root / "nodes" / "one-original")
-        selected_root.symlink_to(project_root / "nodes" / "two", target_is_directory=True)
-        with pytest.raises(DomainError) as replaced_by_link:
+        with pytest.raises(DomainError) as fixed_directory:
             flow_node_workspace.details(
                 db,
                 flow_run_id=flow_run_id,
                 attempt_id=first_attempt_id,
                 work_directory_id=str(directory["id"]),
             )
-        assert replaced_by_link.value.code == "AGENT_WORK_DIRECTORY_PATH_NOT_DIRECTORY"
+        assert fixed_directory.value.code == "NODE_WORK_DIRECTORY_FIXED"
 
 
 def test_flow_run_creation_resolves_the_node_host_once(

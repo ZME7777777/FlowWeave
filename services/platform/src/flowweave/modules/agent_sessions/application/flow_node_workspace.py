@@ -73,6 +73,13 @@ def _scope(
     binding_id: str | None,
     work_directory_id: str | None,
 ) -> tuple[str, dict[str, Any] | None, tuple[str, ...]]:
+    host = resolve_flow_node_session_host(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        require_start_permission=False,
+    )
+    attempt_root = host.session.working_directory
     if binding_id and work_directory_id:
         raise DomainError("FLOW_RUN_WORKSPACE_SCOPE_AMBIGUOUS", "不能同时指定会话与工作区", 422)
     if binding_id:
@@ -83,7 +90,8 @@ def _scope(
             binding_id=binding_id,
         )
         if binding.work_directory_version_id is None:
-            return str(_RUNTIME_PROJECT), None, (str(_RUNTIME_PROJECT),)
+            working_directory = binding.working_directory or attempt_root
+            return working_directory, None, (working_directory,)
         version = db.get(AgentWorkDirectoryVersion, binding.work_directory_version_id)
         directory = (
             db.get(AgentWorkDirectory, version.work_directory_id) if version is not None else None
@@ -105,21 +113,8 @@ def _scope(
         roots = tuple(str(_RUNTIME_PROJECT / path) for path in paths)
         return binding.working_directory or str(_RUNTIME_PROJECT), details, roots
     if work_directory_id:
-        details = agent_workspace_host.get_flow_run_work_directory(
-            db, flow_run_id, work_directory_id
-        )
-        if details["state"] != "ACTIVE":
-            raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
-        _, working_directory = agent_workspace_host.flow_run_conversation_work_directory_context(
-            db, flow_run_id, work_directory_id
-        )
-        paths = tuple(details["current_version"]["selected_paths"])
-        return (
-            working_directory,
-            details,
-            tuple(str(_RUNTIME_PROJECT / path) for path in paths),
-        )
-    return str(_RUNTIME_PROJECT), None, (str(_RUNTIME_PROJECT),)
+        raise DomainError("NODE_WORK_DIRECTORY_FIXED", "节点会话固定使用当前 Attempt 工作目录", 409)
+    return attempt_root, None, (attempt_root,)
 
 
 def _runtime_path(project_root: Path, candidate: Path) -> str:
