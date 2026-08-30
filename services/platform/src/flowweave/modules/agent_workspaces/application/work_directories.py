@@ -16,8 +16,10 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkDirectoryVersion,
     AgentWorkspace,
 )
+from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
+from flowweave.shared.models import FlowRun
 from flowweave.shared.settings import get_settings
 
 _RUNTIME_PROJECT_ROOT = PurePosixPath("/runtime/workspace/project")
@@ -37,6 +39,21 @@ def _directory(
     query = select(AgentWorkDirectory).where(
         AgentWorkDirectory.id == work_directory_id,
         AgentWorkDirectory.workspace_id == workspace_id,
+    )
+    if lock:
+        query = query.with_for_update()
+    item = db.scalar(query)
+    if item is None:
+        raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作目录不存在", 404)
+    return item
+
+
+def _flow_run_directory(
+    db: Session, flow_run_id: str, work_directory_id: str, *, lock: bool = False
+) -> AgentWorkDirectory:
+    query = select(AgentWorkDirectory).where(
+        AgentWorkDirectory.id == work_directory_id,
+        AgentWorkDirectory.flow_run_id == flow_run_id,
     )
     if lock:
         query = query.with_for_update()
@@ -100,13 +117,9 @@ def _canonical_relative_path(value: str) -> PurePosixPath:
     return relative
 
 
-def _validate_paths(db: Session, workspace_id: str, values: tuple[str, ...]) -> tuple[str, ...]:
+def _validated_relative_paths(values: tuple[str, ...], project_root: Path) -> tuple[str, ...]:
     if not values:
-        raise DomainError(
-            "AGENT_WORK_DIRECTORY_PATH_REQUIRED",
-            "至少选择一个项目根子目录",
-            422,
-        )
+        raise DomainError("AGENT_WORK_DIRECTORY_PATH_REQUIRED", "至少选择一个项目根子目录", 422)
     if len(values) > 20:
         raise DomainError(
             "AGENT_WORK_DIRECTORY_PATH_LIMIT_EXCEEDED",
@@ -116,9 +129,7 @@ def _validate_paths(db: Session, workspace_id: str, values: tuple[str, ...]) -> 
     paths = tuple(_canonical_relative_path(value) for value in values)
     if len(set(paths)) != len(paths):
         raise DomainError(
-            "AGENT_WORK_DIRECTORY_PATH_DUPLICATE",
-            "工作目录不能重复选择同一路径",
-            422,
+            "AGENT_WORK_DIRECTORY_PATH_DUPLICATE", "工作目录不能重复选择同一路径", 422
         )
     ordered = sorted(paths, key=lambda item: (len(item.parts), item.parts))
     for index, parent in enumerate(ordered):
@@ -130,8 +141,6 @@ def _validate_paths(db: Session, workspace_id: str, values: tuple[str, ...]) -> 
                     422,
                     {"parent": parent.as_posix(), "child": child.as_posix()},
                 )
-
-    project_root = _project_root(db, workspace_id)
     for relative in paths:
         current = project_root
         for part in relative.parts:
@@ -153,6 +162,22 @@ def _validate_paths(db: Session, workspace_id: str, values: tuple[str, ...]) -> 
                     {"path": relative.as_posix()},
                 )
     return tuple(path.as_posix() for path in paths)
+
+
+def _validate_paths(db: Session, workspace_id: str, values: tuple[str, ...]) -> tuple[str, ...]:
+    return _validated_relative_paths(values, _project_root(db, workspace_id))
+
+
+def _flow_run_root(db: Session, flow_run_id: str) -> Path:
+    if db.get(FlowRun, flow_run_id) is None:
+        raise not_found("flow_run", flow_run_id)
+    return sandboxes.flow_run_workspace_project_path(flow_run_id)
+
+
+def _validate_flow_run_paths(
+    db: Session, flow_run_id: str, values: tuple[str, ...]
+) -> tuple[str, ...]:
+    return _validated_relative_paths(values, _flow_run_root(db, flow_run_id))
 
 
 def _display_name(value: str) -> str:
@@ -178,6 +203,21 @@ def _assert_name_available(
     if db.scalar(query) is not None:
         raise DomainError(
             "AGENT_WORK_DIRECTORY_NAME_CONFLICT", "当前工作空间已存在同名工作目录", 409
+        )
+
+
+def _assert_flow_run_name_available(
+    db: Session, flow_run_id: str, display_name: str, *, exclude_id: str | None = None
+) -> None:
+    query = select(AgentWorkDirectory.id).where(
+        AgentWorkDirectory.flow_run_id == flow_run_id,
+        AgentWorkDirectory.display_name == display_name,
+    )
+    if exclude_id is not None:
+        query = query.where(AgentWorkDirectory.id != exclude_id)
+    if db.scalar(query) is not None:
+        raise DomainError(
+            "AGENT_WORK_DIRECTORY_NAME_CONFLICT", "当前 FlowRun 已存在同名工作目录", 409
         )
 
 
@@ -381,13 +421,86 @@ def archive_work_directory(db: Session, workspace_id: str, work_directory_id: st
     db.flush()
 
 
+def list_flow_run_work_directories(db: Session, flow_run_id: str) -> dict[str, Any]:
+    _flow_run_root(db, flow_run_id)
+    items = db.scalars(
+        select(AgentWorkDirectory)
+        .where(
+            AgentWorkDirectory.flow_run_id == flow_run_id,
+            AgentWorkDirectory.state == "ACTIVE",
+        )
+        .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
+    )
+    return {"root": root_context(), "items": [_dict(db, item) for item in items]}
+
+
+def get_flow_run_work_directory(
+    db: Session, flow_run_id: str, work_directory_id: str
+) -> dict[str, Any]:
+    _flow_run_root(db, flow_run_id)
+    return _dict(db, _flow_run_directory(db, flow_run_id, work_directory_id))
+
+
+def create_flow_run_work_directory(
+    db: Session, flow_run_id: str, display_name: str, selected_paths: tuple[str, ...]
+) -> dict[str, Any]:
+    _flow_run_root(db, flow_run_id)
+    name = _display_name(display_name)
+    _assert_flow_run_name_available(db, flow_run_id, name)
+    paths = _validate_flow_run_paths(db, flow_run_id, selected_paths)
+    item = AgentWorkDirectory(flow_run_id=flow_run_id, display_name=name)
+    db.add(item)
+    db.flush()
+    _add_version(db, item, 1, paths)
+    return _dict(db, item)
+
+
+def flow_run_conversation_context(
+    db: Session, flow_run_id: str, work_directory_id: str | None
+) -> tuple[str | None, str]:
+    _flow_run_root(db, flow_run_id)
+    if work_directory_id is None:
+        return None, _RUNTIME_PROJECT_ROOT.as_posix()
+    item = _flow_run_directory(db, flow_run_id, work_directory_id, lock=True)
+    if item.state != "ACTIVE":
+        raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
+    version = _version(db, item)
+    _validate_flow_run_paths(db, flow_run_id, _path_values(db, version.id))
+    return version.id, _working_directory(version.working_path)
+
+
+def frozen_flow_run_conversation_context(
+    db: Session, flow_run_id: str, work_directory_version_id: str
+) -> str:
+    _flow_run_root(db, flow_run_id)
+    version = db.scalar(
+        select(AgentWorkDirectoryVersion)
+        .join(
+            AgentWorkDirectory, AgentWorkDirectory.id == AgentWorkDirectoryVersion.work_directory_id
+        )
+        .where(
+            AgentWorkDirectoryVersion.id == work_directory_version_id,
+            AgentWorkDirectory.flow_run_id == flow_run_id,
+        )
+    )
+    if version is None:
+        raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
+    _validate_flow_run_paths(db, flow_run_id, _path_values(db, version.id))
+    return _working_directory(version.working_path)
+
+
 __all__ = (
     "archive_work_directory",
     "conversation_context",
     "create_work_directory",
+    "create_flow_run_work_directory",
+    "flow_run_conversation_context",
+    "frozen_flow_run_conversation_context",
     "frozen_conversation_context",
     "get_work_directory",
+    "get_flow_run_work_directory",
     "list_work_directories",
+    "list_flow_run_work_directories",
     "root_context",
     "update_work_directory",
 )

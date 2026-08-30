@@ -654,6 +654,7 @@ class ConversationCreateWrite(ApiModel):
     expected_attempt_state_version: int = Field(ge=1)
     model_name: str | None = Field(default=None, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class FlowRunConversationCreateWrite(ApiModel):
@@ -661,6 +662,7 @@ class FlowRunConversationCreateWrite(ApiModel):
     title: str | None = Field(default=None, max_length=160)
     model_name: str | None = Field(default=None, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class ConversationPatchWrite(ApiModel):

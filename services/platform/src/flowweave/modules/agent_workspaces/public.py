@@ -1,5 +1,7 @@
 """Stable public facade for the independent Agent Workspace."""
 
+from typing import Any
+
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
@@ -13,6 +15,8 @@ from flowweave.modules.agent_workspaces.application.service import (
     runtime_allocation_for_agent_workspace,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
+    AgentWorkDirectory,
+    AgentWorkDirectoryPath,
     AgentWorkDirectoryVersion,
     AgentWorkspace,
     AgentWorkspaceCapability,
@@ -44,6 +48,46 @@ def frozen_conversation_work_directory_context(
     return work_directories.frozen_conversation_context(db, workspace_id, version_id)
 
 
+def list_flow_run_work_directories(db: Session, flow_run_id: str) -> dict[str, Any]:
+    """List logical work directories owned by a FlowRun session host."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.list_flow_run_work_directories(db, flow_run_id)
+
+
+def create_flow_run_work_directory(
+    db: Session, flow_run_id: str, display_name: str, selected_paths: tuple[str, ...]
+) -> dict[str, Any]:
+    """Create a logical work directory for a FlowRun session host."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.create_flow_run_work_directory(
+        db, flow_run_id, display_name, selected_paths
+    )
+
+
+def get_flow_run_work_directory(
+    db: Session, flow_run_id: str, work_directory_id: str
+) -> dict[str, Any]:
+    """Return one FlowRun-owned logical work directory."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.get_flow_run_work_directory(db, flow_run_id, work_directory_id)
+
+
+def flow_run_conversation_work_directory_context(
+    db: Session, flow_run_id: str, work_directory_id: str | None
+) -> tuple[str | None, str]:
+    """Freeze a FlowRun-owned directory selection for a new session."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    return work_directories.flow_run_conversation_context(db, flow_run_id, work_directory_id)
+
+
 def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: str) -> None:
     """Remove only attachment files owned by one shared session locator."""
 
@@ -51,16 +95,23 @@ def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: 
 
     workspace.delete_bound_attachment_files(db, workspace_id, binding_id)
 
+
 __all__ = (
     "agent_workspace_owner_is_active",
+    "AgentWorkDirectory",
+    "AgentWorkDirectoryPath",
     "AgentWorkDirectoryVersion",
     "AgentWorkspace",
     "AgentWorkspaceCapability",
     "AgentWorkspaceRuntime",
     "conversation_work_directory_context",
+    "create_flow_run_work_directory",
     "delete_session_attachment_files",
     "ensure_default_agent_workspace",
     "frozen_conversation_work_directory_context",
+    "flow_run_conversation_work_directory_context",
+    "get_flow_run_work_directory",
+    "list_flow_run_work_directories",
     "mark_agent_workspace_runtime_lost",
     "process_agent_workspace_runtime",
     "process_agent_conversation_title",

@@ -160,14 +160,24 @@ class AgentWorkDirectory(Base):
         UniqueConstraint(
             "workspace_id", "display_name", name="uq_agent_work_directory_workspace_name"
         ),
+        UniqueConstraint(
+            "flow_run_id", "display_name", name="uq_agent_work_directory_flow_run_name"
+        ),
+        CheckConstraint(
+            "(workspace_id IS NOT NULL) <> (flow_run_id IS NOT NULL)",
+            name="ck_agent_work_directory_owner",
+        ),
         CheckConstraint("state IN ('ACTIVE', 'ARCHIVED')", name="ck_agent_work_directory_state"),
         CheckConstraint("current_version >= 1", name="ck_agent_work_directory_current_version"),
         CheckConstraint("row_version >= 1", name="ck_agent_work_directory_row_version"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(
+    workspace_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
+    )
+    flow_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("flow_runs.id", ondelete="CASCADE"), index=True
     )
     display_name: Mapped[str] = mapped_column(String(160))
     state: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)

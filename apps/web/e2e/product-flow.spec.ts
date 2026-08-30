@@ -1705,15 +1705,18 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
     `/flow-runs/${createdRun.id}/nodes/[^/]+/attempts/[^/]+/agent-sessions/${nodeSession.id}$`,
   );
   await expect(page).toHaveURL(nodeSessionUrl);
-  await expect(page.getByRole('heading', { name: 'Agent 会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'FlowRun 会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation').getByRole('button', { name: '流程运行' })).toHaveClass(/active/);
+  await expect(page.getByRole('navigation').getByRole('button', { name: 'Agent 会话' })).not.toHaveClass(/active/);
+  await expect(page.getByRole('button', { name: '返回节点执行' })).toBeVisible();
   await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '新增工作区' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '新增工作区' })).toBeVisible();
   await expect(page.locator('.agent-workbench-rail-footer')).toHaveCount(0);
   await expect(page.getByLabel('添加附件')).toHaveCount(0);
   await page.reload();
   await expect(page).toHaveURL(nodeSessionUrl);
-  await expect(page.getByRole('heading', { name: 'Agent 会话', exact: true })).toBeVisible();
-  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'FlowRun 会话', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '返回节点执行' }).click();
   await expect(page.locator('.attempt-control')).toBeVisible();
 
   const attemptControl = page.locator('.attempt-control');

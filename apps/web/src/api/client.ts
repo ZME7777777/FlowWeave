@@ -495,8 +495,8 @@ export const nodeSessionApi = {
   host: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionHostDetails>(`${nodeSessionBase(flowRunId, attemptId)}/host`),
   runtime: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionRuntime>(`${nodeSessionBase(flowRunId, attemptId)}/runtime`),
   conversations: (flowRunId: string, attemptId: string) => request<import('../types').AgentConversation[]>(nodeSessionBase(flowRunId, attemptId)),
-  create: (flowRunId: string, attemptId: string, title?: string, model_name?: string, reasoning_effort?: string | null, idempotencyKey = randomId()) =>
-    request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_name, reasoning_effort }, idempotencyKey)),
+  create: (flowRunId: string, attemptId: string, title?: string, model_name?: string, reasoning_effort?: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
+    request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string) =>
@@ -513,11 +513,20 @@ export const nodeSessionApi = {
     request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   resume: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/resume`, json('POST')),
-  workspace: (flowRunId: string, attemptId: string, bindingId?: string) =>
-    request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : ''}`),
-  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, download = false) => {
+  workDirectories: (flowRunId: string, attemptId: string) =>
+    request<import('../types').AgentSessionWorkDirectoryList>(`${nodeSessionBase(flowRunId, attemptId)}/work-directories`),
+  createWorkDirectory: (flowRunId: string, attemptId: string, display_name: string, selected_paths: string[]) =>
+    request<import('../types').AgentSessionWorkDirectory>(`${nodeSessionBase(flowRunId, attemptId)}/work-directories`, json('POST', { display_name, selected_paths })),
+  workspace: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams();
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${query.size ? `?${query}` : ''}`);
+  },
+  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, download = false) => {
     const query = new URLSearchParams({ path });
     if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (download) query.set('download', 'true');
     return `${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/workspace/file?${query}`;
   },

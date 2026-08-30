@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
@@ -38,6 +39,12 @@ class NodeSessionCreateWrite(_Write):
     title: str | None = Field(default=None, max_length=160)
     model_name: str | None = Field(default=None, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+
+class FlowRunWorkDirectoryCreateWrite(_Write):
+    display_name: str = Field(min_length=1, max_length=160)
+    selected_paths: list[str] = Field(min_length=1, max_length=20)
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -133,6 +140,7 @@ async def create_node_session(
             title=payload.title,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
+            work_directory_id=payload.work_directory_id,
             idempotency_key=_key(idempotency_key, "create-node-agent-session", attempt_id),
         )
         return agent_sessions.flow_node_conversations.get_node_session_view(
@@ -140,6 +148,94 @@ async def create_node_session(
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=str(created["id"]),
+        )
+
+    return await run_sync(db, create)
+
+
+@router.get(f"{_BASE}/workspace")
+async def node_session_workspace(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.details(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/workspace/file")
+async def node_session_workspace_file(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+    download: bool = Query(default=False),
+) -> Response:
+    content, content_type, filename = await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.read_file(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+            path=path,
+        ),
+    )
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+@router.get(f"{_BASE}/work-directories")
+async def list_flow_run_work_directories(
+    flow_run_id: str, attempt_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: (
+            agent_sessions.resolve_flow_node_session_host(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                require_start_permission=False,
+            ),
+            agent_workspace_host.list_flow_run_work_directories(session, flow_run_id),
+        )[1],
+    )
+
+
+@router.post(f"{_BASE}/work-directories", status_code=201)
+async def create_flow_run_work_directory(
+    flow_run_id: str,
+    attempt_id: str,
+    payload: FlowRunWorkDirectoryCreateWrite,
+    db: Db,
+) -> dict[str, Any]:
+    def create(session: Any) -> dict[str, Any]:
+        agent_sessions.resolve_flow_node_session_host(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            require_start_permission=False,
+        )
+        return agent_workspace_host.create_flow_run_work_directory(
+            session, flow_run_id, payload.display_name, tuple(payload.selected_paths)
         )
 
     return await run_sync(db, create)
@@ -181,51 +277,6 @@ async def patch_node_session(
         )
 
     return await run_sync(db, patch)
-
-
-@router.get(f"{_BASE}/workspace")
-async def node_session_workspace(
-    flow_run_id: str,
-    attempt_id: str,
-    db: Db,
-    binding_id: str | None = Query(default=None),
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: agent_sessions.flow_node_workspace.details(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-        ),
-    )
-
-
-@router.get(f"{_BASE}/workspace/file")
-async def node_session_workspace_file(
-    flow_run_id: str,
-    attempt_id: str,
-    db: Db,
-    path: str = Query(...),
-    binding_id: str | None = Query(default=None),
-    download: bool = Query(default=False),
-) -> Response:
-    content, content_type, filename = await run_sync(
-        db,
-        lambda session: agent_sessions.flow_node_workspace.read_file(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-            path=path,
-        ),
-    )
-    disposition = "attachment" if download else "inline"
-    return Response(
-        content=content,
-        media_type=content_type,
-        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
-    )
 
 
 @router.get(f"{_BASE}/{{binding_id}}/events")
@@ -415,14 +466,20 @@ async def node_session_terminal(
             rows, columns = 24, 80
         async with container.database.session() as db:
             try:
-                resource_name, runtime_id, environment_id = await db.run_sync(
+                resource_name, runtime_id, environment_id, working_directory = await db.run_sync(
                     lambda session: (
-                        agent_sessions.flow_node_conversations.node_terminal_resource_details(
+                        *agent_sessions.flow_node_conversations.node_terminal_resource_details(
                             session,
                             flow_run_id=flow_run_id,
                             attempt_id=attempt_id,
                             binding_id=binding_id,
-                        )
+                        ),
+                        agent_sessions.flow_node_workspace.conversation_working_directory(
+                            session,
+                            flow_run_id=flow_run_id,
+                            attempt_id=attempt_id,
+                            binding_id=binding_id,
+                        ),
                     )
                 )
             except DomainError as exc:
@@ -434,6 +491,7 @@ async def node_session_terminal(
             resource_id=runtime_id,
             environment_id=environment_id,
             session_name=f"flowweave-node-{binding_id}",
+            working_dir=working_directory,
             rows=rows,
             columns=columns,
         )

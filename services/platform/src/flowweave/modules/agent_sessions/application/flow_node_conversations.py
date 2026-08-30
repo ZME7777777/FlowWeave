@@ -20,6 +20,7 @@ from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
 )
+from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_snapshot_memory
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
@@ -39,6 +40,7 @@ from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
+    AgentWorkDirectoryVersion,
     ArtifactVersion,
     AttemptInputBinding,
     FlowRun,
@@ -128,12 +130,12 @@ def _binding_for_attempt(
     binding_id: str,
     lock: bool = False,
 ) -> AgentConversationBinding:
-    """Load a shared binding through one node-Attempt authorization scope."""
+    """Authorize the node entry, then load the FlowRun-owned session."""
 
-    item = _binding_for_run(db, flow_run_id, binding_id, lock=lock)
-    if item.node_attempt_id != attempt_id:
-        raise not_found("agent_session", binding_id)
-    return item
+    agent_sessions.resolve_flow_node_session_host(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
+    )
+    return _binding_for_run(db, flow_run_id, binding_id, lock=lock)
 
 
 def node_conversation_binding(
@@ -173,6 +175,15 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
     session model merely because its host lineage differs.
     """
 
+    work_directory_id = (
+        db.scalar(
+            select(AgentWorkDirectoryVersion.work_directory_id).where(
+                AgentWorkDirectoryVersion.id == item.work_directory_version_id
+            )
+        )
+        if item.work_directory_version_id
+        else None
+    )
     return {
         "id": item.id,
         "display_title": item.display_title,
@@ -180,11 +191,8 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         "model_provider_id": item.model_provider_id,
         "model_name": item.model_name,
         "reasoning_effort": item.reasoning_effort,
-        "work_directory_version_id": None,
-        # A FlowRun Attempt directory is frozen by its lineage, rather than
-        # by an Agent Workspace directory record.  Its stable id is the
-        # authorized node-attempt identity.
-        "work_directory_id": item.node_attempt_id,
+        "work_directory_version_id": item.work_directory_version_id,
+        "work_directory_id": work_directory_id,
         "working_directory": item.working_directory,
         "capabilities": [
             {
@@ -216,16 +224,17 @@ def node_host_details(db: Session, *, flow_run_id: str, attempt_id: str) -> dict
     host path.  The attempt id is the only host id a node Workbench needs.
     """
 
-    host = agent_sessions.resolve_flow_node_session_host(
+    agent_sessions.resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         require_start_permission=False,
     )
     overview = sandboxes.runtime_overview(db, flow_run_id)
+    run = db.get(FlowRun, flow_run_id)
     return {
-        "id": host.attempt_id,
-        "display_name": str(host.node.get("asset", {}).get("name") or "节点会话"),
+        "id": flow_run_id,
+        "display_name": f"{run.name if run else 'FlowRun'} 会话",
         "default_model_provider_id": None,
         "desired_state": "RUNNING" if overview["write_available"] else "MAINTENANCE",
         "updated_at": now().isoformat(),
@@ -257,7 +266,7 @@ def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> di
 def list_node_session_views(
     db: Session, *, flow_run_id: str, attempt_id: str
 ) -> list[dict[str, Any]]:
-    """List one Attempt's sessions in the shared Workbench response shape."""
+    """List all sessions owned by the FlowRun reached through this node."""
 
     agent_sessions.resolve_flow_node_session_host(
         db,
@@ -270,7 +279,6 @@ def list_node_session_views(
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
-            AgentConversationBinding.node_attempt_id == attempt_id,
             AgentConversationBinding.lifecycle != "DELETED",
         )
         .order_by(AgentConversationBinding.created_at)
@@ -308,7 +316,7 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
 def list_node_conversations(
     db: Session, *, flow_run_id: str, attempt_id: str
 ) -> list[dict[str, Any]]:
-    """List sessions only for the route's verified node Attempt."""
+    """List FlowRun-owned sessions through one verified node entry."""
 
     agent_sessions.resolve_flow_node_session_host(
         db,
@@ -321,7 +329,6 @@ def list_node_conversations(
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
-            AgentConversationBinding.node_attempt_id == attempt_id,
         )
         .order_by(AgentConversationBinding.created_at)
     )
@@ -452,6 +459,8 @@ def _create_native_conversation(
     binding_id: str,
     node_run_id: str | None = None,
     attempt_id: str | None = None,
+    work_directory_version_id: str | None = None,
+    runtime_working_directory: str | None = None,
 ) -> dict[str, Any]:
     if run.state in {"COMPLETED", "CANCELLED"}:
         raise DomainError(
@@ -503,7 +512,15 @@ def _create_native_conversation(
             materialize_runtime_memory(
                 flow_run_id=run.id,
                 manifest_digest=snapshot.runtime_manifest_hash,
-                workspace_ref=workspace_ref,
+                workspace_ref=(
+                    str(
+                        sandboxes.flow_run_workspace_project_path(run.id).joinpath(
+                            *PurePosixPath(runtime_working_directory or str(_RUNTIME_PROJECT))
+                            .relative_to(_RUNTIME_PROJECT)
+                            .parts
+                        )
+                    )
+                ),
                 materials=materials,
             )
     request = build_runtime_request(
@@ -527,6 +544,7 @@ def _create_native_conversation(
     connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
     request = replace(
         request,
+        workspace_ref=runtime_working_directory or _runtime_working_directory(request),
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
@@ -540,7 +558,8 @@ def _create_native_conversation(
         binding_id=binding_id,
         node_run_id=node_run_id,
         node_attempt_id=attempt_id,
-        working_directory=_runtime_working_directory(request),
+        working_directory=runtime_working_directory or _runtime_working_directory(request),
+        work_directory_version_id=work_directory_version_id,
     )
     db.add(
         HumanAction(
@@ -608,6 +627,11 @@ def create_conversation(
             instance_key=node_run.flow_node_snapshot_key,
         )
         workspace_ref = attempt.workspace_ref or ""
+    work_directory_version_id, runtime_working_directory = (
+        agent_workspace_host.flow_run_conversation_work_directory_context(
+            db, run.id, payload.work_directory_id
+        )
+    )
     request_owner_id = str(uuid4())
     return _create_native_conversation(
         db,
@@ -623,6 +647,8 @@ def create_conversation(
         binding_id=request_owner_id,
         node_run_id=node_run.id,
         attempt_id=attempt.id,
+        work_directory_version_id=work_directory_version_id,
+        runtime_working_directory=runtime_working_directory,
     )
 
 
@@ -655,6 +681,7 @@ def create_flow_run_conversation(
             expected_attempt_state_version=attempt.state_version,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
+            work_directory_id=payload.work_directory_id,
         ),
         idempotency_key,
         host=host,
@@ -669,6 +696,7 @@ def create_node_conversation(
     title: str | None,
     model_name: str | None,
     reasoning_effort: str | None,
+    work_directory_id: str | None,
     idempotency_key: str,
 ) -> dict[str, Any]:
     """Create through the node-host route contract."""
@@ -681,6 +709,7 @@ def create_node_conversation(
             title=title,
             model_name=model_name,
             reasoning_effort=reasoning_effort,
+            work_directory_id=work_directory_id,
         ),
         idempotency_key,
     )

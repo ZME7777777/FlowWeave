@@ -1,9 +1,7 @@
-"""Read-only node-Attempt workspace projection for shared Agent sessions.
+"""FlowRun-owned workspace projection for sessions entered from a node.
 
-FlowRun Runtime allocations are host paths, whereas OpenHands and the browser
-address the mounted project as ``/runtime/workspace/project``.  This adapter
-proves that mapping from the server-owned Attempt record and never accepts a
-host path from the caller.
+The node Attempt authorizes the browser entry only. Files and logical work
+directories belong to the FlowRun and remain shared by every node entry.
 """
 
 from __future__ import annotations
@@ -14,184 +12,307 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import flow_node_conversations
 from flowweave.modules.agent_sessions.application.flow_node_host import (
     resolve_flow_node_session_host,
 )
+from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import NodeAttempt
 
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _MAX_INDEX_ENTRIES = 20_000
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 
+AgentWorkDirectory = agent_workspace_host.AgentWorkDirectory
+AgentWorkDirectoryPath = agent_workspace_host.AgentWorkDirectoryPath
+AgentWorkDirectoryVersion = agent_workspace_host.AgentWorkDirectoryVersion
 
-def _attempt_workspace(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None
-) -> tuple[NodeAttempt, Path, Path, PurePosixPath]:
-    """Resolve the immutable Attempt directory and its Runtime-relative path."""
 
-    host = resolve_flow_node_session_host(
+def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
+    resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         require_start_permission=False,
     )
-    if binding_id is not None:
-        flow_node_conversations.node_conversation_binding(
+    root = sandboxes.flow_run_workspace_project_path(flow_run_id)
+    try:
+        metadata = root.lstat()
+        resolved = root.resolve(strict=True)
+    except OSError as exc:
+        raise DomainError(
+            "FLOW_RUN_WORKSPACE_UNAVAILABLE", "FlowRun 工作区当前不可用", 503
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise DomainError("FLOW_RUN_WORKSPACE_INVALID", "FlowRun 工作区不是普通目录", 409)
+    return resolved
+
+
+def _version_paths(db: Session, version_id: str) -> tuple[str, ...]:
+    paths = tuple(
+        db.scalars(
+            select(AgentWorkDirectoryPath.relative_path)
+            .where(AgentWorkDirectoryPath.version_id == version_id)
+            .order_by(AgentWorkDirectoryPath.position)
+        )
+    )
+    if not paths:
+        raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
+    return paths
+
+
+def _scope(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None,
+    work_directory_id: str | None,
+) -> tuple[str, dict[str, Any] | None, tuple[str, ...]]:
+    if binding_id and work_directory_id:
+        raise DomainError("FLOW_RUN_WORKSPACE_SCOPE_AMBIGUOUS", "不能同时指定会话与工作区", 422)
+    if binding_id:
+        binding = flow_node_conversations.node_conversation_binding(
             db,
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=binding_id,
         )
-    attempt = db.get(NodeAttempt, host.attempt_id)
-    if attempt is None or not attempt.workspace_ref:
-        raise DomainError(
-            "NODE_WORKSPACE_REQUIRED", "The node Attempt has no isolated workspace", 409
+        if binding.work_directory_version_id is None:
+            return str(_RUNTIME_PROJECT), None, (str(_RUNTIME_PROJECT),)
+        version = db.get(AgentWorkDirectoryVersion, binding.work_directory_version_id)
+        directory = (
+            db.get(AgentWorkDirectory, version.work_directory_id) if version is not None else None
         )
-    project_root = sandboxes.flow_run_workspace_project_path(flow_run_id)
-    try:
-        root_metadata = project_root.lstat()
-        attempt_root = Path(attempt.workspace_ref)
-        attempt_metadata = attempt_root.lstat()
-        resolved_project = project_root.resolve(strict=True)
-        resolved_attempt = attempt_root.resolve(strict=True)
-    except OSError as exc:
-        raise DomainError(
-            "NODE_WORKSPACE_UNAVAILABLE", "The node workspace is unavailable", 503
-        ) from exc
-    if (
-        stat.S_ISLNK(root_metadata.st_mode)
-        or not stat.S_ISDIR(root_metadata.st_mode)
-        or stat.S_ISLNK(attempt_metadata.st_mode)
-        or not stat.S_ISDIR(attempt_metadata.st_mode)
-        or not resolved_attempt.is_relative_to(resolved_project)
-    ):
-        raise DomainError(
-            "NODE_WORKSPACE_INVALID", "The node workspace is outside its FlowRun allocation", 409
+        if version is None or directory is None or directory.flow_run_id != flow_run_id:
+            raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
+        paths = _version_paths(db, version.id)
+        details = {
+            "id": directory.id,
+            "display_name": directory.display_name,
+            "state": directory.state,
+            "current_version": {
+                "id": version.id,
+                "version": version.version,
+                "selected_paths": list(paths),
+                "working_directory": binding.working_directory or str(_RUNTIME_PROJECT),
+            },
+        }
+        roots = tuple(str(_RUNTIME_PROJECT / path) for path in paths)
+        return binding.working_directory or str(_RUNTIME_PROJECT), details, roots
+    if work_directory_id:
+        details = agent_workspace_host.get_flow_run_work_directory(
+            db, flow_run_id, work_directory_id
         )
-    relative = resolved_attempt.relative_to(resolved_project)
-    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
-        raise DomainError("NODE_WORKSPACE_INVALID", "The node workspace layout is invalid", 409)
-    return attempt, resolved_project, resolved_attempt, PurePosixPath(*relative.parts)
+        if details["state"] != "ACTIVE":
+            raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
+        _, working_directory = agent_workspace_host.flow_run_conversation_work_directory_context(
+            db, flow_run_id, work_directory_id
+        )
+        paths = tuple(details["current_version"]["selected_paths"])
+        return (
+            working_directory,
+            details,
+            tuple(str(_RUNTIME_PROJECT / path) for path in paths),
+        )
+    return str(_RUNTIME_PROJECT), None, (str(_RUNTIME_PROJECT),)
 
 
-def _runtime_path(relative: PurePosixPath) -> str:
-    return str(_RUNTIME_PROJECT.joinpath(relative))
+def _runtime_path(project_root: Path, candidate: Path) -> str:
+    relative = candidate.relative_to(project_root)
+    return str(_RUNTIME_PROJECT.joinpath(*relative.parts))
 
 
-def _host_file(*, project_root: Path, attempt_root: Path, path: str, require_file: bool) -> Path:
-    candidate_path = PurePosixPath(path)
+def _validate_scope_roots(project_root: Path, roots: tuple[str, ...]) -> None:
+    """Revalidate frozen directory paths against the mutable project tree.
+
+    A directory was safe when its immutable version was created, but a later
+    filesystem mutation must not turn it into a symlink to another scope.
+    """
+
+    for runtime_root in roots:
+        parsed = PurePosixPath(runtime_root)
+        if (
+            not parsed.is_absolute()
+            or not parsed.is_relative_to(_RUNTIME_PROJECT)
+            or parsed.as_posix() != runtime_root
+            or any(part in {"", ".", ".."} for part in parsed.parts)
+        ):
+            raise DomainError(
+                "FLOW_RUN_WORKSPACE_PATH_INVALID",
+                "工作区目录不在 FlowRun 项目范围内",
+                409,
+            )
+        current = project_root
+        for part in parsed.relative_to(_RUNTIME_PROJECT).parts:
+            current = current / part
+            try:
+                metadata = current.lstat()
+            except OSError as exc:
+                raise DomainError(
+                    "FLOW_RUN_WORKSPACE_UNAVAILABLE",
+                    "工作区目录当前不可用",
+                    409,
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise DomainError(
+                    "FLOW_RUN_WORKSPACE_PATH_INVALID",
+                    "工作区目录不能经过符号链接且必须是普通目录",
+                    409,
+                )
+
+
+def _entries(project_root: Path, roots: tuple[str, ...]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for runtime_root in roots:
+        relative = PurePosixPath(runtime_root).relative_to(_RUNTIME_PROJECT)
+        host_root = project_root.joinpath(*relative.parts)
+        if host_root != project_root:
+            items.append({"path": runtime_root, "kind": "directory", "size": 0})
+        for current, directories, files in os.walk(host_root, followlinks=False):
+            current_path = Path(current)
+            directories[:] = sorted(
+                name
+                for name in directories
+                if not name.startswith(".") and not (current_path / name).is_symlink()
+            )
+            for name, kind in (
+                *((name, "directory") for name in directories),
+                *((name, "file") for name in sorted(files) if not name.startswith(".")),
+            ):
+                candidate = current_path / name
+                try:
+                    metadata = candidate.lstat()
+                except OSError:
+                    continue
+                if stat.S_ISLNK(metadata.st_mode):
+                    continue
+                items.append(
+                    {
+                        "path": _runtime_path(project_root, candidate),
+                        "kind": kind,
+                        "size": metadata.st_size if kind == "file" else 0,
+                    }
+                )
+                if len(items) >= _MAX_INDEX_ENTRIES:
+                    return items
+    return items
+
+
+def _host_file(project_root: Path, path: str, roots: tuple[str, ...]) -> Path:
+    parsed = PurePosixPath(path)
     if (
-        not candidate_path.is_absolute()
-        or not candidate_path.is_relative_to(_RUNTIME_PROJECT)
-        or candidate_path.as_posix() != path
-        or any(part in {"", ".", ".."} or part.startswith(".") for part in candidate_path.parts)
+        not parsed.is_absolute()
+        or not parsed.is_relative_to(_RUNTIME_PROJECT)
+        or parsed.as_posix() != path
+        or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+        or not any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
     ):
-        raise DomainError("NODE_WORKSPACE_PATH_INVALID", "文件路径不在节点工作目录范围内", 422)
-    relative = candidate_path.relative_to(_RUNTIME_PROJECT)
+        raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "文件路径不在当前工作区范围内", 422)
+    relative = parsed.relative_to(_RUNTIME_PROJECT)
     candidate = project_root.joinpath(*relative.parts)
     try:
         metadata = candidate.lstat()
         resolved = candidate.resolve(strict=True)
     except OSError as exc:
-        raise DomainError("NODE_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
+        raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
+    authorized_roots: list[Path] = []
+    try:
+        for root in roots:
+            root_relative = PurePosixPath(root).relative_to(_RUNTIME_PROJECT)
+            authorized_roots.append(
+                project_root.joinpath(*root_relative.parts).resolve(strict=True)
+            )
+    except (OSError, ValueError) as exc:
+        raise DomainError(
+            "FLOW_RUN_WORKSPACE_PATH_INVALID",
+            "工作区目录当前不可用",
+            409,
+        ) from exc
     if (
         stat.S_ISLNK(metadata.st_mode)
-        or not resolved.is_relative_to(attempt_root)
-        or (require_file and not stat.S_ISREG(metadata.st_mode))
+        or not stat.S_ISREG(metadata.st_mode)
+        or not resolved.is_relative_to(project_root)
+        or not any(resolved.is_relative_to(root) for root in authorized_roots)
     ):
-        raise DomainError("NODE_WORKSPACE_PATH_INVALID", "文件路径不在节点工作目录范围内", 422)
+        raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "文件路径不在当前工作区范围内", 422)
     return resolved
 
 
-def _entries(
-    project_root: Path, attempt_root: Path, relative_root: PurePosixPath
-) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for current, directories, files in os.walk(attempt_root, followlinks=False):
-        current_path = Path(current)
-        directories[:] = sorted(
-            name
-            for name in directories
-            if not name.startswith(".") and not (current_path / name).is_symlink()
-        )
-        for name, kind in (
-            *((name, "directory") for name in directories),
-            *((name, "file") for name in sorted(files) if not name.startswith(".")),
-        ):
-            candidate = current_path / name
-            try:
-                metadata = candidate.lstat()
-            except OSError:
-                continue
-            if stat.S_ISLNK(metadata.st_mode):
-                continue
-            relative = candidate.relative_to(project_root)
-            items.append(
-                {
-                    "path": _runtime_path(PurePosixPath(*relative.parts)),
-                    "kind": kind,
-                    "size": metadata.st_size if kind == "file" else 0,
-                }
-            )
-            if len(items) >= _MAX_INDEX_ENTRIES:
-                return items
-    return items
-
-
 def details(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None = None
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
 ) -> dict[str, Any]:
-    """Project exactly one frozen node Attempt directory for browser tools."""
-
-    attempt, project_root, attempt_root, relative = _attempt_workspace(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    working_directory, directory, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
     )
-    working_directory = _runtime_path(relative)
+    _validate_scope_roots(project_root, roots)
+    scope = (
+        {"kind": "ROOT", "display_name": "根工作区"}
+        if directory is None
+        else {
+            "kind": "WORK_DIRECTORY",
+            "id": directory["id"],
+            "display_name": directory["display_name"],
+        }
+    )
     return {
         "root": str(_RUNTIME_PROJECT),
-        "scope": {
-            "kind": "WORK_DIRECTORY",
-            "id": attempt.id,
-            "display_name": "节点工作目录",
-        },
+        "scope": scope,
         "working_directory": working_directory,
-        "work_directory": None,
-        "files": _entries(project_root, attempt_root, relative),
+        "work_directory": directory,
+        "files": _entries(project_root, roots),
         "repositories": [],
         "runtime": {"container_id": None},
         "ide": {
             "workspace_path": working_directory,
             "gateway": {
                 "supported": False,
-                "status": "不可用",
-                "note": "节点会话仅提供已冻结目录内的文件与终端。",
+                "status": "需要部署 Gateway",
+                "note": "当前平台未配置可验证的 IDEA/Gateway 入口。",
             },
         },
     }
 
 
 def read_file(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, path: str
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None,
+    work_directory_id: str | None,
+    path: str,
 ) -> tuple[bytes, str, str]:
-    """Return one bounded regular file from the selected Attempt workspace."""
-
-    _, project_root, attempt_root, _ = _attempt_workspace(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
     )
-    candidate = _host_file(
-        project_root=project_root, attempt_root=attempt_root, path=path, require_file=True
-    )
+    _validate_scope_roots(project_root, roots)
+    candidate = _host_file(project_root, path, roots)
     try:
         content = candidate.read_bytes()
     except OSError as exc:
-        raise DomainError("NODE_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
+        raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
     if len(content) > _MAX_FILE_BYTES:
-        raise DomainError("NODE_WORKSPACE_FILE_TOO_LARGE", "文件超过预览大小限制", 422)
+        raise DomainError("FLOW_RUN_WORKSPACE_FILE_TOO_LARGE", "文件超过预览大小限制", 422)
     return (
         content,
         mimetypes.guess_type(candidate.name)[0] or "application/octet-stream",
@@ -199,4 +320,19 @@ def read_file(
     )
 
 
-__all__ = ("details", "read_file")
+def conversation_working_directory(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> str:
+    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    working_directory, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=None,
+    )
+    _validate_scope_roots(project_root, roots)
+    return working_directory
+
+
+__all__ = ("conversation_working_directory", "details", "read_file")

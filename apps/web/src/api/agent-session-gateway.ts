@@ -168,7 +168,7 @@ export function flowNodeSessionGateway(
   return {
     id: `flow-node:${flowRunId}:${attemptId}`,
     features: {
-      workDirectories: false, capabilities: false, attachments: false,
+      workDirectories: true, capabilities: false, attachments: false,
       modelSelection: false, conversationDeletion: false, fork: false,
       rewrite: false, confirmations: false, terminalRequiresConversation: true,
     },
@@ -176,10 +176,7 @@ export function flowNodeSessionGateway(
       defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: () => nodeSessionApi.conversations(flowRunId, attemptId),
-      workDirectories: async () => ({
-        root: { kind: 'ROOT', display_name: '节点工作目录', working_directory: '/runtime/workspace/project' },
-        items: [],
-      }),
+      workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: async () => [],
       capabilities: async () => [],
       hostCapabilities: async () => [],
@@ -187,11 +184,12 @@ export function flowNodeSessionGateway(
       replaceHostCapabilities: async () => unavailable('Capability replacement'),
       addConversationCapability: async () => unavailable('Conversation capability registration'),
       workspaceDetails: (_hostId, options) =>
-        nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId),
-      createWorkDirectory: async () => unavailable('Work-directory creation'),
+        nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
+      createWorkDirectory: async (_hostId, displayName, selectedPaths) =>
+        nodeSessionApi.createWorkDirectory(flowRunId, attemptId, displayName, selectedPaths),
       filePreview: async (_hostId, path, options) => {
         const response = await fetch(nodeSessionApi.file(
-          flowRunId, attemptId, path, options?.bindingId, false,
+          flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, false,
         ));
         if (!response.ok) throw new Error('Node workspace file preview is unavailable');
         return response.text();
@@ -199,9 +197,9 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, _providerId, modelName, reasoningEffort, content, _attachments, _workDirectoryId, idempotencyKey) => {
+      bootstrapConversation: async (_hostId, conversationId, _providerId, modelName, reasoningEffort, content, _attachments, workDirectoryId, idempotencyKey) => {
         const conversation = await nodeSessionApi.create(
-          flowRunId, attemptId, undefined, modelName || undefined, reasoningEffort, idempotencyKey ?? conversationId,
+          flowRunId, attemptId, undefined, modelName || undefined, reasoningEffort, idempotencyKey ?? conversationId, workDirectoryId,
         );
         const sent = content.trim()
           ? await nodeSessionApi.message(flowRunId, attemptId, conversation.id, content, idempotencyKey)
@@ -241,7 +239,7 @@ export function flowNodeSessionGateway(
       return nodeSessionApi.terminal(flowRunId, attemptId, options.bindingId, rows, columns);
     },
     fileUrl: (_hostId, path, options) =>
-      nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.download),
+      nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.download),
     subscribe: (_hostId, bindingId, onEvent, onStatus) =>
       subscribeToNodeSessionStream(flowRunId, attemptId, bindingId, onEvent, onStatus),
   };

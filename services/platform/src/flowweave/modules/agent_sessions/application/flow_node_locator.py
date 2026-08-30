@@ -31,6 +31,7 @@ def bind_openhands_conversation(
     node_run_id: str | None = None,
     node_attempt_id: str | None = None,
     working_directory: str | None = None,
+    work_directory_version_id: str | None = None,
     allow_inactive_session: bool = False,
 ) -> AgentConversationBinding:
     """Bind a FlowRun-native identity on the shared session locator."""
@@ -70,11 +71,15 @@ def bind_openhands_conversation(
             runtime_session_id=runtime_session_id,
             host_kind=_FLOW_NODE,
             host_id=flow_run_id,
-            conversation_scope_id=node_attempt_id or flow_run_id,
+            # The Attempt is durable creation provenance, not an ownership
+            # boundary. Every node entry into the same FlowRun addresses the
+            # same conversation tree.
+            conversation_scope_id=flow_run_id,
             flow_run_id=flow_run_id,
             node_run_id=node_run_id,
             node_attempt_id=node_attempt_id,
             working_directory=working_directory,
+            work_directory_version_id=work_directory_version_id,
             openhands_conversation_id=openhands_conversation_id,
             display_title=display_label,
             lifecycle="ACTIVE",

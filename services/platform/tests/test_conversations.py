@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from flowweave.modules.agent_sessions.application import flow_node_host, flow_node_workspace
 from flowweave.modules.agent_sessions.application.host import CREATE_SESSIONS, READ_SESSIONS
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
+from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.conversations.application import locator
 from flowweave.modules.conversations.application import service as conversation_service
 from flowweave.shared.errors import DomainError
@@ -321,10 +322,10 @@ def test_flow_node_host_rejects_non_startable_or_unscoped_attempts(
         assert unscoped.value.code == "NODE_WORKSPACE_REQUIRED"
 
 
-def test_node_session_scope_hides_other_attempt_bindings(
+def test_node_session_scope_shares_flow_run_bindings_across_attempt_entries(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One FlowRun's node-attempt routes never cross-list or resolve sessions."""
+    """A node Attempt authorizes entry; its FlowRun owns the shared sessions."""
 
     with db_session_factory() as db:
         flow_run_id, runtime_session_id, first_attempt_id = _node_session_context(db)
@@ -375,10 +376,10 @@ def test_node_session_scope_hides_other_attempt_bindings(
             lambda *_args, **_kwargs: SimpleNamespace(),
         )
 
-        first_items = conversation_service.list_node_conversations(
+        first_items = conversation_service.list_node_session_views(
             db, flow_run_id=flow_run_id, attempt_id=first_attempt_id
         )
-        assert [item["id"] for item in first_items] == [first_binding.id]
+        assert [item["id"] for item in first_items] == [first_binding.id, second_binding.id]
         assert (
             conversation_service.get_node_conversation(
                 db,
@@ -388,20 +389,21 @@ def test_node_session_scope_hides_other_attempt_bindings(
             )["id"]
             == first_binding.id
         )
-        with pytest.raises(DomainError) as denied:
+        assert (
             conversation_service.get_node_conversation(
                 db,
                 flow_run_id=flow_run_id,
                 attempt_id=first_attempt_id,
                 binding_id=second_binding.id,
-            )
-        assert denied.value.code == "RESOURCE_NOT_FOUND"
+            )["id"]
+            == second_binding.id
+        )
 
 
-def test_node_workspace_projection_is_attempt_scoped(
+def test_node_workspace_projection_is_flow_run_scoped(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A node host projects only its selected Attempt's regular files."""
+    """Every node entry projects the shared FlowRun project root."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
         flow_run_workspace_project_path,
@@ -443,25 +445,64 @@ def test_node_workspace_projection_is_attempt_scoped(
         first_runtime_path = "/runtime/workspace/project/nodes/one/sessions/first/1/first.txt"
         second_runtime_path = "/runtime/workspace/project/nodes/two/sessions/second/1/second.txt"
         assert first_runtime_path in paths
-        assert second_runtime_path not in paths
+        assert second_runtime_path in paths
         content, _content_type, filename = flow_node_workspace.read_file(
             db,
             flow_run_id=flow_run_id,
             attempt_id=first_attempt_id,
             binding_id=None,
+            work_directory_id=None,
             path=first_runtime_path,
         )
         assert content == b"first"
         assert filename == "first.txt"
-        with pytest.raises(DomainError) as cross_attempt:
+        content, _content_type, filename = flow_node_workspace.read_file(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=first_attempt_id,
+            binding_id=None,
+            work_directory_id=None,
+            path=second_runtime_path,
+        )
+        assert content == b"second"
+        assert filename == "second.txt"
+
+        directory = work_directories.create_flow_run_work_directory(
+            db, flow_run_id, "节点一目录", ("nodes/one",)
+        )
+        scoped = flow_node_workspace.details(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=first_attempt_id,
+            work_directory_id=str(directory["id"]),
+        )
+        scoped_paths = {item["path"] for item in scoped["files"]}
+        assert first_runtime_path in scoped_paths
+        assert second_runtime_path not in scoped_paths
+        with pytest.raises(DomainError) as outside_scope:
             flow_node_workspace.read_file(
                 db,
                 flow_run_id=flow_run_id,
                 attempt_id=first_attempt_id,
                 binding_id=None,
+                work_directory_id=str(directory["id"]),
                 path=second_runtime_path,
             )
-        assert cross_attempt.value.code == "NODE_WORKSPACE_PATH_INVALID"
+        assert outside_scope.value.code == "FLOW_RUN_WORKSPACE_PATH_INVALID"
+
+        # Immutable database selection is not sufficient by itself: reject a
+        # later filesystem swap that turns the selected directory into a link.
+        selected_root = project_root / "nodes" / "one"
+        selected_root.rename(project_root / "nodes" / "one-original")
+        selected_root.symlink_to(project_root / "nodes" / "two", target_is_directory=True)
+        with pytest.raises(DomainError) as replaced_by_link:
+            flow_node_workspace.details(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=first_attempt_id,
+                work_directory_id=str(directory["id"]),
+            )
+        assert replaced_by_link.value.code == "AGENT_WORK_DIRECTORY_PATH_NOT_DIRECTORY"
 
 
 def test_flow_run_creation_resolves_the_node_host_once(
