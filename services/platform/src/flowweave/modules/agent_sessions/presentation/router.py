@@ -40,6 +40,10 @@ class NodeSessionCreateWrite(_Write):
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
+class NodeSessionBootstrapWrite(ConversationQuestionWrite):
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+
 class FlowRunWorkDirectoryCreateWrite(_Write):
     display_name: str = Field(min_length=1, max_length=160)
     selected_paths: list[str] = Field(min_length=1, max_length=20)
@@ -147,6 +151,29 @@ async def create_node_session(
         )
 
     return await run_sync(db, create)
+
+
+@router.post(f"{_BASE}/bootstrap", status_code=201)
+async def bootstrap_node_session(
+    flow_run_id: str,
+    attempt_id: str,
+    payload: NodeSessionBootstrapWrite,
+    db: Db,
+    actor: Actor = None,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.bootstrap_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            payload=payload,
+            work_directory_id=payload.work_directory_id,
+            idempotency_key=_key(idempotency_key, "bootstrap-node-agent-session", attempt_id),
+            actor=actor,
+        ),
+    )
 
 
 @router.get(f"{_BASE}/workspace")

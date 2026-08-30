@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：无（终端视图隐藏连接保活已完成；后续发布门禁按独立切片执行）
+> 下一可执行切片：无（节点会话草稿首发与工作台一致性已完成；后续发布门禁按独立切片执行）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1449,6 +1449,16 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 验收：Web 定向 Playwright 覆盖发布中关闭/重新进入零次终端 WebSocket，以及运行中终端关闭/重新打开保持一次既有连接；受影响 Web typecheck、ESLint、production build 和 `git diff --check` 通过。本切片使用独立 Git commit。
 
+### FR-104 节点会话草稿首发与工作台一致性 — DONE
+
+依赖：`FR-103`。
+
+目标：节点进入共享 Agent 工作台时必须直接打开浏览器草稿，不创建 OpenHands Conversation、不显示会话标题、也不在左侧列表持久化会话；首条用户消息以同一幂等命令创建、reload 并发送，随后才产生标题、绑定 URL、可用终端和正式事件。节点路径继承 FlowRun 冻结工作目录，并保持与一级 Agent 工作台一致的会话表面；唯一额外产品差异是可见且尺寸正确的“返回节点执行”按钮。修复首发的 native 初始化 NotFoundError 和客户端 optimistic/正式 user event 双重渲染。不得修改 OpenHands 源码、不得复制第二套 Workbench、不得在草稿阶段打开需要绑定的终端。
+
+验收：节点入口/草稿首发定向 Web 回归，节点服务首发与 native reload 定向 pytest，受影响 Python/Web 静态检查、Alembic head、任务状态唯一性和 `git diff --check` 通过。本切片使用独立 Git commit。
+
+完成：节点入口不再在进入页面时创建 binding；共享 Workbench 在节点根路径立即创建仅浏览器可见的草稿，并隐藏草稿标题。首条消息经过节点原子 bootstrap 路由，在原生 Conversation reload 后发送、以正式 cursor 完成身份确认，再持久化标题和启用绑定终端。首发 optimistic bubble 在路由切换后清除，只由正式事件渲染；返回按钮采用文字按钮尺寸，不再被通用图标动作样式压缩。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1465,6 +1475,7 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-104 | 节点首发 API 定向 pytest（1 passed）；受影响 Python `py_compile`/Ruff；Web TypeScript typecheck、ESLint、production build；Alembic head；`git diff --check` | PASS：节点根路由保持未持久化草稿，首条消息通过 reload 后的原生 cursor 激活 binding/标题，终端仅在 binding 存在后可打开，首发 optimistic user event 不会与正式 event 重复渲染。定向 Playwright 在创建测试节点资产前被现有 `INVALID_COMMAND`（fixture 仍发送已移除的 executor/capabilities 字段）拦截，未进入本切片断言。 |
 | 2026-08-30 | FR-103 | Web TypeScript typecheck、ESLint、production build；源码 Vite 定向 Playwright（2 passed）；`git diff --check` | PASS：关闭环境终端仅以 `display:none` 隐藏视图，保留 xterm 与已有 WebSocket；重新点击“继续配置”不会产生第二次 terminal attachment。发布中的会话继续只显示进度，不建立 terminal WebSocket。 |
 | 2026-08-30 | FR-102 | Skill 组合定向 pytest（4 passed）；Web TypeScript typecheck、ESLint、production build；受影响 Python `py_compile` 与 `git diff --check` | PASS：三页局部滚动布局通过编译；Skill 删除不再被逻辑组合引用阻塞，自动解除组合成员并清理空组合，真实受保护引用仍保留。 |
 | 2026-08-30 | FR-101 | 环境服务定向 pytest（35 passed）；Web ESLint/typecheck；发布中视图定向 Playwright（1 passed）；Alembic head/current；任务状态唯一性与 `git diff --check` | PASS：服务端先持久化 Setup Session 的 `PUBLISHING` 状态后再执行容器冻结、正式 Runtime 打包和契约探针；发布期间禁止 WebSocket 终端附着、二次创建及停止丢弃，发布失败回到 `RUNNING` 并保留失败 Version 诊断。页面关闭并重新进入时展示可关闭的后台发布视图，不会创建终端 WebSocket。唯一 Alembic head/current 均为 `0075_shared_agent_runtime_config`；无 `CURRENT` 或下一切片。 |

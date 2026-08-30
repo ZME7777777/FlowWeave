@@ -3,7 +3,7 @@ import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, ExternalLink, Link2, Play, Plus, RefreshCw, Send, StopCircle, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, nodeSessionApi, subscribeToRun } from '../api/client';
+import { api, subscribeToRun } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useWorkbenchStore } from '../store/workbench';
@@ -164,10 +164,7 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
       const attempt = created.attempts.at(-1);
       if (!attempt || attempt.state !== 'WAITING_START_CONFIRMATION') return { created };
       if (mode === 'CHAT') {
-        const conversation = await nodeSessionApi.create(
-          run.id, attempt.id, `${node.alias || node.asset.name} · 会话`,
-        );
-        return { created, conversationId: conversation.id };
+        return { created, openDraft: true };
       }
       const started = await api.confirmStart(attempt.id, attempt.state_version, { startup_mode: 'PROMPT', prompt });
       return {
@@ -177,9 +174,9 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
     onSuccess: result => {
       onActivated(result.created);
       refresh();
-      if (result.conversationId) {
+      if (result.openDraft) {
         const attempt = result.created.attempts.at(-1);
-        if (attempt) openNodeSession(run.id, result.created.id, attempt.id, result.conversationId);
+        if (attempt) openNodeSession(run.id, result.created.id, attempt.id);
       }
     },
   });
@@ -209,9 +206,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
     if (kind === 'confirm') return api.confirmStart(attempt.id, attempt.state_version, body as { startup_mode: 'PROMPT'; prompt?: string });
-    if (kind === 'chat') return nodeSessionApi.create(
-      run.id, attempt.id, `${nodeRunName(run, nodeRun)} · 会话`,
-    );
+    if (kind === 'chat') return { openDraft: true };
     if (kind === 'accept') return api.acceptAttempt(attempt.id, attempt.state_version);
     if (kind === 'reject') return api.rejectAttempt(attempt.id, String((body as { reason: string }).reason), attempt.state_version);
     if (kind === 'human') return api.humanInput(attempt.id, String((body as { content: string }).content), attempt.state_version);
@@ -222,8 +217,8 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     return api.cancelAttempt(attempt.id, attempt.state_version);
   }, onSuccess: (result, variables) => {
     setText('');
-    if (variables.kind === 'chat' && result && typeof result === 'object' && 'id' in result) {
-      openNodeSession(run.id, nodeRun.id, attempt.id, String(result.id));
+    if (variables.kind === 'chat') {
+      openNodeSession(run.id, nodeRun.id, attempt.id);
     } else navigate(result, variables.kind);
     refresh();
   } });

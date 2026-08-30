@@ -11,6 +11,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application.conversations import (
+    _enqueue_title_task,
+    _initial_user_event_id,
+    normalized_first_sentence,
+)
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
     bind_openhands_conversation,
@@ -554,6 +559,7 @@ def _create_native_conversation(
     handle = get_runtime().create_conversation(request)
     if handle.conversation_id != item.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
+    get_runtime().reload_conversation(handle)
     item = bind_openhands_conversation(
         db,
         flow_run_id=run.id,
@@ -709,6 +715,78 @@ def create_node_conversation(
         ),
         idempotency_key,
     )
+
+
+def bootstrap_node_conversation(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    payload: ConversationQuestionWrite,
+    work_directory_id: str | None,
+    idempotency_key: str,
+    actor: str | None,
+) -> dict[str, Any]:
+    """Create a node binding only while delivering its first user event.
+
+    The browser's node draft has no server representation.  This command is
+    intentionally the only node entrypoint that creates a binding for an
+    interactive draft, and it reloads the native Conversation before sending
+    so the first event cannot race OpenHands initialization.
+    """
+
+    text = "\n".join(part.text for part in payload.content if part.type == "text").strip()
+    if not text:
+        raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    created = create_node_conversation(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        title=None,
+        work_directory_id=work_directory_id,
+        idempotency_key=idempotency_key,
+    )
+    binding_id = str(created["id"])
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
+    )
+    handle = _handle(db, binding_id)
+    previous_event_id = get_runtime().reload_conversation(handle).event_id
+    delivered = send_node_question(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        payload=payload,
+        idempotency_key=f"{idempotency_key}:first-message",
+        actor=actor,
+    )
+    initial_event_id = (
+        binding.initial_user_event_id
+        or cast(str | None, delivered.get("cursor"))
+        or _initial_user_event_id(handle, previous_event_id)
+    )
+    if initial_event_id is None:
+        initial_event_id = get_runtime().reload_conversation(handle).event_id
+    if initial_event_id is None:
+        raise DomainError(
+            "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
+            "首条消息正在安全对账，请稍后重试；系统不会重复发送",
+            504,
+            {"binding_id": binding.id},
+        )
+    if binding.initial_user_event_id is None:
+        binding.initial_user_event_id = initial_event_id
+        binding.display_title = normalized_first_sentence(text)
+        binding.title_state = "PENDING"
+        binding.updated_at = now()
+        _enqueue_title_task(db, binding, text)
+        finish(db)
+    return {
+        "conversation": _node_session_dict(db, binding),
+        "accepted": bool(delivered.get("accepted", True)),
+        "cursor": initial_event_id,
+    }
 
 
 def _handle(db: Session, binding_id: str, *, cursor: str | None = None) -> RuntimeHandle:
@@ -868,7 +946,7 @@ def send_question(
     )
     item.last_connected_at = now()
     finish(db)
-    return {"accepted": True, "runtime": _result_dict(result)}
+    return {"accepted": True, "cursor": result.cursor, "runtime": _result_dict(result)}
 
 
 def send_flow_run_question(
@@ -1049,6 +1127,7 @@ __all__ = (
     "create_conversation",
     "create_flow_run_conversation",
     "create_node_conversation",
+    "bootstrap_node_conversation",
     "flow_run_runtime_stream_details",
     "flow_run_terminal_resource_details",
     "get_conversation",

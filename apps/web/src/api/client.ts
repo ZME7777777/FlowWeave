@@ -493,6 +493,8 @@ export const nodeSessionApi = {
   conversations: (flowRunId: string, attemptId: string) => request<import('../types').AgentConversation[]>(nodeSessionBase(flowRunId, attemptId)),
   create: (flowRunId: string, attemptId: string, title?: string, model_name?: string, reasoning_effort?: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
     request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
+  bootstrap: (flowRunId: string, attemptId: string, content: string, work_directory_id?: string, idempotencyKey = randomId()) =>
+    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { client_question_id: idempotencyKey, content: [{ type: 'text', text: content }], work_directory_id }, idempotencyKey)),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string) =>

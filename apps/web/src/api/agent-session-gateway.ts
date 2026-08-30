@@ -202,13 +202,11 @@ export function flowNodeSessionGateway(
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
       bootstrapConversation: async (_hostId, conversationId, _providerId, modelName, reasoningEffort, content, _attachments, workDirectoryId, _capabilityVersionIds, idempotencyKey) => {
-        const conversation = await nodeSessionApi.create(
-          flowRunId, attemptId, undefined, modelName || undefined, reasoningEffort, idempotencyKey ?? conversationId, workDirectoryId,
+        void modelName;
+        void reasoningEffort;
+        return nodeSessionApi.bootstrap(
+          flowRunId, attemptId, content, workDirectoryId, idempotencyKey ?? conversationId,
         );
-        const sent = content.trim()
-          ? await nodeSessionApi.message(flowRunId, attemptId, conversation.id, content, idempotencyKey)
-          : { accepted: true, cursor: null };
-        return { conversation, accepted: sent.accepted, cursor: sent.cursor };
       },
       updateConversation: (_hostId, bindingId, title) =>
         nodeSessionApi.update(flowRunId, attemptId, bindingId, title),

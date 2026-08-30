@@ -42,5 +42,7 @@ export function FlowNodeSessionPage({
     host={host}
     onNavigate={onNavigate}
     onReturnToSource={returnToNodeAttempt}
+    autoOpenDraft
+    hideDraftTitle
   />;
 }

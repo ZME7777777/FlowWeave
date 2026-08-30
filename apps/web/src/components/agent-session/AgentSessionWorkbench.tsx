@@ -1019,6 +1019,8 @@ export interface AgentSessionWorkbenchProps {
   onNavigate: (path: string, replace?: boolean) => void;
   /** Provided by scoped hosts whose conversation page has a product parent. */
   onReturnToSource?: () => void;
+  autoOpenDraft?: boolean;
+  hideDraftTitle?: boolean;
   gateway?: AgentSessionGateway;
   host?: AgentSessionHost;
 }
@@ -1039,7 +1041,7 @@ export function AgentSessionWorkbench({
   </AgentSessionGatewayContext.Provider>;
 }
 
-function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
+function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDraft = false, hideDraftTitle = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, subscribe, features } = useAgentSessionGateway();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
@@ -1366,10 +1368,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
     setPendingCreatedId(conversation.id);
     bootstrapTransitionScope.current = conversation.id;
     setActiveTurnEventId(value.cursor ?? undefined);
-    setOptimisticBootstrapTurn(current => current?.scope === message.scope ? {
-      scope: conversation.id,
-      event: { id: value.cursor || current.event.id, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items } },
-    } : current);
+    setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
     setConversationDraft(undefined);
     clearBootstrapRecovery();
     setOperationError(undefined);
@@ -1646,6 +1645,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
     setTurnState('idle');
     onNavigate(host.rootPath);
   }, [clearBootstrapRecovery, clearLiveText, host.rootPath, onNavigate]);
+  useEffect(() => {
+    if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
+    openConversationDraft({ displayName: '节点工作目录' });
+  }, [autoOpenDraft, conversationDraft, openConversationDraft, selectedBindingId, workspace]);
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
     if ((!content && !attachments.length) || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
@@ -1815,7 +1818,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
       {!conversations.length && !conversationDraft && <div className="agent-workbench-rail-empty"><Bot size={25}/><b>还没有会话</b><span>{features.modelSelection && !connectedProviders.length ? '请先完成至少一个模型供应商的连接测试。' : '在当前节点工作目录中新建会话开始协作。'}</span></div>}
     </aside>
     <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : <h2 title={selected ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected) return; setTitle(conversationName(selected)); setEditing(true); }}>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{onReturnToSource && <button type="button" className="agent-session-return" onClick={onReturnToSource}><ArrowLeft size={14}/>返回节点执行</button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button>}</div></header>
+      <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 title={selected ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected) return; setTitle(conversationName(selected)); setEditing(true); }}>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{onReturnToSource && <button type="button" className="agent-session-return" onClick={onReturnToSource}><ArrowLeft size={14}/>返回节点执行</button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 size={14}/></button>}</div></header>
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {selected && !compactionPolicyCurrent && <section className="agent-compaction-policy-warning" aria-label="历史压缩策略兼容保护"><ShieldAlert size={18}/><div><b>已启用历史会话兼容保护</b><span>此会话继承了旧的事件数压缩策略。继续发送或恢复执行前，系统会先调用 OpenHands 原生压缩并校验摘要；校验失败时不会发送新消息。</span>{features.workDirectories && <button type="button" className="primary" disabled={!canOpenConversation} onClick={openCurrentDirectoryDraft}><Plus size={14}/>在相同工作目录新建会话</button>}</div></section>}
       {selected || conversationDraft ? <ConversationSurface events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} rewritePending={rewrite.isPending || Boolean(pendingRewrite)} onRewrite={selected && features.rewrite ? requestRewrite : undefined} onFork={selected && features.fork ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
@@ -1840,7 +1843,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource }: Omit<Age
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} runtimeAvailable={Boolean(runtime?.write_available)}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} runtimeAvailable={Boolean(runtime?.write_available && (!features.terminalRequiresConversation || selected))}/>
     {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
