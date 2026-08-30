@@ -2109,10 +2109,10 @@ def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    requests: list[tuple[str, str, object]] = []
+    requests: list[tuple[str, str, object, object]] = []
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
-        requests.append((method, path, kwargs.get("json")))
+        requests.append((method, path, kwargs.get("json"), kwargs.get("timeout")))
         return {"success": True}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
@@ -2120,7 +2120,12 @@ def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
 
     assert result == RuntimeResult(status="RUNNING", cursor="event-4")
     assert requests == [
-        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/condense", None)
+        (
+            "POST",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/condense",
+            None,
+            180,
+        )
     ]
 
 

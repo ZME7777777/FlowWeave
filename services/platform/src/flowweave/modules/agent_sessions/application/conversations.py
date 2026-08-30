@@ -49,7 +49,7 @@ from flowweave.shared.settings import get_settings
 _PROJECT_ROOT = "/runtime/workspace/project"
 _PROACTIVE_COMPACTION_RATIO = 0.8
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
-_COMPACTION_EVENT_WAIT_SECONDS = 10.0
+_COMPACTION_EVENT_WAIT_SECONDS = 120.0
 _SANDBOX_PROJECT_IMAGE = re.compile(
     r"sandbox:(/runtime/workspace/project/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
@@ -1487,30 +1487,49 @@ def _safe_native_compaction(runtime: Any, handle: RuntimeHandle) -> str:
     try:
         runtime.condense(handle)
     except DomainError as exc:
-        # A transport/server error can mean the synchronous Agent Server call
-        # completed but its HTTP response was lost. Reconcile exclusively by
-        # the durable native request/completion ancestry before deciding that
-        # the compaction failed; never retry the mutation.
-        if exc.status < 500:
+        # Only a transport interruption has an unknown outcome. An HTTP error
+        # is a definitive Agent Server rejection even when its status is 5xx;
+        # waiting for a completion event in that case misreports the failure as
+        # a lost response and leaves the UI spinning for the reconciliation
+        # window. Never retry either mutation.
+        if exc.details.get("outcome_unknown") is not True:
+            _rollback_unsafe_compaction(runtime, handle, before_event_id)
             raise DomainError(
                 "AGENT_CONTEXT_COMPACTION_FAILED",
-                "OpenHands 原生压缩被拒绝；消息尚未发送",
-                exc.status,
+                (
+                    "OpenHands condenser 明确返回失败；摘要模型或当前事件结构"
+                    "无法生成有效压缩。已恢复压缩前 HEAD，消息尚未发送"
+                ),
+                502 if exc.status >= 500 else exc.status,
+                {"upstream_code": exc.code},
             ) from exc
+        # The synchronous request may have completed before its response was
+        # lost. Reconcile only this explicit unknown-outcome class against the
+        # durable native request/completion ancestry.
         request_error = exc
 
     deadline = time.monotonic() + _COMPACTION_EVENT_WAIT_SECONDS
     completed_event: Any | None = None
-    request_event: Any | None = None
     while time.monotonic() < deadline:
         after_events = runtime.read_active_events(handle).events
         by_id = {event.cursor: event for event in after_events}
-        for candidate in reversed(after_events):
-            if (
-                candidate.event_type != "CONDENSATION_COMPLETED"
-                or candidate.cursor in completed_before
-            ):
-                continue
+        new_requests = [
+            event
+            for event in after_events
+            if event.event_type == "CONDENSATION_REQUESTED" and event.cursor not in before_ids
+        ]
+        new_completions = [
+            event
+            for event in after_events
+            if event.event_type == "CONDENSATION_COMPLETED"
+            and event.cursor not in completed_before
+        ]
+        new_request_ids = {event.cursor for event in new_requests}
+        for candidate in reversed(new_completions):
+            explicit_request_id = candidate.payload.get("condensation_request_event_id")
+            if isinstance(explicit_request_id, str) and explicit_request_id in new_request_ids:
+                completed_event = candidate
+                break
             ancestor_id = candidate.payload.get("parent_id")
             seen: set[str] = set()
             while isinstance(ancestor_id, str) and ancestor_id != "__root__":
@@ -1525,15 +1544,22 @@ def _safe_native_compaction(runtime: Any, handle: RuntimeHandle) -> str:
                     and ancestor.cursor not in before_ids
                 ):
                     completed_event = candidate
-                    request_event = ancestor
                     break
                 ancestor_id = ancestor.payload.get("parent_id")
             if completed_event is not None:
                 break
-        if completed_event is not None and request_event is not None:
+        # OpenHands 1.40's formal Condensation event does not guarantee either
+        # parent_id or condensation_request_event_id.  The binding is locked
+        # and can_accept_input was checked before this mutation, so one unique
+        # request/completion pair added after the before-snapshot is an
+        # unambiguous durable acknowledgement even when the optional ancestry
+        # fields are absent. Never accept a completion without its new request.
+        if completed_event is None and len(new_requests) == len(new_completions) == 1:
+            completed_event = new_completions[0]
+        if completed_event is not None:
             break
         time.sleep(0.1)
-    if completed_event is None or request_event is None:
+    if completed_event is None:
         _rollback_unsafe_compaction(runtime, handle, before_event_id)
         raise DomainError(
             (

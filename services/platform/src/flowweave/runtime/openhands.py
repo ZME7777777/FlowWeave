@@ -3099,6 +3099,12 @@ class OpenHandsRuntime:
             f"/api/conversations/{handle.conversation_id}/condense",
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
+            # The native endpoint waits for the condenser LLM.  It routinely
+            # takes longer than the 30 second default used for ordinary Agent
+            # Server commands, especially for large contexts.  Keep this
+            # request below the browser proxy's 3600 second ceiling while
+            # allowing a normal model retry/backoff cycle to finish.
+            timeout=180,
         )
         # HTTP success only means CondensationRequest was accepted. The durable
         # Condensation event is projected by read_events after the agent step.

@@ -2314,7 +2314,8 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
         runtime.fail_compaction = True
         with pytest.raises(DomainError) as raised:
             conversations.message(db, workspace.id, created["id"], "must-not-send")
-        assert raised.value.code == "AGENT_CONTEXT_COMPACTION_DELIVERY_AMBIGUOUS"
+        assert raised.value.code == "AGENT_CONTEXT_COMPACTION_FAILED"
+        assert "condenser 明确返回失败" in raised.value.message
         assert runtime.calls == ["condense", "navigate:thought-after-first-condensation"]
 
         runtime.fail_compaction = False
@@ -2828,7 +2829,6 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
                     cursor="manual-condensation-completed",
                     event_type="CONDENSATION_COMPLETED",
                     payload={
-                        "parent_id": "manual-condensation-request",
                         "forgotten_event_ids": ["assistant-event"],
                         "summary": (
                             "USER_CONTEXT: 源目标\nCOMPLETED: 已生成源回复\nPENDING: 等待后续指令"

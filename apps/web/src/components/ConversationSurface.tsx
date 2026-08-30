@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileText, GitFork, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentAttachment, OpenHandsConversationEvent } from '../types';
@@ -687,13 +687,15 @@ function ConversationFailure({ item }: { item: Item }) {
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment }: {
+export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
   requestStartedAt?: number;
   requestSubmitting?: boolean;
   rewritePending?: boolean;
+  condensationStatus?: { state: 'running' | 'failed'; startedAt: number; message?: string };
+  onRetryCondensation?: () => void;
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
   onOpenAttachment?: (attachment: AgentAttachment) => void;
@@ -709,6 +711,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
+  const [condensationElapsed, setCondensationElapsed] = useState(0);
   const turns = useMemo(() => turnsFor(events), [events]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
     id: turn.user.event.id,
@@ -758,7 +761,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     window.requestAnimationFrame(updateScrollPosition);
   }, [scrollToLatest, updateScrollPosition]);
   const currentHasTerminal = isGenerating && Boolean(turns.at(-1)?.assistant || turns.at(-1)?.activity.some(item => item.kind === 'error'));
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
       scrollToLatest('auto');
@@ -774,6 +777,14 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
   }, []);
+  useEffect(() => {
+    if (condensationStatus?.state !== 'running') return;
+    const update = () => setCondensationElapsed(Math.max(0, Date.now() - condensationStatus.startedAt));
+    update();
+    const timer = window.setInterval(update, 1_000);
+    if (followLatest.current) window.requestAnimationFrame(() => scrollToLatest('smooth'));
+    return () => window.clearInterval(timer);
+  }, [condensationStatus, scrollToLatest]);
   useEffect(() => {
     const onCopy = (event: ClipboardEvent) => {
       const selection = window.getSelection();
@@ -796,7 +807,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     });
   }, []);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
-  if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
+  if (!turns.length && !liveText && !isGenerating && !condensationStatus) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
     {userMessageNavigation.length > 0 && <nav className="conversation-message-index" aria-label="用户消息导航">
@@ -845,6 +856,19 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         </section>;
       })}
       {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}
+      {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
+        {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
+        <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>
+          <p>{condensationStatus.state === 'failed'
+            ? condensationStatus.message || 'OpenHands 未能完成上下文压缩，请稍后重试。'
+            : condensationElapsed < 2_000
+              ? '已提交原生压缩请求，正在等待 OpenHands 接收。'
+              : condensationElapsed < 20_000
+                ? 'Condenser 正在生成较早上下文的结构化摘要。'
+                : '正在等待摘要完成，并校验用户目标、已完成事项与待办。'}</p>
+          {condensationStatus.state === 'failed' && onRetryCondensation && <button type="button" onClick={onRetryCondensation}>重新压缩</button>}
+        </div>
+      </article>}
     </section>
     {showJumpToLatest && <button
       type="button"

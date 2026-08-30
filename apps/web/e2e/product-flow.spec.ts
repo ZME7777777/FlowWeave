@@ -517,6 +517,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/condense') && request.method() === 'POST') {
       manualCondensations += 1;
+      await new Promise(resolve => setTimeout(resolve, 1_000));
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true }) });
       return;
     }
@@ -807,22 +808,37 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   });
   expect(copiedTerminalSelection.copied).toMatch(/put-\d+/);
   expect(copiedTerminalSelection.prevented).toBe(true);
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922k');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;
   await page.reload();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token6.4k / 922k');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 922,000');
   await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View.*80%/);
-  await expect(page.locator('.agent-context-progress.activity')).toContainText(/工具\d+ 次/);
-  await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /事件规模.*10,000/);
+  await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 10,000/);
+  await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /当前活动事件.*10,000/);
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
   await composerAfterReload.fill('/');
   const nativeMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
   await expect(nativeMenu.getByText('OpenHands 原生能力', { exact: true })).toBeVisible();
   await expect(nativeMenu.getByRole('option', { name: /压缩上下文/ })).toBeVisible();
   await nativeMenu.getByRole('option', { name: /压缩上下文/ }).click();
+  const lowUsageConfirmation = page.getByLabel('确认低用量上下文压缩');
+  await expect(lowUsageConfirmation).toBeVisible();
+  await expect(lowUsageConfirmation).toContainText('Token 6,380 / 922,000（1%）');
+  await expect(lowUsageConfirmation).toContainText('仍会调用摘要模型');
+  expect(manualCondensations).toBe(0);
+  await lowUsageConfirmation.getByRole('button', { name: '取消' }).click();
+  await expect(lowUsageConfirmation).toHaveCount(0);
+  expect(manualCondensations).toBe(0);
+  await composerAfterReload.fill('/');
+  await nativeMenu.getByRole('option', { name: /压缩上下文/ }).click();
+  await page.getByRole('button', { name: '仍然压缩' }).click();
+  const condensationProgress = page.getByLabel('正在压缩上下文');
+  await expect(condensationProgress).toBeVisible();
+  await expect(condensationProgress).toContainText('已提交原生压缩请求');
   await expect.poll(() => manualCondensations).toBe(1);
+  await expect(condensationProgress).toHaveCount(0);
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token待模型更新');
   await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('压缩已完成，等待下次模型调用更新用量', { exact: true })).toBeVisible();
@@ -985,8 +1001,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
   await expect(page.getByLabel('历史压缩策略兼容保护')).toBeVisible();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922k');
-  await expect(page.locator('.agent-context-progress.activity')).toContainText(/工具\d+ 次 · \d+ \/ 240 事件/);
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
+  await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 240/);
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();
   await forkComposer.fill('分叉后可以继续输入');
@@ -998,7 +1014,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('heading', { name: 'Fork · 检查工作目录' }).click();
   await expect(page.locator('.agent-composer-model-popover')).toBeHidden();
   await page.getByLabel('打开模型与推理设置').click();
-  await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-2');
+  await page.getByRole('button', { name: '供应商 已测试模型' }).click();
+  await page.getByLabel('选择供应商').getByRole('button', { name: '另一模型配置' }).click();
   await expect.poll(() => persistedModelSelection).toEqual({
     model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: 'high',
   });
