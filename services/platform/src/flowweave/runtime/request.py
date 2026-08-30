@@ -356,6 +356,8 @@ def build_runtime_request(
     runtime_resource_name: str = "",
     runtime_base_url: str = "",
     memory_materialized: bool = False,
+    agent_spec: RuntimeAgentSpec | None = None,
+    conversation_id: str | None = None,
 ) -> StartAttemptRequest:
     runtime_allocation = runtime_allocation_for_flow_run(
         db, flow_run_id, manifest_digest=runtime_manifest_hash
@@ -379,6 +381,32 @@ def build_runtime_request(
         )
         runtime_workspace_relative, runtime_working_dir_relative = isolated_runtime_workspace_paths(
             workspace_ref, node_workspace_ref
+        )
+    if agent_spec is not None:
+        return StartAttemptRequest(
+            attempt_id=attempt_id,
+            execution_key=execution_key,
+            node=node,
+            bindings=bindings,
+            workspace_ref=workspace_ref,
+            conversation_id=conversation_id,
+            agent_spec=agent_spec,
+            node_workspace_ref=node_workspace_ref,
+            interaction_mode=interaction_mode,
+            startup_prompt=startup_prompt,
+            startup_capability_key=startup_capability_key,
+            semantic_history=semantic_history,
+            output_targets=output_targets or {},
+            environment_image=environment_image or "",
+            environment_id=environment_id or "",
+            environment_version_id=environment_version_id or "",
+            environment_version_no=environment_version_no or 0,
+            runtime_workspace_relative=runtime_workspace_relative,
+            runtime_working_dir_relative=runtime_working_dir_relative,
+            memory_enabled=False,
+            runtime_sandbox_id=runtime_sandbox_id,
+            runtime_resource_name=runtime_resource_name,
+            runtime_base_url=runtime_base_url,
         )
     raw_agent_spec = node.get("runtime_agent_spec")
     if not isinstance(raw_agent_spec, dict):

@@ -19,7 +19,6 @@ from flowweave.modules.orchestration.application.service import (
     list_runs,
     node_run_detail,
     prepare_artifact,
-    preview_agent_profile_switch,
     process_cancel_runtime,
     process_gate_stage,
     process_poll_runtime,
@@ -39,7 +38,6 @@ from flowweave.modules.orchestration.application.service import (
     run_detail,
     start_flow,
     start_node_run,
-    switch_agent_profile,
     sync_snapshot,
 )
 
@@ -74,7 +72,6 @@ __all__ = (
     "record_runtime_task_failure",
     "process_resume_runtime",
     "process_start_runtime",
-    "preview_agent_profile_switch",
     "prepare_artifact",
     "read_artifact_content",
     "recover_runtime_deliveries",
@@ -87,5 +84,4 @@ __all__ = (
     "start_flow",
     "start_node_run",
     "sync_snapshot",
-    "switch_agent_profile",
 )

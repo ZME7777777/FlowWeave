@@ -8,18 +8,8 @@ export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
   description: string; template_url: string; position?: number;
 }
-export interface CondenserConfig {
-  kind: 'NO_OP' | 'LLM_SUMMARIZING';
-  model_provider_id?: string | null; model_name?: string | null;
-  max_size: number; max_tokens?: number | null; keep_first: number;
-  minimum_progress: number; hard_context_reset_max_retries: number;
-  hard_context_reset_context_scaling: number;
-}
 export interface ExecutorConfig {
-  model_provider_id?: string | null; model_name?: string | null;
-  startup_prompt: string; context_prompt: string; timeout_seconds: number; max_iterations: number;
-  confirmation_policy: 'ALWAYS' | 'NEVER';
-  condenser: CondenserConfig;
+  startup_prompt: string; context_prompt: string;
 }
 export type CapabilityAssetType =
   | 'SKILL' | 'PLUGIN' | 'MCP' | 'HOOK' | 'TOOL_POLICY' | 'AGENT_DEFINITION'
@@ -92,15 +82,6 @@ export interface AgentProfileVersion {
     fields: Record<string, string>; server_profile_store: string; activation_semantics: string;
   }; created_at: string;
 }
-export interface AgentProfileBinding { node_asset_id: string; node_name: string; position: number }
-export interface AgentProfileSwitchPreview {
-  flow_run_id: string; flow_node_key: string; active_snapshot_id: string; active_snapshot_version: number;
-  source_profile_version_id?: string | null; target_profile_version_id: string; target_profile_digest: string;
-  changes: Record<string, { from?: unknown; to?: unknown }>; requires_new_snapshot: boolean; existing_attempts_unchanged: boolean;
-}
-export interface AgentProfileSwitchResult {
-  snapshot_id: string; snapshot_version: number; attempt: NodeAttempt; rollback_profile_version_id?: string | null;
-}
 export interface NamedDeleteReference { id: string; name: string }
 export interface BlockedCapabilityDelete {
   id: string; name: string; relation: 'NODE_CAPABILITY' | 'CAPABILITY_COLLECTION' | 'BUILTIN_CAPABILITY';
@@ -111,7 +92,7 @@ export interface BlockedNodeDelete {
   flows: Array<NamedDeleteReference & { reference_count: number }>;
 }
 export interface BlockedProviderDelete {
-  id: string; name: string; relation: 'NODE_EXECUTOR'; nodes: NamedDeleteReference[];
+  id: string; name: string; relation: 'AGENT_CONFIGURATION'; nodes: NamedDeleteReference[];
 }
 export interface BulkDeleteResult<T> { deleted_ids: string[]; blocked: T[] }
 export interface EnvironmentVersion {
@@ -141,13 +122,13 @@ export interface NodeAsset {
   icon_kind: string; icon_value: string; row_version: number;
   workspace_ref?: string;
   inputs: IOField[]; outputs: IOField[]; executor: ExecutorConfig | null;
-  capabilities: CapabilityRef[]; created_at: string; updated_at: string;
+  created_at: string; updated_at: string;
 }
 export interface NodeAssetWrite {
   directory_id?: string | null; name: string; description: string;
   icon_kind: string; icon_value: string;
   row_version?: number | null; inputs: IOField[]; outputs: IOField[];
-  executor: ExecutorConfig; capabilities: CapabilityRef[];
+  executor: ExecutorConfig;
 }
 
 export interface ProviderModel {
@@ -251,7 +232,6 @@ export interface NodeAttempt {
   runtime_cancel_recovery_modes: Array<'RECONCILE_PARENT' | 'DELETE_MANAGED_RUNTIME'>;
   startup_mode?: 'SKILL' | 'PROMPT'; startup_capability_key?: string | null;
   startup_prompt?: string | null;
-  model_name?: string | null; reasoning_effort?: string | null; confirmation_policy: 'ALWAYS' | 'NEVER';
   output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
   gate_evaluations: GateEvaluation[]; runtime_confirmation_batches: RuntimeConfirmationBatch[];

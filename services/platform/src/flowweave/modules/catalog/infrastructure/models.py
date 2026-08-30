@@ -83,51 +83,12 @@ class NodeIOField(Base):
 
 class NodeExecutorConfig(Base):
     __tablename__ = "node_executor_configs"
-    __table_args__ = (
-        CheckConstraint("timeout_seconds > 0", name="ck_executor_timeout_positive"),
-        CheckConstraint("max_iterations > 0", name="ck_executor_iterations_positive"),
-        CheckConstraint(
-            "confirmation_policy IN ('ALWAYS', 'NEVER')",
-            name="ck_executor_confirmation_policy",
-        ),
-    )
 
     node_asset_id: Mapped[str] = mapped_column(
         ForeignKey("node_assets.id", ondelete="CASCADE"), primary_key=True
     )
-    model_provider_id: Mapped[str | None] = mapped_column(
-        ForeignKey("model_providers.id", ondelete="RESTRICT")
-    )
-    model_name: Mapped[str | None] = mapped_column(String(200))
     startup_prompt: Mapped[str] = mapped_column(Text, default="")
     context_prompt: Mapped[str] = mapped_column(Text, default="")
-    timeout_seconds: Mapped[int] = mapped_column(Integer, default=900)
-    max_iterations: Mapped[int] = mapped_column(Integer, default=100)
-    confirmation_policy: Mapped[str] = mapped_column(String(20), default="NEVER")
-    condenser_config_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON, default=lambda: {"kind": "LLM_SUMMARIZING"}
-    )
-
-
-class NodeCapabilityRef(Base):
-    __tablename__ = "node_capability_refs"
-    __table_args__ = (
-        UniqueConstraint(
-            "node_asset_id", "capability_type", "capability_key", name="uq_asset_capability"
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    node_asset_id: Mapped[str] = mapped_column(
-        ForeignKey("node_assets.id", ondelete="CASCADE"), index=True
-    )
-    capability_type: Mapped[str] = mapped_column(String(16))
-    capability_key: Mapped[str] = mapped_column(String(200))
-    # The FK is installed by migration 0029.  Migration 0001 builds this table
-    # from current metadata before the version repository exists.
-    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
-    normalized_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    position: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class CapabilityImport(Base):
@@ -576,7 +537,6 @@ __all__ = (
     "NodeAsset",
     "NodeIOField",
     "NodeExecutorConfig",
-    "NodeCapabilityRef",
     "CapabilityImport",
     "CapabilityBlob",
     "CapabilityPackage",

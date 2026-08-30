@@ -107,7 +107,14 @@ def register_snapshot_references(
             raise DomainError("SNAPSHOT_INVALID", "Snapshot Runtime node is invalid", 409)
         node = cast(dict[object, object], raw_node)
         raw_agent = node.get("agent_spec")
-        agent = cast(dict[object, object], raw_agent) if isinstance(raw_agent, dict) else {}
+        # Agent configuration is now frozen on the shared Conversation
+        # Binding, not on a Flow node. Current manifests therefore have no
+        # node-level Agent Spec and hold no Snapshot-owned Memory references.
+        if raw_agent is None:
+            continue
+        if not isinstance(raw_agent, dict):
+            raise DomainError("SNAPSHOT_INVALID", "Snapshot Agent Spec is invalid", 409)
+        agent = cast(dict[object, object], raw_agent)
         raw_policy = agent.get("memory_policy")
         policy = cast(dict[object, object], raw_policy) if isinstance(raw_policy, dict) else {}
         raw_config = policy.get("runtime_config")

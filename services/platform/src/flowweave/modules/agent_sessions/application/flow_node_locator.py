@@ -98,6 +98,7 @@ def bind_openhands_conversation(
             )
         if display_label is not None:
             item.display_title = display_label
+        item.lifecycle = "ACTIVE"
         item.last_connected_at = now()
     db.flush()
     return item

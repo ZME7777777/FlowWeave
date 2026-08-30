@@ -544,8 +544,6 @@ def test_flow_run_creation_resolves_the_node_host_once(
         FlowRunConversationCreateWrite(
             node_attempt_id="attempt-1",
             title="Node session",
-            model_name="model-1",
-            reasoning_effort="medium",
         ),
         "create-1",
     )

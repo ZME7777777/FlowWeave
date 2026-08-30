@@ -69,11 +69,6 @@ async def agent_profile_versions(package_id: str, db: Db) -> list[dict[str, Any]
     )
 
 
-@router.get("/agent-profiles/{version_id}/bindings")
-async def agent_profile_bindings(version_id: str, db: Db) -> list[dict[str, Any]]:
-    return await run_sync(db, lambda session: agent_profiles.profile_bindings(session, version_id))
-
-
 @router.post("/agent-profiles/{version_id}/versions", status_code=201)
 async def revise_agent_profile(
     version_id: str, payload: AgentProfileRevisionWrite, db: Db

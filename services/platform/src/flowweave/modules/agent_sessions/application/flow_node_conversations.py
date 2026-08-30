@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from dataclasses import asdict, replace
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import uuid4
 
@@ -16,12 +16,17 @@ from flowweave.modules.agent_sessions.application.flow_node_locator import (
     bind_openhands_conversation,
     binding_locator,
 )
+from flowweave.modules.agent_sessions.application.runtime_config import (
+    build_agent_spec,
+    config_from_binding,
+    provider_for_config,
+    reserve_flow_node_binding,
+)
 from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
-from flowweave.modules.catalog.public import resolve_snapshot_memory
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
     validate_runtime_manifest,
@@ -32,10 +37,7 @@ from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import runtime_node
 from flowweave.runtime.request import (
     build_runtime_request,
-    frozen_memory_policy,
-    resolve_runtime_selection,
 )
-from flowweave.runtime.workspace import materialize_runtime_memory
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -453,8 +455,6 @@ def _create_native_conversation(
     workspace_ref: str,
     bindings: list[dict[str, Any]],
     title: str | None,
-    model_name: str | None,
-    reasoning_effort: str | None,
     idempotency_key: str,
     binding_id: str,
     node_run_id: str | None = None,
@@ -496,33 +496,37 @@ def _create_native_conversation(
             {"environment_version_id": run.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-    model_name, reasoning_effort = resolve_runtime_selection(db, node, model_name, reasoning_effort)
-    memory_enabled, source_refs = frozen_memory_policy(node, runtime_scope="CONVERSATION")
-    if memory_enabled:
-        materials = resolve_snapshot_memory(
-            db,
-            snapshot_id=snapshot.id,
-            source_refs=source_refs,
-            allowed_scopes={"USER", "PROJECT"},
+    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+    working_directory = runtime_working_directory or str(_RUNTIME_PROJECT)
+    item = reserve_flow_node_binding(
+        db,
+        runtime_session_id=connection.runtime_session_id,
+        flow_run_id=run.id,
+        node_run_id=node_run_id or "",
+        node_attempt_id=attempt_id or "",
+        working_directory=working_directory,
+        create_idempotency_key=idempotency_key,
+        display_title=title,
+        work_directory_version_id=work_directory_version_id,
+    )
+    config = config_from_binding(db, item)
+    provider = provider_for_config(db, config)
+    host_root = sandboxes.flow_run_capability_path(
+        run.id, snapshot.runtime_manifest_hash, "conversations", item.id
+    )
+    runtime_root = Path(
+        sandboxes.openhands_flow_run_capability_path(
+            snapshot.runtime_manifest_hash, "conversations", item.id
         )
-        runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
-            db, run.id, manifest_digest=snapshot.runtime_manifest_hash
-        )
-        with sandboxes.capability_materialization_lock(runtime_allocation):
-            materialize_runtime_memory(
-                flow_run_id=run.id,
-                manifest_digest=snapshot.runtime_manifest_hash,
-                workspace_ref=(
-                    str(
-                        sandboxes.flow_run_workspace_project_path(run.id).joinpath(
-                            *PurePosixPath(runtime_working_directory or str(_RUNTIME_PROJECT))
-                            .relative_to(_RUNTIME_PROJECT)
-                            .parts
-                        )
-                    )
-                ),
-                materials=materials,
-            )
+    )
+    agent_spec = build_agent_spec(
+        config,
+        provider=provider,
+        binding_id=item.id,
+        working_directory=working_directory,
+        host_root=host_root,
+        runtime_root=runtime_root,
+    )
     request = build_runtime_request(
         db,
         flow_run_id=run.id,
@@ -533,15 +537,13 @@ def _create_native_conversation(
         bindings=bindings,
         workspace_ref=workspace_ref,
         interaction_mode="COLLABORATION",
-        model_name=model_name,
-        reasoning_effort=reasoning_effort,
         environment_image=environment.image_digest,
         environment_id=environment.environment_id,
         environment_version_id=environment.id,
         environment_version_no=environment.version_no,
-        memory_materialized=memory_enabled,
+        agent_spec=agent_spec,
+        conversation_id=item.openhands_conversation_id,
     )
-    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
     request = replace(
         request,
         workspace_ref=runtime_working_directory or _runtime_working_directory(request),
@@ -550,6 +552,8 @@ def _create_native_conversation(
         runtime_base_url=f"http://{connection.resource_name}:8000",
     )
     handle = get_runtime().create_conversation(request)
+    if handle.conversation_id != item.openhands_conversation_id:
+        raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
     item = bind_openhands_conversation(
         db,
         flow_run_id=run.id,
@@ -641,8 +645,6 @@ def create_conversation(
         workspace_ref=workspace_ref,
         bindings=_request_bindings(db, attempt, node),
         title=payload.title,
-        model_name=payload.model_name,
-        reasoning_effort=payload.reasoning_effort,
         idempotency_key=idempotency_key,
         binding_id=request_owner_id,
         node_run_id=node_run.id,
@@ -679,8 +681,6 @@ def create_flow_run_conversation(
         ConversationCreateWrite(
             title=payload.title,
             expected_attempt_state_version=attempt.state_version,
-            model_name=payload.model_name,
-            reasoning_effort=payload.reasoning_effort,
             work_directory_id=payload.work_directory_id,
         ),
         idempotency_key,
@@ -694,8 +694,6 @@ def create_node_conversation(
     flow_run_id: str,
     attempt_id: str,
     title: str | None,
-    model_name: str | None,
-    reasoning_effort: str | None,
     work_directory_id: str | None,
     idempotency_key: str,
 ) -> dict[str, Any]:
@@ -707,8 +705,6 @@ def create_node_conversation(
         FlowRunConversationCreateWrite(
             node_attempt_id=attempt_id,
             title=title,
-            model_name=model_name,
-            reasoning_effort=reasoning_effort,
             work_directory_id=work_directory_id,
         ),
         idempotency_key,

@@ -1,5 +1,5 @@
 import type {
-  AgentProfileBinding, AgentProfileSwitchPreview, AgentProfileSwitchResult, AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
+  AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, SkillSource,
   BlockedCapabilityDelete, BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
   AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, ToolPolicyCatalog,
 } from '../types';
@@ -247,9 +247,6 @@ export const api = {
   deleteCapabilities: (ids: string[]) => request<BulkDeleteResult<BlockedCapabilityDelete>>('/capabilities', json('DELETE', { ids })),
   agentProfileVersions: (packageId: string) =>
     request<AgentProfileVersion[]>(`/agent-profile-packages/${encodeURIComponent(packageId)}/versions`),
-  agentProfileBindings: (versionId: string) =>
-    request<AgentProfileBinding[]>(`/agent-profiles/${encodeURIComponent(versionId)}/bindings`),
-
   terminalEnvironments: () => request<TerminalEnvironment[]>('/terminal-environments'),
   createTerminalEnvironment: (body: TerminalEnvironmentWrite) =>
     request<TerminalEnvironment>('/terminal-environments', json('POST', body)),
@@ -287,10 +284,6 @@ export const api = {
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
-  previewAgentProfileSwitch: (runId: string, flowNodeKey: string, profileVersionId: string) =>
-    request<AgentProfileSwitchPreview>(`/flow-runs/${runId}/agent-profile-switch-preview?flow_node_key=${encodeURIComponent(flowNodeKey)}&profile_version_id=${encodeURIComponent(profileVersionId)}`),
-  switchAgentProfile: (runId: string, body: { expected_active_version: number; flow_node_key: string; profile_version_id: string; source_profile_version_id?: string | null; expected_profile_digest: string; copy_input_bindings_from_attempt_id?: string | null; model_cost_comparison?: Record<string, unknown> }) =>
-    request<AgentProfileSwitchResult>(`/flow-runs/${runId}/agent-profile-switch`, json('POST', body, true)),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
@@ -300,7 +293,7 @@ export const api = {
   bindInputs: (attemptId: string, bindings: Record<string, string>, version?: number) =>
     request<NodeAttempt>(`/node-attempts/${attemptId}/input-bindings`, json('PUT', { bindings, expected_state_version: version })),
   confirmStart: (attemptId: string, version: number, startup: { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string }) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version, ...startup }, true)),
-  humanInput: (attemptId: string, content: string, version: number, runtime?: { model_name?: string; reasoning_effort?: string | null }) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version, ...runtime }, true)),
+  humanInput: (attemptId: string, content: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version }, true)),
   decideRuntimeConfirmation: (batchId: string, accept: boolean, reason: string) =>
     request<RuntimeConfirmationBatch>(`/runtime-confirmation-batches/${batchId}/decision`, json('POST', { accept, reason }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),

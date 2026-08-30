@@ -27,6 +27,7 @@ from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.manifest import runtime_node
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun, RunSnapshot
+from flowweave.shared.settings import get_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +105,8 @@ def resolve_flow_node_session_host(
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
-    if sandboxes.runtime_overview(db, flow_run_id)["rerun_required"]:
+    runtime_overview = sandboxes.runtime_overview(db, flow_run_id)
+    if runtime_overview["rerun_required"]:
         raise DomainError(
             "LEGACY_RUNTIME_INCOMPATIBLE",
             "Historical FlowRun Runtime data is incompatible; rerun the Flow",
@@ -137,7 +139,16 @@ def resolve_flow_node_session_host(
             409,
             {"node_attempt_id": attempt.id, "state": attempt.state},
         )
-    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+    try:
+        runtime_session_id = sandboxes.active_flow_run_runtime_connection(
+            db, flow_run_id=run.id
+        ).runtime_session_id
+    except DomainError as exc:
+        if exc.code != "RUNTIME_SESSION_NOT_ACTIVE" or get_settings().runtime_adapter != "mock":
+            raise
+        runtime_session_id = str(runtime_overview.get("runtime_session_id") or "")
+        if not runtime_session_id:
+            raise
     node = runtime_node(
         definition=snapshot.definition_json,
         manifest=snapshot.runtime_manifest_json or {},
@@ -161,13 +172,10 @@ def resolve_flow_node_session_host(
             host_kind="FLOW_NODE",
             host_id=run.id,
             conversation_scope_id=attempt.id,
-            runtime_session_id=connection.runtime_session_id,
+            runtime_session_id=runtime_session_id,
             working_directory=runtime_working_directory,
             runtime_manifest=snapshot.runtime_manifest_json or {},
-            model_policy={
-                "model_name": attempt.model_name,
-                "reasoning_effort": attempt.reasoning_effort,
-            },
+            model_policy={},
             permissions=(
                 _READ_PERMISSIONS | _WRITE_PERMISSIONS
                 if require_start_permission
@@ -178,7 +186,7 @@ def resolve_flow_node_session_host(
         node_run_id=node_run.id,
         attempt_id=attempt.id,
         snapshot_id=snapshot.id,
-        runtime_session_id=connection.runtime_session_id,
+        runtime_session_id=runtime_session_id,
         working_directory=working_directory,
         node=node,
         startup_prompt=attempt.startup_prompt,

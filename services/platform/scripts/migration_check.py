@@ -341,26 +341,10 @@ def assert_legacy_capability_snapshot_upgraded(connection_url: str) -> None:
         assert len(version_id) == 36
         assert len(digest) == 64
         assert content_hash == LEGACY_CONTENT_HASH
-        duplicate_ref = connection.execute(
-            "SELECT capability_version_id FROM node_capability_refs WHERE id = %s",
-            (LEGACY_DUPLICATE_REF_ID,),
-        ).fetchone()
-        assert duplicate_ref is not None and str(duplicate_ref[0]) == version_id
         version_count = connection.execute(
             "SELECT count(*) FROM capability_versions WHERE digest = %s", (digest,)
         ).fetchone()
         assert version_count is not None and int(version_count[0]) == 1
-
-        ref = connection.execute(
-            "SELECT capability_version_id, normalized_config FROM node_capability_refs "
-            "WHERE id = %s",
-            (LEGACY_REF_ID,),
-        ).fetchone()
-        assert ref is not None and str(ref[0]) == version_id
-        ref_config = ref[1]
-        assert ref_config["capability_version_id"] == version_id
-        assert ref_config["digest"] == digest
-        assert ref_config["content_hash"] == LEGACY_CONTENT_HASH
 
         snapshot = connection.execute(
             "SELECT runtime_manifest_json, runtime_manifest_hash FROM run_snapshots WHERE id = %s",
@@ -407,32 +391,12 @@ def assert_legacy_capability_snapshot_upgraded(connection_url: str) -> None:
         assert context_policy["runtime_config"]["marketplace_path"] is None
         assert context_policy["runtime_config"]["registered_marketplaces"] == []
 
-        policy_ref = connection.execute(
-            "SELECT capability_version_id, normalized_config FROM node_capability_refs "
-            "WHERE node_asset_id = %s AND capability_type = 'TOOL_POLICY'",
-            (LEGACY_ASSET_ID,),
+        # Revision 0075 removes mutable node-level capability ownership after
+        # the immutable Version and historical Snapshot have been migrated.
+        legacy_ref_table = connection.execute(
+            "SELECT to_regclass('public.node_capability_refs')"
         ).fetchone()
-        assert policy_ref is not None
-        assert str(policy_ref[0]) == agent_spec["tool_policy"]["capability_version_id"]
-        assert policy_ref[1]["digest"] == agent_spec["tool_policy"]["digest"]
-
-        context_ref = connection.execute(
-            "SELECT capability_version_id, normalized_config FROM node_capability_refs "
-            "WHERE node_asset_id = %s AND capability_type = 'CONTEXT_POLICY'",
-            (LEGACY_ASSET_ID,),
-        ).fetchone()
-        assert context_ref is not None
-        assert str(context_ref[0]) == agent_spec["context_policy"]["capability_version_id"]
-        assert context_ref[1]["digest"] == agent_spec["context_policy"]["digest"]
-
-        context_ref = connection.execute(
-            "SELECT capability_version_id, normalized_config FROM node_capability_refs "
-            "WHERE node_asset_id = %s AND capability_type = 'CONTEXT_POLICY'",
-            (LEGACY_ASSET_ID,),
-        ).fetchone()
-        assert context_ref is not None
-        assert str(context_ref[0]) == context_policy["capability_version_id"]
-        assert context_ref[1]["digest"] == context_policy["digest"]
+        assert legacy_ref_table is not None and legacy_ref_table[0] is None
 
 
 @contextmanager

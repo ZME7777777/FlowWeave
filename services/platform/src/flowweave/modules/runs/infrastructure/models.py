@@ -87,13 +87,7 @@ class NodeRun(Base):
 
 class NodeAttempt(Base):
     __tablename__ = "node_attempts"
-    __table_args__ = (
-        UniqueConstraint("node_run_id", "attempt_no", name="uq_node_attempt_number"),
-        CheckConstraint(
-            "confirmation_policy IN ('ALWAYS', 'NEVER')",
-            name="ck_attempt_confirmation_policy",
-        ),
-    )
+    __table_args__ = (UniqueConstraint("node_run_id", "attempt_no", name="uq_node_attempt_number"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     node_run_id: Mapped[str] = mapped_column(
@@ -113,12 +107,6 @@ class NodeAttempt(Base):
     startup_mode: Mapped[str] = mapped_column(String(20), default="PROMPT")
     startup_capability_key: Mapped[str | None] = mapped_column(String(200))
     startup_prompt: Mapped[str | None] = mapped_column(Text)
-    model_name: Mapped[str | None] = mapped_column(String(240))
-    reasoning_effort: Mapped[str | None] = mapped_column(String(30))
-    confirmation_policy: Mapped[str] = mapped_column(String(20), default="NEVER")
-    condenser_config_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON, default=lambda: {"kind": "LLM_SUMMARIZING"}
-    )
     output_targets_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_detail: Mapped[str | None] = mapped_column(Text)

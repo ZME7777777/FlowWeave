@@ -103,7 +103,7 @@ class MockRuntime:
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
             job_id=f"mock-job-{request.attempt_id}",
-            conversation_id=f"mock-conversation-{request.attempt_id}",
+            conversation_id=request.conversation_id or f"mock-conversation-{request.attempt_id}",
             cursor="1",
         )
         if request.node.get("config_override", {}).get("mock_human_required"):

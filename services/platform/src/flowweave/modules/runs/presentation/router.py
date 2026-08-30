@@ -14,7 +14,6 @@ from flowweave.modules.orchestration import public as service
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
-    AgentProfileSwitchWrite,
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
@@ -279,39 +278,6 @@ async def sync_snapshot(
         db,
         lambda session: service.sync_snapshot(
             session, run_id, payload, _key(idempotency_key, "sync-snapshot", run_id)
-        ),
-    )
-
-
-@router.get("/flow-runs/{run_id}/agent-profile-switch-preview")
-async def agent_profile_switch_preview(
-    run_id: str,
-    flow_node_key: str,
-    profile_version_id: str,
-    db: Db,
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: service.preview_agent_profile_switch(
-            session, run_id, flow_node_key, profile_version_id
-        ),
-    )
-
-
-@router.post("/flow-runs/{run_id}/agent-profile-switch", status_code=201)
-async def agent_profile_switch(
-    run_id: str,
-    payload: AgentProfileSwitchWrite,
-    db: Db,
-    idempotency_key: IdempotencyKey = None,
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: service.switch_agent_profile(
-            session,
-            run_id,
-            payload,
-            _key(idempotency_key, "switch-agent-profile", run_id),
         ),
     )
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
@@ -17,7 +17,12 @@ from flowweave.modules.model_providers.infrastructure.codex_oauth import (
 )
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import conflict, not_found
-from flowweave.shared.models import ModelProvider, NodeAsset, NodeExecutorConfig, ProviderModel
+from flowweave.shared.models import (
+    AgentConversationBinding,
+    AgentWorkspace,
+    ModelProvider,
+    ProviderModel,
+)
 from flowweave.shared.schemas import (
     ModelProviderDiscoveryWrite,
     ModelProviderWrite,
@@ -28,31 +33,24 @@ from flowweave.shared.settings import get_settings
 _DEVELOPMENT_CREDENTIALS_KEY = b"I84eBL_TIqLl5IVk_DTjGPtUDyVz3pl6pVCHyT8woaE="
 
 
-def _condenser_reference(config: object) -> tuple[str, str] | None:
-    if not isinstance(config, dict):
-        return None
-    item = cast(dict[object, object], config)
-    if item.get("kind") != "LLM_SUMMARIZING":
-        return None
-    provider_id = item.get("model_provider_id")
-    model_name = item.get("model_name")
-    if not isinstance(provider_id, str) or not isinstance(model_name, str):
-        return None
-    return provider_id, model_name
-
-
-def _referencing_nodes(db: Session, provider_id: str) -> list[dict[str, str]]:
-    rows = db.execute(
-        select(NodeExecutorConfig, NodeAsset)
-        .join(NodeAsset, NodeAsset.id == NodeExecutorConfig.node_asset_id)
-        .order_by(NodeAsset.name, NodeAsset.id)
-    ).all()
-    return [
-        {"id": asset.id, "name": asset.name}
-        for executor, asset in rows
-        if executor.model_provider_id == provider_id
-        or (_condenser_reference(executor.condenser_config_json) or (None, None))[0] == provider_id
+def _provider_references(db: Session, provider_id: str) -> list[dict[str, str]]:
+    references = [
+        {"id": workspace.id, "name": workspace.display_name}
+        for workspace in db.scalars(
+            select(AgentWorkspace)
+            .where(AgentWorkspace.default_model_provider_id == provider_id)
+            .order_by(AgentWorkspace.display_name, AgentWorkspace.id)
+        )
     ]
+    references.extend(
+        {"id": binding.id, "name": binding.display_title or binding.id}
+        for binding in db.scalars(
+            select(AgentConversationBinding)
+            .where(AgentConversationBinding.model_provider_id == provider_id)
+            .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
+        )
+    )
+    return references
 
 
 def _fernet() -> Fernet:
@@ -88,7 +86,7 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
             and item.oauth_device_expires_at
             and item.oauth_device_expires_at > datetime.now(UTC)
         ),
-        "reference_node_count": len(_referencing_nodes(db, item.id)),
+        "reference_node_count": len(_provider_references(db, item.id)),
         "available_for_nodes": any(model.enabled and model.is_default for model in models)
         and (item.auth_type == "API_KEY" or item.encrypted_oauth_refresh_token is not None),
         "available_for_prompt_gates": item.auth_type == "API_KEY"
@@ -149,25 +147,20 @@ def _validate_referenced_models(
     db: Session, provider_id: str, models: list[ProviderModelWrite]
 ) -> None:
     enabled_names = {model.model_name for model in models if model.enabled}
-    referenced_names = {
+    referenced_names: set[str] = {
         name
         for name in db.scalars(
-            select(NodeExecutorConfig.model_name).where(
-                NodeExecutorConfig.model_provider_id == provider_id,
-                NodeExecutorConfig.model_name.is_not(None),
+            select(AgentConversationBinding.model_name).where(
+                AgentConversationBinding.model_provider_id == provider_id,
+                AgentConversationBinding.model_name.is_not(None),
             )
-        ).all()
-        if name
+        )
+        if name is not None
     }
-    referenced_names.update(
-        reference[1]
-        for config in db.scalars(select(NodeExecutorConfig.condenser_config_json)).all()
-        if (reference := _condenser_reference(config)) is not None and reference[0] == provider_id
-    )
     unavailable = sorted(referenced_names - enabled_names)
     if unavailable:
         raise conflict(
-            "models referenced by node assets cannot be disabled or removed",
+            "models frozen by Agent conversations cannot be disabled or removed",
             models=unavailable,
         )
 
@@ -175,12 +168,12 @@ def _validate_referenced_models(
 def delete_providers(db: Session, provider_ids: list[str]) -> dict[str, Any]:
     ids = list(dict.fromkeys(provider_ids))
     items = [get_provider(db, provider_id) for provider_id in ids]
-    references = {provider_id: _referencing_nodes(db, provider_id) for provider_id in ids}
+    references = {provider_id: _provider_references(db, provider_id) for provider_id in ids}
     blocked = [
         {
             "id": item.id,
             "name": item.name,
-            "relation": "NODE_EXECUTOR",
+            "relation": "AGENT_CONFIGURATION",
             "nodes": references[item.id],
         }
         for item in items
@@ -496,15 +489,15 @@ def sync_codex_models(
             select(ProviderModel).where(ProviderModel.provider_id == provider_id)
         ).all()
     }
-    referenced = {
+    referenced: set[str] = {
         name
         for name in db.scalars(
-            select(NodeExecutorConfig.model_name).where(
-                NodeExecutorConfig.model_provider_id == provider_id,
-                NodeExecutorConfig.model_name.is_not(None),
+            select(AgentConversationBinding.model_name).where(
+                AgentConversationBinding.model_provider_id == provider_id,
+                AgentConversationBinding.model_name.is_not(None),
             )
-        ).all()
-        if name
+        )
+        if name is not None
     }
     retained = [name for name in existing if name in referenced and name not in discovered]
     synchronized_names = [*discovered, *retained]

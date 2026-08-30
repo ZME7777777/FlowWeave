@@ -22,11 +22,6 @@ export function AgentProfileHistoryDialog({ packageId, capabilityKey, onClose }:
   const [selectedId, setSelectedId] = useState<string>();
   const selected = versions.data?.find(item => item.id === selectedId) ?? versions.data?.[0];
   const previous = versions.data?.find(item => item.version_no === (selected?.version_no ?? 0) - 1);
-  const bindings = useQuery({
-    queryKey: ['agent-profile-bindings', selected?.id],
-    queryFn: () => api.agentProfileBindings(selected!.id),
-    enabled: Boolean(selected?.id),
-  });
   const changes = useMemo(() => {
     if (!selected) return [];
     const keys = new Set([...Object.keys(previous?.document ?? {}), ...Object.keys(selected.document)]);
@@ -41,7 +36,7 @@ export function AgentProfileHistoryDialog({ packageId, capabilityKey, onClose }:
       {selected && <main><section className="agent-profile-provenance"><ShieldCheck size={16}/><div><b>OpenHands {selected.compatibility.openhands_version}</b><code>{selected.compatibility.source_commit}</code><span>{selected.compatibility.activation_semantics}</span></div></section>
         <h3><GitCompareArrows size={14}/>相对 Version {previous?.version_no ?? '起点'} 的字段差异</h3>
         {changes.length ? <dl className="agent-profile-diff">{changes.map(key => <div key={key}><dt>{key}</dt><dd><del>{display(previous?.document[key])}</del><ins>{display(selected.document[key])}</ins></dd></div>)}</dl> : <p className="field-hint">没有字段差异。</p>}
-        <h3>当前节点绑定</h3>{bindings.isLoading ? <p className="field-hint">加载绑定…</p> : bindings.data?.length ? <div className="agent-profile-bindings">{bindings.data.map(item => <span key={item.node_asset_id}><b>{item.node_name}</b><small>position {item.position}</small></span>)}</div> : <p className="field-hint">此版本当前没有 Node Asset 绑定；历史 Snapshot 仍可继续引用。</p>}
+        <p className="field-hint">历史 Snapshot 可继续引用此不可变版本；新会话配置由默认 Agent 工作区统一冻结。</p>
       </main>}
     </div>}
   </section></div>;

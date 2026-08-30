@@ -1,9 +1,8 @@
-import hashlib
-import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -11,6 +10,7 @@ from sqlalchemy import select
 
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
+    AgentConversationBinding,
     ArtifactVersion,
     AttemptInputBinding,
     BackgroundTask,
@@ -32,6 +32,7 @@ from flowweave.shared.models import (
 
 
 def asset_payload(name="方案生成", skill=None):
+    del skill
     return {
         "name": name,
         "description": "产品驱动节点",
@@ -54,10 +55,7 @@ def asset_payload(name="方案生成", skill=None):
         "executor": {
             "startup_prompt": "读取输入并生成方案",
             "context_prompt": "保留证据",
-            "timeout_seconds": 120,
-            "max_iterations": 20,
         },
-        "capabilities": [skill] if skill else [],
     }
 
 
@@ -70,84 +68,24 @@ def create_asset(client, skill, name="方案生成"):
 def test_node_asset_can_be_saved_without_skill(client):
     response = client.post("/api/v1/node-assets", json=asset_payload("无 Skill 节点"))
     assert response.status_code == 201, response.text
-    assert response.json()["executor"]["confirmation_policy"] == "NEVER"
-    assert response.json()["executor"]["condenser"]["kind"] == "LLM_SUMMARIZING"
-    capabilities = response.json()["capabilities"]
-    assert {item["capability_type"]: item["capability_key"] for item in capabilities} == {
-        "TOOL_POLICY": "flowweave-default-tools",
-        "CONTEXT_POLICY": "flowweave-default-context",
-        "MEMORY_POLICY": "flowweave-memory-disabled",
-        "CRITIC_POLICY": "flowweave-critic-disabled",
+    assert response.json()["executor"] == {
+        "startup_prompt": "读取输入并生成方案",
+        "context_prompt": "保留证据",
     }
-    context = next(item for item in capabilities if item["capability_type"] == "CONTEXT_POLICY")
-    runtime_config = context["normalized_config"]
-    document = {
-        key: value
-        for key, value in runtime_config.items()
-        if key
-        not in {
-            "capability_id",
-            "capability_version_id",
-            "package_id",
-            "version_no",
-            "digest",
-            "filename",
-            "content_hash",
-            "storage_key",
-        }
-    }
-    encoded = json.dumps(
-        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()
-    assert hashlib.sha256(encoded).hexdigest() == runtime_config["content_hash"]
+    assert "capabilities" not in response.json()
 
 
-def test_confirm_start_persists_explicit_model_selection(client):
-    provider = client.post(
-        "/api/v1/model-providers",
+def test_confirm_start_rejects_attempt_model_override(client):
+    rejected = client.post(
+        "/api/v1/node-attempts/missing-attempt/confirm-start",
         json={
-            "name": "启动模型选择服务",
-            "base_url": "https://models.example.test/v1",
-            "models": [
-                {"model_name": "model-default", "enabled": True, "is_default": True},
-                {"model_name": "model-explicit", "enabled": True, "is_default": False},
-            ],
-        },
-    )
-    assert provider.status_code == 201, provider.text
-    payload = asset_payload("启动模型选择节点")
-    payload["executor"]["model_provider_id"] = provider.json()["id"]
-    created = client.post("/api/v1/node-assets", json=payload)
-    assert created.status_code == 201, created.text
-    flow = create_flow(client, created.json()["id"])
-    started = client.post(
-        f"/api/v1/flows/{flow['id']}/runs",
-        json={
-            "environment_version_id": client.environment_version_id,
-            "flow_node_key": "design_a",
-            "artifacts": [
-                {
-                    "field_key": "prd",
-                    "artifact_type": "URL",
-                    "uri": "https://example.feishu.cn/docx/model-selection-input",
-                }
-            ],
-        },
-    )
-    assert started.status_code == 201, started.text
-    attempt = started.json()["node_runs"][0]["attempts"][0]
-
-    confirmed = client.post(
-        f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
-        json={
-            "expected_state_version": attempt["state_version"],
+            "expected_state_version": 1,
             "model_name": "model-explicit",
         },
         headers={"Idempotency-Key": "explicit-start-model"},
     )
 
-    assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json()["model_name"] == "model-explicit"
+    assert rejected.status_code == 422, rejected.text
 
 
 def test_platform_owned_lark_oauth_endpoints_are_removed(client):
@@ -930,7 +868,7 @@ def test_catalog_model_provider_and_optimistic_concurrency(client, skill_capabil
     assert "secret-value" not in str(provider)
 
 
-def test_model_provider_node_references_require_enabled_models(client, skill_capability):
+def test_models_frozen_by_agent_conversations_cannot_be_disabled(client, db_session_factory):
     provider = client.post(
         "/api/v1/model-providers",
         json={
@@ -945,19 +883,23 @@ def test_model_provider_node_references_require_enabled_models(client, skill_cap
     assert provider["available_for_nodes"] is True
     assert provider["reference_node_count"] == 0
 
-    disabled = asset_payload("禁用模型节点", skill_capability)
-    disabled["executor"]["model_provider_id"] = provider["id"]
-    disabled["executor"]["model_name"] = "gpt-disabled"
-    rejected = client.post("/api/v1/node-assets", json=disabled)
-    assert rejected.status_code == 400
-    assert rejected.json()["error"]["code"] == "INVALID_COMMAND"
-
-    enabled = asset_payload("启用模型节点", skill_capability)
-    enabled["executor"]["model_provider_id"] = provider["id"]
-    enabled["executor"]["model_name"] = "gpt-enabled"
-    asset = client.post("/api/v1/node-assets", json=enabled)
-    assert asset.status_code == 201, asset.text
-    asset = asset.json()
+    binding_id = str(uuid4())
+    with db_session_factory() as db:
+        db.add(
+            AgentConversationBinding(
+                id=binding_id,
+                runtime_session_id=str(uuid4()),
+                host_kind="FLOW_NODE",
+                host_id=str(uuid4()),
+                conversation_scope_id=str(uuid4()),
+                model_provider_id=provider["id"],
+                model_name="gpt-enabled",
+                openhands_conversation_id=str(uuid4()),
+                display_title="冻结模型会话",
+                create_idempotency_key=f"test-binding:{binding_id}",
+            )
+        )
+        db.commit()
 
     listed = client.get("/api/v1/model-providers").json()[0]
     assert listed["reference_node_count"] == 1
@@ -975,7 +917,11 @@ def test_model_provider_node_references_require_enabled_models(client, skill_cap
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "VERSION_CONFLICT"
 
-    assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
+    with db_session_factory() as db:
+        binding = db.get(AgentConversationBinding, binding_id)
+        assert binding is not None
+        db.delete(binding)
+        db.commit()
     listed = client.get("/api/v1/model-providers").json()[0]
     assert listed["reference_node_count"] == 0
 
@@ -1063,16 +1009,27 @@ def test_model_provider_single_and_bulk_delete(client):
 
 
 def test_model_provider_bulk_delete_deletes_unreferenced_and_reports_blocked(
-    client, skill_capability
+    client, db_session_factory
 ):
     referenced = _create_model_provider(client, "被引用模型服务")
     unreferenced = _create_model_provider(client, "未引用模型服务")
-    payload = asset_payload("引用模型服务节点", skill_capability)
-    payload["executor"]["model_provider_id"] = referenced["id"]
-    payload["executor"]["model_name"] = "gpt-delete"
-    asset_response = client.post("/api/v1/node-assets", json=payload)
-    assert asset_response.status_code == 201, asset_response.text
-    asset = asset_response.json()
+    binding_id = str(uuid4())
+    with db_session_factory() as db:
+        db.add(
+            AgentConversationBinding(
+                id=binding_id,
+                runtime_session_id=str(uuid4()),
+                host_kind="FLOW_NODE",
+                host_id=str(uuid4()),
+                conversation_scope_id=str(uuid4()),
+                model_provider_id=referenced["id"],
+                model_name="gpt-delete",
+                openhands_conversation_id=str(uuid4()),
+                display_title="冻结供应商会话",
+                create_idempotency_key=f"test-binding:{binding_id}",
+            )
+        )
+        db.commit()
 
     deleted = client.request(
         "DELETE",
@@ -1086,8 +1043,8 @@ def test_model_provider_bulk_delete_deletes_unreferenced_and_reports_blocked(
             {
                 "id": referenced["id"],
                 "name": referenced["name"],
-                "relation": "NODE_EXECUTOR",
-                "nodes": [{"id": asset["id"], "name": asset["name"]}],
+                "relation": "AGENT_CONFIGURATION",
+                "nodes": [{"id": binding_id, "name": "冻结供应商会话"}],
             }
         ],
     }
@@ -1095,7 +1052,11 @@ def test_model_provider_bulk_delete_deletes_unreferenced_and_reports_blocked(
         referenced["id"],
     }
 
-    assert client.delete(f"/api/v1/node-assets/{asset['id']}").status_code == 204
+    with db_session_factory() as db:
+        binding = db.get(AgentConversationBinding, binding_id)
+        assert binding is not None
+        db.delete(binding)
+        db.commit()
     assert client.delete(f"/api/v1/model-providers/{referenced['id']}").status_code == 204
     assert client.get("/api/v1/model-providers").json() == []
 
@@ -1413,16 +1374,16 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
         f"/api/v1/node-attempts/{attempt1['id']}/confirm-start",
         json={
             "expected_state_version": attempt1["state_version"],
-            "startup_mode": "SKILL",
-            "capability_key": skill_capability["capability_key"],
+            "startup_mode": "PROMPT",
+            "prompt": "生成首轮方案",
         },
         headers={"Idempotency-Key": "confirm-first"},
     )
     assert execution.status_code == 200, execution.text
     attempt1 = execution.json()
     assert attempt1["state"] == "WAITING_ACCEPTANCE"
-    assert attempt1["startup_mode"] == "SKILL"
-    assert attempt1["startup_capability_key"] == skill_capability["capability_key"]
+    assert attempt1["startup_mode"] == "PROMPT"
+    assert attempt1["startup_capability_key"] is None
     assert attempt1["artifacts"][0]["field_key"] == "design"
     assert attempt1["artifacts"][0]["artifact_type"] == "URL"
     assert attempt1["artifacts"][0]["uri"] == ("https://example.feishu.cn/docx/mock-docx-design")

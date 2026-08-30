@@ -25,14 +25,13 @@ from flowweave.shared.domain.tool_policy import (
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
+    AgentWorkspaceCapability,
     CapabilityBlob,
     CapabilityDependency,
     CapabilityImport,
     CapabilityPackage,
     CapabilityValidation,
     CapabilityVersion,
-    NodeAsset,
-    NodeCapabilityRef,
 )
 
 
@@ -639,9 +638,9 @@ def resolve_version(
 
 def list_versions(db: Session) -> list[dict[str, Any]]:
     reference_rows = db.execute(
-        select(NodeCapabilityRef.capability_version_id, func.count())
-        .join(NodeAsset, NodeAsset.id == NodeCapabilityRef.node_asset_id)
-        .group_by(NodeCapabilityRef.capability_version_id)
+        select(AgentWorkspaceCapability.capability_version_id, func.count()).group_by(
+            AgentWorkspaceCapability.capability_version_id
+        )
     ).all()
     references: dict[str, int] = {version_id: int(count) for version_id, count in reference_rows}
     rows = db.execute(

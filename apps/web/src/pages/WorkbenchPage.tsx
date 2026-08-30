@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, nodeSessionApi, subscribeToRun } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
-import { AgentProfileSwitchPanel } from '../components/AgentProfileSwitchPanel';
 import { useWorkbenchStore } from '../store/workbench';
 import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
 
@@ -153,12 +152,10 @@ function FlowRunControls({ run, refresh, navigate }: { run: FlowRun; refresh: ()
 function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const [bindings, setBindings] = useState<Record<string, string>>({});
-  const [mode, setMode] = useState<'SKILL' | 'PROMPT' | 'CHAT'>('CHAT');
-  const skills = node.asset.capabilities.filter(item => item.capability_type === 'SKILL');
-  const [skill, setSkill] = useState('');
+  const [mode, setMode] = useState<'PROMPT' | 'CHAT'>('CHAT');
   const [prompt, setPrompt] = useState(node.asset.executor?.startup_prompt ?? '');
   useEffect(() => {
-    setBindings({}); setMode('CHAT'); setSkill(''); setPrompt(node.asset.executor?.startup_prompt ?? '');
+    setBindings({}); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? '');
   }, [node.instance_key, node.asset.executor?.startup_prompt]);
   const mutation = useMutation({
     mutationFn: async () => {
@@ -172,9 +169,7 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
         );
         return { created, conversationId: conversation.id };
       }
-      const started = await api.confirmStart(attempt.id, attempt.state_version, mode === 'SKILL'
-        ? { startup_mode: 'SKILL', capability_key: skill }
-        : { startup_mode: 'PROMPT', prompt });
+      const started = await api.confirmStart(attempt.id, attempt.state_version, { startup_mode: 'PROMPT', prompt });
       return {
         created: { ...created, attempts: created.attempts.map(item => item.id === started.id ? started : item) },
       };
@@ -189,15 +184,14 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
     },
   });
   const missing = node.asset.inputs.some(field => !bindings[field.field_key]);
-  const invalidMode = (mode === 'SKILL' && !skill) || (mode === 'PROMPT' && !prompt.trim());
+  const invalidMode = mode === 'PROMPT' && !prompt.trim();
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key);
   const visits = nodeRuns.length;
   return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><div className="action-content">
     <section className="node-console-intro"><span className="eyebrow">ARTIFACT-DRIVEN</span><h3>创建一次独立执行</h3><p>先绑定本次实际输入，再选择启动方式。执行记录引用 FlowRun 内的 OpenHands 会话，不再拥有独立 Runtime。</p></section>
-    <AgentProfileSwitchPanel run={run} node={node} disabled={terminal} onSwitched={result => { refresh(); useWorkbenchStore.getState().selectExecution(result.attempt.node_run_id, result.attempt.id); }}/>
     {nodeRuns.length > 0 && <section className="node-execution-history"><header><h4>已有执行记录</h4><small>可随时查看，且不影响再次启动</small></header>{nodeRuns.map(item => <button key={item.id} onClick={() => onSelectExecution(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>)}</section>}
     <section className="node-console-inputs"><h4>本次输入</h4>{node.asset.inputs.length ? node.asset.inputs.map(field => { const options = artifactOptions(run, field.data_type); const selected = options.find(item => item.id === bindings[field.field_key]); return <article key={field.field_key}><header><span><b>{field.display_name || field.field_key}</b><small>{field.description || field.data_type}</small></span><code>{field.field_key}</code></header><select aria-label={`节点输入 ${field.field_key}`} value={bindings[field.field_key] ?? ''} onChange={event => setBindings(old => ({ ...old, [field.field_key]: event.target.value }))}><option value="">选择已有产物</option>{options.map(item => <option key={item.id} value={item.id}>{artifactLabel(item)} · {item.uri}</option>)}</select>{selected && <div className="selected-artifact"><span><Link2 size={13}/><b>{artifactLabel(selected)}</b></span><a href={selected.uri ?? undefined} target="_blank" rel="noreferrer">{selected.uri || '无外部 URL'}</a></div>}<ArtifactCreator run={run} field={field} refresh={refresh} onCreated={artifact => setBindings(old => ({ ...old, [field.field_key]: artifact.id }))}/></article>; }) : <div className="empty compact">该节点无需输入，可以直接启动。</div>}</section>
-    <section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'SKILL'} onChange={() => setMode('SKILL')}/><span><b>使用 Skill 启动</b><small>选择本轮首要能力</small></span></label><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => setMode('PROMPT')}/><span><b>发送启动提示词</b><small>创建后立即自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => setMode('CHAT')}/><span><b>仅创建会话启动</b><small>不发送首条任务消息</small></span></label></div>{mode === 'SKILL' && <label>本轮 Skill<select aria-label="节点启动 Skill" value={skill} onChange={event => setSkill(event.target.value)}><option value="">请选择</option>{skills.map(item => <option key={item.capability_key}>{item.capability_key}</option>)}</select></label>}{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section>
+    <section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => setMode('PROMPT')}/><span><b>发送启动提示词</b><small>创建后立即自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => setMode('CHAT')}/><span><b>仅创建会话启动</b><small>不发送首条任务消息</small></span></label></div>{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section>
     <button className="primary full node-run-button" disabled={terminal || missing || invalidMode || mutation.isPending} onClick={() => mutation.mutate()}><Play size={15}/>{mutation.isPending ? '正在创建…' : mode === 'CHAT' ? '启动节点会话' : `开始第 ${visits + 1} 次执行`}</button>{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
   </div></aside>;
 }
@@ -206,17 +200,15 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const dialog = useProductDialog();
   const [text, setText] = useState('');
   const [bindings, setBindings] = useState<Record<string, string>>({});
-  const [startupMode, setStartupMode] = useState<'SKILL' | 'PROMPT' | 'CHAT'>('PROMPT');
+  const [startupMode, setStartupMode] = useState<'PROMPT' | 'CHAT'>('PROMPT');
   const attemptSnapshot = run.snapshots.find(item => item.id === attempt.snapshot_id);
   const attemptNode = attemptSnapshot?.definition.nodes.find(item => item.instance_key === nodeRun.flow_node_snapshot_key);
-  const skills = attemptNode?.asset.capabilities.filter(item => item.capability_type === 'SKILL') ?? [];
-  const [startupSkill, setStartupSkill] = useState('');
   const [startupPrompt, setStartupPrompt] = useState(attemptNode?.asset.executor?.startup_prompt ?? '');
-  useEffect(() => { setStartupMode('PROMPT'); setStartupSkill(''); setStartupPrompt(attemptNode?.asset.executor?.startup_prompt ?? ''); }, [attempt.id, attemptNode?.asset.executor?.startup_prompt]);
+  useEffect(() => { setStartupMode('PROMPT'); setStartupPrompt(attemptNode?.asset.executor?.startup_prompt ?? ''); }, [attempt.id, attemptNode?.asset.executor?.startup_prompt]);
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
-    if (kind === 'confirm') return api.confirmStart(attempt.id, attempt.state_version, body as { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string });
+    if (kind === 'confirm') return api.confirmStart(attempt.id, attempt.state_version, body as { startup_mode: 'PROMPT'; prompt?: string });
     if (kind === 'chat') return nodeSessionApi.create(
       run.id, attempt.id, `${nodeRunName(run, nodeRun)} · 会话`,
     );
@@ -246,7 +238,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations}/></section>
     <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts}/></section>
     {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>运行已进入只读终态，历史记录继续保留。流程级操作位于上方“流程运行态管理”。</p></section> : <>
-      {attempt.state === 'WAITING_START_CONFIRMATION' && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>会话归属于 FlowRun；选择“仅创建会话”会显式新建一个 OpenHands Conversation。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'SKILL'} onChange={() => setStartupMode('SKILL')}/><span><b>使用 Skill 启动</b></span></label><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'SKILL' && <label>本轮 Skill<select value={startupSkill} onChange={event => setStartupSkill(event.target.value)}><option value="">请选择</option>{skills.map(item => <option key={item.capability_key}>{item.capability_key}</option>)}</select></label>}{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'SKILL' && !startupSkill) || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => { if (startupMode === 'CHAT') act('chat'); else act('confirm', startupMode === 'SKILL' ? { startup_mode: 'SKILL', capability_key: startupSkill } : { startup_mode: 'PROMPT', prompt: startupPrompt }); }}>确认启动</button></section>}
+      {attempt.state === 'WAITING_START_CONFIRMATION' && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>会话归属于 FlowRun；选择“仅创建会话”会显式新建一个 OpenHands Conversation。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => { if (startupMode === 'CHAT') act('chat'); else act('confirm', { startup_mode: 'PROMPT', prompt: startupPrompt }); }}>确认启动</button></section>}
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>确认完成</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>}

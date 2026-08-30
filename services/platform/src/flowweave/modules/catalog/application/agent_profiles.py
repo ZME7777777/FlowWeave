@@ -17,7 +17,7 @@ from flowweave.shared.domain.runtime_policy import (
     normalize_agent_profile_document,
 )
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import CapabilityVersion, NodeAsset, NodeCapabilityRef
+from flowweave.shared.models import CapabilityVersion
 from flowweave.shared.schemas import (
     AgentProfileCopyWrite,
     AgentProfileRetireWrite,
@@ -147,20 +147,3 @@ def retire_profile(
     source.version.state = "RETIRED"
     finish(db)
     return _read_model(source)
-
-
-def profile_bindings(db: Session, version_id: str) -> list[dict[str, Any]]:
-    _profile(db, version_id, include_retired=True)
-    rows = db.execute(
-        select(NodeAsset.id, NodeAsset.name, NodeCapabilityRef.position)
-        .join(NodeCapabilityRef, NodeCapabilityRef.node_asset_id == NodeAsset.id)
-        .where(
-            NodeCapabilityRef.capability_type == "AGENT_PROFILE",
-            NodeCapabilityRef.capability_version_id == version_id,
-        )
-        .order_by(NodeAsset.name, NodeAsset.id)
-    ).all()
-    return [
-        {"node_asset_id": node_id, "node_name": name, "position": position}
-        for node_id, name, position in rows
-    ]

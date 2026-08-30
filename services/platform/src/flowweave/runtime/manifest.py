@@ -147,8 +147,40 @@ def runtime_node(
             {"snapshot_id": snapshot_id},
         )
     raw_nodes: object = manifest.get("nodes")
+    schema_version = manifest.get("schema_version")
     if (
-        manifest.get("schema_version") != 2
+        schema_version == 3
+        and manifest.get("openhands_version") == OPENHANDS_VERSION
+        and isinstance(raw_nodes, dict)
+    ):
+        raw_manifest_node = cast(dict[object, object], raw_nodes).get(instance_key)
+        if not isinstance(raw_manifest_node, dict):
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Snapshot Runtime Manifest has no selected node",
+                409,
+                {"snapshot_id": snapshot_id, "instance_key": instance_key},
+            )
+        node = _definition_node(definition, instance_key, snapshot_id)
+        asset = node.get("asset")
+        manifest_node = cast(dict[object, object], raw_manifest_node)
+        expected_value = manifest_node.get("node_asset_id")
+        expected_asset_id = expected_value if isinstance(expected_value, str) else ""
+        actual_value: object = node.get("node_asset_id")
+        if not isinstance(actual_value, str) and isinstance(asset, dict):
+            actual_value = cast(dict[object, object], asset).get("id")
+        actual_asset_id = actual_value if isinstance(actual_value, str) else ""
+        if not expected_asset_id or expected_asset_id != actual_asset_id:
+            raise DomainError(
+                "SNAPSHOT_MANIFEST_INVALID",
+                "Snapshot node identity drifted",
+                409,
+                {"snapshot_id": snapshot_id, "instance_key": instance_key},
+            )
+        node["runtime_snapshot_id"] = snapshot_id
+        return node
+    if (
+        schema_version != 2
         or manifest.get("openhands_version") != OPENHANDS_VERSION
         or not isinstance(raw_nodes, dict)
     ):

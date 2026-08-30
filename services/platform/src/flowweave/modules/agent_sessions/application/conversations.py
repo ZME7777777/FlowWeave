@@ -13,6 +13,10 @@ from uuid import UUID, uuid4, uuid5
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.runtime_config import (
+    build_agent_spec,
+    config_from_binding,
+)
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -25,8 +29,6 @@ from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.base import (
-    RuntimeAgentContext,
-    RuntimeAgentSpec,
     RuntimeCondenser,
     RuntimeHandle,
     RuntimeMCPProbeRequest,
@@ -34,7 +36,6 @@ from flowweave.runtime.base import (
     RuntimeTool,
     StartAttemptRequest,
 )
-from flowweave.runtime.contract import agent_workspace_runtime_contract
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.request import runtime_provider
 from flowweave.runtime.workspace import (
@@ -459,74 +460,6 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
     return _dict(db, item)
 
 
-def _system_context(working_directory: str) -> str:
-    if working_directory == _PROJECT_ROOT:
-        return _PROJECT_ROOT_SYSTEM_CONTEXT
-    return _PROJECT_ROOT_SYSTEM_CONTEXT + (
-        f"\n本次会话的默认工作目录是 {working_directory}；"
-        "优先在该目录及其子目录内组织本次工作的文件。"
-    )
-
-
-def _frozen_capabilities(
-    db: Session, binding: AgentConversationBinding
-) -> tuple[dict[str, Any], ...]:
-    """Rebuild only the catalog versions frozen on this binding."""
-
-    frozen: list[dict[str, Any]] = []
-    for reference in db.scalars(
-        select(AgentConversationCapability)
-        .where(AgentConversationCapability.binding_id == binding.id)
-        .order_by(AgentConversationCapability.position)
-    ):
-        published = resolve_version(db, reference.capability_version_id, include_retired=True)
-        if (
-            published.package.capability_type != reference.capability_type
-            or published.package.capability_key != reference.capability_key
-            or published.version.digest != reference.digest
-        ):
-            raise DomainError(
-                "AGENT_CONVERSATION_CAPABILITY_IDENTITY_DRIFT",
-                "会话冻结能力身份校验失败",
-                409,
-            )
-        runtime_config = published.runtime_config()
-        frozen.append(
-            {
-                "capability_version_id": reference.capability_version_id,
-                "capability_type": reference.capability_type,
-                "capability_key": reference.capability_key,
-                "digest": reference.digest,
-                # Materializers consume the complete immutable runtime config:
-                # the Version document alone intentionally omits the blob's
-                # storage key and digest needed to verify and unpack packages.
-                "normalized_config": dict(runtime_config),
-                **runtime_config,
-            }
-        )
-    return tuple(frozen)
-
-
-def _runtime_capabilities(
-    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
-) -> tuple[tuple[Any, ...], tuple[Any, ...], tuple[Any, ...]]:
-    frozen = _frozen_capabilities(db, binding)
-    if not frozen:
-        return (), (), ()
-    allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(db, workspace.id)
-    host_root = (
-        Path(get_settings().workspace_root).resolve()
-        / allocation.relative_root
-        / "capabilities"
-        / "conversations"
-        / binding.id
-    )
-    runtime_root = Path("/runtime/capabilities/conversations") / binding.id
-    return materialize_agent_workspace_capabilities(
-        frozen, host_root=host_root, runtime_root=runtime_root
-    )
-
-
 def _capability_marketplace_paths(
     db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
 ) -> tuple[Path, Path, str]:
@@ -540,21 +473,6 @@ def _capability_marketplace_paths(
     )
     runtime_root = Path("/runtime/capabilities/conversations") / binding.id
     return host_root, runtime_root, agent_workspace_capability_marketplace_name(binding.id)
-
-
-def _ensure_capability_marketplace(
-    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
-) -> tuple[str, str]:
-    host_root, runtime_root, marketplace_name = _capability_marketplace_paths(
-        db, workspace, binding
-    )
-    materialize_agent_workspace_capability_marketplace(
-        None,
-        host_root=host_root,
-        runtime_root=runtime_root,
-        marketplace_name=marketplace_name,
-    )
-    return marketplace_name, str(runtime_root / "marketplace")
 
 
 def _frozen_runtime_capability(db: Session, published: Any, capability_type: str) -> dict[str, Any]:
@@ -656,9 +574,16 @@ def _create_native_conversation(
                     "AGENT_WORK_DIRECTORY_IDENTITY_DRIFT", "会话工作目录校验失败", 409
                 )
             return handle
-    skills, plugins, mcp_servers = _runtime_capabilities(db, workspace, binding)
-    marketplace_name, marketplace_runtime_path = _ensure_capability_marketplace(
+    host_root, runtime_root, _marketplace_name = _capability_marketplace_paths(
         db, workspace, binding
+    )
+    agent_spec = build_agent_spec(
+        config_from_binding(db, binding),
+        provider=provider,
+        binding_id=binding.id,
+        working_directory=working_directory,
+        host_root=host_root,
+        runtime_root=runtime_root,
     )
     request = StartAttemptRequest(
         attempt_id=binding.id,
@@ -667,46 +592,7 @@ def _create_native_conversation(
         bindings=[],
         workspace_ref=working_directory,
         conversation_id=binding.openhands_conversation_id,
-        agent_spec=RuntimeAgentSpec(
-            provider=provider,
-            confirmation_policy="NEVER",
-            agent_context=RuntimeAgentContext(
-                system_message_suffix=_system_context(working_directory),
-                # OpenHands resolves dynamic Plugin loads only through this
-                # persisted AgentContext registration.  It is intentionally a
-                # binding-specific, read-only Marketplace and auto-load is off.
-                registered_marketplaces=(
-                    {
-                        "name": marketplace_name,
-                        "source": marketplace_runtime_path,
-                        "auto_load": False,
-                    },
-                ),
-            ),
-            # This is the fixed OpenHands 1.44.0 summarizing condenser, not a
-            # FlowWeave summary loop. It remains native Conversation history.
-            # Keep OpenHands' native event/token safeguards, but avoid the
-            # default 240-event heuristic compacting tool-heavy sessions while
-            # their token window is still mostly empty. FlowWeave proactively
-            # invokes the same native condenser at 80% of OpenHands' registered
-            # context window before accepting the next user message. The first
-            # system/user context remains verbatim through OpenHands' standard
-            # ``keep_first=4`` checkpoint boundary. The same 80% policy is
-            # frozen into the native condenser for long tool loops; the very
-            # high event limit is only a disaster guard.
-            condenser=RuntimeCondenser(
-                kind="LLM_SUMMARIZING",
-                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-                max_tokens_ratio=_PROACTIVE_COMPACTION_RATIO,
-                keep_first=4,
-            ),
-            condenser_provider=provider,
-            tools=_TOOLS,
-            skills=skills,
-            plugins=plugins,
-            mcp_servers=mcp_servers,
-            runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in _TOOLS)),
-        ),
+        agent_spec=agent_spec,
         environment_image=runtime.runtime_image_digest,
         environment_id=workspace.id,
         environment_version_id=workspace.id,

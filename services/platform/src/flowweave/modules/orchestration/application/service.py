@@ -7,19 +7,25 @@ import shutil
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application.runtime_config import (
+    build_agent_spec,
+    config_from_binding,
+    flow_node_binding_for_attempt,
+    provider_for_config,
+    reserve_flow_node_binding,
+    resolve_session_config,
+)
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.catalog.public import (
-    describe_agent_profile_version,
     describe_asset,
     hold_snapshot_memory_references,
-    resolve_snapshot_memory,
 )
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
@@ -46,7 +52,6 @@ from flowweave.runtime.base import (
     RuntimeResult,
     StartAttemptRequest,
 )
-from flowweave.runtime.contract import compile_runtime_contract
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import (
     runtime_manifest_hash as _runtime_manifest_hash,
@@ -56,14 +61,10 @@ from flowweave.runtime.manifest import (
 )
 from flowweave.runtime.request import (
     build_runtime_request,
-    frozen_memory_policy,
-    resolve_runtime_provider,
-    resolve_runtime_selection,
 )
 from flowweave.runtime.routing import runtime_for
 from flowweave.runtime.workspace import (
     attempt_workspace_path,
-    materialize_runtime_memory,
 )
 from flowweave.shared.application.transactions import (
     finish,
@@ -94,11 +95,9 @@ from flowweave.shared.models import (
     now,
 )
 from flowweave.shared.schemas import (
-    AgentProfileSwitchWrite,
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
-    CondenserWrite,
     HumanInputWrite,
     InputBindingsWrite,
     NodeRunStart,
@@ -116,10 +115,13 @@ def _hash(value: Any) -> str:
 
 
 def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
-    """Compile the complete, replayable Agent specification for every node."""
+    """Freeze only Flow-owned node identity.
 
-    nodes: dict[str, dict[str, Any]] = {}
-    runtime_oracle_profile: dict[str, str] | None = None
+    Agent model, capabilities and OpenHands policy are frozen on each shared
+    Conversation binding when that Conversation is explicitly started.
+    """
+
+    nodes: dict[str, dict[str, str]] = {}
     raw_nodes: object = definition.get("nodes", [])
     if not isinstance(raw_nodes, list):
         raise DomainError("SNAPSHOT_INVALID", "Snapshot nodes are invalid", 409)
@@ -132,176 +134,13 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
         if not instance_key or not isinstance(raw_asset, dict):
             raise DomainError("SNAPSHOT_INVALID", "Snapshot node asset is invalid", 409)
         asset = cast(dict[str, Any], raw_asset)
-        raw_capabilities: object = asset.get("capabilities", [])
-        if not isinstance(raw_capabilities, list):
-            raise DomainError("SNAPSHOT_INVALID", "Snapshot capabilities are invalid", 409)
-        capabilities: list[dict[str, Any]] = []
-        tool_policies: list[dict[str, Any]] = []
-        context_policies: list[dict[str, Any]] = []
-        memory_policies: list[dict[str, Any]] = []
-        critic_policies: list[dict[str, Any]] = []
-        agent_profiles: list[dict[str, Any]] = []
-        agent_definitions: list[dict[str, Any]] = []
-        plugins: list[dict[str, Any]] = []
-        for raw_capability in cast(list[object], raw_capabilities):
-            if not isinstance(raw_capability, dict):
-                raise DomainError("SNAPSHOT_INVALID", "Snapshot capability is invalid", 409)
-            capability = cast(dict[str, Any], raw_capability)
-            raw_config: object = capability.get("normalized_config")
-            if not isinstance(raw_config, dict):
-                raise DomainError("SNAPSHOT_INVALID", "Snapshot capability config is invalid", 409)
-            config = cast(dict[str, Any], raw_config)
-            version_id = str(
-                capability.get("capability_id") or config.get("capability_version_id") or ""
-            )
-            digest = str(config.get("digest") or "")
-            content_hash = str(config.get("content_hash") or "")
-            if len(version_id) != 36 or len(digest) != 64 or len(content_hash) != 64:
-                raise DomainError(
-                    "SNAPSHOT_INVALID",
-                    "Snapshot capability lacks an immutable version",
-                    409,
-                    {"instance_key": instance_key},
-                )
-            frozen = {
-                "capability_version_id": version_id,
-                "capability_type": str(capability.get("capability_type") or ""),
-                "capability_key": str(capability.get("capability_key") or ""),
-                "digest": digest,
-                "content_hash": content_hash,
-                "runtime_config": copy.deepcopy(config),
-            }
-            if frozen["capability_type"] == "TOOL_POLICY":
-                tool_policies.append(frozen)
-            elif frozen["capability_type"] == "CONTEXT_POLICY":
-                context_policies.append(frozen)
-            elif frozen["capability_type"] == "MEMORY_POLICY":
-                memory_policies.append(frozen)
-            elif frozen["capability_type"] == "CRITIC_POLICY":
-                critic_policies.append(frozen)
-            elif frozen["capability_type"] == "AGENT_PROFILE":
-                agent_profiles.append(frozen)
-            elif frozen["capability_type"] == "AGENT_DEFINITION":
-                agent_definitions.append(frozen)
-            elif frozen["capability_type"] == "PLUGIN":
-                plugins.append(frozen)
-            else:
-                capabilities.append(frozen)
-        if len(tool_policies) != 1:
-            raise DomainError(
-                "SNAPSHOT_INVALID",
-                "Snapshot node must freeze exactly one Tool Policy",
-                409,
-                {"instance_key": instance_key, "tool_policy_count": len(tool_policies)},
-            )
-        if len(context_policies) != 1:
-            raise DomainError(
-                "SNAPSHOT_INVALID",
-                "Snapshot node must freeze exactly one Context Policy",
-                409,
-                {
-                    "instance_key": instance_key,
-                    "context_policy_count": len(context_policies),
-                },
-            )
-        if len(memory_policies) != 1:
-            raise DomainError(
-                "SNAPSHOT_INVALID",
-                "Snapshot node must freeze exactly one Memory Policy",
-                409,
-                {
-                    "instance_key": instance_key,
-                    "memory_policy_count": len(memory_policies),
-                },
-            )
-        if len(critic_policies) != 1:
-            raise DomainError(
-                "SNAPSHOT_INVALID",
-                "Snapshot node must freeze exactly one Critic Policy",
-                409,
-                {
-                    "instance_key": instance_key,
-                    "critic_policy_count": len(critic_policies),
-                },
-            )
-        if len(agent_profiles) > 1:
-            raise DomainError(
-                "SNAPSHOT_INVALID",
-                "Snapshot node can freeze at most one Agent Profile",
-                409,
-                {
-                    "instance_key": instance_key,
-                    "agent_profile_count": len(agent_profiles),
-                },
-            )
-        executor = asset.get("executor")
-        if not isinstance(executor, dict):
-            raise DomainError("SNAPSHOT_INVALID", "Snapshot executor is invalid", 409)
-        executor_config = cast(dict[str, Any], executor)
-        raw_tool_config = cast(dict[str, Any], tool_policies[0]["runtime_config"])
-        raw_tools = raw_tool_config.get("tools")
-        if not isinstance(raw_tools, list):
-            raise DomainError(
-                "SNAPSHOT_INVALID",
-                "Snapshot Tool Policy tools are invalid",
-                409,
-                {"instance_key": instance_key},
-            )
-        required_tools = tuple(
-            str(cast(dict[str, Any], item).get("name") or "")
-            for item in cast(list[object], raw_tools)
-            if isinstance(item, dict)
-        )
-        oracle_profile: dict[str, str] | None = None
-        if "ask_oracle" in required_tools:
-            provider_id = str(executor_config.get("model_provider_id") or "")
-            model_name = str(executor_config.get("model_name") or "")
-            if not provider_id or not model_name:
-                raise DomainError(
-                    "SNAPSHOT_INVALID",
-                    "Oracle requires an explicit frozen model provider and model",
-                    409,
-                    {"instance_key": instance_key},
-                )
-            oracle_profile = {
-                "name": "oracle",
-                "provider_id": provider_id,
-                "model": model_name,
-            }
-            if runtime_oracle_profile is None:
-                runtime_oracle_profile = oracle_profile
-            elif runtime_oracle_profile != oracle_profile:
-                raise DomainError(
-                    "SNAPSHOT_INVALID",
-                    "All Oracle-enabled nodes in one FlowRun must share one frozen model profile",
-                    409,
-                    {"instance_key": instance_key},
-                )
-        nodes[instance_key] = {
-            "node_asset_id": str(node.get("node_asset_id") or asset.get("id") or ""),
-            "capabilities": capabilities,
-            "agent_spec": {
-                "schema_version": 1,
-                "agent_kind": "OPENHANDS",
-                "openhands_version": OPENHANDS_VERSION,
-                "runtime_contract": compile_runtime_contract(required_tools),
-                "tool_policy": tool_policies[0],
-                "context_policy": context_policies[0],
-                "memory_policy": memory_policies[0],
-                "critic_policy": critic_policies[0],
-                "agent_profile": agent_profiles[0] if agent_profiles else None,
-                "oracle_profile": oracle_profile,
-                "agent_definitions": agent_definitions,
-                "plugins": plugins,
-                "confirmation_policy": str(executor_config.get("confirmation_policy") or "ALWAYS"),
-                "condenser": copy.deepcopy(executor_config.get("condenser") or {"kind": "NO_OP"}),
-                "budgets": {"max_iterations": int(executor_config.get("max_iterations") or 100)},
-            },
-        }
+        asset_id = str(node.get("node_asset_id") or asset.get("id") or "")
+        if not asset_id:
+            raise DomainError("SNAPSHOT_INVALID", "Snapshot node asset id is missing", 409)
+        nodes[instance_key] = {"node_asset_id": asset_id}
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "openhands_version": OPENHANDS_VERSION,
-        "oracle_profile": copy.deepcopy(runtime_oracle_profile),
         "nodes": nodes,
     }
 
@@ -317,6 +156,8 @@ def _preserve_runtime_oracle_profile(
     different provider/model while historical Conversations remain resumable.
     """
 
+    if candidate_manifest.get("schema_version") == 3:
+        return candidate_manifest
     current = current_manifest.get("oracle_profile")
     candidate = candidate_manifest.get("oracle_profile")
     if current is None:
@@ -411,43 +252,6 @@ def _node(snapshot: RunSnapshot, instance_key: str) -> dict[str, Any]:
         if item["instance_key"] == instance_key:
             return item
     raise not_found("flow_node_snapshot", instance_key)
-
-
-def _confirmation_policy(value: object, *, source: str) -> Literal["ALWAYS", "NEVER"]:
-    policy = str(value or "ALWAYS")
-    if policy not in {"ALWAYS", "NEVER"}:
-        raise DomainError(
-            "SNAPSHOT_INVALID",
-            "OpenHands confirmation policy is invalid",
-            409,
-            {"source": source, "confirmation_policy": policy},
-        )
-    return cast(Literal["ALWAYS", "NEVER"], policy)
-
-
-def _snapshot_confirmation_policy(node: dict[str, Any]) -> Literal["ALWAYS", "NEVER"]:
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    executor = cast(dict[str, Any], asset.get("executor") or {})
-    return _confirmation_policy(
-        executor.get("confirmation_policy"), source="snapshot.node.asset.executor"
-    )
-
-
-def _snapshot_condenser_config(node: dict[str, Any]) -> dict[str, Any]:
-    """Validate and freeze the governed condenser policy from a Run Snapshot."""
-
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    executor = cast(dict[str, Any], asset.get("executor") or {})
-    raw = executor.get("condenser") or {"kind": "NO_OP"}
-    try:
-        return CondenserWrite.model_validate(raw).model_dump(mode="json")
-    except ValueError as exc:
-        raise DomainError(
-            "SNAPSHOT_INVALID",
-            "OpenHands condenser policy is invalid",
-            409,
-            {"source": "snapshot.node.asset.executor.condenser"},
-        ) from exc
 
 
 def _run(db: Session, run_id: str) -> FlowRun:
@@ -1323,8 +1127,6 @@ def _create_node_run(
     asset_id = str(asset.get("id") or "")
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
-    confirmation_policy = _snapshot_confirmation_policy(node)
-    condenser_config = _snapshot_condenser_config(node)
     _validate_input_bindings(db, run, node, artifact_ids)
     # Automatic port propagation targets the latest waiting work item so the
     # same mapping stays idempotent. A human start is intentionally different:
@@ -1391,8 +1193,6 @@ def _create_node_run(
             node_run_id=existing.id,
             attempt_no=next_attempt_no,
             snapshot_id=snapshot.id,
-            confirmation_policy=confirmation_policy,
-            condenser_config_json=copy.deepcopy(condenser_config),
             workspace_ref=str(
                 attempt_workspace_path(
                     asset_id=asset_id,
@@ -1439,8 +1239,6 @@ def _create_node_run(
         node_run_id=node_run.id,
         attempt_no=1,
         snapshot_id=snapshot.id,
-        confirmation_policy=confirmation_policy,
-        condenser_config_json=copy.deepcopy(condenser_config),
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=asset_id,
@@ -1738,12 +1536,16 @@ def confirm_start(
     current = _attempt(db, attempt_id)
     current_node_run = _node_run(db, current.node_run_id)
     node = _node(_snapshot(db, current.snapshot_id), current_node_run.flow_node_snapshot_key)
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    capabilities = cast(list[dict[str, Any]], asset.get("capabilities") or [])
+    host = agent_sessions.resolve_flow_node_session_host(
+        db,
+        flow_run_id=current_node_run.flow_run_id,
+        attempt_id=current.id,
+        require_start_permission=True,
+    )
+    session_config = resolve_session_config(db)
     if payload.startup_mode == "SKILL" and not any(
-        item.get("capability_type") == "SKILL"
-        and item.get("capability_key") == payload.capability_key
-        for item in capabilities
+        item.capability_type == "SKILL" and item.capability_key == payload.capability_key
+        for item in session_config.capabilities
     ):
         raise DomainError(
             "STARTUP_CAPABILITY_INVALID",
@@ -1751,10 +1553,6 @@ def confirm_start(
             422,
             {"capability_key": payload.capability_key},
         )
-    selected_model, selected_effort = resolve_runtime_selection(
-        db, node, payload.model_name, payload.reasoning_effort
-    )
-    _confirmation_policy(current.confirmation_policy, source="node_attempt")
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -1766,10 +1564,19 @@ def confirm_start(
     attempt.startup_mode = payload.startup_mode
     attempt.startup_capability_key = payload.capability_key
     attempt.startup_prompt = payload.prompt
-    attempt.model_name = selected_model
-    attempt.reasoning_effort = selected_effort
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
+    reserve_flow_node_binding(
+        db,
+        runtime_session_id=host.runtime_session_id,
+        flow_run_id=run.id,
+        node_run_id=node_run.id,
+        node_attempt_id=attempt.id,
+        working_directory=host.session.working_directory,
+        create_idempotency_key=f"attempt-runtime:{attempt.id}",
+        display_title=f"运行 {attempt.id}",
+        config=session_config,
+    )
     # Starting an attempt must not call a provider or acquire capability credentials.
     # Skills/MCPs request their own dependencies only when they are actually invoked.
     attempt.output_targets_json = _create_output_targets(db, run, attempt, node)
@@ -2038,16 +1845,25 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     node = _runtime_node(snapshot, node_run.flow_node_snapshot_key)
-    memory_enabled, source_refs = frozen_memory_policy(node, runtime_scope="ATTEMPT")
-    settings = get_settings()
-    if memory_enabled and (
-        settings.runtime_adapter != "openhands" or settings.terminal_environment_backend != "docker"
-    ):
-        raise DomainError(
-            "MEMORY_SOURCE_UNAVAILABLE",
-            "Enabled Memory requires an isolated managed Runtime",
-            409,
+    session_binding = flow_node_binding_for_attempt(db, attempt.id, require_provisioning=True)
+    session_config = config_from_binding(db, session_binding)
+    provider = provider_for_config(db, session_config)
+    host_root = sandboxes.flow_run_capability_path(
+        run.id, snapshot.runtime_manifest_hash, "conversations", session_binding.id
+    )
+    runtime_root = Path(
+        sandboxes.openhands_flow_run_capability_path(
+            snapshot.runtime_manifest_hash, "conversations", session_binding.id
         )
+    )
+    agent_spec = build_agent_spec(
+        session_config,
+        provider=provider,
+        binding_id=session_binding.id,
+        working_directory=session_binding.working_directory or "/runtime/workspace/project",
+        host_root=host_root,
+        runtime_root=runtime_root,
+    )
     asset = cast(dict[str, Any], node.get("asset") or {})
     input_contracts = {
         str(item.get("field_key") or ""): item
@@ -2086,32 +1902,14 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         workspace_ref=attempt.workspace_ref or "",
         startup_prompt=attempt.startup_prompt,
         startup_capability_key=attempt.startup_capability_key,
-        model_name=attempt.model_name,
-        reasoning_effort=attempt.reasoning_effort,
         output_targets=cast(dict[str, dict[str, str]], attempt.output_targets_json or {}),
         environment_image=environment.image_digest,
         environment_id=environment.environment_id,
         environment_version_id=environment.id,
         environment_version_no=environment.version_no,
-        memory_materialized=memory_enabled,
+        agent_spec=agent_spec,
+        conversation_id=session_binding.openhands_conversation_id,
     )
-    if memory_enabled:
-        materials = resolve_snapshot_memory(
-            db,
-            snapshot_id=snapshot.id,
-            source_refs=source_refs,
-            allowed_scopes={"USER", "PROJECT"},
-        )
-        runtime_allocation = sandboxes.runtime_allocation_for_flow_run(
-            db, run.id, manifest_digest=snapshot.runtime_manifest_hash
-        )
-        with sandboxes.capability_materialization_lock(runtime_allocation):
-            materialize_runtime_memory(
-                flow_run_id=run.id,
-                manifest_digest=snapshot.runtime_manifest_hash,
-                workspace_ref=attempt.workspace_ref or "",
-                materials=materials,
-            )
     return request
 
 
@@ -2428,17 +2226,6 @@ def process_poll_runtime(
 def human_input(
     db: Session, attempt_id: str, payload: HumanInputWrite, idempotency_key: str
 ) -> dict[str, Any]:
-    current = _attempt(db, attempt_id)
-    current_node_run = _node_run(db, current.node_run_id)
-    node = _node(_snapshot(db, current.snapshot_id), current_node_run.flow_node_snapshot_key)
-    selected_model, selected_effort = resolve_runtime_selection(
-        db,
-        node,
-        payload.model_name or current.model_name,
-        payload.reasoning_effort
-        if "reasoning_effort" in payload.model_fields_set
-        else current.reasoning_effort,
-    )
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -2453,13 +2240,7 @@ def human_input(
         node_run.flow_run_id,
         "HUMAN_INPUT",
         idempotency_key,
-        {
-            "content": payload.content,
-            "runtime_selection": {
-                "model_name": selected_model,
-                "reasoning_effort": selected_effort,
-            },
-        },
+        {"content": payload.content},
         node_run.id,
         attempt.id,
     )
@@ -2738,23 +2519,8 @@ def process_resume_runtime(
     current_attempt_id = attempt.id
     content = str(action.payload_json.get("content", ""))
     handle = _active_attempt_runtime_handle(db, attempt)
-    selection = cast(dict[str, Any], action.payload_json.get("runtime_selection") or {})
-    node_run = _node_run(db, attempt.node_run_id)
-    node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
-    provider = (
-        resolve_runtime_provider(
-            db,
-            node,
-            cast(str | None, selection.get("model_name")),
-            cast(str | None, selection.get("reasoning_effort")),
-        )
-        if selection.get("model_name") and get_settings().runtime_adapter != "mock"
-        else None
-    )
     _release_worker_read_transaction(db, lease)
     runtime = get_runtime()
-    if provider is not None:
-        runtime.switch_model(handle, provider)
     result = runtime.resume(handle, content)
     try:
         _require_current_lease(db, lease)
@@ -2774,7 +2540,6 @@ def process_resume_runtime(
     action.payload_json = {
         "content_digest": hashlib.sha256(content.encode()).hexdigest(),
         "content_length": len(content),
-        "runtime_selection": selection,
     }
     _apply_runtime_result(
         db,
@@ -3144,14 +2909,10 @@ def reject_attempt(
     next_asset_id = str(next_asset.get("id") or "")
     if not next_asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
-    confirmation_policy = _snapshot_confirmation_policy(next_node)
-    condenser_config = _snapshot_condenser_config(next_node)
     next_attempt = NodeAttempt(
         node_run_id=node_run.id,
         attempt_no=next_no,
         snapshot_id=run.active_snapshot_id,
-        confirmation_policy=confirmation_policy,
-        condenser_config_json=copy.deepcopy(condenser_config),
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=next_asset_id,
@@ -3282,265 +3043,6 @@ def sync_snapshot(
     _event(db, run.id, "SNAPSHOT_SYNCED", {"version": snapshot.version})
     finish(db)
     return run_detail(db, run.id)
-
-
-def _profile_entry_from_snapshot(node: dict[str, Any]) -> dict[str, Any] | None:
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    capabilities = cast(list[object], asset.get("capabilities") or [])
-    matches: list[dict[str, Any]] = []
-    for item in capabilities:
-        if not isinstance(item, dict):
-            continue
-        entry = cast(dict[str, Any], item)
-        if entry.get("capability_type") == "AGENT_PROFILE":
-            matches.append(entry)
-    if len(matches) > 1:
-        raise DomainError("SNAPSHOT_INVALID", "Snapshot node has multiple Agent Profiles", 409)
-    return matches[0] if matches else None
-
-
-def _profile_diff(
-    source: dict[str, Any] | None, target: dict[str, Any]
-) -> dict[str, dict[str, object]]:
-    source_config = cast(dict[str, object], source.get("runtime_config") or {}) if source else {}
-    target_config = cast(dict[str, object], target.get("runtime_config") or {})
-    fields = sorted(set(source_config) | set(target_config))
-    return {
-        field: {"from": source_config.get(field), "to": target_config.get(field)}
-        for field in fields
-        if source_config.get(field) != target_config.get(field) and field not in {"storage_key"}
-    }
-
-
-def preview_agent_profile_switch(
-    db: Session, run_id: str, flow_node_key: str, profile_version_id: str
-) -> dict[str, Any]:
-    run = _run(db, run_id)
-    current = _active_snapshot(db, run)
-    node = _node(current, flow_node_key)
-    current_profile = _profile_entry_from_snapshot(node)
-    try:
-        target = cast(dict[str, Any], describe_agent_profile_version(db, profile_version_id))
-    except ValueError as exc:
-        raise DomainError("AGENT_PROFILE_INVALID", str(exc), 422) from exc
-    return {
-        "flow_run_id": run.id,
-        "flow_node_key": flow_node_key,
-        "active_snapshot_id": current.id,
-        "active_snapshot_version": current.version,
-        "source_profile_version_id": (
-            str(current_profile.get("capability_id") or "") if current_profile else None
-        ),
-        "target_profile_version_id": target["capability_version_id"],
-        "target_profile_digest": target["digest"],
-        "changes": _profile_diff(current_profile, target),
-        "requires_new_snapshot": True,
-        "existing_attempts_unchanged": True,
-    }
-
-
-def switch_agent_profile(
-    db: Session,
-    run_id: str,
-    payload: AgentProfileSwitchWrite,
-    idempotency_key: str,
-) -> dict[str, Any]:
-    """Select an immutable Profile for a new Snapshot and a new Attempt."""
-
-    run = _run(db, run_id)
-    current = _active_snapshot(db, run)
-    if current.version != payload.expected_active_version:
-        raise conflict(
-            "active snapshot changed",
-            expected=payload.expected_active_version,
-            actual=current.version,
-        )
-    node = _node(current, payload.flow_node_key)
-    current_profile = _profile_entry_from_snapshot(node)
-    current_profile_id = (
-        str(current_profile.get("capability_id") or "") if current_profile else None
-    )
-    if payload.source_profile_version_id != current_profile_id:
-        raise DomainError(
-            "AGENT_PROFILE_SWITCH_CONFLICT",
-            "The active Profile changed before the switch",
-            409,
-            {"expected": payload.source_profile_version_id, "actual": current_profile_id},
-        )
-    try:
-        target = cast(
-            dict[str, Any], describe_agent_profile_version(db, payload.profile_version_id)
-        )
-    except ValueError as exc:
-        raise DomainError("AGENT_PROFILE_INVALID", str(exc), 422) from exc
-    if target["digest"] != payload.expected_profile_digest:
-        raise DomainError(
-            "AGENT_PROFILE_VERSION_CONFLICT",
-            "Target Agent Profile digest changed",
-            409,
-            {"expected": payload.expected_profile_digest, "actual": target["digest"]},
-        )
-
-    definition = copy.deepcopy(current.definition_json)
-    target_node: dict[str, Any] | None = None
-    for item in cast(list[object], definition.get("nodes") or []):
-        if not isinstance(item, dict):
-            continue
-        candidate = cast(dict[str, Any], item)
-        if candidate.get("instance_key") == payload.flow_node_key:
-            target_node = candidate
-            break
-    if target_node is None:
-        raise DomainError("SNAPSHOT_INVALID", "Target node is missing", 409)
-    asset = cast(dict[str, Any], target_node.get("asset") or {})
-    capabilities = cast(list[dict[str, Any]], asset.get("capabilities") or [])
-    capabilities = [item for item in capabilities if item.get("capability_type") != "AGENT_PROFILE"]
-    target_config = cast(dict[str, Any], target["runtime_config"])
-    referenced = {
-        "TOOL_POLICY": target_config["tool_policy_version_id"],
-        "CONTEXT_POLICY": target_config["context_policy_version_id"],
-        "MEMORY_POLICY": target_config["memory_policy_version_id"],
-        "CRITIC_POLICY": target_config["critic_policy_version_id"],
-    }
-    for capability_type, version_id in referenced.items():
-        matches = [item for item in capabilities if item.get("capability_type") == capability_type]
-        if len(matches) != 1 or matches[0].get("capability_id") != version_id:
-            raise DomainError(
-                "AGENT_PROFILE_REFERENCE_MISMATCH",
-                "Target Profile references do not match the active Snapshot node",
-                422,
-                {"capability_type": capability_type, "profile": version_id},
-            )
-    capabilities.append(
-        {
-            "id": None,
-            "capability_id": target["capability_version_id"],
-            "capability_type": "AGENT_PROFILE",
-            "capability_key": target["capability_key"],
-            "normalized_config": target["runtime_config"],
-            "position": len(capabilities),
-        }
-    )
-    asset["capabilities"] = capabilities
-    executor = cast(dict[str, Any], asset.get("executor") or {})
-    # Confirmation is a platform-wide policy. Agent Profiles can retain their
-    # source metadata, but switching profiles must not re-enable approval.
-    executor["confirmation_policy"] = "NEVER"
-    executor["max_iterations"] = target_config["max_iterations"]
-    profile_condenser = target_config.get("condenser")
-    if profile_condenser is not None:
-        if not isinstance(profile_condenser, dict):
-            raise DomainError("AGENT_PROFILE_INVALID", "Profile condenser is invalid", 422)
-        upstream_condenser = cast(dict[str, Any], profile_condenser)
-        kind = str(upstream_condenser.get("condenser_kind") or "llm_summarizing")
-        if kind == "no_op":
-            executor["condenser"] = {"kind": "NO_OP"}
-        elif kind == "llm_summarizing":
-            executor["condenser"] = {
-                "kind": "LLM_SUMMARIZING",
-                "model_provider_id": executor.get("model_provider_id"),
-                "model_name": executor.get("model_name"),
-                "max_size": upstream_condenser.get("max_size", 240),
-                "max_tokens": upstream_condenser.get("max_tokens"),
-                "keep_first": upstream_condenser.get("keep_first", 2),
-                "minimum_progress": upstream_condenser.get("minimum_progress", 0.1),
-                "hard_context_reset_max_retries": upstream_condenser.get(
-                    "hard_context_reset_max_retries", 5
-                ),
-                "hard_context_reset_context_scaling": upstream_condenser.get(
-                    "hard_context_reset_context_scaling", 0.8
-                ),
-            }
-        else:
-            raise DomainError("AGENT_PROFILE_INVALID", "Profile condenser kind is unsupported", 422)
-
-    action = _action(
-        db,
-        run.id,
-        "SWITCH_AGENT_PROFILE",
-        idempotency_key,
-        {
-            "flow_node_key": payload.flow_node_key,
-            "source_profile_version_id": current_profile_id,
-            "target_profile_version_id": target["capability_version_id"],
-            "target_profile_digest": target["digest"],
-            "changes": _profile_diff(current_profile, target),
-            "model_cost_comparison": payload.model_cost_comparison,
-            "rollback_profile_version_id": current_profile_id,
-        },
-    )
-    runtime_manifest = _preserve_runtime_oracle_profile(
-        current.runtime_manifest_json or {}, _compile_runtime_manifest(definition)
-    )
-    # Compile-time validation must reject a Profile whose compatibility
-    # declarations drift from the frozen node policies before anything is
-    # persisted or a new Attempt is created.
-    runtime_node(
-        definition=definition,
-        manifest=runtime_manifest,
-        expected_hash=_runtime_manifest_hash(runtime_manifest),
-        snapshot_id="profile-switch-preview",
-        instance_key=payload.flow_node_key,
-    )
-    snapshot = RunSnapshot(
-        flow_run_id=run.id,
-        version=current.version + 1,
-        schema_version=2,
-        definition_json=definition,
-        definition_hash=_hash(definition),
-        runtime_manifest_json=runtime_manifest,
-        runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
-        environment_version_id=run.environment_version_id,
-        created_by_action_id=action.id,
-    )
-    db.add(snapshot)
-    db.flush()
-    hold_snapshot_memory_references(db, snapshot_id=snapshot.id, runtime_manifest=runtime_manifest)
-    run.active_snapshot_id = snapshot.id
-    run.row_version += 1
-
-    artifact_ids: dict[str, str] = {}
-    if payload.copy_input_bindings_from_attempt_id:
-        source_attempt = _attempt(db, payload.copy_input_bindings_from_attempt_id)
-        source_node_run = _node_run(db, source_attempt.node_run_id)
-        if (
-            source_node_run.flow_run_id != run.id
-            or source_node_run.flow_node_snapshot_key != payload.flow_node_key
-        ):
-            raise DomainError(
-                "AGENT_PROFILE_SWITCH_INPUT_INVALID",
-                "Input bindings must come from the same Run and node",
-                422,
-            )
-        artifact_ids = {
-            binding.input_field_key: binding.artifact_version_id
-            for binding in _bindings(db, source_attempt.id)
-        }
-    node_run, attempt = _create_node_run(
-        db, run, payload.flow_node_key, artifact_ids, "PROFILE_SWITCH"
-    )
-    _event(
-        db,
-        run.id,
-        "AGENT_PROFILE_SWITCHED",
-        {
-            "snapshot_version": snapshot.version,
-            "source_profile_version_id": current_profile_id,
-            "target_profile_version_id": target["capability_version_id"],
-            "target_profile_digest": target["digest"],
-            "model_cost_comparison": payload.model_cost_comparison,
-            "existing_attempts_unchanged": True,
-        },
-        node_run.id,
-        attempt.id,
-    )
-    finish(db)
-    return {
-        "snapshot_id": snapshot.id,
-        "snapshot_version": snapshot.version,
-        "attempt": attempt_detail(db, attempt.id),
-        "rollback_profile_version_id": current_profile_id,
-    }
 
 
 def complete_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]:
@@ -3727,10 +3229,6 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_mode": attempt.startup_mode,
         "startup_capability_key": attempt.startup_capability_key,
         "startup_prompt": attempt.startup_prompt,
-        "model_name": attempt.model_name,
-        "reasoning_effort": attempt.reasoning_effort,
-        "confirmation_policy": attempt.confirmation_policy,
-        "condenser": copy.deepcopy(attempt.condenser_config_json),
         "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,
         "error_detail": attempt.error_detail,

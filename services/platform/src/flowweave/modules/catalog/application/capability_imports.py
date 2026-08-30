@@ -46,6 +46,8 @@ from flowweave.shared.domain.tool_policy import (
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
+    AgentWorkspace,
+    AgentWorkspaceCapability,
     CapabilityBlob,
     CapabilityCollection,
     CapabilityCollectionItem,
@@ -54,8 +56,6 @@ from flowweave.shared.models import (
     CapabilityVersion,
     MCPOAuthAuthorization,
     MCPOAuthSecretReference,
-    NodeAsset,
-    NodeCapabilityRef,
     PluginSourceResolution,
 )
 from flowweave.shared.schemas import CapabilityValidateWrite
@@ -1797,16 +1797,17 @@ def process_dependency_build(db: Session, import_id: str, position: int) -> None
         raise
 
 
-def _references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
+def _workspace_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
     rows = db.execute(
-        select(NodeCapabilityRef.node_asset_id, NodeAsset.name)
-        .join(NodeAsset, NodeAsset.id == NodeCapabilityRef.node_asset_id)
-        .where(
-            NodeCapabilityRef.capability_version_id == capability_version_id,
+        select(AgentWorkspace.id, AgentWorkspace.display_name)
+        .join(
+            AgentWorkspaceCapability,
+            AgentWorkspaceCapability.workspace_id == AgentWorkspace.id,
         )
-        .order_by(NodeAsset.name, NodeAsset.id)
+        .where(AgentWorkspaceCapability.capability_version_id == capability_version_id)
+        .order_by(AgentWorkspace.display_name, AgentWorkspace.id)
     ).all()
-    return [{"id": node_id, "name": node_name} for node_id, node_name in rows]
+    return [{"id": workspace_id, "name": name} for workspace_id, name in rows]
 
 
 def _collection_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
@@ -1857,21 +1858,21 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
                 }
             )
             continue
-        nodes = _references(db, capability_id)
+        workspaces = _workspace_references(db, capability_id)
         collections = _collection_references(db, capability_id)
         governance = _governance_references(db, capability_id)
-        if nodes or collections or governance:
+        if workspaces or collections or governance:
             reference: dict[str, Any] = {
                 "id": capability_id,
                 "name": published.package.capability_key,
                 "relation": (
-                    "NODE_CAPABILITY"
-                    if nodes
+                    "AGENT_WORKSPACE"
+                    if workspaces
                     else "CAPABILITY_COLLECTION"
                     if collections
                     else "CAPABILITY_GOVERNANCE"
                 ),
-                "nodes": nodes,
+                "workspaces": workspaces,
             }
             # Preserve the existing node-only response shape while exposing
             # collection references when they actually block deletion.

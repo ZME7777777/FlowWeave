@@ -74,80 +74,9 @@ def _empty_io_fields() -> list[IOFieldWrite]:
     return []
 
 
-class CondenserWrite(ApiModel):
-    kind: Literal["NO_OP", "LLM_SUMMARIZING"] = "LLM_SUMMARIZING"
-    model_provider_id: str | None = None
-    model_name: str | None = Field(default=None, max_length=240)
-    max_size: int = Field(default=240, ge=20, le=10000)
-    max_tokens: int | None = Field(default=None, ge=1)
-    keep_first: int = Field(default=2, ge=0)
-    minimum_progress: float = Field(default=0.1, gt=0.0, lt=1.0)
-    hard_context_reset_max_retries: int = Field(default=5, ge=1, le=100)
-    hard_context_reset_context_scaling: float = Field(default=0.8, gt=0.0, lt=1.0)
-
-    @model_validator(mode="after")
-    def validate_strategy(self) -> CondenserWrite:
-        if self.kind == "NO_OP":
-            if self.model_provider_id is not None or self.model_name is not None:
-                raise ValueError("NO_OP condenser cannot select a model")
-            return self
-        if self.keep_first >= self.max_size // 2 - 1:
-            raise ValueError("keep_first must be less than max_size // 2 - 1 for condensation")
-        return self
-
-
 class ExecutorWrite(ApiModel):
-    model_provider_id: str | None = None
-    model_name: str | None = None
     startup_prompt: str = ""
     context_prompt: str = ""
-    timeout_seconds: int = Field(default=900, ge=1, le=86400)
-    max_iterations: int = Field(default=100, ge=1, le=1000)
-    confirmation_policy: Literal["ALWAYS", "NEVER"] = "NEVER"
-    condenser: CondenserWrite = Field(default_factory=CondenserWrite)
-
-
-class CapabilityWrite(ApiModel):
-    capability_id: str | None = Field(
-        default=None,
-        pattern=(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
-            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        ),
-    )
-    # Read models from older clients may still echo these fields. The server
-    # ignores them and resolves the canonical version by capability_id.
-    capability_type: (
-        Literal[
-            "SKILL",
-            "PLUGIN",
-            "MCP",
-            "HOOK",
-            "TOOL_POLICY",
-            "AGENT_DEFINITION",
-            "CONTEXT_POLICY",
-            "MEMORY_POLICY",
-            "CRITIC_POLICY",
-            "AGENT_PROFILE",
-        ]
-        | None
-    ) = None
-    capability_key: str | None = Field(default=None, max_length=200)
-    normalized_config: dict[str, Any] | None = None
-
-    @model_validator(mode="after")
-    def validate_reference(self) -> CapabilityWrite:
-        if self.capability_id is None and (
-            self.capability_type is None
-            or not self.capability_key
-            or self.normalized_config is None
-        ):
-            raise ValueError("capability_id is required")
-        return self
-
-
-def _empty_capabilities() -> list[CapabilityWrite]:
-    return []
 
 
 class NodeAssetWrite(ApiModel):
@@ -160,17 +89,6 @@ class NodeAssetWrite(ApiModel):
     inputs: list[IOFieldWrite] = Field(default_factory=_empty_io_fields)
     outputs: list[IOFieldWrite] = Field(default_factory=_empty_io_fields)
     executor: ExecutorWrite = Field(default_factory=ExecutorWrite)
-    capabilities: list[CapabilityWrite] = Field(default_factory=_empty_capabilities)
-
-    @model_validator(mode="after")
-    def validate_capabilities(self) -> NodeAssetWrite:
-        identities = [
-            item.capability_id or f"{item.capability_type}:{item.capability_key}"
-            for item in self.capabilities
-        ]
-        if len(identities) != len(set(identities)):
-            raise ValueError("capability references must be unique within a node")
-        return self
 
 
 class TerminalEnvironmentWrite(ApiModel):
@@ -210,27 +128,6 @@ class AgentProfileCopyWrite(ApiModel):
 
 class AgentProfileRetireWrite(ApiModel):
     expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class AgentProfileSwitchWrite(ApiModel):
-    expected_active_version: int = Field(ge=1)
-    flow_node_key: str = Field(min_length=1, max_length=200)
-    profile_version_id: str = Field(
-        pattern=(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
-            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        )
-    )
-    source_profile_version_id: str | None = Field(
-        default=None,
-        pattern=(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
-            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        ),
-    )
-    expected_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    copy_input_bindings_from_attempt_id: str | None = None
-    model_cost_comparison: dict[str, Any] = Field(default_factory=_empty_any_dict)
 
 
 class CapabilityCollectionWrite(ApiModel):
@@ -432,8 +329,6 @@ class AttemptStartWrite(AttemptVersionWrite):
     startup_mode: Literal["SKILL", "PROMPT"] = "PROMPT"
     capability_key: str | None = None
     prompt: str | None = None
-    model_name: str | None = Field(default=None, max_length=240)
-    reasoning_effort: str | None = Field(default=None, max_length=30)
 
     @model_validator(mode="after")
     def validate_startup(self) -> AttemptStartWrite:
@@ -450,8 +345,6 @@ class InputBindingsWrite(AttemptVersionWrite):
 
 class HumanInputWrite(AttemptVersionWrite):
     content: str = Field(min_length=1)
-    model_name: str | None = Field(default=None, max_length=240)
-    reasoning_effort: str | None = Field(default=None, max_length=30)
 
 
 class RuntimeConfirmationDecisionWrite(ApiModel):
@@ -652,16 +545,12 @@ class MemorySourceLifecycleWrite(ApiModel):
 class ConversationCreateWrite(ApiModel):
     title: str | None = Field(default=None, max_length=160)
     expected_attempt_state_version: int = Field(ge=1)
-    model_name: str | None = Field(default=None, max_length=240)
-    reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class FlowRunConversationCreateWrite(ApiModel):
     node_attempt_id: str = Field(min_length=1, max_length=36)
     title: str | None = Field(default=None, max_length=160)
-    model_name: str | None = Field(default=None, max_length=240)
-    reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
