@@ -232,6 +232,39 @@ test('environment publishing reopens as progress instead of reconnecting the ter
   expect(terminalAttachments).toBe(0);
 });
 
+test('closing an environment terminal only hides its existing connection', async ({ page }) => {
+  let terminalAttachments = 0;
+  const environment = {
+    id: 'environment-running', name: '持续连接终端环境', description: '', row_version: 1, versions: [],
+    active_sessions: [{
+      id: 'setup-session-running', environment_id: 'environment-running', base_version_id: null,
+      state: 'RUNNING', base_image_reference: 'flowweave-openhands-runtime:1',
+      expires_at: new Date(Date.now() + 60_000).toISOString(), error_detail: null,
+    }],
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  await page.route('**/api/v1/terminal-environments**', async route => {
+    const request = route.request();
+    if (request.method() === 'GET' && new URL(request.url()).pathname.endsWith('/terminal-environments')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([environment]) });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.routeWebSocket('**/api/v1/environment-setup-sessions/*/terminal*', socket => {
+    terminalAttachments += 1;
+    socket.send('connected\\r\\n$ ');
+  });
+
+  await login(page);
+  await page.getByRole('button', { name: '终端环境' }).click();
+  await page.getByRole('button', { name: '继续配置' }).click();
+  await expect.poll(() => terminalAttachments).toBe(1);
+  await page.getByRole('button', { name: '关闭视图' }).click();
+  await page.getByRole('button', { name: '继续配置' }).click();
+  await expect.poll(() => terminalAttachments).toBe(1);
+});
+
 test('terminal environment delete stops active setup sessions before retrying cleanup', async ({ page }) => {
   let environmentVisible = true;
   let environmentDeleteAttempts = 0;

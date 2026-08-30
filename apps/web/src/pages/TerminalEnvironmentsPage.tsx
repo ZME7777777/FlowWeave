@@ -16,7 +16,7 @@ function PublishingPanel({ onClose }: { onClose: () => void }) {
   </section></div>;
 }
 
-function TerminalPanel({ session, publishError, onClose, onPublishing, onPublishFailed }: { session: EnvironmentSetupSession; publishError: string; onClose: () => void; onPublishing: () => void; onPublishFailed: (message: string) => void }) {
+function TerminalPanel({ session, visible, publishError, onClose, onUnavailable, onPublishing, onPublishFailed }: { session: EnvironmentSetupSession; visible: boolean; publishError: string; onClose: () => void; onUnavailable: () => void; onPublishing: () => void; onPublishFailed: (message: string) => void }) {
   const queryClient = useQueryClient();
   const [connected, setConnected] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
@@ -116,7 +116,7 @@ function TerminalPanel({ session, publishError, onClose, onPublishing, onPublish
         if (event.code === 4404 || event.code === 4409) {
           setReconnecting(false);
           void queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
-          onClose();
+          onUnavailable();
           return;
         }
         attempts += 1;
@@ -151,7 +151,7 @@ function TerminalPanel({ session, publishError, onClose, onPublishing, onPublish
       socket.current = null;
       term.dispose();
     };
-  }, [onClose, queryClient, session.id]);
+  }, [onClose, onUnavailable, queryClient, session.id]);
   const publish = async () => {
     setBusy(true); setError('');
     onPublishing();
@@ -165,10 +165,10 @@ function TerminalPanel({ session, publishError, onClose, onPublishing, onPublish
     catch (reason) { setError(reason instanceof Error ? reason.message : '停止失败'); } finally { setBusy(false); }
   };
 
-  return <div className="environment-terminal-backdrop"><section className="environment-terminal-dialog">
-    <header><div><span className="eyebrow">ISOLATED SETUP SESSION</span><h2><Terminal size={20}/>环境配置终端</h2><small>{connected ? '已连接 · 关闭视图后任务仍会继续运行' : reconnecting ? '连接中断，正在自动重连…' : '连接中…'}</small></div><button className="ghost" title="仅关闭当前窗口，不会终止终端任务" onClick={onClose}><X size={16}/>关闭视图</button></header>
+  return <div className="environment-terminal-backdrop" style={{ display: visible ? undefined : 'none' }}><section className="environment-terminal-dialog">
+    <header><div><span className="eyebrow">ISOLATED SETUP SESSION</span><h2><Terminal size={20}/>环境配置终端</h2><small>{connected ? '已连接 · 关闭视图后连接仍保持' : reconnecting ? '连接中断，正在自动重连…' : '连接中…'}</small></div><button className="ghost" title="仅隐藏当前窗口，不会断开终端或终止任务" onClick={onClose}><X size={16}/>关闭视图</button></header>
     <div className="terminal-screen"><div ref={terminalHost} className="terminal-screen-body" aria-label="环境终端，点击后输入命令"/></div>
-    <p className="terminal-help">点击黑色区域后直接输入。关闭视图只会断开当前窗口，终端及其中的任务会继续运行；再次点击“继续配置”将返回同一个终端。支持 Enter、Backspace、方向键、Ctrl+C 和粘贴；终端失焦时按 Esc 关闭视图，聚焦时 Esc 会发送给终端程序。发布会保留容器文件系统中的认证信息、缓存和命令历史，请仅在受信任环境中使用和分发镜像。</p>
+    <p className="terminal-help">点击黑色区域后直接输入。关闭视图只会隐藏窗口，终端连接及其中的任务会继续运行；再次点击“继续配置”将回到同一个终端。支持 Enter、Backspace、方向键、Ctrl+C 和粘贴；终端失焦时按 Esc 关闭视图，聚焦时 Esc 会发送给终端程序。发布会保留容器文件系统中的认证信息、缓存和命令历史，请仅在受信任环境中使用和分发镜像。</p>
     {(error || publishError) && <p className="error">{error || publishError}</p>}
     <footer><button className="danger" disabled={busy} onClick={() => void stop()}><Square size={14}/>停止并丢弃</button><button className="primary" disabled={busy || !connected} onClick={() => void publish()}><Save size={14}/>{busy ? '处理中…' : '发布环境版本'}</button></footer>
   </section></div>;
@@ -182,17 +182,25 @@ export function TerminalEnvironmentsPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [terminal, setTerminal] = useState<EnvironmentSetupSession | null>(null);
+  const [terminalAttached, setTerminalAttached] = useState(false);
+  const [terminalViewOpen, setTerminalViewOpen] = useState(false);
   const [terminalError, setTerminalError] = useState('');
   const [openingEnvironmentId, setOpeningEnvironmentId] = useState<string | null>(null);
   const [deletingEnvironmentId, setDeletingEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const closeTerminal = useCallback(() => { setTerminal(null); setTerminalError(''); }, []);
+  const closeTerminal = useCallback(() => setTerminalViewOpen(false), []);
+  const discardTerminal = useCallback(() => {
+    setTerminal(null);
+    setTerminalAttached(false);
+    setTerminalViewOpen(false);
+    setTerminalError('');
+  }, []);
   useEffect(() => {
     if (!terminal || isLoading) return;
     const current = environments.flatMap(environment => environment.active_sessions).find(session => session.id === terminal.id);
-    if (!current) { setTerminal(null); setTerminalError(''); return; }
+    if (!current) { discardTerminal(); return; }
     if (current.state !== terminal.state || current.error_detail !== terminal.error_detail) setTerminal(current);
-  }, [environments, isLoading, terminal]);
+  }, [discardTerminal, environments, isLoading, terminal]);
   const create = useMutation({ mutationFn: () => api.createTerminalEnvironment({ name: name.trim(), description: description.trim() }), onSuccess: async () => { setCreating(false); setName(''); setDescription(''); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }, onError: reason => setError(reason instanceof Error ? reason.message : '创建失败') });
   const open = async (environment: TerminalEnvironment, baseVersionId?: string) => {
     if (openingEnvironmentId) return;
@@ -201,7 +209,10 @@ export function TerminalEnvironmentsPage() {
     try {
       const current = environment.active_sessions[0];
       setTerminalError('');
-      setTerminal(current ?? await api.createEnvironmentSetup(environment.id, baseVersionId));
+      const next = current ?? await api.createEnvironmentSetup(environment.id, baseVersionId);
+      setTerminal(next);
+      setTerminalAttached(next.state !== 'PUBLISHING');
+      setTerminalViewOpen(true);
       await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '启动环境失败');
@@ -251,7 +262,7 @@ export function TerminalEnvironmentsPage() {
           throw reason;
         }
       }
-      if (terminal?.environment_id === environment.id) closeTerminal();
+      if (terminal?.environment_id === environment.id) discardTerminal();
       for (const session of environment.active_sessions) await api.stopEnvironmentSetup(session.id);
       for (let attempt = 0; attempt < 40; attempt += 1) {
         try {
@@ -315,17 +326,18 @@ export function TerminalEnvironmentsPage() {
           <button className="ghost" disabled={occupied} title={occupied ? '解除运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button>
         </section>;
       })}</div></details>}
-      <footer>{active ? <button className="primary" disabled={deletingEnvironmentId !== null} onClick={() => setTerminal(active)}>{active.state === 'PUBLISHING' ? <LoaderCircle className="spin" size={14}/> : <Terminal size={14}/>}{active.state === 'PUBLISHING' ? '查看发布进度' : '继续配置'}</button> : <button className="secondary" disabled={openingEnvironmentId !== null || deletingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
+      <footer>{active ? <button className="primary" disabled={deletingEnvironmentId !== null} onClick={() => { setTerminal(active); setTerminalAttached(active.state !== 'PUBLISHING'); setTerminalViewOpen(true); }}>{active.state === 'PUBLISHING' ? <LoaderCircle className="spin" size={14}/> : <Terminal size={14}/>}{active.state === 'PUBLISHING' ? '查看发布进度' : '继续配置'}</button> : <button className="secondary" disabled={openingEnvironmentId !== null || deletingEnvironmentId !== null} aria-busy={openingEnvironmentId === environment.id} onClick={() => void open(environment, latest?.id)}>{openingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>}<span aria-live="polite">{openingEnvironmentId === environment.id ? (latest ? '正在创建草稿…' : '正在开启终端…') : latest ? `从 v${latest.version_no} 创建草稿` : '开启终端'}</span></button>}</footer>
     </article>; })}</div> : <div className="empty">暂无终端环境。新建后可在隔离终端中安装节点需要的命令。</div>}
     {creating && <div className="modal-backdrop"><form className="modal editor environment-create-dialog" onSubmit={event => { event.preventDefault(); setError(''); create.mutate(); }}><header><div><span className="eyebrow">NEW ENVIRONMENT</span><h2>新建终端环境</h2></div><button type="button" className="ghost" onClick={() => setCreating(false)}>关闭</button></header><section className="form-grid form-pane"><label className="wide">名称<input required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></label><label className="wide">说明<textarea value={description} onChange={event => setDescription(event.target.value)}/></label></section><footer><button type="button" className="ghost" onClick={() => setCreating(false)}>取消</button><button className="primary" disabled={create.isPending}>{create.isPending ? '创建中…' : '创建环境'}</button></footer></form></div>}
-    {terminal?.state === 'PUBLISHING' ? <PublishingPanel onClose={closeTerminal}/> : terminal && (
-      <TerminalPanel
-        session={terminal}
-        publishError={terminalError}
-        onClose={closeTerminal}
-        onPublishing={() => { setTerminal(current => current ? { ...current, state: 'PUBLISHING', error_detail: null } : current); setTerminalError(''); }}
-        onPublishFailed={message => { setTerminal(current => current ? { ...current, state: 'RUNNING' } : current); setTerminalError(message); void queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }}
-      />
-    )}
+    {terminalAttached && terminal && <TerminalPanel
+      session={terminal}
+      visible={terminalViewOpen && terminal.state !== 'PUBLISHING'}
+      publishError={terminalError}
+      onClose={closeTerminal}
+      onUnavailable={discardTerminal}
+      onPublishing={() => { setTerminal(current => current ? { ...current, state: 'PUBLISHING', error_detail: null } : current); setTerminalError(''); }}
+      onPublishFailed={message => { setTerminal(current => current ? { ...current, state: 'RUNNING' } : current); setTerminalError(message); void queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); }}
+    />}
+    {terminal?.state === 'PUBLISHING' && terminalViewOpen && <PublishingPanel onClose={closeTerminal}/>}
   </main>;
 }

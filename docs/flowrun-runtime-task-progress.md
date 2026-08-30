@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：无（页面局部滚动与 Skill 组合删除已完成；后续发布门禁按独立切片执行）
+> 下一可执行切片：无（终端视图隐藏连接保活已完成；后续发布门禁按独立切片执行）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1441,6 +1441,14 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 完成：模型配置与流程运行将标题/操作区固定在视口内，只有其数据区滚动；流程编排的资源库、画布和配置器在固定标题下各自占用独立滚动区域。删除 Skill 会同步移除组合中的逻辑成员，自动清理空组合，并刷新组合列表和提示信息；真实工作区、治理与内置策略引用仍继续阻止删除。
 
+### FR-103 终端视图隐藏连接保活 — DONE
+
+依赖：`FR-101`。
+
+目标：关闭环境配置终端视图只能隐藏界面，不能卸载 xterm、关闭 WebSocket 或在重新打开时创建新的终端连接；终端不可用、停止丢弃或会话从服务端消失时才释放本地连接。发布期间已附着的连接可在后台保留，但重新打开的界面仍只展示发布进度，绝不重新附着。
+
+验收：Web 定向 Playwright 覆盖发布中关闭/重新进入零次终端 WebSocket，以及运行中终端关闭/重新打开保持一次既有连接；受影响 Web typecheck、ESLint、production build 和 `git diff --check` 通过。本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1457,6 +1465,7 @@ Agent Workspace 仅作为默认 Runtime、工作目录、能力、文件/终端�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-30 | FR-103 | Web TypeScript typecheck、ESLint、production build；源码 Vite 定向 Playwright（2 passed）；`git diff --check` | PASS：关闭环境终端仅以 `display:none` 隐藏视图，保留 xterm 与已有 WebSocket；重新点击“继续配置”不会产生第二次 terminal attachment。发布中的会话继续只显示进度，不建立 terminal WebSocket。 |
 | 2026-08-30 | FR-102 | Skill 组合定向 pytest（4 passed）；Web TypeScript typecheck、ESLint、production build；受影响 Python `py_compile` 与 `git diff --check` | PASS：三页局部滚动布局通过编译；Skill 删除不再被逻辑组合引用阻塞，自动解除组合成员并清理空组合，真实受保护引用仍保留。 |
 | 2026-08-30 | FR-101 | 环境服务定向 pytest（35 passed）；Web ESLint/typecheck；发布中视图定向 Playwright（1 passed）；Alembic head/current；任务状态唯一性与 `git diff --check` | PASS：服务端先持久化 Setup Session 的 `PUBLISHING` 状态后再执行容器冻结、正式 Runtime 打包和契约探针；发布期间禁止 WebSocket 终端附着、二次创建及停止丢弃，发布失败回到 `RUNNING` 并保留失败 Version 诊断。页面关闭并重新进入时展示可关闭的后台发布视图，不会创建终端 WebSocket。唯一 Alembic head/current 均为 `0075_shared_agent_runtime_config`；无 `CURRENT` 或下一切片。 |
 | 2026-08-30 | FR-100 | 受影响 Python `py_compile` 与 schema import；Web TypeScript typecheck、ESLint 和 `git diff --check` | PASS：MCP 编辑、局部滚动、紧凑 Skill 组合和草稿级能力冻结均通过静态检查。Agent Workspace/bootstrap 定向 pytest 因本机 Docker daemon 未运行而无法创建 testcontainers PostgreSQL，未将该环境前置条件失败视为代码失败。 |
