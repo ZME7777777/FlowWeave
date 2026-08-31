@@ -29,8 +29,10 @@ Attempt 的授权与启动门禁、被冻结的节点工作目录，以及可选
    会话都不得启动第二个容器。
 5. 同一节点可以有 N 个独立 OpenHands Conversation；不同节点的会话集合独立。每个会话保留自己的
    OpenHands Conversation ID 与事件树。
-6. 节点工作区必须隔离。FlowRun 的项目根继续挂载为 `/runtime/workspace/project`，但每个节点/Attempt
-   的会话固定在服务端推导、经 Snapshot 冻结的子工作目录。客户端不能传宿主机路径、绝对路径或 `..`。
+6. 节点逻辑工作区必须隔离，而 FlowRun 的项目根继续共享并挂载为
+   `/runtime/workspace/project`。每个节点/Attempt 只能列出、创建和选择自己拥有的逻辑工作区；它们的
+   目录范围在会话创建时冻结。客户端不能传宿主机路径、绝对路径或 `..`。无法证明创建 Attempt 的历史
+   FlowRun 级工作区保持归档，不显示给任一节点。
 7. 节点启动提示词是唯一的节点特有输入：在显式“启动节点会话”命令中以正式第一条 user event 写入；
    不通过系统提示词、私有 JSON 或平台消息副本模拟。
 8. 不修改 OpenHands 源码；不持久化消息、事件、HEAD、cursor 或浏览器临时状态；不暴露容器 endpoint、
@@ -71,8 +73,8 @@ FlowRun/node 适配器必须在每次读写前解析如下不可伪造的上下�
 | `host_kind` | 服务端常量 | `AGENT_WORKSPACE` 或 `FLOW_NODE`，只用于适配分派 |
 | `host_id` | Workspace ID 或 FlowRun ID | 查询、权限、运行时定位 |
 | `runtime_handle` | 当前 active generation | 使用同一 Runtime，不向浏览器返回物理地址 |
-| `conversation_scope_id` | Workspace 或 Node/Attempt scope | 只列出本宿主合法会话 |
-| `working_directory` | 服务端推导的冻结节点目录 | OpenHands `LocalWorkspace` 工作目录 |
+| `conversation_scope_id` | Workspace 或 Node/Attempt scope | 只列出本宿主合法会话和逻辑工作区 |
+| `working_directory` | 服务端推导的共享根或冻结逻辑目录 | OpenHands `LocalWorkspace` 工作目录 |
 | `runtime_manifest` | Workspace 默认/Run Snapshot | 物化受治理能力与策略 |
 | `model_policy` | Workspace 设置/节点冻结配置 | 创建与切换时可用模型边界 |
 | `start_permission` | Attempt 状态与输入门禁 | 只允许显式节点启动创建首会话 |
@@ -156,7 +158,7 @@ Web 使用稳定路由：
 1. Agent Workspace 全部既有会话回归通过，且页面与后端只有一份实现。
 2. 从一个 FlowRun 的两个节点各进入会话，页面 DOM、交互、Composer、附件、能力、文件与终端均由同一
    `AgentSessionWorkbench` 提供；旧 `AgentChatPage` 不存在。
-3. 一个节点可创建/打开多个会话，另一节点不可在列表、URL、文件或终端中越权访问它们。
+3. 一个节点可创建/打开多个会话和逻辑工作区；另一节点不可在列表、URL、文件或终端中看到或访问它们。
 4. 同一 FlowRun 无论创建多少节点会话都只有一个 active Runtime container；所有会话以不同
    OpenHands Conversation ID 恢复。
 5. 节点 A/B 的 Agent 创建文件只出现在各自冻结目录；终端初始目录与会话 working directory 一致。

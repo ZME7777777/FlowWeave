@@ -26,8 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
+from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
@@ -358,10 +358,12 @@ async def list_flow_run_work_directories(
         db,
         lambda session: (
             agent_sessions.resolve_flow_node_session_host(
-                session, flow_run_id=flow_run_id, attempt_id=attempt_id,
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
                 require_start_permission=False,
             ),
-            agent_workspace_host.list_flow_run_work_directories(session, flow_run_id),
+            agent_workspace_host.list_flow_run_work_directories(session, flow_run_id, attempt_id),
         )[1],
     )
 
@@ -381,7 +383,11 @@ async def create_flow_run_work_directory(
             require_start_permission=False,
         )
         return agent_workspace_host.create_flow_run_work_directory(
-            session, flow_run_id, payload.display_name, tuple(payload.selected_paths)
+            session,
+            flow_run_id,
+            attempt_id,
+            payload.display_name,
+            tuple(payload.selected_paths),
         )
 
     return await run_sync(db, create)

@@ -19,7 +19,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
-from flowweave.shared.models import FlowRun
+from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun
 from flowweave.shared.settings import get_settings
 
 _RUNTIME_PROJECT_ROOT = PurePosixPath("/runtime/workspace/project")
@@ -49,11 +49,17 @@ def _directory(
 
 
 def _flow_run_directory(
-    db: Session, flow_run_id: str, work_directory_id: str, *, lock: bool = False
+    db: Session,
+    flow_run_id: str,
+    node_attempt_id: str,
+    work_directory_id: str,
+    *,
+    lock: bool = False,
 ) -> AgentWorkDirectory:
     query = select(AgentWorkDirectory).where(
         AgentWorkDirectory.id == work_directory_id,
         AgentWorkDirectory.flow_run_id == flow_run_id,
+        AgentWorkDirectory.node_attempt_id == node_attempt_id,
     )
     if lock:
         query = query.with_for_update()
@@ -61,6 +67,21 @@ def _flow_run_directory(
     if item is None:
         raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作目录不存在", 404)
     return item
+
+
+def _flow_run_attempt(db: Session, flow_run_id: str, node_attempt_id: str) -> NodeAttempt:
+    _flow_run_root(db, flow_run_id)
+    attempt = db.get(NodeAttempt, node_attempt_id)
+    if attempt is None:
+        raise not_found("node_attempt", node_attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id)
+    if node_run is None or node_run.flow_run_id != flow_run_id:
+        raise DomainError(
+            "NODE_CONVERSATION_CONTEXT_MISMATCH",
+            "所选节点执行不属于当前 FlowRun",
+            409,
+        )
+    return attempt
 
 
 def _project_root(db: Session, workspace_id: str) -> Path:
@@ -207,10 +228,16 @@ def _assert_name_available(
 
 
 def _assert_flow_run_name_available(
-    db: Session, flow_run_id: str, display_name: str, *, exclude_id: str | None = None
+    db: Session,
+    flow_run_id: str,
+    node_attempt_id: str,
+    display_name: str,
+    *,
+    exclude_id: str | None = None,
 ) -> None:
     query = select(AgentWorkDirectory.id).where(
         AgentWorkDirectory.flow_run_id == flow_run_id,
+        AgentWorkDirectory.node_attempt_id == node_attempt_id,
         AgentWorkDirectory.display_name == display_name,
     )
     if exclude_id is not None:
@@ -421,12 +448,15 @@ def archive_work_directory(db: Session, workspace_id: str, work_directory_id: st
     db.flush()
 
 
-def list_flow_run_work_directories(db: Session, flow_run_id: str) -> dict[str, Any]:
-    _flow_run_root(db, flow_run_id)
+def list_flow_run_work_directories(
+    db: Session, flow_run_id: str, node_attempt_id: str
+) -> dict[str, Any]:
+    _flow_run_attempt(db, flow_run_id, node_attempt_id)
     items = db.scalars(
         select(AgentWorkDirectory)
         .where(
             AgentWorkDirectory.flow_run_id == flow_run_id,
+            AgentWorkDirectory.node_attempt_id == node_attempt_id,
             AgentWorkDirectory.state == "ACTIVE",
         )
         .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
@@ -435,20 +465,28 @@ def list_flow_run_work_directories(db: Session, flow_run_id: str) -> dict[str, A
 
 
 def get_flow_run_work_directory(
-    db: Session, flow_run_id: str, work_directory_id: str
+    db: Session, flow_run_id: str, node_attempt_id: str, work_directory_id: str
 ) -> dict[str, Any]:
-    _flow_run_root(db, flow_run_id)
-    return _dict(db, _flow_run_directory(db, flow_run_id, work_directory_id))
+    _flow_run_attempt(db, flow_run_id, node_attempt_id)
+    return _dict(db, _flow_run_directory(db, flow_run_id, node_attempt_id, work_directory_id))
 
 
 def create_flow_run_work_directory(
-    db: Session, flow_run_id: str, display_name: str, selected_paths: tuple[str, ...]
+    db: Session,
+    flow_run_id: str,
+    node_attempt_id: str,
+    display_name: str,
+    selected_paths: tuple[str, ...],
 ) -> dict[str, Any]:
-    _flow_run_root(db, flow_run_id)
+    _flow_run_attempt(db, flow_run_id, node_attempt_id)
     name = _display_name(display_name)
-    _assert_flow_run_name_available(db, flow_run_id, name)
+    _assert_flow_run_name_available(db, flow_run_id, node_attempt_id, name)
     paths = _validate_flow_run_paths(db, flow_run_id, selected_paths)
-    item = AgentWorkDirectory(flow_run_id=flow_run_id, display_name=name)
+    item = AgentWorkDirectory(
+        flow_run_id=flow_run_id,
+        node_attempt_id=node_attempt_id,
+        display_name=name,
+    )
     db.add(item)
     db.flush()
     _add_version(db, item, 1, paths)
@@ -456,12 +494,12 @@ def create_flow_run_work_directory(
 
 
 def flow_run_conversation_context(
-    db: Session, flow_run_id: str, work_directory_id: str | None
+    db: Session, flow_run_id: str, node_attempt_id: str, work_directory_id: str | None
 ) -> tuple[str | None, str]:
-    _flow_run_root(db, flow_run_id)
+    _flow_run_attempt(db, flow_run_id, node_attempt_id)
     if work_directory_id is None:
         return None, _RUNTIME_PROJECT_ROOT.as_posix()
-    item = _flow_run_directory(db, flow_run_id, work_directory_id, lock=True)
+    item = _flow_run_directory(db, flow_run_id, node_attempt_id, work_directory_id, lock=True)
     if item.state != "ACTIVE":
         raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
     version = _version(db, item)
@@ -470,9 +508,12 @@ def flow_run_conversation_context(
 
 
 def frozen_flow_run_conversation_context(
-    db: Session, flow_run_id: str, work_directory_version_id: str
+    db: Session,
+    flow_run_id: str,
+    node_attempt_id: str,
+    work_directory_version_id: str,
 ) -> str:
-    _flow_run_root(db, flow_run_id)
+    _flow_run_attempt(db, flow_run_id, node_attempt_id)
     version = db.scalar(
         select(AgentWorkDirectoryVersion)
         .join(
@@ -481,6 +522,7 @@ def frozen_flow_run_conversation_context(
         .where(
             AgentWorkDirectoryVersion.id == work_directory_version_id,
             AgentWorkDirectory.flow_run_id == flow_run_id,
+            AgentWorkDirectory.node_attempt_id == node_attempt_id,
         )
     )
     if version is None:

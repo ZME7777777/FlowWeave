@@ -1556,6 +1556,20 @@ Runtime、Snapshot 冻结和 OpenHands 正式事件/API 边界。
 production build、相关 Playwright、受影响 Python 静态检查与 pytest、Alembic 唯一 head、任务状态唯一性和
 `git diff --check` 通过。本切片使用独立 Git commit。
 
+### FR-110 节点逻辑工作区可见性隔离 — DONE
+
+依赖：`FR-109`。
+
+目标：FlowRun 项目根继续是同一 Run 的共享根目录，但节点进入会话时只能看见、创建、选择和冻结当前
+Node Attempt 所拥有的逻辑工作区。不得把其他节点创建的工作区分组带入当前节点的新会话，也不得允许
+通过工作区 ID 选择、读取或冻结另一节点的目录。历史 FlowRun 级工作区没有可证明的创建 Attempt 时保留
+迁移/审计数据但不向任一节点展示，不猜测其归属。
+
+完成：`agent_work_directories` 新增 `node_attempt_id` 归属与同节点唯一名称约束；节点 gateway 的列表、
+创建、会话 bootstrap/创建和工作区文件范围均以当前 Attempt 校验。共享项目根的根会话保持不变，跨节点
+工作区 ID 返回不存在。新增定向回归覆盖两节点共享根、一个节点可见自己的工作区、另一节点列表为空且
+无法读取该工作区。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1572,6 +1586,7 @@ production build、相关 Playwright、受影响 Python 静态检查与 pytest�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-31 | FR-110 | FlowRun 节点工作区定向 pytest（1 passed）与完整 `test_conversations.py`（10 passed）；受影响 Ruff、Pyright（0 errors）、`py_compile`；PostgreSQL 迁移完整 upgrade/downgrade/upgrade；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：逻辑工作区按 `node_attempt_id` 归属，两个节点仍共享 FlowRun 项目根，但第二节点的列表为空且以第一节点工作区 ID 查询返回 `AGENT_WORK_DIRECTORY_NOT_FOUND`；无可证明 Attempt 来源的旧 FlowRun 级工作区不被自动归属或展示。唯一 Alembic head 为 `0078_node_attempt_work_dirs`；无 `CURRENT` 或下一切片。 |
 | 2026-08-31 | FR-109 部署修复 | OpenHands 正式 generation/Workspace 身份回归、文件输入输出闭环与 FlowRun 相关 pytest（222 passed）；受影响 Ruff、`py_compile`；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：自动运行的 FILE 输入上传不再使用私有 `attempt-inputs:*` 路由或空会话标识，改为绑定 Attempt 已冻结的正式 Conversation UUID，并通过当前活跃 generation 的 `env-exec:<resource_name>` 路由调用 OpenHands Workspace API；Conversation reload 同时接受正式项目根 `/runtime/workspace/project` 与节点持久根 `/runtime/workspace/nodes`，继续拒绝其他 Runtime 路径；缺少正式 Runtime generation 时 fail closed。全量 Pyright 仍只有 FR-109 前已存在的 `flow_node_workspace.py` 4 项 unknown 与 `runtime/workspace.py` 1 项 unused import，共 5 项，未由本修复新增。唯一 Alembic head 仍为 `0077_generalized_node_io`；无 `CURRENT` 或下一切片。 |
 | 2026-08-31 | FR-109 | 通用节点 IO、Artifact Store、OpenHands 首发/输出与 FlowRun 相关 pytest（205 passed）；PostgreSQL 对象存储/基线集成 pytest（9 passed）；0077 空库与历史状态 upgrade/downgrade/upgrade；受影响 Ruff/`py_compile`；OpenAPI；Web TypeScript、ESLint、production build；源码 Vite 新增流程编排断言在部署前旧 API 保存边界前通过；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：节点 IO 正式支持安全 HTTP(S) URL 与 25 MiB 内任意文件/图片附件；运行表单严格来自冻结字段定义，自动启动首条正式用户消息携带字段与来源，图片使用 OpenHands 正式多模态内容，文件使用正式 Workspace API 并投影到共享来源区。节点输出区可打开 URL、预览/下载文件；流程删除飞书根节点约束并默认显示流程走向，同时保留独立控制流与产物映射。唯一 Alembic head 为 `0077_generalized_node_io`；无 `CURRENT` 或下一切片。 |
 | 2026-08-30 | FR-108 | 固定工具集、Runtime 契约、会话与 replacement 定向 pytest（20 passed）；环境定向 pytest（35 passed）；受影响 Ruff/格式检查；Web TypeScript、ESLint、production build；Alembic fresh upgrade/head/current、`git diff --check` | PASS：能力仓库与 `/tool-policy-catalog` 已移除，所有新会话共享完整固定 Runtime Tool 集和 `NeverConfirm`。旧 Snapshot 不进行猜测迁移，明确要求重跑；部署迁移删除已废弃能力记录而不重写历史 Snapshot。 |

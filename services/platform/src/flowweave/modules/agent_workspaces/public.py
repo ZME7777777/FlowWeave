@@ -48,44 +48,57 @@ def frozen_conversation_work_directory_context(
     return work_directories.frozen_conversation_context(db, workspace_id, version_id)
 
 
-def list_flow_run_work_directories(db: Session, flow_run_id: str) -> dict[str, Any]:
-    """List logical work directories owned by a FlowRun session host."""
+def list_flow_run_work_directories(
+    db: Session, flow_run_id: str, node_attempt_id: str
+) -> dict[str, Any]:
+    """List logical work directories owned by one FlowRun node Attempt."""
 
     from flowweave.modules.agent_workspaces.application import work_directories
 
-    return work_directories.list_flow_run_work_directories(db, flow_run_id)
+    return work_directories.list_flow_run_work_directories(db, flow_run_id, node_attempt_id)
 
 
 def create_flow_run_work_directory(
-    db: Session, flow_run_id: str, display_name: str, selected_paths: tuple[str, ...]
+    db: Session,
+    flow_run_id: str,
+    node_attempt_id: str,
+    display_name: str,
+    selected_paths: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Create a logical work directory for a FlowRun session host."""
+    """Create a logical work directory for one FlowRun node Attempt."""
 
     from flowweave.modules.agent_workspaces.application import work_directories
 
     return work_directories.create_flow_run_work_directory(
-        db, flow_run_id, display_name, selected_paths
+        db, flow_run_id, node_attempt_id, display_name, selected_paths
     )
 
 
 def get_flow_run_work_directory(
-    db: Session, flow_run_id: str, work_directory_id: str
+    db: Session, flow_run_id: str, node_attempt_id: str, work_directory_id: str
 ) -> dict[str, Any]:
-    """Return one FlowRun-owned logical work directory."""
+    """Return one logical work directory owned by the current node Attempt."""
 
     from flowweave.modules.agent_workspaces.application import work_directories
 
-    return work_directories.get_flow_run_work_directory(db, flow_run_id, work_directory_id)
+    return work_directories.get_flow_run_work_directory(
+        db, flow_run_id, node_attempt_id, work_directory_id
+    )
 
 
 def flow_run_conversation_work_directory_context(
-    db: Session, flow_run_id: str, work_directory_id: str | None
+    db: Session,
+    flow_run_id: str,
+    node_attempt_id: str,
+    work_directory_id: str | None,
 ) -> tuple[str | None, str]:
-    """Freeze a FlowRun-owned directory selection for a new session."""
+    """Freeze a node Attempt-owned directory selection for a new session."""
 
     from flowweave.modules.agent_workspaces.application import work_directories
 
-    return work_directories.flow_run_conversation_context(db, flow_run_id, work_directory_id)
+    return work_directories.flow_run_conversation_context(
+        db, flow_run_id, node_attempt_id, work_directory_id
+    )
 
 
 def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: str) -> None:

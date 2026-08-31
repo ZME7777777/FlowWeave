@@ -1,7 +1,7 @@
-"""FlowRun-owned workspace projection for sessions entered from a node.
+"""Node-Attempt workspace projection for sessions entered from a FlowRun node.
 
-The node Attempt authorizes the browser entry only. Files and logical work
-directories belong to the FlowRun and remain shared by every node entry.
+The project root remains shared by a FlowRun. Logical work directories are
+owned by one node Attempt and never appear through another node entry.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import mimetypes
 import os
 import stat
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -43,9 +43,9 @@ def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
     # A waiting Attempt is inspectable before a Conversation/Runtime request
     # exists. Backfill the same strictly server-derived directory tree used by
     # Runtime startup so the workspace drawer has no lifecycle gap.
-    node = getattr(host, "node", None)
-    asset = node.get("asset") if isinstance(node, dict) else None
-    asset_id = str(asset.get("id") or "") if isinstance(asset, dict) else ""
+    node = cast(dict[str, Any], getattr(host, "node", {}))
+    asset = cast(dict[str, Any], node.get("asset")) if isinstance(node.get("asset"), dict) else {}
+    asset_id = str(asset.get("id") or "")
     working_directory = getattr(host, "working_directory", "")
     if asset_id and working_directory:
         ensure_flow_run_attempt_workspace(
@@ -110,7 +110,12 @@ def _scope(
         directory = (
             db.get(AgentWorkDirectory, version.work_directory_id) if version is not None else None
         )
-        if version is None or directory is None or directory.flow_run_id != flow_run_id:
+        if (
+            version is None
+            or directory is None
+            or directory.flow_run_id != flow_run_id
+            or directory.node_attempt_id != attempt_id
+        ):
             raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
         paths = _version_paths(db, version.id)
         details = {
@@ -128,7 +133,7 @@ def _scope(
         return binding.working_directory or str(_RUNTIME_PROJECT), details, roots
     if work_directory_id:
         directory = agent_workspace_host.get_flow_run_work_directory(
-            db, flow_run_id, work_directory_id
+            db, flow_run_id, attempt_id, work_directory_id
         )
         paths = tuple(directory["current_version"]["selected_paths"])
         roots = tuple(str(_RUNTIME_PROJECT / path) for path in paths)

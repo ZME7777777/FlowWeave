@@ -481,10 +481,10 @@ def test_node_session_list_orders_recent_activity_first(
         ]
 
 
-def test_node_workspace_projection_supports_flow_run_work_directories(
+def test_node_workspace_projection_isolates_node_attempt_work_directories(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Node entries can browse the FlowRun root or a frozen logical directory."""
+    """Node entries share only the project root, never logical directories."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
         flow_run_workspace_project_path,
@@ -494,9 +494,16 @@ def test_node_workspace_projection_supports_flow_run_work_directories(
         flow_run_id, runtime_session_id, first_attempt_id = _node_session_context(db)
         first_attempt = db.get(NodeAttempt, first_attempt_id)
         assert first_attempt is not None
+        second_node_run = NodeRun(
+            flow_run_id=flow_run_id,
+            flow_node_snapshot_key="node-2",
+            sequence_no=2,
+        )
+        db.add(second_node_run)
+        db.flush()
         second_attempt = NodeAttempt(
-            node_run_id=first_attempt.node_run_id,
-            attempt_no=2,
+            node_run_id=second_node_run.id,
+            attempt_no=1,
             snapshot_id=first_attempt.snapshot_id,
             state="WAITING_START_CONFIRMATION",
             workspace_ref="",
@@ -549,8 +556,29 @@ def test_node_workspace_projection_supports_flow_run_work_directories(
         assert content == b"first"
         assert filename == "first.txt"
         directory = work_directories.create_flow_run_work_directory(
-            db, flow_run_id, "节点一目录", ("nodes/one",)
+            db, flow_run_id, first_attempt_id, "节点一目录", ("nodes/one",)
         )
+        first_directories = work_directories.list_flow_run_work_directories(
+            db, flow_run_id, first_attempt_id
+        )
+        second_directories = work_directories.list_flow_run_work_directories(
+            db, flow_run_id, second_attempt.id
+        )
+        assert [item["id"] for item in first_directories["items"]] == [directory["id"]]
+        assert second_directories["items"] == []
+        with pytest.raises(DomainError) as caught:
+            work_directories.get_flow_run_work_directory(
+                db, flow_run_id, second_attempt.id, str(directory["id"])
+            )
+        assert caught.value.code == "AGENT_WORK_DIRECTORY_NOT_FOUND"
+        with pytest.raises(DomainError) as caught:
+            flow_node_workspace.details(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=second_attempt.id,
+                work_directory_id=str(directory["id"]),
+            )
+        assert caught.value.code == "AGENT_WORK_DIRECTORY_NOT_FOUND"
         scoped = flow_node_workspace.details(
             db,
             flow_run_id=flow_run_id,

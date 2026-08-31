@@ -621,12 +621,12 @@ def create_conversation(
                 409,
                 {"flow_run_id": run.id, "node_attempt_id": attempt.id},
             )
-    # The Attempt is authorization and routing context only. Its node payload,
-    # inputs, startup prompt, outputs, and capabilities do not enter the Agent
-    # conversation. FlowRun contributes only the selected shared workspace.
+    # The FlowRun project root stays shared, while optional logical work
+    # directories are owned by this Attempt and cannot be selected by another
+    # node entry.
     work_directory_version_id, runtime_working_directory = (
         agent_workspace_host.flow_run_conversation_work_directory_context(
-            db, run.id, payload.work_directory_id
+            db, run.id, attempt.id, payload.work_directory_id
         )
     )
     request_owner_id = str(uuid4())
@@ -744,7 +744,7 @@ def bootstrap_node_conversation(
     node_run, run, snapshot = _attempt_context(db, attempt)
     work_directory_version_id, working_directory = (
         agent_workspace_host.flow_run_conversation_work_directory_context(
-            db, run.id, work_directory_id
+            db, run.id, attempt.id, work_directory_id
         )
     )
     created = _create_native_conversation(

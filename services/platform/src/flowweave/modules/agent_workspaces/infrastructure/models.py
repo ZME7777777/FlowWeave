@@ -161,10 +161,14 @@ class AgentWorkDirectory(Base):
             "workspace_id", "display_name", name="uq_agent_work_directory_workspace_name"
         ),
         UniqueConstraint(
-            "flow_run_id", "display_name", name="uq_agent_work_directory_flow_run_name"
+            "flow_run_id",
+            "node_attempt_id",
+            "display_name",
+            name="uq_agent_work_directory_flow_run_attempt_name",
         ),
         CheckConstraint(
-            "(workspace_id IS NOT NULL) <> (flow_run_id IS NOT NULL)",
+            "(workspace_id IS NOT NULL AND flow_run_id IS NULL AND node_attempt_id IS NULL) "
+            "OR (workspace_id IS NULL AND flow_run_id IS NOT NULL)",
             name="ck_agent_work_directory_owner",
         ),
         CheckConstraint("state IN ('ACTIVE', 'ARCHIVED')", name="ck_agent_work_directory_state"),
@@ -178,6 +182,9 @@ class AgentWorkDirectory(Base):
     )
     flow_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("flow_runs.id", ondelete="CASCADE"), index=True
+    )
+    node_attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
     )
     display_name: Mapped[str] = mapped_column(String(160))
     state: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
