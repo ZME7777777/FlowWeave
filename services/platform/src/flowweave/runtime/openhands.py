@@ -1379,13 +1379,16 @@ class OpenHandsRuntime:
         workspace = cast(dict[str, Any], raw_workspace) if isinstance(raw_workspace, dict) else {}
         working_dir_raw = workspace.get("working_dir")
         working_dir = PurePosixPath(working_dir_raw) if isinstance(working_dir_raw, str) else None
-        project_root = PurePosixPath("/runtime/workspace/project")
+        workspace_roots = (
+            PurePosixPath("/runtime/workspace/project"),
+            PurePosixPath("/runtime/workspace/nodes"),
+        )
         if (
             workspace.get("kind") != "LocalWorkspace"
             or working_dir is None
             or not working_dir.is_absolute()
             or ".." in working_dir.parts
-            or not working_dir.is_relative_to(project_root)
+            or not any(working_dir.is_relative_to(root) for root in workspace_roots)
         ):
             raise DomainError(
                 "RUNTIME_WORKSPACE_IDENTITY_DRIFT",

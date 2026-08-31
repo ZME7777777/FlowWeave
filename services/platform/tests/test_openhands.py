@@ -252,6 +252,41 @@ def _state(**values: object) -> dict[str, object]:
 
 
 @pytest.mark.parametrize(
+    "working_dir",
+    [
+        "/runtime/workspace/project",
+        "/runtime/workspace/project/backend",
+        "/runtime/workspace/nodes/asset/sessions/node-run/1",
+    ],
+)
+def test_openhands_reload_accepts_formal_flow_run_workspace_roots(
+    openhands_settings, monkeypatch, working_dir: str
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    state = _state(
+        workspace={"kind": "LocalWorkspace", "working_dir": working_dir}
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: state)
+
+    assert runtime._conversation_state(_handle())["workspace"] == state["workspace"]
+
+
+def test_openhands_reload_rejects_workspace_outside_flow_run_roots(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    state = _state(
+        workspace={"kind": "LocalWorkspace", "working_dir": "/runtime/workspace/capabilities"}
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: state)
+
+    with pytest.raises(DomainError) as raised:
+        runtime._conversation_state(_handle())
+
+    assert raised.value.code == "RUNTIME_WORKSPACE_IDENTITY_DRIFT"
+
+
+@pytest.mark.parametrize(
     ("max_iterations", "expected_refinement"),
     [
         (0, None),
