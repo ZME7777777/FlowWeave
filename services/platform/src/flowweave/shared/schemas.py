@@ -188,10 +188,23 @@ class ModelProviderWrite(ApiModel):
 class GateWrite(ApiModel):
     stage: Literal["START", "END"]
     position: int = Field(ge=0)
-    gate_type: Literal["PROMPT", "PYTHON", "JAVASCRIPT"]
+    gate_type: Literal["PROMPT", "PYTHON"]
     enabled: bool = True
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     config: dict[str, Any] = Field(default_factory=_empty_any_dict)
+
+    @model_validator(mode="after")
+    def validate_gate_config(self) -> GateWrite:
+        if self.gate_type == "PYTHON":
+            code = self.config.get("code")
+            if not isinstance(code, str) or not code.strip():
+                raise ValueError("Python gates require a non-empty script")
+            if len(code.encode()) > 256 * 1024:
+                raise ValueError("Python gate scripts cannot exceed 256 KiB")
+            filename = self.config.get("script_filename")
+            if filename is not None and (not isinstance(filename, str) or not filename.endswith(".py")):
+                raise ValueError("Python gate script_filename must end in .py")
+        return self
 
 
 def _empty_gates() -> list[GateWrite]:

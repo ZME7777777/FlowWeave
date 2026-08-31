@@ -91,10 +91,6 @@ def _python(code: str, context: dict[str, Any], timeout: int) -> GateResult:
     return _script("PYTHON", code, context, timeout)
 
 
-def _javascript(code: str, context: dict[str, Any], timeout: int) -> GateResult:
-    return _script("JAVASCRIPT", code, context, timeout)
-
-
 @dataclass(frozen=True, slots=True)
 class GateExecutionPlan:
     gate_type: str
@@ -248,8 +244,6 @@ def execute_gate_plan(plan: GateExecutionPlan, context: dict[str, Any]) -> GateR
         return plan.preparation_error
     if plan.gate_type == "PYTHON":
         return _python(str(plan.config.get("code") or ""), context, plan.timeout)
-    if plan.gate_type == "JAVASCRIPT":
-        return _javascript(str(plan.config.get("code") or ""), context, plan.timeout)
     if plan.gate_type == "PROMPT":
         return _prompt(plan, context)
     return _error(f"Unsupported gate type: {plan.gate_type}", code="GATE_CONFIG_INVALID")

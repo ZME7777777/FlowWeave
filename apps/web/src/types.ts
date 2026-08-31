@@ -159,7 +159,7 @@ export interface CodexOAuthStatus {
 }
 export interface GatePolicy {
   id?: string; stage: 'START' | 'END'; position: number;
-  gate_type: 'PROMPT' | 'PYTHON' | 'JAVASCRIPT'; enabled: boolean;
+  gate_type: 'PROMPT' | 'PYTHON'; enabled: boolean;
   timeout_seconds: number; config: Record<string, unknown>; content_hash?: string;
 }
 export interface FlowNode {

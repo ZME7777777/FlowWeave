@@ -34,7 +34,7 @@ def test_python_gate_rejects_imports_and_host_access(db_session_factory):
     assert "Import" in result.summary or "syntax" in result.summary
 
 
-def test_javascript_gate_executes_with_limits(db_session_factory):
+def test_javascript_gate_is_rejected(db_session_factory):
     with db_session_factory() as db:
         result = execute_gate(
             db,
@@ -48,21 +48,8 @@ def test_javascript_gate_executes_with_limits(db_session_factory):
             {"ready": True},
             1,
         )
-    assert result.decision == "PASS"
-
-
-def test_javascript_gate_interrupts_infinite_loop(db_session_factory):
-    with db_session_factory() as db:
-        result = execute_gate(db, "JAVASCRIPT", {"code": "while (true) {}"}, {}, 1)
     assert result.decision == "ERROR"
-    assert result.error_code == "GATE_TIMEOUT"
-
-
-def test_invalid_gate_result_is_normalized_to_error(db_session_factory):
-    with db_session_factory() as db:
-        result = execute_gate(db, "JAVASCRIPT", {"code": "return {decision: 'MAYBE'};"}, {}, 1)
-    assert result.decision == "ERROR"
-    assert result.error_code == "GATE_RESULT_INVALID"
+    assert result.error_code == "GATE_CONFIG_INVALID"
 
 
 def test_prompt_gate_calls_openai_compatible_provider(monkeypatch, db_session_factory):

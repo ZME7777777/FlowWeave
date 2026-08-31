@@ -206,11 +206,11 @@ def flow_payload(asset_id, name="需求到方案", *, environment_version_id=Non
         {
             "stage": "START",
             "position": 1,
-            "gate_type": "JAVASCRIPT",
+            "gate_type": "PYTHON",
             "config": {
                 "code": (
-                    "return {decision: 'PASS', summary: '规则通过', "
-                    "reasons: [], evidence: [], details: {}};"
+                    "result = {'decision': 'PASS', 'summary': '规则通过', "
+                    "'reasons': [], 'evidence': [], 'details': {}}"
                 )
             },
         },
