@@ -1096,7 +1096,7 @@ def _prepare_gate_stage(
     node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
     context = _gate_context(db, attempt, node_run, node, stage)
     policies = sorted(
-        [x for x in node.get("gates", []) if x["stage"] == stage and x.get("enabled", True)],
+        [x for x in attempt.gate_policies_json if x["stage"] == stage and x.get("enabled", True)],
         key=lambda x: x["position"],
     )
     prepared: list[_PreparedGate] = []
@@ -1224,6 +1224,7 @@ def _create_node_run(
     instance_key: str,
     artifact_ids: dict[str, str],
     created_from: str,
+    gate_policies: list[dict[str, Any]] | None = None,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
@@ -1297,6 +1298,7 @@ def _create_node_run(
             node_run_id=existing.id,
             attempt_no=next_attempt_no,
             snapshot_id=snapshot.id,
+            gate_policies_json=gate_policies or [],
             workspace_ref=str(
                 attempt_workspace_path(
                     asset_id=asset_id,
@@ -1346,6 +1348,7 @@ def _create_node_run(
         node_run_id=node_run.id,
         attempt_no=1,
         snapshot_id=snapshot.id,
+        gate_policies_json=gate_policies or [],
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=asset_id,
@@ -1564,7 +1567,21 @@ def start_node_run(
                 consumer_node_key=instance_key,
             )
             artifact_ids[field_key] = artifact.id
-    node_run, _ = _create_node_run(db, run, instance_key, artifact_ids, "HUMAN_START")
+    gates = [
+        {
+            "id": str(uuid4()),
+            "stage": gate.stage,
+            "position": gate.position,
+            "gate_type": gate.gate_type,
+            "enabled": gate.enabled,
+            "timeout_seconds": gate.timeout_seconds,
+            "config": gate.config,
+        }
+        for gate in payload.gates
+    ]
+    node_run, _ = _create_node_run(
+        db, run, instance_key, artifact_ids, "HUMAN_START", gates
+    )
     finish(db)
     return node_run_detail(db, node_run.id)
 
@@ -3550,6 +3567,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_mode": attempt.startup_mode,
         "startup_capability_key": attempt.startup_capability_key,
         "startup_prompt": attempt.startup_prompt,
+        "gate_policies": attempt.gate_policies_json,
         "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,
         "error_detail": attempt.error_detail,

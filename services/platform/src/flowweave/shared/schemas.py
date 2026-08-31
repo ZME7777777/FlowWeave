@@ -202,7 +202,9 @@ class GateWrite(ApiModel):
             if len(code.encode()) > 256 * 1024:
                 raise ValueError("Python gate scripts cannot exceed 256 KiB")
             filename = self.config.get("script_filename")
-            if filename is not None and (not isinstance(filename, str) or not filename.endswith(".py")):
+            if filename is not None and (
+                not isinstance(filename, str) or not filename.endswith(".py")
+            ):
                 raise ValueError("Python gate script_filename must end in .py")
         return self
 
@@ -303,6 +305,7 @@ class RunStart(ApiModel):
 class NodeRunStart(ApiModel):
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)
     input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
+    gates: list[GateWrite] = Field(default_factory=_empty_gates)
 
     @model_validator(mode="after")
     def validate_input_urls(self) -> NodeRunStart:

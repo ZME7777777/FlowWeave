@@ -107,6 +107,9 @@ class NodeAttempt(Base):
     startup_mode: Mapped[str] = mapped_column(String(20), default="PROMPT")
     startup_capability_key: Mapped[str | None] = mapped_column(String(200))
     startup_prompt: Mapped[str | None] = mapped_column(Text)
+    # Runtime gates are selected for one execution and frozen with its Attempt.
+    # A reusable Flow definition intentionally does not own this configuration.
+    gate_policies_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     output_targets_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_detail: Mapped[str | None] = mapped_column(Text)

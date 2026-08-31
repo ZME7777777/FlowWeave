@@ -9,7 +9,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
+import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, GatePolicy, ModelProvider, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 

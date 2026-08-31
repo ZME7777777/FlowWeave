@@ -15,7 +15,8 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute(
-        "ALTER TABLE node_attempts ADD COLUMN IF NOT EXISTS gate_policies_json JSON NOT NULL DEFAULT '[]'"
+        "ALTER TABLE node_attempts ADD COLUMN IF NOT EXISTS "
+        "gate_policies_json JSON NOT NULL DEFAULT '[]'::json"
     )
 
 
