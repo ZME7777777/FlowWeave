@@ -1594,6 +1594,22 @@ upgrade/downgrade、唯一 head、`git diff --check` 与任务状态唯一性通
 冻结到 Snapshot 及 OpenHands `AgentContext.system_message_suffix`。Agent Workspace 仅在新会话首发前冻结
 Context；已被节点或会话引用的 Context 不能删除。大模型配置按当前可见卡片容量分页。
 
+### FR-112 已有 Agent 会话 Context 装配只读可见性 — DONE
+
+依赖：`FR-111`。
+
+目标：已有 Agent 会话的能力管理器必须保留 `Context` 标签，并仅展示该会话创建时冻结的 Context Version（包括
+已不是最新版本的历史版本）。这些条目和 Context 标签均只读：不能新增、选择、取消、编辑或删除；其他 Skill、
+MCP、Plugin 的既有增量注册语义不变。页面只使用 binding 已持久化的 capability id/type/key/digest 与能力仓库
+版本目录展示装配事实，不修改 OpenHands、会话、系统后缀、Runtime 或 Snapshot。
+
+验收：补充 Agent 工作台定向 Playwright，覆盖当前会话 Context 标签、冻结历史版本的可见性和无注册入口；运行
+Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯一性检查。本切片使用独立 Git commit。
+
+完成：当前会话能力管理器保留 `Context` 标签；该标签只显示 binding 创建时冻结的 Context Version，并可从
+完整能力版本目录读取已非最新的历史版本。条目均锁定，标签内不显示批量选择、MCP 检测或注册按钮；其他能力
+标签继续保留原有增量注册行为。源码 Vite Playwright、Web lint/typecheck/production build 通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
