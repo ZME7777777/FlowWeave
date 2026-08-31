@@ -228,48 +228,49 @@ function FlowRunControls({ run, refresh, navigate }: { run: FlowRun; refresh: ()
   return <div className="flow-run-management" aria-label="流程运行态管理"><span>流程运行态管理</span><div>{terminal ? <button className="danger" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '永久删除这个流程运行？', message: '相关记录都会被清理且不可恢复。', confirmLabel: '永久删除', tone: 'danger' }).then(ok => ok && mutation.mutate('delete'))}><Trash2 size={14}/>永久删除此运行</button> : <><button className="ghost" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '人工结束整个流程？', message: '未结束的执行会被取消。', confirmLabel: '结束流程' }).then(ok => ok && mutation.mutate('complete'))}>人工结束流程</button><button className="danger" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消整个流程？', message: '未结束的执行会被取消。', confirmLabel: '取消流程', tone: 'danger' }).then(ok => ok && mutation.mutate('cancel'))}><StopCircle size={14}/>取消整个流程</button></>}</div>{mutation.error && <p className="error">{mutation.error.message}</p>}</div>;
 }
 
+function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (gates: GatePolicy[]) => void }) {
+  const add = (stage: 'START' | 'END') => onChange([...gates, {
+    stage, position: gates.filter(gate => gate.stage === stage).length, gate_type: 'PROMPT', enabled: true,
+    timeout_seconds: 30, config: { prompt: '' },
+  }]);
+  const update = (index: number, patch: Partial<GatePolicy>) => onChange(gates.map((gate, itemIndex) => itemIndex === index ? { ...gate, ...patch } : gate));
+  const remove = (index: number) => onChange(gates.filter((_, itemIndex) => itemIndex !== index).map((gate, itemIndex, all) => ({ ...gate, position: all.slice(0, itemIndex).filter(candidate => candidate.stage === gate.stage).length })));
+  return <section className="attempt-side-section gate-draft-editor"><p className="field-hint">门禁只应用于即将创建的这一次执行；创建后将冻结为本轮的门禁结果依据。</p>{(['START', 'END'] as const).map(stage => <section key={stage}><header><h4>{stage === 'START' ? '开始门禁' : '结束门禁'}</h4><button type="button" className="secondary" onClick={() => add(stage)}><Plus size={13}/>添加门禁</button></header>{gates.filter(gate => gate.stage === stage).map(gate => {
+    const index = gates.indexOf(gate);
+    return <article key={stage + gate.position} className="gate-editor"><div className="gate-row"><select aria-label="门禁类型" value={gate.gate_type} onChange={event => update(index, { gate_type: event.target.value as GatePolicy['gate_type'], config: event.target.value === 'PYTHON' ? { code: '', script_filename: '' } : { prompt: '' } })}><option value="PROMPT">Prompt 模型判断</option><option value="PYTHON">Python 脚本</option></select><label>超时（秒）<input type="number" min="1" max="300" value={gate.timeout_seconds} onChange={event => update(index, { timeout_seconds: Number(event.target.value) || 30 })}/></label><button type="button" className="ghost" onClick={() => remove(index)}><Trash2 size={13}/>删除</button></div>{gate.gate_type === 'PYTHON' ? <label>Python 脚本<textarea aria-label="Python 门禁脚本" value={String(gate.config.code || '')} onChange={event => update(index, { config: { ...gate.config, code: event.target.value, script_filename: String(gate.config.script_filename || 'gate.py') } })}/></label> : <label>判定提示词<textarea aria-label="门禁判定提示词" value={String(gate.config.prompt || '')} onChange={event => update(index, { config: { ...gate.config, prompt: event.target.value } })}/></label>}</article>;
+  })}</section>)}</section>;
+}
+
 function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
+  const [tab, setTab] = useState<'overview' | 'inputs' | 'gates'>('overview');
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const [bindings, setBindings] = useState<Record<string, string>>({});
+  const [gates, setGates] = useState<GatePolicy[]>([]);
   const [mode, setMode] = useState<'PROMPT' | 'CHAT'>('CHAT');
   const [prompt, setPrompt] = useState(node.asset.executor?.startup_prompt ?? '');
-  useEffect(() => {
-    setInputDialogOpen(false); setBindings({}); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? '');
-  }, [node.instance_key, node.asset.executor?.startup_prompt]);
+  useEffect(() => { setTab('overview'); setInputDialogOpen(false); setBindings({}); setGates([]); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? ''); }, [node.instance_key, node.asset.executor?.startup_prompt]);
   const mutation = useMutation({
-    mutationFn: async (bindings: Record<string, string>) => {
-      const activated = await api.activateNode(run.id, node.instance_key, bindings);
+    mutationFn: async (nextBindings: Record<string, string>) => {
+      const activated = await api.activateNode(run.id, node.instance_key, nextBindings, gates);
       const created = await waitForStartGate(run.id, activated);
       const attempt = created.attempts.at(-1);
       if (!attempt || attempt.state !== 'WAITING_START_CONFIRMATION') return { created };
-      if (mode === 'CHAT') {
-        return { created, openDraft: true };
-      }
+      if (mode === 'CHAT') return { created, openDraft: true };
       const started = await api.confirmStart(attempt.id, attempt.state_version, { startup_mode: 'PROMPT', prompt });
-      return {
-        created: { ...created, attempts: created.attempts.map(item => item.id === started.id ? started : item) },
-      };
+      return { created: { ...created, attempts: created.attempts.map(item => item.id === started.id ? started : item) } };
     },
-    onSuccess: result => {
-      onActivated(result.created);
-      refresh();
-      if (result.openDraft) {
-        const attempt = result.created.attempts.at(-1);
-        if (attempt) openNodeSession(run.id, result.created.id, attempt.id);
-      }
-    },
+    onSuccess: result => { onActivated(result.created); refresh(); if (result.openDraft) { const attempt = result.created.attempts.at(-1); if (attempt) openNodeSession(run.id, result.created.id, attempt.id); } },
   });
   const invalidMode = mode === 'PROMPT' && !prompt.trim();
+  const invalidGates = gates.some(gate => gate.gate_type === 'PYTHON' && !String(gate.config.code || '').trim());
   const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key);
   const visits = nodeRuns.length;
-  return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><div className="action-content">
-    <section className="node-console-intro"><span className="eyebrow">NODE EXECUTION</span><h3>创建一次独立执行</h3><p>输入由节点定义严格生成，并直接绑定到当前节点；不会从其他节点或产物池中选择。</p></section>
-    {nodeRuns.length > 0 && <section className="node-execution-history"><header><h4>已有执行记录</h4><small>可随时查看，且不影响再次启动</small></header>{nodeRuns.map(item => <button key={item.id} onClick={() => onSelectExecution(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>)}</section>}
-    <InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={run.artifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}
-    <section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => setMode('PROMPT')}/><span><b>发送启动提示词</b><small>创建后立即自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => setMode('CHAT')}/><span><b>仅创建会话启动</b><small>不发送首条任务消息</small></span></label></div>{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section>
-    <button className="primary full node-run-button" disabled={terminal || invalidMode || mutation.isPending} onClick={() => missingInputs ? setInputDialogOpen(true) : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : missingInputs ? '请先填写节点输入' : mode === 'CHAT' ? '启动节点会话' : `开始第 ${visits + 1} 次执行`}</button>{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
+  return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><nav className="attempt-detail-tabs" aria-label="新执行配置"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'inputs' ? 'active' : ''} onClick={() => setTab('inputs')}>输入</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁配置</button></nav><div className="action-content">
+    {tab === 'overview' && <><section className="node-console-intro"><span className="eyebrow">NODE EXECUTION</span><h3>创建一次独立执行</h3><p>输入、启动方式和门禁配置只作用于这一次执行；创建后都会冻结。</p></section>{nodeRuns.length > 0 && <section className="node-execution-history"><header><h4>已有执行记录</h4><small>可随时查看，且不影响再次启动</small></header>{nodeRuns.map(item => <button key={item.id} onClick={() => onSelectExecution(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>)}</section>}<section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => setMode('PROMPT')}/><span><b>发送启动提示词</b><small>创建后立即自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => setMode('CHAT')}/><span><b>仅创建会话启动</b><small>不发送首条任务消息</small></span></label></div>{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section><button className="primary full node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => missingInputs ? setTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : missingInputs ? '请先填写节点输入' : mode === 'CHAT' ? '启动节点会话' : '开始节点执行'}</button>{invalidGates && <p className="error">每个 Python 门禁都需要填写脚本。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}</>}
+    {tab === 'inputs' && <><InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={run.artifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}</>}
+    {tab === 'gates' && <GateDraftEditor gates={gates} onChange={setGates}/>} {mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
   </div>{inputDialogOpen && <NodeInputDialog run={run} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setBindings(nextBindings); setInputDialogOpen(false); }}/>}</aside>;
 }
 
@@ -277,7 +278,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const dialog = useProductDialog();
   const [text, setText] = useState('');
   const [bindings, setBindings] = useState<Record<string, string>>({});
-  const [tab, setTab] = useState<'overview' | 'inputs' | 'gates' | 'outputs'>('overview');
+  const [tab, setTab] = useState<'overview' | 'gates' | 'outputs'>('overview');
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const attemptSnapshot = run.snapshots.find(item => item.id === attempt.snapshot_id);
   const attemptNode = attemptSnapshot?.definition.nodes.find(item => item.instance_key === nodeRun.flow_node_snapshot_key);
@@ -302,7 +303,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const attemptTerminal = attempt.state === 'ACCEPTED' || attempt.state === 'REJECTED' || attempt.state === 'CANCELLED';
   const editableInputs = attempt.state === 'WAITING_INPUT' || attempt.state === 'START_BLOCKED';
   const nodeInputBindings = Object.fromEntries((attemptNode?.asset.inputs ?? []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
-  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'inputs' ? 'active' : ''} onClick={() => setTab('inputs')}>输入</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <>{!terminal && <button className="primary full create-another-run" onClick={onCreateNew}><Plus size={15}/>创建新的独立执行</button>}<div className="state-banner"><span>当前轮次状态</span><b>{ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>
+  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <>{!terminal && <button className="primary full create-another-run" onClick={onCreateNew}><Plus size={15}/>创建新的独立执行</button>}<div className="state-banner"><span>当前轮次状态</span><b>{ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div><InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={run.artifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
     <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id)}><Send size={15}/>进入节点会话</button>
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
@@ -312,7 +313,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
       {attempt.state === 'WAITING_ACCEPTANCE' && <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>确认完成</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>}
       {attempt.state === 'START_BLOCKED' && <button className="secondary full" onClick={() => act('retry')}>重试门禁</button>}
       {!attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
-    </>}</>}{tab === 'inputs' && <><InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={run.artifacts}/>{editableInputs && <button className="primary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={run} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setInputDialogOpen(false); setBindings(nextBindings); act('bind', nextBindings); }}/>}</aside>;
+    </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={run} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setInputDialogOpen(false); setBindings(nextBindings); act('bind', nextBindings); }}/>}</aside>;
 }
 
 function SnapshotSync({ run, currentVersion, onSynced }: { run: FlowRun; currentVersion?: number; onSynced: (run: FlowRun) => void }) {
