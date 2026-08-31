@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelLeftClose, PanelLeftOpen, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, randomId } from '../../api/client';
@@ -904,7 +904,6 @@ function WorkspaceDrawer({
     const stored = Number(localStorage.getItem('flowweave:workspace-file-tree-width'));
     return Math.min(520, Math.max(180, Number.isFinite(stored) ? stored : 300));
   });
-  const [fileTreeCollapsed, setFileTreeCollapsed] = useState(false);
   const [panelError, setPanelError] = useState('');
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
@@ -946,9 +945,6 @@ function WorkspaceDrawer({
     const exitOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setFullScreen(false); };
     window.addEventListener('keydown', exitOnEscape);
     return () => window.removeEventListener('keydown', exitOnEscape);
-  }, [fullScreen]);
-  useEffect(() => {
-    if (!fullScreen) setFileTreeCollapsed(false);
   }, [fullScreen]);
   useEffect(() => {
     if (!open) setFullScreen(false);
@@ -1052,7 +1048,7 @@ function WorkspaceDrawer({
     window.addEventListener('pointerup', stop, { once: true });
   };
   const startFileTreeResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (fileTreeCollapsed || window.innerWidth <= 680) return;
+    if (window.innerWidth <= 680) return;
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = fileTreeWidth;
@@ -1100,12 +1096,11 @@ function WorkspaceDrawer({
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error">{panelError}</p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
-          {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${fileTreeCollapsed ? ' tree-collapsed' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
+          {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
-              {fullScreen && <button type="button" className="agent-file-tree-collapse" aria-label={fileTreeCollapsed ? '展开文件目录' : '收起文件目录'} title={fileTreeCollapsed ? '展开文件目录' : '收起文件目录'} onClick={() => setFileTreeCollapsed(current => !current)}>{fileTreeCollapsed ? <PanelLeftOpen size={15}/> : <PanelLeftClose size={15}/>}</button>}
-              {!fileTreeCollapsed && <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} onSelect={path => updateScope(current => ({ ...current, selectedFile: path }))}/>}
+              <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} onSelect={path => updateScope(current => ({ ...current, selectedFile: path }))}/>
             </div>
-            {!fileTreeCollapsed && <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>}
+            <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{selectedFile ? <>
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
