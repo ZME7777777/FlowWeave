@@ -84,6 +84,6 @@ test('node prompt keeps free text and selected Context versions together', async
   await contextSelect.selectOption('context-version-1');
 
   await expect(contextPrompt).toHaveValue('同时保留这段自由上下文');
-  await expect(contextSelect).toHaveValue(['context-version-1']);
+  await expect(contextSelect.locator('option:checked')).toHaveAttribute('value', 'context-version-1');
   await expect(page.getByText('不作为普通用户消息发送。')).toBeVisible();
 });

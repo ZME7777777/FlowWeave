@@ -1,5 +1,26 @@
 import { expect, test } from '@playwright/test';
 
+test('Context module accepts only text-file uploads', async ({ page }) => {
+  await page.route('**/api/v1/capabilities', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' })
+    .getByRole('button', { name: /Context/ }).click();
+
+  const upload = page.getByRole('button', { name: '上传 Context 文本' });
+  await expect(upload).toBeVisible();
+  await expect(page.locator('.capability-list-controls input[type="file"]')).toHaveAttribute(
+    'accept',
+    '.txt,.md,.markdown,text/plain,text/markdown',
+  );
+});
+
 test('capability repository exposes module-specific menus and actions', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
