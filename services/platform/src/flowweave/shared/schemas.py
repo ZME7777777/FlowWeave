@@ -185,20 +185,70 @@ class ModelProviderWrite(ApiModel):
         return self
 
 
+class AgentPresetWrite(ApiModel):
+    """One launch-scoped Agent configuration.
+
+    The caller names published capability versions; the service resolves and
+    freezes their identities when it reserves the native Conversation.
+    """
+
+    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
+    model_provider_id: str | None = Field(default=None, min_length=1, max_length=36)
+    model_name: str | None = Field(default=None, min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+    node_context_enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_preset(self) -> AgentPresetWrite:
+        if len(self.capability_version_ids) != len(set(self.capability_version_ids)):
+            raise ValueError("Agent capability versions must be unique")
+        if self.model_name and not self.model_provider_id:
+            raise ValueError("model_provider_id is required when model_name is selected")
+        return self
+
+
+class GateAgentPresetWrite(ApiModel):
+    """The model-only configuration of an isolated gate Agent.
+
+    Gate Agents deliberately do not inherit the primary launch's capabilities
+    or node context.  They receive only the frozen gate payload in a separate
+    native Conversation.
+    """
+
+    model_provider_id: str | None = Field(default=None, min_length=1, max_length=36)
+    model_name: str | None = Field(default=None, min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+
+    @model_validator(mode="after")
+    def validate_preset(self) -> GateAgentPresetWrite:
+        if self.model_name and not self.model_provider_id:
+            raise ValueError("model_provider_id is required when model_name is selected")
+        return self
+
+
 class GateWrite(ApiModel):
     stage: Literal["START", "END"]
     position: int = Field(ge=0)
-    gate_type: Literal["PROMPT", "PYTHON"]
+    # A gate is always evaluated by an isolated Agent configuration.  Python
+    # is an optional instruction/tool payload for that Agent, not a separate
+    # platform-owned gate mode.
+    gate_type: Literal["PROMPT", "PYTHON"] = "PROMPT"
     enabled: bool = True
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     config: dict[str, Any] = Field(default_factory=_empty_any_dict)
+    # Gates are always evaluated by their own isolated Agent conversation.
+    # There is no default/workspace fallback for a gate.
+    agent_preset: GateAgentPresetWrite
 
     @model_validator(mode="after")
     def validate_gate_config(self) -> GateWrite:
-        if self.gate_type == "PYTHON":
-            code = self.config.get("code")
-            if not isinstance(code, str) or not code.strip():
-                raise ValueError("Python gates require a non-empty script")
+        prompt = self.config.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("Gate prompt must be non-empty text")
+        code = self.config.get("code")
+        if code is not None:
+            if not isinstance(code, str):
+                raise ValueError("Python gate code must be text")
             if len(code.encode()) > 256 * 1024:
                 raise ValueError("Python gate scripts cannot exceed 256 KiB")
             filename = self.config.get("script_filename")
@@ -308,12 +358,12 @@ class NodeRunStart(ApiModel):
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)
     input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
     gates: list[GateWrite] = Field(default_factory=_empty_gates)
-    context_ids: list[str] = Field(default_factory=list, max_length=31)
+    agent_preset: AgentPresetWrite | None = None
 
     @model_validator(mode="after")
     def validate_input_urls(self) -> NodeRunStart:
-        if len(self.context_ids) != len(set(self.context_ids)):
-            raise ValueError("Context selections must be unique")
+        if self.startup_mode == "PROMPT" and self.agent_preset is None:
+            raise ValueError("agent_preset is required for PROMPT startup")
         normalized: dict[str, str] = {}
         for field_key, value in self.input_urls.items():
             normalized[field_key] = _http_url(value, f"input URL for {field_key}")

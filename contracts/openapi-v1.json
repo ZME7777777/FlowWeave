@@ -171,124 +171,6 @@
         }
       }
     },
-    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/capabilities": {
-      "get": {
-        "summary": "Node Session Capabilities",
-        "operationId": "node_session_capabilities_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_capabilities_get",
-        "parameters": [
-          {
-            "name": "flow_run_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Flow Run Id"
-            }
-          },
-          {
-            "name": "attempt_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Attempt Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  },
-                  "title": "Response Node Session Capabilities Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Capabilities Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "summary": "Replace Node Session Capabilities",
-        "operationId": "replace_node_session_capabilities_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_capabilities_put",
-        "parameters": [
-          {
-            "name": "flow_run_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Flow Run Id"
-            }
-          },
-          {
-            "name": "attempt_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Attempt Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NodeCapabilitySelectionWrite"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  },
-                  "title": "Response Replace Node Session Capabilities Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Capabilities Put"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/capabilities/{capability_version_id}/mcp-readiness": {
       "post": {
         "summary": "Node Session Mcp Readiness",
@@ -6316,6 +6198,47 @@
         }
       }
     },
+    "/api/v1/capabilities/{capability_id}/context-source": {
+      "get": {
+        "summary": "Context Source",
+        "operationId": "context_source_api_v1_capabilities__capability_id__context_source_get",
+        "parameters": [
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Context Source Api V1 Capabilities  Capability Id  Context Source Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/capabilities/{capability_id}/mcp-source": {
       "get": {
         "summary": "Mcp Source",
@@ -7815,6 +7738,66 @@
         }
       }
     },
+    "/api/v1/flow-runs/{run_id}/nodes/{flow_node_key}/input-artifacts": {
+      "post": {
+        "summary": "Add Node Input Artifact",
+        "operationId": "add_node_input_artifact_api_v1_flow_runs__run_id__nodes__flow_node_key__input_artifacts_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "flow_node_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Node Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Add Node Input Artifact Api V1 Flow Runs  Run Id  Nodes  Flow Node Key  Input Artifacts Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs/{run_id}/artifacts/upload": {
       "post": {
         "summary": "Upload Artifact",
@@ -7849,6 +7832,66 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Upload Artifact Api V1 Flow Runs  Run Id  Artifacts Upload Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/nodes/{flow_node_key}/input-artifacts/upload": {
+      "post": {
+        "summary": "Upload Node Input Artifact",
+        "operationId": "upload_node_input_artifact_api_v1_flow_runs__run_id__nodes__flow_node_key__input_artifacts_upload_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "flow_node_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Node Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_node_input_artifact_api_v1_flow_runs__run_id__nodes__flow_node_key__input_artifacts_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload Node Input Artifact Api V1 Flow Runs  Run Id  Nodes  Flow Node Key  Input Artifacts Upload Post"
                 }
               }
             }
@@ -9609,6 +9652,65 @@
         ],
         "title": "AgentMessageWrite"
       },
+      "AgentPresetWrite": {
+        "properties": {
+          "capability_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Capability Version Ids"
+          },
+          "model_provider_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Provider Id"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 30
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          },
+          "node_context_enabled": {
+            "type": "boolean",
+            "title": "Node Context Enabled",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AgentPresetWrite",
+        "description": "One launch-scoped Agent configuration.\n\nThe caller names published capability versions; the service resolves and\nfreezes their identities when it reserves the native Conversation."
+      },
       "AgentProfileCopyWrite": {
         "properties": {
           "capability_key": {
@@ -10039,6 +10141,33 @@
         ],
         "title": "Body_upload_node_draft_attachment_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_post"
       },
+      "Body_upload_node_input_artifact_api_v1_flow_runs__run_id__nodes__flow_node_key__input_artifacts_upload_post": {
+        "properties": {
+          "field_key": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Field Key"
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 240,
+            "title": "Display Name",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "field_key",
+          "file"
+        ],
+        "title": "Body_upload_node_input_artifact_api_v1_flow_runs__run_id__nodes__flow_node_key__input_artifacts_upload_post"
+      },
       "CapabilityBulkDeleteWrite": {
         "properties": {
           "ids": {
@@ -10172,6 +10301,7 @@
               "MCP",
               "HOOK",
               "AGENT_DEFINITION",
+              "CONTEXT",
               "CONTEXT_POLICY",
               "MEMORY_POLICY",
               "CRITIC_POLICY",
@@ -10186,6 +10316,30 @@
           "content_base64": {
             "type": "string",
             "title": "Content Base64"
+          },
+          "context_title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Title"
+          },
+          "context_description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Description"
           },
           "mcp_scripts": {
             "items": {
@@ -10324,6 +10478,14 @@
             "type": "string",
             "title": "Context Prompt",
             "default": ""
+          },
+          "context_capability_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Context Capability Ids"
           }
         },
         "additionalProperties": false,
@@ -10554,6 +10716,52 @@
         ],
         "title": "FlowWrite"
       },
+      "GateAgentPresetWrite": {
+        "properties": {
+          "model_provider_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Provider Id"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 30
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GateAgentPresetWrite",
+        "description": "The model-only configuration of an isolated gate Agent.\n\nGate Agents deliberately do not inherit the primary launch's capabilities\nor node context.  They receive only the frozen gate payload in a separate\nnative Conversation."
+      },
       "GateWrite": {
         "properties": {
           "stage": {
@@ -10573,10 +10781,10 @@
             "type": "string",
             "enum": [
               "PROMPT",
-              "PYTHON",
-              "JAVASCRIPT"
+              "PYTHON"
             ],
-            "title": "Gate Type"
+            "title": "Gate Type",
+            "default": "PROMPT"
           },
           "enabled": {
             "type": "boolean",
@@ -10594,6 +10802,9 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Config"
+          },
+          "agent_preset": {
+            "$ref": "#/components/schemas/GateAgentPresetWrite"
           }
         },
         "additionalProperties": false,
@@ -10601,7 +10812,7 @@
         "required": [
           "stage",
           "position",
-          "gate_type"
+          "agent_preset"
         ],
         "title": "GateWrite"
       },
@@ -11554,21 +11765,6 @@
         ],
         "title": "NodeCapabilityAddWrite"
       },
-      "NodeCapabilitySelectionWrite": {
-        "properties": {
-          "capability_version_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 30,
-            "title": "Capability Version Ids"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "NodeCapabilitySelectionWrite"
-      },
       "NodeConfirmationDecisionWrite": {
         "properties": {
           "expected_pending_digest": {
@@ -11627,6 +11823,15 @@
       },
       "NodeRunStart": {
         "properties": {
+          "startup_mode": {
+            "type": "string",
+            "enum": [
+              "PROMPT",
+              "CHAT"
+            ],
+            "title": "Startup Mode",
+            "default": "PROMPT"
+          },
           "artifact_ids": {
             "additionalProperties": {
               "type": "string"
@@ -11640,6 +11845,23 @@
             },
             "type": "object",
             "title": "Input Urls"
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/GateWrite"
+            },
+            "type": "array",
+            "title": "Gates"
+          },
+          "agent_preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentPresetWrite"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -11734,14 +11956,6 @@
             "type": "array",
             "maxItems": 10,
             "title": "Attachments"
-          },
-          "capability_version_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 30,
-            "title": "Capability Version Ids"
           }
         },
         "additionalProperties": false,

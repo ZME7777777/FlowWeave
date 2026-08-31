@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
-import type { CapabilityAsset, IOField, NodeAsset, NodeAssetWrite } from '../types';
+import type { IOField, NodeAsset, NodeAssetWrite } from '../types';
 import { useEscapeClose } from './useEscapeClose';
 
 const emptyField = (direction: 'input' | 'output', index: number): IOField => ({
@@ -44,8 +44,6 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const submitting = useRef(false);
   const { data: directories = [] } = useQuery({ queryKey: ['directories'], queryFn: api.directories });
-  const { data: capabilities = [] } = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
-  const contexts = capabilities.filter((item: CapabilityAsset) => item.capability_type === 'CONTEXT' && item.is_latest);
 
   useEffect(() => {
     if (!node) {
@@ -62,7 +60,7 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
       inputs: node.inputs.map(({ field_key, display_name, data_type, description }) => ({ field_key, display_name, data_type, description })),
       outputs: node.outputs.map(({ field_key, display_name, data_type, description }) => ({ field_key, display_name, data_type, description })),
       executor: node.executor
-        ? { ...node.executor, context_capability_ids: node.executor.context_capability_ids ?? [] }
+        ? { ...node.executor, context_capability_ids: [] }
         : emptyNode().executor,
     });
   }, [node]);
@@ -87,6 +85,7 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
         ...form,
         inputs: form.inputs.map(field => ({ ...field, display_name: field.display_name.trim() })),
         outputs: form.outputs.map(field => ({ ...field, display_name: field.display_name.trim() })),
+        executor: { ...form.executor, context_capability_ids: [] },
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '保存失败');
@@ -107,7 +106,6 @@ export function NodeEditor({ node, onSave, onClose }: Props) {
     {tab === 1 && <section className="form-grid form-pane">
       <label className="wide">启动触发提示词<textarea aria-label="启动触发提示词" value={form.executor.startup_prompt} onChange={event => setForm({ ...form, executor: { ...form.executor, startup_prompt: event.target.value } })}/></label>
       <label className="wide">上下文提示词<textarea aria-label="上下文提示词" value={form.executor.context_prompt} onChange={event => setForm({ ...form, executor: { ...form.executor, context_prompt: event.target.value } })}/></label>
-      <label className="wide">Context 能力（可多选）<select aria-label="Context 能力" multiple value={form.executor.context_capability_ids} onChange={event => setForm({ ...form, executor: { ...form.executor, context_capability_ids: [...event.currentTarget.selectedOptions].map(option => option.value) } })}>{contexts.map(item => <option key={item.id} value={item.id}>{item.capability_key} · rev {item.revision_number}</option>)}</select><small>与上方自由文本一起作为 OpenHands 的系统级会话上下文冻结；不作为普通用户消息发送。</small></label>
     </section>}
     {tab === 2 && <section className="form-pane io-editor"><div className="io-intro"><b>定义输入输出</b><span>这里只定义运行时表单的数据槽位和类型。URL 接受安全 HTTP(S) 链接，文件以平台附件样式上传。</span></div>{(['inputs', 'outputs'] as const).map(direction => {
       const input = direction === 'inputs';

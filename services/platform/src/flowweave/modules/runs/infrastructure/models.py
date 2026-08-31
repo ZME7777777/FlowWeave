@@ -111,6 +111,9 @@ class NodeAttempt(Base):
     # Snapshot was applied. New human starts persist an explicit list, where
     # an empty list deliberately means that no node Context is applied.
     context_ids_json: Mapped[list[str] | None] = mapped_column(JSON)
+    # Immutable per-launch main Agent configuration. The binding copies and
+    # freezes it when the automatic conversation is reserved.
+    agent_preset_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     # Runtime gates are selected for one execution and frozen with its Attempt.
     # A reusable Flow definition intentionally does not own this configuration.
     gate_policies_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)

@@ -161,6 +161,24 @@ export interface GatePolicy {
   id?: string; stage: 'START' | 'END'; position: number;
   gate_type: 'PROMPT' | 'PYTHON'; enabled: boolean;
   timeout_seconds: number; config: Record<string, unknown>; content_hash?: string;
+  /** This policy always runs in a separate sidecar Agent conversation. */
+  agent_preset?: GateAgentPreset | null;
+}
+/** A gate has a deliberately narrow, isolated Agent model preset. */
+export interface GateAgentPreset {
+  model_provider_id?: string | null;
+  model_name?: string | null;
+  reasoning_effort?: string | null;
+}
+/** A per-launch Agent preset. Capability versions are frozen when the first
+ * automatic FlowNode conversation is reserved. */
+export interface AgentPreset {
+  capability_version_ids: string[];
+  model_provider_id?: string | null;
+  model_name?: string | null;
+  reasoning_effort?: string | null;
+  /** Enables only the node's own free-text context, never repository Context. */
+  node_context_enabled: boolean;
 }
 export interface FlowNode {
   id?: string; instance_key: string; node_asset_id: string; alias?: string | null;
@@ -230,6 +248,7 @@ export interface NodeAttempt {
   startup_mode?: 'SKILL' | 'PROMPT' | 'CHAT'; startup_capability_key?: string | null;
   startup_prompt?: string | null;
   context_ids?: string[] | null;
+  agent_preset?: AgentPreset | null;
   gate_policies: GatePolicy[];
   output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];

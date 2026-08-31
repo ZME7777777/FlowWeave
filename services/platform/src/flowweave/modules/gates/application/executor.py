@@ -11,6 +11,8 @@ from flowweave.modules.model_providers.public import (
     PromptProviderSnapshot,
     prompt_provider_snapshot,
 )
+from flowweave.runtime.base import StartAttemptRequest
+from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.application.sandbox import SandboxLanguage
 from flowweave.shared.sandbox import get_sandbox
 
@@ -98,6 +100,12 @@ class GateExecutionPlan:
     timeout: int
     prompt_provider: PromptProviderSnapshot | None = None
     preparation_error: GateResult | None = None
+    # Flow executions populate these values with a newly-created, isolated
+    # Agent Conversation.  Keeping it on the frozen plan means the worker can
+    # perform external I/O without reading the primary Agent's history.
+    sidecar_request: StartAttemptRequest | None = None
+    sidecar_question: str | None = None
+    sidecar_binding_id: str | None = None
 
 
 def prepare_gate(
@@ -242,11 +250,54 @@ def execute_gate_plan(plan: GateExecutionPlan, context: dict[str, Any]) -> GateR
 
     if plan.preparation_error is not None:
         return plan.preparation_error
+    if plan.sidecar_request is not None and plan.sidecar_question is not None:
+        return _sidecar_agent(plan)
     if plan.gate_type == "PYTHON":
         return _python(str(plan.config.get("code") or ""), context, plan.timeout)
     if plan.gate_type == "PROMPT":
         return _prompt(plan, context)
     return _error(f"Unsupported gate type: {plan.gate_type}", code="GATE_CONFIG_INVALID")
+
+
+def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
+    """Run one gate through its own native Agent conversation.
+
+    This is intentionally not a provider HTTP call and not a platform Python
+    runner.  The prepared request has a distinct conversation id, capability
+    materialization directory and frozen Agent configuration.
+    """
+
+    assert plan.sidecar_request is not None and plan.sidecar_question is not None
+    runtime = get_runtime()
+    handle = None
+    try:
+        handle = runtime.create_conversation(plan.sidecar_request)
+        if handle.conversation_id != plan.sidecar_request.conversation_id:
+            return _error(
+                "Gate sidecar Conversation identity drifted",
+                code="GATE_EXECUTOR_UNAVAILABLE",
+            )
+        runtime.reload_conversation(handle)
+        answer = runtime.ask_agent(
+            handle, plan.sidecar_question, timeout_seconds=float(plan.timeout)
+        ).response
+        return _normalize(json.loads(answer))
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _error(
+            "Gate sidecar returned invalid JSON", log=str(exc), code="GATE_RESULT_INVALID"
+        )
+    except Exception as exc:
+        return _error(
+            "Gate sidecar execution failed",
+            log=str(exc),
+            code="GATE_EXECUTOR_UNAVAILABLE",
+        )
+    finally:
+        if handle is not None:
+            try:
+                runtime.delete_conversation(handle)
+            except Exception:
+                pass
 
 
 def execute_gate(

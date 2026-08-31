@@ -39,7 +39,6 @@ from flowweave.modules.gates.public import (
     GateExecutionPlan,
     GateResult,
     execute_gate_plan,
-    prepare_gate,
 )
 from flowweave.modules.runs.public import (
     Artifact,
@@ -1173,28 +1172,194 @@ def _prepare_gate_stage(
             )
             or 0
         ) + 1
+        frozen_policy = dict(policy)
         prepared.append(
             _PreparedGate(
-                policy=dict(policy),
+                policy=frozen_policy,
                 execution_no=execution_no,
-                plan=prepare_gate(
+                plan=_prepare_gate_plan(
                     db,
-                    str(policy["gate_type"]),
-                    dict(policy.get("config") or {}),
-                    int(policy.get("timeout_seconds", 30)),
+                    attempt=attempt,
+                    node_run=node_run,
+                    policy=frozen_policy,
+                    context=context,
+                    execution_no=execution_no,
                 ),
             )
         )
     return context, prepared
 
 
+def _prepare_gate_plan(
+    db: Session,
+    *,
+    attempt: NodeAttempt,
+    node_run: NodeRun,
+    policy: dict[str, Any],
+    context: dict[str, Any],
+    execution_no: int,
+) -> GateExecutionPlan:
+    """Prepare a gate without ever attaching it to the primary Agent.
+
+    Every gate receives a separate native Conversation and a model-only,
+    independently frozen preset.  It never receives primary-Agent
+    capabilities or node context.
+    """
+
+    config = dict(policy.get("config") or {})
+    timeout = int(policy.get("timeout_seconds", 30))
+    preset = policy.get("agent_preset")
+    if not isinstance(preset, dict):
+        return GateExecutionPlan(
+            str(policy["gate_type"]),
+            config,
+            timeout,
+            preparation_error=GateResult(
+                "ERROR",
+                "Gate Agent configuration is required",
+                ["Gate Agent configuration is required"],
+                [],
+                {},
+                error_code="GATE_CONFIG_INVALID",
+            ),
+        )
+
+    run = _run(db, node_run.flow_run_id)
+    snapshot = _snapshot(db, attempt.snapshot_id)
+    if (
+        not run.environment_version_id
+        or snapshot.environment_version_id != run.environment_version_id
+    ):
+        return GateExecutionPlan(
+            str(policy["gate_type"]), config, timeout,
+            preparation_error=GateResult(
+                "ERROR", "Gate Runtime Environment is unavailable",
+                ["Gate Runtime Environment is unavailable"], [], {},
+                error_code="GATE_CONFIG_INVALID",
+            ),
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        return GateExecutionPlan(
+            str(policy["gate_type"]), config, timeout,
+            preparation_error=GateResult(
+                "ERROR", "Gate Runtime Environment is unavailable",
+                ["Gate Runtime Environment is unavailable"], [], {},
+                error_code="GATE_CONFIG_INVALID",
+            ),
+        )
+    try:
+        connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+        session_config = agent_sessions.resolve_session_config(
+            db,
+            model_provider_id=(
+                str(preset["model_provider_id"]) if preset.get("model_provider_id") else None
+            ),
+            model_name=str(preset["model_name"]) if preset.get("model_name") else None,
+            reasoning_effort=(
+                str(preset["reasoning_effort"]) if preset.get("reasoning_effort") else None
+            ),
+            # A gate never inherits the primary Agent's skills, plugins or
+            # context. Its only inputs are the explicit gate payload below.
+            capability_version_ids=(),
+        )
+        binding = agent_sessions.reserve_flow_node_binding(
+            db,
+            runtime_session_id=connection.runtime_session_id,
+            flow_run_id=run.id,
+            node_run_id=node_run.id,
+            node_attempt_id=attempt.id,
+            working_directory="/runtime/workspace/project",
+            create_idempotency_key=(
+                f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}"
+            ),
+            display_title=f"门禁 {policy['id']} · 第 {execution_no} 次",
+            config=session_config,
+        )
+        provider = agent_sessions.provider_for_config(db, session_config)
+        host_root = sandboxes.flow_run_capability_path(
+            run.id, snapshot.runtime_manifest_hash, "gate-sidecars", binding.id
+        )
+        runtime_root = Path(
+            sandboxes.openhands_flow_run_capability_path(
+                snapshot.runtime_manifest_hash, "gate-sidecars", binding.id
+            )
+        )
+        agent_spec = agent_sessions.build_agent_spec(
+            session_config,
+            provider=provider,
+            binding_id=binding.id,
+            working_directory=binding.working_directory or "/runtime/workspace/project",
+            host_root=host_root,
+            runtime_root=runtime_root,
+        )
+        request = build_runtime_request(
+            db,
+            flow_run_id=run.id,
+            runtime_manifest_hash=snapshot.runtime_manifest_hash,
+            attempt_id=binding.id,
+            execution_key=f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}",
+            node={},
+            bindings=[],
+            workspace_ref=binding.working_directory or "/runtime/workspace/project",
+            interaction_mode="COLLABORATION",
+            environment_image=environment.image_digest,
+            environment_id=environment.environment_id,
+            environment_version_id=environment.id,
+            environment_version_no=environment.version_no,
+            agent_spec=agent_spec,
+            conversation_id=binding.openhands_conversation_id,
+        )
+        request = replace(
+            request,
+            runtime_sandbox_id=connection.managed_runtime_id,
+            runtime_resource_name=connection.resource_name,
+            runtime_base_url=f"http://{connection.resource_name}:8000",
+        )
+    except Exception as exc:
+        return GateExecutionPlan(
+            str(policy["gate_type"]), config, timeout,
+            preparation_error=GateResult(
+                "ERROR", "Gate Agent configuration is unavailable",
+                ["Gate Agent configuration is unavailable"], [], {},
+                log_excerpt=str(exc)[:4000], error_code="GATE_CONFIG_INVALID",
+            ),
+        )
+
+    instructions = str(config.get("prompt") or "").strip()
+    code = str(config.get("code") or "").strip()
+    question = (
+        "You are an isolated workflow gate Agent. Do not access any other "
+        "Conversation history. Evaluate only the supplied gate context. Return "
+        "only a JSON object with decision (PASS, FAIL, or ERROR), summary, "
+        "reasons (array), evidence (array), and details (object).\n\n"
+        f"Gate instructions:\n{instructions or '(No additional prose instructions.)'}\n\n"
+        + (
+            f"Optional Python to inspect or execute safely as part of your analysis:\n{code}\n\n"
+            if code
+            else ""
+        )
+        + "Gate context:\n" + json.dumps(context, ensure_ascii=False)
+    )
+    return GateExecutionPlan(
+        str(policy["gate_type"]), config, timeout,
+        sidecar_request=request, sidecar_question=question, sidecar_binding_id=binding.id,
+    )
+
+
 def _execute_gate_stage(
-    context: dict[str, Any], prepared: list[_PreparedGate]
+    db: Session, context: dict[str, Any], prepared: list[_PreparedGate]
 ) -> tuple[list[tuple[_PreparedGate, GateResult]], bool]:
     evaluations: list[tuple[_PreparedGate, GateResult]] = []
     blocked = False
     for item in prepared:
         result = execute_gate_plan(item.plan, context)
+        if item.plan.sidecar_binding_id:
+            db.execute(
+                update(AgentConversationBinding)
+                .where(AgentConversationBinding.id == item.plan.sidecar_binding_id)
+                .values(lifecycle="DELETED", deleted_at=now())
+            )
         evaluations.append((item, result))
         if result.decision != "PASS":
             blocked = True
@@ -1204,7 +1369,7 @@ def _execute_gate_stage(
 
 def _run_gates_inline(db: Session, attempt: NodeAttempt, stage: str) -> None:
     context, prepared = _prepare_gate_stage(db, attempt, stage)
-    evaluations, blocked = _execute_gate_stage(context, prepared)
+    evaluations, blocked = _execute_gate_stage(db, context, prepared)
     attempt.state_version += 1
     _record_gate_results(
         db,
@@ -1222,9 +1387,11 @@ def _run_gates_worker(db: Session, attempt: NodeAttempt, stage: str, lease: Leas
     attempt_id = attempt.id
     context, prepared = _prepare_gate_stage(db, attempt, stage)
 
-    # No database transaction is held while Sandbox or model-provider I/O runs.
-    _release_worker_read_transaction(db, lease)
-    evaluations, blocked = _execute_gate_stage(context, prepared)
+    # The sidecar binding and its frozen configuration are durable before the
+    # isolated Agent performs external I/O.  A gate may be inspected even if a
+    # worker dies while the Runtime call is in flight.
+    finish(db)
+    evaluations, blocked = _execute_gate_stage(db, context, prepared)
     _require_current_lease(db, lease)
     next_state = _next_gate_state(stage, blocked)
     claimed_id = db.scalar(
@@ -1290,6 +1457,7 @@ def _create_node_run(
     *,
     session_only: bool = False,
     context_ids: list[str] | None = None,
+    agent_preset: dict[str, Any] | None = None,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
@@ -1370,6 +1538,7 @@ def _create_node_run(
             ),
             startup_mode="CHAT" if session_only else "PROMPT",
             context_ids_json=context_ids,
+            agent_preset_json=agent_preset,
             gate_policies_json=gate_policies or [],
             workspace_ref=str(
                 attempt_workspace_path(
@@ -1436,6 +1605,7 @@ def _create_node_run(
         ),
         startup_mode="CHAT" if session_only else "PROMPT",
         context_ids_json=context_ids,
+        agent_preset_json=agent_preset,
         gate_policies_json=gate_policies or [],
         workspace_ref=str(
             attempt_workspace_path(
@@ -1652,11 +1822,24 @@ def start_node_run(
             [],
             session_only=True,
             context_ids=[],
+            agent_preset=(payload.agent_preset.model_dump() if payload.agent_preset else None),
         )
         finish(db)
         return node_run_detail(db, node_run.id)
     node = _node(_active_snapshot(db, run), instance_key)
-    context_ids = _validate_context_selection(node, payload.context_ids)
+    # Node-owned prose is selected exclusively by the launch Agent preset.
+    # Repository Context is represented by its frozen capability versions.
+    if payload.agent_preset is None:
+        raise DomainError(
+            "AGENT_PRESET_REQUIRED",
+            "Prompt node execution requires an Agent configuration",
+            422,
+        )
+    preset = payload.agent_preset.model_dump()
+    context_ids = _validate_context_selection(
+        node,
+        [_MANUAL_NODE_CONTEXT_ID] if preset["node_context_enabled"] else [],
+    )
     artifact_ids = dict(payload.artifact_ids)
     if payload.input_urls:
         input_fields = {field.key for field in _input_fields(node)}
@@ -1694,6 +1877,7 @@ def start_node_run(
             "enabled": gate.enabled,
             "timeout_seconds": gate.timeout_seconds,
             "config": gate.config,
+            "agent_preset": gate.agent_preset.model_dump(),
         }
         for gate in payload.gates
     ]
@@ -1705,6 +1889,7 @@ def start_node_run(
         "HUMAN_START",
         gates,
         context_ids=context_ids,
+        agent_preset=preset,
     )
     finish(db)
     return node_run_detail(db, node_run.id)
@@ -1805,7 +1990,26 @@ def confirm_start(
         attempt_id=current.id,
         require_start_permission=True,
     )
-    session_config = agent_sessions.resolve_session_config(db)
+    preset = current.agent_preset_json
+    session_config = agent_sessions.resolve_session_config(
+        db,
+        model_provider_id=(
+            str(preset["model_provider_id"])
+            if preset and preset.get("model_provider_id")
+            else None
+        ),
+        model_name=(str(preset["model_name"]) if preset and preset.get("model_name") else None),
+        reasoning_effort=(
+            str(preset["reasoning_effort"])
+            if preset and preset.get("reasoning_effort")
+            else None
+        ),
+        capability_version_ids=(
+            tuple(str(value) for value in preset.get("capability_version_ids", []))
+            if preset is not None
+            else None
+        ),
+    )
     if payload.startup_mode == "SKILL" and not any(
         item.capability_type == "SKILL" and item.capability_key == payload.capability_key
         for item in session_config.capabilities
@@ -3323,6 +3527,7 @@ def reject_attempt(
         attempt_no=next_no,
         snapshot_id=run.active_snapshot_id,
         context_ids_json=attempt.context_ids_json,
+        agent_preset_json=attempt.agent_preset_json,
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=next_asset_id,
@@ -3695,6 +3900,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_capability_key": attempt.startup_capability_key,
         "startup_prompt": attempt.startup_prompt,
         "context_ids": attempt.context_ids_json,
+        "agent_preset": attempt.agent_preset_json,
         "gate_policies": attempt.gate_policies_json,
         "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,

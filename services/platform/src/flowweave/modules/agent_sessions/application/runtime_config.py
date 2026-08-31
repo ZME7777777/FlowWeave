@@ -206,6 +206,7 @@ def reserve_flow_node_binding(
     work_directory_version_id: str | None = None,
     config: FrozenSessionConfig | None = None,
     binding_id: str | None = None,
+    openhands_conversation_id: str | None = None,
 ) -> AgentConversationBinding:
     """Reserve and freeze one FlowNode Conversation before Runtime I/O."""
 
@@ -239,7 +240,7 @@ def reserve_flow_node_binding(
         model_name=config.model_name,
         reasoning_effort=config.reasoning_effort,
         streaming_callback_ready=True,
-        openhands_conversation_id=str(uuid4()),
+        openhands_conversation_id=openhands_conversation_id or str(uuid4()),
         display_title=display_title,
         lifecycle="PROVISIONING",
         create_idempotency_key=create_idempotency_key,
@@ -259,6 +260,7 @@ def flow_node_binding_for_attempt(
         .where(
             AgentConversationBinding.host_kind == "FLOW_NODE",
             AgentConversationBinding.node_attempt_id == attempt_id,
+            AgentConversationBinding.create_idempotency_key == f"attempt-runtime:{attempt_id}",
         )
         .order_by(AgentConversationBinding.created_at.desc())
     )

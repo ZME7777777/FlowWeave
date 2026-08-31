@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from flowweave.modules.gates.application.executor import execute_gate
+from flowweave.modules.gates.application.executor import (
+    GateExecutionPlan,
+    execute_gate,
+    execute_gate_plan,
+)
+from flowweave.runtime.base import StartAttemptRequest
+from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.mock import MockRuntime
 
 
 def test_python_gate_executes_in_restricted_runner(db_session_factory):
@@ -19,6 +26,48 @@ def test_python_gate_executes_in_restricted_runner(db_session_factory):
         )
     assert result.decision == "PASS"
     assert result.summary == "checked"
+
+
+def test_agent_sidecar_gate_uses_isolated_conversation_and_json_result():
+    class TrackingRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.created: list[str] = []
+            self.deleted: list[str] = []
+
+        def create_conversation(self, request: StartAttemptRequest):
+            self.created.append(request.conversation_id or "")
+            return super().create_conversation(request)
+
+        def delete_conversation(self, handle):
+            self.deleted.append(handle.conversation_id)
+            return super().delete_conversation(handle)
+
+    runtime = TrackingRuntime()
+    request = StartAttemptRequest(
+        attempt_id="gate-sidecar-binding",
+        execution_key="gate-sidecar:test",
+        node={},
+        bindings=[],
+        workspace_ref="/runtime/workspace/project",
+        conversation_id="gate-sidecar-conversation",
+        interaction_mode="COLLABORATION",
+    )
+    plan = GateExecutionPlan(
+        "PROMPT",
+        {"prompt": "check"},
+        2,
+        sidecar_request=request,
+        sidecar_question=(
+            "You are an isolated workflow gate Agent. Return only a JSON object."
+        ),
+    )
+    with runtime_context(runtime):
+        result = execute_gate_plan(plan, {})
+
+    assert result.decision == "PASS"
+    assert runtime.created == ["gate-sidecar-conversation"]
+    assert runtime.deleted == ["gate-sidecar-conversation"]
 
 
 def test_python_gate_rejects_imports_and_host_access(db_session_factory):

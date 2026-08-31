@@ -192,10 +192,14 @@ def save_flow(db: Session, payload: FlowWrite, flow_id: str | None = None) -> di
         db.flush()
         by_key[node.instance_key] = row
         for gate in node.gates:
+            # Agent presets are launch-scoped gate configuration. Flow
+            # Definitions retain only their reusable policy content; the
+            # caller-supplied sidecar preset is frozen on NodeAttempt instead.
+            gate_values = gate.model_dump(exclude={"agent_preset"})
             content_hash = hashlib.sha256(
-                json.dumps(gate.model_dump(), sort_keys=True).encode()
+                json.dumps(gate_values, sort_keys=True).encode()
             ).hexdigest()
-            db.add(GatePolicy(flow_node_id=row.id, content_hash=content_hash, **gate.model_dump()))
+            db.add(GatePolicy(flow_node_id=row.id, content_hash=content_hash, **gate_values))
     for edge in payload.edges:
         row = FlowEdge(
             flow_id=item.id,

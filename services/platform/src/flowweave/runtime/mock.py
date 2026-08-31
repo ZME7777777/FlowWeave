@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 from uuid import uuid4
@@ -286,6 +287,21 @@ class MockRuntime:
         self, handle: RuntimeHandle, question: str, *, timeout_seconds: float
     ) -> RuntimeAskAgentResult:
         del handle, timeout_seconds
+        # Gate sidecars use the same native Conversation API as ordinary
+        # Agents, but their contract requires a JSON decision.  Keep the mock
+        # deterministic so local/demo runs exercise the real parser path.
+        if "isolated workflow gate Agent" in question:
+            return RuntimeAskAgentResult(
+                response=json.dumps(
+                    {
+                        "decision": "PASS",
+                        "summary": "Mock sidecar gate passed",
+                        "reasons": [],
+                        "evidence": [],
+                        "details": {},
+                    }
+                )
+            )
         return RuntimeAskAgentResult(response=f"Mock diagnostic: {question}")
 
     def resolve_fork_boundary(self, handle: RuntimeHandle, event_id: str) -> str:
