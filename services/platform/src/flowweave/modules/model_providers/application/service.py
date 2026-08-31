@@ -90,8 +90,11 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
         "reference_node_count": len(_provider_references(db, item.id)),
         "available_for_nodes": any(model.enabled and model.is_default for model in models)
         and (item.auth_type == "API_KEY" or item.encrypted_oauth_refresh_token is not None),
-        "available_for_prompt_gates": item.auth_type == "API_KEY"
-        and any(model.enabled and model.is_default for model in models),
+        "available_for_prompt_gates": any(model.enabled and model.is_default for model in models)
+        and (
+            item.auth_type == "API_KEY"
+            or (item.auth_type == "CODEX_OAUTH" and item.encrypted_oauth_refresh_token is not None)
+        ),
         "row_version": item.row_version,
         "models": [
             {
@@ -268,6 +271,7 @@ class PromptProviderSnapshot:
     base_url: str
     headers: dict[str, str]
     model: str
+    protocol: str
 
 
 def prompt_provider_snapshot(
@@ -276,8 +280,6 @@ def prompt_provider_snapshot(
     """Freeze prompt-gate connection data inside a short read transaction."""
 
     item = get_provider(db, provider_id)
-    if item.auth_type != "API_KEY":
-        raise ValueError("Codex OAuth providers cannot be used by prompt gates")
     model = requested_model
     if not model:
         row = db.scalar(
@@ -297,10 +299,26 @@ def prompt_provider_snapshot(
         if row is None:
             raise ValueError("Prompt gate provider has no enabled model")
         model = row.model_name
+    if item.auth_type == "CODEX_OAUTH":
+        credentials = codex_runtime_credentials(db, provider_id)
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {credentials.access_token}",
+            "originator": "codex_cli_rs",
+            "OpenAI-Beta": "responses=experimental",
+            "User-Agent": "FlowWeave/prompt-gate",
+        }
+        if credentials.account_id:
+            headers["chatgpt-account-id"] = credentials.account_id
+        return PromptProviderSnapshot(CODEX_BASE_URL, headers, model, "RESPONSES")
+    if item.auth_type != "API_KEY":
+        raise ValueError("Prompt gate provider credentials are unavailable")
     return PromptProviderSnapshot(
         base_url=item.base_url.rstrip("/"),
         headers=provider_auth_headers(item),
         model=model,
+        protocol="CHAT_COMPLETIONS",
     )
 
 

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { GitCompareArrows, ShieldCheck, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { useEscapeClose } from './useEscapeClose';
 
 interface Props {
   packageId: string;
@@ -15,6 +16,7 @@ function display(value: unknown): string {
 }
 
 export function AgentProfileHistoryDialog({ packageId, capabilityKey, onClose }: Props) {
+  useEscapeClose(onClose);
   const versions = useQuery({
     queryKey: ['agent-profile-versions', packageId],
     queryFn: () => api.agentProfileVersions(packageId),

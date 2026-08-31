@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState, type PointerEvent as ReactPo
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
+import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
 import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
 
@@ -109,15 +110,16 @@ function SnapshotGraph({ run, selectedKey, onSelect }: { run: FlowRun; selectedK
       const status = visits.at(-1)?.state.toLowerCase() ?? 'pending';
       return { id: item.instance_key, type: 'snapshotNode', position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, visits: visits.length, inputs: item.asset.inputs, outputs: item.asset.outputs } };
     });
-    const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'smoothstep', className: 'run-direction-edge' }));
+    const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'bezier', className: 'run-direction-edge' }));
     const mappingEdges: Edge[] = (snapshot?.definition.port_mappings ?? []).map((item, index) => ({
       id: `mapping-${item.id ?? index}`,
       source: item.source_instance_key,
       sourceHandle: `output:${item.source_output_key}`,
       target: item.target_instance_key,
       targetHandle: `input:${item.target_input_key}`,
-      type: 'smoothstep',
+      type: 'bezier',
       className: 'run-mapping-edge',
+      label: `${item.source_output_key} → ${item.target_input_key}`,
     }));
     const graphEdges = [
       ...directionEdges.map(edge => ({ ...edge, selectable: false, style: { opacity: linkMode === 'flow' ? 1 : 0.16 } })),
@@ -168,6 +170,7 @@ function InputSummary({ fields, bindings, artifacts }: { fields: InputContract[]
 }
 
 function NodeInputDialog({ run, node, initialBindings = {}, onClose, onSubmit }: { run: FlowRun; node: SnapshotFlowNode; initialBindings?: Record<string, string>; onClose: () => void; onSubmit: (bindings: Record<string, string>) => void }) {
+  useEscapeClose(onClose);
   const fields = node.asset.inputs;
   const [urls, setUrls] = useState<Record<string, string>>(() => Object.fromEntries(fields.filter(field => field.data_type === 'URL').map(field => {
     const artifact = run.artifacts.find(item => item.id === initialBindings[field.field_key]);

@@ -152,6 +152,11 @@ def _prompt(plan: GateExecutionPlan, context: dict[str, Any]) -> GateResult:
         return plan.preparation_error or _error(
             "Prompt gate provider is unavailable", code="GATE_CONFIG_INVALID"
         )
+    system = (
+        "Evaluate a workflow gate. Return only JSON with decision PASS, FAIL, or "
+        "ERROR plus summary, reasons, evidence, and details."
+    )
+    user = prompt + "\n\nContext:\n" + json.dumps(context, ensure_ascii=False)
     payload = {
         "model": provider.model,
         "temperature": 0,
@@ -159,18 +164,17 @@ def _prompt(plan: GateExecutionPlan, context: dict[str, Any]) -> GateResult:
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "Evaluate a workflow gate. Return only JSON with decision PASS, FAIL, or "
-                    "ERROR plus summary, reasons, evidence, and details."
-                ),
+                "content": system,
             },
             {
                 "role": "user",
-                "content": prompt + "\n\nContext:\n" + json.dumps(context, ensure_ascii=False),
+                "content": user,
             },
         ],
     }
     try:
+        if provider.protocol == "RESPONSES":
+            return _prompt_responses(provider, system, user, plan.timeout)
         with httpx.Client(timeout=plan.timeout, follow_redirects=False) as client:
             response = client.post(
                 f"{provider.base_url}/chat/completions",
@@ -189,6 +193,49 @@ def _prompt(plan: GateExecutionPlan, context: dict[str, Any]) -> GateResult:
         ValueError,
         json.JSONDecodeError,
     ) as exc:
+        return _error(
+            "Prompt gate execution failed", log=str(exc), code="GATE_EXECUTOR_UNAVAILABLE"
+        )
+
+
+def _prompt_responses(
+    provider: PromptProviderSnapshot, system: str, user: str, timeout: int
+) -> GateResult:
+    payload = {
+        "model": provider.model,
+        "stream": True,
+        "store": False,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user}]},
+        ],
+    }
+    deltas: list[str] = []
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            with client.stream(
+                "POST",
+                f"{provider.base_url}/responses",
+                headers={**provider.headers, "Accept": "text/event-stream"},
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line.removeprefix("data:").strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    event = cast(dict[str, Any], json.loads(raw))
+                    if event.get("type") == "response.output_text.delta" and isinstance(
+                        event.get("delta"), str
+                    ):
+                        deltas.append(cast(str, event["delta"]))
+                    elif event.get("type") in {"error", "response.failed"}:
+                        raise ValueError(str(event.get("error") or event))
+        return _normalize(json.loads("".join(deltas)))
+    except (httpx.HTTPError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _error(
             "Prompt gate execution failed", log=str(exc), code="GATE_EXECUTOR_UNAVAILABLE"
         )

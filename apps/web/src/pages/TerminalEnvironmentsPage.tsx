@@ -7,9 +7,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, environmentTerminalUrl } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { Pagination } from '../components/Pagination';
+import { useEscapeClose } from '../components/useEscapeClose';
 import type { EnvironmentSetupSession, EnvironmentVersion, TerminalEnvironment } from '../types';
 
 function PublishingPanel({ onClose }: { onClose: () => void }) {
+  useEscapeClose(onClose);
   return <div className="environment-terminal-backdrop"><section className="environment-terminal-dialog">
     <header><div><span className="eyebrow">ENVIRONMENT PUBLISHING</span><h2><LoaderCircle className="spin" size={20}/>正在发布环境版本</h2><small>已冻结配置终端，正在后台构建并验证 Runtime 镜像</small></div><button className="ghost" title="仅关闭当前窗口，发布会继续进行" onClick={onClose}><X size={16}/>关闭视图</button></header>
     <div className="environment-publishing-status"><LoaderCircle className="spin" size={28}/><div><b>环境版本正在后台发布</b><p>这一步会提交配置容器、通过 OpenHands 正式构建链打包 Runtime，并执行镜像契约探针。完成前不能重新连接或停止此终端。</p></div></div>
@@ -18,6 +20,7 @@ function PublishingPanel({ onClose }: { onClose: () => void }) {
 }
 
 function TerminalPanel({ session, visible, publishError, onClose, onUnavailable, onPublishing, onPublishFailed }: { session: EnvironmentSetupSession; visible: boolean; publishError: string; onClose: () => void; onUnavailable: () => void; onPublishing: () => void; onPublishFailed: (message: string) => void }) {
+  useEscapeClose(onClose, visible);
   const queryClient = useQueryClient();
   const [connected, setConnected] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
@@ -34,19 +37,9 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
         (document.activeElement as HTMLElement).blur();
       }
     };
-    const closeWhenTerminalIsBlurred = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      const host = terminalHost.current;
-      if (host?.contains(document.activeElement)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
     document.addEventListener('pointerdown', blurWhenPointerLeavesTerminal, true);
-    document.addEventListener('keydown', closeWhenTerminalIsBlurred, true);
     return () => {
       document.removeEventListener('pointerdown', blurWhenPointerLeavesTerminal, true);
-      document.removeEventListener('keydown', closeWhenTerminalIsBlurred, true);
     };
   }, [onClose]);
 
@@ -190,6 +183,7 @@ export function TerminalEnvironmentsPage() {
   const [deletingEnvironmentId, setDeletingEnvironmentId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
+  useEscapeClose(() => setCreating(false), creating);
   const pageSize = 10;
   const pagedEnvironments = environments.slice((page - 1) * pageSize, page * pageSize);
   useEffect(() => { if (page > Math.max(1, Math.ceil(environments.length / pageSize))) setPage(1); }, [environments.length, page]);

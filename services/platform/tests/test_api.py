@@ -1354,7 +1354,7 @@ def test_codex_oauth_device_flow_encrypts_tokens_and_never_returns_them(
     listed = client.get("/api/v1/model-providers").json()[0]
     assert listed["oauth_connected"] is True
     assert listed["available_for_nodes"] is True
-    assert listed["available_for_prompt_gates"] is False
+    assert listed["available_for_prompt_gates"] is True
     assert [model["model_name"] for model in listed["models"]] == [
         "gpt-5.4",
         "gpt-5.6-sol",

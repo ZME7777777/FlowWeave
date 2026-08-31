@@ -1,5 +1,6 @@
 import { Copy, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { useEscapeClose } from './useEscapeClose';
 
 type HookEditorMode = 'FORM' | 'JSON';
 type HookEvent = 'PreToolUse' | 'PostToolUse' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'Stop';
@@ -213,6 +214,7 @@ function referencedScripts(document: HookDocument): Set<string> {
 }
 
 export function HookEditorDialog({ json, scripts, busy, onJsonChange, onScriptsChange, onClose, onSave }: Props) {
+  useEscapeClose(onClose);
   const [mode, setMode] = useState<HookEditorMode>('FORM');
   const [selectedEvent, setSelectedEvent] = useState<HookEvent>('PreToolUse');
   const [exampleCopied, setExampleCopied] = useState(false);

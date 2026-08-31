@@ -21,6 +21,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { api, randomId } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
+import { useEscapeClose } from '../components/useEscapeClose';
 import type {
   FlowDefinition,
   FlowEdge,
@@ -140,7 +141,7 @@ function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNo
       target: item.target_instance_key,
       sourceHandle: 'flow-source',
       targetHandle: 'flow-target',
-      type: 'smoothstep',
+      type: 'bezier',
       className: 'flow-direction-edge',
     })),
     asArray<FlowDefinition['port_mappings'][number]>(flow.port_mappings).filter(item =>
@@ -152,8 +153,9 @@ function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNo
       sourceHandle: `output:${item.source_output_key}`,
       target: item.target_instance_key,
       targetHandle: `input:${item.target_input_key}`,
-      type: 'smoothstep',
+      type: 'bezier',
       className: 'flow-mapping-edge',
+      label: `${item.source_output_key} → ${item.target_input_key}`,
     })),
   ];
 }
@@ -182,6 +184,7 @@ function GateChoiceMenu({ ariaLabel, value, placeholder, choices, onChange }: {
 function GateConfigurationDialog({ node, providers, onSave, onClose }: {
   node: Node<FlowNodeData>; providers: ModelProvider[]; onSave: (gates: GatePolicy[]) => void; onClose: () => void;
 }) {
+  useEscapeClose(onClose);
   const [gates, setGates] = useState(() => gatePolicies(node.data.gates));
   const add = (stage: 'START' | 'END') => setGates(current => [...current, executableGate(stage, current.filter(item => item.stage === stage).length)]);
   const update = (index: number, patch: Partial<GatePolicy>) => setGates(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
@@ -196,7 +199,7 @@ function GateConfigurationDialog({ node, providers, onSave, onClose }: {
   };
   const remove = (index: number) => setGates(current => current.filter((_, itemIndex) => itemIndex !== index).map((item, itemIndex, all) => ({ ...item, position: all.slice(0, itemIndex).filter(candidate => candidate.stage === item.stage).length })));
   const providerChoices = providers.filter(provider => provider.available_for_prompt_gates).map(provider => ({ value: provider.id, label: provider.name }));
-  return <div className="modal-backdrop"><section className="modal gate-config-dialog" role="dialog" aria-modal="true" aria-label={`配置 ${node.data.label} 的门禁`}><header><div><span className="eyebrow">NODE GATES</span><h2>配置 {node.data.label} 的门禁</h2><p>开始门禁在创建会话前执行，结束门禁在提交验收前执行。</p></div><button type="button" className="ghost" aria-label="关闭门禁配置" onClick={onClose}><X size={17}/></button></header><div className="gate-config-dialog-body">{(['START', 'END'] as const).map(stage => <section key={stage}><div className="inspector-title"><b>{stage === 'START' ? '开始门禁' : '结束门禁'}</b><button type="button" aria-label={stage === 'START' ? '添加开始门禁' : '添加结束门禁'} onClick={() => add(stage)}><Plus size={13}/>添加</button></div>{gates.map((gate, index) => gate.stage === stage && <article className="gate-editor" key={`${stage}-${gate.position}`}><div className="gate-row"><GateChoiceMenu ariaLabel={`${stage} 门禁类型 ${gate.position + 1}`} value={gate.gate_type} placeholder="选择类型" choices={[{ value: 'PROMPT', label: 'Prompt 模型判断' }, { value: 'PYTHON', label: 'Python 代码' }, { value: 'JAVASCRIPT', label: 'JavaScript 代码' }]} onChange={value => changeType(index, value as GatePolicy['gate_type'])}/><label>超时（秒）<input aria-label={`${stage} 门禁超时 ${gate.position + 1}`} type="number" min="1" max="300" value={gate.timeout_seconds} onChange={event => update(index, { timeout_seconds: Number(event.target.value) })}/></label><button type="button" aria-label={`删除${stage === 'START' ? '开始' : '结束'}门禁 ${gate.position + 1}`} className="ghost" onClick={() => remove(index)}><Trash2 size={13}/></button></div>{gate.gate_type === 'PROMPT' ? <><label>模型服务<GateChoiceMenu ariaLabel={`${stage} 门禁模型服务 ${gate.position + 1}`} value={String(gate.config.model_provider_id ?? '')} placeholder="选择模型服务" choices={providerChoices} onChange={providerId => update(index, { config: { ...gate.config, model_provider_id: providerId, model_name: null } })}/><small>仅显示已配置 API Key 的服务；Codex OAuth 不能用于 Prompt 门禁。</small></label><label>模型<GateChoiceMenu ariaLabel={`${stage} 门禁模型 ${gate.position + 1}`} value={String(gate.config.model_name ?? '')} placeholder="服务默认" choices={[{ value: '', label: '服务默认' }, ...(providers.find(provider => provider.id === gate.config.model_provider_id)?.models.filter(model => model.enabled).map(model => ({ value: model.model_name, label: model.model_name })) ?? [])]} onChange={modelName => update(index, { config: { ...gate.config, model_name: modelName || null } })}/></label><label>判定提示词<textarea aria-label={`${stage} 门禁提示词 ${gate.position + 1}`} value={String(gate.config.prompt ?? '')} onChange={event => update(index, { config: { ...gate.config, prompt: event.target.value } })}/></label></> : <label>{gate.gate_type === 'PYTHON' ? 'Python 代码（赋值 result）' : 'JavaScript 代码（return 结果）'}<textarea className="gate-code" aria-label={`${stage} 门禁代码 ${gate.position + 1}`} value={String(gate.config.code ?? '')} onChange={event => update(index, { config: { code: event.target.value } })}/></label>}</article>)}</section>)}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={() => { onSave(gates); onClose(); }}>保存门禁</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal gate-config-dialog" role="dialog" aria-modal="true" aria-label={`配置 ${node.data.label} 的门禁`}><header><div><span className="eyebrow">NODE GATES</span><h2>配置 {node.data.label} 的门禁</h2><p>开始门禁在创建会话前执行，结束门禁在提交验收前执行。</p></div><button type="button" className="ghost" aria-label="关闭门禁配置" onClick={onClose}><X size={17}/></button></header><div className="gate-config-dialog-body">{(['START', 'END'] as const).map(stage => <section key={stage}><div className="inspector-title"><b>{stage === 'START' ? '开始门禁' : '结束门禁'}</b><button type="button" aria-label={stage === 'START' ? '添加开始门禁' : '添加结束门禁'} onClick={() => add(stage)}><Plus size={13}/>添加</button></div>{gates.map((gate, index) => gate.stage === stage && <article className="gate-editor" key={`${stage}-${gate.position}`}><div className="gate-row"><GateChoiceMenu ariaLabel={`${stage} 门禁类型 ${gate.position + 1}`} value={gate.gate_type} placeholder="选择类型" choices={[{ value: 'PROMPT', label: 'Prompt 模型判断' }, { value: 'PYTHON', label: 'Python 代码' }, { value: 'JAVASCRIPT', label: 'JavaScript 代码' }]} onChange={value => changeType(index, value as GatePolicy['gate_type'])}/><label>超时（秒）<input aria-label={`${stage} 门禁超时 ${gate.position + 1}`} type="number" min="1" max="300" value={gate.timeout_seconds} onChange={event => update(index, { timeout_seconds: Number(event.target.value) })}/></label><button type="button" aria-label={`删除${stage === 'START' ? '开始' : '结束'}门禁 ${gate.position + 1}`} className="ghost" onClick={() => remove(index)}><Trash2 size={13}/></button></div>{gate.gate_type === 'PROMPT' ? <><label>模型服务<GateChoiceMenu ariaLabel={`${stage} 门禁模型服务 ${gate.position + 1}`} value={String(gate.config.model_provider_id ?? '')} placeholder="选择模型服务" choices={providerChoices} onChange={providerId => update(index, { config: { ...gate.config, model_provider_id: providerId, model_name: null } })}/><small>显示已配置的 API Key 或已登录的 Codex OAuth 服务。</small></label><label>模型<GateChoiceMenu ariaLabel={`${stage} 门禁模型 ${gate.position + 1}`} value={String(gate.config.model_name ?? '')} placeholder="服务默认" choices={[{ value: '', label: '服务默认' }, ...(providers.find(provider => provider.id === gate.config.model_provider_id)?.models.filter(model => model.enabled).map(model => ({ value: model.model_name, label: model.model_name })) ?? [])]} onChange={modelName => update(index, { config: { ...gate.config, model_name: modelName || null } })}/></label><label>判定提示词<textarea aria-label={`${stage} 门禁提示词 ${gate.position + 1}`} value={String(gate.config.prompt ?? '')} onChange={event => update(index, { config: { ...gate.config, prompt: event.target.value } })}/></label></> : <label>{gate.gate_type === 'PYTHON' ? 'Python 代码（赋值 result）' : 'JavaScript 代码（return 结果）'}<textarea className="gate-code" aria-label={`${stage} 门禁代码 ${gate.position + 1}`} value={String(gate.config.code ?? '')} onChange={event => update(index, { config: { code: event.target.value } })}/></label>}</article>)}</section>)}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={() => { onSave(gates); onClose(); }}>保存门禁</button></footer></section></div>;
 }
 
 function GateEditor({
@@ -377,7 +380,7 @@ export function FlowsPage() {
         id: `flow:${randomId()}`,
         sourceHandle: 'flow-source',
         targetHandle: 'flow-target',
-        type: 'smoothstep',
+        type: 'bezier',
         className: 'flow-direction-edge',
       }, old));
       setError('');
@@ -401,8 +404,9 @@ export function FlowsPage() {
     setPortMappings(old => [...old.filter(edge => !(edge.target === connection.target && edge.targetHandle === connection.targetHandle)), {
       ...connection,
       id: `mapping:${randomId()}`,
-      type: 'smoothstep',
+      type: 'bezier',
       className: 'flow-mapping-edge',
+      label: `${source.field_key} → ${target.field_key}`,
     }]);
     setError('');
     setNotice(`已连接 ${sourceNode?.data.label}.${source.field_key} → ${targetNode?.data.label}.${target.field_key}。`);

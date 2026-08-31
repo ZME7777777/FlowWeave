@@ -1,6 +1,7 @@
 import { CheckCircle2, LoaderCircle, Search, ShieldCheck, Store, X } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { useEscapeClose } from './useEscapeClose';
 import type { MarketplaceCatalog, PluginSourceResolution } from '../types';
 
 interface Props {
@@ -17,6 +18,7 @@ function message(reason: unknown): string {
 }
 
 export function MarketplaceCatalogDialog({ onClose, onPublished }: Props) {
+  useEscapeClose(onClose);
   const [sourceUrl, setSourceUrl] = useState('https://github.com/');
   const [commit, setCommit] = useState('');
   const [repoPath, setRepoPath] = useState('');
