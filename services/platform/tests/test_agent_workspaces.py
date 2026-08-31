@@ -1251,10 +1251,15 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
         upload_path.write_bytes(b"%PDF-1.7")
         # A bound upload is previewable from the right-hand panel before it is
         # sent, but remains inaccessible to every other conversation.
-        assert (
-            workspace.download(db, item.id, str(attachment["path"]), binding_id=owner["id"]).content
-            == b"%PDF-1.7"
+        pending_download = workspace.download(
+            db, item.id, str(attachment["path"]), binding_id=owner["id"]
         )
+        assert pending_download.content == b"%PDF-1.7"
+        # This test runtime deliberately returns the historical opaque path
+        # with no suffix.  Preview and inline delivery must still use the
+        # persisted attachment metadata rather than guessing from that path.
+        assert pending_download.filename == "requirements.pdf"
+        assert pending_download.content_type == "application/pdf"
         with pytest.raises(DomainError, match="当前工作目录范围"):
             workspace.download(db, item.id, str(attachment["path"]), binding_id=other["id"])
         conversations.message(
@@ -1274,10 +1279,12 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
 
         details = workspace.details(db, item.id, binding_id=owner["id"])
         assert str(attachment["path"]) in {entry["path"] for entry in details["files"]}
-        assert (
-            workspace.download(db, item.id, str(attachment["path"]), binding_id=owner["id"]).content
-            == b"%PDF-1.7"
+        sent_download = workspace.download(
+            db, item.id, str(attachment["path"]), binding_id=owner["id"]
         )
+        assert sent_download.content == b"%PDF-1.7"
+        assert sent_download.filename == "requirements.pdf"
+        assert sent_download.content_type == "application/pdf"
         with pytest.raises(DomainError, match="当前工作目录范围"):
             workspace.download(db, item.id, str(attachment["path"]), binding_id=other["id"])
         conversations.delete_conversation(db, item.id, owner["id"], "delete-attachment-owner")

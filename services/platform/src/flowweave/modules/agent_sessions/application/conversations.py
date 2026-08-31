@@ -1738,7 +1738,7 @@ def message(
 _ATTACHMENT_PATH = re.compile(
     r"^/runtime/workspace/project/uploads/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
-    r"(?P<object>[0-9a-f]{32})$"
+    r"(?P<object>[0-9a-f]{32})(?:--(?P<filename>[A-Za-z0-9][A-Za-z0-9._-]{0,180}))?$"
 )
 _LEGACY_ATTACHMENT_PATH = re.compile(
     r"^/runtime/workspace/project/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}$"
@@ -1754,7 +1754,9 @@ def _attachment_filename(path: str) -> str:
 
     filename = path.rsplit("/", 1)[-1]
     matched = _ATTACHMENT_PATH.fullmatch(path)
-    return "attachment" if matched else filename[33:]
+    if matched:
+        return matched.group("filename") or "attachment"
+    return filename[33:]
 
 
 def _legacy_message_attachments(content: str) -> tuple[str, tuple[str, ...]]:

@@ -712,15 +712,17 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
   return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;
 }
 
-function isTextPreviewable(path: string): boolean {
-  return /(?:^|\/)(?:[^.]+|.*\.(?:md|mdx|txt|json|ya?ml|toml|ini|conf|xml|html?|css|scss|less|tsx?|jsx?|py|java|kt|go|rs|rb|php|sh|zsh|sql|graphql|vue|svelte))$/i.test(path);
+function isTextPreviewable(path: string, mimeType = ''): boolean {
+  return mimeType.startsWith('text/')
+    || /^(?:application\/(?:json|xml|javascript|sql)|text\/(?:markdown|x-[^/]+))$/i.test(mimeType)
+    || /\.(?:md|mdx|txt|json|ya?ml|toml|ini|conf|xml|html?|css|scss|less|tsx?|jsx?|py|java|kt|go|rs|rb|php|sh|zsh|sql|graphql|vue|svelte)$/i.test(path);
 }
 
 function relativeWorkspacePath(path: string, root: string): string {
   return path === root ? '.' : path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 }
 
-type WorkspaceEntry = { path: string; kind: 'file' | 'directory'; size: number };
+type WorkspaceEntry = { path: string; kind: 'file' | 'directory'; size: number; displayName?: string };
 type WorkspaceTreeNode = WorkspaceEntry & { name: string; children: WorkspaceTreeNode[] };
 
 function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNode[] {
@@ -741,7 +743,7 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
       const path = `${parentPath}/${parts[index]}`;
       const isLeaf = index === parts.length - 1;
       const node = isLeaf && entry.kind === 'file'
-        ? { ...entry, name: parts[index], children: [] }
+        ? { ...entry, name: entry.displayName ?? parts[index], children: [] }
         : ensureDirectory(path);
       nodes.set(path, node);
       const siblings = parentPath === root ? undefined : ensureDirectory(parentPath).children;
@@ -948,16 +950,19 @@ function WorkspaceDrawer({
   });
   const details = detailsQuery.data;
   const selectedFile = scopeState.selectedFile;
+  const selectedAttachment = attachments.find(item => item.path === selectedFile);
+  const selectedMimeType = selectedAttachment?.mime_type ?? '';
+  const textPreviewable = Boolean(selectedFile && isTextPreviewable(selectedFile, selectedMimeType));
   const previewQuery = useQuery({
     queryKey: sessionQueryKey(host, 'file-preview', workspaceId, bindingId, selectedFile),
-    queryFn: () => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }),
-    enabled: Boolean(open && scopeState.activeTabId === 'files' && selectedFile && isTextPreviewable(selectedFile)),
+    queryFn: ({ signal }) => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }, signal),
+    enabled: Boolean(open && scopeState.activeTabId === 'files' && textPreviewable),
     retry: false,
   });
   const visibleFiles = useMemo(() => {
-    const files = new Map((details?.files ?? []).map(file => [file.path, file]));
+    const files = new Map<string, WorkspaceEntry>((details?.files ?? []).map(file => [file.path, file]));
     for (const attachment of attachments) {
-      files.set(attachment.path, { path: attachment.path, kind: 'file', size: attachment.byte_size });
+      files.set(attachment.path, { path: attachment.path, kind: 'file', size: attachment.byte_size, displayName: attachment.filename });
     }
     return [...files.values()];
   }, [attachments, details?.files]);
@@ -1040,8 +1045,6 @@ function WorkspaceDrawer({
     : !details
       ? <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><span>正在读取工作区…</span></div>
       : null;
-  const selectedAttachment = attachments.find(item => item.path === selectedFile);
-  const selectedMimeType = selectedAttachment?.mime_type ?? '';
   const selectedFileUrl = selectedFile
     ? fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: false })
     : '';
@@ -1069,8 +1072,8 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`}>
             <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} onSelect={path => updateScope(current => ({ ...current, selectedFile: path }))}/>
             <div className="agent-file-preview">{selectedFile ? <>
-              <header><span>{relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
-              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : isTextPreviewable(selectedFile) ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+              <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
+              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}

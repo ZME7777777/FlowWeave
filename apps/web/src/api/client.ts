@@ -71,10 +71,10 @@ async function responseError(response: Response): Promise<ApiError> {
 export const artifactContentUrl = (artifactId: string, download = false) =>
   `${API_BASE}${ROOT}/artifact-versions/${artifactId}/content${download ? '?download=true' : ''}`;
 
-async function requestText(path: string): Promise<string> {
+async function requestText(path: string, signal?: AbortSignal): Promise<string> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${ROOT}${path}`);
+    response = await fetch(`${API_BASE}${ROOT}${path}`, { signal });
   } catch {
     throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
   }
@@ -133,11 +133,11 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<AgentWorkspaceDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace${query.size ? `?${query}` : ''}`);
   },
-  agentWorkspaceFilePreview: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+  agentWorkspaceFilePreview: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
-    return requestText(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`);
+    return requestText(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, signal);
   },
   closeAgentWorkspaceTerminal: (id: string, terminalInstanceId: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams();

@@ -406,8 +406,34 @@ def _is_bound_attachment(db: Session, binding_id: str | None, path: str) -> bool
 _PRIVATE_ATTACHMENT_PATH = re.compile(
     r"^/runtime/workspace/project/uploads/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
-    r"[0-9a-f]{32}$"
+    r"[0-9a-f]{32}(?:--[A-Za-z0-9][A-Za-z0-9._-]{0,180})?$"
 )
+
+
+def _attachment_media_metadata(
+    db: Session, binding_id: str | None, path: str
+) -> tuple[str, str] | None:
+    """Return trusted display metadata for a conversation-private upload.
+
+    Historical uploads used opaque paths with no suffix.  Their persisted
+    attachment projection is therefore the authoritative MIME type and
+    download filename; filesystem guessing is only appropriate for normal
+    workspace files.
+    """
+
+    if binding_id is None:
+        return None
+    attachment = db.scalar(
+        select(AgentConversationMessageAttachment)
+        .where(
+            AgentConversationMessageAttachment.binding_id == binding_id,
+            AgentConversationMessageAttachment.path == path,
+        )
+        .order_by(AgentConversationMessageAttachment.created_at.desc())
+    )
+    if attachment is None:
+        return None
+    return attachment.filename, attachment.mime_type
 
 
 def delete_bound_attachment_files(db: Session, workspace_id: str, binding_id: str) -> None:
@@ -566,8 +592,13 @@ def download(
         content = host_path.read_bytes()
     except OSError as exc:
         raise DomainError("AGENT_WORKSPACE_FILE_UNAVAILABLE", "文件暂时无法读取", 503) from exc
+    attachment_metadata = _attachment_media_metadata(db, binding_id, path)
+    filename, content_type = attachment_metadata or (
+        host_path.name,
+        mimetypes.guess_type(host_path.name)[0] or "application/octet-stream",
+    )
     return RuntimeWorkspaceFile(
-        filename=host_path.name,
-        content_type=mimetypes.guess_type(host_path.name)[0] or "application/octet-stream",
+        filename=filename,
+        content_type=content_type,
         content=content,
     )

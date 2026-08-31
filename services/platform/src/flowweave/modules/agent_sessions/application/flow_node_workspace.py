@@ -19,6 +19,7 @@ from flowweave.modules.agent_sessions.application import flow_node_conversations
 from flowweave.modules.agent_sessions.application.flow_node_host import (
     resolve_flow_node_session_host,
 )
+from flowweave.modules.agent_sessions.public import AgentConversationMessageAttachment
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.workspace import ensure_flow_run_attempt_workspace
@@ -338,11 +339,25 @@ def read_file(
         raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
     if len(content) > _MAX_FILE_BYTES:
         raise DomainError("FLOW_RUN_WORKSPACE_FILE_TOO_LARGE", "文件超过预览大小限制", 422)
-    return (
-        content,
-        mimetypes.guess_type(candidate.name)[0] or "application/octet-stream",
-        candidate.name,
+    attachment = (
+        db.scalar(
+            select(AgentConversationMessageAttachment)
+            .where(
+                AgentConversationMessageAttachment.binding_id == binding_id,
+                AgentConversationMessageAttachment.path == path,
+            )
+            .order_by(AgentConversationMessageAttachment.created_at.desc())
+        )
+        if binding_id
+        else None
     )
+    content_type = (
+        attachment.mime_type
+        if attachment
+        else mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+    )
+    filename = attachment.filename if attachment else candidate.name
+    return content, content_type, filename
 
 
 def conversation_working_directory(

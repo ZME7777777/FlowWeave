@@ -201,9 +201,15 @@ class MockRuntime:
         content: bytes,
         attachment_owner_id: str | None = None,
     ) -> str:
-        del filename, content_type, content
+        del content_type, content
         owner = attachment_owner_id or handle.conversation_id
-        return f"/runtime/workspace/project/uploads/{owner}-{uuid4().hex}"
+        safe_name = "".join(
+            character
+            if character.isascii() and (character.isalnum() or character in "._-")
+            else "_"
+            for character in filename
+        ).strip("._-")[:181] or "attachment"
+        return f"/runtime/workspace/project/uploads/{owner}-{uuid4().hex}--{safe_name}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         del handle

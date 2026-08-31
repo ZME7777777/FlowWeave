@@ -79,7 +79,7 @@ export interface AgentSessionApi {
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceDetails>;
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
-  readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<string>;
+  readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, signal?: AbortSignal) => Promise<string>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
@@ -190,10 +190,10 @@ export function flowNodeSessionGateway(
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
       createWorkDirectory: async (_hostId, displayName, selectedPaths) =>
         nodeSessionApi.createWorkDirectory(flowRunId, attemptId, displayName, selectedPaths),
-      filePreview: async (_hostId, path, options) => {
+      filePreview: async (_hostId, path, options, signal) => {
         const response = await fetch(nodeSessionApi.file(
           flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, false,
-        ));
+        ), { signal });
         if (!response.ok) throw new Error('Node workspace file preview is unavailable');
         return response.text();
       },
