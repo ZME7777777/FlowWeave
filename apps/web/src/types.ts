@@ -421,7 +421,20 @@ export interface AgentSessionWorkspaceDetails {
   files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
   repositories: Array<{ path: string; remote?: string; branch?: string; head?: string }>;
   runtime: { container_id?: string | null; state?: string; write_available?: boolean };
-  ide: { workspace_path: string; gateway: { supported: boolean; status: string; note: string } };
+  ide: {
+    workspace_path: string;
+    gateway: {
+      supported: boolean;
+      status: string;
+      note: string;
+      transport?: 'SSH_REMOTE';
+      host?: string;
+      port?: number;
+      user?: string;
+      path?: string;
+      ssh_command?: string;
+    };
+  };
 }
 export type AgentWorkspaceDetails = AgentSessionWorkspaceDetails;
 export interface FlowRunRuntimeGeneration {

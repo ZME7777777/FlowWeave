@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, randomId } from '../../api/client';
@@ -908,6 +908,7 @@ function WorkspaceDrawer({
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const [fullScreen, setFullScreen] = useState(false);
+  const [sshCopied, setSshCopied] = useState(false);
   useEscapeClose(() => {
     if (pendingTerminalClose && !closingTerminalId) setPendingTerminalClose(undefined);
   }, Boolean(pendingTerminalClose) && !closingTerminalId);
@@ -1077,11 +1078,23 @@ function WorkspaceDrawer({
     : '';
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
+  const sshRemoteReady = Boolean(
+    details?.ide.gateway.supported
+    && details.ide.gateway.ssh_command
+    && details.ide.gateway.path,
+  );
+  const copySshRemote = () => {
+    if (!sshRemoteReady || !details?.ide.gateway.ssh_command || !details.ide.gateway.path) return;
+    void navigator.clipboard.writeText(`${details.ide.gateway.ssh_command}\n${details.ide.gateway.path}`).then(() => {
+      setSshCopied(true);
+      window.setTimeout(() => setSshCopied(false), 1500);
+    }).catch(() => setPanelError('无法复制 SSH 连接信息，请手动复制。'));
+  };
   const summary = details && <section className="agent-workspace-overview">
     <article><FolderOpen size={16}/><div><small>当前工作区</small><b>{details.scope.display_name}</b><code>{details.working_directory}</code></div></article>
     <article><MonitorCog size={16}/><div><small>运行环境</small><b>{details.runtime.container_id || (details.runtime.write_available ? '运行中' : '恢复中')}</b><p>所有会话共用此 Workspace Runtime；每个终端保留独立会话。</p></div></article>
     <article><GitBranch size={16}/><div><small>Git 仓库</small>{details.repositories.length ? details.repositories.map(repository => <p key={repository.path}><b>{relativeWorkspacePath(repository.path, details.root)}</b>{repository.branch && <span>{repository.branch}</span>}{repository.head && <em>{repository.head.slice(0, 12)}</em>}{repository.remote && <code>{repository.remote}</code>}</p>) : <p>当前目录未检测到 Git 仓库。</p>}</div></article>
-    <article><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b><code>{details.ide.workspace_path}</code><p>{details.ide.gateway.note}</p></div></article>
+    <article><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <><code>{details.ide.gateway.ssh_command}</code><code>{details.ide.gateway.path}</code><button type="button" onClick={copySshRemote}><Copy size={12}/>{sshCopied ? '已复制连接信息' : '复制 SSH 与目录'}</button></> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <div className="agent-workspace-source-list">{sources.map(source => source.kind === 'url' ? <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer" title={`打开链接：${source.label}`}><Link2 size={12}/><span><b>{source.label}</b><em>链接</em></span></a> : <button type="button" key={source.id} title={`在工作区预览：${source.label}`} onClick={() => source.attachment && selectFile(source.attachment.path)}>{source.kind === 'image' ? <ImageIcon size={12}/> : <FileText size={12}/>}<span><b>{source.label}</b><em>{source.pending ? '待发送' : source.kind === 'image' ? '图片' : '文件'}</em></span></button>)}</div> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
   return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : 272 }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>

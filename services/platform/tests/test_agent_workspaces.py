@@ -8,6 +8,7 @@ import subprocess
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -1153,7 +1154,11 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
 
         details = workspace.details(db, item.id, work_directory_id=directory["id"])
         assert details["working_directory"] == "/runtime/workspace/project/backend"
-        assert details["ide"]["gateway"]["supported"] is False
+        assert details["ide"]["gateway"] == {
+            "supported": False,
+            "status": "未配置 SSH Remote",
+            "note": "部署方配置 IDEA SSH 主机、用户和宿主机工作区根目录后可连接。",
+        }
         assert details["files"] == [
             {
                 "path": "/runtime/workspace/project/backend/src",
@@ -1186,11 +1191,40 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
         assert resource_name == f"agent-workspace-{item.id}"
         assert resource_id
         assert working_directory == "/runtime/workspace/project/backend"
-
         work_directories.archive_work_directory(db, item.id, directory["id"])
         with pytest.raises(DomainError) as raised:
             workspace.details(db, item.id, work_directory_id=directory["id"])
         assert raised.value.code == "AGENT_WORK_DIRECTORY_ARCHIVED"
+
+
+def test_agent_workspace_details_exposes_configured_ssh_remote(settings, db_session_factory):
+    configured = settings.model_copy(
+        update={
+            "runtime_host_workspace_root": "/srv/flowweave/workspaces",
+            "ide_ssh_host": "dev.flowweave.test",
+            "ide_ssh_user": "flowweave",
+            "ide_ssh_port": 2222,
+        }
+    )
+    with settings_context(configured), db_session_factory() as db:
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(configured, db, item)
+        details = workspace.details(db, item.id)
+
+        assert details["ide"]["gateway"] == {
+            "supported": True,
+            "status": "可通过 SSH 连接",
+            "note": "在 JetBrains Gateway 中选择 SSH，并打开以下宿主机目录。",
+            "transport": "SSH_REMOTE",
+            "host": "dev.flowweave.test",
+            "port": 2222,
+            "user": "flowweave",
+            "path": str(
+                Path("/srv/flowweave/workspaces")
+                / project_root.relative_to(configured.workspace_root)
+            ),
+            "ssh_command": "ssh -p 2222 flowweave@dev.flowweave.test",
+        }
 
 
 def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scope(
@@ -1606,11 +1640,11 @@ def test_responses_title_uses_streaming_codex_protocol(monkeypatch):
         def iter_lines(self):
             return iter(
                 (
-                    'event: response.output_text.delta',
+                    "event: response.output_text.delta",
                     'data: {"type":"response.output_text.delta","delta":"问候"}',
                     'data: {"type":"response.output_text.delta","delta":"与协助"}',
                     'data: {"type":"response.completed","response":{"output":[]}}',
-                    'data: [DONE]',
+                    "data: [DONE]",
                 )
             )
 

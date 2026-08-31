@@ -19,6 +19,7 @@ from flowweave.modules.agent_sessions.application import flow_node_conversations
 from flowweave.modules.agent_sessions.application.flow_node_host import (
     resolve_flow_node_session_host,
 )
+from flowweave.modules.agent_sessions.application.ide import ssh_remote_descriptor
 from flowweave.modules.agent_sessions.public import AgentConversationMessageAttachment
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
@@ -305,11 +306,7 @@ def details(
         },
         "ide": {
             "workspace_path": working_directory,
-            "gateway": {
-                "supported": False,
-                "status": "需要部署 Gateway",
-                "note": "当前平台未配置可验证的 IDEA/Gateway 入口。",
-            },
+            "gateway": ssh_remote_descriptor(project_root, working_directory),
         },
     }
 

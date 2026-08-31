@@ -1290,7 +1290,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
         ],
         repositories: [{ path: workingDirectory, branch: 'main', head: 'abcdef123456', remote: 'ssh://git.example.test/product.git' }],
         runtime: { container_id: '2fae71c74c89' },
-        ide: { workspace_path: workingDirectory, gateway: { supported: true, status: '可连接', note: '使用受保护的 Gateway 入口连接。' } },
+        ide: { workspace_path: workingDirectory, gateway: { supported: true, status: '可通过 SSH 连接', note: '在 JetBrains Gateway 中选择 SSH，并打开以下宿主机目录。', transport: 'SSH_REMOTE', host: 'dev.flowweave.test', port: 2222, user: 'flowweave', path: `/srv/flowweave/workspaces/.agent-workspaces/platform-default/workspace/project${scoped ? '/frontend' : ''}`, ssh_command: 'ssh -p 2222 flowweave@dev.flowweave.test' } },
       }) });
       return;
     }
@@ -1420,6 +1420,9 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(environmentSummary.getByText('main', { exact: true })).toBeVisible();
   await expect(environmentSummary.getByText('abcdef123456', { exact: true })).toBeVisible();
   await expect(environmentSummary.getByText('ssh://git.example.test/product.git', { exact: true })).toBeVisible();
+  await expect(environmentSummary.getByText('ssh -p 2222 flowweave@dev.flowweave.test', { exact: true })).toBeVisible();
+  await expect(environmentSummary.getByText('/srv/flowweave/workspaces/.agent-workspaces/platform-default/workspace/project/frontend', { exact: true })).toBeVisible();
+  await expect(environmentSummary.getByRole('button', { name: '复制 SSH 与目录', exact: true })).toBeVisible();
   expect(workspaceScopeRequests.at(-1)).toEqual({ bindingId: null, workDirectoryId: 'fr58-frontend' });
   await expect(page.getByText('2fae71c74c89', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新终端', exact: true }).click();
@@ -1549,7 +1552,7 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
         root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
         work_directory: null, files: [{ path: '/runtime/workspace/project/README.md', kind: 'file', size: 12 }],
         repositories: [], runtime: { container_id: null },
-        ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '需要部署 Gateway', note: '恢复期间仍可查看文件。' } },
+        ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: true, status: '可通过 SSH 连接', note: '在 JetBrains Gateway 中选择 SSH，并打开以下宿主机目录。', transport: 'SSH_REMOTE', host: 'dev.flowweave.test', port: 2222, user: 'flowweave', path: '/srv/flowweave/workspaces/.agent-workspaces/platform-default/workspace/project', ssh_command: 'ssh -p 2222 flowweave@dev.flowweave.test' } },
       }) });
       return;
     }
@@ -1564,6 +1567,9 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
   await expect(
     workspaceDrawer.getByRole('article').filter({ hasText: '当前工作区' }).getByRole('code'),
   ).toHaveText('/runtime/workspace/project');
+  await expect(workspaceDrawer.getByText('ssh -p 2222 flowweave@dev.flowweave.test', { exact: true })).toBeVisible();
+  await expect(workspaceDrawer.getByText('/srv/flowweave/workspaces/.agent-workspaces/platform-default/workspace/project', { exact: true })).toBeVisible();
+  await expect(workspaceDrawer.getByRole('button', { name: '复制 SSH 与目录', exact: true })).toBeVisible();
   await expect(workspaceDrawer.getByRole('button', { name: '新终端', exact: true })).toBeDisabled();
   await workspaceDrawer.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();

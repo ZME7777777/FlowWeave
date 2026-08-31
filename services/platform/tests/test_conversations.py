@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -490,6 +491,13 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         flow_run_workspace_project_path,
     )
 
+    settings = settings.model_copy(
+        update={
+            "runtime_host_workspace_root": "/srv/flowweave/workspaces",
+            "ide_ssh_host": "dev.flowweave.test",
+            "ide_ssh_user": "flowweave",
+        }
+    )
     with settings_context(settings), db_session_factory() as db:
         flow_run_id, runtime_session_id, first_attempt_id = _node_session_context(db)
         first_attempt = db.get(NodeAttempt, first_attempt_id)
@@ -538,6 +546,20 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         details = flow_node_workspace.details(
             db, flow_run_id=flow_run_id, attempt_id=first_attempt_id
         )
+        assert details["ide"]["gateway"] == {
+            "supported": True,
+            "status": "可通过 SSH 连接",
+            "note": "在 JetBrains Gateway 中选择 SSH，并打开以下宿主机目录。",
+            "transport": "SSH_REMOTE",
+            "host": "dev.flowweave.test",
+            "port": 22,
+            "user": "flowweave",
+            "path": str(
+                Path("/srv/flowweave/workspaces")
+                / project_root.relative_to(settings.workspace_root)
+            ),
+            "ssh_command": "ssh -p 22 flowweave@dev.flowweave.test",
+        }
         paths = {item["path"] for item in details["files"]}
         first_runtime_path = "/runtime/workspace/project/nodes/one/sessions/first/1/first.txt"
         second_runtime_path = "/runtime/workspace/project/nodes/two/sessions/second/1/second.txt"

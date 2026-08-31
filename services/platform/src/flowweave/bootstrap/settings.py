@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # with flow_run_runtime_validation_root instead of inspecting a shared
     # source container to discover host mounts.
     runtime_host_workspace_root: Path = Path("")
+    # Optional SSH endpoint used by JetBrains Gateway/IDEA to open the
+    # persistent workspace on the Docker host. The endpoint is deliberately
+    # separate from Runtime containers, which may be replaced at any time.
+    ide_ssh_host: str = ""
+    ide_ssh_user: str = ""
+    ide_ssh_port: int = Field(default=22, ge=1, le=65_535)
     conversation_limit_per_flow_run: int = Field(default=20, ge=1, le=100)
     conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
 

@@ -51,6 +51,19 @@ Skill ZIP 的压缩包上限为 25 MiB、解压后总量上限为 100 MiB、单�
 
 OpenHands 镜像提供 shell、Python、Node.js/npm/npx、uv/uvx、Git/SSH 与 `lark-cli`。平台不接收、不保存也不向 Runtime 注入 Lark OAuth token。每个终端环境拥有独立的 Controller 管理 Docker 卷；Setup 容器把它挂载到 `/root/.lark-cli`，发布后的 Runtime 把同一卷挂载到 `/home/flowweave/.lark-cli`。卷内容不会进入 `docker commit` 生成的镜像，也不会在不同环境之间共享。
 
+## IDEA / JetBrains Gateway SSH Remote
+
+要从 IDEA 打开当前 Agent 或 FlowRun 的持久工作区，启用 Docker 宿主机的 SSH，并在 `.env` 配置：
+
+```dotenv
+FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT=/srv/flowweave/workspaces
+IDE_SSH_HOST=flowweave-dev.example.com
+IDE_SSH_USER=flowweave
+IDE_SSH_PORT=22
+```
+
+重启 `api` 和 `worker` 后，Agent 工作台右侧的“IDEA / Gateway”会显示 SSH 命令和宿主机目录。JetBrains Gateway 选择 SSH、使用所示主机/用户/端口，并打开显示的目录即可。这个目录是 Docker 宿主机上的持久 Workspace；不要连接 Runtime 容器内的 `/runtime/workspace/project`，因为 Runtime generation 可以被替换。
+
 需要 Lark 能力时，在目标环境的 Setup 终端内运行 `lark-cli config init --new` 和 `lark-cli auth login --domain all`，按 CLI 给出的地址完成授权。发布前平台只调整卷内文件的 UID/GID，使非 root Runtime 可读写；删除环境时，Worker 在确认该环境没有存活 Sandbox 后通过所有权标签校验删除凭据卷。不要把 token、cookie 或 `.lark-cli` 内容复制到节点工作区、镜像层或 Agent 消息。
 
 Agent 消息中的 `file:///workspaces/...`、`/workspaces/...` 或相对 Markdown 图片会通过消息级工作区图片接口转换为浏览器可访问的 HTTP 地址。接口将文件限定在该消息所属 Attempt 的工作目录内，只允许常见图片格式，阻止目录穿越和跨 Attempt 读取。
