@@ -76,9 +76,7 @@ class AgentConversationBinding(Base):
     node_attempt_id: Mapped[str | None] = mapped_column(
         ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
     )
-    work_directory_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("agent_work_directory_versions.id", ondelete="RESTRICT"), index=True
-    )
+    work_directory_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
     working_directory: Mapped[str | None] = mapped_column(String(500))
     model_provider_id: Mapped[str | None] = mapped_column(
         ForeignKey("model_providers.id", ondelete="RESTRICT"), index=True
@@ -138,7 +136,7 @@ class AgentConversationCapability(Base):
             "binding_id", "position", name="uq_agent_conversation_capability_position"
         ),
         CheckConstraint(
-            "capability_type IN ('SKILL', 'MCP', 'PLUGIN')",
+            "capability_type IN ('SKILL', 'MCP', 'PLUGIN', 'CONTEXT')",
             name="ck_agent_conversation_capability_type",
         ),
         CheckConstraint("position >= 0", name="ck_agent_conversation_capability_position"),

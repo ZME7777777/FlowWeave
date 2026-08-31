@@ -486,8 +486,8 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "disabled_skills": ["unreviewed-skill"],
     }
     assert "https://example.feishu.cn/docx/prd-input" in system_context
-    assert "https://example.feishu.cn/docx/prd-template" in system_context
-    assert "uri 或 runtime_path" in system_context
+    assert "https://example.feishu.cn/docx/prd-template" not in system_context
+    assert "流程输入" in system_context
     assert "Run 1" in system_context
     assert "URL 输出返回安全 HTTP(S) uri" in system_context
     assert "不得写入 token、cookie 或凭据" in system_context

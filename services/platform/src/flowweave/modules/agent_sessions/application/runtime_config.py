@@ -41,6 +41,7 @@ TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
 PROJECT_ROOT = "/runtime/workspace/project"
 PROACTIVE_COMPACTION_RATIO = 0.8
 CONDENSER_MAX_EVENTS = 10_000
+MATERIALIZED_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
     (
         "当前会话的项目根目录是 /runtime/workspace/project。",
@@ -322,6 +323,25 @@ def provider_for_config(db: Session, config: FrozenSessionConfig) -> RuntimeProv
     )
 
 
+def frozen_context_suffix(capabilities: tuple[FrozenSessionCapability, ...]) -> str:
+    """Render immutable Context versions into OpenHands' native system suffix."""
+
+    sections: list[str] = []
+    for capability in capabilities:
+        if capability.capability_type != "CONTEXT":
+            continue
+        text = str(capability.runtime_config.get("text") or "").strip()
+        if not text:
+            raise DomainError(
+                "AGENT_CONTEXT_CAPABILITY_INVALID",
+                "已冻结的 Context 内容缺失",
+                409,
+                {"capability_version_id": capability.version_id},
+            )
+        sections.append(f"[{capability.capability_key}]\n{text}")
+    return "已冻结 Context（仅作系统级会话背景）：\n" + "\n\n".join(sections) if sections else ""
+
+
 def build_agent_spec(
     config: FrozenSessionConfig,
     *,
@@ -330,8 +350,13 @@ def build_agent_spec(
     working_directory: str,
     host_root: Path,
     runtime_root: Path,
+    system_message_suffix_append: str = "",
 ) -> RuntimeAgentSpec:
-    materialized = tuple(item.materialization_config() for item in config.capabilities)
+    materialized = tuple(
+        item.materialization_config()
+        for item in config.capabilities
+        if item.capability_type in MATERIALIZED_CAPABILITY_TYPES
+    )
     skills, plugins, mcp_servers = materialize_agent_workspace_capabilities(
         materialized, host_root=host_root, runtime_root=runtime_root
     )
@@ -347,7 +372,15 @@ def build_agent_spec(
         oracle_provider=provider,
         confirmation_policy="NEVER",
         agent_context=RuntimeAgentContext(
-            system_message_suffix=system_context(working_directory),
+            system_message_suffix="\n\n".join(
+                part
+                for part in (
+                    system_context(working_directory),
+                    frozen_context_suffix(config.capabilities),
+                    system_message_suffix_append.strip(),
+                )
+                if part
+            ),
             registered_marketplaces=(
                 {
                     "name": marketplace_name,
@@ -377,6 +410,7 @@ __all__ = (
     "build_agent_spec",
     "config_from_binding",
     "default_workspace",
+    "frozen_context_suffix",
     "freeze_config_on_binding",
     "flow_node_binding_for_attempt",
     "provider_for_config",

@@ -18,7 +18,6 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     flow_run_workspace_project_path,
     openhands_flow_run_capability_path,
     openhands_flow_run_nodes_path,
-    openhands_flow_run_project_path,
 )
 from flowweave.runtime.base import RuntimeMCP, RuntimePlugin, RuntimeSkill
 from flowweave.shared.artifact_store import get_artifact_store

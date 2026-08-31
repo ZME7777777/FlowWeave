@@ -28,6 +28,7 @@ from flowweave.shared.models import (
     CapabilityPackage,
     CapabilityValidation,
     CapabilityVersion,
+    NodeContextCapability,
 )
 
 
@@ -551,6 +552,13 @@ def list_versions(db: Session) -> list[dict[str, Any]]:
         )
     ).all()
     references: dict[str, int] = {version_id: int(count) for version_id, count in reference_rows}
+    context_reference_rows = db.execute(
+        select(NodeContextCapability.capability_version_id, func.count()).group_by(
+            NodeContextCapability.capability_version_id
+        )
+    ).all()
+    for version_id, count in context_reference_rows:
+        references[version_id] = references.get(version_id, 0) + int(count)
     rows = db.execute(
         select(CapabilityVersion, CapabilityPackage, CapabilityBlob)
         .join(CapabilityPackage, CapabilityPackage.id == CapabilityVersion.package_id)

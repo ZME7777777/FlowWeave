@@ -14,9 +14,13 @@ from flowweave.runtime.workspace import (
 from flowweave.shared.application.transactions import finish, register_commit_action
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
+    CapabilityBlob,
+    CapabilityPackage,
+    CapabilityVersion,
     FlowDefinition,
     FlowNode,
     NodeAsset,
+    NodeContextCapability,
     NodeDirectory,
     NodeExecutorConfig,
     NodeIOField,
@@ -59,6 +63,17 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
         .order_by(NodeIOField.direction, NodeIOField.position)
     ).all()
     executor = db.get(NodeExecutorConfig, item.id)
+    contexts = db.execute(
+        select(NodeContextCapability, CapabilityVersion, CapabilityPackage, CapabilityBlob)
+        .join(
+            CapabilityVersion,
+            CapabilityVersion.id == NodeContextCapability.capability_version_id,
+        )
+        .join(CapabilityPackage, CapabilityPackage.id == CapabilityVersion.package_id)
+        .join(CapabilityBlob, CapabilityBlob.id == CapabilityVersion.blob_id)
+        .where(NodeContextCapability.node_asset_id == item.id)
+        .order_by(NodeContextCapability.position)
+    ).all()
 
     def field_dict(x: NodeIOField) -> dict[str, Any]:
         return {
@@ -67,9 +82,12 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
             "display_name": x.display_name,
             "data_type": x.data_type,
             "description": x.description,
-            "template_url": x.template_url,
             "position": x.position,
         }
+
+    def context_text(version: CapabilityVersion) -> str:
+        config = version.normalized_config_json or {}
+        return str(config.get("text") or "")
 
     return {
         "id": item.id,
@@ -85,9 +103,22 @@ def asset_dict(db: Session, item: NodeAsset) -> dict[str, Any]:
         "executor": {
             "startup_prompt": executor.startup_prompt,
             "context_prompt": executor.context_prompt,
+            "context_capability_ids": [
+                reference.capability_version_id for reference, _, _, _ in contexts
+            ],
         }
         if executor
         else None,
+        "context_capabilities": [
+            {
+                "id": version.id,
+                "capability_key": package.capability_key,
+                "digest": version.digest,
+                "content_hash": blob.content_hash,
+                "text": context_text(version),
+            }
+            for _, version, package, blob in contexts
+        ],
         "created_at": _time(item.created_at),
         "updated_at": _time(item.updated_at),
     }
@@ -141,6 +172,7 @@ def get_asset(db: Session, asset_id: str) -> NodeAsset:
 def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> None:
     db.execute(delete(NodeIOField).where(NodeIOField.node_asset_id == item.id))
     db.execute(delete(NodeExecutorConfig).where(NodeExecutorConfig.node_asset_id == item.id))
+    db.execute(delete(NodeContextCapability).where(NodeContextCapability.node_asset_id == item.id))
     for direction, fields in (("INPUT", payload.inputs), ("OUTPUT", payload.outputs)):
         for position, field in enumerate(fields):
             db.add(
@@ -151,7 +183,30 @@ def _replace_children(db: Session, item: NodeAsset, payload: NodeAssetWrite) -> 
                     **field.model_dump(),
                 )
             )
-    db.add(NodeExecutorConfig(node_asset_id=item.id, **payload.executor.model_dump()))
+    db.add(
+        NodeExecutorConfig(
+            node_asset_id=item.id,
+            startup_prompt=payload.executor.startup_prompt,
+            context_prompt=payload.executor.context_prompt,
+        )
+    )
+    for position, version_id in enumerate(payload.executor.context_capability_ids):
+        version = db.get(CapabilityVersion, version_id)
+        package = db.get(CapabilityPackage, version.package_id) if version else None
+        if (
+            version is None
+            or package is None
+            or version.state != "PUBLISHED"
+            or package.capability_type != "CONTEXT"
+        ):
+            raise DomainError("NODE_CONTEXT_INVALID", "节点只能选择已发布的 Context 版本", 422)
+        db.add(
+            NodeContextCapability(
+                node_asset_id=item.id,
+                capability_version_id=version.id,
+                position=position,
+            )
+        )
 
 
 def save_asset(db: Session, payload: NodeAssetWrite, asset_id: str | None = None) -> dict[str, Any]:

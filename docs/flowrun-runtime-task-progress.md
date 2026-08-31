@@ -1570,6 +1570,32 @@ Node Attempt 所拥有的逻辑工作区。不得把其他节点创建的工作�
 工作区 ID 返回不存在。新增定向回归覆盖两节点共享根、一个节点可见自己的工作区、另一节点列表为空且
 无法读取该工作区。
 
+### FR-111 节点冻结 Context 能力与模型列表分页修复 — DONE
+
+依赖：`FR-110`。
+
+目标：删除节点输入输出定义中已废弃的“参考 URL”字段及其运行时提示投影；能力仓库新增可上传 UTF-8
+文本文件、追加不可变版本的 `CONTEXT` 模块。节点可按顺序多选已发布 Context Version，且与现有自由输入的
+上下文提示词同时生效。创建自动执行或节点 Agent 会话时，FlowWeave 必须把两类 Context 与节点工作目录事实
+一起编译为固定 OpenHands `AgentContext.system_message_suffix`：不得把它们伪造为用户消息、私有 HTTP 字段或
+平台消息副本。FlowRun Snapshot 必须携带已选 Context 的版本、digest、content hash 与文本，使节点后续改配
+或删除关联不改写已创建 Run 的会话上下文。Agent Workspace 的新会话能力管理同样可选择 Context；仅在
+首条消息创建前冻结，创建后不提供新增、编辑或注册 Context 的路径。创建请求将其编译进正式
+`AgentContext.system_message_suffix`，不得伪造 user event。能力删除应在当前节点资产或会话仍引用该
+Context Version 时 fail closed。
+同时修复“大模型配置”按可见卡片容量分页，首屏不可因隐藏的卡片而提前出现下一页。不得修改 OpenHands 源码、
+启动额外 Runtime 或改变单 FlowRun 单 Runtime 拓扑。
+
+验收：新增 Context 导入/节点冻结/系统后缀与删除保护定向 pytest，受影响 Python 静态检查；Web 定向回归覆盖
+Context 上传、节点多选与自由文本并存、参考 URL 列移除和模型卡片分页；Web lint/typecheck/build、Alembic
+upgrade/downgrade、唯一 head、`git diff --check` 与任务状态唯一性通过。本切片使用独立 Git commit。
+
+完成：节点资产已移除废弃的参考 URL；Context 以 UTF-8 文本导入为不可变 Capability Version，并按节点顺序
+冻结到 Snapshot 及 OpenHands `AgentContext.system_message_suffix`。Agent Workspace 仅在新会话首发前冻结
+Context；已被节点或会话引用的 Context 不能删除。大模型配置按当前可见卡片容量分页。FlowRun 永久删除改为
+由服务显式依赖序清理工作目录路径、版本和目录，并移除该图谱的数据库删除外键，避免节点 Attempt 删除被
+数据库 `RESTRICT` 约束阻断。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1586,6 +1612,7 @@ Node Attempt 所拥有的逻辑工作区。不得把其他节点创建的工作�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-31 | FR-111 | Context 导入/节点冻结/系统后缀与删除保护 pytest（6 passed）；FlowRun 工作目录删除回归（1 passed）；受影响 Ruff、Pyright（0 errors）、Python 编译；Web ESLint/typecheck/production build；定向 Playwright（能力模块、模型分页、节点编辑、节点资产与终态运行删除共 5 passed）；独立 PostgreSQL `upgrade → downgrade 0078 → upgrade`；生产迁移、唯一 Alembic head、任务状态唯一性与 `git diff --check` | PASS：Context 只作为固定系统后缀进入 OpenHands，不伪造用户消息；参考 URL 已从节点资产和运行时投影移除；FlowRun 删除由服务控制工作目录依赖图，原先受外键阻断的已取消运行已在部署环境成功永久删除。唯一 Alembic head 为 `0081_system_owned_delete`；无 `CURRENT` 或下一切片。 |
 | 2026-08-31 | FR-110 | FlowRun 节点工作区定向 pytest（1 passed）与完整 `test_conversations.py`（10 passed）；受影响 Ruff、Pyright（0 errors）、`py_compile`；PostgreSQL 迁移完整 upgrade/downgrade/upgrade；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：逻辑工作区按 `node_attempt_id` 归属，两个节点仍共享 FlowRun 项目根，但第二节点的列表为空且以第一节点工作区 ID 查询返回 `AGENT_WORK_DIRECTORY_NOT_FOUND`；无可证明 Attempt 来源的旧 FlowRun 级工作区不被自动归属或展示。唯一 Alembic head 为 `0078_node_attempt_work_dirs`；无 `CURRENT` 或下一切片。 |
 | 2026-08-31 | FR-109 部署修复 | OpenHands 正式 generation/Workspace 身份回归、文件输入输出闭环与 FlowRun 相关 pytest（222 passed）；受影响 Ruff、`py_compile`；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：自动运行的 FILE 输入上传不再使用私有 `attempt-inputs:*` 路由或空会话标识，改为绑定 Attempt 已冻结的正式 Conversation UUID，并通过当前活跃 generation 的 `env-exec:<resource_name>` 路由调用 OpenHands Workspace API；Conversation reload 同时接受正式项目根 `/runtime/workspace/project` 与节点持久根 `/runtime/workspace/nodes`，继续拒绝其他 Runtime 路径；缺少正式 Runtime generation 时 fail closed。全量 Pyright 仍只有 FR-109 前已存在的 `flow_node_workspace.py` 4 项 unknown 与 `runtime/workspace.py` 1 项 unused import，共 5 项，未由本修复新增。唯一 Alembic head 仍为 `0077_generalized_node_io`；无 `CURRENT` 或下一切片。 |
 | 2026-08-31 | FR-109 | 通用节点 IO、Artifact Store、OpenHands 首发/输出与 FlowRun 相关 pytest（205 passed）；PostgreSQL 对象存储/基线集成 pytest（9 passed）；0077 空库与历史状态 upgrade/downgrade/upgrade；受影响 Ruff/`py_compile`；OpenAPI；Web TypeScript、ESLint、production build；源码 Vite 新增流程编排断言在部署前旧 API 保存边界前通过；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：节点 IO 正式支持安全 HTTP(S) URL 与 25 MiB 内任意文件/图片附件；运行表单严格来自冻结字段定义，自动启动首条正式用户消息携带字段与来源，图片使用 OpenHands 正式多模态内容，文件使用正式 Workspace API 并投影到共享来源区。节点输出区可打开 URL、预览/下载文件；流程删除飞书根节点约束并默认显示流程走向，同时保留独立控制流与产物映射。唯一 Alembic head 为 `0077_generalized_node_io`；无 `CURRENT` 或下一切片。 |

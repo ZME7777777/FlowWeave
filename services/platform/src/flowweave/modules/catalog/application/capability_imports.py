@@ -42,6 +42,8 @@ from flowweave.shared.domain.runtime_policy import (
 )
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
+    AgentConversationBinding,
+    AgentConversationCapability,
     AgentWorkspace,
     AgentWorkspaceCapability,
     CapabilityBlob,
@@ -52,6 +54,8 @@ from flowweave.shared.models import (
     CapabilityVersion,
     MCPOAuthAuthorization,
     MCPOAuthSecretReference,
+    NodeAsset,
+    NodeContextCapability,
     PluginSourceResolution,
 )
 from flowweave.shared.schemas import CapabilityValidateWrite, MCPScriptWrite
@@ -68,6 +72,10 @@ ZIP_MAX_RAW_ENTRIES = 5000
 ZIP_MAX_FILES = 1000
 ZIP_MAX_DEPTH = 8
 CONFIG_MAX_BYTES = 1024 * 1024
+CONTEXT_ALLOWED_SUFFIXES = {".txt", ".md", ".markdown"}
+CONTEXT_SECRET_ASSIGNMENT = re.compile(
+    r"\b(?:api[_-]?key|token|secret|password|authorization)\b\s*[:=]", re.IGNORECASE
+)
 CONFIG_MAX_ALIASES = 20
 CONFIG_MAX_DEPTH = 20
 CONFIG_MAX_NODES = 10_000
@@ -219,6 +227,37 @@ def _reject_sensitive(value: object, path: str = "$") -> None:
         sequence = cast(list[object], value)
         for index, child in enumerate(sequence):
             _reject_sensitive(child, f"{path}[{index}]")
+
+
+def _context_capability(content: bytes, filename: str) -> dict[str, Any]:
+    """Validate a text Context that is safe to append to an OpenHands system prompt."""
+
+    if Path(filename).suffix.lower() not in CONTEXT_ALLOWED_SUFFIXES:
+        raise _reject("Context must be a UTF-8 .txt or Markdown file")
+    if len(content) > CONFIG_MAX_BYTES:
+        raise _reject("Context exceeds 1 MiB")
+    try:
+        text = content.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise _reject("Context must be UTF-8 text") from exc
+    if not text:
+        raise _reject("Context cannot be blank")
+    if CONTEXT_SECRET_ASSIGNMENT.search(text):
+        raise _reject("Context must not contain plaintext secrets")
+    key = Path(filename).stem.strip()
+    if not key or len(key) > 200:
+        raise _reject("Context filename does not provide a valid stable key")
+    description = next(
+        (line.strip().lstrip("#").strip() for line in text.splitlines() if line.strip()), ""
+    )
+    return {
+        "capability_key": key,
+        "normalized_config": {
+            "schema_version": 1,
+            "text": text,
+            "description": description[:2000],
+        },
+    }
 
 
 def _validate_config_structure(value: object) -> None:
@@ -1224,6 +1263,10 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
             _validate_skill if payload.capability_type == "SKILL" else validate_plugin_archive
         )
         return content, validator(content, Path(filename).stem)
+    if payload.capability_type == "CONTEXT":
+        if payload.mcp_scripts or payload.hook_scripts:
+            raise _reject("Context cannot include detached scripts")
+        return content, {"capabilities": [_context_capability(content, filename)]}
     suffix = Path(filename).suffix.lower()
     if suffix != ".json":
         raise _reject(f"{payload.capability_type} config must be JSON")
@@ -1429,6 +1472,7 @@ def prepare_commit(db: Session, token: str) -> CapabilityCommitPlan:
         "MCP",
         "HOOK",
         "AGENT_DEFINITION",
+        "CONTEXT",
         "CONTEXT_POLICY",
         "MEMORY_POLICY",
         "CRITIC_POLICY",
@@ -1931,6 +1975,32 @@ def _workspace_references(db: Session, capability_version_id: str) -> list[dict[
     return [{"id": workspace_id, "name": name} for workspace_id, name in rows]
 
 
+def _node_context_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
+    rows = db.execute(
+        select(NodeAsset.id, NodeAsset.name)
+        .join(NodeContextCapability, NodeContextCapability.node_asset_id == NodeAsset.id)
+        .where(NodeContextCapability.capability_version_id == capability_version_id)
+        .order_by(NodeAsset.name, NodeAsset.id)
+    ).all()
+    return [{"id": node_id, "name": name} for node_id, name in rows]
+
+
+def _conversation_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
+    rows = db.execute(
+        select(AgentConversationBinding.id, AgentConversationBinding.display_title)
+        .join(
+            AgentConversationCapability,
+            AgentConversationCapability.binding_id == AgentConversationBinding.id,
+        )
+        .where(AgentConversationCapability.capability_version_id == capability_version_id)
+        .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
+    ).all()
+    return [
+        {"id": binding_id, "name": title or f"会话 {binding_id[:8]}"}
+        for binding_id, title in rows
+    ]
+
+
 def _detach_collection_members(
     db: Session, capability_version_ids: list[str]
 ) -> dict[str, list[str]]:
@@ -2004,13 +2074,25 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
     for capability_id in unique_ids:
         published = resolve_version(db, capability_id)
         workspaces = _workspace_references(db, capability_id)
+        nodes = _node_context_references(db, capability_id)
+        conversations = _conversation_references(db, capability_id)
         governance = _governance_references(db, capability_id)
-        if workspaces or governance:
+        if workspaces or nodes or conversations or governance:
             reference: dict[str, Any] = {
                 "id": capability_id,
                 "name": published.package.capability_key,
-                "relation": ("AGENT_WORKSPACE" if workspaces else "CAPABILITY_GOVERNANCE"),
+                "relation": (
+                    "NODE_CONTEXT"
+                    if nodes
+                    else "AGENT_CONVERSATION"
+                    if conversations
+                    else "AGENT_WORKSPACE"
+                    if workspaces
+                    else "CAPABILITY_GOVERNANCE"
+                ),
                 "workspaces": workspaces,
+                "nodes": nodes,
+                "conversations": conversations,
             }
             if governance:
                 reference["governance"] = governance

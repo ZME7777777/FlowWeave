@@ -21,6 +21,11 @@ from flowweave.modules.agent_sessions.public import (
     AgentConversationCommand,
     AgentConversationMessageAttachment,
 )
+from flowweave.modules.agent_workspaces.public import (
+    AgentWorkDirectory,
+    AgentWorkDirectoryPath,
+    AgentWorkDirectoryVersion,
+)
 from flowweave.modules.catalog.public import (
     describe_asset,
     hold_snapshot_memory_references,
@@ -1686,13 +1691,11 @@ def _create_output_targets(
             continue
         display_name = str(output.get("display_name") or field_key)
         title = f"{node_name} · {display_name}"
-        template_url = str(output.get("template_url") or "")
         targets[field_key] = {
             "run_name": run.name,
             "title": title,
             "display_name": display_name,
             "description": str(output.get("description") or ""),
-            "template_url": template_url,
             "artifact_type": str(output.get("data_type") or "URL"),
         }
     return targets
@@ -1938,7 +1941,6 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
                 "field_key": binding.input_field_key,
                 "display_name": contract.get("display_name"),
                 "description": contract.get("description"),
-                "template_url": contract.get("template_url"),
                 "artifact": _artifact_dict(artifact),
             }
         )
@@ -1995,9 +1997,7 @@ def _upload_runtime_input_attachments(
         elif isinstance(inline_content, str):
             content = inline_content.encode()
         else:
-            raise DomainError(
-                "ARTIFACT_UNAVAILABLE", "A bound file artifact has no content", 409
-            )
+            raise DomainError("ARTIFACT_UNAVAILABLE", "A bound file artifact has no content", 409)
         metadata = cast(dict[str, Any], artifact.get("metadata") or {})
         filename = str(metadata.get("filename") or f"{item.get('field_key')}.bin")
         mime_type = str(artifact.get("mime_type") or "application/octet-stream")
@@ -2330,9 +2330,7 @@ def _prepare_runtime_outputs(
                 )
                 continue
             if artifact_type != "FILE":
-                raise DomainError(
-                    "RUNTIME_OUTPUT_INVALID", "Unsupported runtime output type", 422
-                )
+                raise DomainError("RUNTIME_OUTPUT_INVALID", "Unsupported runtime output type", 422)
             path = content.strip()
             workspace_path = PurePosixPath(path)
             nodes_root = PurePosixPath("/runtime/workspace/nodes")
@@ -2404,9 +2402,7 @@ def process_poll_runtime(
     )
     if claimed is None:
         return
-    prepared_outputs = _prepare_runtime_outputs(
-        result, claimed.output_targets_json or {}, handle
-    )
+    prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {}, handle)
     failure_code = "RUNTIME_FAILED"
     if result.cursor is None and batch.cursor is not None:
         result = RuntimeResult(
@@ -2749,9 +2745,7 @@ def process_resume_runtime(
     )
     if claimed is None:
         return
-    prepared_outputs = _prepare_runtime_outputs(
-        result, claimed.output_targets_json or {}, handle
-    )
+    prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {}, handle)
     action.payload_json = {
         "content_digest": hashlib.sha256(content.encode()).hexdigest(),
         "content_length": len(content),
@@ -3369,6 +3363,20 @@ def delete_run(db: Session, run_id: str) -> None:
             )
         )
     )
+    work_directory_ids = list(
+        db.scalars(select(AgentWorkDirectory.id).where(AgentWorkDirectory.flow_run_id == run.id))
+    )
+    work_directory_version_ids = (
+        list(
+            db.scalars(
+                select(AgentWorkDirectoryVersion.id).where(
+                    AgentWorkDirectoryVersion.work_directory_id.in_(work_directory_ids)
+                )
+            )
+        )
+        if work_directory_ids
+        else []
+    )
     artifacts = list(
         db.scalars(select(ArtifactVersion).where(ArtifactVersion.flow_run_id == run.id))
     )
@@ -3407,6 +3415,23 @@ def delete_run(db: Session, run_id: str) -> None:
                 AgentConversationBinding.id.in_(conversation_ids)
             )
         )
+    # Logical work directories are FlowRun-owned product records.  Delete their
+    # complete graph explicitly before deleting Attempts so that the service,
+    # rather than a database cascade or RESTRICT constraint, defines the
+    # FlowRun deletion contract.
+    if work_directory_version_ids:
+        db.execute(
+            delete(AgentWorkDirectoryPath).where(
+                AgentWorkDirectoryPath.version_id.in_(work_directory_version_ids)
+            )
+        )
+        db.execute(
+            delete(AgentWorkDirectoryVersion).where(
+                AgentWorkDirectoryVersion.id.in_(work_directory_version_ids)
+            )
+        )
+    if work_directory_ids:
+        db.execute(delete(AgentWorkDirectory).where(AgentWorkDirectory.id.in_(work_directory_ids)))
     if attempt_ids:
         db.execute(
             delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids))

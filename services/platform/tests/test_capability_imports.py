@@ -25,6 +25,39 @@ def skill_zip() -> str:
     return base64.b64encode(buffer.getvalue()).decode()
 
 
+def test_context_import_is_frozen_as_utf8_text_and_rejects_plaintext_secrets(client):
+    content = "# 产品背景\n\n回答前先核对需求、约束和验收标准。\n".encode()
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "product-background.md",
+            "content_base64": base64.b64encode(content).decode(),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": validated.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+    capability = committed.json()["capabilities"][0]
+    assert capability["capability_type"] == "CONTEXT"
+    assert capability["capability_key"] == "product-background"
+    assert capability["normalized_config"]["text"] == content.decode().strip()
+
+    rejected = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "unsafe.txt",
+            "content_base64": base64.b64encode(b"api_key = super-secret").decode(),
+        },
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "IMPORT_REJECTED"
+
+
 def test_import_is_persistent_hashed_one_time_and_stores_source(client, db_session_factory):
     validated = client.post(
         "/api/v1/capability-imports/validate",

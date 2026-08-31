@@ -180,12 +180,8 @@ class AgentWorkDirectory(Base):
     workspace_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
     )
-    flow_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("flow_runs.id", ondelete="CASCADE"), index=True
-    )
-    node_attempt_id: Mapped[str | None] = mapped_column(
-        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
-    )
+    flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36), index=True)
     display_name: Mapped[str] = mapped_column(String(160))
     state: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
     current_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -209,9 +205,7 @@ class AgentWorkDirectoryVersion(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    work_directory_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_work_directories.id", ondelete="RESTRICT"), index=True
-    )
+    work_directory_id: Mapped[str] = mapped_column(String(36), index=True)
     version: Mapped[int] = mapped_column(Integer)
     working_path: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -232,9 +226,7 @@ class AgentWorkDirectoryPath(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    version_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_work_directory_versions.id", ondelete="RESTRICT"), index=True
-    )
+    version_id: Mapped[str] = mapped_column(String(36), index=True)
     relative_path: Mapped[str] = mapped_column(String(500))
     position: Mapped[int] = mapped_column(Integer)
 

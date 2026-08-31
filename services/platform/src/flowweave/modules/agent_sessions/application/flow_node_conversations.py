@@ -50,6 +50,7 @@ from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.base import RuntimeCondenser, RuntimeEventBatch, RuntimeHandle, RuntimeResult
 from flowweave.runtime.dependencies import get_runtime
+from flowweave.runtime.manifest import runtime_node
 from flowweave.runtime.request import (
     build_runtime_request,
     runtime_provider,
@@ -99,6 +100,40 @@ def _attempt_context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, FlowRu
 
 _FLOW_NODE = "FLOW_NODE"
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
+
+
+def _node_context_suffix(
+    db: Session, *, snapshot: RunSnapshot, node_run_id: str | None
+) -> str:
+    """Render the node's already-frozen Context into the native system suffix."""
+
+    if not node_run_id:
+        return ""
+    node_run = db.get(NodeRun, node_run_id)
+    if node_run is None:
+        raise DomainError("NODE_RUN_NOT_FOUND", "节点执行记录不可用", 409)
+    node = runtime_node(
+        definition=snapshot.definition_json,
+        manifest=snapshot.runtime_manifest_json or {},
+        expected_hash=snapshot.runtime_manifest_hash,
+        snapshot_id=snapshot.id,
+        instance_key=node_run.flow_node_snapshot_key,
+    )
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    parts = [str(executor.get("context_prompt") or "").strip()]
+    raw_contexts = asset.get("context_capabilities")
+    if isinstance(raw_contexts, list):
+        for raw_context in cast(list[object], raw_contexts):
+            if not isinstance(raw_context, dict):
+                raise DomainError("SNAPSHOT_CONTEXT_INVALID", "节点 Context Snapshot 无效", 409)
+            item = cast(dict[str, Any], raw_context)
+            text = str(item.get("text") or "").strip()
+            if not text:
+                raise DomainError("SNAPSHOT_CONTEXT_INVALID", "节点 Context 内容缺失", 409)
+            parts.append(f"[{str(item.get('capability_key') or 'Context')}]\n{text}")
+    rendered = [part for part in parts if part]
+    return "\n\n".join(("节点上下文（仅作系统级会话背景）：", *rendered)) if rendered else ""
 
 
 def _runtime_working_directory(request: Any) -> str:
@@ -525,6 +560,9 @@ def _create_native_conversation(
         working_directory=working_directory,
         host_root=host_root,
         runtime_root=runtime_root,
+        system_message_suffix_append=_node_context_suffix(
+            db, snapshot=snapshot, node_run_id=node_run_id
+        ),
     )
     request = build_runtime_request(
         db,

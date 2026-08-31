@@ -49,6 +49,8 @@ from flowweave.shared.settings import get_settings
 _PROJECT_ROOT = "/runtime/workspace/project"
 _PROACTIVE_COMPACTION_RATIO = 0.8
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
+_DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
+_CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT"}
 _COMPACTION_EVENT_WAIT_SECONDS = 120.0
 _SANDBOX_PROJECT_IMAGE = re.compile(
     r"sandbox:(/runtime/workspace/project/[A-Za-z0-9][A-Za-z0-9._/-]*)"
@@ -193,7 +195,10 @@ def workspace_capabilities(db: Session, workspace_id: str) -> list[dict[str, str
 
 
 def _validated_capabilities(
-    db: Session, capability_version_ids: tuple[str, ...]
+    db: Session,
+    capability_version_ids: tuple[str, ...],
+    *,
+    allowed_types: frozenset[str] = _DYNAMIC_CAPABILITY_TYPES,
 ) -> tuple[tuple[Any, ...], ...]:
     if len(capability_version_ids) > 30:
         raise DomainError("AGENT_WORKSPACE_CAPABILITY_LIMIT", "最多启用 30 项能力", 422)
@@ -206,10 +211,10 @@ def _validated_capabilities(
         published = resolve_version(db, version_id)
         capability_type = published.package.capability_type
         identity = (capability_type, published.package.capability_key)
-        if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
+        if capability_type not in allowed_types:
             raise DomainError(
                 "AGENT_CONVERSATION_CAPABILITY_UNSUPPORTED",
-                "Agent 会话仅支持挂载 Skill、MCP 或 Plugin",
+                "Agent 会话不支持该能力类型",
                 422,
                 {"capability_version_id": version_id},
             )
@@ -484,7 +489,11 @@ def _freeze_capabilities(
     db: Session, binding: AgentConversationBinding, capability_version_ids: tuple[str, ...]
 ) -> None:
     for position, (published, capability_type) in enumerate(
-        _validated_capabilities(db, capability_version_ids)
+        _validated_capabilities(
+            db,
+            capability_version_ids,
+            allowed_types=_CREATION_CAPABILITY_TYPES,
+        )
     ):
         db.add(
             AgentConversationCapability(

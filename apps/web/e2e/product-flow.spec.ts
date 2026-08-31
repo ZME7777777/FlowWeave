@@ -1,14 +1,9 @@
 import { expect, test, type APIRequestContext, type Locator, type Page, type WebSocketRoute } from '@playwright/test';
-import { readFileSync } from 'node:fs';
 
 test.use({ timezoneId: 'Asia/Shanghai' });
 
 const apiBase = process.env.E2E_API_URL ?? 'http://127.0.0.1:8080';
 const suffix = Date.now().toString(36);
-const skillArchive = Buffer.concat([
-  readFileSync('e2e/fixtures/ui-product-skill.zip'),
-  Buffer.from(`\nflowweave-e2e-run:${suffix}\n`),
-]);
 
 async function post(request: APIRequestContext, path: string, data: unknown) {
   const response = await request.post(`${apiBase}/api/v1${path}`, { data });
@@ -17,41 +12,19 @@ async function post(request: APIRequestContext, path: string, data: unknown) {
 }
 
 
-async function importSkill(request: APIRequestContext) {
-  const validated = await post(request, '/capability-imports/validate', {
-    capability_type: 'SKILL',
-    filename: 'ui-product-skill.zip',
-    content_base64: skillArchive.toString('base64'),
-  });
-  const committed = await post(request, '/capability-imports', { import_token: validated.import_token });
-  return committed.capabilities[0];
-}
-
 async function createAsset(request: APIRequestContext, name: string) {
-  const skill = await importSkill(request);
-  const modelName = `e2e-model-${suffix}`;
-  const provider = await post(request, '/model-providers', {
-    name: `E2E模型服务-${name}`,
-    base_url: 'http://127.0.0.1:9/v1',
-    api_key: 'e2e-placeholder-key',
-    models: [{ model_name: modelName, enabled: true, is_default: true }],
-  });
   return post(request, '/node-assets', {
     name,
     description: '浏览器端到端验收节点',
     icon_kind: 'LUCIDE',
     icon_value: 'bot',
-    inputs: [{ field_key: 'prd', display_name: '需求文档', data_type: 'URL', description: '', template_url: '' }],
-    outputs: [{ field_key: 'design', display_name: '技术方案', data_type: 'URL', description: '', template_url: '' }],
+    inputs: [{ field_key: 'prd', display_name: '需求文档', data_type: 'URL', description: '' }],
+    outputs: [{ field_key: 'design', display_name: '技术方案', data_type: 'URL', description: '' }],
     executor: {
-      model_provider_id: provider.id,
-      model_name: modelName,
       startup_prompt: '读取输入并生成方案',
       context_prompt: '保留证据',
-      timeout_seconds: 120,
-      max_iterations: 20,
+      context_capability_ids: [],
     },
-    capabilities: [skill],
   });
 }
 
@@ -1485,7 +1458,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
   expect(destroyedTerminalIds).toHaveLength(0);
-  await page.getByRole('button', { name: '节点资产' }).click();
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   await expect.poll(() => new URL(page.url()).pathname).toBe('/agent/conversations/fr58-conversation');
   await expect(page.getByRole('heading', { name: '实现前端工作区' })).toBeVisible();
@@ -1885,7 +1858,7 @@ test('cancelled run becomes read-only and can be permanently deleted', async ({ 
     page.getByRole('button', { name: '永久删除此运行' }),
     '永久删除',
   );
-  await expect(page.getByRole('heading', { name: '流程运行', exact: true })).toBeVisible();
+  await expect(page.getByLabel('搜索流程或运行')).toBeVisible();
   const listed = await request.get(`${apiBase}/api/v1/flow-runs`);
   expect((await listed.json()).some((item: { id: string }) => item.id === started.id)).toBeFalsy();
 });

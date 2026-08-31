@@ -10,6 +10,11 @@ import type { CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelPr
 const blank = (): ModelProviderWrite => ({ name: '', auth_type: 'API_KEY', base_url: '', api_key: '', models: [{ model_name: '', enabled: true, is_default: true }] });
 const CONNECTION_STATE_LABELS: Record<string, string> = { UNTESTED: '未测试', AUTHORIZING: '等待登录', CONNECTED: '已连接', FAILED: '连接失败' };
 type TestFeedback = { state: 'testing' | 'success' | 'error'; message: string };
+function providerPageSize() {
+  const columns = window.innerWidth >= 1720 ? 4 : window.innerWidth >= 1280 ? 3 : window.innerWidth >= 860 ? 2 : 1;
+  const rows = window.innerHeight >= 920 ? 3 : 2;
+  return columns * rows;
+}
 function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClose: () => void }) {
   useEscapeClose(onClose);
   const qc = useQueryClient();
@@ -153,10 +158,15 @@ export function ModelsPage() {
   const [testFeedback, setTestFeedback] = useState<Record<string, TestFeedback>>({});
   const [codexLogin, setCodexLogin] = useState<{ provider: ModelProvider; authorization: CodexDeviceAuthorization }>();
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(providerPageSize);
   const allSelected = providers.length > 0 && providers.every(provider => selectedIds.has(provider.id));
-  const pageSize = 10;
   const pagedProviders = providers.slice((page - 1) * pageSize, page * pageSize);
-  useEffect(() => { if (page > Math.max(1, Math.ceil(providers.length / pageSize))) setPage(1); }, [page, providers.length]);
+  useEffect(() => { if (page > Math.max(1, Math.ceil(providers.length / pageSize))) setPage(1); }, [page, pageSize, providers.length]);
+  useEffect(() => {
+    const updatePageSize = () => setPageSize(providerPageSize());
+    window.addEventListener('resize', updatePageSize);
+    return () => window.removeEventListener('resize', updatePageSize);
+  }, []);
   const test = useMutation({
     mutationFn: api.testProvider,
     onMutate: providerId => {

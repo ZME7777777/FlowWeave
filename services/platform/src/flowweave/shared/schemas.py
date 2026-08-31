@@ -41,14 +41,9 @@ class IOFieldWrite(ApiModel):
     display_name: str = Field(default="", max_length=160)
     data_type: Literal["URL", "FILE"] = "URL"
     description: str = ""
-    template_url: str = ""
-
-    @model_validator(mode="after")
-    def validate_template(self) -> IOFieldWrite:
-        self.template_url = self.template_url.strip()
-        if self.template_url:
-            self.template_url = _http_url(self.template_url, "template_url")
-        return self
+    # Kept only to accept older saved clients during rollout. It is ignored and
+    # never persisted, projected, or passed to the Runtime.
+    template_url: str = Field(default="", exclude=True)
 
 
 def _empty_io_fields() -> list[IOFieldWrite]:
@@ -58,6 +53,13 @@ def _empty_io_fields() -> list[IOFieldWrite]:
 class ExecutorWrite(ApiModel):
     startup_prompt: str = ""
     context_prompt: str = ""
+    context_capability_ids: list[str] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode="after")
+    def validate_context_capabilities(self) -> ExecutorWrite:
+        if len(self.context_capability_ids) != len(set(self.context_capability_ids)):
+            raise ValueError("Context capability versions must be unique")
+        return self
 
 
 class NodeAssetWrite(ApiModel):
@@ -372,6 +374,7 @@ class CapabilityValidateWrite(ApiModel):
         "MCP",
         "HOOK",
         "AGENT_DEFINITION",
+        "CONTEXT",
         "CONTEXT_POLICY",
         "MEMORY_POLICY",
         "CRITIC_POLICY",

@@ -6,13 +6,14 @@ export interface NodeDirectory {
 export type ArtifactDataType = 'URL' | 'FILE';
 export interface IOField {
   id?: string; field_key: string; display_name: string; data_type: ArtifactDataType;
-  description: string; template_url: string; position?: number;
+  description: string; position?: number;
 }
 export interface ExecutorConfig {
-  startup_prompt: string; context_prompt: string;
+  startup_prompt: string; context_prompt: string; context_capability_ids: string[];
 }
 export type CapabilityAssetType =
   | 'SKILL' | 'PLUGIN' | 'MCP' | 'HOOK' | 'AGENT_DEFINITION'
+  | 'CONTEXT'
   | 'CONTEXT_POLICY' | 'MEMORY_POLICY' | 'CRITIC_POLICY' | 'AGENT_PROFILE';
 export interface CapabilityRef {
   id?: string; capability_id?: string; capability_type: CapabilityAssetType; capability_key: string;
@@ -75,9 +76,9 @@ export interface AgentProfileVersion {
 }
 export interface NamedDeleteReference { id: string; name: string }
 export interface BlockedCapabilityDelete {
-  id: string; name: string; relation: 'NODE_CAPABILITY' | 'CAPABILITY_COLLECTION' | 'BUILTIN_CAPABILITY' | 'AGENT_WORKSPACE' | 'CAPABILITY_GOVERNANCE';
+  id: string; name: string; relation: 'NODE_CAPABILITY' | 'NODE_CONTEXT' | 'CAPABILITY_COLLECTION' | 'BUILTIN_CAPABILITY' | 'AGENT_WORKSPACE' | 'AGENT_CONVERSATION' | 'CAPABILITY_GOVERNANCE';
   nodes?: NamedDeleteReference[]; collections?: NamedDeleteReference[];
-  workspaces?: NamedDeleteReference[]; governance?: Array<{ id: string; relation: string }>;
+  workspaces?: NamedDeleteReference[]; conversations?: NamedDeleteReference[]; governance?: Array<{ id: string; relation: string }>;
 }
 export interface BlockedNodeDelete {
   id: string; name: string; relation: 'FLOW_NODE';
@@ -117,6 +118,7 @@ export interface NodeAsset {
   icon_kind: string; icon_value: string; row_version: number;
   workspace_ref?: string;
   inputs: IOField[]; outputs: IOField[]; executor: ExecutorConfig | null;
+  context_capabilities: Array<{ id: string; capability_key: string; digest: string; content_hash: string; text: string }>;
   created_at: string; updated_at: string;
 }
 export interface NodeAssetWrite {
@@ -337,7 +339,7 @@ export type AgentWorkspaceRuntime = AgentSessionRuntime;
 
 export interface AgentSessionCapability {
   id: string;
-  capability_type: 'SKILL' | 'MCP' | 'PLUGIN';
+  capability_type: 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT';
   capability_key: string;
   digest: string;
 }

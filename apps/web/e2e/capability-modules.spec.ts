@@ -5,7 +5,7 @@ test('capability repository exposes module-specific menus and actions', async ({
   await page.getByRole('button', { name: '能力仓库' }).click();
 
   const modules = page.getByRole('navigation', { name: '能力模块' });
-  const actions = page.locator('.capability-module-actions');
+  const actions = page.locator('.capability-list-controls');
   await expect(modules.getByRole('button')).toHaveCount(6);
   await expect(modules.getByRole('button', { name: /Skill/ })).toHaveAttribute('aria-current', 'page');
   await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toBeVisible();
@@ -38,7 +38,6 @@ test('capability repository exposes module-specific menus and actions', async ({
   const moduleActions = [
     ['MCP', '新建 MCP'],
     ['Hook', '新建 Hook'],
-    ['Tool Policy', '新建 Tool Policy'],
     ['Agent Definition', '新建 Agent Definition'],
   ] as const;
   for (const [module, action] of moduleActions) {
@@ -46,6 +45,9 @@ test('capability repository exposes module-specific menus and actions', async ({
     await expect(actions.getByRole('button')).toHaveCount(1);
     await expect(actions.getByRole('button', { name: action })).toBeVisible();
   }
+
+  await modules.getByRole('button', { name: /Context/ }).click();
+  await expect(actions.getByText('上传 Context 文本', { exact: true })).toBeVisible();
 
   await modules.getByRole('button', { name: /MCP/ }).click();
   await actions.getByRole('button', { name: '新建 MCP' }).click();
@@ -74,14 +76,14 @@ test('capability repository exposes module-specific menus and actions', async ({
 });
 
 test('every capability module supports selecting and bulk deleting capability lineages', async ({ page }) => {
-  const moduleTypes = ['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'TOOL_POLICY', 'AGENT_DEFINITION'] as const;
+  const moduleTypes = ['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'AGENT_DEFINITION', 'CONTEXT'] as const;
   const labels: Record<(typeof moduleTypes)[number], string> = {
     SKILL: 'Skill',
     PLUGIN: 'Plugin',
     MCP: 'MCP',
     HOOK: 'Hook',
-    TOOL_POLICY: 'Tool Policy',
     AGENT_DEFINITION: 'Agent Definition',
+    CONTEXT: 'Context',
   };
   let capabilities = moduleTypes.flatMap((capabilityType, moduleIndex) => [0, 1].map(itemIndex => ({
     id: `version-${moduleIndex}-${itemIndex}`,
@@ -105,10 +107,10 @@ test('every capability module supports selecting and bulk deleting capability li
     dependency_build_error: null,
   })));
   capabilities.push({
-    ...capabilities.find(item => item.capability_type === 'TOOL_POLICY')!,
-    id: 'version-builtin-policy',
-    lineage_id: 'lineage-builtin-policy',
-    capability_key: 'builtin-default-policy',
+    ...capabilities.find(item => item.capability_type === 'CONTEXT')!,
+    id: 'version-builtin-context',
+    lineage_id: 'lineage-builtin-context',
+    capability_key: 'builtin-default-context',
     is_builtin: true,
   });
 
@@ -133,7 +135,7 @@ test('every capability module supports selecting and bulk deleting capability li
     await expect(bulkDelete).toBeDisabled();
     const checkboxes = page.getByRole('checkbox', { name: new RegExp(`选择能力 bulk-delete-${capabilityType.toLowerCase()}-`) });
     await expect(checkboxes).toHaveCount(2);
-    if (capabilityType === 'TOOL_POLICY') await expect(page.getByRole('checkbox', { name: '选择能力 builtin-default-policy' })).toBeDisabled();
+    if (capabilityType === 'CONTEXT') await expect(page.getByRole('checkbox', { name: '选择能力 builtin-default-context' })).toBeDisabled();
     await page.getByRole('button', { name: '全选当前模块' }).click();
     await expect(checkboxes.nth(0)).toBeChecked();
     await expect(checkboxes.nth(1)).toBeChecked();

@@ -77,7 +77,6 @@ class NodeIOField(Base):
     display_name: Mapped[str] = mapped_column(String(160))
     data_type: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(Text, default="")
-    template_url: Mapped[str] = mapped_column(Text)
     position: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -89,6 +88,27 @@ class NodeExecutorConfig(Base):
     )
     startup_prompt: Mapped[str] = mapped_column(Text, default="")
     context_prompt: Mapped[str] = mapped_column(Text, default="")
+
+
+class NodeContextCapability(Base):
+    """An ordered, immutable Context Version selected by a node asset."""
+
+    __tablename__ = "node_context_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "node_asset_id", "capability_version_id", name="uq_node_context_capability"
+        ),
+        CheckConstraint("position >= 0", name="ck_node_context_capability_position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    node_asset_id: Mapped[str] = mapped_column(
+        ForeignKey("node_assets.id", ondelete="CASCADE"), index=True
+    )
+    capability_version_id: Mapped[str] = mapped_column(
+        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
 
 
 class CapabilityImport(Base):
@@ -537,6 +557,7 @@ __all__ = (
     "NodeAsset",
     "NodeIOField",
     "NodeExecutorConfig",
+    "NodeContextCapability",
     "CapabilityImport",
     "CapabilityBlob",
     "CapabilityPackage",

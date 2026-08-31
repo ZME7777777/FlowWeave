@@ -9,6 +9,11 @@ import pytest
 from sqlalchemy import select
 
 from flowweave.modules.agent_sessions.public import AgentConversationMessageAttachment
+from flowweave.modules.agent_workspaces.public import (
+    AgentWorkDirectory,
+    AgentWorkDirectoryPath,
+    AgentWorkDirectoryVersion,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversationBinding,
@@ -74,6 +79,7 @@ def test_node_asset_can_be_saved_without_skill(client):
     assert response.json()["executor"] == {
         "startup_prompt": "读取输入并生成方案",
         "context_prompt": "保留证据",
+        "context_capability_ids": [],
     }
     assert "capabilities" not in response.json()
 
@@ -97,15 +103,15 @@ def test_platform_owned_lark_oauth_endpoints_are_removed(client):
     assert client.get("/api/v1/internal/credential-leases/opaque").status_code == 404
 
 
-def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
+def test_node_asset_ignores_legacy_template_urls_and_creates_blank_output(client):
     payload = asset_payload("无模板节点")
     payload["inputs"][0]["template_url"] = ""
     payload["outputs"][0]["template_url"] = ""
     created = client.post("/api/v1/node-assets", json=payload)
     assert created.status_code == 201, created.text
     asset = created.json()
-    assert asset["inputs"][0]["template_url"] == ""
-    assert asset["outputs"][0]["template_url"] == ""
+    assert "template_url" not in asset["inputs"][0]
+    assert "template_url" not in asset["outputs"][0]
 
     flow = create_flow(client, asset["id"])
     started = client.post(
@@ -131,7 +137,7 @@ def test_node_asset_allows_optional_templates_and_creates_blank_output(client):
     )
     assert confirmed.status_code == 200, confirmed.text
     target = confirmed.json()["output_targets"]["design"]
-    assert target["template_url"] == ""
+    assert "template_url" not in target
     assert target["run_name"]
     assert "url" not in target
 
@@ -423,7 +429,9 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
         headers={"Idempotency-Key": "selected-node-capability-override"},
     )
     assert rejected_capability_override.status_code == 422, rejected_capability_override.text
-    assert client.put(f"{scope}/capabilities", json={"capability_version_ids": []}).status_code == 405
+    assert (
+        client.put(f"{scope}/capabilities", json={"capability_version_ids": []}).status_code == 405
+    )
 
     conversation = client.post(
         f"{scope}/bootstrap",
@@ -1709,6 +1717,27 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
             select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
         )
         assert runtime_session_id is not None
+        directory = AgentWorkDirectory(
+            flow_run_id=run["id"],
+            node_attempt_id=attempt["id"],
+            display_name="删除测试工作目录",
+        )
+        db.add(directory)
+        db.flush()
+        directory_version = AgentWorkDirectoryVersion(
+            work_directory_id=directory.id,
+            version=1,
+            working_path=".",
+        )
+        db.add(directory_version)
+        db.flush()
+        db.add(
+            AgentWorkDirectoryPath(
+                version_id=directory_version.id,
+                relative_path=".",
+                position=0,
+            )
+        )
         conversation = AgentConversationBinding(
             runtime_session_id=runtime_session_id,
             host_kind="FLOW_NODE",
@@ -1717,6 +1746,7 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
             flow_run_id=run["id"],
             node_run_id=attempt["node_run_id"],
             node_attempt_id=attempt["id"],
+            work_directory_version_id=directory_version.id,
             working_directory="/runtime/workspace/project",
             openhands_conversation_id=str(uuid4()),
             lifecycle="ACTIVE",
@@ -1801,6 +1831,16 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
         )
         assert db.scalars(select(RunEvent).where(RunEvent.flow_run_id == run["id"])).all() == []
         assert db.get(NodeAttempt, attempt["id"]) is None
+        assert db.get(AgentWorkDirectory, directory.id) is None
+        assert db.get(AgentWorkDirectoryVersion, directory_version.id) is None
+        assert (
+            db.scalars(
+                select(AgentWorkDirectoryPath).where(
+                    AgentWorkDirectoryPath.version_id == directory_version.id
+                )
+            ).all()
+            == []
+        )
         assert db.get(AgentConversationBinding, conversation_id) is None
         assert (
             db.scalars(

@@ -118,6 +118,7 @@ function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNo
         inputs: [],
         outputs: [],
         executor: null,
+        context_capabilities: [],
         created_at: '',
         updated_at: '',
       };

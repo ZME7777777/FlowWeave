@@ -939,7 +939,6 @@ class OpenHandsRuntime:
             "field_key": binding.get("field_key"),
             "display_name": binding.get("display_name"),
             "description": binding.get("description"),
-            "template_url": binding.get("template_url"),
             "artifact_type": artifact.get("artifact_type"),
             "inline_content": artifact.get("inline_content"),
             "uri": artifact.get("uri"),
@@ -961,7 +960,6 @@ class OpenHandsRuntime:
                 "title": target.get("title", field_key),
                 "display_name": target.get("display_name", field_key),
                 "description": target.get("description", ""),
-                "template_url": target.get("template_url", ""),
                 "workspace_root": request.node_workspace_ref,
             }
             for field_key, target in request.output_targets.items()
@@ -1003,6 +1001,13 @@ class OpenHandsRuntime:
         executor = cast(dict[str, Any], asset.get("executor") or {})
         startup = str(request.startup_prompt or executor.get("startup_prompt") or "").strip()
         context = str(executor.get("context_prompt") or "").strip()
+        raw_contexts = asset.get("context_capabilities")
+        contexts: list[dict[str, Any]] = []
+        if isinstance(raw_contexts, list):
+            for raw_context in cast(list[object], raw_contexts):
+                if not isinstance(raw_context, dict):
+                    raise DomainError("SNAPSHOT_CONTEXT_INVALID", "节点 Context Snapshot 无效", 409)
+                contexts.append(cast(dict[str, Any], raw_context))
         inputs = [self._artifact_input(item) for item in request.bindings]
         outputs = self._output_contract(request)
         collaboration = request.interaction_mode == "COLLABORATION"
@@ -1023,6 +1028,18 @@ class OpenHandsRuntime:
         if context:
             heading = "节点背景上下文（仅作协作参考）" if collaboration else "任务上下文"
             sections.append(f"{heading}：\n{context}")
+        if contexts:
+            rendered_contexts: list[str] = []
+            for item in contexts:
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    raise DomainError("SNAPSHOT_CONTEXT_INVALID", "节点 Context 内容缺失", 409)
+                rendered_contexts.append(
+                    f"[{str(item.get('capability_key') or 'Context')}]\n{text}"
+                )
+            sections.append(
+                "已冻结 Context（仅作系统级会话背景）：\n" + "\n\n".join(rendered_contexts)
+            )
         if collaboration and request.semantic_history:
             sections.append(
                 "这是显式创建的语义分支。下列内容只是源会话截至分叉点的可见文本副本，"
@@ -1056,11 +1073,6 @@ class OpenHandsRuntime:
         input_heading = "当前 Attempt 输入（协作参考）" if collaboration else "流程输入"
         rendered_inputs = json.dumps(inputs, ensure_ascii=False, default=str)
         sections.append(f"{input_heading}：\n{rendered_inputs}")
-        if inputs and not collaboration:
-            sections.append(
-                "输入项中的 uri 或 runtime_path 是本次运行的实际来源；非空 template_url 只是"
-                "节点定义时指定的格式与结构参考。请以实际输入为事实来源，不得修改输入来源。"
-            )
         if outputs:
             sections.append(
                 "请严格按下列字段和 artifact_type 生成输出。URL 输出返回安全 HTTP(S) uri；"
