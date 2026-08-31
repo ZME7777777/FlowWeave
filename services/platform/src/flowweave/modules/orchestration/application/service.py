@@ -665,9 +665,8 @@ def _validate_input_bindings(
                     "actual": artifact.artifact_type,
                 },
             )
-        if (
-            artifact.producer_attempt_id is None
-            and artifact.consumer_node_key != str(node["instance_key"])
+        if artifact.producer_attempt_id is None and artifact.consumer_node_key != str(
+            node["instance_key"]
         ):
             raise DomainError(
                 "INPUT_BINDING_INVALID",
@@ -1225,6 +1224,8 @@ def _create_node_run(
     artifact_ids: dict[str, str],
     created_from: str,
     gate_policies: list[dict[str, Any]] | None = None,
+    *,
+    session_only: bool = False,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
@@ -1298,6 +1299,12 @@ def _create_node_run(
             node_run_id=existing.id,
             attempt_no=next_attempt_no,
             snapshot_id=snapshot.id,
+            state=(
+                AttemptState.WAITING_START_CONFIRMATION
+                if session_only
+                else AttemptState.WAITING_INPUT
+            ),
+            startup_mode="CHAT" if session_only else "PROMPT",
             gate_policies_json=gate_policies or [],
             workspace_ref=str(
                 attempt_workspace_path(
@@ -1331,7 +1338,18 @@ def _create_node_run(
             existing.id,
             attempt.id,
         )
-        _dispatch_readiness(db, attempt)
+        if session_only:
+            run.state = FlowRunState.WAITING_HUMAN
+            _event(
+                db,
+                run.id,
+                "ATTEMPT_SESSION_READY",
+                {"flow_node_key": instance_key},
+                existing.id,
+                attempt.id,
+            )
+        else:
+            _dispatch_readiness(db, attempt)
         return existing, attempt
     sequence = (
         db.scalar(select(func.max(NodeRun.sequence_no)).where(NodeRun.flow_run_id == run.id)) or 0
@@ -1348,6 +1366,10 @@ def _create_node_run(
         node_run_id=node_run.id,
         attempt_no=1,
         snapshot_id=snapshot.id,
+        state=(
+            AttemptState.WAITING_START_CONFIRMATION if session_only else AttemptState.WAITING_INPUT
+        ),
+        startup_mode="CHAT" if session_only else "PROMPT",
         gate_policies_json=gate_policies or [],
         workspace_ref=str(
             attempt_workspace_path(
@@ -1382,7 +1404,18 @@ def _create_node_run(
         node_run.id,
         attempt.id,
     )
-    _dispatch_readiness(db, attempt)
+    if session_only:
+        run.state = FlowRunState.WAITING_HUMAN
+        _event(
+            db,
+            run.id,
+            "ATTEMPT_SESSION_READY",
+            {"flow_node_key": instance_key},
+            node_run.id,
+            attempt.id,
+        )
+    else:
+        _dispatch_readiness(db, attempt)
     return node_run, attempt
 
 
@@ -1538,6 +1571,23 @@ def start_node_run(
     run = _run(db, run_id)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal run cannot activate node", state=run.state)
+    if payload.startup_mode == "CHAT":
+        # A session-only launch is human-directed collaboration, not an
+        # automated node execution. Its Attempt is only an authorization and
+        # Snapshot context for the shared Agent Workbench: it must not bind
+        # declared node inputs, run either gate stage, reserve output targets,
+        # enqueue Runtime work, or trigger flow port propagation.
+        node_run, _ = _create_node_run(
+            db,
+            run,
+            instance_key,
+            {},
+            "HUMAN_CHAT",
+            [],
+            session_only=True,
+        )
+        finish(db)
+        return node_run_detail(db, node_run.id)
     artifact_ids = dict(payload.artifact_ids)
     if payload.input_urls:
         node = _node(_active_snapshot(db, run), instance_key)
@@ -1579,9 +1629,7 @@ def start_node_run(
         }
         for gate in payload.gates
     ]
-    node_run, _ = _create_node_run(
-        db, run, instance_key, artifact_ids, "HUMAN_START", gates
-    )
+    node_run, _ = _create_node_run(db, run, instance_key, artifact_ids, "HUMAN_START", gates)
     finish(db)
     return node_run_detail(db, node_run.id)
 

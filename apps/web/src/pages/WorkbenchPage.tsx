@@ -9,7 +9,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, GatePolicy, ModelProvider, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
+import type { ArtifactVersion, AttemptState, FlowRun, GateEvaluation, GatePolicy, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 
@@ -252,23 +252,31 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
   useEffect(() => { setTab('overview'); setInputDialogOpen(false); setBindings({}); setGates([]); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? ''); }, [node.instance_key, node.asset.executor?.startup_prompt]);
   const mutation = useMutation({
     mutationFn: async (nextBindings: Record<string, string>) => {
-      const activated = await api.activateNode(run.id, node.instance_key, nextBindings, gates);
+      const sessionOnly = mode === 'CHAT';
+      const activated = await api.activateNode(
+        run.id,
+        node.instance_key,
+        sessionOnly ? {} : nextBindings,
+        sessionOnly ? [] : gates,
+        {},
+        mode,
+      );
+      if (sessionOnly) return { created: activated, openDraft: true };
       const created = await waitForStartGate(run.id, activated);
       const attempt = created.attempts.at(-1);
       if (!attempt || attempt.state !== 'WAITING_START_CONFIRMATION') return { created };
-      if (mode === 'CHAT') return { created, openDraft: true };
       const started = await api.confirmStart(attempt.id, attempt.state_version, { startup_mode: 'PROMPT', prompt });
       return { created: { ...created, attempts: created.attempts.map(item => item.id === started.id ? started : item) } };
     },
     onSuccess: result => { onActivated(result.created); refresh(); if (result.openDraft) { const attempt = result.created.attempts.at(-1); if (attempt) openNodeSession(run.id, result.created.id, attempt.id); } },
   });
   const invalidMode = mode === 'PROMPT' && !prompt.trim();
-  const invalidGates = gates.some(gate => gate.gate_type === 'PYTHON' && !String(gate.config.code || '').trim());
+  const invalidGates = mode === 'PROMPT' && gates.some(gate => gate.gate_type === 'PYTHON' && !String(gate.config.code || '').trim());
   const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key);
   const visits = nodeRuns.length;
-  return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><nav className="attempt-detail-tabs" aria-label="新执行配置"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'inputs' ? 'active' : ''} onClick={() => setTab('inputs')}>输入</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁配置</button></nav><div className="action-content">
-    {tab === 'overview' && <><section className="node-console-intro"><span className="eyebrow">NODE EXECUTION</span><h3>创建一次独立执行</h3><p>输入、启动方式和门禁配置只作用于这一次执行；创建后都会冻结。</p></section>{nodeRuns.length > 0 && <section className="node-execution-history"><header><h4>已有执行记录</h4><small>可随时查看，且不影响再次启动</small></header>{nodeRuns.map(item => <button key={item.id} onClick={() => onSelectExecution(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>)}</section>}<section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => setMode('PROMPT')}/><span><b>发送启动提示词</b><small>创建后立即自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => setMode('CHAT')}/><span><b>仅创建会话启动</b><small>不发送首条任务消息</small></span></label></div>{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section><button className="primary full node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => missingInputs ? setTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : missingInputs ? '请先填写节点输入' : mode === 'CHAT' ? '启动节点会话' : '开始节点执行'}</button>{invalidGates && <p className="error">每个 Python 门禁都需要填写脚本。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}</>}
+  return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><nav className="attempt-detail-tabs" aria-label="新执行配置"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button>{mode === 'PROMPT' && <><button className={tab === 'inputs' ? 'active' : ''} onClick={() => setTab('inputs')}>输入</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁配置</button></>}</nav><div className="action-content">
+    {tab === 'overview' && <><section className="node-console-intro"><span className="eyebrow">NODE EXECUTION</span><h3>{mode === 'CHAT' ? '进入人工导向会话' : '创建一次独立执行'}</h3><p>{mode === 'CHAT' ? '会话由人工引导 AI：不会读取节点输入、执行输入/输出门禁、生成流程输出或按端口映射流转。' : '输入、启动方式和门禁配置只作用于这一次执行；创建后都会冻结。'}</p></section>{nodeRuns.length > 0 && <section className="node-execution-history"><header><h4>已有执行记录</h4><small>可随时查看，且不影响再次启动</small></header>{nodeRuns.map(item => <button key={item.id} onClick={() => onSelectExecution(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>)}</section>}<section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => { setMode('PROMPT'); setTab('overview'); }}/><span><b>发送启动提示词</b><small>AI 按节点输入、门禁和流程输出自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => { setMode('CHAT'); setTab('overview'); }}/><span><b>仅创建会话启动</b><small>人工进入会话后自行引导 AI，不应用节点输入、门禁或流程输出</small></span></label></div>{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section><button className="primary full node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => mode === 'PROMPT' && missingInputs ? setTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : mode === 'PROMPT' && missingInputs ? '请先填写节点输入' : mode === 'CHAT' ? '启动节点会话' : '开始节点执行'}</button>{invalidGates && <p className="error">每个 Python 门禁都需要填写脚本。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}</>}
     {tab === 'inputs' && <><InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={run.artifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}</>}
     {tab === 'gates' && <GateDraftEditor gates={gates} onChange={setGates}/>} {mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
   </div>{inputDialogOpen && <NodeInputDialog run={run} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setBindings(nextBindings); setInputDialogOpen(false); }}/>}</aside>;

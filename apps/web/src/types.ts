@@ -227,7 +227,7 @@ export interface NodeAttempt {
   runtime_job_id?: string | null; conversation_id?: string | null; runtime_cursor?: string | null;
   workspace_ref?: string | null; error_code?: string | null; error_detail?: string | null;
   runtime_cancel_recovery_modes: Array<'RECONCILE_PARENT' | 'DELETE_MANAGED_RUNTIME'>;
-  startup_mode?: 'SKILL' | 'PROMPT'; startup_capability_key?: string | null;
+  startup_mode?: 'SKILL' | 'PROMPT' | 'CHAT'; startup_capability_key?: string | null;
   startup_prompt?: string | null;
   gate_policies: GatePolicy[];
   output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;

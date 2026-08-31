@@ -530,6 +530,69 @@ def test_human_can_start_same_node_as_independent_runs(client, skill_capability)
     assert all(item["attempts"][0]["attempt_no"] == 1 for item in matching)
 
 
+def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_execution(
+    client, db_session_factory, skill_capability
+):
+    asset = create_asset(client, skill_capability, name="人工导向会话节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "仅创建会话启动",
+            "environment_version_id": client.environment_version_id,
+        },
+    ).json()
+
+    launched = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={
+            "startup_mode": "CHAT",
+            # These are intentionally ignored. A session-only launch is not an
+            # automated attempt and must not persist any execution contract.
+            "input_urls": {"prd": "https://example.test/ignored-node-input"},
+            "gates": [
+                {
+                    "stage": "START",
+                    "position": 0,
+                    "gate_type": "PROMPT",
+                    "enabled": True,
+                    "timeout_seconds": 30,
+                    "config": {"prompt": "always pass"},
+                }
+            ],
+        },
+    )
+
+    assert launched.status_code == 201, launched.text
+    node_run = launched.json()
+    attempt = node_run["attempts"][0]
+    assert attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert attempt["startup_mode"] == "CHAT"
+    assert attempt["input_bindings"] == []
+    assert attempt["gate_policies"] == []
+    assert attempt["gate_evaluations"] == []
+    assert attempt["output_targets"] == {}
+    assert attempt["artifacts"] == []
+
+    scope = f"/api/v1/flow-runs/{run['id']}/node-attempts/{attempt['id']}/agent-sessions"
+    assert client.get(f"{scope}/host").status_code == 200
+    with db_session_factory() as db:
+        assert not list(
+            db.scalars(select(BackgroundTask).where(BackgroundTask.aggregate_id == attempt["id"]))
+        )
+        events = list(
+            db.scalars(
+                select(RunEvent).where(
+                    RunEvent.flow_run_id == run["id"], RunEvent.attempt_id == attempt["id"]
+                )
+            )
+        )
+        assert [event.event_type for event in events] == [
+            "ATTEMPT_CREATED",
+            "ATTEMPT_SESSION_READY",
+        ]
+
+
 def test_flow_run_rejects_ready_version_of_deleted_environment(
     client, db_session_factory, skill_capability
 ):

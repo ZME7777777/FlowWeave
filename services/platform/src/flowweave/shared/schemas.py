@@ -303,6 +303,7 @@ class RunStart(ApiModel):
 
 
 class NodeRunStart(ApiModel):
+    startup_mode: Literal["PROMPT", "CHAT"] = "PROMPT"
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)
     input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
     gates: list[GateWrite] = Field(default_factory=_empty_gates)

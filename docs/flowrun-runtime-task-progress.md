@@ -1626,6 +1626,16 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 完成：运行快照节点使用正式 React Flow input/output handles，映射边精确连接 `output:<field>` 到 `input:<field>`；右侧输入和输出不再挤在单一表单中。新建人工输入经节点 scoped API 创建不可变 Artifact，并带 `consumer_node_key`；服务端拒绝将无 producer 的人工输入绑定到其他节点，同时保留上游节点输出沿冻结映射传递的语义。新增 `0082_node_bound_inputs` 迁移并兼容历史 metadata 建表路径。
 
+### FR-115 仅创建会话启动的人工导向语义 — DONE
+
+依赖：`FR-114`。
+
+目标：将“仅创建会话启动”明确为人工导向的节点会话入口：创建 Attempt 时不要求、绑定或上传节点输入；不冻结或执行输入/输出门禁；不创建输出目标、不启动自动 Runtime 执行，也不按流程端口映射流转输出。该入口只建立受当前 FlowRun 与节点 Attempt 授权的共享 Agent Workbench 草稿，后续由人工在会话中引导 AI。发送启动提示词继续保留现有 AI 主导的输入校验、门禁、输出与流程流转语义。
+
+验收：补充平台 API 回归，证明会话启动可跳过必填输入且不产生输入绑定、门禁、输出目标或 Runtime 任务；补充 Web 回归，证明会话模式按钮无需输入即可打开节点会话草稿，提示词模式仍要求输入。运行受影响 Python/Web 静态检查、`git diff --check`、Alembic head 与任务状态唯一性检查；完成后独立提交。
+
+完成：`CHAT` 启动模式直接创建只用于节点会话授权的 `WAITING_START_CONFIRMATION` Attempt，输入绑定、门禁策略/结果、输出目标和该 Attempt 的 Runtime 任务均为空；请求中误传的输入 URL 与门禁也不会持久化。前端会话模式隐藏输入和门禁配置，只显示人工导向说明并直接进入共享 Agent Workbench 草稿。`PROMPT` 模式继续经原输入校验、启动门禁、自动执行、输出门禁与端口映射路径流转。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1642,6 +1652,7 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-31 | FR-115 | `test_api.py` 会话/提示词启动定向回归（3 passed）；受影响 Python Ruff format/check 与 `py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：仅创建会话启动不再要求节点输入，并服务端忽略误传输入和门禁；不会创建输入绑定、门禁结果、输出目标或 Attempt Runtime 任务。会话直接打开人工导向草稿，输入/门禁/输出/流程映射均不适用；提示词启动路径保持原流程约束。唯一 Alembic head 为 `0083_attempt_gate_policies`。 |
 | 2026-08-31 | FR-114 | Web TypeScript typecheck、ESLint、production build；受影响平台 Ruff、`py_compile`、`tests/test_api.py`（37 collected / PASS）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：移除节点图标字段；输入输出类型改为平台分段控件；运行图的冻结数据映射边连接真实输入／输出端口。节点输入只在按定义生成的弹窗中编辑，侧栏按概览／输入／门禁／输出分 Tab 展示且可拖宽。人工 URL/文件 Artifact 被绑定到唯一 `consumer_node_key`，跨节点绑定以 `INPUT_BINDING_INVALID` 拒绝。唯一 Alembic head 为 `0082_node_bound_inputs`。 |
 | 2026-08-31 | FR-113 | Web ESLint、TypeScript typecheck、production build；Alembic head；任务状态唯一性与 `git diff --check` | PASS：移除左侧会话栏的“还没有会话”空状态卡片。没有正式会话时，左下角仅保留现有“能力／为新会话选择能力”入口，与新建会话视图一致；未改变草稿、模型、能力、Runtime 或 OpenHands 行为。唯一 Alembic head 为 `0081_system_owned_delete`。 |
 | 2026-08-31 | FR-111 | 受影响 Ruff/`py_compile`、Pyright（0 errors）；`test_api.py`、`test_openhands.py`、`test_context_capabilities.py`、`test_capability_imports.py`、`test_agent_workspaces.py`（213 passed）；PostgreSQL 迁移矩阵 upgrade/downgrade/upgrade；Web lint/typecheck/build；源码 Vite Playwright（Context 文本上传、节点自由文本与多选 Context 并存、节点步骤、12 卡片首屏分页，4 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Context 仅在新会话首条消息创建前冻结，既有会话无法通过 UI 或动态注册追加；系统后缀包含冻结 Context，普通 user prompt 保持正式 user 消息通道。迁移矩阵通过至本地唯一 head `0081_system_owned_delete`；其中 0081 是并行的 FlowRun 工作目录删除切片，作为已存在迁移一并参与验证，Context 功能不依赖其业务行为。完整旧能力仓库/产品流 Playwright 组合另有 11 个既有 API/文案契约失败，未由本切片修复或伪记为通过。 |
