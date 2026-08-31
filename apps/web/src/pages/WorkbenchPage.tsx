@@ -236,17 +236,47 @@ function FlowRunControls({ run, refresh, navigate }: { run: FlowRun; refresh: ()
   return <div className="flow-run-management" aria-label="流程运行态管理"><span>流程运行态管理</span><div>{terminal ? <button className="danger" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '永久删除这个流程运行？', message: '相关记录都会被清理且不可恢复。', confirmLabel: '永久删除', tone: 'danger' }).then(ok => ok && mutation.mutate('delete'))}><Trash2 size={14}/>永久删除此运行</button> : <><button className="ghost" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '人工结束整个流程？', message: '未结束的执行会被取消。', confirmLabel: '结束流程' }).then(ok => ok && mutation.mutate('complete'))}>人工结束流程</button><button className="danger" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消整个流程？', message: '未结束的执行会被取消。', confirmLabel: '取消流程', tone: 'danger' }).then(ok => ok && mutation.mutate('cancel'))}><StopCircle size={14}/>取消整个流程</button></>}</div>{mutation.error && <p className="error">{mutation.error.message}</p>}</div>;
 }
 
+type GateDraftDialog = { index?: number; gate: GatePolicy; readOnly: boolean };
+
+const gateText = (gate: GatePolicy) => String(gate.gate_type === 'PYTHON' ? gate.config.code || '' : gate.config.prompt || '');
+
+function GateDraftDialog({ draft, onClose, onSave }: { draft: GateDraftDialog; onClose: () => void; onSave: (gate: GatePolicy) => void }) {
+  const [gate, setGate] = useState(draft.gate);
+  const [error, setError] = useState('');
+  useEscapeClose(onClose);
+  const editable = !draft.readOnly;
+  const contentLabel = gate.gate_type === 'PYTHON' ? 'Python 脚本' : '判定提示词';
+  const accept = gate.gate_type === 'PYTHON' ? '.py,text/x-python' : '.md,.txt,text/markdown,text/plain';
+  const importFile = async (file?: File) => {
+    if (!file) return;
+    const extension = file.name.toLowerCase().split('.').at(-1);
+    const supported = gate.gate_type === 'PYTHON' ? extension === 'py' : extension === 'md' || extension === 'txt';
+    if (!supported) { setError(gate.gate_type === 'PYTHON' ? 'Python 门禁仅支持导入 .py 文件。' : '提示词门禁仅支持导入 .md 或 .txt 文件。'); return; }
+    const text = await file.text();
+    setGate(current => ({ ...current, config: gate.gate_type === 'PYTHON' ? { ...current.config, code: text, script_filename: file.name } : { ...current.config, prompt: text, source_filename: file.name } }));
+    setError('');
+  };
+  const save = () => {
+    if (!gateText(gate).trim()) { setError(`请填写或导入${contentLabel}。`); return; }
+    onSave(gate);
+  };
+  return <div className="modal-backdrop"><section className="modal gate-draft-dialog" role="dialog" aria-modal="true" aria-label={`${editable ? '编辑' : '查看'}${contentLabel}`}><header><div><span className="eyebrow">{gate.stage === 'START' ? 'START GATE' : 'END GATE'}</span><h2>{editable ? `编辑${contentLabel}` : `查看${contentLabel}`}</h2></div><button type="button" className="ghost" aria-label="关闭门禁弹窗" onClick={onClose}><X size={17}/></button></header><div className="gate-draft-dialog-body"><label>门禁类型<select aria-label="门禁类型" value={gate.gate_type} disabled={!editable} onChange={event => { const gateType = event.target.value as GatePolicy['gate_type']; setGate(current => ({ ...current, gate_type: gateType, config: gateType === 'PYTHON' ? { code: '', script_filename: '' } : { prompt: '' } })); setError(''); }}><option value="PROMPT">Prompt 模型判断</option><option value="PYTHON">Python 脚本</option></select></label><label>超时（秒）<input type="number" min="1" max="300" disabled={!editable} value={gate.timeout_seconds} onChange={event => setGate(current => ({ ...current, timeout_seconds: Number(event.target.value) || 30 }))}/></label>{editable && <label className="gate-file-import"><span><Upload size={15}/>从文件导入</span><small>{gate.gate_type === 'PYTHON' ? '仅支持 .py 文件' : '仅支持 .md 或 .txt 文件'}</small><input aria-label={`导入${contentLabel}文件`} type="file" accept={accept} onChange={event => void importFile(event.target.files?.[0])}/></label>}<label className="gate-content-field">{contentLabel}<textarea aria-label={contentLabel} className={gate.gate_type === 'PYTHON' ? 'code' : ''} readOnly={!editable} value={gateText(gate)} onChange={event => setGate(current => ({ ...current, config: current.gate_type === 'PYTHON' ? { ...current.config, code: event.target.value } : { ...current.config, prompt: event.target.value } }))}/></label></div>{error && <p className="error">{error}</p>}<footer>{editable ? <><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={save}>保存门禁</button></> : <button type="button" className="primary" onClick={onClose}>完成</button>}</footer></section></div>;
+}
+
 function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (gates: GatePolicy[]) => void }) {
-  const add = (stage: 'START' | 'END') => onChange([...gates, {
-    stage, position: gates.filter(gate => gate.stage === stage).length, gate_type: 'PROMPT', enabled: true,
-    timeout_seconds: 30, config: { prompt: '' },
-  }]);
-  const update = (index: number, patch: Partial<GatePolicy>) => onChange(gates.map((gate, itemIndex) => itemIndex === index ? { ...gate, ...patch } : gate));
-  const remove = (index: number) => onChange(gates.filter((_, itemIndex) => itemIndex !== index).map((gate, itemIndex, all) => ({ ...gate, position: all.slice(0, itemIndex).filter(candidate => candidate.stage === gate.stage).length })));
-  return <section className="attempt-side-section gate-draft-editor"><p className="field-hint">门禁只应用于即将创建的这一次执行；创建后将冻结为本轮的门禁结果依据。</p>{(['START', 'END'] as const).map(stage => <section key={stage}><header><h4>{stage === 'START' ? '开始门禁' : '结束门禁'}</h4><button type="button" className="secondary" onClick={() => add(stage)}><Plus size={13}/>添加门禁</button></header>{gates.filter(gate => gate.stage === stage).map(gate => {
-    const index = gates.indexOf(gate);
-    return <article key={stage + gate.position} className="gate-editor"><div className="gate-row"><select aria-label="门禁类型" value={gate.gate_type} onChange={event => update(index, { gate_type: event.target.value as GatePolicy['gate_type'], config: event.target.value === 'PYTHON' ? { code: '', script_filename: '' } : { prompt: '' } })}><option value="PROMPT">Prompt 模型判断</option><option value="PYTHON">Python 脚本</option></select><label>超时（秒）<input type="number" min="1" max="300" value={gate.timeout_seconds} onChange={event => update(index, { timeout_seconds: Number(event.target.value) || 30 })}/></label><button type="button" className="ghost" onClick={() => remove(index)}><Trash2 size={13}/>删除</button></div>{gate.gate_type === 'PYTHON' ? <label>Python 脚本<textarea aria-label="Python 门禁脚本" value={String(gate.config.code || '')} onChange={event => update(index, { config: { ...gate.config, code: event.target.value, script_filename: String(gate.config.script_filename || 'gate.py') } })}/></label> : <label>判定提示词<textarea aria-label="门禁判定提示词" value={String(gate.config.prompt || '')} onChange={event => update(index, { config: { ...gate.config, prompt: event.target.value } })}/></label>}</article>;
-  })}</section>)}</section>;
+  const [dialog, setDialog] = useState<GateDraftDialog>();
+  useEscapeClose(() => setDialog(undefined), Boolean(dialog));
+  const renumber = (items: GatePolicy[]) => items.map((gate, index, all) => ({ ...gate, position: all.slice(0, index).filter(candidate => candidate.stage === gate.stage).length }));
+  const openNew = (stage: 'START' | 'END') => setDialog({ gate: { stage, position: gates.filter(gate => gate.stage === stage).length, gate_type: 'PROMPT', enabled: true, timeout_seconds: 30, config: { prompt: '' } }, readOnly: false });
+  const save = (gate: GatePolicy) => {
+    onChange(dialog?.index === undefined ? [...gates, gate] : gates.map((item, index) => index === dialog.index ? gate : item));
+    setDialog(undefined);
+  };
+  const remove = (index: number) => onChange(renumber(gates.filter((_, itemIndex) => itemIndex !== index)));
+  return <section className="attempt-side-section gate-draft-editor"><p className="field-hint">门禁只应用于即将创建的这一次执行；创建后将冻结为本轮的门禁结果依据。</p>{(['START', 'END'] as const).map(stage => <section key={stage} className="gate-draft-stage"><header><h4>{stage === 'START' ? '开始门禁' : '结束门禁'}</h4><button type="button" className="secondary" onClick={() => openNew(stage)}><Plus size={13}/>添加门禁</button></header><div className="gate-draft-list">{gates.filter(gate => gate.stage === stage).map(gate => {
+    const index = gates.indexOf(gate); const content = gateText(gate).trim();
+    return <article key={`${stage}-${gate.position}`}><button type="button" className="gate-draft-open" onClick={() => setDialog({ index, gate, readOnly: true })}><span><b>{gate.gate_type === 'PYTHON' ? 'Python 脚本' : 'Prompt 模型判断'}</b><small>{content ? content.replace(/\s+/g, ' ').slice(0, 72) : '尚未填写内容'}</small></span><Eye size={14}/></button><div><button type="button" className="ghost" onClick={() => setDialog({ index, gate, readOnly: false })}>编辑</button><button type="button" className="ghost gate-delete" onClick={() => remove(index)}><Trash2 size={14}/>删除</button></div></article>;
+  })}</div></section>)}{dialog && <GateDraftDialog key={`${dialog.index ?? 'new'}-${dialog.gate.stage}-${dialog.readOnly}`} draft={dialog} onClose={() => setDialog(undefined)} onSave={save}/>}</section>;
 }
 
 const MANUAL_NODE_CONTEXT_ID = '__node_context_prompt__';
