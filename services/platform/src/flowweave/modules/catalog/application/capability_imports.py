@@ -1992,13 +1992,36 @@ def _conversation_references(db: Session, capability_version_id: str) -> list[di
             AgentConversationCapability,
             AgentConversationCapability.binding_id == AgentConversationBinding.id,
         )
-        .where(AgentConversationCapability.capability_version_id == capability_version_id)
+        .where(
+            AgentConversationCapability.capability_version_id == capability_version_id,
+            AgentConversationBinding.lifecycle != "DELETED",
+        )
         .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
     ).all()
     return [
-        {"id": binding_id, "name": title or f"会话 {binding_id[:8]}"}
-        for binding_id, title in rows
+        {"id": binding_id, "name": title or f"会话 {binding_id[:8]}"} for binding_id, title in rows
     ]
+
+
+def _remove_deleted_conversation_references(db: Session, capability_version_ids: list[str]) -> None:
+    """Discard frozen references owned by already-deleted conversations.
+
+    A deleted conversation is no longer reachable or recoverable, so it must
+    not retain a foreign-key reference that prevents the user from physically
+    deleting the capability.  The binding itself remains as an audit record.
+    """
+
+    if not capability_version_ids:
+        return
+    deleted_binding_ids = select(AgentConversationBinding.id).where(
+        AgentConversationBinding.lifecycle == "DELETED"
+    )
+    db.execute(
+        delete(AgentConversationCapability).where(
+            AgentConversationCapability.capability_version_id.in_(capability_version_ids),
+            AgentConversationCapability.binding_id.in_(deleted_binding_ids),
+        )
+    )
 
 
 def _detach_collection_members(
@@ -2101,6 +2124,7 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
             deletable.append(published.version)
 
     collection_changes = _detach_collection_members(db, [version.id for version in deletable])
+    _remove_deleted_conversation_references(db, [version.id for version in deletable])
     deleted_ids: list[str] = []
     for version in deletable:
         version_id = version.id

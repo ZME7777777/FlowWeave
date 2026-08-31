@@ -3,6 +3,7 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -11,6 +12,8 @@ from flowweave.modules.catalog.application.capability_repository import (
     resolve_version,
 )
 from flowweave.shared.models import (
+    AgentConversationBinding,
+    AgentConversationCapability,
     CapabilityBlob,
     CapabilityImport,
     CapabilityVersion,
@@ -159,6 +162,57 @@ def test_identical_import_after_physical_delete_publishes_new_version(client, db
     with db_session_factory() as db:
         assert db.get(CapabilityVersion, version_id) is None
         assert len(list(db.scalars(select(CapabilityVersion)))) == 1
+
+
+def test_deleted_agent_conversation_does_not_block_capability_deletion(
+    client, db_session_factory, skill_capability
+):
+    capability_id = skill_capability["capability_id"]
+    binding_id = str(uuid4())
+    with db_session_factory() as db:
+        capability = db.get(CapabilityVersion, capability_id)
+        assert capability is not None
+        db.add(
+            AgentConversationBinding(
+                id=binding_id,
+                runtime_session_id=str(uuid4()),
+                host_kind="AGENT_WORKSPACE",
+                host_id=str(uuid4()),
+                conversation_scope_id=str(uuid4()),
+                openhands_conversation_id=str(uuid4()),
+                display_title="已删除的会话",
+                lifecycle="DELETED",
+                create_idempotency_key=f"deleted-conversation:{binding_id}",
+            )
+        )
+        db.add(
+            AgentConversationCapability(
+                binding_id=binding_id,
+                capability_version_id=capability_id,
+                capability_type="SKILL",
+                capability_key="test-skill",
+                digest=capability.digest,
+                position=0,
+            )
+        )
+        db.commit()
+
+    deleted = client.delete(f"/api/v1/capabilities/{capability_id}")
+    assert deleted.status_code == 204, deleted.text
+
+    with db_session_factory() as db:
+        assert db.get(CapabilityVersion, capability_id) is None
+        assert db.get(AgentConversationBinding, binding_id) is not None
+        assert (
+            list(
+                db.scalars(
+                    select(AgentConversationCapability).where(
+                        AgentConversationCapability.binding_id == binding_id
+                    )
+                )
+            )
+            == []
+        )
 
 
 def test_single_skill_zip_accepts_skill_files_at_archive_root(client):
