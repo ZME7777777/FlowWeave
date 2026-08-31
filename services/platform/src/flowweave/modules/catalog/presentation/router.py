@@ -536,6 +536,13 @@ async def capability_source(capability_id: str, db: Db) -> dict[str, Any]:
     )
 
 
+@router.get("/capabilities/{capability_id}/context-source")
+async def context_source(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.read_context_source(session, capability_id)
+    )
+
+
 @router.put("/capabilities/{capability_id}/source")
 async def update_capability_source(
     capability_id: str, payload: CapabilitySkillRevisionWrite, db: Db

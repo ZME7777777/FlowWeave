@@ -229,7 +229,13 @@ def _reject_sensitive(value: object, path: str = "$") -> None:
             _reject_sensitive(child, f"{path}[{index}]")
 
 
-def _context_capability(content: bytes, filename: str) -> dict[str, Any]:
+def _context_capability(
+    content: bytes,
+    filename: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
     """Validate a text Context that is safe to append to an OpenHands system prompt."""
 
     if Path(filename).suffix.lower() not in CONTEXT_ALLOWED_SUFFIXES:
@@ -244,18 +250,21 @@ def _context_capability(content: bytes, filename: str) -> dict[str, Any]:
         raise _reject("Context cannot be blank")
     if CONTEXT_SECRET_ASSIGNMENT.search(text):
         raise _reject("Context must not contain plaintext secrets")
-    key = Path(filename).stem.strip()
+    key = (title or Path(filename).stem).strip()
     if not key or len(key) > 200:
-        raise _reject("Context filename does not provide a valid stable key")
-    description = next(
+        raise _reject("Context title must be between 1 and 200 characters")
+    inferred_description = next(
         (line.strip().lstrip("#").strip() for line in text.splitlines() if line.strip()), ""
     )
+    resolved_description = (
+        description if description is not None else inferred_description
+    ).strip()
     return {
         "capability_key": key,
         "normalized_config": {
             "schema_version": 1,
             "text": text,
-            "description": description[:2000],
+            "description": resolved_description[:2000],
         },
     }
 
@@ -1266,7 +1275,16 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     if payload.capability_type == "CONTEXT":
         if payload.mcp_scripts or payload.hook_scripts:
             raise _reject("Context cannot include detached scripts")
-        return content, {"capabilities": [_context_capability(content, filename)]}
+        return content, {
+            "capabilities": [
+                _context_capability(
+                    content,
+                    filename,
+                    title=payload.context_title,
+                    description=payload.context_description,
+                )
+            ]
+        }
     suffix = Path(filename).suffix.lower()
     if suffix != ".json":
         raise _reject(f"{payload.capability_type} config must be JSON")
@@ -1606,6 +1624,29 @@ def read_skill_source(db: Session, capability_id: str) -> dict[str, Any]:
         "capability_key": published.package.capability_key,
         "filename": published.version.source_filename,
         "entry": skill_file,
+        "content": content,
+    }
+
+
+def read_context_source(db: Session, capability_id: str) -> dict[str, Any]:
+    """Return Context text for read-only repository inspection."""
+
+    published = resolve_version(db, capability_id)
+    if published.package.capability_type != "CONTEXT":
+        raise DomainError("CAPABILITY_NOT_CONTEXT", "Capability is not a Context", 422)
+    try:
+        content = get_artifact_store().read(published.blob.storage_key).decode("utf-8")
+    except (FileNotFoundError, UnicodeDecodeError) as exc:
+        raise DomainError(
+            "CAPABILITY_SOURCE_UNAVAILABLE", "Context source is unavailable", 422
+        ) from exc
+    return {
+        "id": capability_id,
+        "capability_key": published.package.capability_key,
+        "filename": published.version.source_filename,
+        "description": str(
+            (published.version.normalized_config_json or {}).get("description") or ""
+        ),
         "content": content,
     }
 

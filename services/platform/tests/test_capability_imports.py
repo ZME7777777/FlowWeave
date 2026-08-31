@@ -61,6 +61,37 @@ def test_context_import_is_frozen_as_utf8_text_and_rejects_plaintext_secrets(cli
     assert rejected.json()["error"]["code"] == "IMPORT_REJECTED"
 
 
+def test_context_import_persists_explicit_title_description_and_readonly_source(client):
+    content = b"# Internal playbook\nUse source-grounded answers.\n"
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "playbook.md",
+            "context_title": "产品发布手册",
+            "context_description": "发布前的固定背景和检查项",
+            "content_base64": base64.b64encode(content).decode(),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports", json={"import_token": validated.json()["import_token"]}
+    )
+    assert committed.status_code == 201, committed.text
+    capability_id = committed.json()["capabilities"][0]["capability_id"]
+    assert committed.json()["capabilities"][0]["capability_key"] == "产品发布手册"
+
+    source = client.get(f"/api/v1/capabilities/{capability_id}/context-source")
+    assert source.status_code == 200, source.text
+    assert source.json() == {
+        "id": capability_id,
+        "capability_key": "产品发布手册",
+        "filename": "playbook.md",
+        "description": "发布前的固定背景和检查项",
+        "content": content.decode(),
+    }
+
+
 def test_import_is_persistent_hashed_one_time_and_stores_source(client, db_session_factory):
     validated = client.post(
         "/api/v1/capability-imports/validate",

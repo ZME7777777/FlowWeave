@@ -208,7 +208,7 @@ export const api = {
   updateNode: (id: string, body: NodeAssetWrite) => request<NodeAsset>(`/node-assets/${id}`, json('PUT', body)),
   deleteNode: (id: string) => request<void>(`/node-assets/${id}`, json('DELETE')),
   deleteNodes: (ids: string[]) => request<BulkDeleteResult<BlockedNodeDelete>>('/node-assets', json('DELETE', { ids })),
-  validateCapability: (body: { capability_type: string; filename: string; content_base64: string; mcp_scripts?: Array<{ server: string; filename: string; content_base64: string }>; hook_scripts?: Array<{ filename: string; content_base64: string }> }) =>
+  validateCapability: (body: { capability_type: string; filename: string; content_base64: string; context_title?: string; context_description?: string; mcp_scripts?: Array<{ server: string; filename: string; content_base64: string }>; hook_scripts?: Array<{ filename: string; content_base64: string }> }) =>
     request<{
       import_token: string;
       preview: {
@@ -243,6 +243,7 @@ export const api = {
   deleteCapabilityCollection: (id: string) =>
     request<void>(`/capability-collections/${id}`, json('DELETE')),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
+  contextSource: (id: string) => request<{ id: string; capability_key: string; filename: string; description: string; content: string }>(`/capabilities/${encodeURIComponent(id)}/context-source`),
   updateCapabilitySource: (id: string, content: string) =>
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
   deleteCapability: (id: string) => request<void>(`/capabilities/${encodeURIComponent(id)}`, json('DELETE')),

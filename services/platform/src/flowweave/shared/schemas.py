@@ -256,6 +256,7 @@ class FlowWrite(ApiModel):
     edges: list[FlowEdgeWrite] = Field(default_factory=_empty_edges)
     port_mappings: list[PortMappingWrite] = Field(default_factory=_empty_port_mappings)
 
+
 class ArtifactWrite(ApiModel):
     field_key: str = Field(min_length=1, max_length=100)
     artifact_type: Literal["URL", "FILE"] = "URL"
@@ -402,6 +403,8 @@ class CapabilityValidateWrite(ApiModel):
     ]
     filename: str
     content_base64: str
+    context_title: str | None = Field(default=None, max_length=200)
+    context_description: str | None = Field(default=None, max_length=2000)
     mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
     hook_scripts: list[HookScriptWrite] = Field(default_factory=_empty_hook_scripts, max_length=20)
 

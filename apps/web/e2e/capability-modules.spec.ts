@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('Context module accepts only text-file uploads', async ({ page }) => {
+test('Context module opens a titled text upload form', async ({ page }) => {
   await page.route('**/api/v1/capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
@@ -13,9 +13,11 @@ test('Context module accepts only text-file uploads', async ({ page }) => {
   await page.getByRole('navigation', { name: '能力模块' })
     .getByRole('button', { name: /Context/ }).click();
 
-  const upload = page.getByRole('button', { name: '上传 Context 文本' });
-  await expect(upload).toBeVisible();
-  await expect(page.locator('.capability-list-controls input[type="file"]')).toHaveAttribute(
+  await page.getByRole('button', { name: '新增 Context' }).click();
+  const dialog = page.getByRole('dialog', { name: '新增 Context' });
+  await expect(dialog.getByLabel('Context 标题')).toBeVisible();
+  await expect(dialog.getByLabel('Context 说明')).toBeVisible();
+  await expect(dialog.getByLabel('Context 文件')).toHaveAttribute(
     'accept',
     '.txt,.md,.markdown,text/plain,text/markdown',
   );
@@ -68,7 +70,7 @@ test('capability repository exposes module-specific menus and actions', async ({
   }
 
   await modules.getByRole('button', { name: /Context/ }).click();
-  await expect(actions.getByText('上传 Context 文本', { exact: true })).toBeVisible();
+  await expect(actions.getByRole('button', { name: '新增 Context' })).toBeVisible();
 
   await modules.getByRole('button', { name: /MCP/ }).click();
   await actions.getByRole('button', { name: '新建 MCP' }).click();

@@ -131,12 +131,20 @@ function SnapshotGraph({ run, selectedKey, onSelect }: { run: FlowRun; selectedK
   const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}:${selectedKey ?? 'node-run'}`;
   return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>实线表示流程走向；蓝色虚线表示冻结的输出 → 输入映射。</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onNodeClick={(_, node) => onSelect(node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
-function GateList({ evaluations }: { evaluations: GateEvaluation[] }) {
-  return <div className="gate-results">{evaluations.length ? evaluations.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span><strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>) : <div className="empty compact">此阶段没有门禁记录。</div>}</div>;
+function GateList({ evaluations, policies = [] }: { evaluations: GateEvaluation[]; policies?: GatePolicy[] }) {
+  const configured = [...policies].sort((left, right) => left.stage.localeCompare(right.stage) || left.position - right.position);
+  const unconfiguredResults = evaluations.filter(item => !policies.some(policy => policy.id === item.policy_snapshot_key));
+  if (!configured.length && !unconfiguredResults.length) return <div className="empty compact">本轮未配置门禁。</div>;
+  return <div className="gate-results">{configured.map(policy => {
+    const evaluation = evaluations.find(item => item.policy_snapshot_key === policy.id);
+    const label = `${policy.stage === 'START' ? '启动' : '完成'}门禁 · #${policy.position + 1}`;
+    return <div className="gate-result" key={policy.id ?? `${policy.stage}-${policy.position}`}><span><b>{label}</b><small>{evaluation ? String(evaluation.result.summary ?? '') : `${policy.gate_type === 'PYTHON' ? 'Python 脚本' : 'Prompt 判断'} · 等待执行`}</small></span>{evaluation ? <strong className={evaluation.decision === 'PASS' ? 'good' : 'bad'}>{evaluation.decision}</strong> : <strong className="pending">待执行</strong>}</div>;
+  })}{unconfiguredResults.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span><strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>)}</div>;
 }
 
-function ArtifactList({ artifacts }: { artifacts: ArtifactVersion[] }) {
-  return <section className="artifacts" aria-label="节点输出"><h3>节点输出</h3>{artifacts.length ? artifacts.map(item => <article key={item.id}><span className="artifact-version">v{item.version_no}</span><div><b>{item.field_key} · {item.artifact_type === 'FILE' ? '文件' : 'URL'}</b><small>{item.content_hash.slice(0, 10)} · {item.mime_type} · {item.byte_size} B</small><p>{item.uri || String(item.metadata?.filename || '')}</p><div className="artifact-actions">{item.uri ? <a className="ghost" href={item.uri} target="_blank" rel="noreferrer"><ExternalLink size={13}/>打开链接</a> : <><a className="ghost" href={artifactContentUrl(item.id)} target="_blank" rel="noreferrer"><FileText size={13}/>预览</a><a className="ghost" href={artifactContentUrl(item.id, true)}><Download size={13}/>下载</a></>}</div></div></article>) : <div className="empty compact">本轮尚无输出。</div>}</section>;
+function ArtifactList({ artifacts, expectedFields = [] }: { artifacts: ArtifactVersion[]; expectedFields?: SnapshotFlowNode['asset']['outputs'] }) {
+  const pendingFields = expectedFields.filter(field => !artifacts.some(artifact => artifact.field_key === field.field_key));
+  return <section className="artifacts" aria-label="节点输出"><h3>节点输出</h3>{artifacts.map(item => <article key={item.id}><span className="artifact-version">v{item.version_no}</span><div><b>{item.field_key} · {item.artifact_type === 'FILE' ? '文件' : 'URL'}</b><small>{item.content_hash.slice(0, 10)} · {item.mime_type} · {item.byte_size} B</small><p>{item.uri || String(item.metadata?.filename || '')}</p><div className="artifact-actions">{item.uri ? <a className="ghost" href={item.uri} target="_blank" rel="noreferrer"><ExternalLink size={13}/>打开链接</a> : <><a className="ghost" href={artifactContentUrl(item.id)} target="_blank" rel="noreferrer"><FileText size={13}/>预览</a><a className="ghost" href={artifactContentUrl(item.id, true)}><Download size={13}/>下载</a></>}</div></div></article>)}{pendingFields.map(field => <article className="artifact-pending" key={field.field_key}><span className="artifact-version">—</span><div><b>{field.display_name || field.field_key} · {field.data_type}</b><small>{field.description || '节点定义的输出字段'}</small><p>等待本轮执行产出。</p></div></article>)}{!artifacts.length && !pendingFields.length && <div className="empty compact">该节点没有定义输出。</div>}</section>;
 }
 
 function artifactLabel(item: ArtifactVersion) {
@@ -329,7 +337,11 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const [tab, setTab] = useState<'overview' | 'gates' | 'outputs'>('overview');
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const attemptSnapshot = run.snapshots.find(item => item.id === attempt.snapshot_id);
-  const attemptNode = attemptSnapshot?.definition.nodes.find(item => item.instance_key === nodeRun.flow_node_snapshot_key);
+  const activeSnapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
+  // Older attempts can reference snapshots that were compacted from the run
+  // payload. Their contracts are still best represented by the active frozen
+  // run snapshot, rather than an empty result panel.
+  const attemptNode = (attemptSnapshot ?? activeSnapshot)?.definition.nodes.find(item => item.instance_key === nodeRun.flow_node_snapshot_key);
   useEffect(() => { setTab('overview'); setInputDialogOpen(false); }, [attempt.id]);
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
@@ -351,7 +363,12 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const attemptTerminal = attempt.state === 'ACCEPTED' || attempt.state === 'REJECTED' || attempt.state === 'CANCELLED';
   const editableInputs = attempt.state === 'WAITING_INPUT' || attempt.state === 'START_BLOCKED';
   const nodeInputBindings = Object.fromEntries((attemptNode?.asset.inputs ?? []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
-  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <>{!terminal && <button className="primary full create-another-run" onClick={onCreateNew}><Plus size={15}/>创建新的独立执行</button>}<div className="state-banner"><span>当前轮次状态</span><b>{ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} mode={attempt.startup_mode === "CHAT" ? "CHAT" : "PROMPT"}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={run.artifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
+  // Attempts created before runtime gate freezing retain their legacy gates in
+  // the immutable snapshot. Prefer the frozen Attempt contract, but render the
+  // snapshot contract as a read-only historical fallback so users still see
+  // every configured gate before an evaluation has been produced.
+  const gatePolicies = attempt.gate_policies?.length ? attempt.gate_policies : (attemptNode?.gates ?? []);
+  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <>{!terminal && <button className="primary full create-another-run" onClick={onCreateNew}><Plus size={15}/>创建新的独立执行</button>}<div className="state-banner"><span>当前轮次状态</span><b>{ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={run.artifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
     <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id)}><Send size={15}/>进入节点会话</button>
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
@@ -361,7 +378,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
       {attempt.state === 'WAITING_ACCEPTANCE' && <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>确认完成</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>}
       {attempt.state === 'START_BLOCKED' && <button className="secondary full" onClick={() => act('retry')}>重试门禁</button>}
       {!attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
-    </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={run} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setInputDialogOpen(false); setBindings(nextBindings); act('bind', nextBindings); }}/>}</aside>;
+    </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={run} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setInputDialogOpen(false); setBindings(nextBindings); act('bind', nextBindings); }}/>}</aside>;
 }
 
 function SnapshotSync({ run, currentVersion, onSynced }: { run: FlowRun; currentVersion?: number; onSynced: (run: FlowRun) => void }) {
@@ -394,8 +411,24 @@ export function WorkbenchPage() {
     if (selectedNode && !selectedAttemptId) {
       const latestAttempt = selectedNode.attempts.at(-1);
       if (latestAttempt) selectAttempt(latestAttempt.id);
+      return;
     }
-  }, [query.data, selectAttempt, selectedAttemptId, selectedNodeRunId]);
+    // Opening a Run from the list has no persisted node selection.  Treat the
+    // first node in its active snapshot as selected, rather than using the
+    // canvas-only state that hides both workbench sidebars until a click.
+    // An explicitly selected execution always wins (for deep links and Back).
+    if (!selectedNodeRunId && !selectedNodeKey) {
+      const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id)
+        ?? run.snapshots.at(-1);
+      const firstNode = snapshot?.definition.nodes.at(0);
+      if (firstNode) {
+        setSelectedNodeKey(firstNode.instance_key);
+        return;
+      }
+      const firstExecution = run.node_runs.at(0);
+      if (firstExecution) selectExecution(firstExecution.id, firstExecution.attempts.at(-1)?.id);
+    }
+  }, [query.data, selectAttempt, selectExecution, selectedAttemptId, selectedNodeKey, selectedNodeRunId]);
   const returnToRuns = () => setView('runs');
   if (!selectedRunId) return <div className="empty workbench-fallback"><b>未选择运行</b><button className="secondary" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button></div>;
   const run = query.data;
