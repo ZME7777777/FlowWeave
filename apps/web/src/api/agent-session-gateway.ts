@@ -43,6 +43,8 @@ export type AgentSessionStreamStatus = 'connecting' | 'live' | 'recovering' | 'd
 export interface AgentSessionFeatures {
   readonly workDirectories: boolean;
   readonly capabilities: boolean;
+  /** Whether an unbound draft may choose capabilities for its first session. */
+  readonly draftCapabilitySelection: boolean;
   readonly attachments: boolean;
   readonly modelSelection: boolean;
   readonly conversationDeletion: boolean;
@@ -53,7 +55,7 @@ export interface AgentSessionFeatures {
 }
 
 const fullSessionFeatures: AgentSessionFeatures = {
-  workDirectories: true, capabilities: true, attachments: true, modelSelection: true,
+  workDirectories: true, capabilities: true, draftCapabilitySelection: true, attachments: true, modelSelection: true,
   conversationDeletion: true, fork: true, rewrite: true, confirmations: true,
   terminalRequiresConversation: false,
 };
@@ -169,7 +171,6 @@ export function flowNodeSessionGateway(
     // A FlowRun node is a host scope, not a reduced Agent product. Logical
     // work directories are owned by the FlowRun and can be selected by every
     // node entry that belongs to it.
-    features: fullSessionFeatures,
     api: {
       defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
@@ -178,9 +179,12 @@ export function flowNodeSessionGateway(
       providers: api.providers,
       capabilities: api.capabilities,
       capabilityCollections: api.capabilityCollections,
-      hostCapabilities: () => nodeSessionApi.capabilities(flowRunId, attemptId),
+      // A node is only a route scope. It has no capability configuration of
+      // its own: new conversations inherit the ordinary Agent default, and
+      // capabilities can be added only after a native Conversation exists.
+      hostCapabilities: () => Promise.resolve([]),
       mcpReadiness: (_hostId, capabilityVersionId) => nodeSessionApi.mcpReadiness(flowRunId, attemptId, capabilityVersionId),
-      replaceHostCapabilities: (_hostId, capabilityVersionIds) => nodeSessionApi.replaceCapabilities(flowRunId, attemptId, capabilityVersionIds),
+      replaceHostCapabilities: () => Promise.resolve([]),
       addConversationCapability: (_hostId, bindingId, capabilityVersionId) => nodeSessionApi.addCapability(flowRunId, attemptId, bindingId, capabilityVersionId),
       workspaceDetails: (_hostId, options) =>
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
@@ -196,9 +200,9 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, workDirectoryId, capabilityVersionIds, idempotencyKey) => {
+      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, workDirectoryId, _capabilityVersionIds, idempotencyKey) => {
         return nodeSessionApi.bootstrap(
-          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, workDirectoryId, capabilityVersionIds, idempotencyKey ?? conversationId,
+          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, workDirectoryId, idempotencyKey ?? conversationId,
         );
       },
       updateConversation: (_hostId, bindingId, title) =>
@@ -233,6 +237,7 @@ export function flowNodeSessionGateway(
       switchConversationModel: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
         nodeSessionApi.switchModel(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
     },
+    features: { ...fullSessionFeatures, draftCapabilitySelection: false },
     terminalUrl: (_hostId, rows, columns, options) => {
       return nodeSessionApi.terminal(flowRunId, attemptId, options.bindingId, rows, columns);
     },

@@ -68,7 +68,6 @@ class NodeSessionBootstrapFullWrite(_Write):
     attachments: list[NodeAttachmentReference] = cast(
         list[NodeAttachmentReference], Field(default_factory=list, max_length=10)
     )
-    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
 
 
 class NodeSessionMessageWrite(_Write):
@@ -87,10 +86,6 @@ class NodeConfirmationDecisionWrite(_Write):
 class NodeForkWrite(_Write):
     event_id: str = Field(min_length=1, max_length=200)
     title: str | None = Field(default=None, max_length=240)
-
-
-class NodeCapabilitySelectionWrite(_Write):
-    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
 
 
 class NodeCapabilityAddWrite(_Write):
@@ -175,51 +170,6 @@ async def node_session_runtime(flow_run_id: str, attempt_id: str, db: Db) -> dic
     )
 
 
-def _default_workspace_id(session: Any) -> str:
-    workspace = agent_sessions.conversations.default_workspace(session)
-    return str(workspace["id"])
-
-
-@router.get(f"{_BASE}/capabilities")
-async def node_session_capabilities(
-    flow_run_id: str, attempt_id: str, db: Db
-) -> list[dict[str, str]]:
-    return await run_sync(
-        db,
-        lambda session: (
-            agent_sessions.resolve_flow_node_session_host(
-                session,
-                flow_run_id=flow_run_id,
-                attempt_id=attempt_id,
-                require_start_permission=False,
-            ),
-            agent_sessions.conversations.workspace_capabilities(
-                session, _default_workspace_id(session)
-            ),
-        )[1],
-    )
-
-
-@router.put(f"{_BASE}/capabilities")
-async def replace_node_session_capabilities(
-    flow_run_id: str, attempt_id: str, payload: NodeCapabilitySelectionWrite, db: Db
-) -> list[dict[str, str]]:
-    return await run_sync(
-        db,
-        lambda session: (
-            agent_sessions.resolve_flow_node_session_host(
-                session,
-                flow_run_id=flow_run_id,
-                attempt_id=attempt_id,
-                require_start_permission=False,
-            ),
-            agent_sessions.conversations.replace_workspace_capabilities(
-                session, _default_workspace_id(session), tuple(payload.capability_version_ids)
-            ),
-        )[1],
-    )
-
-
 @router.post(f"{_BASE}/capabilities/{{capability_version_id}}/mcp-readiness")
 async def node_session_mcp_readiness(
     flow_run_id: str, attempt_id: str, capability_version_id: str, db: Db
@@ -234,7 +184,9 @@ async def node_session_mcp_readiness(
                 require_start_permission=False,
             ),
             agent_sessions.conversations.probe_workspace_mcp_readiness(
-                session, _default_workspace_id(session), capability_version_id
+                session,
+                str(agent_sessions.conversations.default_workspace(session)["id"]),
+                capability_version_id,
             ),
         )[1],
     )
@@ -343,7 +295,6 @@ async def bootstrap_node_session(
                 model_provider_id=payload.model_provider_id,
                 model_name=payload.model_name,
                 reasoning_effort=payload.reasoning_effort,
-                capability_version_ids=tuple(payload.capability_version_ids),
             ),
             idempotency_key=_key(idempotency_key, "bootstrap-node-agent-session", attempt_id),
         ),

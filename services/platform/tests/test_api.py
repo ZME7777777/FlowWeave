@@ -408,6 +408,23 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
             "models": [{"model_name": "gpt-node", "enabled": True, "is_default": True}],
         },
     ).json()
+    # Node entry is only a route to the shared Agent session product. It must
+    # not accept a node-specific capability selection for the first session.
+    rejected_capability_override = client.post(
+        f"{scope}/bootstrap",
+        json={
+            "client_question_id": "selected-node-capability-override",
+            "content": "能力不能由节点首发配置",
+            "model_provider_id": provider["id"],
+            "model_name": "gpt-node",
+            "reasoning_effort": None,
+            "capability_version_ids": [],
+        },
+        headers={"Idempotency-Key": "selected-node-capability-override"},
+    )
+    assert rejected_capability_override.status_code == 422, rejected_capability_override.text
+    assert client.put(f"{scope}/capabilities", json={"capability_version_ids": []}).status_code == 405
+
     conversation = client.post(
         f"{scope}/bootstrap",
         json={
