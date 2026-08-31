@@ -289,6 +289,8 @@ export const api = {
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
+  addNodeInputArtifact: (runId: string, nodeKey: string, body: ArtifactInput) =>
+    request<ArtifactVersion>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeKey)}/input-artifacts`, json('POST', body)),
   uploadArtifact: async (runId: string, fieldKey: string, displayName: string, file: File): Promise<ArtifactVersion> => {
     const body = new FormData();
     body.append('field_key', fieldKey);
@@ -297,6 +299,17 @@ export const api = {
     let response: Response;
     try { response = await fetch(`${API_BASE}${ROOT}/flow-runs/${encodeURIComponent(runId)}/artifacts/upload`, { method: 'POST', body }); }
     catch { throw new ApiError('无法上传输入文件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<ArtifactVersion>;
+  },
+  uploadNodeInputArtifact: async (runId: string, nodeKey: string, fieldKey: string, displayName: string, file: File): Promise<ArtifactVersion> => {
+    const body = new FormData();
+    body.append('field_key', fieldKey);
+    body.append('display_name', displayName);
+    body.append('file', file, file.name);
+    let response: Response;
+    try { response = await fetch(`${API_BASE}${ROOT}/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeKey)}/input-artifacts/upload`, { method: 'POST', body }); }
+    catch { throw new ApiError('无法上传节点输入文件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }
     if (!response.ok) throw await responseError(response);
     return response.json() as Promise<ArtifactVersion>;
   },

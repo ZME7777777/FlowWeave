@@ -134,6 +134,9 @@ class ArtifactVersion(Base):
     producer_attempt_id: Mapped[str | None] = mapped_column(
         ForeignKey("node_attempts.id", ondelete="RESTRICT"), index=True
     )
+    # Human input is owned by one declared node contract. It is intentionally
+    # not a FlowRun-wide pool that other nodes may browse or bind.
+    consumer_node_key: Mapped[str | None] = mapped_column(String(100), index=True)
     field_key: Mapped[str] = mapped_column(String(100))
     version_no: Mapped[int] = mapped_column(Integer)
     artifact_type: Mapped[str] = mapped_column(String(80))

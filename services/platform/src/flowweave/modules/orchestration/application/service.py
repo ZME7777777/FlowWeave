@@ -330,6 +330,7 @@ def _artifact_dict(item: ArtifactVersion) -> dict[str, Any]:
         "id": item.id,
         "flow_run_id": item.flow_run_id,
         "producer_attempt_id": item.producer_attempt_id,
+        "consumer_node_key": item.consumer_node_key,
         "field_key": item.field_key,
         "version_no": item.version_no,
         "artifact_type": item.artifact_type,
@@ -455,6 +456,7 @@ def _register_artifact(
     *,
     source: str = "HUMAN",
     attempt_id: str | None = None,
+    consumer_node_key: str | None = None,
 ) -> ArtifactVersion:
     payload = prepared.payload
     if prepared.storage_key is not None:
@@ -473,6 +475,7 @@ def _register_artifact(
         id=prepared.id,
         flow_run_id=run_id,
         producer_attempt_id=attempt_id,
+        consumer_node_key=consumer_node_key,
         field_key=payload.field_key,
         version_no=version,
         artifact_type=payload.artifact_type,
@@ -506,6 +509,38 @@ def create_artifact(db: Session, run_id: str, prepared: PreparedArtifact) -> dic
     return _artifact_dict(item)
 
 
+def create_node_input_artifact(
+    db: Session,
+    run_id: str,
+    instance_key: str,
+    prepared: PreparedArtifact,
+) -> dict[str, Any]:
+    """Create one direct human input tied to one snapshot node contract."""
+
+    run = _run(db, run_id)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("cannot add input to terminal run", state=run.state)
+    node = _node(_active_snapshot(db, run), instance_key)
+    field_types = {field.key: field.data_type for field in _input_fields(node)}
+    field_key = prepared.payload.field_key
+    if field_key not in field_types or prepared.payload.artifact_type != field_types[field_key]:
+        raise DomainError(
+            "INPUT_BINDING_INVALID",
+            "input does not match the declared node field",
+            422,
+            {"field": field_key},
+        )
+    item = _register_artifact(
+        db,
+        run_id,
+        prepared,
+        source="HUMAN_INPUT",
+        consumer_node_key=instance_key,
+    )
+    finish(db)
+    return _artifact_dict(item)
+
+
 def delete_artifact(db: Session, run_id: str, artifact_id: str) -> None:
     """Delete an unbound human-provided artifact from a run's artifact pool."""
 
@@ -515,7 +550,7 @@ def delete_artifact(db: Session, run_id: str, artifact_id: str) -> None:
     item = db.get(ArtifactVersion, artifact_id)
     if item is None or item.flow_run_id != run.id:
         raise not_found("artifact_version", artifact_id)
-    if item.producer_attempt_id is not None or item.source != "HUMAN":
+    if item.producer_attempt_id is not None or item.source not in {"HUMAN", "HUMAN_INPUT"}:
         raise DomainError(
             "ARTIFACT_DELETE_BLOCKED",
             "Only human-provided artifacts can be removed from the artifact pool",
@@ -629,6 +664,16 @@ def _validate_input_bindings(
                     "expected": input_types[field_key],
                     "actual": artifact.artifact_type,
                 },
+            )
+        if (
+            artifact.producer_attempt_id is None
+            and artifact.consumer_node_key != str(node["instance_key"])
+        ):
+            raise DomainError(
+                "INPUT_BINDING_INVALID",
+                "human input is bound to a different node",
+                422,
+                {"id": artifact_id, "field": field_key},
             )
 
 
@@ -1421,7 +1466,13 @@ def start_flow(
         artifact_ids = dict(payload.input_bindings)
         for artifact_payload in payload.artifacts:
             prepared = prepare_artifact(artifact_payload)
-            artifact = _register_artifact(db, run.id, prepared, source="HUMAN_INPUT")
+            artifact = _register_artifact(
+                db,
+                run.id,
+                prepared,
+                source="HUMAN_INPUT",
+                consumer_node_key=payload.flow_node_key,
+            )
             artifact_ids[artifact.field_key] = artifact.id
         _create_node_run(
             db,
@@ -1505,7 +1556,13 @@ def start_node_run(
                     metadata={"source": "HUMAN_INPUT"},
                 )
             )
-            artifact = _register_artifact(db, run.id, prepared, source="HUMAN_INPUT")
+            artifact = _register_artifact(
+                db,
+                run.id,
+                prepared,
+                source="HUMAN_INPUT",
+                consumer_node_key=instance_key,
+            )
             artifact_ids[field_key] = artifact.id
     node_run, _ = _create_node_run(db, run, instance_key, artifact_ids, "HUMAN_START")
     finish(db)

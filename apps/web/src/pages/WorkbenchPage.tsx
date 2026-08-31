@@ -1,8 +1,8 @@
-import { Background, Controls, ReactFlow, type Edge, type Node } from '@xyflow/react';
+import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, ArrowLeft, Download, ExternalLink, FileText, Link2, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Download, ExternalLink, FileText, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
@@ -74,20 +74,52 @@ function RunRail({ run, selected, onSelect }: { run: FlowRun; selected?: string;
   return <aside className="run-rail"><span className="eyebrow">流程运行</span><h2>{run.name}</h2><span data-testid="flow-run-state" className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><div className="run-progress"><span>{run.progress.accepted} 已验收</span><span>{run.progress.terminal} 已结束</span><span>{active} 进行中</span></div><div className="run-history-title"><b>节点执行记录</b><small>节点和修订轮次只引用 OpenHands Conversation；全部会话归属于当前 FlowRun Runtime。</small></div><div className="timeline">{run.node_runs.map(item => <button key={item.id} className={selected === item.id ? 'active' : ''} onClick={() => onSelect(item.id)}><i className={String(attemptState(item)).toLowerCase()}/><span><b>{nodeRunName(run, item)}</b><small>第 {nodeVisitNumber(run, item)} 次执行 · {attemptStateLabel(item)}</small></span></button>)}</div></aside>;
 }
 
+type SnapshotGraphNodeData = {
+  label: string;
+  status: string;
+  visits: number;
+  inputs: SnapshotFlowNode['asset']['inputs'];
+  outputs: SnapshotFlowNode['asset']['outputs'];
+};
+
+function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeData>>) {
+  const portOffset = (index: number) => 53 + index * 22;
+  return <article className={`run-graph-node ${data.status}${selected ? ' snapshot-selected' : ''}`}>
+    <Handle id="flow-target" className="run-flow-handle" type="target" position={Position.Left} style={{ top: 18 }}/>
+    <Handle id="flow-source" className="run-flow-handle" type="source" position={Position.Right} style={{ top: 18 }}/>
+    <header><b>{data.label}</b><small>{data.visits ? `运行 ${data.visits} 次` : '未运行'}</small></header>
+    <div className="run-node-contract">
+      <section aria-label="输入端口"><span>输入</span>{data.inputs.length ? data.inputs.map((field, index) => <div key={field.field_key}><Handle id={`input:${field.field_key}`} className="run-data-handle input" type="target" position={Position.Left} style={{ top: portOffset(index) }}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small></div>) : <em>无输入</em>}</section>
+      <section aria-label="输出端口"><span>输出</span>{data.outputs.length ? data.outputs.map((field, index) => <div key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="run-data-handle output" type="source" position={Position.Right} style={{ top: portOffset(index) }}/></div>) : <em>无输出</em>}</section>
+    </div>
+  </article>;
+}
+
+const runSnapshotNodeTypes = { snapshotNode: SnapshotGraphNode };
+
 function SnapshotGraph({ run, selectedKey, onSelect }: { run: FlowRun; selectedKey?: string; onSelect: (key: string) => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const [nodes, edges] = useMemo(() => {
-    const graphNodes: Node[] = (snapshot?.definition.nodes ?? []).map(item => {
+    const graphNodes: Node<SnapshotGraphNodeData>[] = (snapshot?.definition.nodes ?? []).map(item => {
       const visits = run.node_runs.filter(nodeRun => nodeRun.flow_node_snapshot_key === item.instance_key);
       const status = visits.at(-1)?.state.toLowerCase() ?? 'pending';
-      return { id: item.instance_key, position: { x: item.position_x, y: item.position_y }, data: { label: <span><b>{item.alias || item.asset.name}</b><small>{visits.length ? `运行 ${visits.length} 次` : '未运行'}</small></span> }, className: `run-graph-node ${status}${selectedKey === item.instance_key ? ' snapshot-selected' : ''}` };
+      return { id: item.instance_key, type: 'snapshotNode', position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, visits: visits.length, inputs: item.asset.inputs, outputs: item.asset.outputs } };
     });
-    const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, target: item.target_instance_key, className: 'run-direction-edge' }));
-    const mappingEdges: Edge[] = (snapshot?.definition.port_mappings ?? []).map((item, index) => ({ id: `mapping-${item.id ?? index}`, source: item.source_instance_key, target: item.target_instance_key, label: `${item.source_output_key} → ${item.target_input_key}`, className: 'run-mapping-edge' }));
+    const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'smoothstep', className: 'run-direction-edge' }));
+    const mappingEdges: Edge[] = (snapshot?.definition.port_mappings ?? []).map((item, index) => ({
+      id: `mapping-${item.id ?? index}`,
+      source: item.source_instance_key,
+      sourceHandle: `output:${item.source_output_key}`,
+      target: item.target_instance_key,
+      targetHandle: `input:${item.target_input_key}`,
+      type: 'smoothstep',
+      label: `${item.source_output_key} → ${item.target_input_key}`,
+      className: 'run-mapping-edge',
+    }));
     const graphEdges = [...directionEdges, ...mappingEdges];
     return [graphNodes, graphEdges] as const;
-  }, [run.node_runs, selectedKey, snapshot]);
-  return <section className="run-graph"><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>点击任意节点，在右侧配置输入并开始一次独立执行</small></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={selectedKey ?? 'node-run'} nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onNodeClick={(_, node) => onSelect(node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  }, [run.node_runs, snapshot]);
+  return <section className="run-graph"><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>实线表示流程走向；蓝色虚线表示冻结的输出 → 输入映射。</small></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={selectedKey ?? 'node-run'} nodeTypes={runSnapshotNodeTypes} nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onNodeClick={(_, node) => onSelect(node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
 function GateList({ evaluations }: { evaluations: GateEvaluation[] }) {
   return <div className="gate-results">{evaluations.length ? evaluations.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span><strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>) : <div className="empty compact">此阶段没有门禁记录。</div>}</div>;
@@ -95,10 +127,6 @@ function GateList({ evaluations }: { evaluations: GateEvaluation[] }) {
 
 function ArtifactList({ artifacts }: { artifacts: ArtifactVersion[] }) {
   return <section className="artifacts" aria-label="节点输出"><h3>节点输出</h3>{artifacts.length ? artifacts.map(item => <article key={item.id}><span className="artifact-version">v{item.version_no}</span><div><b>{item.field_key} · {item.artifact_type === 'FILE' ? '文件' : 'URL'}</b><small>{item.content_hash.slice(0, 10)} · {item.mime_type} · {item.byte_size} B</small><p>{item.uri || String(item.metadata?.filename || '')}</p><div className="artifact-actions">{item.uri ? <a className="ghost" href={item.uri} target="_blank" rel="noreferrer"><ExternalLink size={13}/>打开链接</a> : <><a className="ghost" href={artifactContentUrl(item.id)} target="_blank" rel="noreferrer"><FileText size={13}/>预览</a><a className="ghost" href={artifactContentUrl(item.id, true)}><Download size={13}/>下载</a></>}</div></div></article>) : <div className="empty compact">本轮尚无输出。</div>}</section>;
-}
-
-function artifactOptions(run: FlowRun, dataType: string) {
-  return run.artifacts.filter(item => item.artifact_type === dataType);
 }
 
 function artifactLabel(item: ArtifactVersion) {
@@ -123,21 +151,53 @@ async function waitForStartGate(runId: string, initial: NodeRun): Promise<NodeRu
   return current;
 }
 
-function ArtifactCreator({ run, field, refresh, onCreated }: { run: FlowRun; field: SnapshotFlowNode['asset']['inputs'][number]; refresh: () => void; onCreated: (artifact: ArtifactVersion) => void }) {
-  const [name, setName] = useState(field.display_name || field.field_key);
-  const [url, setUrl] = useState('');
-  const [file, setFile] = useState<File>();
+type InputContract = SnapshotFlowNode['asset']['inputs'][number];
+
+function InputSummary({ fields, bindings, artifacts }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[] }) {
+  return <section className="input-summary" aria-label="节点输入"><h4>输入</h4>{fields.length ? fields.map(field => {
+    const artifact = artifacts.find(item => item.id === bindings[field.field_key]);
+    return <article key={field.field_key}><header><span><b>{field.display_name || field.field_key}</b><small>{field.description || '未填写字段说明'}</small></span><code>{field.field_key} · {field.data_type}</code></header>{artifact ? <><strong>{artifactLabel(artifact)}</strong><a href={artifactHref(artifact)} target="_blank" rel="noreferrer">{artifact.uri || String(artifact.metadata?.filename || '查看文件')}</a></> : <span className="input-summary-empty">尚未填写</span>}</article>;
+  }) : <div className="empty compact">该节点无需输入。</div>}</section>;
+}
+
+function NodeInputDialog({ run, node, initialBindings = {}, onClose, onSubmit }: { run: FlowRun; node: SnapshotFlowNode; initialBindings?: Record<string, string>; onClose: () => void; onSubmit: (bindings: Record<string, string>) => void }) {
+  const fields = node.asset.inputs;
+  const [urls, setUrls] = useState<Record<string, string>>(() => Object.fromEntries(fields.filter(field => field.data_type === 'URL').map(field => {
+    const artifact = run.artifacts.find(item => item.id === initialBindings[field.field_key]);
+    return [field.field_key, artifact?.uri ?? ''];
+  })));
+  const [files, setFiles] = useState<Record<string, File | undefined>>({});
+  const [error, setError] = useState('');
   const mutation = useMutation({
-    mutationFn: () => field.data_type === 'FILE' && file
-      ? api.uploadArtifact(run.id, field.field_key, name.trim() || field.display_name || field.field_key, file)
-      : api.addArtifact(run.id, {
-        field_key: field.field_key, artifact_type: 'URL', uri: url.trim(), mime_type: 'text/uri-list',
-        metadata: { source: 'HUMAN_INPUT', display_name: name.trim() || field.display_name || field.field_key },
-      }),
-    onSuccess: artifact => { setUrl(''); setFile(undefined); onCreated(artifact); refresh(); },
+    mutationFn: async () => {
+      const bindings: Record<string, string> = {};
+      for (const field of fields) {
+        const retained = initialBindings[field.field_key];
+        if (field.data_type === 'URL') {
+          const value = urls[field.field_key]?.trim();
+          if (!value && retained) { bindings[field.field_key] = retained; continue; }
+          if (!value) throw new Error(`请填写“${field.display_name || field.field_key}”。`);
+          const artifact = await api.addNodeInputArtifact(run.id, node.instance_key, {
+            field_key: field.field_key, artifact_type: 'URL', uri: value, mime_type: 'text/uri-list',
+            metadata: { display_name: field.display_name || field.field_key },
+          });
+          bindings[field.field_key] = artifact.id;
+          continue;
+        }
+        const file = files[field.field_key];
+        if (!file && retained) { bindings[field.field_key] = retained; continue; }
+        if (!file) throw new Error(`请上传“${field.display_name || field.field_key}”。`);
+        const artifact = await api.uploadNodeInputArtifact(run.id, node.instance_key, field.field_key, field.display_name || field.field_key, file);
+        bindings[field.field_key] = artifact.id;
+      }
+      return bindings;
+    },
+    onSuccess: bindings => onSubmit(bindings),
+    onError: reason => setError(reason instanceof Error ? reason.message : '保存输入失败'),
   });
-  const missingValue = field.data_type === 'FILE' ? !file : !url.trim();
-  return <div className="node-artifact-creator node-input-field"><label>输入名称<input aria-label={`新建产物名称 ${field.field_key}`} value={name} onChange={event => setName(event.target.value)} placeholder={field.display_name || field.field_key}/></label>{field.data_type === 'FILE' ? <label className="node-file-input"><span>文件附件</span><input aria-label={`上传输入文件 ${field.field_key}`} type="file" onChange={event => setFile(event.target.files?.[0])}/><small>{file ? `${file.name} · ${file.size} B` : '图片、PDF、文档、压缩包等任意单文件，最大 25 MiB'}</small></label> : <label>URL<input type="url" aria-label={`新建产物 URL ${field.field_key}`} value={url} onChange={event => setUrl(event.target.value)} placeholder="https://example.com/resource"/></label>}<button className="secondary full" disabled={!name.trim() || missingValue || mutation.isPending} onClick={() => mutation.mutate()}>{field.data_type === 'FILE' ? <Upload size={13}/> : <Plus size={13}/>} {mutation.isPending ? '保存中…' : '使用这个输入'}</button>{mutation.error && <p className="error">{mutation.error.message}</p>}</div>;
+  return <div className="modal-backdrop"><section className="modal node-input-dialog" role="dialog" aria-modal="true" aria-label="填写节点输入"><header><div><span className="eyebrow">NODE INPUTS</span><h2>填写 {node.alias || node.asset.name} 的输入</h2><p>字段由节点定义冻结生成；每个值只绑定当前节点，不会进入可复用产物池。</p></div><button type="button" className="ghost" aria-label="关闭输入表单" onClick={onClose}><X size={17}/></button></header><div className="node-input-dialog-body">{fields.map(field => {
+    const current = run.artifacts.find(item => item.id === initialBindings[field.field_key]);
+    return <label className="node-input-control" key={field.field_key}><span><b>{field.display_name || field.field_key}</b><code>{field.field_key} · {field.data_type}</code><small>{field.description || '请按节点定义填写此字段。'}</small></span>{field.data_type === 'URL' ? <input aria-label={`填写输入 ${field.field_key}`} type="url" value={urls[field.field_key] ?? ''} onChange={event => setUrls(old => ({ ...old, [field.field_key]: event.target.value }))} placeholder="https://example.com/resource"/> : <span className="platform-file-upload"><Upload size={16}/><span><b>{files[field.field_key]?.name || (typeof current?.metadata?.filename === 'string' ? current.metadata.filename : '选择文件')}</b><small>{files[field.field_key] ? `${files[field.field_key]?.size} B` : '图片、PDF、文档、压缩包等，最大 25 MiB'}</small></span><input aria-label={`上传输入文件 ${field.field_key}`} type="file" onChange={event => setFiles(old => ({ ...old, [field.field_key]: event.target.files?.[0] }))}/></span>}{current && <a className="current-input" href={artifactHref(current)} target="_blank" rel="noreferrer">当前绑定：{artifactLabel(current)}</a>}</label>; })}{!fields.length && <div className="empty compact">该节点没有定义输入，可直接创建执行。</div>}</div>{error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '保存输入中…' : '保存输入并继续'}</button></footer></section></div>;
 }
 
 function FlowRunControls({ run, refresh, navigate }: { run: FlowRun; refresh: () => void; navigate: (result: unknown, kind: string) => void }) {
@@ -159,14 +219,14 @@ function FlowRunControls({ run, refresh, navigate }: { run: FlowRun; refresh: ()
 
 function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
-  const [bindings, setBindings] = useState<Record<string, string>>({});
+  const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const [mode, setMode] = useState<'PROMPT' | 'CHAT'>('CHAT');
   const [prompt, setPrompt] = useState(node.asset.executor?.startup_prompt ?? '');
   useEffect(() => {
-    setBindings({}); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? '');
+    setInputDialogOpen(false); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? '');
   }, [node.instance_key, node.asset.executor?.startup_prompt]);
   const mutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (bindings: Record<string, string>) => {
       const activated = await api.activateNode(run.id, node.instance_key, bindings);
       const created = await waitForStartGate(run.id, activated);
       const attempt = created.attempts.at(-1);
@@ -188,28 +248,29 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
       }
     },
   });
-  const missing = node.asset.inputs.some(field => !bindings[field.field_key]);
   const invalidMode = mode === 'PROMPT' && !prompt.trim();
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key);
   const visits = nodeRuns.length;
   return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><div className="action-content">
-    <section className="node-console-intro"><span className="eyebrow">ARTIFACT-DRIVEN</span><h3>创建一次独立执行</h3><p>先绑定本次实际输入，再选择启动方式。执行记录引用 FlowRun 内的 OpenHands 会话，不再拥有独立 Runtime。</p></section>
+    <section className="node-console-intro"><span className="eyebrow">NODE EXECUTION</span><h3>创建一次独立执行</h3><p>输入由节点定义严格生成，并直接绑定到当前节点；不会从其他节点或产物池中选择。</p></section>
     {nodeRuns.length > 0 && <section className="node-execution-history"><header><h4>已有执行记录</h4><small>可随时查看，且不影响再次启动</small></header>{nodeRuns.map(item => <button key={item.id} onClick={() => onSelectExecution(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>)}</section>}
-    <section className="node-console-inputs"><h4>本次输入</h4>{node.asset.inputs.length ? node.asset.inputs.map(field => { const options = artifactOptions(run, field.data_type); const selected = options.find(item => item.id === bindings[field.field_key]); return <article key={field.field_key}><header><span><b>{field.display_name || field.field_key}</b><small>{field.description || '请按节点定义填写本字段'}</small></span><code>{field.field_key} · {field.data_type}</code></header><select aria-label={`节点输入 ${field.field_key}`} value={bindings[field.field_key] ?? ''} onChange={event => setBindings(old => ({ ...old, [field.field_key]: event.target.value }))}><option value="">选择已有同类型产物（可选）</option>{options.map(item => <option key={item.id} value={item.id}>{artifactLabel(item)} · {item.artifact_type}</option>)}</select>{selected && <div className="selected-artifact"><span><Link2 size={13}/><b>{artifactLabel(selected)}</b></span><a href={artifactHref(selected)} target="_blank" rel="noreferrer">{selected.uri || String(selected.metadata?.filename || '查看文件')}</a></div>}<ArtifactCreator run={run} field={field} refresh={refresh} onCreated={artifact => setBindings(old => ({ ...old, [field.field_key]: artifact.id }))}/></article>; }) : <div className="empty compact">该节点无需输入，可以直接启动。</div>}</section>
+    <InputSummary fields={node.asset.inputs} bindings={{}} artifacts={run.artifacts}/>
     <section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => setMode('PROMPT')}/><span><b>发送启动提示词</b><small>创建后立即自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => setMode('CHAT')}/><span><b>仅创建会话启动</b><small>不发送首条任务消息</small></span></label></div>{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section>
-    <button className="primary full node-run-button" disabled={terminal || missing || invalidMode || mutation.isPending} onClick={() => mutation.mutate()}><Play size={15}/>{mutation.isPending ? '正在创建…' : mode === 'CHAT' ? '启动节点会话' : `开始第 ${visits + 1} 次执行`}</button>{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
-  </div></aside>;
+    <button className="primary full node-run-button" disabled={terminal || invalidMode || mutation.isPending} onClick={() => node.asset.inputs.length ? setInputDialogOpen(true) : mutation.mutate({})}><Play size={15}/>{mutation.isPending ? '正在创建…' : node.asset.inputs.length ? '填写输入并开始执行' : mode === 'CHAT' ? '启动节点会话' : `开始第 ${visits + 1} 次执行`}</button>{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
+  </div>{inputDialogOpen && <NodeInputDialog run={run} node={node} onClose={() => setInputDialogOpen(false)} onSubmit={bindings => { setInputDialogOpen(false); mutation.mutate(bindings); }}/>}</aside>;
 }
 
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; onCreateNew: () => void }) {
   const dialog = useProductDialog();
   const [text, setText] = useState('');
   const [bindings, setBindings] = useState<Record<string, string>>({});
+  const [tab, setTab] = useState<'overview' | 'inputs' | 'gates' | 'outputs'>('overview');
+  const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const [startupMode, setStartupMode] = useState<'PROMPT' | 'CHAT'>('PROMPT');
   const attemptSnapshot = run.snapshots.find(item => item.id === attempt.snapshot_id);
   const attemptNode = attemptSnapshot?.definition.nodes.find(item => item.instance_key === nodeRun.flow_node_snapshot_key);
   const [startupPrompt, setStartupPrompt] = useState(attemptNode?.asset.executor?.startup_prompt ?? '');
-  useEffect(() => { setStartupMode('PROMPT'); setStartupPrompt(attemptNode?.asset.executor?.startup_prompt ?? ''); }, [attempt.id, attemptNode?.asset.executor?.startup_prompt]);
+  useEffect(() => { setStartupMode('PROMPT'); setStartupPrompt(attemptNode?.asset.executor?.startup_prompt ?? ''); setTab('overview'); setInputDialogOpen(false); }, [attempt.id, attemptNode?.asset.executor?.startup_prompt]);
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
@@ -231,23 +292,21 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     refresh();
   } });
   const act = (kind: string, body?: unknown) => mutation.mutate({ kind, body });
-  const bindingPayload = Object.fromEntries((attemptNode?.asset.inputs ?? []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
   const attemptTerminal = attempt.state === 'ACCEPTED' || attempt.state === 'REJECTED' || attempt.state === 'CANCELLED';
-  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><div className="action-content">{!terminal && <button className="primary full create-another-run" onClick={onCreateNew}><Plus size={15}/>创建新的独立执行</button>}<div className="state-banner"><span>当前轮次状态</span><b>{ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>
+  const editableInputs = attempt.state === 'WAITING_INPUT' || attempt.state === 'START_BLOCKED';
+  const nodeInputBindings = Object.fromEntries((attemptNode?.asset.inputs ?? []).map(field => [field.field_key, currentBinding(field.field_key)]).filter(([, value]) => value));
+  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'inputs' ? 'active' : ''} onClick={() => setTab('inputs')}>输入</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <>{!terminal && <button className="primary full create-another-run" onClick={onCreateNew}><Plus size={15}/>创建新的独立执行</button>}<div className="state-banner"><span>当前轮次状态</span><b>{ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
     <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id)}><Send size={15}/>进入节点会话</button>
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
-    <section className="attempt-side-section"><h4>本轮冻结输入</h4>{attempt.input_bindings.length ? attempt.input_bindings.map(item => { const boundArtifact = run.artifacts.find(artifactItem => artifactItem.id === item.artifact_version_id); const contract = attemptNode?.asset.inputs.find(field => field.field_key === item.input_field_key); return <article className="attempt-input-card" key={item.id}><header><span><b>{contract?.display_name || item.input_field_key}</b><small>{item.input_field_key} · {contract?.data_type}</small></span><span className="artifact-version">{boundArtifact ? `v${boundArtifact.version_no}` : '失效'}</span></header><strong>{boundArtifact ? artifactLabel(boundArtifact) : '产物不可用'}</strong>{boundArtifact && <a href={artifactHref(boundArtifact)} target="_blank" rel="noreferrer">{boundArtifact.uri || String(boundArtifact.metadata?.filename || '查看文件')}</a>}</article>; }) : <div className="empty compact">本轮没有输入绑定。</div>}</section>
-    <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations}/></section>
-    <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts}/></section>
     {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>运行已进入只读终态，历史记录继续保留。流程级操作位于上方“流程运行态管理”。</p></section> : <>
       {attempt.state === 'WAITING_START_CONFIRMATION' && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>会话归属于 FlowRun；选择“仅创建会话”会显式新建一个 OpenHands Conversation。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => { if (startupMode === 'CHAT') act('chat'); else act('confirm', { startup_mode: 'PROMPT', prompt: startupPrompt }); }}>确认启动</button></section>}
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>确认完成</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>}
-      {(attempt.state === 'WAITING_INPUT' || attempt.state === 'START_BLOCKED') && <section className="input-binding-editor"><h4>修正本轮输入</h4>{attemptNode?.asset.inputs.map(field => <label key={field.field_key}>{field.display_name || field.field_key} · {field.data_type}<select value={currentBinding(field.field_key)} onChange={event => setBindings(old => ({ ...old, [field.field_key]: event.target.value }))}><option value="">未绑定</option>{artifactOptions(run, field.data_type).map(item => <option key={item.id} value={item.id}>{artifactLabel(item)} · {item.artifact_type}</option>)}</select></label>)}<button className="secondary full" disabled={!Object.keys(bindingPayload).length} onClick={() => act('bind', bindingPayload)}>保存输入绑定</button>{attempt.state === 'START_BLOCKED' && <button className="secondary full" onClick={() => act('retry')}>重试门禁</button>}</section>}
+      {attempt.state === 'START_BLOCKED' && <button className="secondary full" onClick={() => act('retry')}>重试门禁</button>}
       {!attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
-    </>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div></aside>;
+    </>}</>}{tab === 'inputs' && <><InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={run.artifacts}/>{editableInputs && <button className="primary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={run} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setInputDialogOpen(false); setBindings(nextBindings); act('bind', nextBindings); }}/>}</aside>;
 }
 
 function SnapshotSync({ run, currentVersion, onSynced }: { run: FlowRun; currentVersion?: number; onSynced: (run: FlowRun) => void }) {
@@ -262,6 +321,7 @@ export function WorkbenchPage() {
   const qc = useQueryClient();
   const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectAttempt, selectExecution, setView } = useWorkbenchStore();
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
+  const [sidePanelWidth, setSidePanelWidth] = useState(390);
   const query = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
   const flowId = query.data?.flow_definition_id;
   const flow = useQuery({ queryKey: ['flow', flowId], queryFn: () => api.flow(flowId!), enabled: Boolean(flowId), refetchInterval: 5000 });
@@ -336,6 +396,13 @@ export function WorkbenchPage() {
     setSelectedNodeKey(undefined);
     selectExecution(id, item?.attempts.at(-1)?.id);
   };
-  return <section className={`workbench-page${hasPanel ? '' : ' no-action-panel'}`}><RunRail run={run} selected={nodeRun?.id} onSelect={selectHistory}/><main className="run-main"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button><header className="run-title"><div><span className="eyebrow">第 {run.run_no} 次流程运行</span><h1>{run.name}</h1><p>流程快照 v{run.active_snapshot_version} · {run.progress.accepted}/{run.node_runs.length} 次节点执行已验收</p></div><div className="run-title-actions"><span className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><FlowRunControls run={run} refresh={refresh} navigate={navigate}/></div></header>{run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={run} selectedKey={selectedNodeKey} onSelect={selectGraphNode}/>
-    </main>{nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} onCreateNew={() => { setSelectedNodeKey(nodeRun.flow_node_snapshot_key); useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined }); }}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(undefined); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}</section>;
+  const beginSideResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const move = (moveEvent: PointerEvent) => setSidePanelWidth(Math.max(320, Math.min(680, window.innerWidth - moveEvent.clientX)));
+    const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+  };
+  return <section className={`workbench-page${hasPanel ? '' : ' no-action-panel'}`} style={hasPanel ? { gridTemplateColumns: `250px minmax(500px, 1fr) ${sidePanelWidth}px` } : undefined}><RunRail run={run} selected={nodeRun?.id} onSelect={selectHistory}/><main className="run-main"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button><header className="run-title"><div><span className="eyebrow">第 {run.run_no} 次流程运行</span><h1>{run.name}</h1><p>流程快照 v{run.active_snapshot_version} · {run.progress.accepted}/{run.node_runs.length} 次节点执行已验收</p></div><div className="run-title-actions"><span className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><FlowRunControls run={run} refresh={refresh} navigate={navigate}/></div></header>{run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={run} selectedKey={selectedNodeKey} onSelect={selectGraphNode}/>
+    </main>{hasPanel && <aside className="run-side-panel"><div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>{nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} onCreateNew={() => { setSelectedNodeKey(nodeRun.flow_node_snapshot_key); useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined }); }}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(undefined); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}</aside>}</section>;
 }

@@ -187,6 +187,7 @@ export interface FlowWrite {
 
 export interface ArtifactVersion {
   id: string; flow_run_id: string; producer_attempt_id?: string | null;
+  consumer_node_key?: string | null;
   field_key: string; version_no: number; artifact_type: string;
   storage_key?: string | null; uri?: string | null; inline_content?: string | null;
   content_hash: string; byte_size: number; mime_type: string; source: string;

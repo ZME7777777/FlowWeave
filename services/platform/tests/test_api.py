@@ -161,7 +161,7 @@ def test_file_input_form_upload_and_file_output_round_trip(client):
     run = started.json()
 
     uploaded = client.post(
-        f"/api/v1/flow-runs/{run['id']}/artifacts/upload",
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts/upload",
         data={"field_key": "prd", "display_name": "产品说明"},
         files={"file": ("requirements.pdf", b"%PDF-flowweave", "application/pdf")},
     )
@@ -388,7 +388,7 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     errors = missing_node.json()["error"]["details"]["errors"]
     assert errors[0]["loc"][-1] == "node_attempt_id"
     artifact = client.post(
-        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_b/input-artifacts",
         json={
             "field_key": "prd",
             "artifact_type": "URL",
@@ -487,7 +487,7 @@ def test_human_can_start_same_node_as_independent_runs(client, skill_capability)
         },
     ).json()
     artifact = client.post(
-        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
         json={
             "field_key": "prd",
             "artifact_type": "URL",
@@ -1567,7 +1567,7 @@ def test_any_node_can_start_without_upstream_completion(client, skill_capability
         json={"environment_version_id": client.environment_version_id},
     ).json()
     manual = client.post(
-        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_b/input-artifacts",
         json={
             "field_key": "prd",
             "artifact_type": "URL",
@@ -1596,7 +1596,7 @@ def test_node_input_bindings_reject_unknown_ports_and_other_run_artifacts(client
         json={"environment_version_id": client.environment_version_id},
     ).json()
     artifact = client.post(
-        f"/api/v1/flow-runs/{first_run['id']}/artifacts",
+        f"/api/v1/flow-runs/{first_run['id']}/nodes/design_a/input-artifacts",
         json={
             "field_key": "prd",
             "artifact_type": "URL",
@@ -1611,6 +1611,13 @@ def test_node_input_bindings_reject_unknown_ports_and_other_run_artifacts(client
     assert unknown.status_code == 422, unknown.text
     assert unknown.json()["error"]["code"] == "INPUT_BINDING_INVALID"
     assert unknown.json()["error"]["details"]["fields"] == ["unknown"]
+
+    cross_node = client.post(
+        f"/api/v1/flow-runs/{first_run['id']}/nodes/design_b/runs",
+        json={"artifact_ids": {"prd": artifact["id"]}},
+    )
+    assert cross_node.status_code == 422, cross_node.text
+    assert cross_node.json()["error"]["code"] == "INPUT_BINDING_INVALID"
 
     cross_run = client.post(
         f"/api/v1/flow-runs/{second_run['id']}/nodes/design_a/runs",
@@ -1667,7 +1674,7 @@ def test_human_artifact_can_be_named_and_removed_until_bound(client, skill_capab
     }
 
     bound = client.post(
-        f"/api/v1/flow-runs/{run['id']}/artifacts",
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
         json={"field_key": "prd", "uri": "https://example.feishu.cn/docx/bound-input"},
     ).json()
     activated = client.post(

@@ -1618,6 +1618,14 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 验收：受影响 Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯一性通过。本切片使用独立 Git commit。
 
+### FR-114 节点输入绑定与运行侧栏体验收口 — DONE
+
+依赖：`FR-109`–`FR-113`。
+
+目标：移除节点资产中不参与执行合同的图标编辑项，并将 URL／文件字段类型切换为平台统一的分段控件。运行快照图必须以实际输入／输出端口渲染冻结的数据映射线；每一个人工 URL 或文件输入必须只绑定到定义它的节点，不能从 FlowRun 级产物池被其他节点选择。节点输入编辑只允许通过按冻结字段定义生成的弹窗表单完成，侧栏仅展示名称、值和说明，文件选择使用平台样式。节点执行详情侧栏按概览、输入、门禁、输出分 Tab 呈现，并支持在合理区间内拖拽调整宽度。
+
+完成：运行快照节点使用正式 React Flow input/output handles，映射边精确连接 `output:<field>` 到 `input:<field>`；右侧输入和输出不再挤在单一表单中。新建人工输入经节点 scoped API 创建不可变 Artifact，并带 `consumer_node_key`；服务端拒绝将无 producer 的人工输入绑定到其他节点，同时保留上游节点输出沿冻结映射传递的语义。新增 `0082_node_bound_inputs` 迁移并兼容历史 metadata 建表路径。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1634,6 +1642,7 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-31 | FR-114 | Web TypeScript typecheck、ESLint、production build；受影响平台 Ruff、`py_compile`、`tests/test_api.py`（37 collected / PASS）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：移除节点图标字段；输入输出类型改为平台分段控件；运行图的冻结数据映射边连接真实输入／输出端口。节点输入只在按定义生成的弹窗中编辑，侧栏按概览／输入／门禁／输出分 Tab 展示且可拖宽。人工 URL/文件 Artifact 被绑定到唯一 `consumer_node_key`，跨节点绑定以 `INPUT_BINDING_INVALID` 拒绝。唯一 Alembic head 为 `0082_node_bound_inputs`。 |
 | 2026-08-31 | FR-113 | Web ESLint、TypeScript typecheck、production build；Alembic head；任务状态唯一性与 `git diff --check` | PASS：移除左侧会话栏的“还没有会话”空状态卡片。没有正式会话时，左下角仅保留现有“能力／为新会话选择能力”入口，与新建会话视图一致；未改变草稿、模型、能力、Runtime 或 OpenHands 行为。唯一 Alembic head 为 `0081_system_owned_delete`。 |
 | 2026-08-31 | FR-111 | 受影响 Ruff/`py_compile`、Pyright（0 errors）；`test_api.py`、`test_openhands.py`、`test_context_capabilities.py`、`test_capability_imports.py`、`test_agent_workspaces.py`（213 passed）；PostgreSQL 迁移矩阵 upgrade/downgrade/upgrade；Web lint/typecheck/build；源码 Vite Playwright（Context 文本上传、节点自由文本与多选 Context 并存、节点步骤、12 卡片首屏分页，4 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Context 仅在新会话首条消息创建前冻结，既有会话无法通过 UI 或动态注册追加；系统后缀包含冻结 Context，普通 user prompt 保持正式 user 消息通道。迁移矩阵通过至本地唯一 head `0081_system_owned_delete`；其中 0081 是并行的 FlowRun 工作目录删除切片，作为已存在迁移一并参与验证，Context 功能不依赖其业务行为。完整旧能力仓库/产品流 Playwright 组合另有 11 个既有 API/文案契约失败，未由本切片修复或伪记为通过。 |
 | 2026-08-31 | FR-110 | FlowRun 节点工作区定向 pytest（1 passed）与完整 `test_conversations.py`（10 passed）；受影响 Ruff、Pyright（0 errors）、`py_compile`；PostgreSQL 迁移完整 upgrade/downgrade/upgrade；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：逻辑工作区按 `node_attempt_id` 归属，两个节点仍共享 FlowRun 项目根，但第二节点的列表为空且以第一节点工作区 ID 查询返回 `AGENT_WORK_DIRECTORY_NOT_FOUND`；无可证明 Attempt 来源的旧 FlowRun 级工作区不被自动归属或展示。唯一 Alembic head 为 `0078_node_attempt_work_dirs`；无 `CURRENT` 或下一切片。 |
