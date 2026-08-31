@@ -1610,6 +1610,14 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 完整能力版本目录读取已非最新的历史版本。条目均锁定，标签内不显示批量选择、MCP 检测或注册按钮；其他能力
 标签继续保留原有增量注册行为。源码 Vite Playwright、Web lint/typecheck/production build 通过。
 
+### FR-113 Agent 工作台左栏空会话提示移除 — DONE
+
+依赖：`FR-112`。
+
+目标：移除左侧会话栏在没有正式会话且未打开新会话时显示的重复空状态卡片。左下角继续仅保留既有“能力／为新会话选择能力”入口，与新建会话视图保持一致；不得改变会话草稿、模型引导、能力选择、Runtime 或 OpenHands 行为。
+
+验收：受影响 Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯一性通过。本切片使用独立 Git commit。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1626,6 +1634,7 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-31 | FR-113 | Web ESLint、TypeScript typecheck、production build；Alembic head；任务状态唯一性与 `git diff --check` | PASS：移除左侧会话栏的“还没有会话”空状态卡片。没有正式会话时，左下角仅保留现有“能力／为新会话选择能力”入口，与新建会话视图一致；未改变草稿、模型、能力、Runtime 或 OpenHands 行为。唯一 Alembic head 为 `0081_system_owned_delete`。 |
 | 2026-08-31 | FR-111 | 受影响 Ruff/`py_compile`、Pyright（0 errors）；`test_api.py`、`test_openhands.py`、`test_context_capabilities.py`、`test_capability_imports.py`、`test_agent_workspaces.py`（213 passed）；PostgreSQL 迁移矩阵 upgrade/downgrade/upgrade；Web lint/typecheck/build；源码 Vite Playwright（Context 文本上传、节点自由文本与多选 Context 并存、节点步骤、12 卡片首屏分页，4 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Context 仅在新会话首条消息创建前冻结，既有会话无法通过 UI 或动态注册追加；系统后缀包含冻结 Context，普通 user prompt 保持正式 user 消息通道。迁移矩阵通过至本地唯一 head `0081_system_owned_delete`；其中 0081 是并行的 FlowRun 工作目录删除切片，作为已存在迁移一并参与验证，Context 功能不依赖其业务行为。完整旧能力仓库/产品流 Playwright 组合另有 11 个既有 API/文案契约失败，未由本切片修复或伪记为通过。 |
 | 2026-08-31 | FR-110 | FlowRun 节点工作区定向 pytest（1 passed）与完整 `test_conversations.py`（10 passed）；受影响 Ruff、Pyright（0 errors）、`py_compile`；PostgreSQL 迁移完整 upgrade/downgrade/upgrade；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：逻辑工作区按 `node_attempt_id` 归属，两个节点仍共享 FlowRun 项目根，但第二节点的列表为空且以第一节点工作区 ID 查询返回 `AGENT_WORK_DIRECTORY_NOT_FOUND`；无可证明 Attempt 来源的旧 FlowRun 级工作区不被自动归属或展示。唯一 Alembic head 为 `0078_node_attempt_work_dirs`；无 `CURRENT` 或下一切片。 |
 | 2026-08-31 | FR-109 部署修复 | OpenHands 正式 generation/Workspace 身份回归、文件输入输出闭环与 FlowRun 相关 pytest（222 passed）；受影响 Ruff、`py_compile`；Alembic 唯一 head、任务状态唯一性与 `git diff --check` | PASS：自动运行的 FILE 输入上传不再使用私有 `attempt-inputs:*` 路由或空会话标识，改为绑定 Attempt 已冻结的正式 Conversation UUID，并通过当前活跃 generation 的 `env-exec:<resource_name>` 路由调用 OpenHands Workspace API；Conversation reload 同时接受正式项目根 `/runtime/workspace/project` 与节点持久根 `/runtime/workspace/nodes`，继续拒绝其他 Runtime 路径；缺少正式 Runtime generation 时 fail closed。全量 Pyright 仍只有 FR-109 前已存在的 `flow_node_workspace.py` 4 项 unknown 与 `runtime/workspace.py` 1 项 unused import，共 5 项，未由本修复新增。唯一 Alembic head 仍为 `0077_generalized_node_io`；无 `CURRENT` 或下一切片。 |
