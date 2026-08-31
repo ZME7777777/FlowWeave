@@ -29,6 +29,10 @@ const ATTEMPT_STATE_LABELS: Record<AttemptState, string> = {
 const FLOW_STATE_LABELS: Record<string, string> = {
   ACTIVE: '运行中', WAITING_HUMAN: '等待人工处理', COMPLETED: '已完成', FAILED: '运行失败', CANCELLED: '已取消',
 };
+// Bump this whenever graph rendering changes. It also guarantees that a web
+// deployment produces a new content-hashed bundle instead of reusing an
+// immutable asset cached by an earlier graph renderer.
+const GRAPH_RENDER_REVISION = '2026-08-31.2';
 
 const nodeForRun = (run: FlowRun, nodeRun: NodeRun) => {
   const snapshotId = nodeRun.attempts.at(-1)?.snapshot_id;
@@ -83,14 +87,13 @@ type SnapshotGraphNodeData = {
 };
 
 function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeData>>) {
-  const portOffset = (index: number) => 53 + index * 22;
   return <article className={`run-graph-node ${data.status}${selected ? ' snapshot-selected' : ''}`}>
     <Handle id="flow-target" className="run-flow-handle" type="target" position={Position.Left} style={{ top: 18 }}/>
     <Handle id="flow-source" className="run-flow-handle" type="source" position={Position.Right} style={{ top: 18 }}/>
     <header><b>{data.label}</b><small>{data.visits ? `运行 ${data.visits} 次` : '未运行'}</small></header>
     <div className="run-node-contract">
-      <section aria-label="输入端口"><span>输入</span>{data.inputs.length ? data.inputs.map((field, index) => <div key={field.field_key}><Handle id={`input:${field.field_key}`} className="run-data-handle input" type="target" position={Position.Left} style={{ top: portOffset(index) }}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small></div>) : <em>无输入</em>}</section>
-      <section aria-label="输出端口"><span>输出</span>{data.outputs.length ? data.outputs.map((field, index) => <div key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="run-data-handle output" type="source" position={Position.Right} style={{ top: portOffset(index) }}/></div>) : <em>无输出</em>}</section>
+      <section aria-label="输入端口"><span>输入</span>{data.inputs.length ? data.inputs.map(field => <div key={field.field_key}><Handle id={`input:${field.field_key}`} className="run-data-handle input" type="target" position={Position.Left} style={{ top: '50%' }}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small></div>) : <em>无输入</em>}</section>
+      <section aria-label="输出端口"><span>输出</span>{data.outputs.length ? data.outputs.map(field => <div key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="run-data-handle output" type="source" position={Position.Right} style={{ top: '50%' }}/></div>) : <em>无输出</em>}</section>
     </div>
   </article>;
 }
@@ -98,6 +101,7 @@ function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeD
 const runSnapshotNodeTypes = { snapshotNode: SnapshotGraphNode };
 
 function SnapshotGraph({ run, selectedKey, onSelect }: { run: FlowRun; selectedKey?: string; onSelect: (key: string) => void }) {
+  const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const [nodes, edges] = useMemo(() => {
     const graphNodes: Node<SnapshotGraphNodeData>[] = (snapshot?.definition.nodes ?? []).map(item => {
@@ -113,13 +117,16 @@ function SnapshotGraph({ run, selectedKey, onSelect }: { run: FlowRun; selectedK
       target: item.target_instance_key,
       targetHandle: `input:${item.target_input_key}`,
       type: 'smoothstep',
-      label: `${item.source_output_key} → ${item.target_input_key}`,
       className: 'run-mapping-edge',
     }));
-    const graphEdges = [...directionEdges, ...mappingEdges];
+    const graphEdges = [
+      ...directionEdges.map(edge => ({ ...edge, selectable: false, style: { opacity: linkMode === 'flow' ? 1 : 0.16 } })),
+      ...mappingEdges.map(edge => ({ ...edge, selectable: false, style: { opacity: linkMode === 'data' ? 1 : 0.16 } })),
+    ];
     return [graphNodes, graphEdges] as const;
-  }, [run.node_runs, snapshot]);
-  return <section className="run-graph"><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>实线表示流程走向；蓝色虚线表示冻结的输出 → 输入映射。</small></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={selectedKey ?? 'node-run'} nodeTypes={runSnapshotNodeTypes} nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onNodeClick={(_, node) => onSelect(node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  }, [linkMode, run.node_runs, snapshot]);
+  const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}:${selectedKey ?? 'node-run'}`;
+  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>实线表示流程走向；蓝色虚线表示冻结的输出 → 输入映射。</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onNodeClick={(_, node) => onSelect(node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
 function GateList({ evaluations }: { evaluations: GateEvaluation[] }) {
   return <div className="gate-results">{evaluations.length ? evaluations.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span><strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>) : <div className="empty compact">此阶段没有门禁记录。</div>}</div>;
@@ -220,10 +227,11 @@ function FlowRunControls({ run, refresh, navigate }: { run: FlowRun; refresh: ()
 function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
+  const [bindings, setBindings] = useState<Record<string, string>>({});
   const [mode, setMode] = useState<'PROMPT' | 'CHAT'>('CHAT');
   const [prompt, setPrompt] = useState(node.asset.executor?.startup_prompt ?? '');
   useEffect(() => {
-    setInputDialogOpen(false); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? '');
+    setInputDialogOpen(false); setBindings({}); setMode('CHAT'); setPrompt(node.asset.executor?.startup_prompt ?? '');
   }, [node.instance_key, node.asset.executor?.startup_prompt]);
   const mutation = useMutation({
     mutationFn: async (bindings: Record<string, string>) => {
@@ -249,15 +257,16 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
     },
   });
   const invalidMode = mode === 'PROMPT' && !prompt.trim();
+  const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key);
   const visits = nodeRuns.length;
   return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><div className="action-content">
     <section className="node-console-intro"><span className="eyebrow">NODE EXECUTION</span><h3>创建一次独立执行</h3><p>输入由节点定义严格生成，并直接绑定到当前节点；不会从其他节点或产物池中选择。</p></section>
     {nodeRuns.length > 0 && <section className="node-execution-history"><header><h4>已有执行记录</h4><small>可随时查看，且不影响再次启动</small></header>{nodeRuns.map(item => <button key={item.id} onClick={() => onSelectExecution(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>)}</section>}
-    <InputSummary fields={node.asset.inputs} bindings={{}} artifacts={run.artifacts}/>
+    <InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={run.artifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}
     <section className="attempt-startup node-console-start"><h4>启动方式</h4><div className="startup-mode-options"><label><input type="radio" checked={mode === 'PROMPT'} onChange={() => setMode('PROMPT')}/><span><b>发送启动提示词</b><small>创建后立即自动执行</small></span></label><label><input type="radio" checked={mode === 'CHAT'} onChange={() => setMode('CHAT')}/><span><b>仅创建会话启动</b><small>不发送首条任务消息</small></span></label></div>{mode === 'PROMPT' && <label>启动提示词<textarea aria-label="节点启动提示词" value={prompt} onChange={event => setPrompt(event.target.value)}/></label>}</section>
-    <button className="primary full node-run-button" disabled={terminal || invalidMode || mutation.isPending} onClick={() => node.asset.inputs.length ? setInputDialogOpen(true) : mutation.mutate({})}><Play size={15}/>{mutation.isPending ? '正在创建…' : node.asset.inputs.length ? '填写输入并开始执行' : mode === 'CHAT' ? '启动节点会话' : `开始第 ${visits + 1} 次执行`}</button>{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
-  </div>{inputDialogOpen && <NodeInputDialog run={run} node={node} onClose={() => setInputDialogOpen(false)} onSubmit={bindings => { setInputDialogOpen(false); mutation.mutate(bindings); }}/>}</aside>;
+    <button className="primary full node-run-button" disabled={terminal || invalidMode || mutation.isPending} onClick={() => missingInputs ? setInputDialogOpen(true) : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : missingInputs ? '请先填写节点输入' : mode === 'CHAT' ? '启动节点会话' : `开始第 ${visits + 1} 次执行`}</button>{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
+  </div>{inputDialogOpen && <NodeInputDialog run={run} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={nextBindings => { setBindings(nextBindings); setInputDialogOpen(false); }}/>}</aside>;
 }
 
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; onCreateNew: () => void }) {
@@ -300,7 +309,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id)}><Send size={15}/>进入节点会话</button>
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
     {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>运行已进入只读终态，历史记录继续保留。流程级操作位于上方“流程运行态管理”。</p></section> : <>
-      {attempt.state === 'WAITING_START_CONFIRMATION' && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>会话归属于 FlowRun；选择“仅创建会话”会显式新建一个 OpenHands Conversation。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => { if (startupMode === 'CHAT') act('chat'); else act('confirm', { startup_mode: 'PROMPT', prompt: startupPrompt }); }}>确认启动</button></section>}
+      {attempt.state === 'WAITING_START_CONFIRMATION' && !attempt.conversation_id && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>会话归属于 FlowRun；选择“仅创建会话”会显式新建一个 OpenHands Conversation。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => { if (startupMode === 'CHAT') act('chat'); else act('confirm', { startup_mode: 'PROMPT', prompt: startupPrompt }); }}>确认启动</button></section>}
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>确认完成</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>}

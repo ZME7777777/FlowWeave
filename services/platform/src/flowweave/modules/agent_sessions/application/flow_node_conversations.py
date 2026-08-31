@@ -935,10 +935,11 @@ def flow_run_terminal_resource_details(
 def read_conversation_events(
     db: Session, binding_id: str, *, cursor: str | None = None
 ) -> dict[str, Any]:
-    """Read OpenHands events live without storing a cursor or event projection."""
+    """Read a node Conversation and project its product-owned attachments."""
 
+    binding = _binding(db, binding_id)
     batch = get_runtime().read_events(_handle(db, binding_id, cursor=cursor))
-    return _event_batch_dict(batch)
+    return _event_batch_dict(db, binding, batch)
 
 
 def read_flow_run_conversation_events(
@@ -948,8 +949,9 @@ def read_flow_run_conversation_events(
     *,
     cursor: str | None = None,
 ) -> dict[str, Any]:
+    binding = _binding_for_run(db, flow_run_id, binding_id)
     batch = get_runtime().read_events(_flow_run_handle(db, flow_run_id, binding_id, cursor=cursor))
-    return _event_batch_dict(batch)
+    return _event_batch_dict(db, binding, batch)
 
 
 def read_node_conversation_events(
@@ -964,12 +966,56 @@ def read_node_conversation_events(
     return read_flow_run_conversation_events(db, flow_run_id, binding_id, cursor=cursor)
 
 
-def _event_batch_dict(batch: RuntimeEventBatch) -> dict[str, Any]:
+def _event_batch_dict(
+    db: Session, binding: AgentConversationBinding, batch: RuntimeEventBatch
+) -> dict[str, Any]:
+    """Add FlowWeave attachment metadata to immutable OpenHands events.
+
+    Automatic node starts upload frozen FILE inputs before OpenHands creates
+    the initial user event.  OpenHands owns that event, while FlowWeave owns
+    the attachment metadata, so the projection must happen when events are
+    read just as it does for ordinary Agent Workspace conversations.
+    """
+
+    event_ids = [event.cursor for event in batch.events if event.event_type == "MESSAGE"]
+    stored = (
+        list(
+            db.scalars(
+                select(AgentConversationMessageAttachment).where(
+                    AgentConversationMessageAttachment.binding_id == binding.id,
+                    AgentConversationMessageAttachment.event_id.in_(event_ids),
+                )
+            ).all()
+        )
+        if event_ids
+        else []
+    )
+    attachments_by_event: dict[str, list[AgentConversationMessageAttachment]] = {}
+    for attachment in stored:
+        attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
+
+    def project(event: Any) -> dict[str, Any]:
+        payload = dict(event.payload)
+        attachments = attachments_by_event.get(event.cursor, [])
+        if attachments:
+            # Automatic starts record an empty display override: retain the
+            # native startup prompt and merely attach the input files.
+            display_content = next((item.content for item in attachments if item.content), None)
+            if display_content is not None:
+                payload["display_content"] = display_content
+            payload["attachments"] = [
+                {
+                    "filename": item.filename,
+                    "mime_type": item.mime_type,
+                    "byte_size": item.byte_size,
+                    "path": item.path,
+                }
+                for item in attachments
+            ]
+        return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
+
     return {
-        "events": [
-            {"id": event.cursor, "event_type": event.event_type, "payload": event.payload}
-            for event in batch.events
-        ],
+        "events": [project(event) for event in batch.events],
         "next_cursor": batch.cursor,
         "result": batch.result.as_dict() if batch.result is not None else None,
     }

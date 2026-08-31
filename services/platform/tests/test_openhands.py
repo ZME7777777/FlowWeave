@@ -548,7 +548,8 @@ def test_openhands_initial_user_message_carries_file_and_image_inputs(
     assert isinstance(payload, dict)
     content = payload["initial_message"]["content"]
     system_context = payload["agent"]["agent_context"]["system_message_suffix"]
-    assert "/runtime/workspace/project/uploads/input-image" in content[0]["text"]
+    assert "已附加文件：reference.png" in content[0]["text"]
+    assert "/runtime/workspace/project/uploads/input-image" not in content[0]["text"]
     assert content[1] == {"type": "image", "image_urls": ["data:image/png;base64,UE5H"]}
     assert [tool["name"] for tool in payload["agent"]["tools"]] == [
         "terminal",

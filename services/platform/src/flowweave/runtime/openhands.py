@@ -977,7 +977,13 @@ class OpenHandsRuntime:
         lines = [task, "", "本次节点输入："]
         for binding in request.bindings:
             item = self._artifact_input(binding)
-            value = item.get("uri") or item.get("runtime_path") or item.get("inline_content")
+            # FILE values are supplied as formal message attachments.  Do not
+            # duplicate their private runtime workspace path in the prompt.
+            if item.get("artifact_type") == "FILE":
+                filename = item.get("filename") or item.get("field_key")
+                value = f"已附加文件：{filename}"
+            else:
+                value = item.get("uri") or item.get("inline_content")
             lines.append(
                 f"- {item.get('display_name') or item.get('field_key')} "
                 f"[{item.get('field_key')} · {item.get('artifact_type')}]: {value}"
