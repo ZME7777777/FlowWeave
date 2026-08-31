@@ -279,16 +279,12 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
   const [bindings, setBindings] = useState<Record<string, string>>({});
   const [tab, setTab] = useState<'overview' | 'inputs' | 'gates' | 'outputs'>('overview');
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
-  const [startupMode, setStartupMode] = useState<'PROMPT' | 'CHAT'>('PROMPT');
   const attemptSnapshot = run.snapshots.find(item => item.id === attempt.snapshot_id);
   const attemptNode = attemptSnapshot?.definition.nodes.find(item => item.instance_key === nodeRun.flow_node_snapshot_key);
-  const [startupPrompt, setStartupPrompt] = useState(attemptNode?.asset.executor?.startup_prompt ?? '');
-  useEffect(() => { setStartupMode('PROMPT'); setStartupPrompt(attemptNode?.asset.executor?.startup_prompt ?? ''); setTab('overview'); setInputDialogOpen(false); }, [attempt.id, attemptNode?.asset.executor?.startup_prompt]);
+  useEffect(() => { setTab('overview'); setInputDialogOpen(false); }, [attempt.id]);
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
-    if (kind === 'confirm') return api.confirmStart(attempt.id, attempt.state_version, body as { startup_mode: 'PROMPT'; prompt?: string });
-    if (kind === 'chat') return { openDraft: true };
     if (kind === 'accept') return api.acceptAttempt(attempt.id, attempt.state_version);
     if (kind === 'reject') return api.rejectAttempt(attempt.id, String((body as { reason: string }).reason), attempt.state_version);
     if (kind === 'human') return api.humanInput(attempt.id, String((body as { content: string }).content), attempt.state_version);
@@ -299,9 +295,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     return api.cancelAttempt(attempt.id, attempt.state_version);
   }, onSuccess: (result, variables) => {
     setText('');
-    if (variables.kind === 'chat') {
-      openNodeSession(run.id, nodeRun.id, attempt.id);
-    } else navigate(result, variables.kind);
+    navigate(result, variables.kind);
     refresh();
   } });
   const act = (kind: string, body?: unknown) => mutation.mutate({ kind, body });
@@ -313,7 +307,6 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, onCreateNew }:
     <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id)}><Send size={15}/>进入节点会话</button>
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
     {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>运行已进入只读终态，历史记录继续保留。流程级操作位于上方“流程运行态管理”。</p></section> : <>
-      {attempt.state === 'WAITING_START_CONFIRMATION' && !attempt.conversation_id && <section className="attempt-startup"><h4>启动这条执行记录</h4><p>会话归属于 FlowRun；选择“仅创建会话”会显式新建一个 OpenHands Conversation。</p><div className="startup-mode-options"><label><input type="radio" checked={startupMode === 'PROMPT'} onChange={() => setStartupMode('PROMPT')}/><span><b>发送启动提示词</b></span></label><label><input type="radio" checked={startupMode === 'CHAT'} onChange={() => setStartupMode('CHAT')}/><span><b>仅创建会话启动</b></span></label></div>{startupMode === 'PROMPT' && <label>启动提示词<textarea value={startupPrompt} onChange={event => setStartupPrompt(event.target.value)}/></label>}<button className="primary full" disabled={mutation.isPending || (startupMode === 'PROMPT' && !startupPrompt.trim())} onClick={() => { if (startupMode === 'CHAT') act('chat'); else act('confirm', { startup_mode: 'PROMPT', prompt: startupPrompt }); }}>确认启动</button></section>}
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>确认完成</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>}

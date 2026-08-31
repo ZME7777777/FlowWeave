@@ -1696,7 +1696,11 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await nodeConsole.getByRole('button', { name: '使用这个输入' }).click();
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`需求文档-${suffix}`);
   await expect(nodeConsole.locator('.selected-artifact')).toContainText(`https://files.example.test/e2e-input-${suffix}`);
-  await nodeConsole.getByRole('button', { name: '启动节点会话' }).click();
+  await nodeConsole.getByText('发送启动提示词', { exact: true }).click();
+  await nodeConsole.getByRole('button', { name: '开始第 1 次执行' }).click();
+  const attemptControl = page.locator('.attempt-control');
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+  await attemptControl.getByRole('button', { name: '进入节点会话' }).click();
   const nodeSessionUrl = new RegExp(`/flow-runs/${createdRun.id}/nodes/[^/]+/attempts/[^/]+/agent-sessions$`);
   await expect(page).toHaveURL(nodeSessionUrl);
   await expect(page.getByRole('heading', { name: '首轮方案', exact: true })).toBeVisible();
@@ -1714,11 +1718,9 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await page.getByRole('button', { name: '返回节点执行' }).click();
   await expect(page.locator('.attempt-control')).toBeVisible();
 
-  const attemptControl = page.locator('.attempt-control');
-  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
-  await attemptControl.getByText('发送启动提示词', { exact: true }).click();
-  await attemptControl.getByRole('button', { name: '确认启动' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+  await expect(attemptControl.getByRole('heading', { name: '启动这条执行记录' })).toHaveCount(0);
+  await expect(attemptControl.getByRole('button', { name: '确认启动' })).toHaveCount(0);
   await graphNodes.filter({ hasText: '首轮方案' }).click();
   await expect(page.locator('.run-graph .run-graph-node.snapshot-selected')).toHaveCount(1);
   await page.locator('.run-rail .timeline').getByRole('button', { name: /首轮方案/ }).click();
