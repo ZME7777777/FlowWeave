@@ -62,7 +62,9 @@ IDE_SSH_USER=flowweave
 IDE_SSH_PORT=22
 ```
 
-重启 `api` 和 `worker` 后，Agent 工作台右侧的“IDEA / Gateway”会显示 SSH 命令和宿主机目录。JetBrains Gateway 选择 SSH、使用所示主机/用户/端口，并打开显示的目录即可。这个目录是 Docker 宿主机上的持久 Workspace；不要连接 Runtime 容器内的 `/runtime/workspace/project`，因为 Runtime generation 可以被替换。
+重启 `api` 和 `worker` 后，Agent 工作台右侧的“IDEA / Gateway”会显示并可复制“用户名、主机 / IP、端口、项目目录、SSH 命令”。每位连接者在自己的设备上选择其私钥；部署方只授权对应的公钥。FlowWeave 不接收、保存、显示或返回客户端私钥路径或内容。在目标为 Linux 时，JetBrains Gateway 选择 SSH，填入页面所示连接信息并选择自己的已授权私钥，连接后打开项目目录。这个目录是 Docker 宿主机上的持久 Workspace；不要连接 Runtime 容器内的 `/runtime/workspace/project`，因为 Runtime generation 可以被替换。
+
+Linux 服务器的 SSH 服务、权限、部署、历史会话和 Gateway 操作步骤见 [IDEA / JetBrains Gateway SSH Remote](idea-gateway-ssh-remote.md)。
 
 需要 Lark 能力时，在目标环境的 Setup 终端内运行 `lark-cli config init --new` 和 `lark-cli auth login --domain all`，按 CLI 给出的地址完成授权。发布前平台只调整卷内文件的 UID/GID，使非 root Runtime 可读写；删除环境时，Worker 在确认该环境没有存活 Sandbox 后通过所有权标签校验删除凭据卷。不要把 token、cookie 或 `.lark-cli` 内容复制到节点工作区、镜像层或 Agent 消息。
 

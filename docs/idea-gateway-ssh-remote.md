@@ -91,11 +91,16 @@ curl -fsS http://127.0.0.1:8080/health
 ## 5. 在 JetBrains Gateway 打开会话工作区
 
 1. 刷新 FlowWeave 页面，打开目标 Agent 会话或 FlowRun 节点会话。
-2. 右侧“IDEA / Gateway”区域应显示 SSH 命令和一个以 `/srv/flowweave/workspaces/` 开头的目录。
-3. 在 JetBrains Gateway 选择 **SSH**，填写该区域给出的主机、端口和用户，完成认证。
+2. 右侧“IDEA / Gateway”区域应分别显示“用户名、主机 / IP、端口”和一个以 `/srv/flowweave/workspaces/` 开头的项目目录；每项都可单独复制。
+3. 在 JetBrains Gateway 选择 **SSH**，按相同字段填写用户名、主机和端口，完成认证。
 4. 选择 **Open**，粘贴页面显示的**宿主机目录**。
 
 历史会话可以直接打开：只要其持久工作区没有被删除，页面给出的宿主机目录仍对应相同的项目文件。
+
+历史会话的 Workspace 不会自动跨宿主机迁移：如果会话是在另一台 Mac 或 Linux 服务器上创建的，必须连接
+那台原宿主机才能打开其既有文件。把 FlowWeave 部署到新的 Linux 服务器后，新服务器只会显示其自身持久
+工作区中的会话；如需迁移历史文件，应在停止相关写入后单独复制对应的宿主机工作区目录，并按迁移流程
+验证所有权和数据完整性。
 
 不要在 Gateway 中打开 `/runtime/workspace/project`。它仅在 Runtime 容器内存在，Runtime generation 被替换后该容器随时可能消失。
 
@@ -110,4 +115,8 @@ curl -fsS http://127.0.0.1:8080/health
 
 ## 7. 本机 macOS 开发说明
 
-本机 Docker 开发时，服务器就是 macOS 宿主机，`IDE_SSH_HOST` 应为 `127.0.0.1`，用户为本机用户名，工作区根目录为本机 `.env` 中已有的绝对路径。另需在“系统设置 → 通用 → 共享 → 远程登录”启用 SSH（或运行 `sudo systemsetup -setremotelogin on`）。这只用于本机验证；部署到 Linux 后必须改为 Linux 服务器的实际 SSH 信息。
+本机 Docker 开发时，服务器就是 macOS 宿主机，`IDE_SSH_HOST` 应为 `127.0.0.1`，用户为本机用户名，工作区根目录为本机 `.env` 中已有的绝对路径。另需在“系统设置 → 通用 → 共享 → 远程登录”启用 SSH（或运行 `sudo systemsetup -setremotelogin on`）。
+
+JetBrains Gateway 仅支持远程 Linux 主机。连接本机 macOS 时，请在 **JetBrains Toolbox → Remote Development → SSH → New Connection** 中，分别粘贴页面显示的“用户名”“主机 / IP”“端口”；验证成功后，在 Toolbox 中打开页面显示的“项目目录”。部署到 Linux 后可直接使用 JetBrains Gateway，并必须改为 Linux 服务器的实际 SSH 信息。
+
+使用专用公钥认证时，连接者在自己的设备生成并保管私钥，只将 `.pub` 公钥交给部署方授权。FlowWeave 不接收、保存、显示或返回客户端私钥路径或内容。macOS 的受限账户、公钥和 SSH 规则可通过 `sudo ./scripts/setup-flowweave-macos-ssh.sh /path/to/authorized-key.pub` 初始化。

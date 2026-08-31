@@ -872,6 +872,38 @@ type WorkspaceToolTab =
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string };
 
+function SshAccessGuide({
+  host, port, path, onClose,
+}: { host: string; port: number; path: string; onClose: () => void }) {
+  const [copied, setCopied] = useState<string>();
+  useEscapeClose(onClose);
+  const copy = (field: string, value: string) => {
+    void navigator.clipboard.writeText(value).then(() => {
+      setCopied(field);
+      window.setTimeout(() => setCopied(current => current === field ? undefined : current), 1500);
+    });
+  };
+  const fields = [
+    ['host', '主机 / IP', host],
+    ['port', '端口', String(port)],
+    ['path', '当前会话工作目录', path],
+  ] as const;
+
+  return <div className="agent-ssh-access-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="agent-ssh-access-guide" role="dialog" aria-modal="true" aria-labelledby="agent-ssh-access-title">
+      <header><div><span className="eyebrow">SSH ACCESS</span><h2 id="agent-ssh-access-title">SSH 接入说明</h2><p>以下信息只对应当前会话的持久工作目录。</p></div><button type="button" aria-label="关闭 SSH 接入说明" onClick={onClose}><X size={18}/></button></header>
+      <div className="agent-ssh-access-fields">{fields.map(([field, label, value]) => <div key={field}><span>{label}</span><code title={value}>{value}</code><button type="button" aria-label={`复制${label}`} onClick={() => copy(field, value)}><Copy size={12}/>{copied === field ? '已复制' : '复制'}</button></div>)}</div>
+      <ol>
+        <li>在你的设备上生成并保管自己的 SSH 私钥；只向 SSH 管理员提交对应的 <code>.pub</code> 公钥。</li>
+        <li>在 JetBrains Gateway 或 SSH 客户端中填写上方主机和端口，使用已授权的个人 SSH 用户名与私钥认证。</li>
+        <li>认证成功后，只打开上方“当前会话工作目录”。FlowWeave 不接收、保存或展示私钥。</li>
+      </ol>
+      <aside className="agent-ssh-access-warning"><ShieldAlert size={17}/><div><b>当前尚未具备会话级 SSH 隔离</b><p>现在的 <code>flowweave</code> 是共享的宿主机 SSH 账户；它能访问 Unix 文件权限允许的目录，而不只是此会话目录。因此它只能用于本机开发或可信单用户环境，不能作为多用户生产访问方案。</p></div></aside>
+      <footer><button type="button" className="primary" onClick={onClose}>我已了解</button></footer>
+    </section>
+  </div>;
+}
+
 function clampWorkspaceToolWidth(value: number): number {
   if (window.innerWidth <= 1100) return Math.max(300, Math.min(720, value));
   const viewportMaximum = Math.max(300, window.innerWidth - 700);
@@ -908,7 +940,7 @@ function WorkspaceDrawer({
   const [closingTerminalId, setClosingTerminalId] = useState<string>();
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const [fullScreen, setFullScreen] = useState(false);
-  const [sshCopied, setSshCopied] = useState(false);
+  const [sshAccessOpen, setSshAccessOpen] = useState(false);
   useEscapeClose(() => {
     if (pendingTerminalClose && !closingTerminalId) setPendingTerminalClose(undefined);
   }, Boolean(pendingTerminalClose) && !closingTerminalId);
@@ -1080,21 +1112,15 @@ function WorkspaceDrawer({
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
   const sshRemoteReady = Boolean(
     details?.ide.gateway.supported
-    && details.ide.gateway.ssh_command
+    && details.ide.gateway.host
+    && details.ide.gateway.port
     && details.ide.gateway.path,
   );
-  const copySshRemote = () => {
-    if (!sshRemoteReady || !details?.ide.gateway.ssh_command || !details.ide.gateway.path) return;
-    void navigator.clipboard.writeText(`${details.ide.gateway.ssh_command}\n${details.ide.gateway.path}`).then(() => {
-      setSshCopied(true);
-      window.setTimeout(() => setSshCopied(false), 1500);
-    }).catch(() => setPanelError('无法复制 SSH 连接信息，请手动复制。'));
-  };
   const summary = details && <section className="agent-workspace-overview">
     <article><FolderOpen size={16}/><div><small>当前工作区</small><b>{details.scope.display_name}</b><code>{details.working_directory}</code></div></article>
     <article><MonitorCog size={16}/><div><small>运行环境</small><b>{details.runtime.container_id || (details.runtime.write_available ? '运行中' : '恢复中')}</b><p>所有会话共用此 Workspace Runtime；每个终端保留独立会话。</p></div></article>
     <article><GitBranch size={16}/><div><small>Git 仓库</small>{details.repositories.length ? details.repositories.map(repository => <p key={repository.path}><b>{relativeWorkspacePath(repository.path, details.root)}</b>{repository.branch && <span>{repository.branch}</span>}{repository.head && <em>{repository.head.slice(0, 12)}</em>}{repository.remote && <code>{repository.remote}</code>}</p>) : <p>当前目录未检测到 Git 仓库。</p>}</div></article>
-    <article><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <><code>{details.ide.gateway.ssh_command}</code><code>{details.ide.gateway.path}</code><button type="button" onClick={copySshRemote}><Copy size={12}/>{sshCopied ? '已复制连接信息' : '复制 SSH 与目录'}</button></> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
+    <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <button type="button" className="agent-ssh-access-trigger" onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <div className="agent-workspace-source-list">{sources.map(source => source.kind === 'url' ? <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer" title={`打开链接：${source.label}`}><Link2 size={12}/><span><b>{source.label}</b><em>链接</em></span></a> : <button type="button" key={source.id} title={`在工作区预览：${source.label}`} onClick={() => source.attachment && selectFile(source.attachment.path)}>{source.kind === 'image' ? <ImageIcon size={12}/> : <FileText size={12}/>}<span><b>{source.label}</b><em>{source.pending ? '待发送' : source.kind === 'image' ? '图片' : '文件'}</em></span></button>)}</div> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
   return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : 272 }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
@@ -1123,7 +1149,7 @@ function WorkspaceDrawer({
         </div>)}
       </div>
     </section>
-  </aside>{pendingTerminalClose && <div className="agent-terminal-close-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !closingTerminalId) setPendingTerminalClose(undefined); }}><section role="dialog" aria-modal="true" aria-labelledby="agent-terminal-close-title" className="agent-terminal-close-dialog"><header><span className="eyebrow">TERMINAL</span><h2 id="agent-terminal-close-title">关闭此终端？</h2></header><p>关闭后会停止该终端中正在执行的命令，并清除这一个终端会话；其他终端和当前会话不会受影响。</p><footer><button type="button" className="secondary" disabled={Boolean(closingTerminalId)} onClick={() => setPendingTerminalClose(undefined)}>取消</button><button type="button" className="danger" autoFocus disabled={Boolean(closingTerminalId)} onClick={() => { const tab = pendingTerminalClose; setPendingTerminalClose(undefined); void closeTab(tab); }}>{closingTerminalId ? '正在关闭…' : '关闭终端'}</button></footer></section></div>}</>;
+  </aside>{sshAccessOpen && sshRemoteReady && <SshAccessGuide host={details!.ide.gateway.host!} port={details!.ide.gateway.port!} path={details!.ide.gateway.path!} onClose={() => setSshAccessOpen(false)}/>} {pendingTerminalClose && <div className="agent-terminal-close-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !closingTerminalId) setPendingTerminalClose(undefined); }}><section role="dialog" aria-modal="true" aria-labelledby="agent-terminal-close-title" className="agent-terminal-close-dialog"><header><span className="eyebrow">TERMINAL</span><h2 id="agent-terminal-close-title">关闭此终端？</h2></header><p>关闭后会停止该终端中正在执行的命令，并清除这一个终端会话；其他终端和当前会话不会受影响。</p><footer><button type="button" className="secondary" disabled={Boolean(closingTerminalId)} onClick={() => setPendingTerminalClose(undefined)}>取消</button><button type="button" className="danger" autoFocus disabled={Boolean(closingTerminalId)} onClick={() => { const tab = pendingTerminalClose; setPendingTerminalClose(undefined); void closeTab(tab); }}>{closingTerminalId ? '正在关闭…' : '关闭终端'}</button></footer></section></div>}</>;
 }
 
 export interface AgentSessionWorkbenchProps {
