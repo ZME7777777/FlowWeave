@@ -107,6 +107,10 @@ class NodeAttempt(Base):
     startup_mode: Mapped[str] = mapped_column(String(20), default="PROMPT")
     startup_capability_key: Mapped[str | None] = mapped_column(String(200))
     startup_prompt: Mapped[str | None] = mapped_column(Text)
+    # ``NULL`` preserves the pre-FR-116 contract: all Context frozen in the
+    # Snapshot was applied. New human starts persist an explicit list, where
+    # an empty list deliberately means that no node Context is applied.
+    context_ids_json: Mapped[list[str] | None] = mapped_column(JSON)
     # Runtime gates are selected for one execution and frozen with its Attempt.
     # A reusable Flow definition intentionally does not own this configuration.
     gate_policies_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)

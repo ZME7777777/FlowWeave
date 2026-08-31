@@ -229,6 +229,7 @@ export interface NodeAttempt {
   runtime_cancel_recovery_modes: Array<'RECONCILE_PARENT' | 'DELETE_MANAGED_RUNTIME'>;
   startup_mode?: 'SKILL' | 'PROMPT' | 'CHAT'; startup_capability_key?: string | null;
   startup_prompt?: string | null;
+  context_ids?: string[] | null;
   gate_policies: GatePolicy[];
   output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];

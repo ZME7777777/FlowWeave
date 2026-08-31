@@ -676,6 +676,69 @@ def _validate_input_bindings(
             )
 
 
+_MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
+
+
+def _validate_context_selection(node: dict[str, Any], context_ids: list[str]) -> list[str]:
+    """Validate one human-selected subset of the node's frozen Context."""
+
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    allowed: set[str] = set()
+    if str(executor.get("context_prompt") or "").strip():
+        allowed.add(_MANUAL_NODE_CONTEXT_ID)
+    raw_contexts = asset.get("context_capabilities")
+    if isinstance(raw_contexts, list):
+        for raw_context in cast(list[object], raw_contexts):
+            if isinstance(raw_context, dict) and str(raw_context.get("id") or ""):
+                allowed.add(str(raw_context["id"]))
+    unknown = [item for item in context_ids if item not in allowed]
+    if unknown:
+        raise DomainError(
+            "NODE_CONTEXT_INVALID",
+            "Selected Context is not available on this node",
+            422,
+            {"context_ids": unknown},
+        )
+    return list(context_ids)
+
+
+def _node_with_selected_context(
+    node: dict[str, Any], context_ids: list[str] | None
+) -> dict[str, Any]:
+    """Keep legacy Attempts unchanged, but filter new explicit selections."""
+
+    if context_ids is None:
+        return node
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    selected = set(context_ids)
+    next_executor = dict(executor)
+    next_executor["context_prompt"] = (
+        str(executor.get("context_prompt") or "") if _MANUAL_NODE_CONTEXT_ID in selected else ""
+    )
+    next_executor["context_capability_ids"] = [
+        item
+        for item in cast(list[object], executor.get("context_capability_ids") or [])
+        if isinstance(item, str) and item in selected
+    ]
+    raw_contexts = asset.get("context_capabilities")
+    next_asset = dict(asset)
+    next_asset["executor"] = next_executor
+    next_asset["context_capabilities"] = (
+        [
+            item
+            for item in cast(list[object], raw_contexts)
+            if isinstance(item, dict) and str(item.get("id") or "") in selected
+        ]
+        if isinstance(raw_contexts, list)
+        else []
+    )
+    next_node = dict(node)
+    next_node["asset"] = next_asset
+    return next_node
+
+
 def _bindings(db: Session, attempt_id: str) -> list[AttemptInputBinding]:
     return list(
         db.scalars(
@@ -1226,6 +1289,7 @@ def _create_node_run(
     gate_policies: list[dict[str, Any]] | None = None,
     *,
     session_only: bool = False,
+    context_ids: list[str] | None = None,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
@@ -1305,6 +1369,7 @@ def _create_node_run(
                 else AttemptState.WAITING_INPUT
             ),
             startup_mode="CHAT" if session_only else "PROMPT",
+            context_ids_json=context_ids,
             gate_policies_json=gate_policies or [],
             workspace_ref=str(
                 attempt_workspace_path(
@@ -1370,6 +1435,7 @@ def _create_node_run(
             AttemptState.WAITING_START_CONFIRMATION if session_only else AttemptState.WAITING_INPUT
         ),
         startup_mode="CHAT" if session_only else "PROMPT",
+        context_ids_json=context_ids,
         gate_policies_json=gate_policies or [],
         workspace_ref=str(
             attempt_workspace_path(
@@ -1585,12 +1651,14 @@ def start_node_run(
             "HUMAN_CHAT",
             [],
             session_only=True,
+            context_ids=[],
         )
         finish(db)
         return node_run_detail(db, node_run.id)
+    node = _node(_active_snapshot(db, run), instance_key)
+    context_ids = _validate_context_selection(node, payload.context_ids)
     artifact_ids = dict(payload.artifact_ids)
     if payload.input_urls:
-        node = _node(_active_snapshot(db, run), instance_key)
         input_fields = {field.key for field in _input_fields(node)}
         unknown_fields = sorted(set(payload.input_urls) - input_fields)
         if unknown_fields:
@@ -1629,7 +1697,15 @@ def start_node_run(
         }
         for gate in payload.gates
     ]
-    node_run, _ = _create_node_run(db, run, instance_key, artifact_ids, "HUMAN_START", gates)
+    node_run, _ = _create_node_run(
+        db,
+        run,
+        instance_key,
+        artifact_ids,
+        "HUMAN_START",
+        gates,
+        context_ids=context_ids,
+    )
     finish(db)
     return node_run_detail(db, node_run.id)
 
@@ -2018,7 +2094,9 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
             {"environment_version_id": run.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-    node = _runtime_node(snapshot, node_run.flow_node_snapshot_key)
+    node = _node_with_selected_context(
+        _runtime_node(snapshot, node_run.flow_node_snapshot_key), attempt.context_ids_json
+    )
     session_binding = agent_sessions.flow_node_binding_for_attempt(
         db, attempt.id, require_provisioning=True
     )
@@ -3244,6 +3322,7 @@ def reject_attempt(
         node_run_id=node_run.id,
         attempt_no=next_no,
         snapshot_id=run.active_snapshot_id,
+        context_ids_json=attempt.context_ids_json,
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=next_asset_id,
@@ -3615,6 +3694,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_mode": attempt.startup_mode,
         "startup_capability_key": attempt.startup_capability_key,
         "startup_prompt": attempt.startup_prompt,
+        "context_ids": attempt.context_ids_json,
         "gate_policies": attempt.gate_policies_json,
         "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,

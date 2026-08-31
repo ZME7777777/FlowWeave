@@ -14,6 +14,7 @@ from flowweave.modules.agent_workspaces.public import (
     AgentWorkDirectoryPath,
     AgentWorkDirectoryVersion,
 )
+from flowweave.modules.orchestration.application import service as orchestration_service
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversationBinding,
@@ -591,6 +592,53 @@ def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_executi
             "ATTEMPT_CREATED",
             "ATTEMPT_SESSION_READY",
         ]
+
+
+def test_human_start_freezes_selected_node_context_and_chat_starts_without_it(
+    client, skill_capability
+):
+    asset = create_asset(client, skill_capability, name="可选 Context 节点")
+    flow = create_flow(client, asset["id"])
+    prompt_run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    prompt_started = client.post(
+        f"/api/v1/flow-runs/{prompt_run['id']}/nodes/design_a/runs",
+        json={
+            "input_urls": {"prd": "https://example.test/selected-context-input"},
+            "context_ids": ["__node_context_prompt__"],
+        },
+    )
+    assert prompt_started.status_code == 201, prompt_started.text
+    prompt_attempt = prompt_started.json()["attempts"][0]
+    assert prompt_attempt["context_ids"] == ["__node_context_prompt__"]
+
+    snapshot_node = prompt_run["snapshots"][0]["definition"]["nodes"][0]
+    filtered = orchestration_service._node_with_selected_context(
+        snapshot_node, prompt_attempt["context_ids"]
+    )
+    assert filtered["asset"]["executor"]["context_prompt"] == "保留证据"
+    assert (
+        orchestration_service._node_with_selected_context(snapshot_node, [])["asset"]["executor"][
+            "context_prompt"
+        ]
+        == ""
+    )
+
+    chat_run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    chat_started = client.post(
+        f"/api/v1/flow-runs/{chat_run['id']}/nodes/design_a/runs",
+        json={
+            "startup_mode": "CHAT",
+            "context_ids": ["__node_context_prompt__"],
+        },
+    )
+    assert chat_started.status_code == 201, chat_started.text
+    assert chat_started.json()["attempts"][0]["context_ids"] == []
 
 
 def test_flow_run_rejects_ready_version_of_deleted_environment(

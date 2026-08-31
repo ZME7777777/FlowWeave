@@ -1636,6 +1636,16 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 完成：`CHAT` 启动模式直接创建只用于节点会话授权的 `WAITING_START_CONFIRMATION` Attempt，输入绑定、门禁策略/结果、输出目标和该 Attempt 的 Runtime 任务均为空；请求中误传的输入 URL 与门禁也不会持久化。前端会话模式隐藏输入和门禁配置，只显示人工导向说明并直接进入共享 Agent Workbench 草稿。`PROMPT` 模式继续经原输入校验、启动门禁、自动执行、输出门禁与端口映射路径流转。
 
+### FR-116 节点运行上下文的显式选择与展示 — DONE
+
+依赖：`FR-115`。
+
+目标：在节点侧栏概览中统一展示当前节点上下文。待创建 Prompt 启动时，节点定义的手动 Context 与 Context 能力使用同一列表样式供用户多选、查看详情，并将当次选择冻结到 Attempt；允许不选。仅创建会话启动不应用节点 Context，进入会话后由用户自行决定上下文。已创建 Attempt 的概览只展示该轮实际冻结的上下文，自动运行和节点会话均不得回退为节点定义中的全量 Context；历史 Attempt 保留原全量 Context 语义。
+
+验收：平台 API 回归覆盖 Prompt 的空集/选择冻结、运行请求 Context 过滤和 CHAT 的空 Context；Web 回归覆盖待创建多选、详情弹窗和已创建概览；受影响 Python/Web 检查、迁移、Alembic head、任务状态唯一性与 `git diff --check` 通过；完成后独立提交。
+
+完成：新建 `PROMPT` Attempt 将用户选择的手动 Context 与 Context 能力版本 ID 冻结到自身，空选择不注入节点 Context；自动运行请求和后续节点会话均按该冻结子集构造系统上下文。新建 `CHAT` Attempt 明确冻结为空选择，不注入节点定义 Context。历史 Attempt 保持 `NULL`，继续按原来全量 Context 解释。待创建及已创建侧栏概览均复用 Context 列表和详情弹窗，已创建记录只显示本轮实际选择。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1652,6 +1662,7 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-08-31 | FR-116 | `test_api.py` 节点会话/Prompt Context 定向回归（2 passed）；受影响 Python Ruff/`py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Prompt 启动允许空或多选 Context，并将选择冻结到 Attempt；自动执行和后续节点会话只应用冻结子集。CHAT 明确不应用节点 Context。唯一 Alembic head 为 `0084_attempt_context_selection`。 |
 | 2026-08-31 | FR-115 | `test_api.py` 会话/提示词启动定向回归（3 passed）；受影响 Python Ruff format/check 与 `py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：仅创建会话启动不再要求节点输入，并服务端忽略误传输入和门禁；不会创建输入绑定、门禁结果、输出目标或 Attempt Runtime 任务。会话直接打开人工导向草稿，输入/门禁/输出/流程映射均不适用；提示词启动路径保持原流程约束。唯一 Alembic head 为 `0083_attempt_gate_policies`。 |
 | 2026-08-31 | FR-114 | Web TypeScript typecheck、ESLint、production build；受影响平台 Ruff、`py_compile`、`tests/test_api.py`（37 collected / PASS）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：移除节点图标字段；输入输出类型改为平台分段控件；运行图的冻结数据映射边连接真实输入／输出端口。节点输入只在按定义生成的弹窗中编辑，侧栏按概览／输入／门禁／输出分 Tab 展示且可拖宽。人工 URL/文件 Artifact 被绑定到唯一 `consumer_node_key`，跨节点绑定以 `INPUT_BINDING_INVALID` 拒绝。唯一 Alembic head 为 `0082_node_bound_inputs`。 |
 | 2026-08-31 | FR-113 | Web ESLint、TypeScript typecheck、production build；Alembic head；任务状态唯一性与 `git diff --check` | PASS：移除左侧会话栏的“还没有会话”空状态卡片。没有正式会话时，左下角仅保留现有“能力／为新会话选择能力”入口，与新建会话视图一致；未改变草稿、模型、能力、Runtime 或 OpenHands 行为。唯一 Alembic head 为 `0081_system_owned_delete`。 |

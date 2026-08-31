@@ -99,16 +99,17 @@ def _attempt_context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, FlowRu
 
 
 _FLOW_NODE = "FLOW_NODE"
+_MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 
 
-def _node_context_suffix(
-    db: Session, *, snapshot: RunSnapshot, node_run_id: str | None
-) -> str:
+def _node_context_suffix(db: Session, *, snapshot: RunSnapshot, attempt_id: str | None) -> str:
     """Render the node's already-frozen Context into the native system suffix."""
 
-    if not node_run_id:
+    if not attempt_id:
         return ""
+    attempt = _attempt(db, attempt_id)
+    node_run_id = attempt.node_run_id
     node_run = db.get(NodeRun, node_run_id)
     if node_run is None:
         raise DomainError("NODE_RUN_NOT_FOUND", "节点执行记录不可用", 409)
@@ -121,13 +122,20 @@ def _node_context_suffix(
     )
     asset = cast(dict[str, Any], node.get("asset") or {})
     executor = cast(dict[str, Any], asset.get("executor") or {})
-    parts = [str(executor.get("context_prompt") or "").strip()]
+    selected = set(attempt.context_ids_json) if attempt.context_ids_json is not None else None
+    parts = [
+        str(executor.get("context_prompt") or "").strip()
+        if selected is None or _MANUAL_NODE_CONTEXT_ID in selected
+        else ""
+    ]
     raw_contexts = asset.get("context_capabilities")
     if isinstance(raw_contexts, list):
         for raw_context in cast(list[object], raw_contexts):
             if not isinstance(raw_context, dict):
                 raise DomainError("SNAPSHOT_CONTEXT_INVALID", "节点 Context Snapshot 无效", 409)
             item = cast(dict[str, Any], raw_context)
+            if selected is not None and str(item.get("id") or "") not in selected:
+                continue
             text = str(item.get("text") or "").strip()
             if not text:
                 raise DomainError("SNAPSHOT_CONTEXT_INVALID", "节点 Context 内容缺失", 409)
@@ -561,7 +569,7 @@ def _create_native_conversation(
         host_root=host_root,
         runtime_root=runtime_root,
         system_message_suffix_append=_node_context_suffix(
-            db, snapshot=snapshot, node_run_id=node_run_id
+            db, snapshot=snapshot, attempt_id=attempt_id
         ),
     )
     request = build_runtime_request(

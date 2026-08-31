@@ -307,9 +307,12 @@ class NodeRunStart(ApiModel):
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)
     input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
     gates: list[GateWrite] = Field(default_factory=_empty_gates)
+    context_ids: list[str] = Field(default_factory=list, max_length=31)
 
     @model_validator(mode="after")
     def validate_input_urls(self) -> NodeRunStart:
+        if len(self.context_ids) != len(set(self.context_ids)):
+            raise ValueError("Context selections must be unique")
         normalized: dict[str, str] = {}
         for field_key, value in self.input_urls.items():
             normalized[field_key] = _http_url(value, f"input URL for {field_key}")
