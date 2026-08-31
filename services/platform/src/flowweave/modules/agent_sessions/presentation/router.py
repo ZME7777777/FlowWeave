@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Annotated, Any, cast
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import (
@@ -346,7 +347,7 @@ async def node_session_workspace_file(
     return Response(
         content=content,
         media_type=content_type,
-        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}"},
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Annotated, Any
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -281,7 +282,7 @@ async def download_agent_workspace_file(
     return Response(
         content=item.content,
         media_type=item.content_type,
-        headers={"Content-Disposition": f'{disposition}; filename="{item.filename}"'},
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(item.filename)}"},
     )
 
 
