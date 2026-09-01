@@ -379,6 +379,9 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .run-graph-node.automatic-missing>header{border-color:#efcdcd!important}
 .run-graph-node.automatic-missing b,.run-graph-node.automatic-missing .run-node-contract b{color:#8e3c3c!important}
 .run-graph-node.automatic-missing .run-node-contract small{color:#aa6969!important}
+.run-graph-node.automatic-configured{border:2px solid #5b9a72!important;background:#edf8f1!important;color:#276840!important;box-shadow:0 0 0 3px #dcefe2!important}
+.run-graph-node.automatic-configured>header{border-color:#c7e2d0!important}.run-graph-node.automatic-configured b,.run-graph-node.automatic-configured .run-node-contract b{color:#276840!important}
+.run-graph-node.automatic-locked{border-color:#d9dfdb!important;background:#f4f6f4!important;color:#98a39d!important;box-shadow:none!important;opacity:.68}.run-graph-node.automatic-locked>header{border-color:#e1e6e3!important}.run-graph-node.automatic-locked b{color:#87928c!important}.run-graph-node.automatic-locked .run-node-contract{opacity:.55}
 .run-graph-node.snapshot-selected{border-color:var(--green)!important;background:#e8f3eb!important;box-shadow:0 0 0 4px #dcece2!important}
 .run-graph-node.automatic-missing.snapshot-selected{border-color:#b84848!important;background:#fff0f0!important;box-shadow:0 0 0 4px #f3cccc!important}
 
