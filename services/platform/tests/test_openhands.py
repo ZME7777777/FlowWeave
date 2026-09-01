@@ -2682,6 +2682,69 @@ def test_openhands_projects_native_conversation_error_details():
     }
 
 
+def test_openhands_does_not_fail_a_completed_reply_for_late_autotitle_error(
+    openhands_settings,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    result = runtime._result_from_events(
+        "10000000-0000-4000-8000-000000000002",
+        [
+            {
+                "kind": "MessageEvent",
+                "id": "assistant-1",
+                "source": "agent",
+                "parent_id": "user-1",
+                "llm_message": {"role": "assistant", "content": "已完成"},
+            },
+            {
+                "kind": "ConversationErrorEvent",
+                "id": "title-error",
+                "source": "environment",
+                "parent_id": "user-1",
+                "code": "NotFoundError",
+                "detail": "title provider returned 404",
+            },
+        ],
+        "title-error",
+        assistant_message_is_final=True,
+    )
+
+    assert result is not None
+    assert result.status == "COMPLETED"
+    assert result.final_message == "已完成"
+
+
+def test_openhands_keeps_an_error_from_a_different_turn_after_an_assistant_reply(
+    openhands_settings,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    result = runtime._result_from_events(
+        "10000000-0000-4000-8000-000000000002",
+        [
+            {
+                "kind": "MessageEvent",
+                "id": "assistant-1",
+                "source": "agent",
+                "parent_id": "old-user",
+                "llm_message": {"role": "assistant", "content": "较早回复"},
+            },
+            {
+                "kind": "ConversationErrorEvent",
+                "id": "current-error",
+                "source": "environment",
+                "parent_id": "current-user",
+                "code": "LLMRateLimitError",
+                "detail": "当前回合失败",
+            },
+        ],
+        "current-error",
+    )
+
+    assert result is not None
+    assert result.status == "FAILED"
+    assert result.error == "当前回合失败"
+
+
 def test_openhands_projects_native_task_tool_lifecycle_without_fabricating_child_api():
     requested = {
         "kind": "ActionEvent",

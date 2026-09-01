@@ -150,10 +150,43 @@ function orderedEvents(events: OpenHandsConversationEvent[]): OpenHandsConversat
   return output;
 }
 
+function isHistoricalAutoTitleError(
+  event: OpenHandsConversationEvent,
+  events: OpenHandsConversationEvent[],
+): boolean {
+  if (event.event_type !== 'ERROR' || event.payload.error_code !== 'NotFoundError') return false;
+  const byId = new Map(events.map(candidate => [candidate.id, candidate]));
+  const userAncestor = (candidate: OpenHandsConversationEvent): string | undefined => {
+    const visited = new Set<string>();
+    let current: OpenHandsConversationEvent | undefined = candidate;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      const source = String(current.payload.source ?? '').toLowerCase();
+      if (current.event_type === 'MESSAGE' && (source === 'user' || source === 'human')) {
+        return current.id;
+      }
+      const parentId: string | undefined = current.payload.parent_id ?? undefined;
+      current = parentId ? byId.get(parentId) : undefined;
+    }
+    return undefined;
+  };
+  const root = userAncestor(event);
+  if (!root) return false;
+  return events.some(candidate => {
+    if (candidate.event_type !== 'MESSAGE') return false;
+    const source = String(candidate.payload.source ?? '').toLowerCase();
+    return source !== 'user' && source !== 'human'
+      && Boolean(candidate.payload.content)
+      && userAncestor(candidate) === root;
+  });
+}
+
 function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
   let current: Turn | undefined;
-  for (const event of orderedEvents(events)) {
+  const ordered = orderedEvents(events);
+  for (const event of ordered) {
+    if (isHistoricalAutoTitleError(event, ordered)) continue;
     for (const item of itemsFor(event)) {
       if (item.kind === 'user') {
         current = { id: item.event.id, user: item, activity: [] };

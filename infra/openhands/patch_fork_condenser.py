@@ -1,10 +1,16 @@
-"""Apply FlowWeave's fail-closed condenser override to OpenHands forks.
+"""Apply FlowWeave's governed OpenHands source fixes.
 
 OpenHands 1.44.0 deep-copies the source Agent when forking. That is correct
 for general callers, but FlowWeave needs a fork to retain the selected event
 history while adopting the currently governed condenser policy. The upstream
 SDK already supports LocalConversation.fork(agent=...); this patch exposes
 only the condenser override through Agent Server's fork request.
+
+The native auto-title helper is also made protocol-aware: providers configured
+for the Responses API (notably Codex OAuth) must use ``LLM.responses()``,
+whereas Chat Completions providers retain ``LLM.completion()``.  Auto-title is
+non-critical metadata, so its failure is logged upstream but never published as
+a ConversationErrorEvent for a successful user turn.
 """
 
 from __future__ import annotations
@@ -94,6 +100,37 @@ def apply(source_root: Path) -> None:
         "        fork_conv = await asyncio.to_thread(\n"
         "            source_conversation.fork,\n"
         "            agent=fork_agent,\n",
+    )
+
+    title_utils = source_root / "openhands-sdk" / "openhands" / "sdk" / "conversation" / "title_utils.py"
+    _replace(
+        title_utils,
+        "        response = llm.completion(messages)\n",
+        "        # Respect the provider's frozen protocol contract. Codex OAuth, for\n"
+        "        # example, exposes only the native Responses endpoint; forcing it\n"
+        "        # through Chat Completions turns a harmless title request into 404.\n"
+        "        response = (\n"
+        "            llm.responses(messages) if llm.api_mode == \"responses\" else llm.completion(messages)\n"
+        "        )\n",
+    )
+
+    _replace(
+        service,
+        "        # Surface an LLM failure during auto-titling to the UI (issue #16686);\n"
+        "        # generation itself stays non-fatal and falls back to truncation.\n"
+        "        def _on_title_error(exc: Exception) -> None:\n"
+        "            self.service._publish_error_event_sync(exc)\n\n",
+        "        # Auto-title is non-critical metadata. Its fallback is the first user\n"
+        "        # message, so never publish a title-provider failure as a conversation\n"
+        "        # error for an otherwise successful turn.\n",
+    )
+    _replace(
+        service,
+        "                    50,\n"
+        "                    _on_title_error,\n"
+        "                )\n",
+        "                    50,\n"
+        "                )\n",
     )
 
 

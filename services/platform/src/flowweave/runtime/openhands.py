@@ -2211,7 +2211,8 @@ class OpenHandsRuntime:
         *,
         assistant_message_is_final: bool = False,
     ) -> RuntimeResult | None:
-        for item in reversed(items):
+        for index in range(len(items) - 1, -1, -1):
+            item = items[index]
             if self._event_type(item) == "COMPLETED":
                 text = self._event_text(item)
                 return RuntimeResult(
@@ -2221,6 +2222,13 @@ class OpenHandsRuntime:
                     cursor=cursor,
                 )
             if self._event_type(item) == "ERROR":
+                # OpenHands 1.42/1.44 can publish an asynchronous native
+                # auto-title provider failure as a generic ConversationErrorEvent
+                # after the real assistant message.  The title is auxiliary
+                # metadata: a turn that already has an assistant reply is not
+                # failed.  Retain true errors that occur before any reply.
+                if self._is_late_auxiliary_title_error(item, items[:index]):
+                    continue
                 return RuntimeResult(
                     status="FAILED",
                     error=self._event_text(item) or "OpenHands failed",
@@ -2243,6 +2251,41 @@ class OpenHandsRuntime:
                             cursor=cursor,
                         )
         return None
+
+    @staticmethod
+    def _is_late_auxiliary_title_error(
+        error: dict[str, Any], prior_items: list[dict[str, Any]]
+    ) -> bool:
+        """Recognize OpenHands' unscoped auto-title error publication.
+
+        OpenHands 1.42/1.44 publishes auto-title failures as generic error
+        events after the response they describe.  The native event has no
+        action/tool identity and shares its direct user-message parent with
+        the already-published assistant reply.  Do not suppress real errors
+        from a different turn or an Action/Tool lifecycle.
+        """
+
+        if str(error.get("kind") or "") != "ConversationErrorEvent":
+            return False
+        if error.get("action_id") or error.get("tool_call_id") or error.get("action"):
+            return False
+        parent_id = str(error.get("parent_id") or "")
+        if not parent_id or parent_id == "__root__":
+            return False
+        for item in prior_items:
+            if str(item.get("kind") or "") != "MessageEvent":
+                continue
+            if str(item.get("parent_id") or "") != parent_id:
+                continue
+            message = item.get("llm_message")
+            role = (
+                str(cast(dict[str, object], message).get("role") or "").lower()
+                if isinstance(message, dict)
+                else ""
+            )
+            if role == "assistant" or str(item.get("source") or "").lower() == "agent":
+                return bool(OpenHandsRuntime._event_text(item))
+        return False
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         base_url = self._base_url_for_handle(handle)

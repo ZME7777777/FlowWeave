@@ -63,6 +63,7 @@ from openhands.sdk.context.memory import (
     load_memory,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.conversation import title_utils
 from openhands.sdk.conversation.goal import GoalStatus, GoalVerdict
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -341,6 +342,12 @@ def main() -> None:
     assert _WebSocketSubscriber.receives_streaming_deltas is True
     asyncio.run(_assert_targeted_streaming_delta_delivery())
     _assert_profile_provider_secret_and_condenser_behavior()
+    title_source = getsource(title_utils.generate_title_with_llm)
+    assert 'llm.responses(messages) if llm.api_mode == "responses"' in title_source
+    auto_title_source = getsource(__import__(
+        "openhands.agent_server.conversation_service", fromlist=["AutoTitleSubscriber"]
+    ).AutoTitleSubscriber)
+    assert "_publish_error_event_sync(exc)" not in auto_title_source
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
         provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
@@ -1229,7 +1236,7 @@ def main() -> None:
                 "provider_connection_read_at_use": True,
                 "nested_secret_serializer_probe": True,
                 "subscription_condenser_dispatch": True,
-                "remote_title_generation_fix_in_frozen_source": False,
+                "remote_title_generation_fix_in_frozen_source": True,
             },
             sort_keys=True,
         )
