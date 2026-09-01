@@ -726,6 +726,15 @@ const NETWORK_ERROR_CODES = new Set([
 
 function ConversationFailure({ item }: { item: Item }) {
   const code = typeof item.event.payload.error_code === 'string' ? item.event.payload.error_code : '';
+  // OpenHands 1.42 emitted failed auto-title metadata as a regular terminal
+  // ConversationErrorEvent. The runtime patch prevents new events; this is a
+  // final rendering safeguard for already-persisted history regardless of the
+  // event order or branch projection returned by an older runtime.
+  const isLegacyAutoTitleFailure = code === 'NotFoundError'
+    && item.content.includes('litellm.NotFoundError')
+    && item.content.includes('OpenAIException')
+    && item.content.includes('Error code: 404');
+  if (isLegacyAutoTitleFailure) return null;
   const content = code === 'LLMRateLimitError'
     ? '模型服务拒绝了这次请求：当前配置的账户可用额度已用尽。请选择有可用额度的模型配置后，编辑并重新思考此消息。'
     : NETWORK_ERROR_CODES.has(code)
