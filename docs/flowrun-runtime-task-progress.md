@@ -1833,6 +1833,22 @@ typecheck、production build、Alembic head、任务状态唯一性和 `git diff
 改为标题栏下方的独立反馈条，长文本可换行且不会被固定标题高度裁切。未改变后端、Runtime、OpenHands 或数据库
 契约。
 
+### FR-124A Agent 会话标题与最近发送排序修复 — DONE
+
+依赖：`FR-123`。
+
+目标：修复一级 Agent Workspace 会话在首条消息完成后仍停留于首句兜底标题，以及已有会话发送新消息后未按
+最近发送活动上移的问题。标题继续遵守固定 OpenHands `1.44.0` 基线的既有架构边界：关闭不可靠的原生
+`autotitle`，由 FlowWeave 一次性独立元数据任务按供应商正式协议生成展示标题，并以 generation CAS 保证
+手动改名不被延迟结果覆盖；任务失败保留首句兜底且不污染 OpenHands Conversation/Event。正式 user event
+被 Runtime 接受后更新 binding 活动时间，一级工作区和 FlowRun 节点会话均按该时间倒序返回。标题任务完成不得
+伪造新的发送活动。
+
+完成：标题任务支持 Chat Completions 与 streaming Responses 正式协议，失败保留首句兜底，generation CAS
+保护手动改名，处理后脱敏首条消息种子。固定 OpenHands 原生 `autotitle` 关闭，源码 overlay 不再修改标题路径。
+一级工作区和 FlowRun 节点会话在正式发送或重发被 Runtime 接受后更新活动时间，列表使用稳定次级键倒序；
+标题元数据更新保持原活动时间。Web 仅在可见会话存在 `PENDING` 标题时轮询。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1849,6 +1865,7 @@ typecheck、production build、Alembic head、任务状态唯一性和 `git diff
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-124A | Agent Workspace／OpenHands／FlowRun 会话／架构边界合并 pytest（181 passed）；受影响 Python Ruff、全量 Pyright（0 errors）；Web TypeScript typecheck、ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：一级 Agent Workspace 首发后由一次性 FlowWeave 元数据任务按冻结供应商的 Chat Completions 或 streaming Responses 正式协议生成标题；失败保留首句兜底，generation CAS 防止延迟结果覆盖手动改名，任务完成不伪造发送活动且首条消息种子及时脱敏。固定 OpenHands `1.44.0` 原生 `autotitle` 关闭，源码 overlay 不再修改标题路径。一级工作区和 FlowRun 节点会话在正式发送或重发被 Runtime 接受后更新 binding 活动时间，列表按活动时间及稳定次级键倒序；待生成标题仅在可见 `PENDING` 会话存在时轮询。唯一 Alembic head 为 `0087_nested_automatic_runs`；无 `CURRENT`，下一切片仍为 FR-128。 |
 | 2026-09-01 | FR-127 | 当前源码独立 Vite 定向 Playwright（1 passed，覆盖手动／自动记录重复点击、左栏／标题／画布空白退出、自动中性图不可配置、反馈条几何可见性和服务端拒绝反馈）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：所有退出入口统一关闭右栏并恢复中性流程图；自动模式无记录时节点不可选，选中草稿后恢复配置；保存反馈位于侧栏标题下方且完整处于侧栏可见区域。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-127 完成后无 `CURRENT`，下一切片为 FR-128 Context Bundle 表单编辑与资料包预览。 |
 | 2026-09-01 | FR-126 | Context Bundle 定向 pytest（7 passed）；完整 `test_capability_imports.py`（42 passed）与 `test_context_capabilities.py`（3 passed）；受影响 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：Bundle 仍是单个 `CONTEXT` Version，内部确定性生成 Manifest 并编译全部文档到现有系统后缀兼容文本；ZIP 单顶层目录自动归一化，根 README 被建议为入口，原始 ZIP 以 `application/zip` 不可变保存，查看接口可返回可读编译内容。路径穿越、Windows／POSIX 绝对路径、重复路径、空文件、明文 Secret 与符号链接均被拒绝。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-126 完成后无 `CURRENT`，下一切片为 FR-127 表单编辑与资料包预览。 |
 | 2026-09-01 | FR-125 | Web ESLint、TypeScript typecheck；当前源码 Vite 定向 Playwright（1 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：节点资产页桌面紧凑网格每页显示 25 张卡片，完整 5×5 首屏不再把第 25 张提前移至第二页；25 个节点时不显示分页控件。唯一 Alembic head 为 `0087_nested_automatic_runs`，FR-125 完成后无 `CURRENT` 或后续切片。 |

@@ -1204,10 +1204,11 @@ class OpenHandsRuntime:
             request.execution_key.startswith("agent-workspace:")
             or request.interaction_mode == "COLLABORATION"
         ):
-            # OpenHands owns interactive Conversation titles.  FlowWeave only
-            # projects that native title into its conversation list; it must
-            # not issue a second, provider-specific hidden title request.
-            payload["autotitle"] = True
+            # The frozen OpenHands 1.44.0 auto-title path is not reliable for
+            # every governed provider protocol. Keep title metadata isolated
+            # from the Conversation/Event lifecycle and generate it once in a
+            # FlowWeave worker with the binding's frozen provider selection.
+            payload["autotitle"] = False
         if spec.agent_profile is not None:
             # The immutable FlowWeave Profile has already been materialized in
             # the explicit Agent payload above.  Never send agent_profile_id:
@@ -2841,10 +2842,7 @@ class OpenHandsRuntime:
         """
 
         kind = str(event.get("kind") or "")
-        if (
-            isinstance(event, dict)
-            and cls._is_legacy_autotitle_protocol_error(cast(dict[str, Any], event))
-        ):
+        if cls._is_legacy_autotitle_protocol_error(cast(dict[str, Any], event)):
             return ()
         if kind == "StreamingDeltaEvent":
             content = event.get("content")

@@ -27,6 +27,7 @@ from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
+from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.base import (
     RuntimeCondenser,
     RuntimeHandle,
@@ -436,27 +437,27 @@ def _handle(
 
 
 def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
-    workspace = _workspace(db, workspace_id)
-    items = list(
-        db.scalars(
+    _workspace(db, workspace_id)
+    return [
+        _dict(db, item)
+        for item in db.scalars(
             select(AgentConversationBinding)
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
             )
-            .order_by(AgentConversationBinding.updated_at.desc())
+            .order_by(
+                AgentConversationBinding.updated_at.desc(),
+                AgentConversationBinding.created_at.desc(),
+                AgentConversationBinding.id.desc(),
+            )
         )
-    )
-    for item in items:
-        _sync_native_title(db, workspace, item)
-    db.flush()
-    return [_dict(db, item) for item in items]
+    ]
 
 
 def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
-    workspace = _workspace(db, workspace_id)
+    _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id)
-    _sync_native_title(db, workspace, item)
     item.last_connected_at = now()
     db.flush()
     return _dict(db, item)
@@ -805,40 +806,36 @@ def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[st
 
 
 def normalized_first_sentence(content: str) -> str:
-    """Temporary first-message label until OpenHands publishes its native title."""
+    """A useful local title while the independent metadata task is pending."""
 
-    # Preserve the full first message, collapsing line breaks for the rail.
-    # Keep enough text for the UI to decide where to
-    # truncate it. The conversation rail owns the one-line ellipsis; the
-    # persistence bound merely protects its String(240) projection.
-    normalized = " ".join(content.split())[:240]
+    first_line = next((line for line in content.splitlines() if line.strip()), "")
+    normalized = " ".join(first_line.split())[:80]
     if _MECHANICAL_TITLE.fullmatch(normalized):
         return f"关于“{normalized}”的请求"[:80]
     return normalized or "用户请求"
 
 
-def _sync_native_title(
-    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
-) -> None:
-    """Project OpenHands' native asynchronous title without overriding a rename.
-
-    Until OpenHands returns a title, ``display_title`` remains the first user
-    message selected at bootstrap.  This lets the rail show a useful one-line
-    temporary label without introducing a second title-generation model call.
-    """
-
-    if binding.title_state == "MANUAL":
+def _enqueue_title_task(db: Session, binding: AgentConversationBinding, first_message: str) -> None:
+    if not binding.model_provider_id or not binding.model_name:
         return
-    try:
-        title = get_runtime().conversation_title(_handle(db, workspace, binding))
-    except DomainError:
-        # Listing conversations must remain available while the managed Runtime
-        # is reconnecting.  A later refresh will pick up the native title.
-        return
-    if title and not _MECHANICAL_TITLE.fullmatch(title):
-        binding.display_title = title[:240]
-        binding.title_state = "GENERATED"
-        binding.updated_at = now()
+    enqueue(
+        db,
+        task_type="GENERATE_AGENT_CONVERSATION_TITLE",
+        aggregate_type="AGENT_CONVERSATION",
+        aggregate_id=binding.id,
+        idempotency_key=(
+            f"generate-agent-conversation-title:{binding.id}:{binding.title_generation}"
+        ),
+        payload={
+            "title_generation": binding.title_generation,
+            "model_provider_id": binding.model_provider_id,
+            "model_name": binding.model_name,
+            # Redacted by the one-shot handler after its single use. This is
+            # metadata input, never an OpenHands Conversation/Event projection.
+            "first_message": " ".join(first_message.split())[:4000],
+            "fallback_title": binding.display_title,
+        },
+    )
 
 
 def _activate_bootstrapped_conversation(
@@ -857,6 +854,7 @@ def _activate_bootstrapped_conversation(
     command.state = "SUCCEEDED"
     command.updated_at = binding.updated_at
     _record_message_attachments(db, binding, initial_event_id, first_message, attachments)
+    _enqueue_title_task(db, binding, first_message)
     db.commit()
     return _bootstrap_result(db, binding)
 
@@ -1748,6 +1746,10 @@ def message(
         raise
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+    activity_at = now()
+    binding.last_connected_at = activity_at
+    binding.updated_at = activity_at
+    db.flush()
     return {"accepted": True, "cursor": result.cursor, "compacted": compacted}
 
 
@@ -2315,7 +2317,8 @@ def rewrite_message(
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     workspace = _workspace(db, workspace_id)
-    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    handle = _handle(db, workspace, binding)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
@@ -2351,6 +2354,10 @@ def rewrite_message(
                 "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "重新发送结果不确定，请先刷新会话", 504
             ) from exc
         raise
+    activity_at = now()
+    binding.last_connected_at = activity_at
+    binding.updated_at = activity_at
+    db.flush()
     return {"accepted": True, "cursor": result.cursor}
 
 
@@ -2370,6 +2377,7 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
 PROACTIVE_COMPACTION_RATIO = _PROACTIVE_COMPACTION_RATIO
 AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
 ATTACHMENT_PATH = _ATTACHMENT_PATH
+enqueue_title_task = _enqueue_title_task
 frozen_runtime_capability = _frozen_runtime_capability
 initial_user_event_id = _initial_user_event_id
 message_payload = _message_payload

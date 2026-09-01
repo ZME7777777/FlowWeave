@@ -7,7 +7,7 @@ import json
 import subprocess
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,6 +21,7 @@ from flowweave.modules.agent_sessions.application.host import (
 )
 from flowweave.modules.agent_workspaces.application import (
     conversations,
+    titles,
     work_directories,
     workspace,
 )
@@ -44,10 +45,12 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.presentation import router as agent_router
 from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
+from flowweave.modules.model_providers.public import TitleProviderSnapshot
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
+from flowweave.modules.tasks.public import Lease
 from flowweave.runtime.base import (
     RuntimeConversationIdentity,
     RuntimeEvent,
@@ -1539,23 +1542,25 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
                 BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
             )
         )
-        assert title_task is None
+        assert title_task is not None
+        assert title_task.aggregate_id == first["conversation"]["id"]
+        assert title_task.payload_json["first_message"] == "实现接口"
         listed = conversations.list_conversations(db, workspace.id)
         assert listed[0]["work_directory_id"] == directory["id"]
         assert len(conversations.list_conversations(db, workspace.id)) == 1
 
 
+def _title_task_lease(task: BackgroundTask) -> Lease:
+    task.state = TaskState.RUNNING
+    task.lease_owner = "title-test-worker"
+    task.lease_generation = 1
+    task.lease_until = datetime.max.replace(tzinfo=UTC)
+    return Lease(task.id, task.lease_owner, task.lease_generation)
 
-def test_agent_workspace_projects_native_title_without_overwriting_manual_title(
+
+def test_agent_workspace_title_task_generates_title_and_preserves_activity_time(
     settings, db_session_factory, monkeypatch
 ):
-    class NativeTitleRuntime(MockRuntime):
-        title: str | None = None
-
-        def conversation_title(self, handle):
-            del handle
-            return self.title
-
     monkeypatch.setattr(
         conversations,
         "runtime_provider",
@@ -1566,8 +1571,22 @@ def test_agent_workspace_projects_native_title_without_overwriting_manual_title(
             api_key="x",
         ),
     )
-    runtime = NativeTitleRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    monkeypatch.setattr(
+        titles,
+        "title_provider_snapshot",
+        lambda *_args: TitleProviderSnapshot(
+            "https://titles.example.test/v1",
+            {"Authorization": "Bearer x"},
+            "title-model",
+            "CHAT_COMPLETIONS",
+        ),
+    )
+    monkeypatch.setattr(
+        titles,
+        "generate_title",
+        lambda _snapshot, prompt: "检查 Hello World 项目" if prompt else "",
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
         workspace_item = _ready_workspace_for_conversation(db)
         created = conversations.bootstrap_conversation(
             db,
@@ -1575,32 +1594,223 @@ def test_agent_workspace_projects_native_title_without_overwriting_manual_title(
             work_directory_id=None,
             model_provider_id=workspace_item.default_model_provider_id,
             content="当前目录下有没有 hello world 的项目",
-            idempotency_key="native-title-001",
+            idempotency_key="title-task-001",
         )
         assert created["conversation"]["display_title"] == "当前目录下有没有 hello world 的项目"
         assert created["conversation"]["title_state"] == "PENDING"
-        assert db.scalar(
+        task = db.scalar(
             select(BackgroundTask).where(
                 BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
             )
-        ) is None
-
-        runtime.title = "检查 Hello World 项目"
-        projected = conversations.get_conversation(
-            db, workspace_item.id, created["conversation"]["id"]
         )
-        assert projected["display_title"] == "检查 Hello World 项目"
-        assert projected["title_state"] == "GENERATED"
+        assert task is not None
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+        activity_time = binding.updated_at
+        titles.process_agent_conversation_title(
+            db, binding.id, task.payload_json, _title_task_lease(task)
+        )
+        db.flush()
+        db.refresh(binding)
+        assert binding.display_title == "检查 Hello World 项目"
+        assert binding.title_state == "GENERATED"
+        assert binding.updated_at == activity_time
+        assert task.payload_json == {"title_generation": 1}
+
+
+def test_agent_workspace_manual_title_wins_over_late_title_task(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    called = False
+
+    def unexpected_title(*_args):
+        nonlocal called
+        called = True
+        return "自动标题"
+
+    monkeypatch.setattr(titles, "generate_title", unexpected_title)
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace_item = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace_item.id,
+            work_directory_id=None,
+            model_provider_id=workspace_item.default_model_provider_id,
+            content="自动标题不应该覆盖手动名称",
+            idempotency_key="title-task-manual",
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert task is not None
 
         conversations.patch_conversation(
             db, workspace_item.id, created["conversation"]["id"], "我的手动会话名"
         )
-        runtime.title = "不应覆盖手动标题"
-        manual = conversations.get_conversation(
-            db, workspace_item.id, created["conversation"]["id"]
+        titles.process_agent_conversation_title(
+            db, created["conversation"]["id"], task.payload_json, _title_task_lease(task)
         )
-        assert manual["display_title"] == "我的手动会话名"
-        assert manual["title_state"] == "MANUAL"
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+        assert binding.display_title == "我的手动会话名"
+        assert binding.title_state == "MANUAL"
+        assert binding.title_generation == 2
+        assert called is False
+        assert task.payload_json == {"title_generation": 1}
+
+
+def test_agent_workspace_title_task_falls_back_to_first_sentence(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    monkeypatch.setattr(
+        titles,
+        "title_provider_snapshot",
+        lambda *_args: (_ for _ in ()).throw(ValueError("offline")),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace_item = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace_item.id,
+            work_directory_id=None,
+            model_provider_id=workspace_item.default_model_provider_id,
+            content="  修复会话标题生成的失败兜底。\n后续补充信息  ",
+            idempotency_key="title-task-fallback",
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert task is not None
+        titles.process_agent_conversation_title(
+            db, created["conversation"]["id"], task.payload_json, _title_task_lease(task)
+        )
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+        assert binding.display_title == "修复会话标题生成的失败兜底。"
+        assert binding.title_state == "FALLBACK"
+
+
+def test_chat_completions_title_uses_provider_protocol(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "问候与协助"}}]}
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            return Response()
+
+    monkeypatch.setattr(titles.httpx, "Client", Client)
+    generated = titles.generate_title(
+        TitleProviderSnapshot(
+            "https://models.example.test/v1",
+            {"Authorization": "Bearer token"},
+            "title-model",
+            "CHAT_COMPLETIONS",
+        ),
+        "你好",
+    )
+
+    assert generated == "问候与协助"
+    assert captured["url"] == "https://models.example.test/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer token"
+    assert captured["json"]["stream"] is False
+    assert captured["json"]["temperature"] == 0
+
+
+def test_responses_title_uses_streaming_provider_protocol(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            return iter(
+                (
+                    'data: {"type":"response.output_text.delta","delta":"问候"}',
+                    'data: {"type":"response.output_text.delta","delta":"与协助"}',
+                    'data: {"type":"response.completed","response":{"output":[]}}',
+                    "data: [DONE]",
+                )
+            )
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def stream(self, method, url, **kwargs):
+            captured.update({"method": method, "url": url, **kwargs})
+            return Response()
+
+    monkeypatch.setattr(titles.httpx, "Client", Client)
+    generated = titles.generate_title(
+        TitleProviderSnapshot(
+            "https://chatgpt.example.test/backend-api/codex",
+            {"Authorization": "Bearer token", "Accept": "application/json"},
+            "gpt-5.6-terra",
+            "RESPONSES",
+        ),
+        "你好",
+    )
+
+    assert generated == "问候与协助"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://chatgpt.example.test/backend-api/codex/responses"
+    assert captured["headers"]["Accept"] == "text/event-stream"
+    assert captured["json"]["stream"] is True
+    assert captured["json"]["store"] is False
+
 
 def test_agent_workspace_terminal_session_names_are_safe_and_instance_scoped():
     first = workspace.terminal_session_name(
@@ -2035,6 +2245,50 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
 
         conversations.delete_conversation(db, workspace.id, created["id"], "delete-key")
         assert conversations.list_conversations(db, workspace.id) == []
+
+
+def test_agent_workspace_recent_message_moves_conversation_to_top(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        older = conversations.create_conversation(
+            db, workspace.id, "较早会话", workspace.default_model_provider_id, "sort-older"
+        )
+        newer = conversations.create_conversation(
+            db, workspace.id, "较新会话", workspace.default_model_provider_id, "sort-newer"
+        )
+        baseline = datetime.now(UTC) - timedelta(days=1)
+        older_binding = db.get(AgentConversationBinding, older["id"])
+        newer_binding = db.get(AgentConversationBinding, newer["id"])
+        assert older_binding is not None
+        assert newer_binding is not None
+        older_binding.updated_at = baseline
+        newer_binding.updated_at = baseline + timedelta(hours=1)
+        db.flush()
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            newer["id"],
+            older["id"],
+        ]
+
+        conversations.message(db, workspace.id, older["id"], "继续更新较早会话")
+
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            older["id"],
+            newer["id"],
+        ]
+        assert older_binding.updated_at > newer_binding.updated_at
 
 
 def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_send(
