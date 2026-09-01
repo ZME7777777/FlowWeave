@@ -31,6 +31,7 @@ class GateType(StrEnum):
 
 
 class FlowRunState(StrEnum):
+    DRAFT = "DRAFT"
     ACTIVE = "ACTIVE"
     WAITING_HUMAN = "WAITING_HUMAN"
     COMPLETED = "COMPLETED"

@@ -358,6 +358,38 @@ class RunStart(ApiModel):
     input_bindings: dict[str, str] = Field(default_factory=_empty_str_dict)
 
 
+class AutomaticNodePlanWrite(ApiModel):
+    """Editable, pre-runtime configuration for one automatic flow node."""
+
+    startup_prompt: str = Field(min_length=1, max_length=200_000)
+    agent_preset: AgentPresetWrite
+    gates: list[GateWrite] = Field(default_factory=_empty_gates)
+    artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)
+    input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
+
+    @model_validator(mode="after")
+    def validate_input_urls(self) -> AutomaticNodePlanWrite:
+        self.input_urls = {
+            field_key: _http_url(value, f"input URL for {field_key}")
+            for field_key, value in self.input_urls.items()
+        }
+        return self
+
+
+class AutomaticRunDraftWrite(ApiModel):
+    name: str | None = Field(default=None, max_length=220)
+    environment_version_id: str = Field(min_length=1, max_length=36)
+    start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
+    node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
+
+
+class AutomaticRunDraftUpdateWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    name: str | None = Field(default=None, max_length=220)
+    start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
+    node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
+
+
 class NodeRunStart(ApiModel):
     startup_mode: Literal["PROMPT", "CHAT"] = "PROMPT"
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)

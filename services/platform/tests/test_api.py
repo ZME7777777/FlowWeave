@@ -174,7 +174,7 @@ def test_file_input_form_upload_and_file_output_round_trip(client):
 
     activated = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
-        json={"artifact_ids": {"prd": input_artifact["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": input_artifact["id"]}),
     )
     assert activated.status_code == 201, activated.text
     attempt = activated.json()["attempts"][-1]
@@ -191,42 +191,63 @@ def test_file_input_form_upload_and_file_output_round_trip(client):
     assert downloaded.content == b"mock workspace file\n"
 
 
-def flow_payload(asset_id, name="需求到方案", *, environment_version_id=None):
-    gates = [
+def gate_payloads():
+    return [
         {
             "stage": "START",
             "position": 0,
             "gate_type": "PYTHON",
+            "agent_preset": {},
             "config": {
+                "prompt": "检查输入是否完整",
                 "code": (
                     "result = {'decision': 'PASS', 'summary': '输入完整', "
                     "'reasons': [], 'evidence': [], 'details': {}}"
-                )
+                ),
             },
         },
         {
             "stage": "START",
             "position": 1,
             "gate_type": "PYTHON",
+            "agent_preset": {},
             "config": {
+                "prompt": "执行启动规则检查",
                 "code": (
                     "result = {'decision': 'PASS', 'summary': '规则通过', "
                     "'reasons': [], 'evidence': [], 'details': {}}"
-                )
+                ),
             },
         },
         {
             "stage": "END",
             "position": 0,
             "gate_type": "PYTHON",
+            "agent_preset": {},
             "config": {
+                "prompt": "检查输出是否完整",
                 "code": (
                     "result = {'decision': 'PASS', 'summary': '输出完整', "
                     "'reasons': [], 'evidence': [], 'details': {}}"
-                )
+                ),
             },
         },
     ]
+
+
+def prompt_node_start(**values):
+    payload = {
+        "agent_preset": {
+            "capability_version_ids": [],
+            "node_context_enabled": False,
+        }
+    }
+    payload.update(values)
+    return payload
+
+
+def flow_payload(asset_id, name="需求到方案", *, environment_version_id=None):
+    gates = gate_payloads()
     payload = {
         "name": name,
         "description": "同一资产放置两次，映射显式产物",
@@ -398,7 +419,7 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     ).json()
     activated = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
-        json={"artifact_ids": {"prd": artifact["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": artifact["id"]}),
     )
     assert activated.status_code == 201, activated.text
     node_run = activated.json()
@@ -498,7 +519,7 @@ def test_human_can_start_same_node_as_independent_runs(client, skill_capability)
 
     first = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
-        json={"artifact_ids": {"prd": artifact["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": artifact["id"]}),
     )
     assert first.status_code == 201, first.text
     first_attempt = first.json()["attempts"][0]
@@ -516,7 +537,7 @@ def test_human_can_start_same_node_as_independent_runs(client, skill_capability)
 
     second = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
-        json={"artifact_ids": {"prd": artifact["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": artifact["id"]}),
     )
 
     assert second.status_code == 201, second.text
@@ -559,6 +580,7 @@ def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_executi
                     "enabled": True,
                     "timeout_seconds": 30,
                     "config": {"prompt": "always pass"},
+                    "agent_preset": {},
                 }
             ],
         },
@@ -605,10 +627,13 @@ def test_human_start_freezes_selected_node_context_and_chat_starts_without_it(
     ).json()
     prompt_started = client.post(
         f"/api/v1/flow-runs/{prompt_run['id']}/nodes/design_a/runs",
-        json={
-            "input_urls": {"prd": "https://example.test/selected-context-input"},
-            "context_ids": ["__node_context_prompt__"],
-        },
+        json=prompt_node_start(
+            input_urls={"prd": "https://example.test/selected-context-input"},
+            agent_preset={
+                "capability_version_ids": [],
+                "node_context_enabled": True,
+            },
+        ),
     )
     assert prompt_started.status_code == 201, prompt_started.text
     prompt_attempt = prompt_started.json()["attempts"][0]
@@ -634,7 +659,6 @@ def test_human_start_freezes_selected_node_context_and_chat_starts_without_it(
         f"/api/v1/flow-runs/{chat_run['id']}/nodes/design_a/runs",
         json={
             "startup_mode": "CHAT",
-            "context_ids": ["__node_context_prompt__"],
         },
     )
     assert chat_started.status_code == 201, chat_started.text
@@ -833,7 +857,7 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
     for node_key in ("source_a", "source_b"):
         activated = client.post(
             f"/api/v1/flow-runs/{run['id']}/nodes/{node_key}/runs",
-            json={"artifact_ids": {}},
+            json=prompt_node_start(artifact_ids={}),
         )
         assert activated.status_code == 201, activated.text
         source_attempts[node_key] = activated.json()["attempts"][0]
@@ -1555,22 +1579,31 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
         json={
             "environment_version_id": client.environment_version_id,
             "name": "Run #验收",
-            "flow_node_key": "design_a",
-            "artifacts": [
-                {
-                    "field_key": "prd",
-                    "artifact_type": "URL",
-                    "uri": "https://example.feishu.cn/docx/prd-v1",
-                }
-            ],
         },
     )
     assert started.status_code == 201, started.text
     run = started.json()
-    first = run["node_runs"][0]
+    input_artifact = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.feishu.cn/docx/prd-v1",
+        },
+    )
+    assert input_artifact.status_code == 201, input_artifact.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(
+            artifact_ids={"prd": input_artifact.json()["id"]},
+        ),
+    )
+    assert activated.status_code == 201, activated.text
+    first = activated.json()
+    run = client.get(f"/api/v1/flow-runs/{run['id']}").json()
     attempt1 = first["attempts"][0]
     assert attempt1["state"] == "WAITING_START_CONFIRMATION"
-    assert [x["policy_position"] for x in attempt1["gate_evaluations"]] == [0, 1]
+    assert attempt1["gate_evaluations"] == []
     assert attempt1["input_bindings"][0]["artifact_version_id"] == run["artifacts"][0]["id"]
 
     summary = client.get("/api/v1/flow-runs").json()[0]
@@ -1604,7 +1637,7 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     assert attempt1["artifacts"][0]["uri"] == "https://example.test/outputs/design"
     assert "url" not in attempt1["output_targets"]["design"]
     assert attempt1["artifacts"][0]["inline_content"] is None
-    assert [x["stage"] for x in attempt1["gate_evaluations"]] == ["END", "START", "START"]
+    assert attempt1["gate_evaluations"] == []
 
     rejected = client.post(
         f"/api/v1/node-attempts/{attempt1['id']}/reject",
@@ -1687,7 +1720,7 @@ def test_any_node_can_start_without_upstream_completion(client, skill_capability
     ).json()
     activated = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
-        json={"artifact_ids": {"prd": manual["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": manual["id"]}),
     )
     assert activated.status_code == 201, activated.text
     assert activated.json()["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
@@ -1717,7 +1750,7 @@ def test_node_input_bindings_reject_unknown_ports_and_other_run_artifacts(client
 
     unknown = client.post(
         f"/api/v1/flow-runs/{first_run['id']}/nodes/design_a/runs",
-        json={"artifact_ids": {"unknown": artifact["id"]}},
+        json=prompt_node_start(artifact_ids={"unknown": artifact["id"]}),
     )
     assert unknown.status_code == 422, unknown.text
     assert unknown.json()["error"]["code"] == "INPUT_BINDING_INVALID"
@@ -1725,14 +1758,14 @@ def test_node_input_bindings_reject_unknown_ports_and_other_run_artifacts(client
 
     cross_node = client.post(
         f"/api/v1/flow-runs/{first_run['id']}/nodes/design_b/runs",
-        json={"artifact_ids": {"prd": artifact["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": artifact["id"]}),
     )
     assert cross_node.status_code == 422, cross_node.text
     assert cross_node.json()["error"]["code"] == "INPUT_BINDING_INVALID"
 
     cross_run = client.post(
         f"/api/v1/flow-runs/{second_run['id']}/nodes/design_a/runs",
-        json={"artifact_ids": {"prd": artifact["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": artifact["id"]}),
     )
     assert cross_run.status_code == 422, cross_run.text
     assert cross_run.json()["error"]["code"] == "INPUT_BINDING_INVALID"
@@ -1790,7 +1823,7 @@ def test_human_artifact_can_be_named_and_removed_until_bound(client, skill_capab
     ).json()
     activated = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
-        json={"artifact_ids": {"prd": bound["id"]}},
+        json=prompt_node_start(artifact_ids={"prd": bound["id"]}),
     )
     assert activated.status_code == 201, activated.text
     blocked = client.delete(f"/api/v1/flow-runs/{run['id']}/artifacts/{bound['id']}")

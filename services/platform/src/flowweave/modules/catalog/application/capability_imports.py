@@ -52,6 +52,7 @@ from flowweave.shared.models import (
     CapabilityImport,
     CapabilityPackage,
     CapabilityVersion,
+    FlowRun,
     MCPOAuthAuthorization,
     MCPOAuthSecretReference,
     NodeAsset,
@@ -2044,6 +2045,39 @@ def _conversation_references(db: Session, capability_version_id: str) -> list[di
     ]
 
 
+def _automatic_run_references(db: Session, capability_version_id: str) -> list[dict[str, str]]:
+    """Find editable or frozen automatic plans that retain this version."""
+
+    references: list[dict[str, str]] = []
+    for run in db.scalars(
+        select(FlowRun)
+        .where(FlowRun.run_mode == "AUTOMATIC")
+        .order_by(FlowRun.started_at, FlowRun.id)
+    ):
+        raw_nodes_value: object = (run.automation_plan_json or {}).get("node_plans") or {}
+        if not isinstance(raw_nodes_value, dict):
+            continue
+        raw_nodes = cast(dict[object, object], raw_nodes_value)
+        node_keys: list[str] = []
+        for node_key, raw_plan_value in raw_nodes.items():
+            if not isinstance(raw_plan_value, dict):
+                continue
+            raw_plan = cast(dict[str, object], raw_plan_value)
+            preset_value = raw_plan.get("agent_preset")
+            if not isinstance(preset_value, dict):
+                continue
+            preset = cast(dict[str, object], preset_value)
+            version_ids = preset.get("capability_version_ids")
+            if not isinstance(version_ids, list):
+                continue
+            if capability_version_id in {str(value) for value in cast(list[object], version_ids)}:
+                node_keys.append(str(node_key))
+        node_keys.sort()
+        if node_keys:
+            references.append({"id": run.id, "name": run.name, "node_keys": ",".join(node_keys)})
+    return references
+
+
 def _remove_deleted_conversation_references(db: Session, capability_version_ids: list[str]) -> None:
     """Discard frozen references owned by already-deleted conversations.
 
@@ -2140,14 +2174,17 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
         workspaces = _workspace_references(db, capability_id)
         nodes = _node_context_references(db, capability_id)
         conversations = _conversation_references(db, capability_id)
+        automatic_runs = _automatic_run_references(db, capability_id)
         governance = _governance_references(db, capability_id)
-        if workspaces or nodes or conversations or governance:
+        if workspaces or nodes or conversations or automatic_runs or governance:
             reference: dict[str, Any] = {
                 "id": capability_id,
                 "name": published.package.capability_key,
                 "relation": (
                     "NODE_CONTEXT"
                     if nodes
+                    else "AUTOMATIC_RUN"
+                    if automatic_runs
                     else "AGENT_CONVERSATION"
                     if conversations
                     else "AGENT_WORKSPACE"
@@ -2157,6 +2194,7 @@ def delete_capabilities(db: Session, capability_ids: list[str]) -> dict[str, Any
                 "workspaces": workspaces,
                 "nodes": nodes,
                 "conversations": conversations,
+                "automatic_runs": automatic_runs,
             }
             if governance:
                 reference["governance"] = governance

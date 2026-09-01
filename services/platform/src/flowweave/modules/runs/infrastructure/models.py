@@ -23,7 +23,10 @@ from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunSta
 
 class FlowRun(Base):
     __tablename__ = "flow_runs"
-    __table_args__ = (UniqueConstraint("flow_definition_id", "run_no", name="uq_flow_run_number"),)
+    __table_args__ = (
+        CheckConstraint("run_mode IN ('MANUAL', 'AUTOMATIC')", name="ck_flow_runs_run_mode"),
+        UniqueConstraint("flow_definition_id", "run_no", name="uq_flow_run_number"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     flow_definition_id: Mapped[str] = mapped_column(
@@ -31,6 +34,11 @@ class FlowRun(Base):
     )
     run_no: Mapped[int] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(220))
+    # MANUAL preserves the current node-by-node workbench. AUTOMATIC records
+    # begin as editable plans and only acquire Runtime/NodeRun state when a
+    # later explicit start command freezes them.
+    run_mode: Mapped[str] = mapped_column(String(20), default="MANUAL", index=True)
+    automation_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     state: Mapped[str] = mapped_column(String(30), default=FlowRunState.ACTIVE)
     active_snapshot_id: Mapped[str | None] = mapped_column(String(36))
     # The database foreign key is added by migration 0015. Keeping the ORM

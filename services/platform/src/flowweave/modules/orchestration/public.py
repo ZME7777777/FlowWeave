@@ -10,6 +10,7 @@ from flowweave.modules.orchestration.application.service import (
     complete_run,
     confirm_start,
     create_artifact,
+    create_automatic_run_draft,
     create_node_input_artifact,
     decide_runtime_confirmation,
     delete_artifact,
@@ -41,6 +42,7 @@ from flowweave.modules.orchestration.application.service import (
     start_flow,
     start_node_run,
     sync_snapshot,
+    update_automatic_run_draft,
 )
 
 recover_runtime_deliveries = recover_runtime_tasks
@@ -55,6 +57,7 @@ __all__ = (
     "cancel_run",
     "complete_run",
     "confirm_start",
+    "create_automatic_run_draft",
     "create_artifact",
     "create_node_input_artifact",
     "decide_runtime_confirmation",
@@ -88,4 +91,5 @@ __all__ = (
     "start_flow",
     "start_node_run",
     "sync_snapshot",
+    "update_automatic_run_draft",
 )

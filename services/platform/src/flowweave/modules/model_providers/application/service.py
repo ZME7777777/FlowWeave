@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
@@ -21,6 +21,7 @@ from flowweave.shared.errors import conflict, not_found
 from flowweave.shared.models import (
     AgentConversationBinding,
     AgentWorkspace,
+    FlowRun,
     ModelProvider,
     ProviderModel,
 )
@@ -32,6 +33,35 @@ from flowweave.shared.schemas import (
 from flowweave.shared.settings import get_settings
 
 _DEVELOPMENT_CREDENTIALS_KEY = b"I84eBL_TIqLl5IVk_DTjGPtUDyVz3pl6pVCHyT8woaE="
+
+
+def _automatic_run_provider_models(run: FlowRun, provider_id: str) -> set[str]:
+    models: set[str] = set()
+    raw_nodes_value: object = (run.automation_plan_json or {}).get("node_plans") or {}
+    if not isinstance(raw_nodes_value, dict):
+        return models
+    raw_nodes = cast(dict[object, object], raw_nodes_value)
+    for raw_plan_value in raw_nodes.values():
+        if not isinstance(raw_plan_value, dict):
+            continue
+        raw_plan = cast(dict[str, object], raw_plan_value)
+        presets: list[object] = [raw_plan.get("agent_preset")]
+        gates_value = raw_plan.get("gates")
+        if isinstance(gates_value, list):
+            for gate_value in cast(list[object], gates_value):
+                if isinstance(gate_value, dict):
+                    gate = cast(dict[str, object], gate_value)
+                    presets.append(gate.get("agent_preset"))
+        for preset_value in presets:
+            if not isinstance(preset_value, dict):
+                continue
+            preset = cast(dict[str, object], preset_value)
+            if preset.get("model_provider_id") != provider_id:
+                continue
+            model_name = preset.get("model_name")
+            if isinstance(model_name, str) and model_name:
+                models.add(model_name)
+    return models
 
 
 def _provider_references(db: Session, provider_id: str) -> list[dict[str, str]]:
@@ -50,6 +80,15 @@ def _provider_references(db: Session, provider_id: str) -> list[dict[str, str]]:
             .where(AgentConversationBinding.model_provider_id == provider_id)
             .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
         )
+    )
+    references.extend(
+        {"id": run.id, "name": run.name}
+        for run in db.scalars(
+            select(FlowRun)
+            .where(FlowRun.run_mode == "AUTOMATIC")
+            .order_by(FlowRun.started_at, FlowRun.id)
+        )
+        if _automatic_run_provider_models(run, provider_id)
     )
     return references
 
@@ -164,6 +203,8 @@ def _validate_referenced_models(
         )
         if name is not None
     }
+    for run in db.scalars(select(FlowRun).where(FlowRun.run_mode == "AUTOMATIC")):
+        referenced_names.update(_automatic_run_provider_models(run, provider_id))
     unavailable = sorted(referenced_names - enabled_names)
     if unavailable:
         raise conflict(

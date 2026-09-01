@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：无
+> 下一可执行切片：`FR-119`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1656,6 +1656,72 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 完成：一级 Agent Workspace 与 FlowRun 节点会话共用 SSH Remote 描述器，将 Runtime 内项目目录及节点子目录安全映射到 Docker 宿主机持久 Workspace。部署方通过 `IDE_SSH_HOST`、`IDE_SSH_USER`、`IDE_SSH_PORT` 和既有宿主机根目录启用；缺失配置或无法证明路径映射时明确拒绝连接。工作台展示并可复制 SSH 命令和宿主机目录，文档说明 JetBrains Gateway 应连接宿主机持久目录而非可替换 Runtime 容器。
 
+### FR-118 单节点与自动运行记录领域基础 — DONE
+
+依赖：`FR-117`。
+
+切换决策：本轮按新运行模型直接切换，不为历史数据或旧调用形态增加推断、回填或兼容分支；缺少新领域事实的
+旧记录不进入自动运行机制，需要时重新创建运行记录。
+
+目标：保留既有 FlowRun 作为单节点运行组，为每条运行记录增加明确的 `MANUAL`／`AUTOMATIC` 模式，并建立
+可保存但不预置 Runtime、不创建 NodeRun 的自动运行草稿。自动草稿冻结流程快照、Environment Version、任意
+起始节点以及逐节点的输入、启动提示词、Agent 预设和独立门禁 Agent 配置；草稿可按 row version 整体更新，
+现有单节点运行创建、Runtime 和节点执行行为保持不变。自动草稿必须在详情和列表中投影模式、配置及就绪缺项，
+且不得通过现有单节点入口启动节点。本切片不实现自动运行启动、下游调度或 Web 双 Tab。
+
+验收：新增 migration upgrade/downgrade；平台定向测试覆盖历史/新单节点模式、自动草稿创建、更新、冻结快照、
+无 Runtime/NodeRun、副作用隔离及非法节点拒绝；受影响 Python Ruff/Pyright、OpenAPI、Alembic head、任务状态
+唯一性与 `git diff --check` 通过。本切片使用独立 Git commit。
+
+完成：FlowRun 已具有明确的 `MANUAL`／`AUTOMATIC` 模式；自动运行可从任意节点创建和整体更新草稿，
+冻结流程快照、Environment Version、可达节点、输入 Artifact／URL、启动提示词、主 Agent 与独立门禁 Agent
+配置。草稿不会分配 Runtime、创建 NodeRun 或进入单节点启动／同步快照／人工完成路径，并对冻结的 Artifact、
+能力版本和模型供应商建立删除保护。列表和详情投影草稿状态、计划与就绪缺项；未实现启动和自动调度。
+
+### FR-119 流程工作台双运行 Tab 与记录选择投影 — READY
+
+依赖：`FR-118`。
+
+目标：把流程运行工作台左栏收口为“单节点运行／自动运行”两个 Tab；记录选择是流程图运行状态的唯一投影
+上下文，首次进入、刷新和切换 Tab 均不默认选中记录。选中行可再次点击或通过明确入口取消，取消只改变视图，
+不停止后台执行。无选择时画布只显示中性流程定义，并允许从任意节点创建新的单节点运行组；右侧全局执行历史
+移入左栏，节点侧仅保留当前 NodeRun 的 Attempt 记录。本切片不改变节点完成流转和自动调度。
+
+### FR-120 单节点运行组手动完成与产物流转 — PENDING
+
+依赖：`FR-119`。
+
+目标：同一单节点运行组中每个流程节点最多一条 NodeRun，重试继续使用 Attempt。结束门禁通过后由用户显式执行
+“完成节点并流转”，平台按冻结端口映射把当前输出绑定到下游输入，只把下游节点置为可配置而不自动启动；用户
+点击已到达节点后沿用现有单节点表单配置并启动。未到达节点不能加入当前组，取消记录选择后从任意节点启动会
+创建新的独立组。分支按流程方向展示，第一版拒绝同一组内重复进入节点的循环。
+
+### FR-121 自动运行逐节点编排与草稿页面 — PENDING
+
+依赖：`FR-119`、`FR-120`。
+
+目标：增加“编排自动运行”入口，使用与单节点启动一致的输入、提示词、Agent、Context、能力和门禁表面配置
+任意起始节点及其可达节点。已映射的后续输入只显示上游来源，未覆盖的必填输入形成就绪缺项。保存后在自动运行
+Tab 生成可继续编辑的草稿；启动前完成就绪检查，启动后冻结且只能复制为新编排。本切片只完成草稿产品闭环，
+不执行自动调度。
+
+### FR-122 门禁／流转 Agent 自动调度 — PENDING
+
+依赖：`FR-121`。
+
+目标：自动运行启动后不跳入会话，按冻结预设创建节点 Agent；独立门禁 Agent 只读取门禁上下文包并形成结构化
+决定。通过后，流转 Agent 只能在冻结拓扑和端口映射允许的操作集合中选择下游，平台完成权限、类型、幂等和
+状态裁决后创建下游 NodeRun，直到终点完成。人工审核、失败、取消和恢复必须形成可见终态，Agent 不得直接写
+平台状态或绕过门禁。
+
+### FR-123 双模式运行完整门禁与部署验收 — PENDING
+
+依赖：`FR-118`–`FR-122`。
+
+目标：集中完成迁移矩阵、平台/Web 静态检查与测试、OpenAPI、真实单节点手动串联、自动草稿冻结、自动运行、
+分支、门禁失败、人工介入、刷新恢复、Runtime replacement 和部署后 E2E；证明两种模式共享同一 Flow Version
+事实、单 FlowRun 单 Runtime 和 OpenHands 原生 Conversation/Event 边界。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1672,6 +1738,7 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-118 | 自动运行草稿与引用保护定向 pytest（5 passed）；FlowRun／能力删除／模型供应商合并回归（44 passed）；更新后的 API 产品流回归（80 passed）；受影响 Ruff 与全量 Pyright（0 errors）；OpenAPI 契约测试；PostgreSQL 空库、历史基线 downgrade／upgrade 迁移矩阵；Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动草稿冻结快照、任意起点、节点配置和输入引用，不创建 Runtime／NodeRun；手动启动、同步快照和人工完成均 fail closed。冻结 Artifact、能力版本、主 Agent／门禁 Agent 模型供应商不可被删除或禁用。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；未实现 Web 双 Tab、手动流转或自动调度。 |
 | 2026-08-31 | FR-117 | Agent Workspace 与 FlowRun 节点 SSH 映射/未配置降级 pytest（3 passed）；受影响 Python Ruff format/check 与 `py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；源码 Vite 的 Runtime 恢复工作区抽屉 Playwright（1 passed）；Compose config、Alembic head、任务状态唯一性与 `git diff --check` | PASS：SSH Remote 仅返回 Docker 宿主机持久 Workspace 的映射路径，未暴露 Runtime 容器连接信息；工作台展示并复制 SSH 与目录。唯一 Alembic head 为 `0084_attempt_context_selection`。另一条既有产品流浏览器用例在本次 SSH 断言前因未加载 `lark-sheets` Skill fixture 失败，未将其记为通过。 |
 | 2026-08-31 | FR-116 | `test_api.py` 节点会话/Prompt Context 定向回归（2 passed）；受影响 Python Ruff/`py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Prompt 启动允许空或多选 Context，并将选择冻结到 Attempt；自动执行和后续节点会话只应用冻结子集。CHAT 明确不应用节点 Context。唯一 Alembic head 为 `0084_attempt_context_selection`。 |
 | 2026-08-31 | FR-115 | `test_api.py` 会话/提示词启动定向回归（3 passed）；受影响 Python Ruff format/check 与 `py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：仅创建会话启动不再要求节点输入，并服务端忽略误传输入和门禁；不会创建输入绑定、门禁结果、输出目标或 Attempt Runtime 任务。会话直接打开人工导向草稿，输入/门禁/输出/流程映射均不适用；提示词启动路径保持原流程约束。唯一 Alembic head 为 `0083_attempt_gate_policies`。 |

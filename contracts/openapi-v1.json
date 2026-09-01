@@ -7451,6 +7451,108 @@
         }
       }
     },
+    "/api/v1/flows/{flow_id}/automatic-runs": {
+      "post": {
+        "summary": "Create Automatic Run Draft",
+        "operationId": "create_automatic_run_draft_api_v1_flows__flow_id__automatic_runs_post",
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomaticRunDraftWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Automatic Run Draft Api V1 Flows  Flow Id  Automatic Runs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/automatic-runs/{run_id}": {
+      "put": {
+        "summary": "Update Automatic Run Draft",
+        "operationId": "update_automatic_run_draft_api_v1_automatic_runs__run_id__put",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomaticRunDraftUpdateWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Automatic Run Draft Api V1 Automatic Runs  Run Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs": {
       "get": {
         "summary": "List Flow Runs",
@@ -10069,6 +10171,131 @@
           "expected_state_version"
         ],
         "title": "AttemptVersionWrite"
+      },
+      "AutomaticNodePlanWrite": {
+        "properties": {
+          "startup_prompt": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Startup Prompt"
+          },
+          "agent_preset": {
+            "$ref": "#/components/schemas/AgentPresetWrite"
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/GateWrite"
+            },
+            "type": "array",
+            "title": "Gates"
+          },
+          "artifact_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Artifact Ids"
+          },
+          "input_urls": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Input Urls"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "startup_prompt",
+          "agent_preset"
+        ],
+        "title": "AutomaticNodePlanWrite",
+        "description": "Editable, pre-runtime configuration for one automatic flow node."
+      },
+      "AutomaticRunDraftUpdateWrite": {
+        "properties": {
+          "expected_row_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Row Version"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 220
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "start_node_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$",
+            "title": "Start Node Key"
+          },
+          "node_plans": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AutomaticNodePlanWrite"
+            },
+            "type": "object",
+            "maxProperties": 200,
+            "title": "Node Plans"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_row_version",
+          "start_node_key"
+        ],
+        "title": "AutomaticRunDraftUpdateWrite"
+      },
+      "AutomaticRunDraftWrite": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 220
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "environment_version_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Environment Version Id"
+          },
+          "start_node_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$",
+            "title": "Start Node Key"
+          },
+          "node_plans": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AutomaticNodePlanWrite"
+            },
+            "type": "object",
+            "maxProperties": 200,
+            "title": "Node Plans"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "environment_version_id",
+          "start_node_key"
+        ],
+        "title": "AutomaticRunDraftWrite"
       },
       "Body_agent_attachment_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_post": {
         "properties": {

@@ -101,6 +101,8 @@ from flowweave.shared.schemas import (
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    AutomaticRunDraftUpdateWrite,
+    AutomaticRunDraftWrite,
     HumanInputWrite,
     InputBindingsWrite,
     NodeRunStart,
@@ -255,6 +257,169 @@ def _node(snapshot: RunSnapshot, instance_key: str) -> dict[str, Any]:
         if item["instance_key"] == instance_key:
             return item
     raise not_found("flow_node_snapshot", instance_key)
+
+
+def _reachable_node_keys(definition: dict[str, Any], start_node_key: str) -> list[str]:
+    ordered = [str(item.get("instance_key") or "") for item in definition.get("nodes", [])]
+    known = {key for key in ordered if key}
+    if start_node_key not in known:
+        raise not_found("flow_node_snapshot", start_node_key)
+    targets: dict[str, list[str]] = {key: [] for key in known}
+    for edge in definition.get("edges", []):
+        source = str(edge.get("source_instance_key") or "")
+        target = str(edge.get("target_instance_key") or "")
+        if source in known and target in known and target not in targets[source]:
+            targets[source].append(target)
+    reached: set[str] = set()
+    pending = [start_node_key]
+    while pending:
+        current = pending.pop(0)
+        if current in reached:
+            continue
+        reached.add(current)
+        pending.extend(targets[current])
+    return [key for key in ordered if key in reached]
+
+
+def _freeze_draft_agent_preset(db: Session, raw: dict[str, Any]) -> dict[str, Any]:
+    config = agent_sessions.resolve_session_config(
+        db,
+        model_provider_id=raw.get("model_provider_id"),
+        model_name=raw.get("model_name"),
+        reasoning_effort=raw.get("reasoning_effort"),
+        capability_version_ids=tuple(raw.get("capability_version_ids") or ()),
+    )
+    return {
+        "model_provider_id": config.model_provider_id,
+        "model_name": config.model_name,
+        "reasoning_effort": config.reasoning_effort,
+        "node_context_enabled": bool(raw.get("node_context_enabled")),
+        "node_context_prompt": raw.get("node_context_prompt"),
+        "capability_version_ids": [item.version_id for item in config.capabilities],
+        "capabilities": [
+            {
+                "version_id": item.version_id,
+                "capability_type": item.capability_type,
+                "capability_key": item.capability_key,
+                "digest": item.digest,
+            }
+            for item in config.capabilities
+        ],
+    }
+
+
+def _freeze_automatic_plan(
+    db: Session,
+    run: FlowRun,
+    definition: dict[str, Any],
+    *,
+    start_node_key: str,
+    node_plans: dict[str, Any],
+) -> dict[str, Any]:
+    reachable = _reachable_node_keys(definition, start_node_key)
+    known_nodes = {
+        str(item.get("instance_key") or ""): cast(dict[str, Any], item)
+        for item in definition.get("nodes", [])
+    }
+    unknown = sorted(set(node_plans) - set(known_nodes))
+    if unknown:
+        raise DomainError(
+            "AUTOMATION_PLAN_NODE_INVALID",
+            "Automatic plan contains nodes outside the frozen Flow",
+            422,
+            {"node_keys": unknown},
+        )
+    unreachable = sorted(set(node_plans) - set(reachable))
+    if unreachable:
+        raise DomainError(
+            "AUTOMATION_PLAN_NODE_UNREACHABLE",
+            "Automatic plan contains nodes outside the selected start node's reachable flow",
+            422,
+            {"node_keys": unreachable},
+        )
+    frozen_nodes: dict[str, Any] = {}
+    for node_key, plan_model in node_plans.items():
+        raw = plan_model.model_dump(mode="json")
+        node = known_nodes[node_key]
+        asset = cast(dict[str, Any], node.get("asset") or {})
+        input_types = {
+            str(item.get("field_key") or ""): str(item.get("data_type") or "")
+            for item in asset.get("inputs", [])
+        }
+        unknown_inputs = sorted(
+            (set(raw["artifact_ids"]) | set(raw["input_urls"])) - set(input_types)
+        )
+        if unknown_inputs:
+            raise DomainError(
+                "AUTOMATION_PLAN_INPUT_INVALID",
+                "Automatic plan input is not declared by the target node",
+                422,
+                {"node_key": node_key, "field_keys": unknown_inputs},
+            )
+        duplicate_inputs = sorted(set(raw["artifact_ids"]) & set(raw["input_urls"]))
+        if duplicate_inputs:
+            raise DomainError(
+                "AUTOMATION_PLAN_INPUT_INVALID",
+                "Automatic plan input has more than one configured source",
+                422,
+                {"node_key": node_key, "field_keys": duplicate_inputs},
+            )
+        non_url_inputs = sorted(
+            field_key for field_key in raw["input_urls"] if input_types[field_key] != "URL"
+        )
+        if non_url_inputs:
+            raise DomainError(
+                "AUTOMATION_PLAN_INPUT_INVALID",
+                "Automatic plan URL input does not match the declared input type",
+                422,
+                {"node_key": node_key, "field_keys": non_url_inputs},
+            )
+        _validate_input_bindings(db, run, node, dict(raw["artifact_ids"]))
+        frozen_gates: list[dict[str, Any]] = []
+        for gate in raw["gates"]:
+            gate_preset = dict(gate["agent_preset"])
+            gate_config = agent_sessions.resolve_session_config(
+                db,
+                model_provider_id=gate_preset.get("model_provider_id"),
+                model_name=gate_preset.get("model_name"),
+                reasoning_effort=gate_preset.get("reasoning_effort"),
+                capability_version_ids=(),
+            )
+            frozen_gates.append(
+                {
+                    **gate,
+                    "agent_preset": {
+                        "model_provider_id": gate_config.model_provider_id,
+                        "model_name": gate_config.model_name,
+                        "reasoning_effort": gate_config.reasoning_effort,
+                    },
+                }
+            )
+        frozen_nodes[node_key] = {
+            "startup_prompt": raw["startup_prompt"],
+            "agent_preset": _freeze_draft_agent_preset(db, dict(raw["agent_preset"])),
+            "gates": frozen_gates,
+            "artifact_ids": dict(raw["artifact_ids"]),
+            "input_urls": dict(raw["input_urls"]),
+        }
+    missing = [key for key in reachable if key not in frozen_nodes]
+    return {
+        "status": "DRAFT",
+        "start_node_key": start_node_key,
+        "reachable_node_keys": reachable,
+        "node_plans": frozen_nodes,
+        "readiness": {
+            "ready": not missing,
+            "issues": [
+                {
+                    "code": "NODE_PLAN_REQUIRED",
+                    "node_key": key,
+                    "message": "请配置此节点的自动执行预设",
+                }
+                for key in missing
+            ],
+        },
+    }
 
 
 def _run(db: Session, run_id: str) -> FlowRun:
@@ -556,6 +721,19 @@ def delete_artifact(db: Session, run_id: str, artifact_id: str) -> None:
             409,
             {"id": artifact_id},
         )
+    plan_nodes = cast(dict[str, Any], (run.automation_plan_json or {}).get("node_plans") or {})
+    plan_references = sorted(
+        node_key
+        for node_key, node_plan in plan_nodes.items()
+        if artifact_id in set(cast(dict[str, str], node_plan.get("artifact_ids") or {}).values())
+    )
+    if plan_references:
+        raise DomainError(
+            "ARTIFACT_DELETE_BLOCKED",
+            "Artifact is frozen by an automatic run draft",
+            409,
+            {"id": artifact_id, "node_keys": plan_references},
+        )
     binding_count = (
         db.scalar(
             select(func.count())
@@ -678,30 +856,6 @@ def _validate_input_bindings(
 _MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
 
 
-def _validate_context_selection(node: dict[str, Any], context_ids: list[str]) -> list[str]:
-    """Validate one human-selected subset of the node's frozen Context."""
-
-    asset = cast(dict[str, Any], node.get("asset") or {})
-    executor = cast(dict[str, Any], asset.get("executor") or {})
-    allowed: set[str] = set()
-    if str(executor.get("context_prompt") or "").strip():
-        allowed.add(_MANUAL_NODE_CONTEXT_ID)
-    raw_contexts = asset.get("context_capabilities")
-    if isinstance(raw_contexts, list):
-        for raw_context in cast(list[object], raw_contexts):
-            if isinstance(raw_context, dict) and str(raw_context.get("id") or ""):
-                allowed.add(str(raw_context["id"]))
-    unknown = [item for item in context_ids if item not in allowed]
-    if unknown:
-        raise DomainError(
-            "NODE_CONTEXT_INVALID",
-            "Selected Context is not available on this node",
-            422,
-            {"context_ids": unknown},
-        )
-    return list(context_ids)
-
-
 def _node_with_selected_context(
     node: dict[str, Any],
     context_ids: list[str] | None,
@@ -730,15 +884,15 @@ def _node_with_selected_context(
     raw_contexts = asset.get("context_capabilities")
     next_asset = dict(asset)
     next_asset["executor"] = next_executor
-    next_asset["context_capabilities"] = (
-        [
-            item
-            for item in cast(list[object], raw_contexts)
-            if isinstance(item, dict) and str(item.get("id") or "") in selected
-        ]
-        if isinstance(raw_contexts, list)
-        else []
-    )
+    selected_contexts: list[dict[str, object]] = []
+    if isinstance(raw_contexts, list):
+        for item_value in cast(list[object], raw_contexts):
+            if not isinstance(item_value, dict):
+                continue
+            item = cast(dict[str, object], item_value)
+            if str(item.get("id") or "") in selected:
+                selected_contexts.append(item)
+    next_asset["context_capabilities"] = selected_contexts
     next_node = dict(node)
     next_node["asset"] = next_asset
     return next_node
@@ -1229,6 +1383,7 @@ def _prepare_gate_plan(
                 error_code="GATE_CONFIG_INVALID",
             ),
         )
+    typed_preset = cast(dict[str, object], preset)
 
     run = _run(db, node_run.flow_run_id)
     snapshot = _snapshot(db, attempt.snapshot_id)
@@ -1237,20 +1392,30 @@ def _prepare_gate_plan(
         or snapshot.environment_version_id != run.environment_version_id
     ):
         return GateExecutionPlan(
-            str(policy["gate_type"]), config, timeout,
+            str(policy["gate_type"]),
+            config,
+            timeout,
             preparation_error=GateResult(
-                "ERROR", "Gate Runtime Environment is unavailable",
-                ["Gate Runtime Environment is unavailable"], [], {},
+                "ERROR",
+                "Gate Runtime Environment is unavailable",
+                ["Gate Runtime Environment is unavailable"],
+                [],
+                {},
                 error_code="GATE_CONFIG_INVALID",
             ),
         )
     environment = lock_referenceable_version(db, run.environment_version_id)
     if environment is None:
         return GateExecutionPlan(
-            str(policy["gate_type"]), config, timeout,
+            str(policy["gate_type"]),
+            config,
+            timeout,
             preparation_error=GateResult(
-                "ERROR", "Gate Runtime Environment is unavailable",
-                ["Gate Runtime Environment is unavailable"], [], {},
+                "ERROR",
+                "Gate Runtime Environment is unavailable",
+                ["Gate Runtime Environment is unavailable"],
+                [],
+                {},
                 error_code="GATE_CONFIG_INVALID",
             ),
         )
@@ -1259,11 +1424,17 @@ def _prepare_gate_plan(
         session_config = agent_sessions.resolve_session_config(
             db,
             model_provider_id=(
-                str(preset["model_provider_id"]) if preset.get("model_provider_id") else None
+                str(typed_preset["model_provider_id"])
+                if typed_preset.get("model_provider_id")
+                else None
             ),
-            model_name=str(preset["model_name"]) if preset.get("model_name") else None,
+            model_name=(
+                str(typed_preset["model_name"]) if typed_preset.get("model_name") else None
+            ),
             reasoning_effort=(
-                str(preset["reasoning_effort"]) if preset.get("reasoning_effort") else None
+                str(typed_preset["reasoning_effort"])
+                if typed_preset.get("reasoning_effort")
+                else None
             ),
             # A gate never inherits the primary Agent's skills, plugins or
             # context. Its only inputs are the explicit gate payload below.
@@ -1276,9 +1447,7 @@ def _prepare_gate_plan(
             node_run_id=node_run.id,
             node_attempt_id=attempt.id,
             working_directory="/runtime/workspace/project",
-            create_idempotency_key=(
-                f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}"
-            ),
+            create_idempotency_key=(f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}"),
             display_title=f"门禁 {policy['id']} · 第 {execution_no} 次",
             config=session_config,
         )
@@ -1324,11 +1493,17 @@ def _prepare_gate_plan(
         )
     except Exception as exc:
         return GateExecutionPlan(
-            str(policy["gate_type"]), config, timeout,
+            str(policy["gate_type"]),
+            config,
+            timeout,
             preparation_error=GateResult(
-                "ERROR", "Gate Agent configuration is unavailable",
-                ["Gate Agent configuration is unavailable"], [], {},
-                log_excerpt=str(exc)[:4000], error_code="GATE_CONFIG_INVALID",
+                "ERROR",
+                "Gate Agent configuration is unavailable",
+                ["Gate Agent configuration is unavailable"],
+                [],
+                {},
+                log_excerpt=str(exc)[:4000],
+                error_code="GATE_CONFIG_INVALID",
             ),
         )
 
@@ -1345,11 +1520,16 @@ def _prepare_gate_plan(
             if code
             else ""
         )
-        + "Gate context:\n" + json.dumps(context, ensure_ascii=False)
+        + "Gate context:\n"
+        + json.dumps(context, ensure_ascii=False)
     )
     return GateExecutionPlan(
-        str(policy["gate_type"]), config, timeout,
-        sidecar_request=request, sidecar_question=question, sidecar_binding_id=binding.id,
+        str(policy["gate_type"]),
+        config,
+        timeout,
+        sidecar_request=request,
+        sidecar_question=question,
+        sidecar_binding_id=binding.id,
     )
 
 
@@ -1686,6 +1866,7 @@ def start_flow(
         flow_definition_id=flow_id,
         run_no=run_no,
         name=run_name,
+        run_mode="MANUAL",
         environment_version_id=environment.id,
         lark_folder_token=None,
         lark_folder_url=None,
@@ -1763,6 +1944,103 @@ def start_flow(
     return run_detail(db, run.id)
 
 
+def create_automatic_run_draft(
+    db: Session, flow_id: str, payload: AutomaticRunDraftWrite
+) -> dict[str, Any]:
+    flow = load_flow(db, flow_id)
+    environment = lock_referenceable_version(db, payload.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The selected automatic-run Environment Version is not READY",
+            422,
+            {"environment_version_id": payload.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
+    run_no = (
+        db.scalar(select(func.max(FlowRun.run_no)).where(FlowRun.flow_definition_id == flow_id))
+        or 0
+    ) + 1
+    run = FlowRun(
+        flow_definition_id=flow_id,
+        run_no=run_no,
+        name=(payload.name or "").strip() or f"{flow.name} · 自动运行 #{run_no}",
+        run_mode="AUTOMATIC",
+        state=FlowRunState.DRAFT,
+        environment_version_id=environment.id,
+    )
+    db.add(run)
+    db.flush()
+    run.automation_plan_json = _freeze_automatic_plan(
+        db,
+        run,
+        definition,
+        start_node_key=payload.start_node_key,
+        node_plans=payload.node_plans,
+    )
+    runtime_manifest = _compile_runtime_manifest(definition)
+    snapshot = RunSnapshot(
+        flow_run_id=run.id,
+        version=1,
+        schema_version=2,
+        definition_json=definition,
+        definition_hash=_hash(definition),
+        runtime_manifest_json=runtime_manifest,
+        runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
+        environment_version_id=environment.id,
+    )
+    db.add(snapshot)
+    db.flush()
+    hold_snapshot_memory_references(db, snapshot_id=snapshot.id, runtime_manifest=runtime_manifest)
+    run.active_snapshot_id = snapshot.id
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_RUN_DRAFT_CREATED",
+        {
+            "snapshot_version": 1,
+            "environment_version_id": environment.id,
+            "start_node_key": payload.start_node_key,
+        },
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
+def update_automatic_run_draft(
+    db: Session, run_id: str, payload: AutomaticRunDraftUpdateWrite
+) -> dict[str, Any]:
+    run = _run(db, run_id)
+    if run.run_mode != "AUTOMATIC" or run.state != FlowRunState.DRAFT:
+        raise illegal("only an automatic run draft can be edited", state=run.state)
+    if run.row_version != payload.expected_row_version:
+        raise conflict(
+            "automatic run draft was modified",
+            expected=payload.expected_row_version,
+            actual=run.row_version,
+        )
+    snapshot = _active_snapshot(db, run)
+    run.automation_plan_json = _freeze_automatic_plan(
+        db,
+        run,
+        snapshot.definition_json,
+        start_node_key=payload.start_node_key,
+        node_plans=payload.node_plans,
+    )
+    if payload.name is not None:
+        run.name = payload.name.strip() or run.name
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_RUN_DRAFT_UPDATED",
+        {"start_node_key": payload.start_node_key, "row_version": run.row_version},
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
 def process_provision_flow_run_runtime(
     db: Session,
     run_id: str,
@@ -1773,6 +2051,8 @@ def process_provision_flow_run_runtime(
     """Provision a FlowRun Agent Server through the Worker controller principal."""
 
     run = _run(db, run_id)
+    if run.state == FlowRunState.DRAFT:
+        raise illegal("automatic run draft cannot provision a Runtime", state=run.state)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         _finish_transaction(db, commit)
         return
@@ -1811,6 +2091,8 @@ def start_node_run(
     db: Session, run_id: str, instance_key: str, payload: NodeRunStart
 ) -> dict[str, Any]:
     run = _run(db, run_id)
+    if run.run_mode != "MANUAL":
+        raise illegal("automatic runs cannot use the manual node start command", state=run.state)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal run cannot activate node", state=run.state)
     if payload.startup_mode == "CHAT":
@@ -2009,15 +2291,11 @@ def confirm_start(
     session_config = agent_sessions.resolve_session_config(
         db,
         model_provider_id=(
-            str(preset["model_provider_id"])
-            if preset and preset.get("model_provider_id")
-            else None
+            str(preset["model_provider_id"]) if preset and preset.get("model_provider_id") else None
         ),
         model_name=(str(preset["model_name"]) if preset and preset.get("model_name") else None),
         reasoning_effort=(
-            str(preset["reasoning_effort"])
-            if preset and preset.get("reasoning_effort")
-            else None
+            str(preset["reasoning_effort"]) if preset and preset.get("reasoning_effort") else None
         ),
         capability_version_ids=(
             tuple(str(value) for value in preset.get("capability_version_ids", []))
@@ -2314,7 +2592,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     preset = attempt.agent_preset_json or {}
-    node_context_prompt = preset.get("node_context_prompt") if isinstance(preset, dict) else None
+    node_context_prompt = preset.get("node_context_prompt")
     node = _node_with_selected_context(
         _runtime_node(snapshot, node_run.flow_node_snapshot_key),
         attempt.context_ids_json,
@@ -3609,6 +3887,11 @@ def sync_snapshot(
     db: Session, run_id: str, payload: SyncSnapshotWrite, idempotency_key: str
 ) -> dict[str, Any]:
     run = _run(db, run_id)
+    if run.run_mode == "AUTOMATIC":
+        raise illegal(
+            "automatic runs keep their creation snapshot and cannot use manual snapshot sync",
+            state=run.state,
+        )
     current = _active_snapshot(db, run)
     if (
         payload.expected_active_version is not None
@@ -3684,6 +3967,8 @@ def sync_snapshot(
 
 def complete_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]:
     run = _run(db, run_id)
+    if run.state == FlowRunState.DRAFT:
+        raise illegal("automatic run draft must be started or cancelled", state=run.state)
     attempts = list(
         db.scalars(
             select(NodeAttempt)
@@ -4015,6 +4300,8 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
         ),
         "run_no": run.run_no,
         "name": run.name,
+        "run_mode": run.run_mode,
+        "automation_plan": run.automation_plan_json,
         "state": run.state,
         "row_version": run.row_version,
         "completion_mode": run.completion_mode,
@@ -4159,6 +4446,8 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 ),
                 "run_no": run.run_no,
                 "name": run.name,
+                "run_mode": run.run_mode,
+                "automation_plan": run.automation_plan_json,
                 "state": run.state,
                 "completion_mode": run.completion_mode,
                 "environment_version_id": run.environment_version_id,
@@ -4166,9 +4455,23 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "current_node_key": (current_node.flow_node_snapshot_key if current_node else None),
                 "current_node_name": current_name,
                 "current_attempt_state": current_attempt.state if current_attempt else None,
-                "runtime_status": runtime.get("status") if runtime else "ARCHIVED",
-                "runtime_write_available": bool(runtime and runtime.get("write_available")),
-                "runtime_message": runtime.get("message") if runtime else None,
+                "runtime_status": (
+                    "DRAFT"
+                    if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
+                    else runtime.get("status")
+                    if runtime
+                    else "ARCHIVED"
+                ),
+                "runtime_write_available": bool(
+                    run.state != FlowRunState.DRAFT and runtime and runtime.get("write_available")
+                ),
+                "runtime_message": (
+                    "自动运行尚未启动，可继续编辑编排"
+                    if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
+                    else runtime.get("message")
+                    if runtime
+                    else None
+                ),
                 "has_pending_action": bool(
                     current_attempt and current_attempt.state in pending_states
                 ),

@@ -17,6 +17,8 @@ from flowweave.shared.schemas import (
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    AutomaticRunDraftUpdateWrite,
+    AutomaticRunDraftWrite,
     HumanInputWrite,
     InputBindingsWrite,
     NodeRunStart,
@@ -38,6 +40,24 @@ def _key(value: str | None, action: str, identifier: str) -> str:
 @router.post("/flows/{flow_id}/runs", status_code=201)
 async def start_flow(flow_id: str, payload: RunStart, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.start_flow(session, flow_id, payload))
+
+
+@router.post("/flows/{flow_id}/automatic-runs", status_code=201)
+async def create_automatic_run_draft(
+    flow_id: str, payload: AutomaticRunDraftWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.create_automatic_run_draft(session, flow_id, payload)
+    )
+
+
+@router.put("/automatic-runs/{run_id}")
+async def update_automatic_run_draft(
+    run_id: str, payload: AutomaticRunDraftUpdateWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.update_automatic_run_draft(session, run_id, payload)
+    )
 
 
 @router.get("/flow-runs")
