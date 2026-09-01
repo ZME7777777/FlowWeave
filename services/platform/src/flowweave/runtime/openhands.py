@@ -2253,6 +2253,33 @@ class OpenHandsRuntime:
         return None
 
     @staticmethod
+    def _is_legacy_autotitle_protocol_error(item: dict[str, Any]) -> bool:
+        """Identify the pre-fix OpenHands native-title error publication.
+
+        OpenHands 1.42/1.44 emitted a background title-generation failure as
+        a top-level conversation error.  This exact error is non-critical
+        metadata, not a user-turn failure.  Keep the signature intentionally
+        narrow so normal provider, tool, and model errors remain visible.
+        """
+
+        if (
+            str(item.get("kind") or "") != "ConversationErrorEvent"
+            or str(item.get("source") or "") != "environment"
+            or str(item.get("code") or "") != "NotFoundError"
+            or item.get("action")
+            or item.get("action_id")
+            or item.get("tool_call_id")
+        ):
+            return False
+        detail = item.get("detail")
+        return (
+            isinstance(detail, str)
+            and "litellm.NotFoundError" in detail
+            and "OpenAIException" in detail
+            and "Error code: 404" in detail
+        )
+
+    @staticmethod
     def _is_late_auxiliary_title_error(
         error: dict[str, Any], prior_items: list[dict[str, Any]]
     ) -> bool:
@@ -2296,13 +2323,16 @@ class OpenHandsRuntime:
             base_url=base_url,
             session_api_key=session_api_key,
         )
+        visible_items = [
+            item for item in items if not self._is_legacy_autotitle_protocol_error(item)
+        ]
         events = tuple(
             RuntimeEvent(
                 cursor=self._event_identity(item)[0],
                 event_type=self._event_type(item),
                 payload=self._event_payload(item),
             )
-            for item in items
+            for item in visible_items
         )
         state = self._conversation_state(handle)
         state_cursor = str(state.get("leaf_event_id") or cursor or handle.cursor or "") or None
@@ -2357,7 +2387,12 @@ class OpenHandsRuntime:
             # /events/search, so it terminates traversal rather than proving
             # the branch is incomplete.
             active_event_id = None if parent_id == "__root__" else parent_id
-        active_items = [item for item in items if self._event_identity(item)[0] in active_ids]
+        active_items = [
+            item
+            for item in items
+            if self._event_identity(item)[0] in active_ids
+            and not self._is_legacy_autotitle_protocol_error(item)
+        ]
         events = tuple(
             RuntimeEvent(
                 cursor=self._event_identity(item)[0],
@@ -2806,6 +2841,11 @@ class OpenHandsRuntime:
         """
 
         kind = str(event.get("kind") or "")
+        if (
+            isinstance(event, dict)
+            and cls._is_legacy_autotitle_protocol_error(cast(dict[str, Any], event))
+        ):
+            return ()
         if kind == "StreamingDeltaEvent":
             content = event.get("content")
             return (
