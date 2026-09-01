@@ -1,7 +1,7 @@
 import type {
   AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, AutomaticRunDraftUpdateWrite, AutomaticRunDraftWrite, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -285,6 +285,14 @@ export const api = {
 
   runFlow: (flowId: string, body: { name?: string; environment_version_id: string }) =>
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
+  createAutomaticRun: (flowId: string, body: AutomaticRunDraftWrite) =>
+    request<FlowRun>(`/flows/${flowId}/automatic-runs`, json('POST', body)),
+  updateAutomaticRun: (runId: string, body: AutomaticRunDraftUpdateWrite) =>
+    request<FlowRun>(`/automatic-runs/${runId}`, json('PUT', body)),
+  freezeAutomaticRun: (runId: string, expected_row_version: number) =>
+    request<FlowRun>(`/automatic-runs/${runId}/start`, json('POST', { expected_row_version }, true)),
+  copyAutomaticRun: (runId: string, name?: string) =>
+    request<FlowRun>(`/automatic-runs/${runId}/copy`, json('POST', { name: name || null })),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),

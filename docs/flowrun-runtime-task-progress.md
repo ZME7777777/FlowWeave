@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-121`
+> 下一可执行切片：`FR-122`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1708,7 +1708,7 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 页面点击已到达节点时复用完整单节点表单并预填映射输入，未到达节点只显示等待提示；移除重复 NodeRun 入口，
 刷新后仍从持久 NodeRun 与 Artifact 事实恢复可配置状态。
 
-### FR-121 自动运行逐节点编排与草稿页面 — READY
+### FR-121 自动运行逐节点编排与草稿页面 — DONE
 
 依赖：`FR-119`、`FR-120`。
 
@@ -1717,7 +1717,14 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 Tab 生成可继续编辑的草稿；启动前完成就绪检查，启动后冻结且只能复制为新编排。本切片只完成草稿产品闭环，
 不执行自动调度。
 
-### FR-122 门禁／流转 Agent 自动调度 — PENDING
+完成：中性流程工作台提供“编排自动运行”入口，可选择流程、READY Environment Version 和任意起始节点；
+草稿按冻结可达图逐节点复用 URL／FILE 输入、启动提示词、主 Agent 模型、Context、能力和独立门禁 Agent 配置。
+冻结端口映射覆盖的下游输入只读展示上游来源，未映射输入和缺失节点预设形成服务端就绪缺项。草稿保存采用
+row version 乐观锁；启动命令幂等地把就绪计划冻结为 `FROZEN`，不分配 Runtime、不创建 NodeRun／Attempt／
+后台任务，误投递 Runtime 预置同样 fail closed。冻结计划只读且只能复制为新草稿，复制会重新归属输入 Artifact，
+不会跨 FlowRun 引用源 Artifact。自动调度仍留给 FR-122。
+
+### FR-122 门禁／流转 Agent 自动调度 — READY
 
 依赖：`FR-121`。
 
@@ -1750,6 +1757,7 @@ Tab 生成可继续编辑的草稿；启动前完成就绪检查，启动后冻�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-121 | 自动草稿平台回归（8 passed，含就绪缺项、幂等冻结、误投递 Runtime 任务 fail closed、Artifact 复制归属）；受影响 Ruff 与全量 Pyright；OpenAPI 契约；Web ESLint、TypeScript typecheck、production build；源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Workbench 可从任意起始节点创建并逐节点编辑自动草稿，复用 URL／FILE 输入、提示词、Agent、Context、能力和独立门禁配置；映射输入只读展示上游来源，缺失输入形成服务端就绪缺项。启动仅把计划幂等冻结为 `FROZEN`，不创建 Runtime、NodeRun、Attempt 或后台任务，冻结后只能复制为重新归属 Artifact 的新草稿。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；无 `CURRENT`，下一切片为 FR-122。 |
 | 2026-09-01 | FR-120 | `test_api.py` 全量（40 passed，含同节点唯一、完成命令幂等重放、真实分支／汇聚、循环定义拒绝、完整运行链路）；受影响 Ruff/`py_compile`；Web TypeScript、ESLint、production build；源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：手动完成只创建可配置的冻结下游 NodeRun，并绑定映射产物而不启动 Agent；同组节点唯一，修订继续使用 Attempt，重复完成不创建第二条下游记录，未到达节点与循环 fail closed。页面订阅新的完成／流转事件且无重复 NodeRun 操作，已到达节点可在刷新后继续使用完整表单。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；无 `CURRENT`，下一切片为 FR-121。 |
 | 2026-09-01 | FR-119 | Web TypeScript typecheck、ESLint、production build；源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：流程运行统一进入双 Tab Workbench；记录选择、取消、Tab 切换和浏览器刷新均不产生隐式选中。无选择时中性流程图可从任意节点打开新的单节点运行对话框；选中记录后左栏展示全局 NodeRun 历史，节点详情仅保留 Attempt 历史。自动草稿仅显示冻结投影。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；无 `CURRENT`，下一切片为 FR-120。 |
 | 2026-09-01 | FR-118 | 自动运行草稿与引用保护定向 pytest（5 passed）；FlowRun／能力删除／模型供应商合并回归（44 passed）；更新后的 API 产品流回归（80 passed）；受影响 Ruff 与全量 Pyright（0 errors）；OpenAPI 契约测试；PostgreSQL 空库、历史基线 downgrade／upgrade 迁移矩阵；Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动草稿冻结快照、任意起点、节点配置和输入引用，不创建 Runtime／NodeRun；手动启动、同步快照和人工完成均 fail closed。冻结 Artifact、能力版本、主 Agent／门禁 Agent 模型供应商不可被删除或禁用。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；未实现 Web 双 Tab、手动流转或自动调度。 |

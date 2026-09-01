@@ -10,7 +10,7 @@ import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel
 import { StartRunDialog } from '../components/StartRunDialog';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, CapabilityAsset, CapabilityCollection, FlowDefinition, FlowRun, FlowRunSummary, GateAgentPreset, GateEvaluation, GatePolicy, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlanWrite, CapabilityAsset, CapabilityCollection, FlowDefinition, FlowRun, FlowRunSummary, GateAgentPreset, GateEvaluation, GatePolicy, NodeAttempt, NodeRun, SnapshotFlowNode, TerminalEnvironment } from '../types';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 
@@ -504,21 +504,82 @@ type RunMode = 'MANUAL' | 'AUTOMATIC';
 
 function RunSelectorRail({ mode, onModeChange, selectedRunId, runs, selectedRun, selectedNodeRunId, onSelect, onSelectNodeRun, onClear }: { mode: RunMode; onModeChange: (mode: RunMode) => void; selectedRunId?: string; runs: FlowRunSummary[]; selectedRun?: FlowRun; selectedNodeRunId?: string; onSelect: (runId: string) => void; onSelectNodeRun: (nodeRunId: string) => void; onClear: () => void }) {
   const matching = runs.filter(run => run.run_mode === mode);
-  return <aside className="run-selector-rail"><header><span className="eyebrow">FLOW RUNS</span><b>流程运行</b></header><nav className="run-mode-tabs" role="tablist" aria-label="运行模式"><button type="button" role="tab" aria-selected={mode === 'MANUAL'} className={mode === 'MANUAL' ? 'active' : ''} onClick={() => onModeChange('MANUAL')}>单节点运行</button><button type="button" role="tab" aria-selected={mode === 'AUTOMATIC'} className={mode === 'AUTOMATIC' ? 'active' : ''} onClick={() => onModeChange('AUTOMATIC')}>自动运行</button></nav><div className="run-selector-heading"><span>{mode === 'MANUAL' ? '运行组' : '自动草稿'}</span>{selectedRunId && <button type="button" className="ghost" onClick={onClear}>取消选择</button>}</div><div className="run-selector-list">{matching.map(run => { const selected = run.id === selectedRunId; const ready = run.run_mode === 'AUTOMATIC' ? Boolean(run.automation_plan?.readiness.ready) : run.runtime_write_available !== false; return <button type="button" key={run.id} className={selected ? 'active' : ''} onClick={() => selected ? onClear() : onSelect(run.id)}><span><b>{run.name}</b><small>{run.run_mode === 'AUTOMATIC' ? (ready ? '草稿已就绪' : '草稿待补齐') : 'Run #' + run.run_no + ' · ' + (FLOW_STATE_LABELS[run.state] ?? run.state)}</small></span><i className={ready ? 'ready' : 'pending'}>{selected ? '✓' : ''}</i></button>; })}{!matching.length && <p>{mode === 'MANUAL' ? '暂无单节点运行组。' : '暂无自动运行草稿。'}</p>}</div>{selectedRun?.run_mode === 'MANUAL' && <section className="run-selector-history"><header><b>节点执行记录</b><small>选择记录只切换当前投影，不会停止执行。</small></header>{selectedRun.node_runs.length ? selectedRun.node_runs.map(nodeRun => <button type="button" key={nodeRun.id} className={nodeRun.id === selectedNodeRunId ? 'active' : ''} onClick={() => onSelectNodeRun(nodeRun.id)}><i className={String(attemptState(nodeRun)).toLowerCase()}/><span><b>{nodeRunName(selectedRun, nodeRun)}</b><small>第 {nodeVisitNumber(selectedRun, nodeRun)} 次执行 · {attemptStateLabel(nodeRun)}</small></span></button>) : <p>当前运行组尚无节点执行记录。</p>}</section>}</aside>;
+  return <aside className="run-selector-rail"><header><span className="eyebrow">FLOW RUNS</span><b>流程运行</b></header><nav className="run-mode-tabs" role="tablist" aria-label="运行模式"><button type="button" role="tab" aria-selected={mode === 'MANUAL'} className={mode === 'MANUAL' ? 'active' : ''} onClick={() => onModeChange('MANUAL')}>单节点运行</button><button type="button" role="tab" aria-selected={mode === 'AUTOMATIC'} className={mode === 'AUTOMATIC' ? 'active' : ''} onClick={() => onModeChange('AUTOMATIC')}>自动运行</button></nav><div className="run-selector-heading"><span>{mode === 'MANUAL' ? '运行组' : '自动编排'}</span>{selectedRunId && <button type="button" className="ghost" onClick={onClear}>取消选择</button>}</div><div className="run-selector-list">{matching.map(run => { const selected = run.id === selectedRunId; const frozen = run.run_mode === 'AUTOMATIC' && run.automation_plan?.status === 'FROZEN'; const ready = run.run_mode === 'AUTOMATIC' ? Boolean(run.automation_plan?.readiness.ready) : run.runtime_write_available !== false; return <button type="button" key={run.id} className={selected ? 'active' : ''} onClick={() => selected ? onClear() : onSelect(run.id)}><span><b>{run.name}</b><small>{run.run_mode === 'AUTOMATIC' ? frozen ? '计划已冻结' : ready ? '草稿已就绪' : '草稿待补齐' : 'Run #' + run.run_no + ' · ' + (FLOW_STATE_LABELS[run.state] ?? run.state)}</small></span><i className={frozen || ready ? 'ready' : 'pending'}>{selected ? '✓' : ''}</i></button>; })}{!matching.length && <p>{mode === 'MANUAL' ? '暂无单节点运行组。' : '暂无自动运行编排。'}</p>}</div>{selectedRun?.run_mode === 'MANUAL' && <section className="run-selector-history"><header><b>节点执行记录</b><small>选择记录只切换当前投影，不会停止执行。</small></header>{selectedRun.node_runs.length ? selectedRun.node_runs.map(nodeRun => <button type="button" key={nodeRun.id} className={nodeRun.id === selectedNodeRunId ? 'active' : ''} onClick={() => onSelectNodeRun(nodeRun.id)}><i className={String(attemptState(nodeRun)).toLowerCase()}/><span><b>{nodeRunName(selectedRun, nodeRun)}</b><small>第 {nodeVisitNumber(selectedRun, nodeRun)} 次执行 · {attemptStateLabel(nodeRun)}</small></span></button>) : <p>当前运行组尚无节点执行记录。</p>}</section>}</aside>;
 }
 
-function NeutralFlowWorkspace({ flows, onStart }: { flows: FlowDefinition[]; onStart: (flow: FlowDefinition, nodeKey: string) => void }) {
+function NeutralFlowWorkspace({ flows, onStart, onAutomaticStart }: { flows: FlowDefinition[]; onStart: (flow: FlowDefinition, nodeKey: string) => void; onAutomaticStart: () => void }) {
   const [flowId, setFlowId] = useState<string>();
   const flow = flows.find(item => item.id === flowId);
   const nodes = useMemo<Node[]>(() => (flow?.nodes ?? []).map(node => ({ id: node.instance_key, position: { x: node.position_x, y: node.position_y }, data: { label: node.alias || node.instance_key } })), [flow]);
   const edges = useMemo<Edge[]>(() => (flow?.edges ?? []).map((edge, index) => ({ id: edge.id ?? 'definition-' + index, source: edge.source_instance_key, target: edge.target_instance_key })), [flow]);
-  return <main className="run-main neutral-run-workspace"><header className="run-title"><div><span className="eyebrow">NO RUN SELECTED</span><h1>流程定义</h1><p>记录选择是运行状态的唯一投影上下文。选择流程后，可从任意节点创建新的单节点运行组。</p></div><label className="neutral-flow-picker">流程<select aria-label="选择中性流程" value={flowId ?? ''} onChange={event => setFlowId(event.target.value || undefined)}><option value="">选择流程</option>{flows.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></header>{flow ? <section className="neutral-flow-preview" data-testid="neutral-flow-preview"><div className="neutral-flow-canvas"><ReactFlow nodes={nodes} edges={edges} fitView nodesConnectable={false} nodesDraggable={false} onNodeClick={(_, node) => onStart(flow, node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section> : <div className="empty"><b>尚未选择流程</b><span>选择一个流程以查看中性定义图。</span></div>}</main>;
+  return <main className="run-main neutral-run-workspace"><header className="run-title"><div><span className="eyebrow">NO RUN SELECTED</span><h1>流程定义</h1><p>记录选择是运行状态的唯一投影上下文。选择流程后，可从任意节点创建新的单节点运行组。</p></div><div className="neutral-flow-actions"><button type="button" className="primary" onClick={onAutomaticStart}><Play size={14}/>编排自动运行</button><label className="neutral-flow-picker">流程<select aria-label="选择中性流程" value={flowId ?? ''} onChange={event => setFlowId(event.target.value || undefined)}><option value="">选择流程</option>{flows.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div></header>{flow ? <section className="neutral-flow-preview" data-testid="neutral-flow-preview"><div className="neutral-flow-canvas"><ReactFlow nodes={nodes} edges={edges} fitView nodesConnectable={false} nodesDraggable={false} onNodeClick={(_, node) => onStart(flow, node.id)}><Background/><Controls showInteractive={false}/></ReactFlow></div></section> : <div className="empty"><b>尚未选择流程</b><span>选择一个流程以查看中性定义图。</span></div>}</main>;
 }
 
-function AutomaticRunProjection({ run }: { run: FlowRun }) {
+const emptyAutomaticPlan = (node: SnapshotFlowNode): AutomaticNodePlanWrite => ({
+  startup_prompt: node.asset.executor?.startup_prompt || '',
+  agent_preset: { capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt || '' },
+  gates: [], artifact_ids: {}, input_urls: {},
+});
+
+function automaticReachable(flow: FlowDefinition, start: string): string[] {
+  const reached = new Set<string>();
+  const pending = [start];
+  while (pending.length) {
+    const key = pending.shift()!;
+    if (reached.has(key)) continue;
+    reached.add(key);
+    flow.edges.filter(edge => edge.source_instance_key === key).forEach(edge => pending.push(edge.target_instance_key));
+  }
+  return flow.nodes.map(node => node.instance_key).filter(key => reached.has(key));
+}
+
+function AutomaticDraftDialog({ flows, environments, onClose, onCreated }: { flows: FlowDefinition[]; environments: TerminalEnvironment[]; onClose: () => void; onCreated: (run: FlowRun) => void }) {
+  const [flowId, setFlowId] = useState('');
+  const [environmentId, setEnvironmentId] = useState('');
+  const [startNodeKey, setStartNodeKey] = useState('');
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const flow = flows.find(item => item.id === flowId);
+  const start = flow?.nodes.find(node => node.instance_key === startNodeKey);
+  useEscapeClose(onClose);
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (!flow || !start || !environmentId) throw new Error('请选择流程、运行环境和起始节点。');
+      return api.createAutomaticRun(flow.id, { name: name.trim() || undefined, environment_version_id: environmentId, start_node_key: start.instance_key, node_plans: {} });
+    },
+    onSuccess: onCreated,
+    onError: reason => setError(reason instanceof Error ? reason.message : '创建草稿失败'),
+  });
+  return <div className="modal-backdrop"><section className="modal automatic-draft-dialog" role="dialog" aria-modal="true" aria-label="编排自动运行"><header><div><span className="eyebrow">AUTOMATIC FLOW</span><h2>编排自动运行</h2><p>先创建可编辑草稿；所有可达节点配置完整后才能冻结计划。</p></div><button type="button" className="ghost" aria-label="关闭编排自动运行" onClick={onClose}><X size={17}/></button></header><label>流程<select aria-label="自动运行流程" value={flowId} onChange={event => { setFlowId(event.target.value); setStartNodeKey(''); }}><option value="">选择流程</option>{flows.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>运行名称<input aria-label="自动运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={flow ? `${flow.name} · 自动运行` : '自动运行名称'}/></label><label>运行环境<select aria-label="自动运行环境版本" value={environmentId} onChange={event => setEnvironmentId(event.target.value)}><option value="">选择运行环境</option>{environments.flatMap(environment => environment.versions.filter(version => version.state === 'READY' && version.runtime_compatible && Boolean(version.image_digest)).map(version => <option key={version.id} value={version.id}>{environment.name} · v{version.version_no}</option>))}</select></label><label>起始节点<select aria-label="自动运行起始节点" disabled={!flow} value={startNodeKey} onChange={event => setStartNodeKey(event.target.value)}><option value="">选择起始节点</option>{flow?.nodes.map(node => <option key={node.instance_key} value={node.instance_key}>{node.alias || node.instance_key}</option>)}</select></label>{start && <p className="field-hint">将编排 {automaticReachable(flow!, start.instance_key).length} 个可达节点；下游映射输入由冻结端口映射提供。</p>}{error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={mutation.isPending || !start || !environmentId} onClick={() => mutation.mutate()}>{mutation.isPending ? '正在创建…' : '创建自动草稿'}</button></footer></section></div>;
+}
+
+function AutomaticDraftEditor({ run, refresh, onCopied }: { run: FlowRun; refresh: () => void; onCopied: (run: FlowRun) => void }) {
+  const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const plan = run.automation_plan;
-  if (!plan) return <div className="empty"><b>自动运行计划不可用</b><span>该记录缺少冻结的自动运行计划，不能进入后续调度。</span></div>;
-  return <section className="automatic-draft-summary"><header><div><h3>自动运行草稿</h3><small>当前仅展示 FR-118 已冻结的编排事实；编辑与启动将在后续切片接入。</small></div><strong className={plan.readiness.ready ? 'good' : 'pending'}>{plan.readiness.ready ? '已就绪' : '待补齐'}</strong></header><dl><div><dt>起始节点</dt><dd>{plan.start_node_key}</dd></div><div><dt>可达节点</dt><dd>{plan.reachable_node_keys.join('、')}</dd></div></dl>{plan.readiness.issues.length ? <section className="automatic-draft-issues"><h4>待配置项</h4>{plan.readiness.issues.map(issue => <p key={`${issue.code}:${issue.node_key ?? ''}`}><b>{issue.node_key ?? '流程'}</b>{issue.message}</p>)}</section> : null}</section>;
+  const editable = run.state === 'DRAFT' && plan?.status === 'DRAFT';
+  const [selectedKey, setSelectedKey] = useState(plan?.start_node_key ?? '');
+  const [drafts, setDrafts] = useState<Record<string, AutomaticNodePlanWrite>>(() => {
+    if (!snapshot || !plan) return {};
+    return Object.fromEntries(plan.reachable_node_keys.map(key => {
+      const node = snapshot.definition.nodes.find(item => item.instance_key === key)!;
+      const saved = plan.node_plans[key];
+      return [key, saved ? { ...saved, gates: saved.gates ?? [], artifact_ids: saved.artifact_ids ?? {}, input_urls: saved.input_urls ?? {} } : emptyAutomaticPlan(node)];
+    }));
+  });
+  const [inputNode, setInputNode] = useState<SnapshotFlowNode>();
+  const [dirty, setDirty] = useState(false);
+  const node = snapshot?.definition.nodes.find(item => item.instance_key === selectedKey);
+  const draft = drafts[selectedKey];
+  const save = useMutation({ mutationFn: () => api.updateAutomaticRun(run.id, { expected_row_version: run.row_version, name: run.name, start_node_key: plan!.start_node_key, node_plans: drafts }), onSuccess: () => { setDirty(false); refresh(); } });
+  const freeze = useMutation({ mutationFn: () => api.freezeAutomaticRun(run.id, run.row_version), onSuccess: refresh });
+  const copy = useMutation({ mutationFn: () => api.copyAutomaticRun(run.id), onSuccess: onCopied });
+  const mappedInputs = new Set((snapshot?.definition.port_mappings ?? []).filter(item => item.target_instance_key === selectedKey && plan?.reachable_node_keys.includes(item.source_instance_key)).map(item => item.target_input_key));
+  const patch = (value: Partial<AutomaticNodePlanWrite>) => { setDirty(true); setDrafts(current => ({ ...current, [selectedKey]: { ...current[selectedKey], ...value } })); };
+  if (!plan || !snapshot) return <div className="empty"><b>自动运行计划不可用</b><span>该记录缺少冻结计划。</span></div>;
+  const inputBindings = draft?.artifact_ids ?? {};
+  const editableInputNode = node ? { ...node, asset: { ...node.asset, inputs: node.asset.inputs.filter(field => !mappedInputs.has(field.field_key)) } } : undefined;
+  const error = save.error || freeze.error || copy.error;
+  return <section className="automatic-draft-summary automatic-draft-editor"><header><div><h3>{editable ? '自动运行编排' : '已冻结自动计划'}</h3><small>{editable ? '逐节点配置输入、提示词、Agent、Context、能力和门禁；保存后仍可继续编辑。' : '计划已冻结但尚未分配 Runtime 或执行调度；如需修改，请复制为新编排。'}</small></div><strong className={plan.readiness.ready ? 'good' : 'pending'}>{plan.status === 'FROZEN' ? '已冻结' : plan.readiness.ready ? '已就绪' : '待补齐'}</strong></header><div className="automatic-draft-actions">{editable && <button className="secondary" disabled={save.isPending || !dirty} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : dirty ? '保存编排' : '已保存'}</button>}{editable && <button className="primary" disabled={!plan.readiness.ready || dirty || freeze.isPending} onClick={() => freeze.mutate()}><Play size={14}/>{freeze.isPending ? '正在冻结…' : '启动并冻结计划'}</button>}{!editable && <button className="secondary" disabled={copy.isPending} onClick={() => copy.mutate()}>{copy.isPending ? '正在复制…' : '复制为新编排'}</button>}</div>{editable && !plan.readiness.ready && <p className="field-hint">补齐并保存所有可达节点后才能启动；本阶段启动只冻结计划，不创建 Runtime 或 NodeRun。</p>}{error && <p className="error">{error.message}</p>}<dl><div><dt>起始节点</dt><dd>{plan.start_node_key}</dd></div><div><dt>可达节点</dt><dd>{plan.reachable_node_keys.join('、')}</dd></div></dl>{plan.readiness.issues.length ? <section className="automatic-draft-issues"><h4>待配置项</h4>{plan.readiness.issues.map(issue => <p key={`${issue.code}:${issue.node_key}`}><b>{issue.node_key}</b>{issue.message}</p>)}</section> : null}<nav className="automatic-node-tabs" aria-label="自动节点编排">{plan.reachable_node_keys.map(key => <button type="button" className={key === selectedKey ? 'active' : ''} key={key} onClick={() => setSelectedKey(key)}>{snapshot.definition.nodes.find(item => item.instance_key === key)?.alias || key}</button>)}</nav>{node && draft && <section className="automatic-node-editor"><header><b>{node.alias || node.asset.name}</b><small>{editable ? '保存后写入当前草稿，冻结后不可修改。' : '冻结节点计划（只读）'}</small></header><label>启动提示词<textarea aria-label={`自动启动提示词 ${selectedKey}`} disabled={!editable} value={draft.startup_prompt} onChange={event => patch({ startup_prompt: event.target.value })}/></label>{editable ? <><AgentPresetEditor preset={draft.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/><GateDraftEditor gates={draft.gates} onChange={gates => patch({ gates })}/></> : <><section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{draft.agent_preset.model_name || '工作区默认模型'} · 已冻结 {draft.agent_preset.capability_version_ids.length} 项能力</p></section><section className="attempt-side-section"><h4>门禁配置</h4><GateList evaluations={[]} policies={draft.gates}/></section></>}<section className="automatic-inputs"><header><h4>节点输入</h4>{editable && editableInputNode && editableInputNode.asset.inputs.length > 0 && <button type="button" className="secondary" onClick={() => setInputNode(editableInputNode)}><Upload size={14}/>配置输入</button>}</header>{node.asset.inputs.length ? node.asset.inputs.map(field => mappedInputs.has(field.field_key) ? <p key={field.field_key} className="mapped-input"><b>{field.display_name || field.field_key}</b><span>由冻结上游端口映射提供</span></p> : <InputSummary key={field.field_key} fields={[field]} bindings={inputBindings} artifacts={run.artifacts}/>) : <p className="field-hint">该节点无需输入。</p>}</section></section>}{inputNode && draft && <NodeInputDialog run={run} node={inputNode} initialBindings={inputBindings} onClose={() => setInputNode(undefined)} onSubmit={bindings => { patch({ artifact_ids: { ...draft.artifact_ids, ...bindings }, input_urls: Object.fromEntries(Object.entries(draft.input_urls).filter(([key]) => !(key in bindings))) }); setInputNode(undefined); refresh(); }}/>}</section>;
 }
 
 export function WorkbenchPage() {
@@ -526,6 +587,7 @@ export function WorkbenchPage() {
   const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectedFlowNodeKey, clearRunSelection, openRun, selectAttempt, selectExecution } = useWorkbenchStore();
   const [mode, setMode] = useState<RunMode>('MANUAL');
   const [starting, setStarting] = useState<FlowDefinition>();
+  const [automaticDraftOpen, setAutomaticDraftOpen] = useState(false);
   const [startNodeKey, setStartNodeKey] = useState<string>();
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const [sidePanelWidth, setSidePanelWidth] = useState(390);
@@ -570,7 +632,7 @@ export function WorkbenchPage() {
     setStartNodeKey(undefined);
     await qc.invalidateQueries({ queryKey: ['runs'] });
   }}/> : null;
-  if (!selectedRunId) return <><section className="workbench-page run-selection-workbench">{rail}<NeutralFlowWorkspace flows={flows.data ?? []} onStart={startManualRun}/></section>{startDialog}</>;
+  if (!selectedRunId) return <><section className="workbench-page run-selection-workbench">{rail}<NeutralFlowWorkspace flows={flows.data ?? []} onStart={startManualRun} onAutomaticStart={() => setAutomaticDraftOpen(true)}/></section>{startDialog}{automaticDraftOpen && <AutomaticDraftDialog flows={flows.data ?? []} environments={environments.data ?? []} onClose={() => setAutomaticDraftOpen(false)} onCreated={created => { setAutomaticDraftOpen(false); setMode('AUTOMATIC'); openRun(created.id); void qc.invalidateQueries({ queryKey: ['runs'] }); }}/>}</>;
   const run = selectedRun;
   if (query.isError) return <section className="workbench-page run-selection-workbench">{rail}<div className="empty workbench-fallback"><b>运行详情加载失败</b><span>{query.error.message}</span><button className="secondary" onClick={returnToRuns}>取消选择</button></div></section>;
   if (!run) return <section className="workbench-page run-selection-workbench">{rail}<div className="empty workbench-fallback"><span>加载运行状态…</span></div></section>;
@@ -636,7 +698,8 @@ export function WorkbenchPage() {
   const automaticDraft = run.run_mode === 'AUTOMATIC';
   const draftPlan = run.automation_plan;
   if (automaticDraft) {
-    return <><section className="workbench-page run-selection-workbench automatic-draft-workbench">{rail}<main className="run-main"><button className="back" onClick={clearRunSelection}><ArrowLeft size={14}/>取消选择</button><header className="run-title"><div><span className="eyebrow">自动运行草稿</span><h1>{run.name}</h1><p>流程快照 v{run.active_snapshot_version} · 起始节点 {draftPlan?.start_node_key ?? '—'} · 选择记录只切换画布投影。</p></div><span className="run-state draft">草稿</span></header><AutomaticRunProjection run={run}/><SnapshotGraph run={run} selectedKey={undefined} onSelect={() => undefined}/></main></section>{startDialog}</>;
+    const frozen = draftPlan?.status === 'FROZEN';
+    return <><section className="workbench-page run-selection-workbench automatic-draft-workbench">{rail}<main className="run-main"><button className="back" onClick={clearRunSelection}><ArrowLeft size={14}/>取消选择</button><header className="run-title"><div><span className="eyebrow">{frozen ? '已冻结自动计划' : '自动运行草稿'}</span><h1>{run.name}</h1><p>流程快照 v{run.active_snapshot_version} · 起始节点 {draftPlan?.start_node_key ?? '—'} · {frozen ? '尚未分配 Runtime 或执行调度。' : '可继续逐节点编辑，保存后再启动冻结。'}</p></div><span className={`run-state ${frozen ? 'active' : 'draft'}`}>{frozen ? '已冻结' : '草稿'}</span></header><AutomaticDraftEditor key={`${run.id}:${run.row_version}:${draftPlan?.status ?? ''}`} run={run} refresh={refresh} onCopied={created => { qc.setQueryData(['flow-run', created.id], created); openRun(created.id); void qc.invalidateQueries({ queryKey: ['runs'] }); }}/><SnapshotGraph run={run} selectedKey={undefined} onSelect={() => undefined}/></main></section>{startDialog}</>;
   }
   return <><section className={hasPanel ? 'workbench-page run-selection-workbench with-action-panel' : 'workbench-page run-selection-workbench'} style={hasPanel ? { gridTemplateColumns: `250px minmax(500px, 1fr) ${sidePanelWidth}px` } : undefined}>{rail}<main className="run-main"><button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>取消选择</button><header className="run-title"><div><span className="eyebrow">第 {run.run_no} 次流程运行</span><h1>{run.name}</h1><p>流程快照 v{run.active_snapshot_version} · {run.progress.accepted}/{run.node_runs.length} 次节点执行已验收</p></div><div className="run-title-actions"><span className={'run-state ' + run.state.toLowerCase()}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><FlowRunControls run={run} refresh={refresh} navigate={navigate}/></div></header>{run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}<SnapshotGraph run={run} selectedKey={selectedNodeKey} onSelect={selectGraphNode}/></main>{hasPanel && <aside className="run-side-panel"><div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>{nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} available={selectedNodeAvailable} initialBindings={selectedNodeBindings} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }}/> : null}</aside>}</section>{startDialog}</>;
 }

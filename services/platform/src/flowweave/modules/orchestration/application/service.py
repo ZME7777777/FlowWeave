@@ -101,8 +101,10 @@ from flowweave.shared.schemas import (
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
+    AutomaticRunStartWrite,
     HumanInputWrite,
     InputBindingsWrite,
     NodeRunStart,
@@ -402,22 +404,47 @@ def _freeze_automatic_plan(
             "artifact_ids": dict(raw["artifact_ids"]),
             "input_urls": dict(raw["input_urls"]),
         }
-    missing = [key for key in reachable if key not in frozen_nodes]
+    issues = [
+        {
+            "code": "NODE_PLAN_REQUIRED",
+            "node_key": key,
+            "message": "请配置此节点的自动执行预设",
+        }
+        for key in reachable
+        if key not in frozen_nodes
+    ]
+    for node_key, node_plan in frozen_nodes.items():
+        node = known_nodes[node_key]
+        asset = cast(dict[str, Any], node.get("asset") or {})
+        declared_inputs = {
+            str(field.get("field_key") or "")
+            for field in cast(list[dict[str, Any]], asset.get("inputs") or [])
+            if str(field.get("field_key") or "")
+        }
+        mapped_inputs = {
+            str(mapping.get("target_input_key") or "")
+            for mapping in definition.get("port_mappings", [])
+            if str(mapping.get("target_instance_key") or "") == node_key
+            and str(mapping.get("source_instance_key") or "") in reachable
+        }
+        explicit_inputs = set(node_plan["artifact_ids"]) | set(node_plan["input_urls"])
+        missing_inputs = sorted(declared_inputs - mapped_inputs - explicit_inputs)
+        if missing_inputs:
+            issues.append(
+                {
+                    "code": "NODE_INPUT_REQUIRED",
+                    "node_key": node_key,
+                    "message": f"请配置未映射输入：{', '.join(missing_inputs)}",
+                }
+            )
     return {
         "status": "DRAFT",
         "start_node_key": start_node_key,
         "reachable_node_keys": reachable,
         "node_plans": frozen_nodes,
         "readiness": {
-            "ready": not missing,
-            "issues": [
-                {
-                    "code": "NODE_PLAN_REQUIRED",
-                    "node_key": key,
-                    "message": "请配置此节点的自动执行预设",
-                }
-                for key in missing
-            ],
+            "ready": not issues,
+            "issues": issues,
         },
     }
 
@@ -2008,6 +2035,196 @@ def update_automatic_run_draft(
     return run_detail(db, run.id)
 
 
+def start_automatic_run(
+    db: Session,
+    run_id: str,
+    payload: AutomaticRunStartWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Freeze a ready plan without allocating Runtime or execution work."""
+
+    run = _locked_run(db, run_id)
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if existing.flow_run_id != run.id or existing.action_type != "FREEZE_AUTOMATIC_RUN":
+            raise conflict(
+                "automatic-run idempotency key is already used",
+                flow_run_id=existing.flow_run_id,
+            )
+        if existing.payload_json.get("expected_row_version") != payload.expected_row_version:
+            raise conflict(
+                "automatic-run freeze request does not match the idempotent request",
+                flow_run_id=run.id,
+            )
+        return run_detail(db, run.id)
+    if run.run_mode != "AUTOMATIC" or run.state != FlowRunState.DRAFT:
+        raise illegal("only an editable automatic run draft can be frozen", state=run.state)
+    if run.row_version != payload.expected_row_version:
+        raise conflict(
+            "automatic run draft was modified",
+            expected=payload.expected_row_version,
+            actual=run.row_version,
+        )
+    plan = copy.deepcopy(dict(run.automation_plan_json or {}))
+    readiness = cast(dict[str, Any], plan.get("readiness") or {})
+    if not readiness.get("ready"):
+        raise DomainError(
+            "AUTOMATION_PLAN_NOT_READY",
+            "Automatic run cannot be frozen until every reachable node is configured",
+            422,
+            {"issues": readiness.get("issues", [])},
+        )
+    if plan.get("status") != "DRAFT":
+        raise illegal("automatic run plan is already frozen", state=run.state)
+    _action(
+        db,
+        run.id,
+        "FREEZE_AUTOMATIC_RUN",
+        idempotency_key,
+        {"expected_row_version": payload.expected_row_version},
+    )
+    plan["status"] = "FROZEN"
+    run.automation_plan_json = plan
+    run.state = FlowRunState.ACTIVE
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_RUN_PLAN_FROZEN",
+        {
+            "start_node_key": plan.get("start_node_key"),
+            "row_version": run.row_version,
+        },
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
+def copy_automatic_run_draft(
+    db: Session, source_run_id: str, payload: AutomaticRunCopyWrite
+) -> dict[str, Any]:
+    """Copy an automatic plan into a new independently editable draft."""
+
+    source = _run(db, source_run_id)
+    if source.run_mode != "AUTOMATIC":
+        raise illegal("only an automatic run can be copied", state=source.state)
+    if source.environment_version_id is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED",
+            "automatic run has no Environment Version",
+            409,
+        )
+    source_snapshot = _active_snapshot(db, source)
+    source_plan = copy.deepcopy(dict(source.automation_plan_json or {}))
+    if not source_plan.get("start_node_key"):
+        raise DomainError("AUTOMATION_PLAN_INVALID", "automatic plan is missing a start node", 409)
+    run_no = (
+        db.scalar(
+            select(func.max(FlowRun.run_no)).where(
+                FlowRun.flow_definition_id == source.flow_definition_id
+            )
+        )
+        or 0
+    ) + 1
+    copied = FlowRun(
+        flow_definition_id=source.flow_definition_id,
+        run_no=run_no,
+        name=(payload.name or "").strip() or f"{source.name} · 副本 #{run_no}",
+        run_mode="AUTOMATIC",
+        state=FlowRunState.DRAFT,
+        environment_version_id=source.environment_version_id,
+    )
+    db.add(copied)
+    db.flush()
+    snapshot = RunSnapshot(
+        flow_run_id=copied.id,
+        version=1,
+        schema_version=source_snapshot.schema_version,
+        definition_json=copy.deepcopy(source_snapshot.definition_json),
+        definition_hash=source_snapshot.definition_hash,
+        runtime_manifest_json=copy.deepcopy(source_snapshot.runtime_manifest_json),
+        runtime_manifest_hash=source_snapshot.runtime_manifest_hash,
+        environment_version_id=source.environment_version_id,
+    )
+    db.add(snapshot)
+    db.flush()
+    copied.active_snapshot_id = snapshot.id
+    node_plans = cast(dict[str, Any], source_plan.get("node_plans") or {})
+    for node_key in node_plans:
+        plan = dict(cast(dict[str, Any], node_plans[node_key]))
+        copied_ids: dict[str, str] = {}
+        for field_key, artifact_id in cast(dict[str, Any], plan.get("artifact_ids") or {}).items():
+            copied_ids[str(field_key)] = _copy_automatic_plan_artifact(
+                db, source, copied, str(node_key), str(artifact_id)
+            )
+        plan["artifact_ids"] = copied_ids
+        node_plans[node_key] = plan
+    source_plan["node_plans"] = node_plans
+    source_plan["status"] = "DRAFT"
+    copied.automation_plan_json = source_plan
+    hold_snapshot_memory_references(
+        db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
+    )
+    _event(
+        db,
+        copied.id,
+        "AUTOMATIC_RUN_DRAFT_COPIED",
+        {"source_run_id": source.id, "snapshot_version": snapshot.version},
+    )
+    finish(db)
+    return run_detail(db, copied.id)
+
+
+def _copy_automatic_plan_artifact(
+    db: Session, source_run: FlowRun, copied_run: FlowRun, node_key: str, artifact_id: str
+) -> str:
+    artifact = db.get(ArtifactVersion, artifact_id)
+    if artifact is None or artifact.flow_run_id != source_run.id:
+        raise DomainError(
+            "AUTOMATION_PLAN_INPUT_INVALID",
+            "automatic plan references an artifact outside its source run",
+            409,
+            {"artifact_id": artifact_id},
+        )
+    metadata = dict(artifact.metadata_json or {})
+    if artifact.artifact_type == "URL":
+        prepared = prepare_artifact(
+            ArtifactWrite(
+                field_key=artifact.field_key,
+                artifact_type="URL",
+                uri=artifact.uri,
+                metadata=metadata,
+            )
+        )
+    else:
+        if artifact.inline_content is not None:
+            content = artifact.inline_content.encode("utf-8")
+        elif artifact.storage_key:
+            try:
+                content = get_artifact_store().read(artifact.storage_key)
+            except FileNotFoundError as exc:
+                raise DomainError(
+                    "ARTIFACT_UNAVAILABLE", "Artifact content is unavailable", 409
+                ) from exc
+        else:
+            raise DomainError("ARTIFACT_UNAVAILABLE", "Artifact content is unavailable", 409)
+        prepared = prepare_file_artifact(
+            field_key=artifact.field_key,
+            filename=str(metadata.get("filename") or f"{artifact.field_key}.bin"),
+            mime_type=artifact.mime_type,
+            content=content,
+            metadata=metadata,
+        )
+    copied_artifact = _register_artifact(
+        db,
+        copied_run.id,
+        prepared,
+        source="AUTOMATIC_PLAN_COPY",
+        consumer_node_key=node_key,
+    )
+    return copied_artifact.id
+
+
 def process_provision_flow_run_runtime(
     db: Session,
     run_id: str,
@@ -2018,6 +2235,11 @@ def process_provision_flow_run_runtime(
     """Provision a FlowRun Agent Server through the Worker controller principal."""
 
     run = _run(db, run_id)
+    if run.run_mode == "AUTOMATIC" and (run.automation_plan_json or {}).get("status") == "FROZEN":
+        raise illegal(
+            "frozen automatic plans cannot provision a Runtime before scheduling",
+            state=run.state,
+        )
     if run.state == FlowRunState.DRAFT:
         raise illegal("automatic run draft cannot provision a Runtime", state=run.state)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
@@ -4074,8 +4296,11 @@ def sync_snapshot(
 
 def complete_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]:
     run = _run(db, run_id)
-    if run.state == FlowRunState.DRAFT:
-        raise illegal("automatic run draft must be started or cancelled", state=run.state)
+    if run.run_mode == "AUTOMATIC":
+        raise illegal(
+            "automatic runs can only be completed by the platform scheduler",
+            state=run.state,
+        )
     attempts = list(
         db.scalars(
             select(NodeAttempt)
@@ -4565,6 +4790,12 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "runtime_status": (
                     "DRAFT"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
+                    else "FROZEN"
+                    if (
+                        run.run_mode == "AUTOMATIC"
+                        and (run.automation_plan_json or {}).get("status") == "FROZEN"
+                        and runtime is None
+                    )
                     else runtime.get("status")
                     if runtime
                     else "ARCHIVED"
@@ -4575,6 +4806,12 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "runtime_message": (
                     "自动运行尚未启动，可继续编辑编排"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
+                    else "自动运行计划已冻结，尚未分配 Runtime 或执行调度"
+                    if (
+                        run.run_mode == "AUTOMATIC"
+                        and (run.automation_plan_json or {}).get("status") == "FROZEN"
+                        and runtime is None
+                    )
                     else runtime.get("message")
                     if runtime
                     else None

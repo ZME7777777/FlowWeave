@@ -7553,6 +7553,124 @@
         }
       }
     },
+    "/api/v1/automatic-runs/{run_id}/copy": {
+      "post": {
+        "summary": "Copy Automatic Run Draft",
+        "operationId": "copy_automatic_run_draft_api_v1_automatic_runs__run_id__copy_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomaticRunCopyWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Copy Automatic Run Draft Api V1 Automatic Runs  Run Id  Copy Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/automatic-runs/{run_id}/start": {
+      "post": {
+        "summary": "Start Automatic Run",
+        "operationId": "start_automatic_run_api_v1_automatic_runs__run_id__start_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomaticRunStartWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Start Automatic Run Api V1 Automatic Runs  Run Id  Start Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs": {
       "get": {
         "summary": "List Flow Runs",
@@ -10214,6 +10332,26 @@
         "title": "AutomaticNodePlanWrite",
         "description": "Editable, pre-runtime configuration for one automatic flow node."
       },
+      "AutomaticRunCopyWrite": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 220
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AutomaticRunCopyWrite",
+        "description": "Name an independent editable copy of an automatic plan."
+      },
       "AutomaticRunDraftUpdateWrite": {
         "properties": {
           "expected_row_version": {
@@ -10296,6 +10434,22 @@
           "start_node_key"
         ],
         "title": "AutomaticRunDraftWrite"
+      },
+      "AutomaticRunStartWrite": {
+        "properties": {
+          "expected_row_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Row Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_row_version"
+        ],
+        "title": "AutomaticRunStartWrite",
+        "description": "Freeze one ready automatic plan without starting runtime work."
       },
       "Body_agent_attachment_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_post": {
         "properties": {

@@ -17,8 +17,10 @@ from flowweave.shared.schemas import (
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
+    AutomaticRunStartWrite,
     HumanInputWrite,
     InputBindingsWrite,
     NodeRunStart,
@@ -57,6 +59,30 @@ async def update_automatic_run_draft(
 ) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.update_automatic_run_draft(session, run_id, payload)
+    )
+
+
+@router.post("/automatic-runs/{run_id}/copy", status_code=201)
+async def copy_automatic_run_draft(
+    run_id: str, payload: AutomaticRunCopyWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.copy_automatic_run_draft(session, run_id, payload)
+    )
+
+
+@router.post("/automatic-runs/{run_id}/start")
+async def start_automatic_run(
+    run_id: str,
+    payload: AutomaticRunStartWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.start_automatic_run(
+            session, run_id, payload, _key(idempotency_key, "start-automatic-run", run_id)
+        ),
     )
 
 

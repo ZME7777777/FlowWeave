@@ -287,7 +287,7 @@ export interface FlowRunSummary {
   started_at: string; updated_at: string; finished_at?: string | null;
 }
 export interface AutomationPlan {
-  status: 'DRAFT' | 'RUNNING';
+  status: 'DRAFT' | 'FROZEN';
   start_node_key: string;
   reachable_node_keys: string[];
   node_plans: Record<string, {
@@ -298,6 +298,25 @@ export interface AutomationPlan {
     input_urls: Record<string, string>;
   }>;
   readiness: { ready: boolean; issues: Array<{ code: string; node_key: string; message: string }> };
+}
+export interface AutomaticNodePlanWrite {
+  startup_prompt: string;
+  agent_preset: AgentPreset;
+  gates: GatePolicy[];
+  artifact_ids: Record<string, string>;
+  input_urls: Record<string, string>;
+}
+export interface AutomaticRunDraftWrite {
+  name?: string;
+  environment_version_id: string;
+  start_node_key: string;
+  node_plans: Record<string, AutomaticNodePlanWrite>;
+}
+export interface AutomaticRunDraftUpdateWrite {
+  expected_row_version: number;
+  name?: string;
+  start_node_key: string;
+  node_plans: Record<string, AutomaticNodePlanWrite>;
 }
 export interface FlowRun extends FlowRunSummary {
   row_version: number; active_snapshot_id: string; active_snapshot_version: number;

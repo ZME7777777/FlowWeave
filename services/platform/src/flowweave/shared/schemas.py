@@ -390,6 +390,18 @@ class AutomaticRunDraftUpdateWrite(ApiModel):
     node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
 
 
+class AutomaticRunStartWrite(ApiModel):
+    """Freeze one ready automatic plan without starting runtime work."""
+
+    expected_row_version: int = Field(ge=1)
+
+
+class AutomaticRunCopyWrite(ApiModel):
+    """Name an independent editable copy of an automatic plan."""
+
+    name: str | None = Field(default=None, max_length=220)
+
+
 class NodeRunStart(ApiModel):
     startup_mode: Literal["PROMPT", "CHAT"] = "PROMPT"
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)
