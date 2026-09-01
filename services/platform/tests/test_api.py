@@ -498,7 +498,7 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     assert node_run["flow_node_snapshot_key"] == "design_b"
 
 
-def test_human_can_start_same_node_as_independent_runs(client, skill_capability):
+def test_human_cannot_create_a_second_node_run_in_one_manual_group(client, skill_capability):
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
     run = client.post(
@@ -540,16 +540,14 @@ def test_human_can_start_same_node_as_independent_runs(client, skill_capability)
         json=prompt_node_start(artifact_ids={"prd": artifact["id"]}),
     )
 
-    assert second.status_code == 201, second.text
-    assert first.json()["id"] != second.json()["id"]
-    assert first.json()["sequence_no"] == 1
-    assert second.json()["sequence_no"] == 2
+    assert second.status_code == 409, second.text
+    assert second.json()["error"]["code"] == "ILLEGAL_STATE_TRANSITION"
     detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
     matching = [
         item for item in detail["node_runs"] if item["flow_node_snapshot_key"] == "design_a"
     ]
-    assert len(matching) == 2
-    assert all(item["attempts"][0]["attempt_no"] == 1 for item in matching)
+    assert len(matching) == 1
+    assert matching[0]["attempts"][0]["attempt_no"] == 1
 
 
 def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_execution(
@@ -752,7 +750,7 @@ def test_flow_run_rejects_ready_environment_without_runtime_provenance(
     assert response.json()["error"]["code"] == "ENVIRONMENT_RUNTIME_INCOMPATIBLE"
 
 
-def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
+def test_manual_completion_exposes_branches_and_merges_into_one_configurable_node_run(client):
     def create_graph_asset(name, inputs, outputs):
         response = client.post(
             "/api/v1/node-assets",
@@ -778,6 +776,7 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
             }
         ],
     )
+    root = create_graph_asset("流程入口", [], [])
     merge = create_graph_asset(
         "汇聚节点",
         [
@@ -814,12 +813,15 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
             "name": "分支与汇聚流程",
             "environment_version_id": client.environment_version_id,
             "nodes": [
+                {"instance_key": "root", "node_asset_id": root["id"]},
                 {"instance_key": "source_a", "node_asset_id": source["id"]},
                 {"instance_key": "source_b", "node_asset_id": source["id"]},
                 {"instance_key": "merge", "node_asset_id": merge["id"]},
                 {"instance_key": "branch", "node_asset_id": branch["id"]},
             ],
             "edges": [
+                {"source_instance_key": "root", "target_instance_key": "source_a"},
+                {"source_instance_key": "root", "target_instance_key": "source_b"},
                 {"source_instance_key": "source_a", "target_instance_key": "merge"},
                 {"source_instance_key": "source_b", "target_instance_key": "merge"},
                 {"source_instance_key": "source_a", "target_instance_key": "branch"},
@@ -853,17 +855,7 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
         json={"environment_version_id": client.environment_version_id},
     ).json()
 
-    source_attempts = {}
-    for node_key in ("source_a", "source_b"):
-        activated = client.post(
-            f"/api/v1/flow-runs/{run['id']}/nodes/{node_key}/runs",
-            json=prompt_node_start(artifact_ids={}),
-        )
-        assert activated.status_code == 201, activated.text
-        source_attempts[node_key] = activated.json()["attempts"][0]
-
-    def execute_and_accept(node_key):
-        attempt = source_attempts[node_key]
+    def execute_and_accept(node_key, attempt):
         execution = client.post(
             f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
             json={
@@ -884,7 +876,31 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
         assert accepted.status_code == 200, accepted.text
         return executed, accepted.json()
 
-    source_a_execution, after_source_a = execute_and_accept("source_a")
+    root_run = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/root/runs",
+        json=prompt_node_start(artifact_ids={}),
+    )
+    assert root_run.status_code == 201, root_run.text
+    _, after_root = execute_and_accept("root", root_run.json()["attempts"][0])
+    reached = {
+        item["flow_node_snapshot_key"]: item
+        for item in after_root["node_runs"]
+        if item["flow_node_snapshot_key"] in {"source_a", "source_b"}
+    }
+    assert set(reached) == {"source_a", "source_b"}
+    assert all(item["attempts"][0]["state"] == "WAITING_INPUT" for item in reached.values())
+
+    source_attempts = {}
+    for node_key in ("source_a", "source_b"):
+        activated = client.post(
+            f"/api/v1/flow-runs/{run['id']}/nodes/{node_key}/runs",
+            json=prompt_node_start(artifact_ids={}),
+        )
+        assert activated.status_code == 201, activated.text
+        assert activated.json()["id"] == reached[node_key]["id"]
+        source_attempts[node_key] = activated.json()["attempts"][0]
+
+    source_a_execution, after_source_a = execute_and_accept("source_a", source_attempts["source_a"])
     merge_run = next(
         item for item in after_source_a["node_runs"] if item["flow_node_snapshot_key"] == "merge"
     )
@@ -895,19 +911,19 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
     assert [item["input_field_key"] for item in merge_run["attempts"][0]["input_bindings"]] == [
         "left"
     ]
-    assert branch_run["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
+    assert branch_run["attempts"][0]["state"] == "WAITING_INPUT"
     assert (
         branch_run["attempts"][0]["input_bindings"][0]["artifact_version_id"]
         == source_a_execution["artifacts"][0]["id"]
     )
 
-    source_b_execution, after_source_b = execute_and_accept("source_b")
+    source_b_execution, after_source_b = execute_and_accept("source_b", source_attempts["source_b"])
     merge_runs = [
         item for item in after_source_b["node_runs"] if item["flow_node_snapshot_key"] == "merge"
     ]
     assert len(merge_runs) == 1
     merge_attempt = merge_runs[0]["attempts"][0]
-    assert merge_attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert merge_attempt["state"] == "WAITING_INPUT"
     assert {
         item["input_field_key"]: item["artifact_version_id"]
         for item in merge_attempt["input_bindings"]
@@ -915,6 +931,52 @@ def test_port_mappings_support_branching_and_merge_into_one_node_run(client):
         "left": source_a_execution["artifacts"][0]["id"],
         "right": source_b_execution["artifacts"][0]["id"],
     }
+    configured_merge = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/merge/runs",
+        json=prompt_node_start(
+            artifact_ids={
+                item["input_field_key"]: item["artifact_version_id"]
+                for item in merge_attempt["input_bindings"]
+            }
+        ),
+    )
+    assert configured_merge.status_code == 201, configured_merge.text
+    assert configured_merge.json()["id"] == merge_runs[0]["id"]
+    assert configured_merge.json()["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
+
+    refreshed = client.get(f"/api/v1/flow-runs/{run['id']}")
+    assert refreshed.status_code == 200, refreshed.text
+    node_keys = [item["flow_node_snapshot_key"] for item in refreshed.json()["node_runs"]]
+    assert len(node_keys) == len(set(node_keys)) == 5
+
+
+def test_manual_flow_definition_rejects_a_cycle_before_a_run_can_revisit_a_node(client):
+    asset = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "循环节点",
+            "inputs": [],
+            "outputs": [],
+            "executor": {"startup_prompt": "执行"},
+        },
+    ).json()
+    flow = client.post(
+        "/api/v1/flows",
+        json={
+            "name": "循环流程",
+            "nodes": [
+                {"instance_key": "first", "node_asset_id": asset["id"]},
+                {"instance_key": "second", "node_asset_id": asset["id"]},
+            ],
+            "edges": [
+                {"source_instance_key": "first", "target_instance_key": "second"},
+                {"source_instance_key": "second", "target_instance_key": "first"},
+            ],
+        },
+    )
+    assert flow.status_code == 422, flow.text
+    assert flow.json()["error"]["code"] == "FLOW_GRAPH_INVALID"
+    assert flow.json()["error"]["message"] == "Flow direction graph cannot contain cycles"
 
 
 def test_public_reads_and_writes_require_no_human_token(public_client):
@@ -1689,18 +1751,31 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     assert len(run["node_runs"]) == 2
     downstream = run["node_runs"][1]
     assert downstream["flow_node_snapshot_key"] == "design_b"
-    assert downstream["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
+    assert downstream["attempts"][0]["state"] == "WAITING_INPUT"
     assert downstream["attempts"][0]["snapshot_id"] == synced["active_snapshot_id"]
     assert (
         downstream["attempts"][0]["input_bindings"][0]["artifact_version_id"]
         == second_execution["artifacts"][0]["id"]
     )
+    replayed = client.post(
+        f"/api/v1/node-attempts/{attempt2['id']}/accept",
+        json={"expected_state_version": second_execution["state_version"]},
+        headers={"Idempotency-Key": "accept-second"},
+    )
+    assert replayed.status_code == 200, replayed.text
+    assert len(replayed.json()["node_runs"]) == 2
+    assert [item["flow_node_snapshot_key"] for item in replayed.json()["node_runs"]].count(
+        "design_b"
+    ) == 1
 
     events = client.get(f"/api/v1/flow-runs/{run['id']}/event-history").json()
     assert [x["cursor"] for x in events] == sorted(x["cursor"] for x in events)
-    assert {"SNAPSHOT_SYNCED", "NODE_RUN_ACCEPTED", "ARTIFACT_VERSION_CREATED"} <= {
-        x["event_type"] for x in events
-    }
+    assert {
+        "SNAPSHOT_SYNCED",
+        "NODE_RUN_COMPLETED",
+        "DOWNSTREAM_NODE_AVAILABLE",
+        "ARTIFACT_VERSION_CREATED",
+    } <= {x["event_type"] for x in events}
 
 
 def test_any_node_can_start_without_upstream_completion(client, skill_capability):

@@ -1723,6 +1723,74 @@ test('run workbench keeps record selection explicit across tabs and refresh', as
   expect(run.id).toBeTruthy();
 });
 
+test('manual transition remains configurable after refresh without exposing a second NodeRun action', async ({ page }) => {
+  const runId = '00000000-0000-4000-8000-00000000f120';
+  const flowId = '00000000-0000-4000-8000-00000000f121';
+  const artifactId = '00000000-0000-4000-8000-00000000f122';
+  const nodeAsset = (id: string, name: string, inputs: Array<Record<string, string>>, outputs: Array<Record<string, string>>) => ({
+    id, name, description: '', inputs, outputs,
+    executor: { startup_prompt: `执行${name}`, context_prompt: '', context_capability_ids: [] },
+  });
+  const definition = {
+    id: flowId, name: 'FR120 手动流转', description: '', row_version: 1, default_entry_key: 'source',
+    nodes: [
+      { instance_key: 'source', alias: '上游节点', position_x: 80, position_y: 120, config_override: {}, gates: [], asset: nodeAsset('asset-source', '上游节点', [], [{ field_key: 'result', display_name: '结果', data_type: 'URL', description: '' }]) },
+      { instance_key: 'target', alias: '已到达节点', position_x: 430, position_y: 120, config_override: {}, gates: [], asset: nodeAsset('asset-target', '已到达节点', [{ field_key: 'input', display_name: '映射输入', data_type: 'URL', description: '' }], []) },
+      { instance_key: 'blocked', alias: '未到达节点', position_x: 430, position_y: 330, config_override: {}, gates: [], asset: nodeAsset('asset-blocked', '未到达节点', [], []) },
+    ],
+    edges: [{ id: 'edge-source-target', source_instance_key: 'source', target_instance_key: 'target', position: 0 }],
+    port_mappings: [{ source_instance_key: 'source', source_output_key: 'result', target_instance_key: 'target', target_input_key: 'input' }],
+  };
+  const attempt = {
+    id: 'attempt-target', attempt_no: 1, snapshot_id: 'snapshot-fr120', state: 'WAITING_INPUT', state_version: 1,
+    startup_mode: 'PROMPT', input_bindings: [{ input_field_key: 'input', artifact_version_id: artifactId, binding_source: 'PORT_MAPPING' }],
+    gate_evaluations: [], gate_policies: [], artifacts: [], output_targets: {}, context_ids: [], agent_preset: null,
+    runtime_phase: null, runtime_cancel_recovery_modes: [],
+  };
+  const detail = {
+    id: runId, flow_definition_id: flowId, flow_name: definition.name, flow_row_version: 1, run_no: 1,
+    name: 'FR120 手动运行组', state: 'WAITING_HUMAN', run_mode: 'MANUAL', automation_plan: null,
+    row_version: 1, active_snapshot_id: 'snapshot-fr120', active_snapshot_version: 1,
+    environment_version_id: 'environment-fr120', completion_mode: null, current_node_key: 'target', current_node_name: '已到达节点',
+    current_attempt_state: 'WAITING_INPUT', has_pending_action: true, runtime_status: 'ACTIVE', runtime_write_available: true, runtime_message: null,
+    progress: { accepted: 1, terminal: 1, active: 1 }, started_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:01:00Z', finished_at: null,
+    environment_version: null, lark_folder_token: null, lark_folder_url: null,
+    snapshots: [{ id: 'snapshot-fr120', version: 1, definition_hash: 'f'.repeat(64), definition, runtime_manifest: {} }],
+    node_runs: [
+      { id: 'node-source', flow_node_snapshot_key: 'source', sequence_no: 1, state: 'ACCEPTED', accepted_attempt_id: 'attempt-source', created_from: 'HUMAN_START', attempts: [{ ...attempt, id: 'attempt-source', state: 'ACCEPTED', input_bindings: [], artifacts: [{ id: artifactId, field_key: 'result', artifact_type: 'URL', uri: 'https://example.test/fr120-result', mime_type: 'text/uri-list', source: 'AGENT', metadata: {}, created_at: '2026-09-01T00:00:30Z' }] }] },
+      { id: 'node-target', flow_node_snapshot_key: 'target', sequence_no: 2, state: 'ACTIVE', accepted_attempt_id: null, created_from: 'FLOW_TRANSITION', attempts: [attempt] },
+    ],
+    artifacts: [{ id: artifactId, field_key: 'result', artifact_type: 'URL', uri: 'https://example.test/fr120-result', mime_type: 'text/uri-list', source: 'AGENT', metadata: {}, created_at: '2026-09-01T00:00:30Z' }],
+  };
+  const summary = Object.fromEntries(Object.entries(detail).filter(([key]) => !['row_version', 'snapshots', 'node_runs', 'artifacts', 'environment_version', 'lark_folder_token', 'lark_folder_url'].includes(key)));
+  await page.route('**/api/v1/flow-runs', route => route.fulfill({ json: [summary] }));
+  await page.route(`**/api/v1/flow-runs/${runId}`, route => route.fulfill({ json: detail }));
+  await page.route(`**/api/v1/flow-runs/${runId}/events`, route => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
+  await page.route('**/api/v1/flows', route => route.fulfill({ json: [definition] }));
+  await page.route(`**/api/v1/flows/${flowId}`, route => route.fulfill({ json: definition }));
+  await page.route('**/api/v1/terminal-environments', route => route.fulfill({ json: [] }));
+
+  await login(page);
+  await page.getByRole('button', { name: '流程运行' }).click();
+  const runButton = page.locator('.run-selector-rail').getByRole('button', { name: /FR120 手动运行组/ });
+  await runButton.click();
+  await page.locator('.run-graph .react-flow__node').filter({ hasText: '已到达节点' }).click();
+  const console = page.locator('.node-console');
+  await expect(console).toContainText('https://example.test/fr120-result');
+  await expect(console.getByRole('button', { name: '开始节点执行' })).toBeEnabled();
+  await page.locator('.run-graph .react-flow__node').filter({ hasText: '未到达节点' }).click();
+  await expect(console.getByRole('button', { name: '等待上游完成并流转' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '创建新的独立执行' })).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '流程定义' })).toBeVisible();
+  await page.getByRole('button', { name: '流程运行' }).click();
+  await page.locator('.run-selector-rail').getByRole('button', { name: /FR120 手动运行组/ }).click();
+  await expect(page.locator('.run-selector-history').getByRole('button', { name: /已到达节点/ })).toBeVisible();
+  await page.locator('.run-graph .react-flow__node').filter({ hasText: '已到达节点' }).click();
+  await expect(page.locator('.node-console').getByRole('button', { name: '开始节点执行' })).toBeEnabled();
+});
+
 test('run keeps attempts, snapshots, gates and artifact lineage visible', async ({ page, request }) => {
   const asset = await createAsset(request, `运行资产-${suffix}`);
   const flow = await createFlow(request, asset.id, `运行流程-${suffix}`);

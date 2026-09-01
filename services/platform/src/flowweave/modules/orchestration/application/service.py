@@ -429,6 +429,13 @@ def _run(db: Session, run_id: str) -> FlowRun:
     return item
 
 
+def _locked_run(db: Session, run_id: str) -> FlowRun:
+    item = db.scalar(select(FlowRun).where(FlowRun.id == run_id).with_for_update())
+    if not item:
+        raise not_found("flow_run", run_id)
+    return item
+
+
 def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
     item = db.get(NodeAttempt, attempt_id)
     if not item:
@@ -1652,21 +1659,15 @@ def _create_node_run(
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
     _validate_input_bindings(db, run, node, artifact_ids)
-    # Automatic port propagation targets the latest waiting work item so the
-    # same mapping stays idempotent. A human start is intentionally different:
-    # every click represents an independent execution record, even when another
-    # execution of the same snapshot node is still active.
-    existing = (
-        db.scalar(
-            select(NodeRun)
-            .where(
-                NodeRun.flow_run_id == run.id,
-                NodeRun.flow_node_snapshot_key == instance_key,
-            )
-            .order_by(NodeRun.sequence_no.desc())
+    # A manual FlowRun owns at most one durable NodeRun for each frozen graph
+    # node. Downstream transitions create that work item in WAITING_INPUT; the
+    # user's later configuration updates its first Attempt instead of creating
+    # another NodeRun. Revisions after a rejected result remain Attempts.
+    existing = db.scalar(
+        select(NodeRun).where(
+            NodeRun.flow_run_id == run.id,
+            NodeRun.flow_node_snapshot_key == instance_key,
         )
-        if created_from == "PORT_MAPPING"
-        else None
     )
     if existing:
         latest = db.scalar(
@@ -1676,89 +1677,15 @@ def _create_node_run(
         )
         if latest is None:
             raise DomainError("RUN_STATE_INVALID", "node work item has no attempt", 409)
-        if created_from == "PORT_MAPPING" and latest.state != AttemptState.WAITING_INPUT:
-            return existing, latest
-        if latest.state == AttemptState.WAITING_INPUT:
-            current_bindings = {row.input_field_key: row for row in _bindings(db, latest.id)}
-            for field_key, artifact_id in artifact_ids.items():
-                binding = current_bindings.get(field_key)
-                if binding:
-                    binding.artifact_version_id = artifact_id
-                    binding.binding_source = created_from
-                else:
-                    db.add(
-                        AttemptInputBinding(
-                            attempt_id=latest.id,
-                            input_field_key=field_key,
-                            artifact_version_id=artifact_id,
-                            binding_source=created_from,
-                        )
-                    )
-            latest.state_version += 1
-            latest.error_code = None
-            latest.error_detail = None
-            db.flush()
-            _dispatch_readiness(db, latest)
-            _event(
-                db,
-                run.id,
-                "INPUT_BINDING_CHANGED",
-                {"fields": list(artifact_ids), "source": created_from},
-                existing.id,
-                latest.id,
-            )
-            return existing, latest
-        if existing.state == NodeRunState.ACTIVE:
-            raise illegal("node work item already has an active attempt", state=latest.state)
-        next_attempt_no = latest.attempt_no + 1
-        existing.state = NodeRunState.ACTIVE
-        existing.accepted_attempt_id = None
-        attempt = NodeAttempt(
-            node_run_id=existing.id,
-            attempt_no=next_attempt_no,
-            snapshot_id=snapshot.id,
-            state=(
-                AttemptState.WAITING_START_CONFIRMATION
-                if session_only
-                else AttemptState.WAITING_INPUT
-            ),
-            startup_mode="CHAT" if session_only else "PROMPT",
-            context_ids_json=context_ids,
-            agent_preset_json=agent_preset,
-            gate_policies_json=gate_policies or [],
-            workspace_ref=str(
-                attempt_workspace_path(
-                    asset_id=asset_id,
-                    run_id=run.id,
-                    node_run_id=existing.id,
-                    attempt_no=next_attempt_no,
-                )
-            ),
-        )
-        db.add(attempt)
-        db.flush()
-        ensure_flow_run_attempt_workspace(
-            flow_run_id=run.id, asset_id=asset_id, workspace_ref=attempt.workspace_ref or ""
-        )
-        for field_key, artifact_id in artifact_ids.items():
-            db.add(
-                AttemptInputBinding(
-                    attempt_id=attempt.id,
-                    input_field_key=field_key,
-                    artifact_version_id=artifact_id,
-                    binding_source=created_from,
-                )
-            )
-        db.flush()
-        _event(
-            db,
-            run.id,
-            "ATTEMPT_CREATED",
-            {"attempt_no": next_attempt_no, "flow_node_key": instance_key},
-            existing.id,
-            attempt.id,
-        )
+        if latest.state != AttemptState.WAITING_INPUT or existing.created_from != "FLOW_TRANSITION":
+            raise illegal("node already exists in this manual run group", state=latest.state)
         if session_only:
+            latest.startup_mode = "CHAT"
+            latest.context_ids_json = []
+            latest.agent_preset_json = agent_preset
+            latest.gate_policies_json = []
+            latest.state = AttemptState.WAITING_START_CONFIRMATION
+            latest.state_version += 1
             run.state = FlowRunState.WAITING_HUMAN
             _event(
                 db,
@@ -1766,11 +1693,51 @@ def _create_node_run(
                 "ATTEMPT_SESSION_READY",
                 {"flow_node_key": instance_key},
                 existing.id,
-                attempt.id,
+                latest.id,
             )
-        else:
-            _dispatch_readiness(db, attempt)
-        return existing, attempt
+            return existing, latest
+        current_bindings = {row.input_field_key: row for row in _bindings(db, latest.id)}
+        for field_key, artifact_id in artifact_ids.items():
+            binding = current_bindings.get(field_key)
+            if binding:
+                if (
+                    binding.binding_source == "PORT_MAPPING"
+                    and binding.artifact_version_id != artifact_id
+                ):
+                    raise DomainError(
+                        "INPUT_BINDING_IMMUTABLE",
+                        "a frozen port mapping cannot be replaced by manual input",
+                        409,
+                        {"field": field_key},
+                    )
+                binding.artifact_version_id = artifact_id
+                binding.binding_source = created_from
+            else:
+                db.add(
+                    AttemptInputBinding(
+                        attempt_id=latest.id,
+                        input_field_key=field_key,
+                        artifact_version_id=artifact_id,
+                        binding_source=created_from,
+                    )
+                )
+        latest.context_ids_json = context_ids
+        latest.agent_preset_json = agent_preset
+        latest.gate_policies_json = gate_policies or []
+        latest.state_version += 1
+        latest.error_code = None
+        latest.error_detail = None
+        db.flush()
+        _dispatch_readiness(db, latest)
+        _event(
+            db,
+            run.id,
+            "REACHED_NODE_CONFIGURED",
+            {"fields": sorted(artifact_ids), "flow_node_key": instance_key},
+            existing.id,
+            latest.id,
+        )
+        return existing, latest
     sequence = (
         db.scalar(select(func.max(NodeRun.sequence_no)).where(NodeRun.flow_run_id == run.id)) or 0
     ) + 1
@@ -2090,17 +2057,38 @@ def process_provision_flow_run_runtime(
 def start_node_run(
     db: Session, run_id: str, instance_key: str, payload: NodeRunStart
 ) -> dict[str, Any]:
-    run = _run(db, run_id)
+    # Serializing on the FlowRun closes the application-level race between two
+    # starts or two branch completions that target the same frozen node.
+    run = _locked_run(db, run_id)
     if run.run_mode != "MANUAL":
         raise illegal("automatic runs cannot use the manual node start command", state=run.state)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal run cannot activate node", state=run.state)
+    existing_node = db.scalar(
+        select(NodeRun).where(
+            NodeRun.flow_run_id == run.id,
+            NodeRun.flow_node_snapshot_key == instance_key,
+        )
+    )
+    has_group_work = (
+        db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1)) is not None
+    )
+    if has_group_work and existing_node is None:
+        raise DomainError(
+            "NODE_NOT_REACHED",
+            "node is not available in this manual run group",
+            409,
+            {"flow_node_key": instance_key},
+        )
     if payload.startup_mode == "CHAT":
         # A session-only launch is human-directed collaboration, not an
         # automated node execution. Its Attempt is only an authorization and
-        # Snapshot context for the shared Agent Workbench: it must not bind
-        # declared node inputs, run either gate stage, reserve output targets,
-        # enqueue Runtime work, or trigger flow port propagation.
+        # Snapshot context for the shared Agent Workbench: it must not add or
+        # replace declared node inputs, run either gate stage, reserve output
+        # targets, enqueue Runtime work, or trigger flow port propagation.
+        # A reached node can already carry immutable PORT_MAPPING bindings;
+        # those remain attached as transition audit facts but are not consumed
+        # by this session-only launch.
         node_run, _ = _create_node_run(
             db,
             run,
@@ -3728,7 +3716,9 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
             run.state = FlowRunState.ACTIVE
 
 
-def _activate_mapped_targets(db: Session, run: FlowRun, accepted: NodeRun) -> None:
+def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -> None:
+    """Expose frozen downstream work without starting its Agent or gates."""
+
     snapshot = _active_snapshot(db, run)
     definition = snapshot.definition_json
     outputs = list(
@@ -3738,19 +3728,118 @@ def _activate_mapped_targets(db: Session, run: FlowRun, accepted: NodeRun) -> No
             )
         )
     )
-    by_field = {x.field_key: x.id for x in outputs}
-    for mapping in definition.get("port_mappings", []):
-        if mapping["source_instance_key"] != accepted.flow_node_snapshot_key:
-            continue
-        artifact_id = by_field.get(mapping["source_output_key"])
-        if artifact_id:
-            _create_node_run(
-                db,
-                run,
-                mapping["target_instance_key"],
-                {mapping["target_input_key"]: artifact_id},
-                "PORT_MAPPING",
+    by_field = {item.field_key: item.id for item in outputs}
+    targets = sorted(
+        {
+            str(edge["target_instance_key"])
+            for edge in definition.get("edges", [])
+            if edge.get("source_instance_key") == accepted.flow_node_snapshot_key
+        }
+    )
+    for target_key in targets:
+        bindings = {
+            str(mapping["target_input_key"]): artifact_id
+            for mapping in definition.get("port_mappings", [])
+            if mapping.get("source_instance_key") == accepted.flow_node_snapshot_key
+            and mapping.get("target_instance_key") == target_key
+            and (artifact_id := by_field.get(str(mapping.get("source_output_key") or "")))
+        }
+        existing = db.scalar(
+            select(NodeRun).where(
+                NodeRun.flow_run_id == run.id,
+                NodeRun.flow_node_snapshot_key == target_key,
             )
+        )
+        if existing is not None:
+            attempt = db.scalar(
+                select(NodeAttempt)
+                .where(NodeAttempt.node_run_id == existing.id)
+                .order_by(NodeAttempt.attempt_no.desc())
+            )
+            if attempt is None:
+                raise DomainError("RUN_STATE_INVALID", "node work item has no attempt", 409)
+            if attempt.state != AttemptState.WAITING_INPUT:
+                raise DomainError(
+                    "MANUAL_FLOW_CYCLE_UNSUPPORTED",
+                    "manual run groups cannot revisit a node",
+                    409,
+                    {"flow_node_key": target_key},
+                )
+            current = {item.input_field_key: item for item in _bindings(db, attempt.id)}
+            for field_key, artifact_id in bindings.items():
+                if field_key in current:
+                    current[field_key].artifact_version_id = artifact_id
+                    current[field_key].binding_source = "PORT_MAPPING"
+                else:
+                    db.add(
+                        AttemptInputBinding(
+                            attempt_id=attempt.id,
+                            input_field_key=field_key,
+                            artifact_version_id=artifact_id,
+                            binding_source="PORT_MAPPING",
+                        )
+                    )
+            attempt.state_version += 1
+            _event(
+                db,
+                run.id,
+                "DOWNSTREAM_INPUTS_BOUND",
+                {"fields": sorted(bindings), "source_node_key": accepted.flow_node_snapshot_key},
+                existing.id,
+                attempt.id,
+            )
+            continue
+        node = _node(snapshot, target_key)
+        asset = cast(dict[str, Any], node.get("asset") or {})
+        asset_id = str(asset.get("id") or "")
+        if not asset_id:
+            raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
+        _validate_input_bindings(db, run, node, bindings)
+        sequence = (
+            db.scalar(select(func.max(NodeRun.sequence_no)).where(NodeRun.flow_run_id == run.id))
+            or 0
+        ) + 1
+        node_run = NodeRun(
+            flow_run_id=run.id,
+            flow_node_snapshot_key=target_key,
+            sequence_no=sequence,
+            created_from="FLOW_TRANSITION",
+        )
+        db.add(node_run)
+        db.flush()
+        attempt = NodeAttempt(
+            node_run_id=node_run.id,
+            attempt_no=1,
+            snapshot_id=snapshot.id,
+            state=AttemptState.WAITING_INPUT,
+            workspace_ref=str(
+                attempt_workspace_path(
+                    asset_id=asset_id, run_id=run.id, node_run_id=node_run.id, attempt_no=1
+                )
+            ),
+        )
+        db.add(attempt)
+        db.flush()
+        ensure_flow_run_attempt_workspace(
+            flow_run_id=run.id, asset_id=asset_id, workspace_ref=attempt.workspace_ref or ""
+        )
+        for field_key, artifact_id in bindings.items():
+            db.add(
+                AttemptInputBinding(
+                    attempt_id=attempt.id,
+                    input_field_key=field_key,
+                    artifact_version_id=artifact_id,
+                    binding_source="PORT_MAPPING",
+                )
+            )
+        _event(
+            db,
+            run.id,
+            "DOWNSTREAM_NODE_AVAILABLE",
+            {"source_node_key": accepted.flow_node_snapshot_key, "target_node_key": target_key},
+            node_run.id,
+            attempt.id,
+        )
 
 
 def accept_attempt(
@@ -3759,6 +3848,24 @@ def accept_attempt(
     payload: AttemptVersionWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
+    current = _attempt(db, attempt_id)
+    current_node_run = _node_run(db, current.node_run_id)
+    run = _locked_run(db, current_node_run.flow_run_id)
+    if run.run_mode != "MANUAL":
+        raise illegal("automatic attempts cannot be accepted manually", state=current.state)
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if existing.action_type != "ACCEPT_ATTEMPT" or existing.attempt_id != attempt_id:
+            raise conflict(
+                "accept idempotency key is already used",
+                attempt_id=existing.attempt_id,
+            )
+        if existing.payload_json.get("expected_state_version") != payload.expected_state_version:
+            raise conflict(
+                "accept request does not match the idempotent request",
+                attempt_id=attempt_id,
+            )
+        return run_detail(db, run.id)
     attempt = _claim_attempt_version(
         db,
         attempt_id,
@@ -3767,19 +3874,19 @@ def accept_attempt(
         next_state=AttemptState.ACCEPTED,
     )
     node_run = _node_run(db, attempt.node_run_id)
-    run = _run(db, node_run.flow_run_id)
     _action(
         db,
         run.id,
         "ACCEPT_ATTEMPT",
         idempotency_key,
+        {"expected_state_version": payload.expected_state_version},
         node_run_id=node_run.id,
         attempt_id=attempt.id,
     )
     node_run.state = NodeRunState.ACCEPTED
     node_run.accepted_attempt_id = attempt.id
-    _event(db, run.id, "NODE_RUN_ACCEPTED", {}, node_run.id, attempt.id)
-    _activate_mapped_targets(db, run, node_run)
+    _event(db, run.id, "NODE_RUN_COMPLETED", {}, node_run.id, attempt.id)
+    _create_configurable_targets(db, run, node_run)
     _recompute_run(db, run)
     finish(db)
     return run_detail(db, run.id)

@@ -625,6 +625,6 @@ export function subscribeToNodeSessionStream(
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`);
   source.onmessage = onEvent;
-  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
+  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'NODE_RUN_COMPLETED', 'DOWNSTREAM_NODE_AVAILABLE', 'DOWNSTREAM_INPUTS_BOUND', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
   return () => source.close();
 }
