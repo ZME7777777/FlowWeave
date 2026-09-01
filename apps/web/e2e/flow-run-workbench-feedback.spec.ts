@@ -126,23 +126,39 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 
   await page.getByRole('tab', { name: '自动运行' }).click();
-  await expect(graph).toContainText('选择一条自动运行记录后，可逐个配置其可达节点。');
+  await expect(graph).toContainText('未选择自动运行记录，当前显示中性流程定义；点击节点可新建单节点运行。');
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).first().click();
-  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+  const neutralNodeConsole = page.locator('.run-side-panel .node-console');
+  await expect(neutralNodeConsole).toBeVisible();
+  await expect(neutralNodeConsole.getByRole('button', { name: /提示词执行/ })).toBeVisible();
+  await expect(neutralNodeConsole.getByRole('button', { name: /会话启动/ })).toBeEnabled();
+  await expect(neutralNodeConsole.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
 
   const automaticRecord = page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' });
   await automaticRecord.click();
-  await expect(page.getByLabel('自动启动提示词 first')).toHaveValue('读取流程输入并完成节点工作。');
+  const automaticEditor = page.locator('.automatic-record-editor');
+  await expect(automaticEditor).toBeVisible();
+  await expect(automaticEditor.getByRole('button', { name: /提示词执行/ })).toHaveClass(/active/);
+  await expect(automaticEditor.getByRole('button', { name: /会话启动/ })).toBeDisabled();
+  await expect(automaticEditor.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
+  await expect(automaticEditor.getByRole('heading', { name: '输入' })).toBeVisible();
+  await expect(automaticEditor.getByRole('heading', { name: '启动提示词' })).toBeVisible();
+  await expect(automaticEditor).toContainText('读取流程输入并完成节点工作。');
+  await automaticEditor.getByRole('button', { name: 'Agent 配置' }).click();
+  await expect(automaticEditor.getByRole('heading', { name: '首会话 Agent 配置' })).toBeVisible();
+  await automaticEditor.getByRole('button', { name: '门禁配置' }).click();
+  await expect(automaticEditor).toContainText('门禁只应用于即将创建的这一次执行');
+  await automaticEditor.getByRole('button', { name: '输入与上下文' }).click();
   await automaticRecord.click();
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await automaticRecord.click();
-  await expect(page.getByLabel('自动启动提示词 first')).toBeVisible();
+  await expect(page.locator('.automatic-record-editor')).toBeVisible();
   await page.locator('.react-flow__pane').click({ position: { x: 20, y: 20 } });
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await automaticRecord.click();
-  await expect(page.getByLabel('自动启动提示词 first')).toBeVisible();
+  await expect(page.locator('.automatic-record-editor')).toBeVisible();
   await page.getByRole('button', { name: '保存配置' }).click();
 
   await expect(page.getByRole('status')).toContainText('配置已保存，仍有 2 项待补齐');
