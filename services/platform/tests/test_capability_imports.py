@@ -1,10 +1,12 @@
 import base64
+import hashlib
 import io
 import json
 import zipfile
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from flowweave.modules.catalog.application.capability_repository import (
@@ -25,6 +27,17 @@ def skill_zip() -> str:
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("sample/SKILL.md", "# Sample\n")
         archive.writestr("sample/reference.md", "evidence")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def context_bundle_zip(
+    entries: dict[str, bytes | str] | list[tuple[str, bytes | str]],
+) -> str:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        items = entries.items() if isinstance(entries, dict) else entries
+        for filename, content in items:
+            archive.writestr(filename, content)
     return base64.b64encode(buffer.getvalue()).decode()
 
 
@@ -90,6 +103,129 @@ def test_context_import_persists_explicit_title_description_and_readonly_source(
         "description": "发布前的固定背景和检查项",
         "content": content.decode(),
     }
+
+
+def test_context_bundle_import_generates_deterministic_manifest_and_readable_source(
+    client, db_session_factory
+):
+    payload = {
+        "capability_type": "CONTEXT",
+        "filename": "ai-context.zip",
+        "context_title": "AI 上下文资料包",
+        "context_description": "一套关联的架构约束",
+        "content_base64": context_bundle_zip(
+            {
+                "ai-context/README.md": "# 总览\n所有文档需要共同理解。\n",
+                "ai-context/01-系统边界.md": "# 系统边界\n保持控制面职责。\n",
+                "ai-context/AGENTS.md": "# 执行约束\n先验证再提交。\n",
+                "ai-context/flowweave-context.yaml": "entrypoint: ignored\n",
+            }
+        ),
+    }
+    first = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert first.status_code == 200, first.text
+    second = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert second.status_code == 200, second.text
+
+    normalized = first.json()["preview"]["capabilities"][0]["normalized_config"]
+    assert normalized == second.json()["preview"]["capabilities"][0]["normalized_config"]
+    assert normalized["schema_version"] == 2
+    assert normalized["content_format"] == "BUNDLE"
+    assert normalized["description"] == "一套关联的架构约束"
+    assert normalized["manifest"] == {
+        "entrypoint": "README.md",
+        "documents": [
+            {
+                "path": "01-系统边界.md",
+                "title": "系统边界",
+                "content_sha256": hashlib.sha256(
+                    "# 系统边界\n保持控制面职责。".encode()
+                ).hexdigest(),
+            },
+            {
+                "path": "AGENTS.md",
+                "title": "执行约束",
+                "content_sha256": hashlib.sha256("# 执行约束\n先验证再提交。".encode()).hexdigest(),
+            },
+            {
+                "path": "README.md",
+                "title": "总览",
+                "content_sha256": hashlib.sha256(
+                    "# 总览\n所有文档需要共同理解。".encode()
+                ).hexdigest(),
+            },
+        ],
+        "conflict_policy": "ORDERED_DOCUMENTS_LATER_WINS",
+    }
+    assert "[AI 上下文资料包 · 关联资料包]" in normalized["text"]
+    assert "## 文档：系统边界" in normalized["text"]
+    assert "<!-- source: README.md -->" in normalized["text"]
+    assert normalized["text"] == normalized["compiled_text"]
+
+    committed = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": first.json()["import_token"]},
+    )
+    assert committed.status_code == 201, committed.text
+    capability_id = committed.json()["capabilities"][0]["capability_id"]
+    source = client.get(f"/api/v1/capabilities/{capability_id}/context-source")
+    assert source.status_code == 200, source.text
+    assert source.json()["content"] == normalized["text"]
+    with db_session_factory() as db:
+        blob = db.scalar(
+            select(CapabilityBlob).where(
+                CapabilityBlob.content_hash == committed.json()["content_hash"]
+            )
+        )
+        assert blob is not None
+        assert blob.media_type == "application/zip"
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected_message"),
+    [
+        ({"../escape.md": "not allowed"}, "Unsafe Context Bundle ZIP path"),
+        ({"C:\\escape.md": "not allowed"}, "Unsafe Context Bundle ZIP path"),
+        (
+            [("same.md", "first"), ("same.md", "second")],
+            "Context Bundle contains duplicate document paths",
+        ),
+        ({"blank.md": "   \n"}, "Context Bundle documents cannot be blank"),
+        ({"unsafe.md": "token = plaintext"}, "Context Bundle must not contain plaintext secrets"),
+    ],
+)
+@pytest.mark.filterwarnings("ignore:Duplicate name:UserWarning")
+def test_context_bundle_rejects_unsafe_or_invalid_documents(client, entries, expected_message):
+    content = context_bundle_zip(entries)
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "context-bundle.zip",
+            "content_base64": content,
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "IMPORT_REJECTED"
+    assert response.json()["error"]["message"] == expected_message
+
+
+def test_context_bundle_rejects_symbolic_links(client):
+    buffer = io.BytesIO()
+    link = zipfile.ZipInfo("linked.md")
+    link.external_attr = 0o120777 << 16
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(link, "linked")
+    response = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "context-bundle.zip",
+            "content_base64": base64.b64encode(buffer.getvalue()).decode(),
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == "Context Bundle cannot contain symbolic links"
 
 
 def test_import_is_persistent_hashed_one_time_and_stores_source(client, db_session_factory):

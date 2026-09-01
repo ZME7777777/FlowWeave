@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`
+> 下一可执行切片：`FR-127 Context Bundle 表单编辑与资料包预览`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1786,6 +1786,32 @@ build、Alembic head、任务状态唯一性与 `git diff --check`。本切片�
 
 完成：节点资产页每页容量调整为 25，并新增浏览器回归覆盖 25 个节点在首页完整显示且不出现分页控件。
 
+### FR-126 Context Bundle 不可变导入与自动 Manifest — DONE
+
+依赖：`FR-125`。
+
+目标：保持唯一业务能力类型 `CONTEXT`，在既有单个 UTF-8 文本 Context 之外，允许上传一个只含 UTF-8
+`.txt`、`.md` 或 `.markdown` 文档的 ZIP 资料包。导入必须安全拒绝路径穿越、绝对路径、重复规范路径、符号链接、
+非普通文件、嵌套压缩包、超限条目／深度／大小、空文件、非 UTF-8 内容和明文 Secret。系统应从 ZIP 文件名、
+根 `README.md` 和文档路径确定性生成内部 Manifest：资料包名称、说明建议、可选资料入口、自然排序文档目录、
+展示标题、内容哈希和显式默认冲突规则；不得要求用户上传或维护 YAML／JSON Manifest，也不得引入
+`CONTEXT_BUNDLE` 能力类型。
+
+所有资料包文档必须被确定性编译为当前 `runtime_config["text"]` 兼容的完整文本，以便既有 OpenHands
+`AgentContext.system_message_suffix` 注册路径能够继续加载全部文档。原始 ZIP 仍作为不可变导入源保存，
+Context 查看接口在资料包场景返回可阅读的编译文本。首个切片不实现表单中的文档重命名、排序、入口或冲突规则
+编辑，也不改变运行时渲染；这些在后续 UI／发布确认切片完成。
+
+验收：新增 Context Bundle 导入定向测试，覆盖确定性 Manifest／全量编译、根目录归一化、查看接口及安全拒绝；
+运行受影响 Python Ruff、pytest、`py_compile`、Alembic head、任务状态唯一性和 `git diff --check`。完成后独立
+Git commit 并停止。
+
+完成：`CONTEXT` 导入现可接受单个 UTF-8 文本或 Context Bundle ZIP，资料包仍只发布一个不可变 Context
+Version。ZIP 资料在安全校验后自动去除单一顶层目录，生成带文档路径、展示标题、内容哈希、可选 README
+入口和默认“后文覆盖前文”规则的 Manifest；所有文档编译为清晰分界的完整文本，并继续经现有
+`AgentContext.system_message_suffix` 路径加载。查看接口对 Bundle 返回该编译文本，原 ZIP 保留为版本来源；
+未增加新能力类型、迁移或 OpenHands 私有协议。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1802,6 +1828,7 @@ build、Alembic head、任务状态唯一性与 `git diff --check`。本切片�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-126 | Context Bundle 定向 pytest（7 passed）；完整 `test_capability_imports.py`（42 passed）与 `test_context_capabilities.py`（3 passed）；受影响 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：Bundle 仍是单个 `CONTEXT` Version，内部确定性生成 Manifest 并编译全部文档到现有系统后缀兼容文本；ZIP 单顶层目录自动归一化，根 README 被建议为入口，原始 ZIP 以 `application/zip` 不可变保存，查看接口可返回可读编译内容。路径穿越、Windows／POSIX 绝对路径、重复路径、空文件、明文 Secret 与符号链接均被拒绝。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-126 完成后无 `CURRENT`，下一切片为 FR-127 表单编辑与资料包预览。 |
 | 2026-09-01 | FR-125 | Web ESLint、TypeScript typecheck；当前源码 Vite 定向 Playwright（1 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：节点资产页桌面紧凑网格每页显示 25 张卡片，完整 5×5 首屏不再把第 25 张提前移至第二页；25 个节点时不显示分页控件。唯一 Alembic head 为 `0087_nested_automatic_runs`，FR-125 完成后无 `CURRENT` 或后续切片。 |
 | 2026-09-01 | FR-124 | Web ESLint、TypeScript typecheck、production build；当前源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：未选择运行记录时冻结流程图不再隐式投影“当前激活”或运行次数，显式选择单节点记录后才展示执行事实；自动草稿首次保存会提交当前默认节点计划，并在按钮旁展示保存成功、剩余就绪缺项或服务端拒绝。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-124 完成后无 `CURRENT` 或后续切片。 |
 | 2026-09-01 | FR-123 | 平台完整 pytest（546 passed）；架构／契约／Runtime replacement 合并回归（54 passed）；自动调度与恢复定向 pytest（30 passed）；全量 Pyright（0 errors）、受影响 Ruff、OpenAPI、Web ESLint／TypeScript／production build、Compose 安全与迁移矩阵；源码及部署后双模式 Playwright（部署后 3 passed）；无缓存完整镜像重建与 Compose 部署；真实 OpenHands 手动／自动单节点执行、原生 Conversation/Event、失败投影及 generation 1→2 replacement | PASS：自动启动响应保持零 Runtime／NodeRun 副作用，Worker 接管后完成真实自动链路；手动链路到达 `WAITING_ACCEPTANCE` 并正式验收，两个 FlowRun 最终均完成。每个 FlowRun 只有一个 Runtime Session 和一个 active generation，Conversation 使用独立原生 ID。replacement 后 Runtime Session、Conversation ID 与 8 个原事件 ID 不变，旧 generation 删除。外网 Codex 不可达被安全投影为 `RUNTIME_FAILED`，容器内可达 `kiro-go` 的双模式链路通过。唯一 Alembic head/current 为 `0086_run_modes_auto_drafts`；FR-123 完成后无 `CURRENT` 或后续切片。 |

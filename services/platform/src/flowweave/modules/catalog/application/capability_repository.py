@@ -235,6 +235,9 @@ def _blob(db: Session, imported: CapabilityImport) -> CapabilityBlob:
         media_type=(
             "application/zip"
             if imported.capability_type in {"SKILL", "PLUGIN"}
+            or (
+                imported.capability_type == "CONTEXT" and imported.filename.lower().endswith(".zip")
+            )
             else "application/json"
         ),
     )

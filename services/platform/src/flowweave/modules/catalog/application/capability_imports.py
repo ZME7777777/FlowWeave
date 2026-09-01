@@ -74,6 +74,12 @@ ZIP_MAX_FILES = 1000
 ZIP_MAX_DEPTH = 8
 CONFIG_MAX_BYTES = 1024 * 1024
 CONTEXT_ALLOWED_SUFFIXES = {".txt", ".md", ".markdown"}
+CONTEXT_BUNDLE_MANIFEST_NAMES = {
+    "flowweave-context.yaml",
+    "flowweave-context.yml",
+    "flowweave-context.json",
+}
+CONTEXT_BUNDLE_MAX_FILES = 100
 CONTEXT_SECRET_ASSIGNMENT = re.compile(
     r"\b(?:api[_-]?key|token|secret|password|authorization)\b\s*[:=]", re.IGNORECASE
 )
@@ -267,6 +273,235 @@ def _context_capability(
             "text": text,
             "description": resolved_description[:2000],
         },
+    }
+
+
+def _natural_path_key(path: str) -> tuple[tuple[int, int | str], ...]:
+    """Sort document paths predictably without putting 10 before 2."""
+
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", path)
+    )
+
+
+def _context_document_title(path: str, text: str) -> str:
+    for line in text.splitlines():
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if match:
+            heading = match.group(1).strip()
+            if heading:
+                return heading[:200]
+    return PurePosixPath(path).stem[:200] or PurePosixPath(path).name[:200]
+
+
+def _bundle_root(paths: list[PurePosixPath]) -> str | None:
+    """Remove the conventional single top-level folder created by ZIP tools."""
+
+    if not paths or any(len(path.parts) < 2 for path in paths):
+        return None
+    roots = {path.parts[0] for path in paths}
+    return next(iter(roots)) if len(roots) == 1 else None
+
+
+def _compile_context_bundle(
+    title: str,
+    manifest: dict[str, Any],
+    documents: list[tuple[dict[str, str], str]],
+) -> str:
+    lines = [
+        f"[{title} · 关联资料包]",
+        "",
+        "本资料包由以下关联文档组成；所有文档均已加载，应作为同一套约束和背景共同理解。",
+    ]
+    entrypoint = manifest.get("entrypoint")
+    if isinstance(entrypoint, str) and entrypoint:
+        lines.extend(("", f"资料入口：{entrypoint}"))
+    lines.extend(
+        (
+            "",
+            "冲突规则：后面的文档覆盖前面的文档。",
+            "",
+            "## 文档目录",
+        )
+    )
+    for position, (document, _) in enumerate(documents, start=1):
+        lines.append(f"{position}. {document['path']}")
+    for document, text in documents:
+        lines.extend(
+            (
+                "",
+                f"## 文档：{document['title']}",
+                f"<!-- source: {document['path']} -->",
+                text,
+            )
+        )
+    return "\n".join(lines).strip()
+
+
+def _context_bundle_capability(
+    content: bytes,
+    filename: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Validate one related Context document set and build its immutable draft manifest."""
+
+    if len(content) > CONFIG_MAX_BYTES:
+        raise _reject("Context Bundle ZIP exceeds 1 MiB")
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            entries = archive.infolist()
+            if len(entries) > ZIP_MAX_RAW_ENTRIES:
+                raise _reject(
+                    f"ZIP contains {len(entries)} raw entries; maximum is {ZIP_MAX_RAW_ENTRIES}",
+                    actual_entries=len(entries),
+                    max_entries=ZIP_MAX_RAW_ENTRIES,
+                )
+            total_bytes = 0
+            ignored_entries = 0
+            file_entries: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
+            for item in entries:
+                archive_name = item.filename.replace("\\", "/")
+                path = PurePosixPath(archive_name)
+                if (
+                    path.is_absolute()
+                    or re.match(r"^[A-Za-z]:/", archive_name)
+                    or ".." in path.parts
+                ):
+                    raise _reject("Unsafe Context Bundle ZIP path", filename=item.filename)
+                mode_type = (item.external_attr >> 16) & 0o170000
+                if mode_type == 0o120000:
+                    raise _reject(
+                        "Context Bundle cannot contain symbolic links", filename=item.filename
+                    )
+                if item.file_size > CONFIG_MAX_BYTES:
+                    raise _reject("Context Bundle file exceeds 1 MiB", filename=item.filename)
+                total_bytes += item.file_size
+                if total_bytes > CONFIG_MAX_BYTES:
+                    raise _reject("Context Bundle documents exceed 1 MiB in total")
+                if _ignored_archive_entry(path):
+                    ignored_entries += 1
+                    continue
+                if item.is_dir():
+                    continue
+                if (
+                    path.name in {"", ".", ".."}
+                    or len(path.parts) > ZIP_MAX_DEPTH
+                    or mode_type not in {0, 0o100000}
+                ):
+                    raise _reject("Context Bundle contains an unsafe file", filename=item.filename)
+                file_entries.append((item, path))
+
+            root = _bundle_root(
+                [
+                    path
+                    for _, path in file_entries
+                    if not (
+                        len(path.parts) == 1
+                        and path.name.casefold() in CONTEXT_BUNDLE_MANIFEST_NAMES
+                    )
+                ]
+            )
+            documents_by_path: dict[str, tuple[dict[str, str], str]] = {}
+            seen_paths: set[str] = set()
+            for item, raw_path in file_entries:
+                path = PurePosixPath(*raw_path.parts[1:]) if root is not None else raw_path
+                normalized_path = path.as_posix()
+                if not normalized_path or normalized_path == ".":
+                    raise _reject("Context Bundle contains an unsafe file", filename=item.filename)
+                if normalized_path in seen_paths:
+                    raise _reject(
+                        "Context Bundle contains duplicate document paths",
+                        filename=normalized_path,
+                    )
+                seen_paths.add(normalized_path)
+                if len(path.parts) == 1 and path.name.casefold() in CONTEXT_BUNDLE_MANIFEST_NAMES:
+                    ignored_entries += 1
+                    continue
+                if path.suffix.lower() not in CONTEXT_ALLOWED_SUFFIXES:
+                    raise _reject(
+                        "Context Bundle supports only UTF-8 .txt or Markdown documents",
+                        filename=normalized_path,
+                    )
+                if path.suffix.lower() in NESTED_ARCHIVE_SUFFIXES:
+                    raise _reject("Nested archives are not allowed", filename=normalized_path)
+                try:
+                    text = archive.read(item).decode("utf-8").strip()
+                except (KeyError, UnicodeDecodeError) as exc:
+                    raise _reject(
+                        "Context Bundle documents must be UTF-8 text",
+                        filename=normalized_path,
+                    ) from exc
+                if not text:
+                    raise _reject(
+                        "Context Bundle documents cannot be blank", filename=normalized_path
+                    )
+                if CONTEXT_SECRET_ASSIGNMENT.search(text):
+                    raise _reject(
+                        "Context Bundle must not contain plaintext secrets",
+                        filename=normalized_path,
+                    )
+                if len(documents_by_path) >= CONTEXT_BUNDLE_MAX_FILES:
+                    raise _reject(
+                        f"Context Bundle contains more than {CONTEXT_BUNDLE_MAX_FILES} documents",
+                        max_files=CONTEXT_BUNDLE_MAX_FILES,
+                    )
+                documents_by_path[normalized_path] = (
+                    {
+                        "path": normalized_path,
+                        "title": _context_document_title(normalized_path, text),
+                        "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    },
+                    text,
+                )
+    except zipfile.BadZipFile as exc:
+        raise _reject("Invalid Context Bundle ZIP") from exc
+
+    documents = [
+        documents_by_path[path] for path in sorted(documents_by_path, key=_natural_path_key)
+    ]
+    if not documents:
+        raise _reject("Context Bundle must contain at least one text document")
+    entrypoint = "README.md" if "README.md" in documents_by_path else None
+    key = (title or Path(filename).stem).strip()
+    if not key or len(key) > 200:
+        raise _reject("Context title must be between 1 and 200 characters")
+    description_source = (
+        documents_by_path[entrypoint][1] if entrypoint is not None else documents[0][1]
+    )
+    inferred_description = next(
+        (
+            line.strip().lstrip("#").strip()
+            for line in description_source.splitlines()
+            if line.strip()
+        ),
+        "",
+    )
+    resolved_description = (
+        description if description is not None else inferred_description
+    ).strip()
+    manifest: dict[str, Any] = {
+        "entrypoint": entrypoint,
+        "documents": [document for document, _ in documents],
+        "conflict_policy": "ORDERED_DOCUMENTS_LATER_WINS",
+    }
+    compiled_text = _compile_context_bundle(key, manifest, documents)
+    if len(compiled_text.encode("utf-8")) > CONFIG_MAX_BYTES:
+        raise _reject("Context Bundle compiled text exceeds 1 MiB")
+    return {
+        "capability_key": key,
+        "normalized_config": {
+            "schema_version": 2,
+            "content_format": "BUNDLE",
+            "text": compiled_text,
+            "compiled_text": compiled_text,
+            "description": resolved_description[:2000],
+            "manifest": manifest,
+        },
+        "document_count": len(documents),
+        "ignored_entry_count": ignored_entries,
     }
 
 
@@ -1276,6 +1511,23 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     if payload.capability_type == "CONTEXT":
         if payload.mcp_scripts or payload.hook_scripts:
             raise _reject("Context cannot include detached scripts")
+        if Path(filename).suffix.lower() == ".zip":
+            bundle = _context_bundle_capability(
+                content,
+                filename,
+                title=payload.context_title,
+                description=payload.context_description,
+            )
+            return content, {
+                "capabilities": [
+                    {
+                        "capability_key": bundle["capability_key"],
+                        "normalized_config": bundle["normalized_config"],
+                    }
+                ],
+                "document_count": bundle["document_count"],
+                "ignored_entry_count": bundle["ignored_entry_count"],
+            }
         return content, {
             "capabilities": [
                 _context_capability(
@@ -1635,19 +1887,25 @@ def read_context_source(db: Session, capability_id: str) -> dict[str, Any]:
     published = resolve_version(db, capability_id)
     if published.package.capability_type != "CONTEXT":
         raise DomainError("CAPABILITY_NOT_CONTEXT", "Capability is not a Context", 422)
-    try:
-        content = get_artifact_store().read(published.blob.storage_key).decode("utf-8")
-    except (FileNotFoundError, UnicodeDecodeError) as exc:
-        raise DomainError(
-            "CAPABILITY_SOURCE_UNAVAILABLE", "Context source is unavailable", 422
-        ) from exc
+    normalized = published.version.normalized_config_json or {}
+    if normalized.get("content_format") == "BUNDLE":
+        content = str(normalized.get("text") or "").strip()
+        if not content:
+            raise DomainError(
+                "CAPABILITY_SOURCE_UNAVAILABLE", "Context Bundle source is unavailable", 422
+            )
+    else:
+        try:
+            content = get_artifact_store().read(published.blob.storage_key).decode("utf-8")
+        except (FileNotFoundError, UnicodeDecodeError) as exc:
+            raise DomainError(
+                "CAPABILITY_SOURCE_UNAVAILABLE", "Context source is unavailable", 422
+            ) from exc
     return {
         "id": capability_id,
         "capability_key": published.package.capability_key,
         "filename": published.version.source_filename,
-        "description": str(
-            (published.version.normalized_config_json or {}).get("description") or ""
-        ),
+        "description": str(normalized.get("description") or ""),
         "content": content,
     }
 
