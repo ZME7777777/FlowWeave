@@ -1770,12 +1770,13 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
 
     events = client.get(f"/api/v1/flow-runs/{run['id']}/event-history").json()
     assert [x["cursor"] for x in events] == sorted(x["cursor"] for x in events)
-    assert {
+    expected_events = {
         "SNAPSHOT_SYNCED",
         "NODE_RUN_COMPLETED",
         "DOWNSTREAM_NODE_AVAILABLE",
         "ARTIFACT_VERSION_CREATED",
-    } <= {x["event_type"] for x in events}
+    }
+    assert expected_events <= {x["event_type"] for x in events}
 
 
 def test_any_node_can_start_without_upstream_completion(client, skill_capability):

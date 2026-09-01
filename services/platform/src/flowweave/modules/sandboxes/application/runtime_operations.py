@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
 )
@@ -32,7 +33,8 @@ def runtime_overview(db: Session, flow_run_id: str) -> dict[str, Any]:
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
-    session = db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id))
+    owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    session = db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == owner_id))
     if session is None:
         return {
             "flow_run_id": flow_run_id,

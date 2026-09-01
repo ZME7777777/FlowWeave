@@ -110,6 +110,7 @@ def resolve_flow_node_session_host(
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
     runtime_overview = sandboxes.runtime_overview(db, flow_run_id)
     if runtime_overview["rerun_required"]:
         raise DomainError(
@@ -170,7 +171,7 @@ def resolve_flow_node_session_host(
             {"node_attempt_id": attempt.id},
         )
     runtime_working_directory = _runtime_working_directory(
-        flow_run_id=run.id, workspace_ref=working_directory
+        flow_run_id=runtime_owner_id, workspace_ref=working_directory
     )
     return FlowNodeSessionHost(
         session=AgentSessionHostContext.create(

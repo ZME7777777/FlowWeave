@@ -31,6 +31,16 @@ def process_agent_conversation_title(*args: Any, **kwargs: Any) -> None:
     process(*args, **kwargs)
 
 
+def ssh_remote_descriptor(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Expose the IDE descriptor without leaking an application module."""
+
+    from flowweave.modules.agent_sessions.application.ide import (
+        ssh_remote_descriptor as descriptor,
+    )
+
+    return descriptor(*args, **kwargs)
+
+
 def __getattr__(name: str) -> Any:
     """Load application modules only for callers that need their services.
 
@@ -114,4 +124,5 @@ __all__ = [
     "READ_SESSIONS",
     "WRITE_SESSIONS",
     "process_agent_conversation_title",
+    "ssh_remote_descriptor",
 ]

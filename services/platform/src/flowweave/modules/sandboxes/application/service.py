@@ -12,6 +12,7 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
 )
+from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
 )
@@ -441,6 +442,7 @@ def ensure_flow_run_runtime(
     environment_version_no: int,
 ) -> RuntimeProviderAllocation:
     """Return the single physical Runtime Provider allocation for one FlowRun."""
+    flow_run_id = runtime_owner_flow_run_id(db, flow_run_id)
 
     return _create_managed_runtime(
         db,

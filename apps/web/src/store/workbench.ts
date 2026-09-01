@@ -3,7 +3,7 @@ import { createJSONStorage, persist, type StateStorage } from 'zustand/middlewar
 import type { ViewName } from '../types';
 
 const STORAGE_KEY = 'flowweave-workbench';
-const STORAGE_VERSION = 5;
+const STORAGE_VERSION = 4;
 const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'models', 'flows', 'runs', 'workbench', 'agent-workbench']);
 
 interface WorkbenchState {
@@ -11,10 +11,8 @@ interface WorkbenchState {
   selectedRunId?: string;
   selectedNodeRunId?: string;
   selectedAttemptId?: string;
-  selectedFlowNodeKey?: string;
   setView: (view: ViewName) => void;
-  openRun: (runId: string, nodeRunId?: string, nodeKey?: string) => void;
-  clearRunSelection: () => void;
+  openRun: (runId: string, nodeRunId?: string) => void;
   selectNodeRun: (id: string) => void;
   selectAttempt: (id: string) => void;
   selectExecution: (nodeRunId: string, attemptId?: string) => void;
@@ -62,11 +60,8 @@ export const useWorkbenchStore = create<WorkbenchState>()(
     set => ({
       view: 'nodes',
       setView: view => set({ view }),
-      openRun: (selectedRunId, selectedNodeRunId, selectedFlowNodeKey) => set({
-        view: 'workbench', selectedRunId, selectedNodeRunId, selectedFlowNodeKey, selectedAttemptId: undefined,
-      }),
-      clearRunSelection: () => set({
-        view: 'runs', selectedRunId: undefined, selectedNodeRunId: undefined, selectedAttemptId: undefined, selectedFlowNodeKey: undefined,
+      openRun: (selectedRunId, selectedNodeRunId) => set({
+        view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId: undefined,
       }),
       selectNodeRun: selectedNodeRunId => set({ selectedNodeRunId, selectedAttemptId: undefined }),
       selectAttempt: selectedAttemptId => set({ selectedAttemptId }),

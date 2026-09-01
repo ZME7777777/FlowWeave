@@ -262,6 +262,9 @@ class TaskWorker:
                     await session.run_sync(
                         lambda db: recover_default_agent_workspace_runtime_task(db)
                     )
+                    await session.run_sync(
+                        lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
+                    )
                     # Publish maintenance intent before the reconciler opens its
                     # independent short control transactions.
                     await session.commit()

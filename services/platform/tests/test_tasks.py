@@ -914,7 +914,7 @@ def test_worker_runtime_io_runs_without_database_transaction(
 
 
 def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
-    worker_client, db_session_factory, worker_container, worker_skill_capability
+    worker_client, db_session_factory, worker_container, worker_skill_capability, monkeypatch
 ):
     """Gate I/O holds no DB transaction and CAS discards a concurrently stale result."""
 
@@ -924,11 +924,11 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
     from sqlalchemy import func, update
 
     from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.modules.gates.public import GateResult
+    from flowweave.modules.orchestration import application as orchestration_application
     from flowweave.modules.orchestration.public import process_gate_stage
     from flowweave.modules.tasks.application.service import claim, succeed
-    from flowweave.shared.application.sandbox import SandboxExecution
     from flowweave.shared.models import GateEvaluation, NodeAttempt, RunEvent
-    from flowweave.shared.sandbox import sandbox_context
 
     asset = worker_client.post(
         "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
@@ -949,11 +949,13 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
                             "position": 0,
                             "gate_type": "PYTHON",
                             "config": {
+                                "prompt": "评估输出是否符合门禁要求",
                                 "code": (
                                     "result = {'decision': 'PASS', 'summary': 'ok', "
                                     "'reasons': [], 'evidence': [], 'details': {}}"
-                                )
+                                ),
                             },
+                            "agent_preset": {},
                         }
                     ],
                 }
@@ -990,25 +992,19 @@ def test_worker_gate_io_is_transaction_free_and_late_result_is_discarded(
 
     with db_session_factory() as db:
 
-        class BlockingSandbox:
-            def execute(self, _language, _code, _context, _timeout_seconds):
-                transaction_states.append(db.in_transaction())
-                entered.set()
-                assert release.wait(timeout=5)
-                return SandboxExecution(
-                    "COMPLETED",
-                    result={
-                        "decision": "PASS",
-                        "summary": "late pass",
-                        "reasons": [],
-                        "evidence": [],
-                        "details": {},
-                    },
-                )
+        def execute_frozen_gate(_db, _context, prepared):
+            transaction_states.append(db.in_transaction())
+            entered.set()
+            assert release.wait(timeout=5)
+            result = GateResult("PASS", "late pass", [], [], {})
+            return [(item, result) for item in prepared], False
+
+        monkeypatch.setattr(
+            orchestration_application.service, "_execute_gate_stage", execute_frozen_gate
+        )
 
         def execute_gate() -> None:
-            with sandbox_context(BlockingSandbox()):
-                process_gate_stage(db, attempt_id, "START", lease, commit=False)
+            process_gate_stage(db, attempt_id, "START", lease, commit=False)
 
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(execute_gate)

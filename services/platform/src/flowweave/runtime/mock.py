@@ -204,12 +204,15 @@ class MockRuntime:
     ) -> str:
         del content_type, content
         owner = attachment_owner_id or handle.conversation_id
-        safe_name = "".join(
-            character
-            if character.isascii() and (character.isalnum() or character in "._-")
-            else "_"
-            for character in filename
-        ).strip("._-")[:181] or "attachment"
+        safe_name = (
+            "".join(
+                character
+                if character.isascii() and (character.isalnum() or character in "._-")
+                else "_"
+                for character in filename
+            ).strip("._-")[:181]
+            or "attachment"
+        )
         return f"/runtime/workspace/project/uploads/{owner}-{uuid4().hex}--{safe_name}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
@@ -287,9 +290,22 @@ class MockRuntime:
         self, handle: RuntimeHandle, question: str, *, timeout_seconds: float
     ) -> RuntimeAskAgentResult:
         del handle, timeout_seconds
-        # Gate sidecars use the same native Conversation API as ordinary
+        # Gate and transition sidecars use the same native Conversation API as ordinary
         # Agents, but their contract requires a JSON decision.  Keep the mock
         # deterministic so local/demo runs exercise the real parser path.
+        if "isolated workflow transition Agent" in question:
+            context = json.loads(question.split("Gate context:\n", 1)[1])
+            return RuntimeAskAgentResult(
+                response=json.dumps(
+                    {
+                        "decision": "PASS",
+                        "summary": "Mock transition selected frozen successors",
+                        "reasons": [],
+                        "evidence": [],
+                        "details": {"selected_node_keys": context["allowed_node_keys"]},
+                    }
+                )
+            )
         if "isolated workflow gate Agent" in question:
             return RuntimeAskAgentResult(
                 response=json.dumps(

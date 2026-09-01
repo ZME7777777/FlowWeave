@@ -39,6 +39,12 @@ class FlowRun(Base):
     # later explicit start command freezes them.
     run_mode: Mapped[str] = mapped_column(String(20), default="MANUAL", index=True)
     automation_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # Automatic runs are records inside one user-created FlowRun.  Keeping the
+    # execution as a FlowRun lets the mature automatic scheduler remain
+    # unchanged while this self reference supplies the product-level owner.
+    parent_flow_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("flow_runs.id", ondelete="CASCADE"), index=True
+    )
     state: Mapped[str] = mapped_column(String(30), default=FlowRunState.ACTIVE)
     active_snapshot_id: Mapped[str | None] = mapped_column(String(36))
     # The database foreign key is added by migration 0015. Keeping the ORM

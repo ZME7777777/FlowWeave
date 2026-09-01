@@ -536,6 +536,7 @@ def _create_native_conversation(
             {"environment_version_id": run.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
     connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
     working_directory = runtime_working_directory or str(_RUNTIME_PROJECT)
     item = reserve_flow_node_binding(
@@ -554,7 +555,7 @@ def _create_native_conversation(
     config = config_from_binding(db, item)
     provider = provider_for_config(db, config)
     host_root = sandboxes.flow_run_capability_path(
-        run.id, snapshot.runtime_manifest_hash, "conversations", item.id
+        runtime_owner_id, snapshot.runtime_manifest_hash, "conversations", item.id
     )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(
@@ -574,7 +575,7 @@ def _create_native_conversation(
     )
     request = build_runtime_request(
         db,
-        flow_run_id=run.id,
+        flow_run_id=runtime_owner_id,
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=binding_id,
         execution_key=f"flow-run:{run.id}:conversation:create",
@@ -1286,8 +1287,9 @@ def add_node_conversation_capability(
         raise DomainError("AGENT_CONVERSATION_RUNNING", "会话运行中，完成当前回复后再加载能力", 409)
     attempt = _attempt(db, attempt_id)
     _, _, snapshot = _attempt_context(db, attempt)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
     host_root = sandboxes.flow_run_capability_path(
-        flow_run_id, snapshot.runtime_manifest_hash, "conversations", binding.id
+        runtime_owner_id, snapshot.runtime_manifest_hash, "conversations", binding.id
     )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(

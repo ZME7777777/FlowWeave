@@ -1,7 +1,7 @@
 import type {
-  AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
+  AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, AutomaticRunDraftUpdateWrite, AutomaticRunDraftWrite, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -105,6 +105,27 @@ const json = (method: string, body?: unknown, idempotencyKey?: string | true): R
     ? { 'Idempotency-Key': idempotencyKey === true ? randomId() : idempotencyKey }
     : undefined,
 });
+
+type AutomaticRunResponse = FlowRun & {
+  parent_flow_run_id?: string | null;
+  automation_plan?: {
+    start_node_key?: string; reachable_node_keys?: string[];
+    node_plans?: Record<string, FlowRunAutomaticRecord['node_plans'][string]>;
+    readiness?: FlowRunAutomaticRecord['readiness'];
+  } | null;
+};
+
+const automaticRecord = (run: AutomaticRunResponse): FlowRunAutomaticRecord => {
+  const plan = run.automation_plan ?? {};
+  return {
+    ...run,
+    flow_run_id: run.parent_flow_run_id ?? '',
+    start_node_key: plan.start_node_key ?? '',
+    reachable_node_keys: plan.reachable_node_keys ?? [],
+    node_plans: plan.node_plans ?? {},
+    readiness: plan.readiness ?? { ready: false, issues: [] },
+  };
+};
 
 /** The upload response includes display metadata which strict write schemas do
  * not accept. Only send the native attachment reference back to the API. */
@@ -285,16 +306,18 @@ export const api = {
 
   runFlow: (flowId: string, body: { name?: string; environment_version_id: string }) =>
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
-  createAutomaticRun: (flowId: string, body: AutomaticRunDraftWrite) =>
-    request<FlowRun>(`/flows/${flowId}/automatic-runs`, json('POST', body)),
-  updateAutomaticRun: (runId: string, body: AutomaticRunDraftUpdateWrite) =>
-    request<FlowRun>(`/automatic-runs/${runId}`, json('PUT', body)),
-  freezeAutomaticRun: (runId: string, expected_row_version: number) =>
-    request<FlowRun>(`/automatic-runs/${runId}/start`, json('POST', { expected_row_version }, true)),
-  copyAutomaticRun: (runId: string, name?: string) =>
-    request<FlowRun>(`/automatic-runs/${runId}/copy`, json('POST', { name: name || null })),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
+  automaticRecords: async (runId: string) =>
+    (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`)).map(automaticRecord),
+  createAutomaticRecord: async (runId: string, body: FlowRunAutomaticRecordWrite) =>
+    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`, json('POST', body))),
+  updateAutomaticRecord: async (runId: string, recordId: string, body: FlowRunAutomaticRecordUpdate) =>
+    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}`, json('PUT', body))),
+  startAutomaticRecord: async (runId: string, recordId: string, expected_row_version: number) =>
+    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/start`, json('POST', { expected_row_version }, true))),
+  deleteAutomaticRecord: (runId: string, recordId: string) =>
+    request<void>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
@@ -633,6 +656,6 @@ export function subscribeToNodeSessionStream(
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {
   const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`);
   source.onmessage = onEvent;
-  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'NODE_RUN_COMPLETED', 'DOWNSTREAM_NODE_AVAILABLE', 'DOWNSTREAM_INPUTS_BOUND', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
+  ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
   return () => source.close();
 }

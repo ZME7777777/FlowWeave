@@ -84,6 +84,7 @@ from flowweave.shared.models import (
     BackgroundTask,
     EnvironmentVersion,
     FlowRun,
+    FlowRunRuntime,
     FlowRunState,
     GateEvaluation,
     HumanAction,
@@ -404,15 +405,16 @@ def _freeze_automatic_plan(
             "artifact_ids": dict(raw["artifact_ids"]),
             "input_urls": dict(raw["input_urls"]),
         }
-    issues = [
-        {
-            "code": "NODE_PLAN_REQUIRED",
-            "node_key": key,
-            "message": "请配置此节点的自动执行预设",
-        }
-        for key in reachable
-        if key not in frozen_nodes
-    ]
+    issues: list[dict[str, str]] = []
+    for key in reachable:
+        if key not in frozen_nodes:
+            issues.append(
+                {
+                    "code": "NODE_PLAN_REQUIRED",
+                    "node_key": key,
+                    "message": "请配置此节点的自动执行预设",
+                }
+            )
     for node_key, node_plan in frozen_nodes.items():
         node = known_nodes[node_key]
         asset = cast(dict[str, Any], node.get("asset") or {})
@@ -1281,6 +1283,43 @@ class _PreparedGate:
     plan: GateExecutionPlan
 
 
+@dataclass(frozen=True, slots=True)
+class _SidecarRuntimeConnection:
+    runtime_session_id: str
+    managed_runtime_id: str
+    resource_name: str
+
+
+def _flow_run_sidecar_connection(db: Session, flow_run_id: str) -> _SidecarRuntimeConnection:
+    """Resolve a fenced production connection or the explicit MockRuntime locator."""
+
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
+    if get_settings().runtime_adapter == "mock":
+        session = db.scalar(
+            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == runtime_owner_id)
+        )
+        if session is None:
+            raise DomainError(
+                "RUNTIME_SESSION_NOT_ACTIVE",
+                "The FlowRun has no Runtime Session",
+                409,
+                {"flow_run_id": flow_run_id},
+            )
+        return _SidecarRuntimeConnection(
+            runtime_session_id=session.id,
+            managed_runtime_id=f"mock-runtime:{runtime_owner_id}",
+            resource_name=f"mock-runtime-{runtime_owner_id}",
+        )
+    connection = sandboxes.active_flow_run_runtime_connection(
+        db, flow_run_id=runtime_owner_id
+    )
+    return _SidecarRuntimeConnection(
+        runtime_session_id=connection.runtime_session_id,
+        managed_runtime_id=connection.managed_runtime_id,
+        resource_name=connection.resource_name,
+    )
+
+
 def _next_gate_state(stage: str, blocked: bool) -> str:
     if stage == "START":
         return AttemptState.START_BLOCKED if blocked else AttemptState.WAITING_START_CONFIRMATION
@@ -1328,11 +1367,30 @@ def _record_gate_results(
         node_run.id,
         attempt.id,
     )
+    run = _run(db, node_run.flow_run_id)
+    if run.run_mode == "AUTOMATIC":
+        if next_state == AttemptState.WAITING_START_CONFIRMATION:
+            _dispatch_automatic_start(db, attempt)
+            return
+        if next_state == AttemptState.WAITING_ACCEPTANCE:
+            _dispatch_automatic_advance(db, attempt)
+            return
+        # A failed automatic gate is intentionally not silently retried or
+        # bypassed. It is a visible operator intervention point.
+        run.state = FlowRunState.WAITING_HUMAN
+        _event(
+            db,
+            run.id,
+            "AUTOMATIC_GATE_REVIEW_REQUIRED",
+            {"stage": stage, "state": next_state},
+            node_run.id,
+            attempt.id,
+        )
+        return
     if next_state in {
         AttemptState.WAITING_START_CONFIRMATION,
         AttemptState.WAITING_ACCEPTANCE,
     }:
-        run = _run(db, node_run.flow_run_id)
         run.state = FlowRunState.WAITING_HUMAN
         _event(
             db,
@@ -1454,7 +1512,7 @@ def _prepare_gate_plan(
             ),
         )
     try:
-        connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+        connection = _flow_run_sidecar_connection(db, run.id)
         session_config = agent_sessions.resolve_session_config(
             db,
             model_provider_id=(
@@ -1486,8 +1544,9 @@ def _prepare_gate_plan(
             config=session_config,
         )
         provider = agent_sessions.provider_for_config(db, session_config)
+        runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
         host_root = sandboxes.flow_run_capability_path(
-            run.id, snapshot.runtime_manifest_hash, "gate-sidecars", binding.id
+            runtime_owner_id, snapshot.runtime_manifest_hash, "gate-sidecars", binding.id
         )
         runtime_root = Path(
             sandboxes.openhands_flow_run_capability_path(
@@ -1504,7 +1563,7 @@ def _prepare_gate_plan(
         )
         request = build_runtime_request(
             db,
-            flow_run_id=run.id,
+            flow_run_id=runtime_owner_id,
             runtime_manifest_hash=snapshot.runtime_manifest_hash,
             attempt_id=binding.id,
             execution_key=f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}",
@@ -1667,6 +1726,332 @@ def process_gate_stage(
     _finish_transaction(db, commit)
 
 
+def _dispatch_automatic_start(db: Session, attempt: NodeAttempt) -> None:
+    # Automatic orchestration always crosses a durable task boundary. Unlike
+    # manual inline tests, recursively starting a newly created Attempt inside
+    # the draft-start transaction can observe an uncommitted work item. It also
+    # would make recovery after a worker restart impossible to audit.
+    enqueue(
+        db,
+        task_type="START_AUTOMATIC_ATTEMPT",
+        aggregate_type="ATTEMPT",
+        aggregate_id=attempt.id,
+        idempotency_key=_task_key("START_AUTOMATIC_ATTEMPT", attempt),
+    )
+
+
+def _dispatch_automatic_advance(db: Session, attempt: NodeAttempt) -> None:
+    # Keep platform acceptance/routing durable and replayable for the same
+    # reason as automatic starts.
+    enqueue(
+        db,
+        task_type="ADVANCE_AUTOMATIC_ATTEMPT",
+        aggregate_type="ATTEMPT",
+        aggregate_id=attempt.id,
+        idempotency_key=_task_key("ADVANCE_AUTOMATIC_ATTEMPT", attempt),
+    )
+
+
+def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True) -> None:
+    """Materialize one frozen automatic plan through a durable Worker task.
+
+    The HTTP command only freezes the plan. This transition owns every
+    scheduling side effect and is safe to replay after a Worker restart.
+    """
+
+    run = _locked_run(db, run_id)
+    plan = dict(run.automation_plan_json or {})
+    if (
+        run.run_mode != "AUTOMATIC"
+        or run.state != FlowRunState.ACTIVE
+        or plan.get("status") != "FROZEN"
+    ):
+        return
+    existing = db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1))
+    if existing is not None:
+        return
+    if run.environment_version_id is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED", "automatic run has no Environment Version", 409
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "automatic run Environment Version is unavailable",
+            409,
+        )
+    snapshot = _active_snapshot(db, run)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
+    sandboxes.allocate_flow_run_runtime(db, runtime_owner_id)
+    allocation = sandboxes.runtime_allocation_for_flow_run(
+        db, runtime_owner_id, manifest_digest=snapshot.runtime_manifest_hash
+    )
+    sandboxes.ensure_flow_run_runtime_session(
+        db,
+        flow_run_id=runtime_owner_id,
+        environment_version_id=environment.id,
+        runtime_image_digest=environment.image_digest,
+        workspace_allocation=allocation,
+    )
+    if get_settings().runtime_adapter != "mock" and runtime_owner_id == run.id:
+        task = enqueue(
+            db,
+            task_type="PROVISION_FLOW_RUN_RUNTIME",
+            aggregate_type="FLOW_RUN",
+            aggregate_id=run.id,
+            idempotency_key=f"provision-flow-run-runtime:{run.id}",
+        )
+        task.max_attempts = max(task.max_attempts, 20)
+    start_node_key = str(plan.get("start_node_key") or "")
+    node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
+    first_plan = _automatic_node_plan(node_plans, start_node_key)
+    artifact_ids = _automatic_plan_artifacts(db, run, start_node_key, first_plan)
+    node_run, attempt = _create_node_run(
+        db,
+        run,
+        start_node_key,
+        artifact_ids,
+        "AUTOMATIC_START",
+        cast(list[dict[str, Any]], first_plan.get("gates") or []),
+        context_ids=[],
+        agent_preset=cast(dict[str, Any], first_plan.get("agent_preset") or {}),
+    )
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_RUN_STARTED",
+        {"start_node_key": start_node_key},
+        node_run.id,
+        attempt.id,
+    )
+    _finish_transaction(db, commit)
+
+
+def process_start_automatic_attempt(db: Session, attempt_id: str, *, commit: bool = True) -> None:
+    """Start a ready automatic Attempt from its immutable node plan.
+
+    This durable worker transition deliberately delegates the Runtime start to
+    the normal Attempt state machine.  Automatic mode therefore has the same
+    Conversation, Runtime replacement and output-contract guarantees as a
+    manual node execution, without an HTTP caller confirming each node.
+    """
+
+    attempt = _attempt(db, attempt_id)
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    if run.run_mode != "AUTOMATIC" or attempt.state != AttemptState.WAITING_START_CONFIRMATION:
+        return
+    plan_root: dict[str, Any] = dict(run.automation_plan_json or {})
+    node_plans = cast(dict[str, Any], plan_root.get("node_plans") or {})
+    node_plan = _automatic_node_plan(node_plans, node_run.flow_node_snapshot_key)
+    confirm_start(
+        db,
+        attempt.id,
+        AttemptStartWrite(
+            expected_state_version=attempt.state_version,
+            startup_mode="PROMPT",
+            prompt=str(node_plan.get("startup_prompt") or ""),
+        ),
+        f"automatic-start:{attempt.id}:v{attempt.state_version}",
+    )
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_ATTEMPT_STARTED",
+        {"flow_node_key": node_run.flow_node_snapshot_key},
+        node_run.id,
+        attempt.id,
+    )
+    _finish_transaction(db, commit)
+
+
+def process_advance_automatic_attempt(
+    db: Session,
+    attempt_id: str,
+    lease: Lease | None = None,
+    *,
+    commit: bool = True,
+) -> None:
+    """Accept one automatic node and apply a governed transition decision.
+
+    A distinct, capability-free Agent sees only the frozen successor action
+    package. External I/O runs outside a database transaction. The returned
+    node keys are advisory until the platform validates the task lease, the
+    Attempt CAS version, and the immutable Snapshot topology.
+    """
+
+    attempt = _attempt(db, attempt_id)
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    if run.run_mode != "AUTOMATIC" or attempt.state != AttemptState.WAITING_ACCEPTANCE:
+        return
+    expected_version = attempt.state_version
+    allowed = _automatic_successor_keys(db, run, node_run)
+    prepared: GateExecutionPlan | None = None
+    if allowed:
+        prepared = _prepare_automatic_transition_plan(db, run, node_run, attempt, allowed)
+        # Persist the isolated Conversation locator/configuration before slow
+        # Runtime I/O. A retry reuses the same idempotent binding.
+        db.commit()
+        result = execute_gate_plan(prepared, {})
+        _require_current_lease(db, lease)
+        selected, error = _automatic_transition_selection(result, allowed)
+    else:
+        selected, error = [], None
+
+    claimed_id = db.scalar(
+        update(NodeAttempt)
+        .where(
+            NodeAttempt.id == attempt_id,
+            NodeAttempt.state == AttemptState.WAITING_ACCEPTANCE,
+            NodeAttempt.state_version == expected_version,
+        )
+        .values(
+            state=AttemptState.END_BLOCKED if error else AttemptState.ACCEPTED,
+            state_version=NodeAttempt.state_version + 1,
+            error_code="AUTOMATIC_TRANSITION_INVALID" if error else None,
+            error_detail=error,
+        )
+        .returning(NodeAttempt.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_id is None:
+        db.expire_all()
+        return
+    db.expire_all()
+    attempt = _attempt(db, attempt_id)
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _locked_run(db, node_run.flow_run_id)
+    if prepared is not None and prepared.sidecar_binding_id:
+        db.execute(
+            update(AgentConversationBinding)
+            .where(AgentConversationBinding.id == prepared.sidecar_binding_id)
+            .values(lifecycle="DELETED", deleted_at=now())
+        )
+    if error:
+        run.state = FlowRunState.WAITING_HUMAN
+        _event(
+            db,
+            run.id,
+            "AUTOMATIC_TRANSITION_REVIEW_REQUIRED",
+            {"error": error, "allowed_node_keys": allowed},
+            node_run.id,
+            attempt.id,
+        )
+        _finish_transaction(db, commit)
+        return
+    node_run.state = NodeRunState.ACCEPTED
+    node_run.accepted_attempt_id = attempt.id
+    _action(
+        db,
+        run.id,
+        "ADVANCE_AUTOMATIC_ATTEMPT",
+        f"automatic-advance:{attempt.id}:v{expected_version}",
+        node_run_id=node_run.id,
+        attempt_id=attempt.id,
+        payload={"selected_node_keys": selected},
+    )
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_NODE_ACCEPTED",
+        {"selected_node_keys": selected},
+        node_run.id,
+        attempt.id,
+    )
+    _advance_automatic_targets(db, run, node_run, selected)
+    _recompute_run(db, run)
+    _finish_transaction(db, commit)
+
+
+def _automatic_successor_keys(db: Session, run: FlowRun, node_run: NodeRun) -> list[str]:
+    definition = _active_snapshot(db, run).definition_json
+    return sorted(
+        {
+            str(edge["target_instance_key"])
+            for edge in definition.get("edges", [])
+            if edge.get("source_instance_key") == node_run.flow_node_snapshot_key
+        }
+    )
+
+
+def _prepare_automatic_transition_plan(
+    db: Session,
+    run: FlowRun,
+    node_run: NodeRun,
+    attempt: NodeAttempt,
+    allowed: list[str],
+) -> GateExecutionPlan:
+    plan = dict(run.automation_plan_json or {})
+    node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
+    source_plan = _automatic_node_plan(node_plans, node_run.flow_node_snapshot_key)
+    preset = dict(cast(dict[str, Any], source_plan.get("agent_preset") or {}))
+    context = {
+        "schema_version": 1,
+        "source_node_key": node_run.flow_node_snapshot_key,
+        "allowed_node_keys": allowed,
+        "allowed_actions": [{"action": "SELECT_SUCCESSOR", "node_key": key} for key in allowed],
+        "outputs": [
+            _gate_artifact(item)
+            for item in db.scalars(
+                select(ArtifactVersion)
+                .where(ArtifactVersion.producer_attempt_id == attempt.id)
+                .order_by(ArtifactVersion.field_key, ArtifactVersion.version_no)
+            )
+        ],
+        "port_mappings": [
+            mapping
+            for mapping in _active_snapshot(db, run).definition_json.get("port_mappings", [])
+            if mapping.get("source_instance_key") == node_run.flow_node_snapshot_key
+            and mapping.get("target_instance_key") in allowed
+        ],
+    }
+    policy = {
+        "id": "automatic-transition",
+        "gate_type": "PROMPT",
+        "position": 0,
+        "timeout_seconds": 60,
+        "agent_preset": preset,
+        "config": {
+            "prompt": (
+                "You are an isolated workflow transition Agent. Select one or more "
+                "successors only from allowed_node_keys. Return PASS with "
+                "details.selected_node_keys as a non-empty JSON array. Do not invent "
+                "nodes and do not perform platform writes."
+            )
+        },
+    }
+    return _prepare_gate_plan(
+        db,
+        attempt=attempt,
+        node_run=node_run,
+        policy=policy,
+        context=context,
+        execution_no=attempt.state_version,
+    )
+
+
+def _automatic_transition_selection(
+    result: GateResult, allowed: list[str]
+) -> tuple[list[str], str | None]:
+    raw = result.details.get("selected_node_keys")
+    if result.decision != "PASS":
+        return [], result.summary or "流转 Agent 未形成通过决定"
+    if not isinstance(raw, list) or not raw:
+        return [], "流转 Agent 未选择任何冻结后继节点"
+    raw_items = cast(list[object], raw)
+    if any(not isinstance(item, str) or not item for item in raw_items):
+        return [], "流转 Agent 返回了无效节点标识"
+    selected = [str(item) for item in raw_items]
+    if len(selected) != len(set(selected)):
+        return [], "流转 Agent 重复选择了同一节点"
+    unauthorized = sorted(set(selected) - set(allowed))
+    if unauthorized:
+        return [], f"流转 Agent 选择了未授权节点：{', '.join(unauthorized)}"
+    return sorted(selected), None
+
+
 def _create_node_run(
     db: Session,
     run: FlowRun,
@@ -1765,6 +2150,7 @@ def _create_node_run(
             latest.id,
         )
         return existing, latest
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
     sequence = (
         db.scalar(select(func.max(NodeRun.sequence_no)).where(NodeRun.flow_run_id == run.id)) or 0
     ) + 1
@@ -1790,7 +2176,7 @@ def _create_node_run(
         workspace_ref=str(
             attempt_workspace_path(
                 asset_id=asset_id,
-                run_id=run.id,
+                run_id=runtime_owner_id,
                 node_run_id=node_run.id,
                 attempt_no=1,
             )
@@ -1799,7 +2185,9 @@ def _create_node_run(
     db.add(attempt)
     db.flush()
     ensure_flow_run_attempt_workspace(
-        flow_run_id=run.id, asset_id=asset_id, workspace_ref=attempt.workspace_ref or ""
+        flow_run_id=runtime_owner_id,
+        asset_id=asset_id,
+        workspace_ref=attempt.workspace_ref or "",
     )
     for field_key, artifact_id in artifact_ids.items():
         db.add(
@@ -1939,7 +2327,11 @@ def start_flow(
 
 
 def create_automatic_run_draft(
-    db: Session, flow_id: str, payload: AutomaticRunDraftWrite
+    db: Session,
+    flow_id: str,
+    payload: AutomaticRunDraftWrite,
+    *,
+    parent_flow_run_id: str | None = None,
 ) -> dict[str, Any]:
     flow = load_flow(db, flow_id)
     environment = lock_referenceable_version(db, payload.environment_version_id)
@@ -1963,6 +2355,7 @@ def create_automatic_run_draft(
         run_mode="AUTOMATIC",
         state=FlowRunState.DRAFT,
         environment_version_id=environment.id,
+        parent_flow_run_id=parent_flow_run_id,
     )
     db.add(run)
     db.flush()
@@ -2002,6 +2395,45 @@ def create_automatic_run_draft(
     return run_detail(db, run.id)
 
 
+def create_nested_automatic_run_draft(
+    db: Session, parent_run_id: str, payload: AutomaticRunDraftWrite
+) -> dict[str, Any]:
+    parent = _run(db, parent_run_id)
+    if parent.run_mode != "MANUAL":
+        raise illegal("automatic records require a standard parent FlowRun", state=parent.state)
+    if parent.environment_version_id != payload.environment_version_id:
+        raise DomainError(
+            "RUN_ENVIRONMENT_MISMATCH",
+            "Automatic records must use their parent FlowRun Environment Version",
+            422,
+        )
+    return create_automatic_run_draft(
+        db, parent.flow_definition_id, payload, parent_flow_run_id=parent.id
+    )
+
+
+def list_nested_automatic_runs(db: Session, parent_run_id: str) -> list[dict[str, Any]]:
+    parent = _run(db, parent_run_id)
+    children = list(
+        db.scalars(
+            select(FlowRun)
+            .where(
+                FlowRun.parent_flow_run_id == parent.id,
+                FlowRun.run_mode == "AUTOMATIC",
+            )
+            .order_by(FlowRun.started_at.desc())
+        )
+    )
+    return [run_detail(db, child.id) for child in children]
+
+
+def nested_automatic_run(db: Session, parent_run_id: str, run_id: str) -> FlowRun:
+    child = _run(db, run_id)
+    if child.parent_flow_run_id != parent_run_id or child.run_mode != "AUTOMATIC":
+        raise not_found("automatic_run", run_id)
+    return child
+
+
 def update_automatic_run_draft(
     db: Session, run_id: str, payload: AutomaticRunDraftUpdateWrite
 ) -> dict[str, Any]:
@@ -2035,84 +2467,23 @@ def update_automatic_run_draft(
     return run_detail(db, run.id)
 
 
-def start_automatic_run(
-    db: Session,
-    run_id: str,
-    payload: AutomaticRunStartWrite,
-    idempotency_key: str,
-) -> dict[str, Any]:
-    """Freeze a ready plan without allocating Runtime or execution work."""
-
-    run = _locked_run(db, run_id)
-    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
-    if existing is not None:
-        if existing.flow_run_id != run.id or existing.action_type != "FREEZE_AUTOMATIC_RUN":
-            raise conflict(
-                "automatic-run idempotency key is already used",
-                flow_run_id=existing.flow_run_id,
-            )
-        if existing.payload_json.get("expected_row_version") != payload.expected_row_version:
-            raise conflict(
-                "automatic-run freeze request does not match the idempotent request",
-                flow_run_id=run.id,
-            )
-        return run_detail(db, run.id)
-    if run.run_mode != "AUTOMATIC" or run.state != FlowRunState.DRAFT:
-        raise illegal("only an editable automatic run draft can be frozen", state=run.state)
-    if run.row_version != payload.expected_row_version:
-        raise conflict(
-            "automatic run draft was modified",
-            expected=payload.expected_row_version,
-            actual=run.row_version,
-        )
-    plan = copy.deepcopy(dict(run.automation_plan_json or {}))
-    readiness = cast(dict[str, Any], plan.get("readiness") or {})
-    if not readiness.get("ready"):
-        raise DomainError(
-            "AUTOMATION_PLAN_NOT_READY",
-            "Automatic run cannot be frozen until every reachable node is configured",
-            422,
-            {"issues": readiness.get("issues", [])},
-        )
-    if plan.get("status") != "DRAFT":
-        raise illegal("automatic run plan is already frozen", state=run.state)
-    _action(
-        db,
-        run.id,
-        "FREEZE_AUTOMATIC_RUN",
-        idempotency_key,
-        {"expected_row_version": payload.expected_row_version},
-    )
-    plan["status"] = "FROZEN"
-    run.automation_plan_json = plan
-    run.state = FlowRunState.ACTIVE
-    run.row_version += 1
-    _event(
-        db,
-        run.id,
-        "AUTOMATIC_RUN_PLAN_FROZEN",
-        {
-            "start_node_key": plan.get("start_node_key"),
-            "row_version": run.row_version,
-        },
-    )
-    finish(db)
-    return run_detail(db, run.id)
-
-
 def copy_automatic_run_draft(
     db: Session, source_run_id: str, payload: AutomaticRunCopyWrite
 ) -> dict[str, Any]:
-    """Copy an automatic plan into a new independently editable draft."""
+    """Create an independent editable draft from any frozen automatic plan.
+
+    The new FlowRun deliberately reuses the immutable Flow snapshot, but it
+    never retains an ArtifactVersion identifier from the source FlowRun.
+    This keeps input ownership, deletion protection, and future edits scoped
+    to the copied plan.
+    """
 
     source = _run(db, source_run_id)
     if source.run_mode != "AUTOMATIC":
         raise illegal("only an automatic run can be copied", state=source.state)
     if source.environment_version_id is None:
         raise DomainError(
-            "RUN_ENVIRONMENT_REQUIRED",
-            "automatic run has no Environment Version",
-            409,
+            "RUN_ENVIRONMENT_REQUIRED", "automatic run has no Environment Version", 409
         )
     source_snapshot = _active_snapshot(db, source)
     source_plan = copy.deepcopy(dict(source.automation_plan_json or {}))
@@ -2151,14 +2522,15 @@ def copy_automatic_run_draft(
     copied.active_snapshot_id = snapshot.id
     node_plans = cast(dict[str, Any], source_plan.get("node_plans") or {})
     for node_key in node_plans:
-        plan = dict(cast(dict[str, Any], node_plans[node_key]))
+        plan = _automatic_node_plan(node_plans, str(node_key))
+        raw_ids = cast(dict[str, Any], plan.get("artifact_ids") or {})
         copied_ids: dict[str, str] = {}
-        for field_key, artifact_id in cast(dict[str, Any], plan.get("artifact_ids") or {}).items():
+        for field_key, artifact_id in raw_ids.items():
             copied_ids[str(field_key)] = _copy_automatic_plan_artifact(
                 db, source, copied, str(node_key), str(artifact_id)
             )
         plan["artifact_ids"] = copied_ids
-        node_plans[node_key] = plan
+        node_plans[str(node_key)] = plan
     source_plan["node_plans"] = node_plans
     source_plan["status"] = "DRAFT"
     copied.automation_plan_json = source_plan
@@ -2225,6 +2597,115 @@ def _copy_automatic_plan_artifact(
     return copied_artifact.id
 
 
+def start_automatic_run(
+    db: Session,
+    run_id: str,
+    payload: AutomaticRunStartWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Freeze a ready plan and durably request Worker scheduling."""
+
+    run = _locked_run(db, run_id)
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if existing.flow_run_id != run.id or existing.action_type != "FREEZE_AUTOMATIC_RUN":
+            raise conflict(
+                "automatic-run idempotency key is already used",
+                flow_run_id=existing.flow_run_id,
+            )
+        if existing.payload_json.get("expected_row_version") != payload.expected_row_version:
+            raise conflict(
+                "automatic-run freeze request does not match the idempotent request",
+                flow_run_id=run.id,
+            )
+        return run_detail(db, run.id)
+    if run.run_mode != "AUTOMATIC" or run.state != FlowRunState.DRAFT:
+        raise illegal("only an editable automatic run draft can be frozen", state=run.state)
+    if run.row_version != payload.expected_row_version:
+        raise conflict(
+            "automatic run draft was modified",
+            expected=payload.expected_row_version,
+            actual=run.row_version,
+        )
+    plan = copy.deepcopy(dict(run.automation_plan_json or {}))
+    readiness = cast(dict[str, Any], plan.get("readiness") or {})
+    if not readiness.get("ready"):
+        raise DomainError(
+            "AUTOMATION_PLAN_NOT_READY",
+            "Automatic run cannot be frozen until every reachable node is configured",
+            422,
+            {"issues": readiness.get("issues", [])},
+        )
+    if plan.get("status") != "DRAFT":
+        raise illegal("automatic run plan is already frozen", state=run.state)
+    _action(
+        db,
+        run.id,
+        "FREEZE_AUTOMATIC_RUN",
+        idempotency_key,
+        {"expected_row_version": payload.expected_row_version},
+    )
+    plan["status"] = "FROZEN"
+    run.automation_plan_json = plan
+    run.state = FlowRunState.ACTIVE
+    run.row_version += 1
+    enqueue(
+        db,
+        task_type="START_AUTOMATIC_RUN",
+        aggregate_type="FLOW_RUN",
+        aggregate_id=run.id,
+        idempotency_key=f"start-automatic-run:{run.id}:v{run.row_version}",
+    )
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_RUN_PLAN_FROZEN",
+        {"start_node_key": plan.get("start_node_key"), "row_version": run.row_version},
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
+def _automatic_plan_artifacts(
+    db: Session, run: FlowRun, node_key: str, plan: dict[str, Any]
+) -> dict[str, str]:
+    """Materialize explicit automatic URL inputs as frozen Artifacts once."""
+
+    artifact_ids = {
+        str(key): str(value) for key, value in dict(plan.get("artifact_ids") or {}).items()
+    }
+    for field_key, uri in dict(plan.get("input_urls") or {}).items():
+        prepared = prepare_artifact(
+            ArtifactWrite(
+                field_key=str(field_key),
+                artifact_type="URL",
+                uri=str(uri),
+                metadata={"source": "AUTOMATIC_PLAN"},
+            )
+        )
+        artifact = _register_artifact(
+            db,
+            run.id,
+            prepared,
+            source="AUTOMATIC_PLAN",
+            consumer_node_key=node_key,
+        )
+        artifact_ids[str(field_key)] = artifact.id
+    return artifact_ids
+
+
+def _automatic_node_plan(node_plans: dict[str, Any], node_key: str) -> dict[str, Any]:
+    raw_plan = node_plans.get(node_key)
+    if not isinstance(raw_plan, dict):
+        raise DomainError(
+            "AUTOMATION_PLAN_INVALID",
+            "automatic node plan is missing",
+            409,
+            {"node_key": node_key},
+        )
+    return dict(cast(dict[str, Any], raw_plan))
+
+
 def process_provision_flow_run_runtime(
     db: Session,
     run_id: str,
@@ -2235,11 +2716,6 @@ def process_provision_flow_run_runtime(
     """Provision a FlowRun Agent Server through the Worker controller principal."""
 
     run = _run(db, run_id)
-    if run.run_mode == "AUTOMATIC" and (run.automation_plan_json or {}).get("status") == "FROZEN":
-        raise illegal(
-            "frozen automatic plans cannot provision a Runtime before scheduling",
-            state=run.state,
-        )
     if run.state == FlowRunState.DRAFT:
         raise illegal("automatic run draft cannot provision a Runtime", state=run.state)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
@@ -2614,6 +3090,8 @@ def recover_runtime_tasks(db: Session) -> int:
     Rows are locked with SKIP LOCKED so multiple workers may recover concurrently.
     """
 
+    recovered = _recover_automatic_run_starts(db)
+    recovered += _recover_automatic_attempt_tasks(db)
     attempts = list(
         db.scalars(
             select(NodeAttempt)
@@ -2635,7 +3113,6 @@ def recover_runtime_tasks(db: Session) -> int:
             .with_for_update(skip_locked=True)
         )
     )
-    recovered = 0
     now_utc = datetime.now(UTC)
     active_states = [TaskState.PENDING, TaskState.RETRY, TaskState.RUNNING]
     for attempt in attempts:
@@ -2777,6 +3254,142 @@ def recover_runtime_tasks(db: Session) -> int:
     return recovered
 
 
+def _recover_automatic_attempt_tasks(db: Session) -> int:
+    """Restore orchestration deliveries from durable automatic Attempt state.
+
+    A WAITING_INPUT row is recoverable only before readiness has recorded a
+    result. INPUTS_MISSING/INPUTS_INCOMPATIBLE are stable operator-visible
+    outcomes and must not generate a task on every maintenance sweep.
+    """
+
+    attempts = list(
+        db.scalars(
+            select(NodeAttempt)
+            .join(NodeRun, NodeRun.id == NodeAttempt.node_run_id)
+            .join(FlowRun, FlowRun.id == NodeRun.flow_run_id)
+            .where(
+                FlowRun.run_mode == "AUTOMATIC",
+                FlowRun.state.in_([FlowRunState.ACTIVE, FlowRunState.WAITING_HUMAN]),
+                NodeRun.state == NodeRunState.ACTIVE,
+                NodeAttempt.state.in_(
+                    [
+                        AttemptState.WAITING_INPUT,
+                        AttemptState.START_GATES,
+                        AttemptState.WAITING_START_CONFIRMATION,
+                        AttemptState.END_GATES,
+                        AttemptState.WAITING_ACCEPTANCE,
+                    ]
+                ),
+            )
+            .order_by(NodeAttempt.updated_at, NodeAttempt.id)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    active_states = [TaskState.PENDING, TaskState.RETRY, TaskState.RUNNING]
+    now_utc = datetime.now(UTC)
+    recovered = 0
+    for attempt in attempts:
+        task_type: str
+        payload: dict[str, Any] = {}
+        suffix = ""
+        if attempt.state == AttemptState.WAITING_INPUT:
+            if attempt.error_code is not None:
+                continue
+            task_type = "EVALUATE_READINESS"
+        elif attempt.state == AttemptState.START_GATES:
+            task_type = "RUN_GATE_POLICY"
+            payload = {"stage": "START"}
+            suffix = ":start"
+        elif attempt.state == AttemptState.WAITING_START_CONFIRMATION:
+            task_type = "START_AUTOMATIC_ATTEMPT"
+        elif attempt.state == AttemptState.END_GATES:
+            task_type = "RUN_GATE_POLICY"
+            payload = {"stage": "END"}
+            suffix = ":end"
+        else:
+            task_type = "ADVANCE_AUTOMATIC_ATTEMPT"
+
+        active = db.scalar(
+            select(BackgroundTask.id).where(
+                BackgroundTask.aggregate_id == attempt.id,
+                BackgroundTask.task_type == task_type,
+                BackgroundTask.state.in_(active_states),
+            )
+        )
+        if active is not None:
+            continue
+        key = f"recovery:{task_type.lower()}:{attempt.id}:v{attempt.state_version}{suffix}"
+        existing = db.scalar(select(BackgroundTask).where(BackgroundTask.idempotency_key == key))
+        if existing is None:
+            enqueue(
+                db,
+                task_type=task_type,
+                aggregate_type="ATTEMPT",
+                aggregate_id=attempt.id,
+                idempotency_key=key,
+                payload=payload,
+                available_at=now_utc,
+            )
+        else:
+            existing.state = TaskState.RETRY
+            existing.available_at = now_utc
+            existing.lease_owner = None
+            existing.lease_until = None
+            existing.last_error = "STARTUP_RECOVERY"
+            existing.payload_json = payload
+        recovered += 1
+    return recovered
+
+
+def _recover_automatic_run_starts(db: Session) -> int:
+    """Restore the Worker handoff for frozen plans with no materialized work."""
+
+    active_states = [TaskState.PENDING, TaskState.RETRY, TaskState.RUNNING]
+    recovered = 0
+    runs = list(
+        db.scalars(
+            select(FlowRun)
+            .where(
+                FlowRun.run_mode == "AUTOMATIC",
+                FlowRun.state == FlowRunState.ACTIVE,
+            )
+            .order_by(FlowRun.started_at, FlowRun.id)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    for run in runs:
+        if (run.automation_plan_json or {}).get("status") != "FROZEN":
+            continue
+        if db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1)):
+            continue
+        if db.scalar(
+            select(BackgroundTask.id).where(
+                BackgroundTask.aggregate_id == run.id,
+                BackgroundTask.task_type == "START_AUTOMATIC_RUN",
+                BackgroundTask.state.in_(active_states),
+            )
+        ):
+            continue
+        key = f"recovery:start-automatic-run:{run.id}:v{run.row_version}"
+        existing = db.scalar(select(BackgroundTask).where(BackgroundTask.idempotency_key == key))
+        if existing is None:
+            enqueue(
+                db,
+                task_type="START_AUTOMATIC_RUN",
+                aggregate_type="FLOW_RUN",
+                aggregate_id=run.id,
+                idempotency_key=key,
+            )
+        else:
+            existing.state = TaskState.RETRY
+            existing.available_at = datetime.now(UTC)
+            existing.lease_owner = None
+            existing.lease_until = None
+            existing.last_error = "STARTUP_RECOVERY"
+        recovered += 1
+    return recovered
+
+
 def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
@@ -2813,8 +3426,12 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     )
     session_config = agent_sessions.config_from_binding(db, session_binding)
     provider = agent_sessions.provider_for_config(db, session_config)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
     host_root = sandboxes.flow_run_capability_path(
-        run.id, snapshot.runtime_manifest_hash, "conversations", session_binding.id
+        runtime_owner_id,
+        snapshot.runtime_manifest_hash,
+        "conversations",
+        session_binding.id,
     )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(
@@ -2857,7 +3474,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         )
     request = build_runtime_request(
         db,
-        flow_run_id=run.id,
+        flow_run_id=runtime_owner_id,
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=attempt.id,
         execution_key=f"attempt:{attempt.id}:start",
@@ -3758,6 +4375,80 @@ def record_runtime_task_failure(
     db.flush()
 
 
+def record_automatic_task_failure(
+    db: Session,
+    aggregate_id: str,
+    task_type: str,
+    payload: dict[str, Any],
+    error: str,
+) -> None:
+    """Project an exhausted automatic delivery into visible workflow state."""
+
+    if task_type == "START_AUTOMATIC_RUN":
+        run = db.get(FlowRun, aggregate_id)
+        if (
+            run is None
+            or run.run_mode != "AUTOMATIC"
+            or run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}
+        ):
+            return
+        run.state = FlowRunState.WAITING_HUMAN
+        _event(
+            db,
+            run.id,
+            "AUTOMATIC_SCHEDULER_FAILED",
+            {"task_type": task_type, "error": error[:2000]},
+        )
+        db.flush()
+        return
+
+    attempt = db.get(NodeAttempt, aggregate_id)
+    if attempt is None:
+        return
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    if (
+        run.run_mode != "AUTOMATIC"
+        or run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}
+        or attempt.state
+        in {
+            AttemptState.ACCEPTED,
+            AttemptState.REJECTED,
+            AttemptState.CANCELLED,
+        }
+    ):
+        return
+    start_side = task_type in {
+        "EVALUATE_READINESS",
+        "START_AUTOMATIC_ATTEMPT",
+        "START_RUNTIME",
+    } or (task_type == "RUN_GATE_POLICY" and payload.get("stage") == "START")
+    if task_type == "RUN_GATE_POLICY":
+        error_code = "AUTOMATIC_GATE_DELIVERY_FAILED"
+    elif task_type == "START_AUTOMATIC_ATTEMPT":
+        error_code = "AUTOMATIC_START_DELIVERY_FAILED"
+    elif task_type == "ADVANCE_AUTOMATIC_ATTEMPT":
+        error_code = "AUTOMATIC_TRANSITION_DELIVERY_FAILED"
+    elif task_type == "EVALUATE_READINESS":
+        error_code = "AUTOMATIC_READINESS_DELIVERY_FAILED"
+    else:
+        error_code = "AUTOMATIC_RUNTIME_DELIVERY_FAILED"
+    attempt.state = AttemptState.START_BLOCKED if start_side else AttemptState.END_BLOCKED
+    attempt.error_code = error_code
+    attempt.error_detail = error[:2000]
+    attempt.state_version += 1
+    run.state = FlowRunState.WAITING_HUMAN
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_SCHEDULER_FAILED",
+        {"task_type": task_type, "error": attempt.error_detail},
+        node_run.id,
+        attempt.id,
+    )
+    db.flush()
+
+
 def retry_runtime_cancel(
     db: Session, attempt_id: str, payload: RuntimeCancelRecoveryWrite, idempotency_key: str
 ) -> dict[str, Any]:
@@ -4064,6 +4755,123 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
         )
 
 
+def _advance_automatic_targets(
+    db: Session, run: FlowRun, accepted: NodeRun, selected_targets: list[str]
+) -> None:
+    """Advance only frozen graph successors after an automatic acceptance.
+
+    This is intentionally platform-owned: the primary Agent cannot select an
+    arbitrary target or write bindings.  Multiple predecessors merge into one
+    durable waiting NodeRun, and the regular readiness pipeline starts it only
+    when every declared input has a valid Artifact.
+    """
+
+    snapshot = _active_snapshot(db, run)
+    definition = snapshot.definition_json
+    plan: dict[str, Any] = dict(run.automation_plan_json or {})
+    node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
+    source_outputs = {
+        item.field_key: item.id
+        for item in db.scalars(
+            select(ArtifactVersion).where(
+                ArtifactVersion.producer_attempt_id == accepted.accepted_attempt_id
+            )
+        )
+    }
+    allowed = set(_automatic_successor_keys(db, run, accepted))
+    unauthorized = sorted(set(selected_targets) - allowed)
+    if unauthorized:
+        raise DomainError(
+            "AUTOMATIC_TRANSITION_UNAUTHORIZED",
+            "automatic transition selected a node outside the frozen topology",
+            409,
+            {"node_keys": unauthorized},
+        )
+    for target_key in selected_targets:
+        target_plan = _automatic_node_plan(node_plans, target_key)
+        mapped = {
+            str(mapping["target_input_key"]): artifact_id
+            for mapping in definition.get("port_mappings", [])
+            if mapping.get("source_instance_key") == accepted.flow_node_snapshot_key
+            and mapping.get("target_instance_key") == target_key
+            and (artifact_id := source_outputs.get(str(mapping.get("source_output_key") or "")))
+        }
+        existing = db.scalar(
+            select(NodeRun).where(
+                NodeRun.flow_run_id == run.id,
+                NodeRun.flow_node_snapshot_key == target_key,
+            )
+        )
+        if existing is None:
+            explicit = _automatic_plan_artifacts(db, run, target_key, target_plan)
+            # A mapped source is authoritative for its frozen target port.
+            explicit.update(mapped)
+            created, created_attempt = _create_node_run(
+                db,
+                run,
+                target_key,
+                explicit,
+                "AUTOMATIC_TRANSITION",
+                cast(list[dict[str, Any]], target_plan.get("gates") or []),
+                context_ids=[],
+                agent_preset=cast(dict[str, Any], target_plan.get("agent_preset") or {}),
+            )
+            # Keep the mapped fields auditable as platform-owned port flow;
+            # explicit plan inputs retain their original creation provenance.
+            for binding in _bindings(db, created_attempt.id):
+                if binding.input_field_key in mapped:
+                    binding.binding_source = "AUTOMATIC_PORT_MAPPING"
+            _event(
+                db,
+                run.id,
+                "AUTOMATIC_DOWNSTREAM_AVAILABLE",
+                {
+                    "source_node_key": accepted.flow_node_snapshot_key,
+                    "target_node_key": target_key,
+                },
+                created.id,
+                created_attempt.id,
+            )
+            continue
+        current_attempt = db.scalar(
+            select(NodeAttempt)
+            .where(NodeAttempt.node_run_id == existing.id)
+            .order_by(NodeAttempt.attempt_no.desc())
+        )
+        if current_attempt is None:
+            raise DomainError("RUN_STATE_INVALID", "automatic node has no Attempt", 409)
+        if current_attempt.state != AttemptState.WAITING_INPUT:
+            # A completed/started target cannot be retroactively re-bound by a
+            # late predecessor.  The topology itself remains immutable.
+            continue
+        current = {row.input_field_key: row for row in _bindings(db, current_attempt.id)}
+        for field_key, artifact_id in mapped.items():
+            binding = current.get(field_key)
+            if binding is None:
+                db.add(
+                    AttemptInputBinding(
+                        attempt_id=current_attempt.id,
+                        input_field_key=field_key,
+                        artifact_version_id=artifact_id,
+                        binding_source="AUTOMATIC_PORT_MAPPING",
+                    )
+                )
+            else:
+                binding.artifact_version_id = artifact_id
+                binding.binding_source = "AUTOMATIC_PORT_MAPPING"
+        current_attempt.state_version += 1
+        _event(
+            db,
+            run.id,
+            "AUTOMATIC_DOWNSTREAM_INPUTS_BOUND",
+            {"fields": sorted(mapped)},
+            existing.id,
+            current_attempt.id,
+        )
+        db.flush()
+        _dispatch_readiness(db, current_attempt)
+
+
 def accept_attempt(
     db: Session,
     attempt_id: str,
@@ -4073,8 +4881,11 @@ def accept_attempt(
     current = _attempt(db, attempt_id)
     current_node_run = _node_run(db, current.node_run_id)
     run = _locked_run(db, current_node_run.flow_run_id)
-    if run.run_mode != "MANUAL":
-        raise illegal("automatic attempts cannot be accepted manually", state=current.state)
+    if run.run_mode == "AUTOMATIC":
+        raise illegal(
+            "automatic attempts are accepted only by the platform scheduler",
+            state=current.state,
+        )
     existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
     if existing is not None:
         if existing.action_type != "ACCEPT_ATTEMPT" or existing.attempt_id != attempt_id:
@@ -4194,6 +5005,20 @@ def reject_attempt(
 
 def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> dict[str, Any]:
     current = _attempt(db, attempt_id)
+    retryable_error_codes = {
+        None,
+        "GATE_CONFIG_INVALID",
+        "AUTOMATIC_GATE_DELIVERY_FAILED",
+        "AUTOMATIC_START_DELIVERY_FAILED",
+        "AUTOMATIC_TRANSITION_DELIVERY_FAILED",
+        "AUTOMATIC_TRANSITION_INVALID",
+    }
+    if current.error_code not in retryable_error_codes:
+        raise illegal(
+            "attempt failure cannot be recovered by rerunning gates",
+            state=current.state,
+            error_code=current.error_code,
+        )
     if current.state == AttemptState.START_BLOCKED:
         next_state, stage = AttemptState.START_GATES, "START"
     elif current.state == AttemptState.END_BLOCKED:
@@ -4634,6 +5459,7 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
         "name": run.name,
         "run_mode": run.run_mode,
         "automation_plan": run.automation_plan_json,
+        "parent_flow_run_id": run.parent_flow_run_id,
         "state": run.state,
         "row_version": run.row_version,
         "completion_mode": run.completion_mode,
@@ -4681,7 +5507,15 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
 
 
 def list_runs(db: Session) -> list[dict[str, Any]]:
-    runs = list(db.scalars(select(FlowRun).order_by(FlowRun.started_at.desc())))
+    # The outer Runs page remains the historical FlowRun overview. Automatic
+    # executions are managed only inside their owning FlowRun workbench.
+    runs = list(
+        db.scalars(
+            select(FlowRun)
+            .where(FlowRun.parent_flow_run_id.is_(None))
+            .order_by(FlowRun.started_at.desc())
+        )
+    )
     if not runs:
         return []
 
@@ -4790,12 +5624,6 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "runtime_status": (
                     "DRAFT"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
-                    else "FROZEN"
-                    if (
-                        run.run_mode == "AUTOMATIC"
-                        and (run.automation_plan_json or {}).get("status") == "FROZEN"
-                        and runtime is None
-                    )
                     else runtime.get("status")
                     if runtime
                     else "ARCHIVED"
@@ -4806,12 +5634,6 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "runtime_message": (
                     "自动运行尚未启动，可继续编辑编排"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
-                    else "自动运行计划已冻结，尚未分配 Runtime 或执行调度"
-                    if (
-                        run.run_mode == "AUTOMATIC"
-                        and (run.automation_plan_json or {}).get("status") == "FROZEN"
-                        and runtime is None
-                    )
                     else runtime.get("message")
                     if runtime
                     else None

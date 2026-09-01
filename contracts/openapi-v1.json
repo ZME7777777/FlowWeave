@@ -10350,7 +10350,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "AutomaticRunCopyWrite",
-        "description": "Name an independent editable copy of an automatic plan."
+        "description": "Name an independent draft copied from one frozen automatic run."
       },
       "AutomaticRunDraftUpdateWrite": {
         "properties": {
@@ -10449,7 +10449,7 @@
           "expected_row_version"
         ],
         "title": "AutomaticRunStartWrite",
-        "description": "Freeze one ready automatic plan without starting runtime work."
+        "description": "Optimistic-lock the one-way transition from editable draft to Runtime work."
       },
       "Body_agent_attachment_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_post": {
         "properties": {

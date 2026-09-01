@@ -37,6 +37,24 @@ def _start_runtime(db: Session, aggregate_id: str, _payload: dict[str, Any], lea
     orchestration.process_start_runtime(db, aggregate_id, lease, commit=False)
 
 
+def _start_automatic_run(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    orchestration.process_start_automatic_run(db, aggregate_id, commit=False)
+
+
+def _start_automatic_attempt(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    orchestration.process_start_automatic_attempt(db, aggregate_id, commit=False)
+
+
+def _advance_automatic_attempt(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    orchestration.process_advance_automatic_attempt(db, aggregate_id, lease, commit=False)
+
+
 def _provision_flow_run_runtime(
     db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
 ) -> None:
@@ -170,6 +188,9 @@ HANDLERS: dict[str, Handler] = {
     "EVALUATE_READINESS": _readiness,
     "RUN_GATE_POLICY": _gates,
     "START_RUNTIME": _start_runtime,
+    "START_AUTOMATIC_RUN": _start_automatic_run,
+    "START_AUTOMATIC_ATTEMPT": _start_automatic_attempt,
+    "ADVANCE_AUTOMATIC_ATTEMPT": _advance_automatic_attempt,
     "PROVISION_FLOW_RUN_RUNTIME": _provision_flow_run_runtime,
     "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
     "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,
@@ -202,6 +223,26 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
     task = db.get(BackgroundTask, task_id)
     if task is None or task.state != TaskState.DEAD:
         return
+    automatic_task_types = {
+        "START_AUTOMATIC_RUN",
+        "EVALUATE_READINESS",
+        "RUN_GATE_POLICY",
+        "START_AUTOMATIC_ATTEMPT",
+        "ADVANCE_AUTOMATIC_ATTEMPT",
+        "START_RUNTIME",
+        "POLL_RUNTIME",
+        "WAIT_RUNTIME_WAKEUP",
+        "RESUME_RUNTIME",
+        "RESPOND_RUNTIME_CONFIRMATION",
+    }
+    if task.task_type in automatic_task_types:
+        orchestration.record_automatic_task_failure(
+            db,
+            task.aggregate_id,
+            task.task_type,
+            dict(task.payload_json or {}),
+            error,
+        )
     if task.task_type == "CANCEL_RUNTIME":
         orchestration.record_runtime_task_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "REPLACE_FLOW_RUN_RUNTIME":

@@ -20,7 +20,7 @@ import { CheckSquare, GitBranch, LayoutDashboard, Plus, Save, Search, Trash2 } f
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { api, randomId } from '../api/client';
-import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/FlowMappingEdge';
+import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { useProductDialog } from '../components/ProductDialogContext';
 import type {
   FlowDefinition,

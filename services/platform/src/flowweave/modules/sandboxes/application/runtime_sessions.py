@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntime,
     FlowRunRuntimeAllocation,
@@ -774,6 +775,7 @@ def assert_active_runtime_fence(
 
 def active_flow_run_runtime_connection(db: Session, *, flow_run_id: str) -> ActiveRuntimeConnection:
     """Resolve the only routable Agent Server generation for a FlowRun."""
+    owner_id = runtime_owner_flow_run_id(db, flow_run_id)
 
     match = db.execute(
         select(FlowRunRuntime, RuntimeGeneration, ManagedSandbox)
@@ -784,12 +786,12 @@ def active_flow_run_runtime_connection(db: Session, *, flow_run_id: str) -> Acti
         )
         .join(ManagedSandbox, ManagedSandbox.id == RuntimeGeneration.managed_runtime_id)
         .where(
-            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.flow_run_id == owner_id,
             FlowRunRuntime.status == "ACTIVE",
             RuntimeGeneration.state == "READY",
             ManagedSandbox.kind == "AGENT_RUNTIME",
             ManagedSandbox.owner_type == "FLOW_RUN",
-            ManagedSandbox.owner_id == flow_run_id,
+            ManagedSandbox.owner_id == owner_id,
             ManagedSandbox.desired_state == "RUNNING",
             ManagedSandbox.observed_state == "RUNNING",
         )

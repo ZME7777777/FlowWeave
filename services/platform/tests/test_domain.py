@@ -53,8 +53,20 @@ def test_flow_validation_allows_same_asset_twice_but_checks_mapping_and_gate_pos
                     "instance_key": "first",
                     "node_asset_id": "asset",
                     "gates": [
-                        {"stage": "START", "position": 0, "gate_type": "PROMPT"},
-                        {"stage": "END", "position": 0, "gate_type": "PYTHON"},
+                        {
+                            "stage": "START",
+                            "position": 0,
+                            "gate_type": "PROMPT",
+                            "config": {"prompt": "check"},
+                            "agent_preset": {},
+                        },
+                        {
+                            "stage": "END",
+                            "position": 0,
+                            "gate_type": "PYTHON",
+                            "config": {"prompt": "check"},
+                            "agent_preset": {},
+                        },
                     ],
                 },
                 {"instance_key": "second", "node_asset_id": "asset"},

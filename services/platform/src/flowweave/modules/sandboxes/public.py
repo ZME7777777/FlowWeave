@@ -20,6 +20,7 @@ from flowweave.modules.sandboxes.application.runtime_operations import (
     runtime_overview,
     runtime_readiness_by_flow_run,
 )
+from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
     process_flow_run_runtime_replacement,
@@ -98,6 +99,7 @@ __all__ = (
     "runtime_allocation_for_flow_run",
     "runtime_readiness_by_flow_run",
     "runtime_overview",
+    "runtime_owner_flow_run_id",
     "sandbox_dict",
     "sandbox_snapshot",
     "touch_runtime",

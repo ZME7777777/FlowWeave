@@ -36,6 +36,7 @@ AgentWorkDirectoryVersion = agent_workspace_host.AgentWorkDirectoryVersion
 
 
 def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
     host = resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
@@ -51,11 +52,11 @@ def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
     working_directory = getattr(host, "working_directory", "")
     if asset_id and working_directory:
         ensure_flow_run_attempt_workspace(
-            flow_run_id=flow_run_id,
+            flow_run_id=runtime_owner_id,
             asset_id=asset_id,
             workspace_ref=working_directory,
         )
-    root = sandboxes.flow_run_workspace_project_path(flow_run_id)
+    root = sandboxes.flow_run_workspace_project_path(runtime_owner_id)
     try:
         metadata = root.lstat()
         resolved = root.resolve(strict=True)

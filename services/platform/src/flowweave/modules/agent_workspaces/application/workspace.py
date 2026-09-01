@@ -13,7 +13,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application.ide import ssh_remote_descriptor
 from flowweave.modules.agent_workspaces.application import service, work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentConversationBinding,
@@ -542,7 +541,7 @@ def details(
         "runtime": {"container_id": container_short_id},
         "ide": {
             "workspace_path": working_directory,
-            "gateway": ssh_remote_descriptor(project_root, working_directory),
+            "gateway": agent_sessions.ssh_remote_descriptor(project_root, working_directory),
         },
     }
 

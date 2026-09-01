@@ -1,16 +1,15 @@
-import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
+from flowweave.modules.gates.public import GateResult
 from flowweave.modules.orchestration.application import service as orchestration_service
-from flowweave.modules.tasks.application.service import claim, enqueue
-from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     BackgroundTask,
     FlowRun,
     FlowRunRuntime,
     FlowRunRuntimeAllocation,
-    HumanAction,
+    NodeAttempt,
     NodeRun,
+    TaskState,
 )
 
 
@@ -205,126 +204,6 @@ def test_automatic_run_draft_can_be_edited_but_not_manually_activated(client, db
         assert db.scalar(select(NodeRun).where(NodeRun.flow_run_id == draft["id"])) is None
 
 
-def test_ready_automatic_plan_freezes_without_runtime_or_execution_work(client, db_session_factory):
-    flow = _create_flow(client)
-    created = client.post(
-        f"/api/v1/flows/{flow['id']}/automatic-runs",
-        json={
-            "environment_version_id": client.environment_version_id,
-            "start_node_key": "first",
-            "node_plans": {
-                "first": _node_plan("执行第一个节点", input_url="https://example.com/source"),
-                "second": _node_plan("执行第二个节点"),
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
-    draft = created.json()
-    assert draft["automation_plan"]["readiness"] == {"ready": True, "issues": []}
-
-    frozen = client.post(
-        f"/api/v1/automatic-runs/{draft['id']}/start",
-        json={"expected_row_version": draft["row_version"]},
-        headers={"Idempotency-Key": "freeze-ready-plan"},
-    )
-    assert frozen.status_code == 200, frozen.text
-    run = frozen.json()
-    assert run["state"] == "ACTIVE"
-    assert run["automation_plan"]["status"] == "FROZEN"
-    assert run["node_runs"] == []
-
-    replay = client.post(
-        f"/api/v1/automatic-runs/{draft['id']}/start",
-        json={"expected_row_version": draft["row_version"]},
-        headers={"Idempotency-Key": "freeze-ready-plan"},
-    )
-    assert replay.status_code == 200, replay.text
-    assert replay.json()["row_version"] == run["row_version"]
-    mismatch = client.post(
-        f"/api/v1/automatic-runs/{draft['id']}/start",
-        json={"expected_row_version": run["row_version"]},
-        headers={"Idempotency-Key": "freeze-ready-plan"},
-    )
-    assert mismatch.status_code == 409, mismatch.text
-
-    with db_session_factory() as db:
-        assert db.scalar(select(NodeRun).where(NodeRun.flow_run_id == run["id"])) is None
-        assert (
-            db.scalar(
-                select(FlowRunRuntimeAllocation).where(
-                    FlowRunRuntimeAllocation.flow_run_id == run["id"]
-                )
-            )
-            is None
-        )
-        assert (
-            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == run["id"])) is None
-        )
-        assert (
-            db.scalar(select(BackgroundTask).where(BackgroundTask.aggregate_id == run["id"]))
-            is None
-        )
-        actions = list(db.scalars(select(HumanAction).where(HumanAction.flow_run_id == run["id"])))
-        assert [item.action_type for item in actions] == ["FREEZE_AUTOMATIC_RUN"]
-
-        task = enqueue(
-            db,
-            task_type="PROVISION_FLOW_RUN_RUNTIME",
-            aggregate_type="FLOW_RUN",
-            aggregate_id=run["id"],
-            idempotency_key=f"misdelivered-provision:{run['id']}",
-        )
-        db.commit()
-        claimed = claim(db, "fr121-guard", lease_seconds=30)
-        assert claimed is not None and claimed[0].id == task.id
-        with pytest.raises(DomainError, match="cannot provision a Runtime before scheduling"):
-            orchestration_service.process_provision_flow_run_runtime(
-                db, run["id"], claimed[1], commit=False
-            )
-        db.rollback()
-        assert (
-            db.scalar(
-                select(FlowRunRuntimeAllocation).where(
-                    FlowRunRuntimeAllocation.flow_run_id == run["id"]
-                )
-            )
-            is None
-        )
-
-
-def test_automatic_plan_rejects_freeze_with_unmapped_required_input(client):
-    flow = _create_flow(client)
-    created = client.post(
-        f"/api/v1/flows/{flow['id']}/automatic-runs",
-        json={
-            "environment_version_id": client.environment_version_id,
-            "start_node_key": "first",
-            "node_plans": {
-                "first": _node_plan("缺少输入的起始节点"),
-                "second": _node_plan("映射输入的下游节点"),
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
-    draft = created.json()
-    assert draft["automation_plan"]["readiness"] == {
-        "ready": False,
-        "issues": [
-            {
-                "code": "NODE_INPUT_REQUIRED",
-                "node_key": "first",
-                "message": "请配置未映射输入：source",
-            }
-        ],
-    }
-    response = client.post(
-        f"/api/v1/automatic-runs/{draft['id']}/start",
-        json={"expected_row_version": draft["row_version"]},
-    )
-    assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "AUTOMATION_PLAN_NOT_READY"
-
-
 def test_new_standard_flow_run_remains_manual(client):
     flow = _create_flow(client)
     created = client.post(
@@ -334,6 +213,140 @@ def test_new_standard_flow_run_remains_manual(client):
     assert created.status_code == 201, created.text
     assert created.json()["run_mode"] == "MANUAL"
     assert created.json()["automation_plan"] is None
+
+
+def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
+    worker_client, worker_container, db_session_factory
+):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    parent_response = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"name": "父流程运行", "environment_version_id": worker_client.environment_version_id},
+    )
+    assert parent_response.status_code == 201, parent_response.text
+    parent = parent_response.json()
+
+    created_response = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
+        json={
+            "name": "内部自动记录",
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {"first": _node_plan("先执行起点")},
+        },
+    )
+    assert created_response.status_code == 201, created_response.text
+    draft = created_response.json()
+    assert draft["parent_flow_run_id"] == parent["id"]
+    assert draft["automation_plan"]["readiness"]["ready"] is False
+
+    outer = worker_client.get("/api/v1/flow-runs")
+    assert outer.status_code == 200, outer.text
+    outer_ids = {item["id"] for item in outer.json()}
+    assert parent["id"] in outer_ids
+    assert draft["id"] not in outer_ids
+
+    nested = worker_client.get(f"/api/v1/flow-runs/{parent['id']}/automatic-runs")
+    assert nested.status_code == 200, nested.text
+    assert [item["id"] for item in nested.json()] == [draft["id"]]
+
+    updated_response = worker_client.put(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{draft['id']}",
+        json={
+            "expected_row_version": draft["row_version"],
+            "name": "已就绪自动记录",
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan(
+                    "执行起点", input_url="https://example.com/nested-input"
+                ),
+                "second": _node_plan("执行下游"),
+            },
+        },
+    )
+    assert updated_response.status_code == 200, updated_response.text
+    updated = updated_response.json()
+    assert updated["automation_plan"]["readiness"] == {"ready": True, "issues": []}
+
+    wrong_parent = worker_client.get(
+        f"/api/v1/flow-runs/{draft['id']}/automatic-runs"
+    )
+    assert wrong_parent.status_code == 200, wrong_parent.text
+    assert wrong_parent.json() == []
+    cross_parent_update = worker_client.put(
+        f"/api/v1/flow-runs/{draft['id']}/automatic-runs/{updated['id']}",
+        json={
+            "expected_row_version": updated["row_version"],
+            "name": "越权更新",
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan(
+                    "执行起点", input_url="https://example.com/nested-input"
+                ),
+                "second": _node_plan("执行下游"),
+            },
+        },
+    )
+    assert cross_parent_update.status_code == 404, cross_parent_update.text
+
+    started_response = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{updated['id']}/start",
+        json={"expected_row_version": updated["row_version"]},
+        headers={"Idempotency-Key": "start-nested-record"},
+    )
+    assert started_response.status_code == 200, started_response.text
+    assert started_response.json()["state"] == "ACTIVE"
+
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True
+    detail = worker_client.get(f"/api/v1/flow-runs/{updated['id']}").json()
+    assert [item["flow_node_snapshot_key"] for item in detail["node_runs"]] == ["first"]
+
+    with db_session_factory() as db:
+        parent_runtime = db.scalar(
+            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"])
+        )
+        parent_allocation = db.scalar(
+            select(FlowRunRuntimeAllocation).where(
+                FlowRunRuntimeAllocation.flow_run_id == parent["id"]
+            )
+        )
+        child_runtime = db.scalar(
+            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == updated["id"])
+        )
+        child_allocation = db.scalar(
+            select(FlowRunRuntimeAllocation).where(
+                FlowRunRuntimeAllocation.flow_run_id == updated["id"]
+            )
+        )
+        assert parent_runtime is not None
+        assert parent_allocation is not None
+        assert child_runtime is None
+        assert child_allocation is None
+
+    disposable_response = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
+        json={
+            "name": "待删除记录",
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {},
+        },
+    )
+    assert disposable_response.status_code == 201, disposable_response.text
+    disposable = disposable_response.json()
+    deleted = worker_client.delete(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{disposable['id']}"
+    )
+    assert deleted.status_code == 204, deleted.text
+    assert worker_client.get(f"/api/v1/flow-runs/{parent['id']}").status_code == 200
+    with db_session_factory() as db:
+        assert db.get(FlowRun, disposable["id"]) is None
+        assert db.scalar(
+            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"])
+        ) is not None
 
 
 def test_automatic_run_draft_rejects_unknown_frozen_nodes(client):
@@ -421,72 +434,278 @@ def test_automatic_run_draft_freezes_artifact_and_capability_references(client, 
     assert provider_delete.status_code == 409, provider_delete.text
 
 
-def test_frozen_automatic_plan_copies_to_editable_draft_with_owned_artifact(
-    client, db_session_factory
+def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
+    worker_client, worker_container, db_session_factory
 ):
-    flow = _create_flow(client)
-    created = client.post(
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    created = worker_client.post(
         f"/api/v1/flows/{flow['id']}/automatic-runs",
         json={
-            "name": "待冻结自动编排",
-            "environment_version_id": client.environment_version_id,
+            "environment_version_id": worker_client.environment_version_id,
             "start_node_key": "first",
-            "node_plans": {},
+            "node_plans": {
+                "first": _node_plan("自动执行第一个节点", input_url="https://example.com/input"),
+                # `second.source` is supplied exclusively through the frozen
+                # first.result -> second.source port mapping.
+                "second": _node_plan("自动执行第二个节点"),
+            },
         },
     )
     assert created.status_code == 201, created.text
     draft = created.json()
-    artifact = client.post(
-        f"/api/v1/flow-runs/{draft['id']}/nodes/first/input-artifacts",
-        json={
-            "field_key": "source",
-            "artifact_type": "URL",
-            "uri": "https://example.com/copied-source",
-        },
+    assert draft["automation_plan"]["readiness"] == {"ready": True, "issues": []}
+
+    started = worker_client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/start",
+        json={"expected_row_version": draft["row_version"]},
+        headers={"Idempotency-Key": "start-automatic-chain"},
     )
-    assert artifact.status_code == 201, artifact.text
-    configured = client.put(
-        f"/api/v1/automatic-runs/{draft['id']}",
+    assert started.status_code == 200, started.text
+    run = started.json()
+    assert run["state"] == "ACTIVE"
+    assert run["automation_plan"]["status"] == "FROZEN"
+    assert run["node_runs"] == []
+    with db_session_factory() as db:
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == run["id"])) is None
+        )
+        tasks = list(
+            db.scalars(
+                select(BackgroundTask).where(
+                    BackgroundTask.aggregate_id == run["id"],
+                    BackgroundTask.task_type == "START_AUTOMATIC_RUN",
+                )
+            )
+        )
+        assert len(tasks) == 1
+    worker = TaskWorker(worker_container)
+    for _ in range(24):
+        run = worker_client.get(f"/api/v1/flow-runs/{run['id']}").json()
+        if run["state"] == "COMPLETED":
+            break
+        assert worker._run_once_sync() is True
+    assert run["state"] == "COMPLETED"
+    assert run["automation_plan"]["status"] == "FROZEN"
+    assert [item["flow_node_snapshot_key"] for item in run["node_runs"]] == ["first", "second"]
+    assert all(item["state"] == "ACCEPTED" for item in run["node_runs"])
+    first, second = run["node_runs"]
+    assert first["attempts"][0]["state"] == "ACCEPTED"
+    assert second["attempts"][0]["state"] == "ACCEPTED"
+    first_output = first["attempts"][0]["artifacts"][0]["id"]
+    bindings = second["attempts"][0]["input_bindings"]
+    assert len(bindings) == 1
+    binding_summary = {
+        key: bindings[0][key]
+        for key in ("input_field_key", "artifact_version_id", "binding_source")
+    }
+    assert binding_summary == {
+        "input_field_key": "source",
+        "artifact_version_id": first_output,
+        "binding_source": "AUTOMATIC_PORT_MAPPING",
+    }
+
+    events = worker_client.get(f"/api/v1/flow-runs/{run['id']}/event-history").json()
+    event_types = {event["event_type"] for event in events}
+    assert {
+        "AUTOMATIC_RUN_STARTED",
+        "AUTOMATIC_ATTEMPT_STARTED",
+        "AUTOMATIC_NODE_ACCEPTED",
+        "AUTOMATIC_DOWNSTREAM_AVAILABLE",
+    } <= event_types
+
+    # Starting is one-way; stale and repeated starts cannot create additional work.
+    again = worker_client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/start",
+        json={"expected_row_version": draft["row_version"]},
+    )
+    assert again.status_code == 409, again.text
+
+
+def test_automatic_run_rejects_start_when_required_unmapped_input_is_missing(client):
+    flow = _create_flow(client)
+    created = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
         json={
-            "expected_row_version": draft["row_version"],
+            "environment_version_id": client.environment_version_id,
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan("执行第一个节点", artifact_id=artifact.json()["id"]),
-                "second": _node_plan("执行第二个节点"),
+                "first": _node_plan("缺输入的起点"),
+                "second": _node_plan("下游"),
             },
         },
     )
-    assert configured.status_code == 200, configured.text
-    frozen = client.post(
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    assert draft["automation_plan"]["readiness"] == {
+        "ready": False,
+        "issues": [
+            {
+                "code": "NODE_INPUT_REQUIRED",
+                "node_key": "first",
+                "message": "请配置未映射输入：source",
+            }
+        ],
+    }
+    start = client.post(
         f"/api/v1/automatic-runs/{draft['id']}/start",
-        json={"expected_row_version": configured.json()["row_version"]},
-        headers={"Idempotency-Key": "freeze-copy-source"},
+        json={"expected_row_version": draft["row_version"]},
     )
-    assert frozen.status_code == 200, frozen.text
+    assert start.status_code == 422, start.text
+    assert start.json()["error"]["code"] == "AUTOMATION_PLAN_NOT_READY"
 
-    copied = client.post(
-        f"/api/v1/automatic-runs/{draft['id']}/copy",
-        json={"name": "复制后的自动编排"},
+
+def _started_automatic_attempt(worker_client, worker_container):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    created = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan("自动执行第一个节点", input_url="https://example.com/input"),
+                "second": _node_plan("自动执行第二个节点"),
+            },
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/automatic-runs/{created['id']}/start",
+        json={"expected_row_version": created["row_version"]},
+        headers={"Idempotency-Key": f"start:{created['id']}"},
+    ).json()
+    worker = TaskWorker(worker_container)
+    assert worker._run_once_sync() is True
+    detail = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    return worker, detail["id"], detail["node_runs"][0]["attempts"][0]["id"]
+
+
+def test_automatic_transition_rejects_unauthorized_agent_selection(
+    worker_client, worker_container, db_session_factory, monkeypatch
+):
+    worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    for _ in range(12):
+        detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+        if detail["node_runs"][0]["attempts"][0]["state"] == "WAITING_ACCEPTANCE":
+            break
+        assert worker._run_once_sync() is True
+    else:
+        raise AssertionError("automatic attempt did not reach transition decision")
+
+    monkeypatch.setattr(
+        orchestration_service,
+        "execute_gate_plan",
+        lambda _plan, _context: GateResult(
+            "PASS",
+            "unauthorized",
+            [],
+            [],
+            {"selected_node_keys": ["outside-frozen-topology"]},
+        ),
     )
-    assert copied.status_code == 201, copied.text
-    copy = copied.json()
-    assert copy["state"] == "DRAFT"
-    assert copy["automation_plan"]["status"] == "DRAFT"
-    assert copy["name"] == "复制后的自动编排"
-    copied_artifact_id = copy["automation_plan"]["node_plans"]["first"]["artifact_ids"]["source"]
-    assert copied_artifact_id != artifact.json()["id"]
-    copied_artifact = next(item for item in copy["artifacts"] if item["id"] == copied_artifact_id)
-    assert copied_artifact["flow_run_id"] == copy["id"]
-    assert copied_artifact["uri"] == "https://example.com/copied-source"
-    assert copy["node_runs"] == []
+    assert worker._run_once_sync() is True
 
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    assert detail["state"] == "WAITING_HUMAN"
+    assert [item["flow_node_snapshot_key"] for item in detail["node_runs"]] == ["first"]
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["id"] == attempt_id
+    assert attempt["state"] == "END_BLOCKED"
+    assert attempt["error_code"] == "AUTOMATIC_TRANSITION_INVALID"
     with db_session_factory() as db:
-        assert db.scalar(select(NodeRun).where(NodeRun.flow_run_id == copy["id"])) is None
         assert (
             db.scalar(
-                select(FlowRunRuntimeAllocation).where(
-                    FlowRunRuntimeAllocation.flow_run_id == copy["id"]
+                select(NodeRun.id).where(
+                    NodeRun.flow_run_id == run_id,
+                    NodeRun.flow_node_snapshot_key == "second",
                 )
             )
             is None
         )
+
+
+def test_automatic_attempt_delivery_recovery_covers_every_scheduler_stage(
+    worker_client, worker_container, db_session_factory
+):
+    _worker, _run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    stages = [
+        ("WAITING_INPUT", "EVALUATE_READINESS", {}),
+        ("START_GATES", "RUN_GATE_POLICY", {"stage": "START"}),
+        ("WAITING_START_CONFIRMATION", "START_AUTOMATIC_ATTEMPT", {}),
+        ("END_GATES", "RUN_GATE_POLICY", {"stage": "END"}),
+        ("WAITING_ACCEPTANCE", "ADVANCE_AUTOMATIC_ATTEMPT", {}),
+    ]
+    for index, (state, task_type, payload) in enumerate(stages, start=1):
+        with db_session_factory() as db:
+            db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id == attempt_id))
+            attempt = db.get(NodeAttempt, attempt_id)
+            assert attempt is not None
+            attempt.state = state
+            attempt.state_version = 100 + index
+            attempt.error_code = None
+            attempt.error_detail = None
+            db.commit()
+
+        with db_session_factory() as db:
+            assert orchestration_service.recover_runtime_tasks(db) >= 1
+
+        with db_session_factory() as db:
+            recovered = db.scalar(
+                select(BackgroundTask).where(
+                    BackgroundTask.aggregate_id == attempt_id,
+                    BackgroundTask.task_type == task_type,
+                    BackgroundTask.state == TaskState.PENDING,
+                )
+            )
+            assert recovered is not None
+            assert recovered.payload_json == payload
+
+
+def test_automatic_terminal_task_failure_becomes_visible_block(
+    worker_client, worker_container, db_session_factory
+):
+    _worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "WAITING_START_CONFIRMATION"
+        orchestration_service.record_automatic_task_failure(
+            db, attempt_id, "START_AUTOMATIC_ATTEMPT", {}, "scheduler exhausted retries"
+        )
+        db.commit()
+
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    assert detail["state"] == "WAITING_HUMAN"
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["state"] == "START_BLOCKED"
+    assert attempt["error_code"] == "AUTOMATIC_START_DELIVERY_FAILED"
+    assert attempt["error_detail"] == "scheduler exhausted retries"
+
+
+def test_automatic_runtime_delivery_failure_cannot_be_retried_as_a_gate(
+    worker_client, worker_container, db_session_factory
+):
+    _worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "EXECUTING"
+        attempt.runtime_phase = "RUNNING"
+        orchestration_service.record_automatic_task_failure(
+            db, attempt_id, "POLL_RUNTIME", {}, "runtime delivery exhausted retries"
+        )
+        db.commit()
+
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["state"] == "END_BLOCKED"
+    assert attempt["error_code"] == "AUTOMATIC_RUNTIME_DELIVERY_FAILED"
+
+    retried = worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/retry-gates",
+        json={"expected_state_version": attempt["state_version"]},
+    )
+    assert retried.status_code == 409, retried.text
+    assert retried.json()["error"]["details"]["error_code"] == ("AUTOMATIC_RUNTIME_DELIVERY_FAILED")

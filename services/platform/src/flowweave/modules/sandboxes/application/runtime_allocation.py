@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntimeAllocation,
     FlowRunRuntimeSecretReference,
@@ -451,6 +452,7 @@ def ensure_capability_manifest_directory(
 def runtime_allocation_for_flow_run(
     db: Session, flow_run_id: str, *, manifest_digest: str | None = None
 ) -> FlowRunRuntimeAllocation:
+    flow_run_id = runtime_owner_flow_run_id(db, flow_run_id)
     allocation = db.scalar(
         select(FlowRunRuntimeAllocation).where(FlowRunRuntimeAllocation.flow_run_id == flow_run_id)
     )

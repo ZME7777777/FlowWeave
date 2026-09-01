@@ -53,6 +53,72 @@ async def create_automatic_run_draft(
     )
 
 
+@router.get("/flow-runs/{parent_run_id}/automatic-runs")
+async def nested_automatic_runs(parent_run_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(
+        db, lambda session: service.list_nested_automatic_runs(session, parent_run_id)
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/automatic-runs", status_code=201)
+async def create_nested_automatic_run(
+    parent_run_id: str, payload: AutomaticRunDraftWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.create_nested_automatic_run_draft(
+            session, parent_run_id, payload
+        ),
+    )
+
+
+@router.put("/flow-runs/{parent_run_id}/automatic-runs/{run_id}")
+async def update_nested_automatic_run(
+    parent_run_id: str, run_id: str, payload: AutomaticRunDraftUpdateWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: (
+            service.nested_automatic_run(session, parent_run_id, run_id),
+            service.update_automatic_run_draft(session, run_id, payload),
+        )[1],
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/automatic-runs/{run_id}/start")
+async def start_nested_automatic_run(
+    parent_run_id: str, run_id: str, payload: AutomaticRunStartWrite, db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: (
+            service.nested_automatic_run(session, parent_run_id, run_id),
+            service.start_automatic_run(
+                session, run_id, payload,
+                _key(idempotency_key, "start-nested-automatic-run", run_id),
+            ),
+        )[1],
+    )
+
+
+@router.delete(
+    "/flow-runs/{parent_run_id}/automatic-runs/{run_id}",
+    status_code=204, response_class=Response,
+)
+async def delete_nested_automatic_run(
+    parent_run_id: str, run_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: (
+            service.nested_automatic_run(session, parent_run_id, run_id),
+            service.delete_run(session, run_id),
+        )[1],
+    )
+    return Response(status_code=204)
+
+
 @router.put("/automatic-runs/{run_id}")
 async def update_automatic_run_draft(
     run_id: str, payload: AutomaticRunDraftUpdateWrite, db: Db

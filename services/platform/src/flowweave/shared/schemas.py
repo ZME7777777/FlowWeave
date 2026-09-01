@@ -391,13 +391,13 @@ class AutomaticRunDraftUpdateWrite(ApiModel):
 
 
 class AutomaticRunStartWrite(ApiModel):
-    """Freeze one ready automatic plan without starting runtime work."""
+    """Optimistic-lock the one-way transition from editable draft to Runtime work."""
 
     expected_row_version: int = Field(ge=1)
 
 
 class AutomaticRunCopyWrite(ApiModel):
-    """Name an independent editable copy of an automatic plan."""
+    """Name an independent draft copied from one frozen automatic run."""
 
     name: str | None = Field(default=None, max_length=220)
 

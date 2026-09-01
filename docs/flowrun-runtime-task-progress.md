@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
-> 当前执行切片：无
+> 当前执行切片：`FR-122`
 > 下一可执行切片：`FR-122`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -1720,11 +1720,11 @@ Tab 生成可继续编辑的草稿；启动前完成就绪检查，启动后冻�
 完成：中性流程工作台提供“编排自动运行”入口，可选择流程、READY Environment Version 和任意起始节点；
 草稿按冻结可达图逐节点复用 URL／FILE 输入、启动提示词、主 Agent 模型、Context、能力和独立门禁 Agent 配置。
 冻结端口映射覆盖的下游输入只读展示上游来源，未映射输入和缺失节点预设形成服务端就绪缺项。草稿保存采用
-row version 乐观锁；启动命令幂等地把就绪计划冻结为 `FROZEN`，不分配 Runtime、不创建 NodeRun／Attempt／
-后台任务，误投递 Runtime 预置同样 fail closed。冻结计划只读且只能复制为新草稿，复制会重新归属输入 Artifact，
-不会跨 FlowRun 引用源 Artifact。自动调度仍留给 FR-122。
+row version 乐观锁；启动命令幂等地把就绪计划冻结为 `FROZEN`，不分配 Runtime、不创建 NodeRun／Attempt。
+FR-122 在同一冻结事务中增加唯一持久调度投递，但 Runtime 与节点执行副作用仍全部由 Worker 接管。冻结计划只读且
+只能复制为新草稿，复制会重新归属输入 Artifact，不会跨 FlowRun 引用源 Artifact。
 
-### FR-122 门禁／流转 Agent 自动调度 — READY
+### FR-122 门禁／流转 Agent 自动调度 — DONE
 
 依赖：`FR-121`。
 
@@ -1733,13 +1733,29 @@ row version 乐观锁；启动命令幂等地把就绪计划冻结为 `FROZEN`�
 状态裁决后创建下游 NodeRun，直到终点完成。人工审核、失败、取消和恢复必须形成可见终态，Agent 不得直接写
 平台状态或绕过门禁。
 
-### FR-123 双模式运行完整门禁与部署验收 — PENDING
+完成：冻结命令原子投递 `START_AUTOMATIC_RUN`，Worker 幂等分配单 FlowRun Runtime 并创建起始 NodeRun。各节点按
+冻结输入、Agent 预设与门禁自动执行；门禁使用独立零能力 Conversation，只读取显式上下文包并返回结构化决定。
+结束门禁通过后，独立流转 Agent 仅接收冻结后继动作集合，外部 I/O 在短事务边界外执行；平台以任务 lease、Attempt
+state/version CAS、冻结拓扑和端口映射再次裁决，越权、空选择或无效结果进入可见人工介入状态且不创建下游。
+自动持久阶段均可由 Worker 启动／周期扫描恢复丢失投递，任务重试耗尽投影为 FlowRun／Attempt 错误事件；人工完成
+命令不能绕过自动调度器，取消仍可用。终点由平台自动验收并完成 FlowRun。
+
+### FR-123 双模式运行完整门禁与部署验收 — DONE
 
 依赖：`FR-118`–`FR-122`。
 
 目标：集中完成迁移矩阵、平台/Web 静态检查与测试、OpenAPI、真实单节点手动串联、自动草稿冻结、自动运行、
 分支、门禁失败、人工介入、刷新恢复、Runtime replacement 和部署后 E2E；证明两种模式共享同一 Flow Version
 事实、单 FlowRun 单 Runtime 和 OpenHands 原生 Conversation/Event 边界。
+
+完成：双模式共享同一冻结 Flow Version、Environment Version、NodeRun／Attempt、Artifact 和事件投影；自动记录在
+刷新后展示持久节点执行历史、门禁／流转阻断详情和安全恢复入口，人工完成不能越过调度器，取消与复制草稿保持
+可用。门禁／流转失败允许按原阶段重试，Runtime 或调度交付耗尽使用独立错误语义并禁止伪装成门禁重试。迁移矩阵、
+完整平台／Web／OpenAPI／架构／replacement 回归和无缓存部署均通过。部署后真实手动与自动单节点运行分别使用独立
+FlowRun Runtime Session、单一 active generation 和 OpenHands 原生 Conversation/Event；自动运行完成为
+`COMPLETED/ACCEPTED`，手动运行正式验收后同样完成。真实 replacement 将手动 Runtime 从 generation 1 切换至 2，
+旧 generation 删除，原 Conversation ID 与全部事件 ID 保持不变。外网 Codex Provider 因部署网络无法连接
+`chatgpt.com:443` 正确投影为 `RUNTIME_FAILED`；改用容器内可达的 `kiro-go` 后双模式真实链路通过。
 
 ## 7. 恢复工作检查表
 
@@ -1757,6 +1773,8 @@ row version 乐观锁；启动命令幂等地把就绪计划冻结为 `FROZEN`�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-123 | 平台完整 pytest（546 passed）；架构／契约／Runtime replacement 合并回归（54 passed）；自动调度与恢复定向 pytest（30 passed）；全量 Pyright（0 errors）、受影响 Ruff、OpenAPI、Web ESLint／TypeScript／production build、Compose 安全与迁移矩阵；源码及部署后双模式 Playwright（部署后 3 passed）；无缓存完整镜像重建与 Compose 部署；真实 OpenHands 手动／自动单节点执行、原生 Conversation/Event、失败投影及 generation 1→2 replacement | PASS：自动启动响应保持零 Runtime／NodeRun 副作用，Worker 接管后完成真实自动链路；手动链路到达 `WAITING_ACCEPTANCE` 并正式验收，两个 FlowRun 最终均完成。每个 FlowRun 只有一个 Runtime Session 和一个 active generation，Conversation 使用独立原生 ID。replacement 后 Runtime Session、Conversation ID 与 8 个原事件 ID 不变，旧 generation 删除。外网 Codex 不可达被安全投影为 `RUNTIME_FAILED`，容器内可达 `kiro-go` 的双模式链路通过。唯一 Alembic head/current 为 `0086_run_modes_auto_drafts`；FR-123 完成后无 `CURRENT` 或后续切片。 |
+| 2026-09-01 | FR-122 | 自动调度／安全／恢复定向 pytest（26 passed）；受影响平台回归（72 passed）；OpenAPI 契约（4 passed）；Ruff、Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：冻结响应无 Runtime／NodeRun 副作用并原子留下唯一 Worker 投递；自动链路按冻结预设完成两节点端口传递。门禁与流转 Agent 使用独立零能力 Conversation，流转结果经 lease、CAS 和冻结拓扑复核；越权选择不创建下游并进入人工介入。自动阶段丢失投递可恢复，耗尽失败形成可见投影；自动运行拒绝人工完成但允许取消。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；唯一 `CURRENT` 已移至 FR-123。 |
 | 2026-09-01 | FR-121 | 自动草稿平台回归（8 passed，含就绪缺项、幂等冻结、误投递 Runtime 任务 fail closed、Artifact 复制归属）；受影响 Ruff 与全量 Pyright；OpenAPI 契约；Web ESLint、TypeScript typecheck、production build；源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Workbench 可从任意起始节点创建并逐节点编辑自动草稿，复用 URL／FILE 输入、提示词、Agent、Context、能力和独立门禁配置；映射输入只读展示上游来源，缺失输入形成服务端就绪缺项。启动仅把计划幂等冻结为 `FROZEN`，不创建 Runtime、NodeRun、Attempt 或后台任务，冻结后只能复制为重新归属 Artifact 的新草稿。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；无 `CURRENT`，下一切片为 FR-122。 |
 | 2026-09-01 | FR-120 | `test_api.py` 全量（40 passed，含同节点唯一、完成命令幂等重放、真实分支／汇聚、循环定义拒绝、完整运行链路）；受影响 Ruff/`py_compile`；Web TypeScript、ESLint、production build；源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：手动完成只创建可配置的冻结下游 NodeRun，并绑定映射产物而不启动 Agent；同组节点唯一，修订继续使用 Attempt，重复完成不创建第二条下游记录，未到达节点与循环 fail closed。页面订阅新的完成／流转事件且无重复 NodeRun 操作，已到达节点可在刷新后继续使用完整表单。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；无 `CURRENT`，下一切片为 FR-121。 |
 | 2026-09-01 | FR-119 | Web TypeScript typecheck、ESLint、production build；源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：流程运行统一进入双 Tab Workbench；记录选择、取消、Tab 切换和浏览器刷新均不产生隐式选中。无选择时中性流程图可从任意节点打开新的单节点运行对话框；选中记录后左栏展示全局 NodeRun 历史，节点详情仅保留 Attempt 历史。自动草稿仅显示冻结投影。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；无 `CURRENT`，下一切片为 FR-120。 |
