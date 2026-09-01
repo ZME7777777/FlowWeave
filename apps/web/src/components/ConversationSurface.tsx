@@ -155,6 +155,18 @@ function isHistoricalAutoTitleError(
   events: OpenHandsConversationEvent[],
 ): boolean {
   if (event.event_type !== 'ERROR' || event.payload.error_code !== 'NotFoundError') return false;
+  // OpenHands 1.42 emitted this exact auxiliary title-generation failure as a
+  // generic ConversationErrorEvent. It is only safe to suppress when a normal
+  // assistant response is already present; other 404s remain visible.
+  const detail = String(event.payload.content ?? '');
+  const isKnownTitleProtocolFailure = detail.includes('litellm.NotFoundError')
+    && detail.includes('OpenAIException')
+    && detail.includes('Error code: 404');
+  if (isKnownTitleProtocolFailure) {
+    return events.some(candidate => candidate.event_type === 'MESSAGE'
+      && !['user', 'human'].includes(String(candidate.payload.source ?? '').toLowerCase())
+      && Boolean(candidate.payload.content));
+  }
   const byId = new Map(events.map(candidate => [candidate.id, candidate]));
   const userAncestor = (candidate: OpenHandsConversationEvent): string | undefined => {
     const visited = new Set<string>();
