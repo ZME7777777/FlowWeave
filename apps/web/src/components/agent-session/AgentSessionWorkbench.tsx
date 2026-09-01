@@ -1240,7 +1240,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   });
   const workspace = workspaceQuery.data;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
-  const conversationsQuery = useQuery({ queryKey: sessionQueryKey(host, 'conversations', workspace?.id), queryFn: () => api.conversations(workspace!.id), enabled: Boolean(workspace) });
+  const conversationsQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'conversations', workspace?.id),
+    queryFn: () => api.conversations(workspace!.id),
+    enabled: Boolean(workspace),
+    // Title generation is an isolated one-shot metadata task. Poll only while
+    // at least one visible binding is pending so the generated title replaces
+    // its first-message fallback without requiring a page refresh.
+    refetchInterval: query => query.state.data?.some(item => item.title_state === 'PENDING')
+      ? 1000
+      : false,
+  });
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });

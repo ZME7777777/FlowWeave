@@ -15,6 +15,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
     PROACTIVE_COMPACTION_RATIO,
+    enqueue_title_task,
     frozen_runtime_capability,
     initial_user_event_id,
     message_payload,
@@ -853,6 +854,7 @@ def bootstrap_node_conversation(
         binding.display_title = normalized_first_sentence(text)
         binding.title_state = "PENDING"
         binding.updated_at = now()
+        enqueue_title_task(db, binding, text)
         finish(db)
     return {
         "conversation": _node_session_dict(db, binding),
@@ -1087,7 +1089,9 @@ def send_question(
             },
         )
     )
-    item.last_connected_at = now()
+    activity_at = now()
+    item.last_connected_at = activity_at
+    item.updated_at = activity_at
     finish(db)
     return {"accepted": True, "cursor": result.cursor, "runtime": _result_dict(result)}
 
@@ -1156,7 +1160,9 @@ def send_node_message(
     result = runtime.send_message(handle, prompt, image_urls)
     if result.cursor:
         record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
-    binding.last_connected_at = now()
+    activity_at = now()
+    binding.last_connected_at = activity_at
+    binding.updated_at = activity_at
     finish(db)
     return {"accepted": True, "cursor": result.cursor, "compacted": False}
 
@@ -1392,6 +1398,13 @@ def rerun_node_message(
 ) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    binding = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
@@ -1413,6 +1426,10 @@ def rerun_node_message(
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     runtime.navigate(handle, parent_id)
     result = runtime.send_message(handle, content.strip())
+    activity_at = now()
+    binding.last_connected_at = activity_at
+    binding.updated_at = activity_at
+    finish(db)
     return {"accepted": True, "cursor": result.cursor}
 
 

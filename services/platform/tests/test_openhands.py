@@ -1013,7 +1013,7 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
     assert llm["extra_headers"]["chatgpt-account-id"] == "account-123"
 
 
-def test_openhands_enables_native_autotitle_for_agent_workspace(openhands_settings, monkeypatch):
+def test_openhands_disables_native_autotitle_for_agent_workspace(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
 
@@ -1030,10 +1030,10 @@ def test_openhands_enables_native_autotitle_for_agent_workspace(openhands_settin
 
     payload = captured["json"]
     assert isinstance(payload, dict)
-    assert payload["autotitle"] is True
+    assert payload["autotitle"] is False
 
 
-def test_openhands_enables_native_autotitle_for_collaboration(openhands_settings, monkeypatch):
+def test_openhands_disables_native_autotitle_for_collaboration(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
 
@@ -1046,7 +1046,7 @@ def test_openhands_enables_native_autotitle_for_collaboration(openhands_settings
 
     payload = captured["json"]
     assert isinstance(payload, dict)
-    assert payload["autotitle"] is True
+    assert payload["autotitle"] is False
 
 
 def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
