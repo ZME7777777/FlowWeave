@@ -78,7 +78,10 @@ export function NodesPage() {
   const visible = useMemo(() => nodes.filter(item => (directory === 'all' || item.directory_id === directory) && (!search || `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()))), [nodes, directory, search]);
   const visibleIds = visible.map(item => item.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
-  const pageSize = 24;
+  // The compact grid has five columns at the desktop breakpoint. Keep a full
+  // five-by-five grid together instead of moving the last visible card to a
+  // second page.
+  const pageSize = 25;
   const pagedVisible = visible.slice((page - 1) * pageSize, page * pageSize);
   useEffect(() => setPage(1), [directory, search]);
   useEffect(() => { if (page > Math.max(1, Math.ceil(visible.length / pageSize))) setPage(1); }, [page, visible.length]);

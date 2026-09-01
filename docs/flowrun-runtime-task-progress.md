@@ -1778,6 +1778,14 @@ build、Alembic head、任务状态唯一性与 `git diff --check`。本切片�
 定向浏览器回归覆盖中性／选中投影、首次默认计划提交、未就绪成功反馈和拒绝反馈；未改变后端、迁移、Runtime
 或 OpenHands 契约。
 
+### FR-125 节点资产页完整首屏分页 — DONE
+
+依赖：`FR-124`。
+
+目标：节点资产页的紧凑桌面网格在一行可显示 5 张卡片时，首屏应容纳完整的 5×5 卡片，不能因固定每页 24 条而把第 25 条提前分到第二页。不得改变节点资产数据、目录、搜索、批量选择或分页组件契约。
+
+完成：节点资产页每页容量调整为 25，并新增浏览器回归覆盖 25 个节点在首页完整显示且不出现分页控件。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1794,6 +1802,7 @@ build、Alembic head、任务状态唯一性与 `git diff --check`。本切片�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-125 | Web ESLint、TypeScript typecheck；当前源码 Vite 定向 Playwright（1 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：节点资产页桌面紧凑网格每页显示 25 张卡片，完整 5×5 首屏不再把第 25 张提前移至第二页；25 个节点时不显示分页控件。唯一 Alembic head 为 `0087_nested_automatic_runs`，FR-125 完成后无 `CURRENT` 或后续切片。 |
 | 2026-09-01 | FR-124 | Web ESLint、TypeScript typecheck、production build；当前源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：未选择运行记录时冻结流程图不再隐式投影“当前激活”或运行次数，显式选择单节点记录后才展示执行事实；自动草稿首次保存会提交当前默认节点计划，并在按钮旁展示保存成功、剩余就绪缺项或服务端拒绝。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-124 完成后无 `CURRENT` 或后续切片。 |
 | 2026-09-01 | FR-123 | 平台完整 pytest（546 passed）；架构／契约／Runtime replacement 合并回归（54 passed）；自动调度与恢复定向 pytest（30 passed）；全量 Pyright（0 errors）、受影响 Ruff、OpenAPI、Web ESLint／TypeScript／production build、Compose 安全与迁移矩阵；源码及部署后双模式 Playwright（部署后 3 passed）；无缓存完整镜像重建与 Compose 部署；真实 OpenHands 手动／自动单节点执行、原生 Conversation/Event、失败投影及 generation 1→2 replacement | PASS：自动启动响应保持零 Runtime／NodeRun 副作用，Worker 接管后完成真实自动链路；手动链路到达 `WAITING_ACCEPTANCE` 并正式验收，两个 FlowRun 最终均完成。每个 FlowRun 只有一个 Runtime Session 和一个 active generation，Conversation 使用独立原生 ID。replacement 后 Runtime Session、Conversation ID 与 8 个原事件 ID 不变，旧 generation 删除。外网 Codex 不可达被安全投影为 `RUNTIME_FAILED`，容器内可达 `kiro-go` 的双模式链路通过。唯一 Alembic head/current 为 `0086_run_modes_auto_drafts`；FR-123 完成后无 `CURRENT` 或后续切片。 |
 | 2026-09-01 | FR-122 | 自动调度／安全／恢复定向 pytest（26 passed）；受影响平台回归（72 passed）；OpenAPI 契约（4 passed）；Ruff、Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：冻结响应无 Runtime／NodeRun 副作用并原子留下唯一 Worker 投递；自动链路按冻结预设完成两节点端口传递。门禁与流转 Agent 使用独立零能力 Conversation，流转结果经 lease、CAS 和冻结拓扑复核；越权选择不创建下游并进入人工介入。自动阶段丢失投递可恢复，耗尽失败形成可见投影；自动运行拒绝人工完成但允许取消。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；唯一 `CURRENT` 已移至 FR-123。 |
