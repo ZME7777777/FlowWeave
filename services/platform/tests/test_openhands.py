@@ -263,17 +263,13 @@ def test_openhands_reload_accepts_formal_flow_run_workspace_roots(
     openhands_settings, monkeypatch, working_dir: str
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    state = _state(
-        workspace={"kind": "LocalWorkspace", "working_dir": working_dir}
-    )
+    state = _state(workspace={"kind": "LocalWorkspace", "working_dir": working_dir})
     monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: state)
 
     assert runtime._conversation_state(_handle())["workspace"] == state["workspace"]
 
 
-def test_openhands_reload_rejects_workspace_outside_flow_run_roots(
-    openhands_settings, monkeypatch
-):
+def test_openhands_reload_rejects_workspace_outside_flow_run_roots(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     state = _state(
         workspace={"kind": "LocalWorkspace", "working_dir": "/runtime/workspace/capabilities"}
@@ -404,7 +400,9 @@ def test_openhands_refreshes_only_the_same_frozen_oracle_binding(openhands_setti
     assert methods == ["GET", "POST"]
 
 
-def test_openhands_refuses_to_overwrite_a_different_oracle_binding(openhands_settings, monkeypatch):
+def test_openhands_keeps_existing_oracle_when_primary_provider_differs(
+    openhands_settings, monkeypatch
+):
     runtime = OpenHandsRuntime(openhands_settings)
     provider = RuntimeProvider(
         provider_id="provider-1",
@@ -427,14 +425,15 @@ def test_openhands_refuses_to_overwrite_a_different_oracle_binding(openhands_set
 
     monkeypatch.setattr(runtime, "_request", fake_request)
 
-    with pytest.raises(DomainError) as raised:
-        runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
-            provider,
-            base_url="http://runtime.test:8000",
-            session_api_key="session-key",
-        )
+    runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
+        provider,
+        base_url="http://runtime.test:8000",
+        session_api_key="session-key",
+    )
 
-    assert raised.value.code == "RUNTIME_ORACLE_PROFILE_CONFLICT"
+    # ``oracle`` is a Runtime-wide OpenHands singleton. A Conversation using
+    # another primary provider must neither overwrite it nor be blocked from
+    # creation/switch_llm because it exists.
     assert methods == ["GET"]
 
 
@@ -1239,9 +1238,7 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(
         ("javascript:alert(1)", False),
     ),
 )
-def test_openhands_accepts_declared_safe_http_output_urls(
-    openhands_settings, uri, accepted
-):
+def test_openhands_accepts_declared_safe_http_output_urls(openhands_settings, uri, accepted):
     runtime = OpenHandsRuntime(openhands_settings)
     runtime._contracts["10000000-0000-4000-8000-000000000002"] = [{"field_key": "design"}]
 

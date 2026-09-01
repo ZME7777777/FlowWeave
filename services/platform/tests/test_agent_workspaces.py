@@ -1882,6 +1882,47 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         assert conversations.list_conversations(db, workspace.id) == []
 
 
+def test_agent_workspace_bootstrap_rejects_reuse_of_deleted_draft_id(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="首条消息",
+            idempotency_key="deleted-draft",
+        )
+        conversations.delete_conversation(
+            db, workspace.id, created["conversation"]["id"], "delete-draft"
+        )
+
+        with pytest.raises(DomainError) as raised:
+            conversations.bootstrap_conversation(
+                db,
+                workspace.id,
+                work_directory_id=None,
+                model_provider_id=workspace.default_model_provider_id,
+                content="不应重用",
+                idempotency_key="deleted-draft",
+            )
+
+        assert raised.value.code == "AGENT_BOOTSTRAP_DRAFT_EXPIRED"
+        assert raised.value.status == 409
+
+
 def test_agent_workspace_bootstrap_explicit_openhands_500_is_not_ambiguous(
     settings, db_session_factory, monkeypatch
 ):

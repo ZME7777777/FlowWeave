@@ -122,6 +122,10 @@ function isBootstrapAmbiguous(error: Error): boolean {
   ].includes((error as ApiError).code);
 }
 
+function isExpiredBootstrapDraft(error: Error): boolean {
+  return (error as ApiError).code === 'AGENT_BOOTSTRAP_DRAFT_EXPIRED';
+}
+
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT';
 type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'NATIVE';
 type NativeComposerAction = 'CONDENSE';
@@ -1524,6 +1528,32 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     onNavigate(host.conversationPath(conversation.id));
   }, onError: (error, message) => {
+    if (isExpiredBootstrapDraft(error)) {
+      // The server keeps deleted bindings as audit tombstones.  A tab restored
+      // from session storage may therefore still carry their draft UUID.
+      // Preserve the text but allocate a new draft and discard attachments:
+      // their private files were deleted together with the old conversation.
+      const replacement = {
+        ...(conversationDraft ?? { displayName: '根工作区' }),
+        id: randomId(),
+      };
+      setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+      clearLiveText();
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      setTurnState('idle');
+      setConversationDraft(replacement);
+      setDraft(message.content);
+      setAttachments([]);
+      clearBootstrapRecovery();
+      reportOperationError(message.scope, new ApiError(
+        '原会话已删除，已恢复为新草稿。请重新发送消息；如需附件请重新添加。',
+        'AGENT_BOOTSTRAP_DRAFT_EXPIRED',
+        {},
+        409,
+      ));
+      return;
+    }
     if (isBootstrapAmbiguous(error)) {
       // React Query can retain a mutation observer from the render that
       // initiated the request. The command scope is the draft UUID, so it is

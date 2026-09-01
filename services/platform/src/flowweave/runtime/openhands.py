@@ -861,7 +861,20 @@ class OpenHandsRuntime:
         base_url: str,
         session_api_key: str,
     ) -> None:
-        """Materialize the frozen Runtime-wide Oracle profile without model drift."""
+        """Ensure the singleton Runtime-wide Oracle profile exists.
+
+        OpenHands' built-in ``ask_oracle`` tool resolves the fixed profile
+        name ``oracle``.  That makes the profile Runtime-wide rather than
+        Conversation-scoped.  In particular, it must not be treated as a
+        frozen copy of the primary LLM for every Conversation: doing so makes
+        a second Conversation using a different provider fail before its
+        primary LLM is even created.
+
+        The first configured Oracle remains stable for the lifetime of the
+        Runtime generation.  A caller whose primary provider differs still
+        creates and switches its own Conversation LLM normally; it simply
+        does not overwrite the shared auxiliary Oracle profile.
+        """
 
         llm = self._llm_payload(provider)
         binding_id = self._oracle_binding_id(provider)
@@ -877,15 +890,16 @@ class OpenHandsRuntime:
             config = existing.get("config")
             config_map = cast(dict[str, Any], config) if isinstance(config, dict) else {}
             if (
-                not config_map
-                or config_map.get("usage_id") != binding_id
+                config_map
+                and config_map.get("usage_id") != binding_id
                 or config_map.get("model") != llm["model"]
             ):
-                raise DomainError(
-                    "RUNTIME_ORACLE_PROFILE_CONFLICT",
-                    "The Runtime Oracle profile is already bound to a different frozen model",
-                    409,
-                )
+                # ``oracle`` is a shared OpenHands profile, not the primary
+                # Conversation LLM.  Do not let a different Conversation's
+                # provider prevent creating or rebinding this Conversation.
+                # Equally importantly, do not overwrite the existing profile
+                # and silently change Oracle behaviour for its owner.
+                return
         self._request(
             "POST",
             "/api/profiles/oracle",
@@ -2134,9 +2148,7 @@ class OpenHandsRuntime:
         return RuntimeResult(status="RUNNING", cursor=pending.cursor)
 
     def _outputs(self, conversation_id: str, text: str) -> dict[str, tuple[str, str]]:
-        expected = {
-            item["field_key"]: item for item in self._contracts.get(conversation_id, [])
-        }
+        expected = {item["field_key"]: item for item in self._contracts.get(conversation_id, [])}
         candidate = text.strip()
         if candidate.startswith("```"):
             lines = candidate.splitlines()

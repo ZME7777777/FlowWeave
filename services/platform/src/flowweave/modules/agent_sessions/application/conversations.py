@@ -932,6 +932,16 @@ def bootstrap_conversation(
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
     if binding is not None and command is not None:
+        # A deleted conversation deliberately retains its command record as an
+        # audit tombstone.  A browser can still hold the old draft UUID after
+        # deletion, but it must not treat that tombstone as an in-progress
+        # bootstrap or reuse its idempotency key.
+        if binding.lifecycle == "DELETED":
+            raise DomainError(
+                "AGENT_BOOTSTRAP_DRAFT_EXPIRED",
+                "原会话已删除，请重新发送首条消息",
+                409,
+            )
         if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
             return _bootstrap_result(db, binding)
         if command.state == "AMBIGUOUS":
@@ -1530,8 +1540,7 @@ def _safe_native_compaction(runtime: Any, handle: RuntimeHandle) -> str:
         new_completions = [
             event
             for event in after_events
-            if event.event_type == "CONDENSATION_COMPLETED"
-            and event.cursor not in completed_before
+            if event.event_type == "CONDENSATION_COMPLETED" and event.cursor not in completed_before
         ]
         new_request_ids = {event.cursor for event in new_requests}
         for candidate in reversed(new_completions):
