@@ -179,6 +179,8 @@ export interface AgentPreset {
   reasoning_effort?: string | null;
   /** Enables only the node's own free-text context, never repository Context. */
   node_context_enabled: boolean;
+  /** Launch-only editable copy of the node's own free-text context. */
+  node_context_prompt?: string | null;
 }
 export interface FlowNode {
   id?: string; instance_key: string; node_asset_id: string; alias?: string | null;

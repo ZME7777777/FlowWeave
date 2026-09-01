@@ -197,6 +197,9 @@ class AgentPresetWrite(ApiModel):
     model_name: str | None = Field(default=None, min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
     node_context_enabled: bool = False
+    # An optional launch-only replacement for the node's saved free-text
+    # context. It is persisted only on this Attempt, never back to the Node.
+    node_context_prompt: str | None = Field(default=None, max_length=200_000)
 
     @model_validator(mode="after")
     def validate_preset(self) -> AgentPresetWrite:
@@ -234,7 +237,9 @@ class GateWrite(ApiModel):
     # platform-owned gate mode.
     gate_type: Literal["PROMPT", "PYTHON"] = "PROMPT"
     enabled: bool = True
-    timeout_seconds: int = Field(default=30, ge=1, le=300)
+    # Evaluation time is a Runtime safety bound, not a user-configurable gate
+    # decision. The Agent's JSON decision is the only product-level outcome.
+    timeout_seconds: int = Field(default=300, ge=1, le=300)
     config: dict[str, Any] = Field(default_factory=_empty_any_dict)
     # Gates are always evaluated by their own isolated Agent conversation.
     # There is no default/workspace fallback for a gate.

@@ -703,7 +703,10 @@ def _validate_context_selection(node: dict[str, Any], context_ids: list[str]) ->
 
 
 def _node_with_selected_context(
-    node: dict[str, Any], context_ids: list[str] | None
+    node: dict[str, Any],
+    context_ids: list[str] | None,
+    *,
+    node_context_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Keep legacy Attempts unchanged, but filter new explicit selections."""
 
@@ -713,8 +716,11 @@ def _node_with_selected_context(
     executor = cast(dict[str, Any], asset.get("executor") or {})
     selected = set(context_ids)
     next_executor = dict(executor)
+    saved_context_prompt = str(executor.get("context_prompt") or "")
     next_executor["context_prompt"] = (
-        str(executor.get("context_prompt") or "") if _MANUAL_NODE_CONTEXT_ID in selected else ""
+        (node_context_prompt if node_context_prompt is not None else saved_context_prompt)
+        if _MANUAL_NODE_CONTEXT_ID in selected
+        else ""
     )
     next_executor["context_capability_ids"] = [
         item
@@ -1836,9 +1842,18 @@ def start_node_run(
             422,
         )
     preset = payload.agent_preset.model_dump()
-    context_ids = _validate_context_selection(
-        node,
-        [_MANUAL_NODE_CONTEXT_ID] if preset["node_context_enabled"] else [],
+    node_context_prompt = preset.get("node_context_prompt")
+    node_asset = cast(dict[str, Any], node.get("asset") or {})
+    node_executor = cast(dict[str, Any], node_asset.get("executor") or {})
+    effective_context_prompt = (
+        str(node_context_prompt)
+        if node_context_prompt is not None
+        else str(node_executor.get("context_prompt") or "")
+    )
+    context_ids = (
+        [_MANUAL_NODE_CONTEXT_ID]
+        if preset["node_context_enabled"] and effective_context_prompt.strip()
+        else []
     )
     artifact_ids = dict(payload.artifact_ids)
     if payload.input_urls:
@@ -2298,8 +2313,12 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
             {"environment_version_id": run.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    preset = attempt.agent_preset_json or {}
+    node_context_prompt = preset.get("node_context_prompt") if isinstance(preset, dict) else None
     node = _node_with_selected_context(
-        _runtime_node(snapshot, node_run.flow_node_snapshot_key), attempt.context_ids_json
+        _runtime_node(snapshot, node_run.flow_node_snapshot_key),
+        attempt.context_ids_json,
+        node_context_prompt=(str(node_context_prompt) if node_context_prompt is not None else None),
     )
     session_binding = agent_sessions.flow_node_binding_for_attempt(
         db, attempt.id, require_provisioning=True

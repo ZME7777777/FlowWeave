@@ -9704,6 +9704,18 @@
             "type": "boolean",
             "title": "Node Context Enabled",
             "default": false
+          },
+          "node_context_prompt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Context Prompt"
           }
         },
         "additionalProperties": false,
@@ -10796,7 +10808,7 @@
             "maximum": 300.0,
             "minimum": 1.0,
             "title": "Timeout Seconds",
-            "default": 30
+            "default": 300
           },
           "config": {
             "additionalProperties": true,
