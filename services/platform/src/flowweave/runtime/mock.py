@@ -94,6 +94,10 @@ class MockRuntime:
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         return handle
 
+    def conversation_title(self, handle: RuntimeHandle) -> str | None:
+        del handle
+        return None
+
     def rename_conversation(self, handle: RuntimeHandle, title: str) -> None:
         del handle, title
 

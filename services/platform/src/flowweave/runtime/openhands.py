@@ -1204,12 +1204,10 @@ class OpenHandsRuntime:
             request.execution_key.startswith("agent-workspace:")
             or request.interaction_mode == "COLLABORATION"
         ):
-            # FlowWeave owns the display title for every interactive Agent
-            # conversation, including conversations hosted by a Flow node.
-            # OpenHands autotitle is a second hidden model call; failures from
-            # that call are emitted as ConversationErrorEvent and can falsely
-            # make a successfully completed turn look failed in the UI.
-            payload["autotitle"] = False
+            # OpenHands owns interactive Conversation titles.  FlowWeave only
+            # projects that native title into its conversation list; it must
+            # not issue a second, provider-specific hidden title request.
+            payload["autotitle"] = True
         if spec.agent_profile is not None:
             # The immutable FlowWeave Profile has already been materialized in
             # the explicit Agent payload above.  Never send agent_profile_id:
@@ -1324,6 +1322,10 @@ class OpenHandsRuntime:
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
+
+    def conversation_title(self, handle: RuntimeHandle) -> str | None:
+        title = self._conversation_state(handle).get("title")
+        return title.strip() if isinstance(title, str) and title.strip() else None
 
     def rename_conversation(self, handle: RuntimeHandle, title: str) -> None:
         self._request(

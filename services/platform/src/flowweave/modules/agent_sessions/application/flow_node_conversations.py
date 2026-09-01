@@ -15,7 +15,6 @@ from flowweave.modules.agent_sessions.application.conversations import (
     AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
     PROACTIVE_COMPACTION_RATIO,
-    enqueue_title_task,
     frozen_runtime_capability,
     initial_user_event_id,
     message_payload,
@@ -854,7 +853,6 @@ def bootstrap_node_conversation(
         binding.display_title = normalized_first_sentence(text)
         binding.title_state = "PENDING"
         binding.updated_at = now()
-        enqueue_title_task(db, binding, text)
         finish(db)
     return {
         "conversation": _node_session_dict(db, binding),

@@ -27,7 +27,6 @@ from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
-from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.base import (
     RuntimeCondenser,
     RuntimeHandle,
@@ -437,10 +436,9 @@ def _handle(
 
 
 def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
-    _workspace(db, workspace_id)
-    return [
-        _dict(db, item)
-        for item in db.scalars(
+    workspace = _workspace(db, workspace_id)
+    items = list(
+        db.scalars(
             select(AgentConversationBinding)
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
@@ -448,11 +446,17 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             )
             .order_by(AgentConversationBinding.updated_at.desc())
         )
-    ]
+    )
+    for item in items:
+        _sync_native_title(db, workspace, item)
+    db.flush()
+    return [_dict(db, item) for item in items]
 
 
 def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id)
+    _sync_native_title(db, workspace, item)
     item.last_connected_at = now()
     db.flush()
     return _dict(db, item)
@@ -801,36 +805,40 @@ def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[st
 
 
 def normalized_first_sentence(content: str) -> str:
-    """A useful local title while the independent metadata task is pending."""
+    """Temporary first-message label until OpenHands publishes its native title."""
 
-    first_line = next((line for line in content.splitlines() if line.strip()), "")
-    normalized = " ".join(first_line.split())[:80]
+    # Preserve the full first message, collapsing line breaks for the rail.
+    # Keep enough text for the UI to decide where to
+    # truncate it. The conversation rail owns the one-line ellipsis; the
+    # persistence bound merely protects its String(240) projection.
+    normalized = " ".join(content.split())[:240]
     if _MECHANICAL_TITLE.fullmatch(normalized):
         return f"关于“{normalized}”的请求"[:80]
     return normalized or "用户请求"
 
 
-def _enqueue_title_task(db: Session, binding: AgentConversationBinding, first_message: str) -> None:
-    if not binding.model_provider_id or not binding.model_name:
+def _sync_native_title(
+    db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
+) -> None:
+    """Project OpenHands' native asynchronous title without overriding a rename.
+
+    Until OpenHands returns a title, ``display_title`` remains the first user
+    message selected at bootstrap.  This lets the rail show a useful one-line
+    temporary label without introducing a second title-generation model call.
+    """
+
+    if binding.title_state == "MANUAL":
         return
-    enqueue(
-        db,
-        task_type="GENERATE_AGENT_CONVERSATION_TITLE",
-        aggregate_type="AGENT_CONVERSATION",
-        aggregate_id=binding.id,
-        idempotency_key=(
-            f"generate-agent-conversation-title:{binding.id}:{binding.title_generation}"
-        ),
-        payload={
-            "title_generation": binding.title_generation,
-            "model_provider_id": binding.model_provider_id,
-            "model_name": binding.model_name,
-            # This transient seed is redacted by the handler after its single
-            # use. It is not an Agent Conversation/event projection.
-            "first_message": " ".join(first_message.split())[:4000],
-            "fallback_title": binding.display_title,
-        },
-    )
+    try:
+        title = get_runtime().conversation_title(_handle(db, workspace, binding))
+    except DomainError:
+        # Listing conversations must remain available while the managed Runtime
+        # is reconnecting.  A later refresh will pick up the native title.
+        return
+    if title and not _MECHANICAL_TITLE.fullmatch(title):
+        binding.display_title = title[:240]
+        binding.title_state = "GENERATED"
+        binding.updated_at = now()
 
 
 def _activate_bootstrapped_conversation(
@@ -849,7 +857,6 @@ def _activate_bootstrapped_conversation(
     command.state = "SUCCEEDED"
     command.updated_at = binding.updated_at
     _record_message_attachments(db, binding, initial_event_id, first_message, attachments)
-    _enqueue_title_task(db, binding, first_message)
     db.commit()
     return _bootstrap_result(db, binding)
 
@@ -2363,7 +2370,6 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
 PROACTIVE_COMPACTION_RATIO = _PROACTIVE_COMPACTION_RATIO
 AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
 ATTACHMENT_PATH = _ATTACHMENT_PATH
-enqueue_title_task = _enqueue_title_task
 frozen_runtime_capability = _frozen_runtime_capability
 initial_user_event_id = _initial_user_event_id
 message_payload = _message_payload

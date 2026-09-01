@@ -319,9 +319,9 @@ def test_openhands_144_profile_secret_condenser_and_title_boundaries() -> None:
     assert '"nested_secret_serializer_probe": True' in contract_probe
     assert '"subscription_condenser_dispatch": True' in contract_probe
     assert '"remote_title_generation_fix_in_frozen_source": False' in contract_probe
-    assert 'payload["autotitle"] = False' in runtime
-    assert "_enqueue_title_task" in conversations
-    assert "AgentConversationBinding.title_generation == generation" in titles
+    assert 'payload["autotitle"] = True' in runtime
+    assert "_sync_native_title" in conversations
+    assert "legacy provider request overwriting" in titles
 
 
 def test_agent_workspace_uses_the_single_agent_session_workbench_and_facade() -> None:
