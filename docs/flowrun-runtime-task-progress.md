@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`FR-127 Context Bundle 表单编辑与资料包预览`
+> 下一可执行切片：`FR-128 Context Bundle 表单编辑与资料包预览`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1812,6 +1812,27 @@ Version。ZIP 资料在安全校验后自动去除单一顶层目录，生成带
 `AgentContext.system_message_suffix` 路径加载。查看接口对 Bundle 返回该编译文本，原 ZIP 保留为版本来源；
 未增加新能力类型、迁移或 OpenHands 私有协议。
 
+### FR-127 Workbench 选择退出与保存反馈可见性 — DONE
+
+依赖：`FR-126`。
+
+目标：自动草稿保存结果必须在标题栏下方使用独立反馈条完整展示，不能被固定标题高度、Flex 收缩或下方内容
+裁切。手动和自动运行记录都必须支持再次点击当前记录取消选择，并允许点击左栏空白、运行标题空白或流程图画布
+空白退出当前选择；退出后关闭右侧详情并恢复中性流程图。自动运行 Tab 未选择自动记录时，流程图必须是不可交互
+的只读中性定义，不能允许节点出现无效选中；选择自动草稿后才允许点击其已解锁节点配置。不得改变 FlowRun、
+NodeRun、自动运行计划、Runtime、OpenHands 或数据库契约。原计划的 Context Bundle 表单编辑与资料包预览顺延为
+`FR-128`。
+
+验收：扩展 FlowRun Workbench 定向 Playwright，覆盖反馈条完整可见、手动／自动记录再次点击取消、左栏／标题／
+画布空白取消选择、自动中性图拒绝无效节点点击，以及选中自动草稿后恢复节点配置；运行 Web ESLint、TypeScript
+typecheck、production build、Alembic head、任务状态唯一性和 `git diff --check`。本切片使用独立 Git commit。
+
+完成：手动节点执行记录和自动运行记录均支持再次点击取消选择；点击左栏非交互区域、运行标题区域或流程图画布
+空白也会统一清除记录、节点与 Attempt 选择，关闭右侧详情并恢复中性流程定义。自动运行 Tab 未选择记录时使用
+不可选的中性节点，不再响应节点点击；选择自动草稿后才恢复已解锁节点配置。自动草稿保存成功、待补齐和失败信息
+改为标题栏下方的独立反馈条，长文本可换行且不会被固定标题高度裁切。未改变后端、Runtime、OpenHands 或数据库
+契约。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1828,6 +1849,7 @@ Version。ZIP 资料在安全校验后自动去除单一顶层目录，生成带
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-127 | 当前源码独立 Vite 定向 Playwright（1 passed，覆盖手动／自动记录重复点击、左栏／标题／画布空白退出、自动中性图不可配置、反馈条几何可见性和服务端拒绝反馈）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：所有退出入口统一关闭右栏并恢复中性流程图；自动模式无记录时节点不可选，选中草稿后恢复配置；保存反馈位于侧栏标题下方且完整处于侧栏可见区域。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-127 完成后无 `CURRENT`，下一切片为 FR-128 Context Bundle 表单编辑与资料包预览。 |
 | 2026-09-01 | FR-126 | Context Bundle 定向 pytest（7 passed）；完整 `test_capability_imports.py`（42 passed）与 `test_context_capabilities.py`（3 passed）；受影响 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：Bundle 仍是单个 `CONTEXT` Version，内部确定性生成 Manifest 并编译全部文档到现有系统后缀兼容文本；ZIP 单顶层目录自动归一化，根 README 被建议为入口，原始 ZIP 以 `application/zip` 不可变保存，查看接口可返回可读编译内容。路径穿越、Windows／POSIX 绝对路径、重复路径、空文件、明文 Secret 与符号链接均被拒绝。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-126 完成后无 `CURRENT`，下一切片为 FR-127 表单编辑与资料包预览。 |
 | 2026-09-01 | FR-125 | Web ESLint、TypeScript typecheck；当前源码 Vite 定向 Playwright（1 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：节点资产页桌面紧凑网格每页显示 25 张卡片，完整 5×5 首屏不再把第 25 张提前移至第二页；25 个节点时不显示分页控件。唯一 Alembic head 为 `0087_nested_automatic_runs`，FR-125 完成后无 `CURRENT` 或后续切片。 |
 | 2026-09-01 | FR-124 | Web ESLint、TypeScript typecheck、production build；当前源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：未选择运行记录时冻结流程图不再隐式投影“当前激活”或运行次数，显式选择单节点记录后才展示执行事实；自动草稿首次保存会提交当前默认节点计划，并在按钮旁展示保存成功、剩余就绪缺项或服务端拒绝。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-124 完成后无 `CURRENT` 或后续切片。 |

@@ -101,16 +101,62 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(graph.getByText('运行 1 次', { exact: true })).toHaveCount(0);
   await expect(page.locator('.timeline button.active')).toHaveCount(0);
 
-  await page.locator('.timeline button').filter({ hasText: '测试节点' }).click();
+  const manualRecord = page.locator('.timeline button').filter({ hasText: '测试节点' });
+  await manualRecord.click();
   await expect(graph.locator('.run-graph-node.current')).toContainText('当前激活 · 运行 1 次');
   await expect(page.locator('.timeline button.active')).toHaveCount(1);
+  await manualRecord.click();
+  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
+
+  await manualRecord.click();
+  await page.locator('.run-title > div').first().click();
+  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
+
+  await manualRecord.click();
+  await page.locator('.run-rail > h2').click();
+  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
+
+  await manualRecord.click();
+  await page.locator('.react-flow__pane').click({ position: { x: 20, y: 20 } });
+  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+  await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 
   await page.getByRole('tab', { name: '自动运行' }).click();
-  await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
+  await expect(graph).toContainText('选择一条自动运行记录后，可逐个配置其可达节点。');
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).first().click();
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+
+  const automaticRecord = page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' });
+  await automaticRecord.click();
   await expect(page.getByLabel('自动启动提示词 first')).toHaveValue('读取流程输入并完成节点工作。');
+  await automaticRecord.click();
+  await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+  await automaticRecord.click();
+  await expect(page.getByLabel('自动启动提示词 first')).toBeVisible();
+  await page.locator('.react-flow__pane').click({ position: { x: 20, y: 20 } });
+  await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+  await automaticRecord.click();
+  await expect(page.getByLabel('自动启动提示词 first')).toBeVisible();
   await page.getByRole('button', { name: '保存配置' }).click();
 
   await expect(page.getByRole('status')).toContainText('配置已保存，仍有 2 项待补齐');
+  const feedbackBanner = page.locator('.automatic-save-feedback-banner');
+  await expect(feedbackBanner).toBeVisible();
+  const [bannerBox, panelBox] = await Promise.all([
+    feedbackBanner.boundingBox(),
+    page.locator('.run-side-panel').boundingBox(),
+  ]);
+  expect(bannerBox).not.toBeNull();
+  expect(panelBox).not.toBeNull();
+  expect(bannerBox!.x).toBeGreaterThanOrEqual(panelBox!.x);
+  expect(bannerBox!.x + bannerBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+  expect(bannerBox!.y + bannerBox!.height).toBeLessThanOrEqual(panelBox!.y + panelBox!.height);
   expect((submittedBody?.node_plans as Record<string, unknown>).first).toEqual(expect.objectContaining({
     startup_prompt: '读取流程输入并完成节点工作。',
   }));
