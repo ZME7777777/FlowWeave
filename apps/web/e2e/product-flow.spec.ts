@@ -57,8 +57,8 @@ async function readyEnvironmentVersionId(request: APIRequestContext) {
 
 async function createFlow(request: APIRequestContext, assetId: string, name: string) {
   const gates = [
-    { stage: 'START', position: 0, gate_type: 'JAVASCRIPT', enabled: true, timeout_seconds: 30, config: { code: "return {decision: 'PASS', summary: '开始门禁通过', reasons: [], evidence: [], details: {}};" } },
-    { stage: 'END', position: 0, gate_type: 'PYTHON', enabled: true, timeout_seconds: 30, config: { code: "result = {'decision': 'PASS', 'summary': '结束门禁通过', 'reasons': [], 'evidence': [], 'details': {}}" } },
+    { stage: 'START', position: 0, gate_type: 'PYTHON', enabled: true, timeout_seconds: 30, agent_preset: {}, config: { prompt: '检查启动条件', code: "result = {'decision': 'PASS', 'summary': '开始门禁通过', 'reasons': [], 'evidence': [], 'details': {}}" } },
+    { stage: 'END', position: 0, gate_type: 'PYTHON', enabled: true, timeout_seconds: 30, agent_preset: {}, config: { prompt: '检查结束条件', code: "result = {'decision': 'PASS', 'summary': '结束门禁通过', 'reasons': [], 'evidence': [], 'details': {}}" } },
   ];
   return post(request, '/flows', {
     name,
@@ -1674,21 +1674,75 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await expect(library.getByRole('button', { name: `UI流程-${suffix}`, exact: true })).toBeVisible();
 });
 
+test('run workbench keeps record selection explicit across tabs and refresh', async ({ page, request }) => {
+  const asset = await createAsset(request, `工作台资产-${suffix}`);
+  const flow = await createFlow(request, asset.id, `工作台流程-${suffix}`);
+  const run = await post(request, `/flows/${flow.id}/runs`, {
+    name: `工作台运行-${suffix}`,
+    environment_version_id: await readyEnvironmentVersionId(request),
+  });
+  // The local deployed API can lag the source worktree during a slice. Keep
+  // this UI regression self-contained by projecting the FR-118 discriminator
+  // that the committed API returns.
+  await page.route(/\/api\/v1\/flow-runs$/, async route => {
+    const response = await route.fetch();
+    const records = await response.json() as Array<Record<string, unknown>>;
+    await route.fulfill({ response, json: records.map(item => ({ ...item, run_mode: item.run_mode ?? 'MANUAL' })) });
+  });
+  await page.route(new RegExp(`/api/v1/flow-runs/${run.id}$`), async route => {
+    const response = await route.fetch();
+    const record = await response.json() as Record<string, unknown>;
+    await route.fulfill({ response, json: { ...record, run_mode: record.run_mode ?? 'MANUAL' } });
+  });
+
+  await login(page);
+  await page.getByRole('button', { name: '流程运行' }).click();
+  const rail = page.locator('.run-selector-rail');
+  await expect(rail.getByRole('tab', { name: '单节点运行' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: '流程定义' })).toBeVisible();
+
+  await page.getByLabel('选择中性流程').selectOption(flow.id);
+  const neutralPreview = page.getByTestId('neutral-flow-preview');
+  await neutralPreview.locator('.react-flow__node').filter({ hasText: '复核方案' }).click();
+  await expect(page.locator('form.start-run-modal')).toBeVisible();
+  await page.locator('form.start-run-modal').getByRole('button', { name: '取消' }).click();
+
+  const runButton = rail.getByRole('button', { name: new RegExp(`工作台运行-${suffix}`) });
+  await runButton.click();
+  await expect(page.locator('.run-main').getByRole('heading', { name: `工作台运行-${suffix}` })).toBeVisible();
+  await runButton.click();
+  await expect(page.getByRole('heading', { name: '流程定义' })).toBeVisible();
+
+  await runButton.click();
+  await rail.getByRole('tab', { name: '自动运行' }).click();
+  await expect(rail.getByRole('tab', { name: '自动运行' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: '流程定义' })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '流程定义' })).toBeVisible();
+  expect(run.id).toBeTruthy();
+});
+
 test('run keeps attempts, snapshots, gates and artifact lineage visible', async ({ page, request }) => {
   const asset = await createAsset(request, `运行资产-${suffix}`);
   const flow = await createFlow(request, asset.id, `运行流程-${suffix}`);
   await login(page);
   await page.getByRole('button', { name: '流程运行' }).click();
-  const runGroup = page.locator('.run-group').filter({ hasText: flow.name });
-  await expect(runGroup).toBeVisible();
-  await runGroup.getByRole('button', { name: '启动', exact: true }).click();
+  await expect(page.locator('.run-selector-rail')).toBeVisible();
+  await expect(page.getByTestId('neutral-flow-preview')).toHaveCount(0);
+  await page.getByLabel('选择中性流程').selectOption(flow.id);
+  const neutralPreview = page.getByTestId('neutral-flow-preview');
+  await expect(neutralPreview).toBeVisible();
+  await neutralPreview.locator('.react-flow__node').filter({ hasText: '首轮方案' }).click();
   const dialog = page.locator('form.start-run-modal');
   await dialog.getByLabel('运行名称').fill(`运行验收-${suffix}`);
   await dialog.getByLabel('本次运行环境版本').selectOption(await readyEnvironmentVersionId(request));
   const createdRunResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/flows/${flow.id}/runs`) && response.request().method() === 'POST');
   await dialog.getByRole('button', { name: '启动流程', exact: true }).click();
   const createdRun = await (await createdRunResponse).json();
-  await expect(page.getByText('点击任意节点，在右侧配置输入并开始一次独立执行', { exact: true })).toBeVisible();
+  // Explicit creation selects the new record and the node the user clicked;
+  // passive entry, refresh, and tab changes never pick a record themselves.
+  await expect(page.locator('.run-main')).toContainText(`运行验收-${suffix}`);
   await expect(page.getByText('FlowRun 会话工作台', { exact: true })).toHaveCount(0);
   await expect.poll(async () => {
     const response = await request.get(`${apiBase}/api/v1/flow-runs/${createdRun.id}/conversations`);
@@ -1698,9 +1752,6 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
     const response = await request.get(`${apiBase}/api/v1/flow-runs/${createdRun.id}/runtime`);
     return (await response.json()).connection_state;
   }, { timeout: 60_000 }).toBe('READY');
-  await expect(page.locator('.action-panel')).toHaveCount(0);
-  const graphNodes = page.locator('.run-graph .react-flow__node');
-  await graphNodes.filter({ hasText: '首轮方案' }).click();
   const nodeConsole = page.locator('.node-console');
   await expect(nodeConsole).toContainText('首轮方案');
   await expect(nodeConsole).toContainText('创建一次独立执行');
@@ -1767,7 +1818,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
       description: '运行中发布的新流程配置',
       default_entry_key: flow.default_entry_key,
       row_version: flow.row_version,
-      nodes: flow.nodes.map((node: { instance_key: string; node_asset_id: string; alias?: string | null; position_x: number; position_y: number; config_override: Record<string, unknown>; gates: Array<{ stage: string; position: number; gate_type: string; enabled: boolean; timeout_seconds: number; config: Record<string, unknown> }> }) => ({
+      nodes: flow.nodes.map((node: { instance_key: string; node_asset_id: string; alias?: string | null; position_x: number; position_y: number; config_override: Record<string, unknown>; gates: Array<{ stage: string; position: number; gate_type: string; enabled: boolean; timeout_seconds: number; agent_preset?: Record<string, unknown>; config: Record<string, unknown> }> }) => ({
         instance_key: node.instance_key,
         node_asset_id: node.node_asset_id,
         alias: node.alias,
@@ -1776,7 +1827,7 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
         config_override: node.config_override,
         gates: node.gates.map(gate => ({
           stage: gate.stage, position: gate.position, gate_type: gate.gate_type,
-          enabled: gate.enabled, timeout_seconds: gate.timeout_seconds, config: gate.config,
+          enabled: gate.enabled, timeout_seconds: gate.timeout_seconds, agent_preset: gate.agent_preset ?? {}, config: gate.config,
         })),
       })),
       edges: flow.edges.map((edge: { source_instance_key: string; target_instance_key: string; position: number }) => ({

@@ -43,6 +43,9 @@ export function FlowMappingEdge({
   </>;
 }
 
+// React Flow consumes this registry outside React render. Keeping it beside
+// its node component avoids a circular dependency in every graph consumer.
+// eslint-disable-next-line react-refresh/only-export-components
 export const flowMappingEdgeTypes = { mappingEdge: FlowMappingEdge };
 
 /**
@@ -51,6 +54,7 @@ export const flowMappingEdgeTypes = { mappingEdge: FlowMappingEdge };
  * This scales beyond the two-edge case without placing every label at one path
  * midpoint.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function withMappingLabelOffsets(edges: Edge[]): Array<Edge<FlowMappingEdgeData>> {
   const key = (edge: Edge) => `${edge.source}→${edge.target}`;
   const groups = new Map<string, Edge[]>();

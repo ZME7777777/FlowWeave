@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-119`
+> 下一可执行切片：`FR-120`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -1678,7 +1678,7 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 配置。草稿不会分配 Runtime、创建 NodeRun 或进入单节点启动／同步快照／人工完成路径，并对冻结的 Artifact、
 能力版本和模型供应商建立删除保护。列表和详情投影草稿状态、计划与就绪缺项；未实现启动和自动调度。
 
-### FR-119 流程工作台双运行 Tab 与记录选择投影 — READY
+### FR-119 流程工作台双运行 Tab 与记录选择投影 — DONE
 
 依赖：`FR-118`。
 
@@ -1687,7 +1687,12 @@ Web lint/typecheck/build、`git diff --check`、Alembic head 与任务状态唯�
 不停止后台执行。无选择时画布只显示中性流程定义，并允许从任意节点创建新的单节点运行组；右侧全局执行历史
 移入左栏，节点侧仅保留当前 NodeRun 的 Attempt 记录。本切片不改变节点完成流转和自动调度。
 
-### FR-120 单节点运行组手动完成与产物流转 — PENDING
+完成：流程运行导航只装配唯一 Workbench，旧 `RunsPage` 已删除。左栏按单节点／自动运行分 Tab 展示记录，
+进入、刷新和切换 Tab 均保持无记录选择；再次点击已选记录或“取消选择”只清除投影视图。无选择时显示中性流程
+定义，可从任意节点显式创建新的单节点运行组并直接打开该节点配置。FlowRun 全局 NodeRun 历史已移入左栏，
+节点侧只保留当前 NodeRun 的 Attempt 切换；自动草稿仅投影 FR-118 已冻结的就绪事实，不接入编辑或调度。
+
+### FR-120 单节点运行组手动完成与产物流转 — READY
 
 依赖：`FR-119`。
 
@@ -1738,6 +1743,7 @@ Tab 生成可继续编辑的草稿；启动前完成就绪检查，启动后冻�
 
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
+| 2026-09-01 | FR-119 | Web TypeScript typecheck、ESLint、production build；源码 Vite 定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：流程运行统一进入双 Tab Workbench；记录选择、取消、Tab 切换和浏览器刷新均不产生隐式选中。无选择时中性流程图可从任意节点打开新的单节点运行对话框；选中记录后左栏展示全局 NodeRun 历史，节点详情仅保留 Attempt 历史。自动草稿仅显示冻结投影。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；无 `CURRENT`，下一切片为 FR-120。 |
 | 2026-09-01 | FR-118 | 自动运行草稿与引用保护定向 pytest（5 passed）；FlowRun／能力删除／模型供应商合并回归（44 passed）；更新后的 API 产品流回归（80 passed）；受影响 Ruff 与全量 Pyright（0 errors）；OpenAPI 契约测试；PostgreSQL 空库、历史基线 downgrade／upgrade 迁移矩阵；Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动草稿冻结快照、任意起点、节点配置和输入引用，不创建 Runtime／NodeRun；手动启动、同步快照和人工完成均 fail closed。冻结 Artifact、能力版本、主 Agent／门禁 Agent 模型供应商不可被删除或禁用。唯一 Alembic head 为 `0086_run_modes_auto_drafts`；未实现 Web 双 Tab、手动流转或自动调度。 |
 | 2026-08-31 | FR-117 | Agent Workspace 与 FlowRun 节点 SSH 映射/未配置降级 pytest（3 passed）；受影响 Python Ruff format/check 与 `py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；源码 Vite 的 Runtime 恢复工作区抽屉 Playwright（1 passed）；Compose config、Alembic head、任务状态唯一性与 `git diff --check` | PASS：SSH Remote 仅返回 Docker 宿主机持久 Workspace 的映射路径，未暴露 Runtime 容器连接信息；工作台展示并复制 SSH 与目录。唯一 Alembic head 为 `0084_attempt_context_selection`。另一条既有产品流浏览器用例在本次 SSH 断言前因未加载 `lark-sheets` Skill fixture 失败，未将其记为通过。 |
 | 2026-08-31 | FR-116 | `test_api.py` 节点会话/Prompt Context 定向回归（2 passed）；受影响 Python Ruff/`py_compile`；Web TypeScript、受影响文件 ESLint 与 production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：Prompt 启动允许空或多选 Context，并将选择冻结到 Attempt；自动执行和后续节点会话只应用冻结子集。CHAT 明确不应用节点 Context。唯一 Alembic head 为 `0084_attempt_context_selection`。 |

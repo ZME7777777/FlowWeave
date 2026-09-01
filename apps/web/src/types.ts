@@ -275,6 +275,8 @@ export interface RunSnapshot {
 export interface FlowRunSummary {
   id: string; flow_definition_id: string; flow_name?: string | null;
   flow_row_version?: number | null; run_no: number; name: string; state: string;
+  run_mode: 'MANUAL' | 'AUTOMATIC';
+  automation_plan?: AutomationPlan | null;
   completion_mode?: string | null; active_snapshot_version?: number | null;
   environment_version_id?: string | null;
   current_node_key?: string | null; current_node_name?: string | null;
@@ -283,6 +285,19 @@ export interface FlowRunSummary {
   runtime_message?: string | null;
   progress: { accepted: number; terminal: number; active: number };
   started_at: string; updated_at: string; finished_at?: string | null;
+}
+export interface AutomationPlan {
+  status: 'DRAFT' | 'RUNNING';
+  start_node_key: string;
+  reachable_node_keys: string[];
+  node_plans: Record<string, {
+    startup_prompt: string;
+    agent_preset: AgentPreset;
+    gates: GatePolicy[];
+    artifact_ids: Record<string, string>;
+    input_urls: Record<string, string>;
+  }>;
+  readiness: { ready: boolean; issues: Array<{ code: string; node_key: string; message: string }> };
 }
 export interface FlowRun extends FlowRunSummary {
   row_version: number; active_snapshot_id: string; active_snapshot_version: number;
