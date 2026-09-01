@@ -163,9 +163,13 @@ function isHistoricalAutoTitleError(
     && detail.includes('OpenAIException')
     && detail.includes('Error code: 404');
   if (isKnownTitleProtocolFailure) {
-    return events.some(candidate => candidate.event_type === 'MESSAGE'
-      && !['user', 'human'].includes(String(candidate.payload.source ?? '').toLowerCase())
-      && Boolean(candidate.payload.content));
+    return events.some(candidate => {
+      const assistantMessage = candidate.event_type === 'MESSAGE'
+        && !['user', 'human'].includes(String(candidate.payload.source ?? '').toLowerCase());
+      const finishResponse = candidate.event_type === 'COMPLETED'
+        && candidate.payload.event_name === 'FinishAction';
+      return (assistantMessage || finishResponse) && Boolean(candidate.payload.content);
+    });
   }
   const byId = new Map(events.map(candidate => [candidate.id, candidate]));
   const userAncestor = (candidate: OpenHandsConversationEvent): string | undefined => {
