@@ -158,6 +158,12 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .flow-product-layout{grid-template-columns:230px minmax(0,1fr)}
 @media(max-width:1180px){.flow-product-layout{grid-template-columns:200px minmax(0,1fr)}}
 
+/* Keep the file chooser inside its own import control instead of covering the editor. */
+.gate-content-dialog .gate-file-import{position:relative;display:grid;min-height:48px;align-content:center;gap:3px;overflow:hidden;margin-top:11px;padding:6px 0;color:var(--green);cursor:pointer}.gate-content-dialog .gate-file-import input{position:absolute;inset:0;width:100%;height:100%;cursor:pointer;opacity:0}.gate-content-dialog .gate-file-import>span{display:flex;align-items:center;gap:6px;font-weight:600}.gate-content-dialog .gate-file-import small{color:var(--muted);font-size:9px;line-height:1.45}
+
+/* The optional Skill-collection row must not reserve a grid row when the list is shown. */
+.agent-preset-capability-dialog{display:flex;flex-direction:column}.agent-preset-capability-dialog .agent-capability-toolbar,.agent-preset-capability-dialog .agent-capability-collections,.agent-preset-capability-dialog .agent-capability-summary,.agent-preset-capability-dialog>footer{flex:0 0 auto}.agent-preset-capability-dialog .agent-capability-list{flex:1 1 auto;min-height:180px}
+
 /* FlowRun-internal modes extend the historical workbench without changing
    the outer Runs page or the existing node console/detail components. */
 .flow-run-inner-workbench{grid-template-columns:250px minmax(500px,1fr)}
