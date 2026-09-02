@@ -6,7 +6,9 @@ test('desktop node assets keep a full five-by-five grid on the first page', asyn
     id: `node-${index}`,
     directory_id: null,
     name: `节点 ${index + 1}`,
-    description: '分页回归验证',
+    description: index === 0
+      ? '这是用于验证紧凑卡片不会被长说明撑开或跨越相邻卡片的超长节点说明，必绑能力：exception-baseline-publisher、lark-sheets、find-and-pull-hq-git。'
+      : '分页回归验证',
     icon_kind: 'TEXT',
     icon_value: 'NO',
     row_version: 1,
@@ -29,4 +31,26 @@ test('desktop node assets keep a full five-by-five grid on the first page', asyn
 
   await expect(page.getByTestId('node-card')).toHaveCount(25);
   await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+
+  const firstCard = page.getByTestId('node-card').first();
+  const summary = firstCard.locator('.node-list-summary p');
+  const geometry = await firstCard.evaluate(card => {
+    const paragraph = card.querySelector('.node-list-summary p');
+    if (!(paragraph instanceof HTMLElement)) throw new Error('node summary is missing');
+    const cardRect = card.getBoundingClientRect();
+    const paragraphRect = paragraph.getBoundingClientRect();
+    return {
+      cardRight: cardRect.right,
+      paragraphRight: paragraphRect.right,
+      cardHeight: cardRect.height,
+      paragraphHeight: paragraphRect.height,
+      scrollWidth: paragraph.scrollWidth,
+      clientWidth: paragraph.clientWidth,
+    };
+  });
+  expect(geometry.paragraphRight).toBeLessThanOrEqual(geometry.cardRight);
+  expect(geometry.paragraphHeight).toBeLessThan(geometry.cardHeight);
+  expect(geometry.scrollWidth).toBeGreaterThan(geometry.clientWidth);
+  await expect(summary).toHaveCSS('white-space', 'nowrap');
+  await expect(summary).toHaveCSS('text-overflow', 'ellipsis');
 });
