@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -16,6 +17,57 @@ class DockerControlError(RuntimeError):
 
 class DockerOwnershipError(DockerControlError):
     """The selected container is not owned by the expected FlowWeave resource."""
+
+
+def docker_storage_quota_is_unsupported(detail: str) -> bool:
+    """Match only Docker's explicit overlay2/XFS project-quota rejection."""
+
+    normalized = detail.lower()
+    return (
+        "--storage-opt" in normalized
+        and "supported only for overlay over xfs" in normalized
+        and ("pquota" in normalized or "project quota" in normalized)
+    )
+
+
+def run_docker_with_storage_quota_fallback(
+    command: list[str],
+    *,
+    timeout: int | float,
+    input_text: str | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    """Run Docker with quota, retrying once only when the daemon lacks pquota.
+
+    The fallback removes exactly the fixed ``--storage-opt size=...`` pair.
+    All other resource, isolation, ownership, image, and network arguments are
+    preserved, and every unrelated Docker failure remains fail-closed.
+    """
+
+    def invoke(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return runner(
+            argv,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env={"PATH": os.defpath},
+        )
+
+    completed = invoke(command)
+    detail = completed.stderr or completed.stdout
+    if completed.returncode == 0 or not docker_storage_quota_is_unsupported(detail):
+        return completed
+    try:
+        option_index = command.index("--storage-opt")
+        option_value = command[option_index + 1]
+    except (ValueError, IndexError):
+        return completed
+    if re.fullmatch(r"size=[1-9][0-9]*[mMgG]", option_value) is None:
+        return completed
+    fallback = command[:option_index] + command[option_index + 2 :]
+    return invoke(fallback)
 
 
 def docker_resource_is_absent(detail: str, resource_type: str) -> bool:

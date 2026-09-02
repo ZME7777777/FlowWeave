@@ -16,6 +16,7 @@ from flowweave.shared.infrastructure.docker_control import (
     EphemeralDockerLease,
     remove_owned_container,
     remove_owned_network,
+    run_docker_with_storage_quota_fallback,
 )
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -153,14 +154,11 @@ class DockerDependencyBuilder:
         )
         try:
             self._create_network(lease)
-            completed = subprocess.run(
+            completed = run_docker_with_storage_quota_fallback(
                 self.command(lease),
-                input=payload,
-                capture_output=True,
-                text=True,
+                input_text=payload,
                 timeout=self.timeout_seconds,
-                check=False,
-                env={"PATH": os.defpath},
+                runner=subprocess.run,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Dependency build timed out") from exc

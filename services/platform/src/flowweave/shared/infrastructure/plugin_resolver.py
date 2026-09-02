@@ -21,6 +21,7 @@ from flowweave.shared.infrastructure.docker_control import (
     EphemeralDockerLease,
     remove_owned_container,
     remove_owned_network,
+    run_docker_with_storage_quota_fallback,
 )
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -273,14 +274,11 @@ class DockerPluginResolver:
         )
         try:
             self._create_network(lease)
-            completed = subprocess.run(
+            completed = run_docker_with_storage_quota_fallback(
                 self.command(lease),
-                input=payload,
-                capture_output=True,
-                text=True,
+                input_text=payload,
                 timeout=self.timeout_seconds,
-                check=False,
-                env={"PATH": os.defpath},
+                runner=subprocess.run,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Plugin resolution timed out") from exc
@@ -331,14 +329,11 @@ class DockerPluginResolver:
         )
         try:
             self._create_network(lease)
-            completed = subprocess.run(
+            completed = run_docker_with_storage_quota_fallback(
                 self.command(lease),
-                input=json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-                capture_output=True,
-                text=True,
+                input_text=json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
                 timeout=self.timeout_seconds,
-                check=False,
-                env={"PATH": os.defpath},
+                runner=subprocess.run,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Marketplace Plugin resolution timed out") from exc
@@ -385,14 +380,11 @@ class DockerPluginResolver:
         )
         try:
             self._create_network(lease)
-            completed = subprocess.run(
+            completed = run_docker_with_storage_quota_fallback(
                 self.command(lease),
-                input=json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-                capture_output=True,
-                text=True,
+                input_text=json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
                 timeout=self.timeout_seconds,
-                check=False,
-                env={"PATH": os.defpath},
+                runner=subprocess.run,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Marketplace catalog resolution timed out") from exc

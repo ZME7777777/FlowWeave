@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import stat
 import subprocess
@@ -27,6 +26,7 @@ from flowweave.shared.infrastructure.docker_control import (
     remove_owned_container,
     remove_owned_network,
     remove_owned_volume,
+    run_docker_with_storage_quota_fallback,
 )
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -69,13 +69,10 @@ class DockerSandboxProvider:
 
     def _run(self, command: list[str], *, timeout: int = 60) -> str:
         try:
-            completed = subprocess.run(
+            completed = run_docker_with_storage_quota_fallback(
                 command,
-                capture_output=True,
-                text=True,
                 timeout=timeout,
-                check=False,
-                env={"PATH": os.defpath},
+                runner=subprocess.run,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise DomainError(

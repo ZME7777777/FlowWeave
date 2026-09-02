@@ -36,9 +36,80 @@ from flowweave.shared.infrastructure.docker_control import (
     remove_owned_container,
     remove_owned_network,
     remove_owned_volume,
+    run_docker_with_storage_quota_fallback,
 )
 from flowweave.shared.models import ManagedSandbox
 from flowweave.shared.settings import settings_context
+
+
+def test_docker_storage_quota_fallback_retries_only_without_fixed_quota() -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                command,
+                125,
+                stdout="",
+                stderr=(
+                    "docker: Error response from daemon: --storage-opt is supported only "
+                    "for overlay over xfs with 'pquota' mount option"
+                ),
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="container-id", stderr="")
+
+    command = [
+        "docker",
+        "run",
+        "--storage-opt",
+        "size=4g",
+        "--read-only",
+        "--memory",
+        "128m",
+        "locked-image",
+    ]
+    completed = run_docker_with_storage_quota_fallback(
+        command,
+        timeout=30,
+        runner=fake_run,
+    )
+
+    assert completed.returncode == 0
+    assert calls == [
+        command,
+        [
+            "docker",
+            "run",
+            "--read-only",
+            "--memory",
+            "128m",
+            "locked-image",
+        ],
+    ]
+
+
+def test_docker_storage_quota_fallback_keeps_unrelated_failures_closed() -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            125,
+            stdout="",
+            stderr="docker: Error response from daemon: pull access denied",
+        )
+
+    command = ["docker", "run", "--storage-opt", "size=4g", "locked-image"]
+    completed = run_docker_with_storage_quota_fallback(
+        command,
+        timeout=30,
+        runner=fake_run,
+    )
+
+    assert completed.returncode == 125
+    assert calls == [command]
 
 
 def _resource(*, expired: bool = False, desired_state: str = "RUNNING") -> ManagedSandbox:

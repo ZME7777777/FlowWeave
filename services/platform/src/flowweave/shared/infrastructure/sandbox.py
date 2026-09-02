@@ -19,6 +19,7 @@ from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
     EphemeralDockerLease,
     remove_owned_container,
+    run_docker_with_storage_quota_fallback,
 )
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -206,14 +207,11 @@ class DockerSandbox:
         ]
         payload = json.dumps({"code": code, "context": context}, ensure_ascii=False)
         try:
-            completed = subprocess.run(
+            completed = run_docker_with_storage_quota_fallback(
                 command,
-                input=payload,
-                capture_output=True,
-                text=True,
+                input_text=payload,
                 timeout=timeout_seconds + 1,
-                check=False,
-                env={"PATH": os.defpath},
+                runner=subprocess.run,
             )
         except subprocess.TimeoutExpired:
             try:
