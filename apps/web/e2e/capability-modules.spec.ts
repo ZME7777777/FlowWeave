@@ -122,10 +122,9 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(page.locator('.skill-collection-section')).toBeVisible();
   const collectionEditor = page.locator('form.capability-collection-editor');
   const collectionDialog = collectionEditor.getByRole('heading', { name: '新建 Skill 组合' });
-  // A persistent local deployment may already contain a collection. Both the
-  // empty-state and populated-state entry points must open the same editor.
-  await page.getByRole('button', { name: '新建 Skill 组合' })
-    .or(page.getByRole('button', { name: '创建第一个 Skill 组合' })).click();
+  // The header action is always present, including when the local fixture has
+  // no collections, so it is the stable entry point for this test.
+  await page.getByRole('button', { name: '新建 Skill 组合' }).click();
   await expect(collectionDialog).toBeVisible();
   // The persistent local E2E database may already contain immutable Skill
   // versions from a preceding product scenario.  Both states must keep the
@@ -184,6 +183,53 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(page.locator('.capability-tools')).toHaveCount(0);
 });
 
+test('Skill collections use a compact paged grid', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 480 });
+  const collections = ['需求分析', '研发交付', '质量验证', '发布运营'].map((name, index) => ({
+    id: `collection-${index + 1}`,
+    name,
+    category: '研发',
+    description: `${name}组合说明`,
+    row_version: 1,
+    members: [],
+    created_at: '2026-09-02T00:00:00Z',
+    updated_at: '2026-09-02T00:00:00Z',
+  }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(collections),
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  const collectionSection = page.locator('.skill-collection-section');
+  const collectionList = collectionSection.locator('.capability-collection-list');
+  const collectionRows = collectionList.locator(':scope > article');
+  await expect(collectionRows).toHaveCount(3);
+  const widths = await collectionRows.first().evaluate(row => {
+    const list = row.parentElement;
+    return { row: row.getBoundingClientRect().width, list: list?.getBoundingClientRect().width ?? 0 };
+  });
+  expect(widths.row).toBeLessThan(widths.list);
+  const bounds = await collectionSection.evaluate(section => {
+    const pager = section.querySelector('.skill-collection-pagination');
+    const sectionBounds = section.getBoundingClientRect();
+    const pagerBounds = pager?.getBoundingClientRect();
+    return { sectionBottom: sectionBounds.bottom, pagerBottom: pagerBounds?.bottom ?? 0 };
+  });
+  expect(bounds.pagerBottom).toBeLessThanOrEqual(bounds.sectionBottom);
+  await expect(collectionSection.getByText('需求分析', { exact: true })).toBeVisible();
+  await expect(collectionSection.getByText('研发交付', { exact: true })).toBeVisible();
+  await expect(collectionSection.getByText('质量验证', { exact: true })).toBeVisible();
+  await expect(collectionSection.getByText('发布运营', { exact: true })).toHaveCount(0);
+  await collectionSection.getByRole('button', { name: '下一页' }).click();
+  await expect(collectionRows).toHaveCount(1);
+  await expect(collectionSection.getByText('发布运营', { exact: true })).toBeVisible();
+  await expect(collectionSection.getByRole('button', { name: '上一页' })).toBeEnabled();
+});
+
 test('every capability module supports selecting and bulk deleting capability lineages', async ({ page }) => {
   const moduleTypes = ['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'AGENT_DEFINITION', 'CONTEXT'] as const;
   const labels: Record<(typeof moduleTypes)[number], string> = {
@@ -227,7 +273,15 @@ test('every capability module supports selecting and bulk deleting capability li
     if (route.request().method() === 'DELETE') {
       const payload = route.request().postDataJSON() as { ids: string[] };
       capabilities = capabilities.filter(item => !payload.ids.includes(item.id));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ deleted_ids: payload.ids, blocked: [] }) });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          deleted_ids: payload.ids,
+          blocked: [],
+          collection_changes: { updated: [], deleted: [] },
+        }),
+      });
       return;
     }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(capabilities) });
