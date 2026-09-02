@@ -201,6 +201,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).first().click();
   const neutralNodeConsole = page.locator('.run-side-panel .node-console');
   await expect(neutralNodeConsole).toBeVisible();
+  await expect(neutralNodeConsole).toHaveAttribute('data-testid', 'node-configuration-panel');
   await expect(neutralNodeConsole.getByRole('button', { name: /提示词执行/ })).toBeVisible();
   await expect(neutralNodeConsole.getByRole('button', { name: /会话启动/ })).toBeEnabled();
   await expect(neutralNodeConsole.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
@@ -209,6 +210,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await automaticRecord.click();
   const automaticEditor = page.locator('.automatic-record-editor');
   await expect(automaticEditor).toBeVisible();
+  await expect(automaticEditor).toHaveAttribute('data-testid', 'node-configuration-panel');
   await expect(automaticEditor.getByRole('button', { name: /提示词执行/ })).toHaveClass(/active/);
   await expect(automaticEditor.getByRole('button', { name: /会话启动/ })).toBeDisabled();
   await expect(automaticEditor.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');

@@ -2050,6 +2050,14 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 
 完成：运行快照图改为使用编排页同款节点卡片、可见端口和 `flow-direction-edge`／`flow-mapping-edge` 样式；节点位置由浏览器内存维护，状态刷新与选择不会重置已拖拽布局，Snapshot 内容仍完全只读。定向浏览器回归覆盖控制/产物流转边、可见端口与节点拖拽。
 
+### FR-141 FlowRun 节点配置侧栏统一 — DONE
+
+依赖：FR-129。
+
+目标：单节点运行与自动运行草稿的节点配置侧栏必须使用同一个前端面板壳，统一标题、启动方式、提示词执行四个配置页签、内容滚动和保存反馈位置；两种运行方式只通过注入的内容与动作表达业务差异。单节点保留可用的会话启动与开始执行动作；自动草稿继续只支持提示词执行、保存节点计划且不改变自动调度、Runtime、OpenHands 或数据库契约。
+
+完成：新增唯一 `NodeConfigurationPanel`，手动节点控制台和自动运行草稿编辑器均由其装配。自动草稿通过受控参数禁用会话启动，并继续提供既有保存、输入、Agent、门禁与执行记录内容；手动面板保持原有会话启动、输入校验和错误反馈。新增浏览器断言确认两个入口均渲染同一受测面板壳。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2066,6 +2074,7 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-02 | FR-140 | FlowRun Workbench 定向 Playwright（3 passed，覆盖节点拖拽、控制／产物流转边和可见端口）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行快照图复用流程编排的节点、端口和边样式；节点可在当前浏览器视图自由拖拽，运行状态刷新与节点选择均不重置布局，且不写回冻结 Snapshot 或流程定义。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
+| 2026-09-03 | FR-141 | Web TypeScript typecheck、ESLint、production build；当前隔离工作树 Vite（4174）上的 `flow-run-workbench-feedback.spec.ts`（3 passed）；`git diff --check`、任务状态唯一性 | PASS：手动节点控制台和自动运行草稿编辑器均通过同一 `NodeConfigurationPanel` 渲染，标题、启动方式、四个配置页签、内容滚动和保存反馈壳统一；手动会话启动仍可用，自动草稿会话启动继续禁用。先前 5173 指向另一工作树的旧 Vite bundle，已改用当前隔离工作树的 4174 服务重新验证。未修改后端、迁移、Runtime 或 OpenHands 契约。 |
 | 2026-09-02 | FR-139 | 前缀生产构建 HTML 路径断言；Web ESLint、TypeScript typecheck；linux/amd64 Web 镜像构建、Compose Web 单服务替换；公网 JS/CSS、FlowWeave API、FastGPT 登录页与浏览器应用外壳验证 | PASS：Dockerfile 默认生产基路径为 `/flowweave/`，HTML 只引用 `/flowweave/assets/index-DBMHJl84.js` 和前缀 CSS。远端 Web 镜像为 `sha256:32a80a…ff7d4c`（linux/amd64），仅 Web 容器重建；公网前缀 JS/CSS 均为 200，浏览器可加载“终端环境”入口，API 与 FastGPT 登录页保持成功。 |
 | 2026-09-02 | FR-138 | 环境配置终端定向 Playwright（tmux 鼠标上报下普通拖拽复制且不发送 PTY 鼠标序列）；Web ESLint、TypeScript typecheck、production build、`git diff --check`；linux/amd64 Web 镜像构建、Compose 配置与 Web 单服务替换、静态资产 SHA-256、远端服务/公网入口健康检查 | PASS：环境配置终端捕获普通左键拖拽并使用 xterm 公共 selection API 保留选区，复制内容为终端文本，PTY 未收到鼠标序列。Web 构建产物 `index-szfa_8IM.js` SHA-256 为 `9b9cda…4c033e`，远端 `flowweave-web:remote-amd64` 更新为 `sha256:caf3bc…5868d`（linux/amd64）；仅 `web` 容器 force-recreate，API、Runtime Provider、Worker 与数据库未重启。`/flowweave/`、`/flowweave/api/v1/flows` 和 FastGPT 登录页均返回成功。公网匿名浏览器会话不能进入受当前登录入口保护的“终端环境”菜单，未将该项伪记为通过；已通过静态产物一致性和本机精确交互回归验证。 |
 | 2026-09-02 | FR-137 | 已保存流程校验定向 API pytest（2 passed）；受影响 Python Ruff、生产源码 Pyright（0 errors）与 `py_compile`；Alembic head、任务状态唯一性与 `git diff --check`；linux/amd64 平台镜像构建、Migration、运行镜像、服务健康、原 500 流程及公网入口实测 | PASS：严格写模型由持久化读取投影显式重建，合法流程返回 200，非法自环仍返回 `FLOW_GRAPH_INVALID` 422。远端 API／Runtime Provider healthy、Worker Up、Migration Exited (0)，三个常驻平台进程统一运行镜像 `sha256:bcb3239fb69dc9c991c4af43e503545dd015d0a483baae88f3a9f105a25a2331`；公网 FlowWeave API、页面、Agent 深层路由及 FastGPT 登录页均为 200。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |

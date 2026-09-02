@@ -2,7 +2,7 @@ import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type 
 import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, Download, ExternalLink, Eye, FileText, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { useProductDialog } from '../components/ProductDialogContext';
@@ -523,6 +523,53 @@ function NodeExecutionHistory({ run, node, onSelectExecution }: { run: FlowRun; 
   return <section className="node-execution-history"><header><h4>执行记录</h4><small>可随时查看，且不影响再次配置</small></header>{nodeRuns.length ? nodeRuns.map(item => <button type="button" key={item.id} disabled={!onSelectExecution} onClick={() => onSelectExecution?.(item)}><span><b>第 {nodeVisitNumber(run, item)} 次执行</b><small>{item.attempts.length} 个轮次 · {attemptStateLabel(item)}</small></span><ExternalLink size={13}/></button>) : <p className="field-hint">还没有执行记录。</p>}</section>;
 }
 
+type NodeConfigurationPanelProps = {
+  title: string;
+  subtitle: string;
+  mode: 'PROMPT' | 'CHAT';
+  onModeChange: (mode: 'PROMPT' | 'CHAT') => void;
+  promptTab: PromptConfigurationTab;
+  onPromptTabChange: (tab: PromptConfigurationTab) => void;
+  promptContent: ReactNode;
+  agentContent: ReactNode;
+  gateContent: ReactNode;
+  historyContent: ReactNode;
+  chatContent: ReactNode;
+  action?: ReactNode;
+  feedback?: ReactNode;
+  belowContent?: ReactNode;
+  chatEnabled?: boolean;
+  className?: string;
+};
+
+/**
+ * The manual-node and automatic-run editors intentionally share one panel
+ * shell.  Their persistence semantics differ, but the visible configuration
+ * navigation, hierarchy, and scrolling contract must never drift apart.
+ */
+function NodeConfigurationPanel({
+  title,
+  subtitle,
+  mode,
+  onModeChange,
+  promptTab,
+  onPromptTabChange,
+  promptContent,
+  agentContent,
+  gateContent,
+  historyContent,
+  chatContent,
+  action,
+  feedback,
+  belowContent,
+  chatEnabled = true,
+  className,
+}: NodeConfigurationPanelProps) {
+  const panelClassName = ['action-panel', 'node-console', className].filter(Boolean).join(' ');
+  const chatDisabledTitle = chatEnabled ? undefined : '自动运行记录只支持提示词执行';
+  return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{feedback}<div className="node-console-mode-bar"><nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
+}
+
 function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const [topTab, setTopTab] = useState<'PROMPT' | 'CHAT'>('PROMPT');
@@ -566,11 +613,7 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
   const selectTopTab = (next: 'PROMPT' | 'CHAT') => { setTopTab(next); setMode(next); };
   const runAction = <button className="primary node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => mode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : mode === 'PROMPT' && missingInputs ? '请先填写节点输入' : mode === 'CHAT' ? '启动节点会话' : '开始节点执行'}</button>;
   const history = <NodeExecutionHistory run={run} node={node} onSelectExecution={onSelectExecution}/>;
-  return <aside className="action-panel node-console"><header><div><b>{node.alias || node.asset.name}</b><small>节点控制台 · 已执行 {visits} 次</small></div></header><div className="node-console-mode-bar"><nav className="node-console-mode-tabs" aria-label="启动方式"><button className={topTab === 'PROMPT' ? 'active' : ''} onClick={() => selectTopTab('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={topTab === 'CHAT' ? 'active' : ''} onClick={() => selectTopTab('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>{runAction}</div>{topTab === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={setPromptTab}/>}<div className="action-content">
-    {topTab === 'PROMPT' && <>{promptTab === 'inputs' && <><InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="本次执行创建后会冻结。" onEdit={() => setPromptDialogOpen(true)}/></>}{promptTab === 'agent' && <AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} {promptTab === 'gates' && <GateDraftEditor gates={gates} onChange={setGates}/>} {promptTab === 'history' && history}</>}
-    {topTab === 'CHAT' && history}
-    {invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}
-  </div>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</aside>;
+  return <><NodeConfigurationPanel title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={topTab} onModeChange={selectTopTab} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<><InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="本次执行创建后会冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void }) {
@@ -726,19 +769,14 @@ function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }
   if (!node || !plan) return <aside className="action-panel automatic-record-editor"><div className="action-content automatic-empty">请在流程图中选择一个可配置节点。</div></aside>;
   const feedback = save.error ? `保存失败：${save.error.message}` : saveFeedback;
   const history = <NodeExecutionHistory run={record} node={node}/>;
-  return <aside className="action-panel node-console automatic-record-editor"><header><div><b>{node.alias || node.asset.name}</b><small>{record.name} · {editable ? '自动运行草稿配置' : '自动运行配置（只读）'}</small></div></header>{feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>}<div className="node-console-mode-bar"><nav className="node-console-mode-tabs" aria-label="启动方式"><button className="active" aria-pressed="true"><span>提示词执行</span><small>按节点配置自动执行</small></button><button disabled title="自动运行记录只支持提示词执行"><span>会话启动</span><small>人工进入会话引导</small></button></nav>{editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>}</div><PromptConfigurationTabs active={promptTab} onChange={setPromptTab}/><div className="action-content">
-    {promptTab === 'inputs' && <><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts}/>{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="自动运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>}
-    {promptTab === 'agent' && (editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '工作区默认模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>)}
-    {promptTab === 'gates' && (editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>)}
-    {promptTab === 'history' && history}
-  </div>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
+  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '自动运行草稿配置' : '自动运行配置（只读）'}`} mode="PROMPT" onModeChange={() => undefined} chatEnabled={false} promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} action={editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts}/>{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="自动运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '工作区默认模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
     const nextArtifacts = mergeArtifacts(inputArtifacts, artifacts);
     const nextPlans = { ...plans, [node.instance_key]: { ...plan, artifact_ids } };
     setPlans(nextPlans);
     setInputArtifacts(nextArtifacts);
     onDraft({ ...record, node_plans: nextPlans, artifacts: nextArtifacts });
     setInputDialogOpen(false);
-  }}/>} {promptDialogOpen && <StartupPromptDialog prompt={plan.startup_prompt} label={`自动启动提示词 ${activeKey}`} onChange={startup_prompt => patch({ startup_prompt })} onClose={() => setPromptDialogOpen(false)}/>}</aside>;
+  }}/>} {promptDialogOpen && <StartupPromptDialog prompt={plan.startup_prompt} label={`自动启动提示词 ${activeKey}`} onChange={startup_prompt => patch({ startup_prompt })} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 export function WorkbenchPage() {
