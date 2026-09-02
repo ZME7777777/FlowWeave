@@ -253,6 +253,84 @@ def test_replacement_freezes_routes_restores_original_id_and_fences_old_writer(
     assert len(deleted) == 1
 
 
+def test_replacement_probe_ignores_earlier_non_active_reservation(
+    settings,
+    db_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id = _seed_active_runtime(db)
+        active = db.scalar(
+            select(AgentConversationBinding).where(
+                AgentConversationBinding.host_kind == "FLOW_NODE",
+                AgentConversationBinding.runtime_session_id == runtime_session_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+            )
+        )
+        assert active is not None
+        active.created_at = datetime.now(UTC)
+        active_conversation_id = active.openhands_conversation_id
+        invalid_conversation_id = str(uuid4())
+        db.add(
+            AgentConversationBinding(
+                workspace_id=None,
+                host_kind="FLOW_NODE",
+                host_id=flow_run_id,
+                conversation_scope_id=flow_run_id,
+                flow_run_id=flow_run_id,
+                runtime_session_id=runtime_session_id,
+                openhands_conversation_id=invalid_conversation_id,
+                display_title="incomplete reservation",
+                lifecycle="PROVISIONING",
+                create_idempotency_key=f"incomplete-probe:{runtime_session_id}",
+                created_at=datetime.now(UTC) - timedelta(days=1),
+            )
+        )
+        db.commit()
+
+    probes: list[str] = []
+    monkeypatch.setattr(runtime_replacement, "_require_task_lease", lambda *_args: None)
+    monkeypatch.setattr(runtime_replacement, "resolve_runtime_secret", lambda *_args: "secret")
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda _provider, target, **_kwargs: DockerObservation(
+            resource_id=target.id,
+            resource_name=target.backend_resource_name,
+            resource_identifier=f"replacement-instance-{target.generation}",
+            state="RUNNING",
+            labels={},
+        ),
+    )
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "drain",
+        lambda *_args: DockerDrainResult(graceful=True, stopped=True),
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "delete", lambda *_args: None)
+
+    def probe(*, resource_name, conversation_id, expected):
+        del resource_name
+        probes.append(conversation_id)
+        identity = _identity(conversation_id)
+        if expected is not None:
+            assert identity == expected
+        return identity
+
+    monkeypatch.setattr(runtime_replacement, "_probe_identity", probe)
+
+    with settings_context(settings), db_session_factory() as db:
+        runtime_replacement.process_flow_run_runtime_replacement(
+            db,
+            flow_run_id,
+            1,
+            Lease(task_id="replacement-active-probe", owner="worker-a", generation=1),
+        )
+
+    assert probes == [active_conversation_id, active_conversation_id]
+    assert invalid_conversation_id not in probes
+
+
 def test_crash_takeover_reuses_n_plus_one_and_waits_for_openhands_lease(
     db_session_factory: sessionmaker[Session],
 ) -> None:

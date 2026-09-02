@@ -478,6 +478,7 @@ def process_flow_run_runtime_replacement(
                 .where(
                     AgentConversationBinding.host_kind == "FLOW_NODE",
                     AgentConversationBinding.runtime_session_id == session.id,
+                    AgentConversationBinding.lifecycle == "ACTIVE",
                 )
                 .order_by(AgentConversationBinding.created_at)
                 .limit(1)

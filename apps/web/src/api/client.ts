@@ -88,6 +88,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(`${API_BASE}${ROOT}${path}`, {
       ...init,
+      // Runtime replacement and other control-plane state may recover without
+      // changing the route. Never let the browser reuse a stale dynamic GET.
+      cache: init.method === undefined || init.method === 'GET' ? 'no-store' : init.cache,
       headers: { 'Content-Type': 'application/json', ...init.headers },
     });
   } catch {
@@ -97,6 +100,33 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw await responseError(response);
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+}
+
+async function requestWithTimeout<T>(
+  path: string,
+  timeoutMs: number,
+  init: RequestInit = {},
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) abort();
+  else init.signal?.addEventListener('abort', abort, { once: true });
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await request<T>(path, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiError('服务器响应超时，请稍后重试。', 'REQUEST_TIMEOUT', {}, 0);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    init.signal?.removeEventListener('abort', abort);
+  }
 }
 const json = (method: string, body?: unknown, idempotencyKey?: string | true): RequestInit => ({
   method,
@@ -166,7 +196,7 @@ const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map
 );
 
 export const api = {
-  defaultAgentWorkspace: () => request<AgentWorkspace>('/agent-workspaces/default'),
+  defaultAgentWorkspace: () => requestWithTimeout<AgentWorkspace>('/agent-workspaces/default', 10_000),
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
   updateAgentWorkspaceSettings: (id: string, default_model_provider_id: string | null) =>
     request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}/settings`, json('PATCH', { default_model_provider_id })),
