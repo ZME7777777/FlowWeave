@@ -392,8 +392,7 @@ def process_cleanup_setup_container(
         except DomainError as exc:
             # The Runtime Provider reconciler may confirm external deletion
             # and remove the ledger row between cleanup enqueue and delivery.
-            # Its SET NULL foreign key is then authoritative; the setup task
-            # still owns clearing the denormalized container locator.
+            # The setup task still owns clearing both application locators.
             if exc.code != "RESOURCE_NOT_FOUND":
                 raise
     else:
@@ -417,6 +416,7 @@ def process_cleanup_setup_container(
         if bool(payload.get("delete_session")) and current.state == "CANCELLED":
             db.delete(current)
         else:
+            current.sandbox_id = None
             current.container_id = ""
             current.error_detail = None
     db.commit() if commit else db.flush()

@@ -6,7 +6,6 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
-    ForeignKey,
     Index,
     Integer,
     LargeBinary,
@@ -57,9 +56,7 @@ class ProviderModel(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    provider_id: Mapped[str] = mapped_column(
-        ForeignKey("model_providers.id", ondelete="CASCADE"), index=True
-    )
+    provider_id: Mapped[str] = mapped_column(String(36), index=True)
     model_name: Mapped[str] = mapped_column(String(240))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -13,6 +13,7 @@ from uuid import UUID, uuid4, uuid5
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
     config_from_binding,
@@ -115,7 +116,7 @@ def _binding(
     if lock:
         query = query.with_for_update()
     item = db.scalar(query)
-    if item is None or item.lifecycle == "DELETED":
+    if item is None:
         raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
     return item
 
@@ -937,16 +938,6 @@ def bootstrap_conversation(
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
     if binding is not None and command is not None:
-        # A deleted conversation deliberately retains its command record as an
-        # audit tombstone.  A browser can still hold the old draft UUID after
-        # deletion, but it must not treat that tombstone as an in-progress
-        # bootstrap or reuse its idempotency key.
-        if binding.lifecycle == "DELETED":
-            raise DomainError(
-                "AGENT_BOOTSTRAP_DRAFT_EXPIRED",
-                "原会话已删除，请重新发送首条消息",
-                409,
-            )
         if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
             return _bootstrap_result(db, binding)
         if command.state == "AMBIGUOUS":
@@ -1199,9 +1190,7 @@ def delete_conversation(
     # must not outlive it.  The helper only unlinks files bearing this binding's
     # opaque owner UUID and never traverses arbitrary workspace paths.
     agent_workspace_host.delete_session_attachment_files(db, workspace.id, item.id)
-    item.lifecycle = "DELETED"
-    item.deleted_at = now()
-    command.state = "SUCCEEDED"
+    delete_binding_records(db, item.id)
     db.flush()
 
 
@@ -2303,9 +2292,7 @@ def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     )
 
 
-def input_readiness(
-    db: Session, workspace_id: str, binding_id: str
-) -> dict[str, bool | str]:
+def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str, bool | str]:
     workspace = _workspace(db, workspace_id)
     readiness = get_runtime().input_readiness(
         _handle(db, workspace, _binding(db, workspace_id, binding_id))

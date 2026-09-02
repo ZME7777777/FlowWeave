@@ -23,6 +23,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     record_message_attachments,
     validate_attachment_owners,
 )
+from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
     bind_openhands_conversation,
@@ -1681,8 +1682,7 @@ def delete_node_conversation(
     get_runtime().delete_conversation(
         _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     )
-    binding.lifecycle = "DELETED"
-    binding.deleted_at = now()
+    delete_binding_records(db, binding.id)
     finish(db)
 
 
@@ -1864,9 +1864,13 @@ def _node_handle(
 def node_input_readiness(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, bool | str]:
-    return get_runtime().input_readiness(
-        _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    ).as_dict()
+    return (
+        get_runtime()
+        .input_readiness(
+            _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+        )
+        .as_dict()
+    )
 
 
 def node_conversation_context(

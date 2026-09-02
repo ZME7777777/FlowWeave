@@ -1080,7 +1080,14 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": {
-                    "type": "boolean"
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
                   },
                   "title": "Response Node Session Input Readiness Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Input Readiness Get"
                 }
@@ -3928,7 +3935,14 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": {
-                    "type": "boolean"
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
                   },
                   "title": "Response Agent Input Readiness Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Input Readiness Get"
                 }
@@ -7502,6 +7516,274 @@
         }
       }
     },
+    "/api/v1/flow-runs/{parent_run_id}/automatic-runs": {
+      "get": {
+        "summary": "Nested Automatic Runs",
+        "operationId": "nested_automatic_runs_api_v1_flow_runs__parent_run_id__automatic_runs_get",
+        "parameters": [
+          {
+            "name": "parent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Parent Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Nested Automatic Runs Api V1 Flow Runs  Parent Run Id  Automatic Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Nested Automatic Run",
+        "operationId": "create_nested_automatic_run_api_v1_flow_runs__parent_run_id__automatic_runs_post",
+        "parameters": [
+          {
+            "name": "parent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Parent Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomaticRunDraftWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Nested Automatic Run Api V1 Flow Runs  Parent Run Id  Automatic Runs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{parent_run_id}/automatic-runs/{run_id}": {
+      "put": {
+        "summary": "Update Nested Automatic Run",
+        "operationId": "update_nested_automatic_run_api_v1_flow_runs__parent_run_id__automatic_runs__run_id__put",
+        "parameters": [
+          {
+            "name": "parent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Parent Run Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomaticRunDraftUpdateWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Nested Automatic Run Api V1 Flow Runs  Parent Run Id  Automatic Runs  Run Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Nested Automatic Run",
+        "operationId": "delete_nested_automatic_run_api_v1_flow_runs__parent_run_id__automatic_runs__run_id__delete",
+        "parameters": [
+          {
+            "name": "parent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Parent Run Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{parent_run_id}/automatic-runs/{run_id}/start": {
+      "post": {
+        "summary": "Start Nested Automatic Run",
+        "operationId": "start_nested_automatic_run_api_v1_flow_runs__parent_run_id__automatic_runs__run_id__start_post",
+        "parameters": [
+          {
+            "name": "parent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Parent Run Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomaticRunStartWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Start Nested Automatic Run Api V1 Flow Runs  Parent Run Id  Automatic Runs  Run Id  Start Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/automatic-runs/{run_id}": {
       "put": {
         "summary": "Update Automatic Run Draft",
@@ -8445,6 +8727,57 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Human Input Api V1 Node Attempts  Attempt Id  Human Input Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-attempts/{attempt_id}/manual-outputs": {
+      "post": {
+        "summary": "Submit Manual Outputs",
+        "operationId": "submit_manual_outputs_api_v1_node_attempts__attempt_id__manual_outputs_post",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualAttemptOutputsWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Submit Manual Outputs Api V1 Node Attempts  Attempt Id  Manual Outputs Post"
                 }
               }
             }
@@ -10734,6 +11067,16 @@
             ],
             "title": "Context Description"
           },
+          "context_bundle_manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextBundleManifestWrite"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mcp_scripts": {
             "items": {
               "$ref": "#/components/schemas/MCPScriptWrite"
@@ -10759,6 +11102,67 @@
           "content_base64"
         ],
         "title": "CapabilityValidateWrite"
+      },
+      "ContextBundleDocumentWrite": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Path"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path",
+          "title"
+        ],
+        "title": "ContextBundleDocumentWrite"
+      },
+      "ContextBundleManifestWrite": {
+        "properties": {
+          "entrypoint": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entrypoint"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/ContextBundleDocumentWrite"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Documents"
+          },
+          "conflict_policy": {
+            "type": "string",
+            "const": "ORDERED_DOCUMENTS_LATER_WINS",
+            "title": "Conflict Policy",
+            "default": "ORDERED_DOCUMENTS_LATER_WINS"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "documents"
+        ],
+        "title": "ContextBundleManifestWrite",
+        "description": "User-confirmed presentation metadata for an already validated Bundle."
       },
       "ConversationPatchWrite": {
         "properties": {
@@ -11504,6 +11908,70 @@
           "content_base64"
         ],
         "title": "MCPScriptWrite"
+      },
+      "ManualAttemptOutputWrite": {
+        "properties": {
+          "artifact_type": {
+            "type": "string",
+            "enum": [
+              "URL",
+              "FILE"
+            ],
+            "title": "Artifact Type"
+          },
+          "uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "artifact_type"
+        ],
+        "title": "ManualAttemptOutputWrite"
+      },
+      "ManualAttemptOutputsWrite": {
+        "properties": {
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected State Version"
+          },
+          "outputs": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ManualAttemptOutputWrite"
+            },
+            "type": "object",
+            "maxProperties": 100,
+            "title": "Outputs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_state_version",
+          "outputs"
+        ],
+        "title": "ManualAttemptOutputsWrite"
       },
       "MarketplaceCatalogPluginRead": {
         "properties": {

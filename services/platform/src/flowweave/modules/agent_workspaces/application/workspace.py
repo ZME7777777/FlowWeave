@@ -255,8 +255,6 @@ def _working_directory(
     if not work_directory_id:
         return _PROJECT_ROOT, None
     directory = work_directories.get_work_directory(db, workspace_id, work_directory_id)
-    if directory["state"] != "ACTIVE":
-        raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
     # A browser draft contains only an ID. Revalidate the active directory and
     # its real project-tree path before exposing it to file or terminal APIs.
     _, working_directory = work_directories.conversation_context(

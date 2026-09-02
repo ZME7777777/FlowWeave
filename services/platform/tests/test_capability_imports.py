@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from flowweave.modules.agent_sessions.public import delete_binding_records
 from flowweave.modules.catalog.application.capability_repository import (
     publish_dependency_build,
     resolve_version,
@@ -437,7 +438,7 @@ def test_identical_import_after_physical_delete_publishes_new_version(client, db
         assert len(list(db.scalars(select(CapabilityVersion)))) == 1
 
 
-def test_deleted_agent_conversation_does_not_block_capability_deletion(
+def test_physically_deleted_agent_conversation_does_not_block_capability_deletion(
     client, db_session_factory, skill_capability
 ):
     capability_id = skill_capability["capability_id"]
@@ -453,8 +454,8 @@ def test_deleted_agent_conversation_does_not_block_capability_deletion(
                 host_id=str(uuid4()),
                 conversation_scope_id=str(uuid4()),
                 openhands_conversation_id=str(uuid4()),
-                display_title="已删除的会话",
-                lifecycle="DELETED",
+                display_title="待删除的会话",
+                lifecycle="ACTIVE",
                 create_idempotency_key=f"deleted-conversation:{binding_id}",
             )
         )
@@ -469,13 +470,26 @@ def test_deleted_agent_conversation_does_not_block_capability_deletion(
             )
         )
         db.commit()
+        delete_binding_records(db, binding_id)
+        db.commit()
+        assert db.get(AgentConversationBinding, binding_id) is None
+        assert (
+            list(
+                db.scalars(
+                    select(AgentConversationCapability).where(
+                        AgentConversationCapability.binding_id == binding_id
+                    )
+                )
+            )
+            == []
+        )
 
     deleted = client.delete(f"/api/v1/capabilities/{capability_id}")
     assert deleted.status_code == 204, deleted.text
 
     with db_session_factory() as db:
         assert db.get(CapabilityVersion, capability_id) is None
-        assert db.get(AgentConversationBinding, binding_id) is not None
+        assert db.get(AgentConversationBinding, binding_id) is None
         assert (
             list(
                 db.scalars(

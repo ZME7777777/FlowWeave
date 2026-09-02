@@ -14,7 +14,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Integer,
     String,
     Text,
@@ -45,7 +44,7 @@ class AgentConversationBinding(Base):
             name="ck_agent_conversation_working_directory",
         ),
         CheckConstraint(
-            "lifecycle IN ('PROVISIONING', 'ACTIVE', 'DELETE_PENDING', 'DELETED', 'FAILED')",
+            "lifecycle IN ('PROVISIONING', 'ACTIVE', 'DELETE_PENDING', 'FAILED')",
             name="ck_agent_conversation_lifecycle",
         ),
         CheckConstraint(
@@ -58,29 +57,19 @@ class AgentConversationBinding(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     # ``workspace_id`` remains the default-host compatibility reference.  A
     # FlowRun node uses the neutral host and lineage fields below instead.
-    workspace_id: Mapped[str | None] = mapped_column(
-        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
-    )
+    workspace_id: Mapped[str | None] = mapped_column(String(36), index=True)
     # Runtime Session identity is host-neutral: Agent Workspace and FlowRun
     # Runtime Sessions live in separate ownership tables.
     runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
     host_kind: Mapped[str] = mapped_column(String(30), default="AGENT_WORKSPACE", index=True)
     host_id: Mapped[str] = mapped_column(String(36), index=True)
     conversation_scope_id: Mapped[str] = mapped_column(String(36), index=True)
-    flow_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("flow_runs.id", ondelete="CASCADE"), index=True
-    )
-    node_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("node_runs.id", ondelete="CASCADE"), index=True
-    )
-    node_attempt_id: Mapped[str | None] = mapped_column(
-        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
-    )
+    flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36), index=True)
     work_directory_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
     working_directory: Mapped[str | None] = mapped_column(String(500))
-    model_provider_id: Mapped[str | None] = mapped_column(
-        ForeignKey("model_providers.id", ondelete="RESTRICT"), index=True
-    )
+    model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -98,7 +87,6 @@ class AgentConversationBinding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AgentConversationMessageAttachment(Base):
@@ -112,9 +100,7 @@ class AgentConversationMessageAttachment(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    binding_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_conversation_bindings.id", ondelete="RESTRICT"), index=True
-    )
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
     event_id: Mapped[str] = mapped_column(String(200), index=True)
     content: Mapped[str] = mapped_column(Text, default="")
     filename: Mapped[str] = mapped_column(String(240))
@@ -143,12 +129,8 @@ class AgentConversationCapability(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    binding_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_conversation_bindings.id", ondelete="RESTRICT"), index=True
-    )
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
-    )
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     capability_type: Mapped[str] = mapped_column(String(20))
     capability_key: Mapped[str] = mapped_column(String(160))
     digest: Mapped[str] = mapped_column(String(64))
@@ -170,14 +152,10 @@ class AgentConversationCommand(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str | None] = mapped_column(
-        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
-    )
+    workspace_id: Mapped[str | None] = mapped_column(String(36), index=True)
     host_kind: Mapped[str] = mapped_column(String(30), default="AGENT_WORKSPACE", index=True)
     host_id: Mapped[str] = mapped_column(String(36), index=True)
-    binding_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_conversation_bindings.id", ondelete="RESTRICT"), index=True
-    )
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
     command_type: Mapped[str] = mapped_column(String(20))
     idempotency_key: Mapped[str] = mapped_column(String(200))
     state: Mapped[str] = mapped_column(String(20), default="PENDING")

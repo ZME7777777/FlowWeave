@@ -4,9 +4,10 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application.service import (
     runtime_allocation_for_agent_workspace,
 )
@@ -288,7 +289,7 @@ def _dict(db: Session, item: AgentWorkDirectory) -> dict[str, Any]:
     return {
         "id": item.id,
         "display_name": item.display_name,
-        "state": item.state,
+        "state": "ACTIVE",
         "current_version": {
             "id": version.id,
             "version": version.version,
@@ -297,7 +298,6 @@ def _dict(db: Session, item: AgentWorkDirectory) -> dict[str, Any]:
         },
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
-        "archived_at": item.archived_at.isoformat() if item.archived_at else None,
     }
 
 
@@ -318,8 +318,6 @@ def conversation_context(
     if work_directory_id is None:
         return None, _RUNTIME_PROJECT_ROOT.as_posix()
     item = _directory(db, workspace_id, work_directory_id, lock=True)
-    if item.state != "ACTIVE":
-        raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
     version = _version(db, item)
     # A version was checked when saved, but the underlying project tree is
     # mutable. Re-check it before handing the path to OpenHands.
@@ -353,10 +351,7 @@ def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
     _workspace(db, workspace_id)
     items = db.scalars(
         select(AgentWorkDirectory)
-        .where(
-            AgentWorkDirectory.workspace_id == workspace_id,
-            AgentWorkDirectory.state == "ACTIVE",
-        )
+        .where(AgentWorkDirectory.workspace_id == workspace_id)
         .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
     )
     return {"root": root_context(), "items": [_dict(db, item) for item in items]}
@@ -412,8 +407,6 @@ def update_work_directory(
 ) -> dict[str, Any]:
     _workspace(db, workspace_id)
     item = _directory(db, workspace_id, work_directory_id, lock=True)
-    if item.state != "ACTIVE":
-        raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
     changed = False
     if display_name is not None:
         name = _display_name(display_name)
@@ -435,16 +428,34 @@ def update_work_directory(
     return _dict(db, item)
 
 
-def archive_work_directory(db: Session, workspace_id: str, work_directory_id: str) -> None:
+def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str) -> None:
     _workspace(db, workspace_id)
     item = _directory(db, workspace_id, work_directory_id, lock=True)
-    if item.state == "ARCHIVED":
-        return
-    archived_at = now()
-    item.state = "ARCHIVED"
-    item.archived_at = archived_at
-    item.updated_at = archived_at
-    item.row_version += 1
+    version_ids = list(
+        db.scalars(
+            select(AgentWorkDirectoryVersion.id).where(
+                AgentWorkDirectoryVersion.work_directory_id == item.id
+            )
+        )
+    )
+    if version_ids and db.scalar(
+        select(AgentConversationBinding.id)
+        .where(AgentConversationBinding.work_directory_version_id.in_(version_ids))
+        .limit(1)
+    ):
+        raise DomainError(
+            "AGENT_WORK_DIRECTORY_IN_USE",
+            "工作目录仍被会话引用，请先删除相关会话",
+            409,
+        )
+    if version_ids:
+        db.execute(
+            delete(AgentWorkDirectoryPath).where(AgentWorkDirectoryPath.version_id.in_(version_ids))
+        )
+        db.execute(
+            delete(AgentWorkDirectoryVersion).where(AgentWorkDirectoryVersion.id.in_(version_ids))
+        )
+    db.delete(item)
     db.flush()
 
 
@@ -457,7 +468,6 @@ def list_flow_run_work_directories(
         .where(
             AgentWorkDirectory.flow_run_id == flow_run_id,
             AgentWorkDirectory.node_attempt_id == node_attempt_id,
-            AgentWorkDirectory.state == "ACTIVE",
         )
         .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
     )
@@ -500,8 +510,6 @@ def flow_run_conversation_context(
     if work_directory_id is None:
         return None, _RUNTIME_PROJECT_ROOT.as_posix()
     item = _flow_run_directory(db, flow_run_id, node_attempt_id, work_directory_id, lock=True)
-    if item.state != "ACTIVE":
-        raise DomainError("AGENT_WORK_DIRECTORY_ARCHIVED", "工作目录已归档", 409)
     version = _version(db, item)
     _validate_flow_run_paths(db, flow_run_id, _path_values(db, version.id))
     return version.id, _working_directory(version.working_path)
@@ -532,7 +540,7 @@ def frozen_flow_run_conversation_context(
 
 
 __all__ = (
-    "archive_work_directory",
+    "delete_work_directory",
     "conversation_context",
     "create_work_directory",
     "create_flow_run_work_directory",

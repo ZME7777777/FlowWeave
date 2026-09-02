@@ -346,7 +346,7 @@ async def delete_agent_work_directory(
 ) -> Response:
     await run_sync(
         db,
-        lambda session: work_directories.archive_work_directory(
+        lambda session: work_directories.delete_work_directory(
             session, workspace_id, work_directory_id
         ),
     )

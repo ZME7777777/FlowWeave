@@ -138,23 +138,17 @@ def assert_shared_agent_session_host_schema(connection_url: str) -> None:
             "node_run_id",
             "node_attempt_id",
         } <= columns
-        foreign_keys = {
-            (str(row[0]), str(row[1]))
-            for row in connection.execute(
-                "SELECT tc.constraint_name, ccu.table_name "
-                "FROM information_schema.table_constraints tc "
-                "JOIN information_schema.constraint_column_usage ccu "
-                "ON tc.constraint_name = ccu.constraint_name "
-                "AND tc.table_schema = ccu.table_schema "
-                "WHERE tc.table_schema = 'public' "
-                "AND tc.table_name = 'agent_conversation_bindings' "
-                "AND tc.constraint_type = 'FOREIGN KEY'"
-            )
-        }
-        assert ("fk_agent_conversation_flow_run", "flow_runs") in foreign_keys
-        assert ("fk_agent_conversation_node_run", "node_runs") in foreign_keys
-        assert ("fk_agent_conversation_node_attempt", "node_attempts") in foreign_keys
-        assert not any(table == "agent_workspace_runtimes" for _, table in foreign_keys)
+
+
+def assert_no_database_foreign_keys(connection_url: str) -> None:
+    with psycopg.connect(connection_url) as connection:
+        rows = connection.execute(
+            "SELECT conrelid::regclass::text, conname "
+            "FROM pg_constraint "
+            "WHERE contype = 'f' AND connamespace = 'public'::regnamespace "
+            "ORDER BY 1, 2"
+        ).fetchall()
+        assert rows == [], f"database foreign keys remain: {rows}"
 
 
 def insert_legacy_capability_snapshot(connection_url: str) -> None:
@@ -433,16 +427,19 @@ def check(source_url: str) -> None:
         command.upgrade(config, "head")
         assert_native_subagent_schema(target_connection_url)
         assert_shared_agent_session_host_schema(target_connection_url)
+        assert_no_database_foreign_keys(target_connection_url)
         command.downgrade(config, "0005_execution")
         command.upgrade(config, "head")
         assert_native_subagent_schema(target_connection_url)
         assert_shared_agent_session_host_schema(target_connection_url)
+        assert_no_database_foreign_keys(target_connection_url)
         command.downgrade(config, "0028_condensation_commands")
         insert_legacy_capability_snapshot(target_connection_url)
         command.upgrade(config, "head")
         assert_legacy_capability_snapshot_upgraded(target_connection_url)
         assert_native_subagent_schema(target_connection_url)
         assert_shared_agent_session_host_schema(target_connection_url)
+        assert_no_database_foreign_keys(target_connection_url)
     finally:
         with psycopg.connect(**admin_parameters, autocommit=True) as connection:
             connection.execute(

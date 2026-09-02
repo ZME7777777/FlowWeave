@@ -5,7 +5,6 @@ from datetime import datetime
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Integer,
     LargeBinary,
     String,
@@ -37,9 +36,7 @@ class AgentWorkspace(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     scope_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(160), default="Agent 工作区")
-    default_model_provider_id: Mapped[str | None] = mapped_column(
-        ForeignKey("model_providers.id", ondelete="RESTRICT"), index=True
-    )
+    default_model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     desired_state: Mapped[str] = mapped_column(String(20), default="RUNNING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -49,9 +46,7 @@ class AgentWorkspaceRuntimeSecretReference(Base):
     __tablename__ = "agent_workspace_runtime_secret_references"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), unique=True, index=True
-    )
+    workspace_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     encrypted_secret_key: Mapped[bytes] = mapped_column(LargeBinary)
     secret_digest: Mapped[str] = mapped_column(String(64), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -67,11 +62,9 @@ class AgentWorkspaceRuntimeAllocation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), unique=True, index=True
-    )
+    workspace_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     secret_reference_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspace_runtime_secret_references.id", ondelete="RESTRICT"),
+        String(36),
         unique=True,
         index=True,
     )
@@ -97,12 +90,10 @@ class AgentWorkspaceRuntime(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), unique=True, index=True
-    )
+    workspace_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
     workspace_allocation_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspace_runtime_allocations.id", ondelete="RESTRICT"),
+        String(36),
         unique=True,
         index=True,
     )
@@ -132,13 +123,9 @@ class AgentWorkspaceRuntimeGeneration(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    runtime_session_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspace_runtimes.id", ondelete="RESTRICT"), index=True
-    )
+    runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
     generation: Mapped[int] = mapped_column(Integer)
-    managed_runtime_id: Mapped[str | None] = mapped_column(
-        ForeignKey("managed_sandboxes.id", ondelete="SET NULL"), unique=True, index=True
-    )
+    managed_runtime_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
     state: Mapped[str] = mapped_column(String(20), default="PROVISIONING", index=True)
     fence_token: Mapped[str] = mapped_column(String(36), unique=True)
@@ -171,24 +158,19 @@ class AgentWorkDirectory(Base):
             "OR (workspace_id IS NULL AND flow_run_id IS NOT NULL)",
             name="ck_agent_work_directory_owner",
         ),
-        CheckConstraint("state IN ('ACTIVE', 'ARCHIVED')", name="ck_agent_work_directory_state"),
         CheckConstraint("current_version >= 1", name="ck_agent_work_directory_current_version"),
         CheckConstraint("row_version >= 1", name="ck_agent_work_directory_row_version"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str | None] = mapped_column(
-        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
-    )
+    workspace_id: Mapped[str | None] = mapped_column(String(36), index=True)
     flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
     node_attempt_id: Mapped[str | None] = mapped_column(String(36), index=True)
     display_name: Mapped[str] = mapped_column(String(160))
-    state: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AgentWorkDirectoryVersion(Base):
@@ -248,12 +230,8 @@ class AgentWorkspaceCapability(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_workspaces.id", ondelete="RESTRICT"), index=True
-    )
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
-    )
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     capability_type: Mapped[str] = mapped_column(String(20))
     capability_key: Mapped[str] = mapped_column(String(160))
     digest: Mapped[str] = mapped_column(String(64))

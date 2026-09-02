@@ -122,10 +122,6 @@ function isBootstrapAmbiguous(error: Error): boolean {
   ].includes((error as ApiError).code);
 }
 
-function isExpiredBootstrapDraft(error: Error): boolean {
-  return (error as ApiError).code === 'AGENT_BOOTSTRAP_DRAFT_EXPIRED';
-}
-
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT';
 type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'NATIVE';
 type NativeComposerAction = 'CONDENSE';
@@ -1553,33 +1549,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     onNavigate(host.conversationPath(conversation.id));
   }, onError: (error, message) => {
-    if (isExpiredBootstrapDraft(error)) {
-      // The server keeps deleted bindings as audit tombstones.  A tab restored
-      // from session storage may therefore still carry their draft UUID.
-      // Preserve the text but allocate a new draft and discard attachments:
-      // their private files were deleted together with the old conversation.
-      const replacement = {
-        ...(conversationDraft ?? { displayName: '根工作区' }),
-        id: randomId(),
-      };
-      setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
-      setPendingBootstrap(undefined);
-      clearLiveText();
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(undefined);
-      setTurnState('idle');
-      setConversationDraft(replacement);
-      setDraft(message.content);
-      setAttachments([]);
-      clearBootstrapRecovery();
-      reportOperationError(message.scope, new ApiError(
-        '原会话已删除，已恢复为新草稿。请重新发送消息；如需附件请重新添加。',
-        'AGENT_BOOTSTRAP_DRAFT_EXPIRED',
-        {},
-        409,
-      ));
-      return;
-    }
     if (isBootstrapAmbiguous(error)) {
       // React Query can retain a mutation observer from the render that
       // initiated the request. The command scope is the draft UUID, so it is
@@ -2031,15 +2000,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
       displayName: directory?.display_name ?? '根工作区',
     });
   };
-  const activeWorkDirectoryIds = new Set(workDirectories.map(item => item.id));
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
     : null;
   const rootConversations = conversations.filter(item => !item.work_directory_id);
-  const archivedDirectoryConversations = conversations.filter(item => {
-    const workDirectoryId = item.work_directory_id;
-    return workDirectoryId ? !activeWorkDirectoryIds.has(workDirectoryId) : false;
-  });
   const conversationsForDirectory = (workDirectoryId: string) => conversations.filter(
     item => item.work_directory_id === workDirectoryId,
   );
@@ -2060,9 +2024,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
           {pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}
           {conversationsForDirectory(directory.id).map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
         </WorkspaceConversationGroup>)}
-        {features.workDirectories && archivedDirectoryConversations.length > 0 && <WorkspaceConversationGroup groupId="archived" label="已归档工作目录">
-          {archivedDirectoryConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>保留的历史会话</small></span><ChevronRight size={13}/></button>)}
-        </WorkspaceConversationGroup>}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>能力</b><small>{selected ? '管理当前会话能力' : '为新会话选择能力'}</small></span><ChevronRight size={14}/></button></footer>}
     </aside>

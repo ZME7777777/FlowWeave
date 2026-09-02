@@ -1897,6 +1897,26 @@ Artifact，再运行冻结的完成门禁。通过后复用既有人工验收和
 一级工作区和 FlowRun 节点会话在正式发送或重发被 Runtime 接受后更新活动时间，列表使用稳定次级键倒序；
 标题元数据更新保持原活动时间。Web 仅在可见会话存在 `PENDING` 标题时轮询。
 
+### FR-131 全量物理删除与应用层引用治理 — DONE
+
+依赖：`FR-130`。
+
+目标：系统中所有用户显式删除的业务资源都以数据库行真实消失为完成事实，不再用 `DELETED`、`ARCHIVED`
+或 `deleted_at` 墓碑隐藏；异步外部资源清理可保留短暂删除中状态，但清理成功后必须删除账本行。移除现行数据库
+全部外键约束及 ORM 外键声明，引用保护、子记录清理和删除顺序统一由应用服务显式执行。修复已取消 FlowRun 永久
+删除被遗漏 Attempt 级引用阻塞的问题；顶层与节点会话、工作目录删除改为物理删除。业务执行状态、不可变版本生命周期、
+审计和 Runtime generation 替换历史不因名称相似被误当作逻辑删除。
+
+验收：新增迁移清理历史墓碑并移除全部外键；架构测试阻止 ORM 和数据库外键回归；定向测试覆盖取消 FlowRun、会话与
+工作目录物理删除及应用层引用保护；运行受影响 Ruff、Pyright、pytest、迁移矩阵、Alembic head、任务状态唯一性与
+`git diff --check`。完成后独立提交。
+
+完成：顶层 Agent 会话、FlowRun 节点会话、内部门禁／流转 sidecar 会话和工作目录均以完整记录图物理删除；工作目录
+存在会话引用时由应用层明确拒绝。FlowRun 永久删除显式递归清理嵌套自动运行、确认批次、会话、目录、Attempt、Artifact、
+Runtime 与任务记录，遗漏的 `runtime_confirmation_approvals` 不再阻塞已取消运行删除。迁移清理历史会话／目录墓碑并移除
+PostgreSQL 全部外键，ORM 元数据同步保持零外键；索引、唯一约束、检查约束及应用层引用门禁继续保留。Runtime generation
+替换审计和外部资源短暂删除中状态保持原有生命周期边界。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1912,6 +1932,7 @@ Artifact，再运行冻结的完成门禁。通过后复用既有人工验收和
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-02 | FR-131 | 平台完整 pytest（567 passed）；删除／会话／工作目录／架构相关回归（101 passed）与确认批次阻塞定向回归（11 passed）；能力删除及环境 Sandbox 先回收竞态回归；受影响 Ruff、定向 Pyright（0 errors）；OpenAPI 契约；Web ESLint、TypeScript typecheck、production build；PostgreSQL 空库、历史基线 downgrade／upgrade 迁移矩阵；ORM 与数据库零外键门禁；Alembic head、任务状态唯一性与 `git diff --check` | PASS：用户显式删除改为完整记录图物理删除；FlowRun 显式递归清理嵌套自动运行及全部 Attempt 级引用，截图中的确认批次约束冲突已回归覆盖。环境清理在 Provider 先删除 Sandbox 账本时也显式清空 Setup Session locator，不依赖 `ON DELETE SET NULL`。迁移清理历史墓碑并移除全部数据库外键，ORM 元数据保持零外键。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。完整平台 Pyright 仍仅有 `capability_imports.py` 的 10 个既有 Context Bundle 类型错误，本切片新增／受影响路径定向检查为 0 errors。 |
 | 2026-09-02 | FR-130 | CHAT 人工产出平台定向 pytest（3 passed，覆盖 URL／FILE、越界路径、合同缺失、CAS 与完成门禁）；受影响 Python Ruff 与定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；当前源码 Vite Workbench 定向 Playwright（2 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：已启动自动记录投影自身 NodeRun／Attempt，未激活节点置灰，人工处理与可恢复失败显示既有合法入口且不提供无效人工验收／取消。CHAT 会话不解析聊天正文；显式合同提交由服务端复核 URL 或共享项目文件，复制不可变 Artifact 并运行冻结完成门禁，通过后复用人工验收与 FR-120 流转。完整平台 Pyright 仍被未改动 `capability_imports.py` 的 10 个既有 Context 类型错误阻塞，本切片涉及文件定向检查为 0 errors。唯一 Alembic head 为 `0087_nested_automatic_runs`；无 `CURRENT` 或下一切片。 |
 |---|---|---|---|
 | 2026-09-02 | FR-128 | Context Bundle／Context capability 定向 pytest（43 passed）；受影响 Python Ruff；Web ESLint、TypeScript typecheck、production build；当前源码 Vite 定向 Playwright（3 passed，覆盖 ZIP 解析、目录编辑/确认发布与冻结资料目录预览）；`git diff --check` | PASS：Context 保持唯一能力类型。资料包先由服务端安全解析，再只允许用户调整已验证文档的标题、顺序和入口；服务端复核全量文档、内容身份与唯一固定的“后文覆盖前文”规则。查看接口及前端资料包预览同时显示冻结目录、入口、全量加载事实和编译文本。普通文本拒绝 Bundle Manifest；未修改 Runtime、OpenHands 或数据库契约。FR-128 完成后无 `CURRENT`。 |

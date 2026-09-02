@@ -8,7 +8,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Index,
     Integer,
     String,
@@ -45,12 +44,8 @@ class RuntimeConfirmationApproval(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_run_conversation_binding_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_conversation_bindings.id", ondelete="CASCADE"), index=True
-    )
-    attempt_id: Mapped[str] = mapped_column(
-        ForeignKey("node_attempts.id", ondelete="CASCADE"), index=True
-    )
+    flow_run_conversation_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    attempt_id: Mapped[str] = mapped_column(String(36), index=True)
     pending_actions_digest: Mapped[str] = mapped_column(String(64))
     pending_actions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
     risk_summary_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)

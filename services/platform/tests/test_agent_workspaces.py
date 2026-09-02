@@ -227,12 +227,12 @@ def test_agent_work_directory_root_is_implicit_and_versions_are_immutable(
             )
         ) == ["service-a"]
 
-        work_directories.archive_work_directory(db, workspace.id, directory_id)
+        work_directories.delete_work_directory(db, workspace.id, directory_id)
         active = work_directories.list_work_directories(db, workspace.id)
         assert [item["id"] for item in active["items"]] == [multiple["id"]]
-        archived = work_directories.get_work_directory(db, workspace.id, directory_id)
-        assert archived["state"] == "ARCHIVED"
-        assert archived["current_version"]["id"] == second_version_id
+        assert db.get(AgentWorkDirectory, directory_id) is None
+        assert db.get(AgentWorkDirectoryVersion, first_version_id) is None
+        assert db.get(AgentWorkDirectoryVersion, second_version_id) is None
 
 
 @pytest.mark.parametrize(
@@ -1191,10 +1191,10 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
         assert resource_name == f"agent-workspace-{item.id}"
         assert resource_id
         assert working_directory == "/runtime/workspace/project/backend"
-        work_directories.archive_work_directory(db, item.id, directory["id"])
+        work_directories.delete_work_directory(db, item.id, directory["id"])
         with pytest.raises(DomainError) as raised:
             workspace.details(db, item.id, work_directory_id=directory["id"])
-        assert raised.value.code == "AGENT_WORK_DIRECTORY_ARCHIVED"
+        assert raised.value.code == "AGENT_WORK_DIRECTORY_NOT_FOUND"
 
 
 def test_agent_workspace_details_exposes_configured_ssh_remote(settings, db_session_factory):
@@ -1902,18 +1902,15 @@ def test_agent_workspace_bootstrap_rejects_reuse_of_deleted_draft_id(
             db, workspace.id, created["conversation"]["id"], "delete-draft"
         )
 
-        with pytest.raises(DomainError) as raised:
-            conversations.bootstrap_conversation(
-                db,
-                workspace.id,
-                work_directory_id=None,
-                model_provider_id=workspace.default_model_provider_id,
-                content="不应重用",
-                idempotency_key="deleted-draft",
-            )
-
-        assert raised.value.code == "AGENT_BOOTSTRAP_DRAFT_EXPIRED"
-        assert raised.value.status == 409
+        recreated = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            content="删除后重新创建",
+            idempotency_key="deleted-draft",
+        )
+        assert recreated["conversation"]["id"] != created["conversation"]["id"]
 
 
 def test_agent_workspace_bootstrap_explicit_openhands_500_is_not_ambiguous(

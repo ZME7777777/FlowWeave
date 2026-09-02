@@ -7,9 +7,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+from flowweave.shared import models as shared_model_exports  # noqa: F401
+from flowweave.shared.database import Base
+
 SOURCE = Path(__file__).parents[2] / "src" / "flowweave"
 REPOSITORY = Path(__file__).parents[4]
 FORBIDDEN_DOMAIN_ROOTS = {"fastapi", "pydantic", "sqlalchemy", "httpx"}
+
+
+def test_orm_metadata_declares_no_foreign_keys() -> None:
+    violations = [
+        f"{table.name}.{foreign_key.parent.name} -> {foreign_key.target_fullname}"
+        for table in Base.metadata.sorted_tables
+        for foreign_key in table.foreign_keys
+    ]
+    assert not violations, "ORM foreign keys are forbidden:\n" + "\n".join(violations)
 
 
 def _imports(path: Path) -> set[str]:
@@ -552,9 +564,9 @@ def test_orm_mappings_are_owned_by_module_infrastructure() -> None:
             if declares_mapping and path.resolve() not in allowed:
                 violations.append(f"{path.relative_to(SOURCE)}:{node.name}")
 
-    shared_models = ast.parse(
+    shared_models_tree = ast.parse(
         (SOURCE / "shared" / "models.py").read_text(),
         filename=str(SOURCE / "shared" / "models.py"),
     )
-    assert not any(isinstance(node, ast.ClassDef) for node in shared_models.body)
+    assert not any(isinstance(node, ast.ClassDef) for node in shared_models_tree.body)
     assert not violations, "ORM mappings outside module infrastructure:\n" + "\n".join(violations)

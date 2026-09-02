@@ -7,8 +7,6 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
-    ForeignKey,
-    ForeignKeyConstraint,
     Integer,
     LargeBinary,
     String,
@@ -43,11 +41,9 @@ class FlowRunRuntimeAllocation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_run_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_runs.id", ondelete="RESTRICT"), unique=True, index=True
-    )
+    flow_run_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     secret_reference_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_run_runtime_secret_references.id", ondelete="RESTRICT"),
+        String(36),
         unique=True,
         index=True,
     )
@@ -92,32 +88,16 @@ class FlowRunRuntime(Base):
             "'DEGRADED', 'STOPPED', 'DELETING')",
             name="ck_flow_run_runtime_status",
         ),
-        ForeignKeyConstraint(
-            ["id", "active_generation"],
-            ["runtime_generations.runtime_session_id", "runtime_generations.generation"],
-            name="fk_flow_run_runtime_active_generation",
-            use_alter=True,
-        ),
-        ForeignKeyConstraint(
-            ["id", "replacement_generation"],
-            ["runtime_generations.runtime_session_id", "runtime_generations.generation"],
-            name="fk_flow_run_runtime_replacement_generation",
-            use_alter=True,
-        ),
     )
 
     # The primary key is the stable Runtime Session identity. Physical
     # containers and endpoints live in generation/provider records instead.
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_run_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_runs.id", ondelete="RESTRICT"), unique=True, index=True
-    )
-    environment_version_id: Mapped[str] = mapped_column(
-        ForeignKey("environment_versions.id", ondelete="RESTRICT"), index=True
-    )
+    flow_run_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
     workspace_allocation_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_run_runtime_allocations.id", ondelete="RESTRICT"),
+        String(36),
         unique=True,
         index=True,
     )
@@ -157,15 +137,11 @@ class RuntimeGeneration(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    runtime_session_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_run_runtimes.id", ondelete="RESTRICT"), index=True
-    )
+    runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
     generation: Mapped[int] = mapped_column(Integer)
     # ManagedSandbox is a replaceable physical-provider record. SET NULL keeps
     # the generation audit identity intact after that physical record is gone.
-    managed_runtime_id: Mapped[str | None] = mapped_column(
-        ForeignKey("managed_sandboxes.id", ondelete="SET NULL"), unique=True, index=True
-    )
+    managed_runtime_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     instance_id: Mapped[str | None] = mapped_column(String(100))
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
     state: Mapped[str] = mapped_column(String(30), default="PROVISIONING", index=True)
@@ -208,12 +184,8 @@ class ManagedSandbox(Base):
     observed_state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
     generation: Mapped[int] = mapped_column(Integer, default=1)
     image_reference: Mapped[str] = mapped_column(String(500))
-    runtime_allocation_id: Mapped[str | None] = mapped_column(
-        ForeignKey("flow_run_runtime_allocations.id", ondelete="RESTRICT"), index=True
-    )
-    agent_workspace_allocation_id: Mapped[str | None] = mapped_column(
-        ForeignKey("agent_workspace_runtime_allocations.id", ondelete="RESTRICT"), index=True
-    )
+    runtime_allocation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    agent_workspace_allocation_id: Mapped[str | None] = mapped_column(String(36), index=True)
     spec_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     idle_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

@@ -124,7 +124,7 @@ def _scope(
         details = {
             "id": directory.id,
             "display_name": directory.display_name,
-            "state": directory.state,
+            "state": "ACTIVE",
             "current_version": {
                 "id": version.id,
                 "version": version.version,

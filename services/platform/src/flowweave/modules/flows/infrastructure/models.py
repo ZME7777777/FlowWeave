@@ -8,7 +8,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Integer,
     String,
     Text,
@@ -36,11 +35,9 @@ class FlowNode(Base):
     __table_args__ = (UniqueConstraint("flow_id", "instance_key", name="uq_flow_instance_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_definitions.id", ondelete="CASCADE"), index=True
-    )
+    flow_id: Mapped[str] = mapped_column(String(36), index=True)
     instance_key: Mapped[str] = mapped_column(String(100))
-    node_asset_id: Mapped[str] = mapped_column(ForeignKey("node_assets.id", ondelete="RESTRICT"))
+    node_asset_id: Mapped[str] = mapped_column(String(36))
     alias: Mapped[str | None] = mapped_column(String(200))
     position_x: Mapped[int] = mapped_column(Integer, default=0)
     position_y: Mapped[int] = mapped_column(Integer, default=0)
@@ -60,15 +57,9 @@ class FlowEdge(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_definitions.id", ondelete="CASCADE"), index=True
-    )
-    source_flow_node_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_nodes.id", ondelete="CASCADE")
-    )
-    target_flow_node_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_nodes.id", ondelete="CASCADE")
-    )
+    flow_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_flow_node_id: Mapped[str] = mapped_column(String(36))
+    target_flow_node_id: Mapped[str] = mapped_column(String(36))
     position: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -84,16 +75,10 @@ class FlowPortMapping(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_definitions.id", ondelete="CASCADE"), index=True
-    )
-    source_flow_node_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_nodes.id", ondelete="CASCADE")
-    )
+    flow_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_flow_node_id: Mapped[str] = mapped_column(String(36))
     source_output_key: Mapped[str] = mapped_column(String(100))
-    target_flow_node_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_nodes.id", ondelete="CASCADE")
-    )
+    target_flow_node_id: Mapped[str] = mapped_column(String(36))
     target_input_key: Mapped[str] = mapped_column(String(100))
 
 
@@ -105,9 +90,7 @@ class GatePolicy(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_node_id: Mapped[str] = mapped_column(
-        ForeignKey("flow_nodes.id", ondelete="CASCADE"), index=True
-    )
+    flow_node_id: Mapped[str] = mapped_column(String(36), index=True)
     stage: Mapped[str] = mapped_column(String(10))
     position: Mapped[int] = mapped_column(Integer)
     gate_type: Mapped[str] = mapped_column(String(20))

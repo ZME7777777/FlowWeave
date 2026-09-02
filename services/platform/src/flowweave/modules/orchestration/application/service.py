@@ -1311,9 +1311,7 @@ def _flow_run_sidecar_connection(db: Session, flow_run_id: str) -> _SidecarRunti
             managed_runtime_id=f"mock-runtime:{runtime_owner_id}",
             resource_name=f"mock-runtime-{runtime_owner_id}",
         )
-    connection = sandboxes.active_flow_run_runtime_connection(
-        db, flow_run_id=runtime_owner_id
-    )
+    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=runtime_owner_id)
     return _SidecarRuntimeConnection(
         runtime_session_id=connection.runtime_session_id,
         managed_runtime_id=connection.managed_runtime_id,
@@ -1635,11 +1633,7 @@ def _execute_gate_stage(
     for item in prepared:
         result = execute_gate_plan(item.plan, context)
         if item.plan.sidecar_binding_id:
-            db.execute(
-                update(AgentConversationBinding)
-                .where(AgentConversationBinding.id == item.plan.sidecar_binding_id)
-                .values(lifecycle="DELETED", deleted_at=now())
-            )
+            agent_sessions.delete_binding_records(db, item.plan.sidecar_binding_id)
         evaluations.append((item, result))
         if result.decision != "PASS":
             blocked = True
@@ -1925,11 +1919,7 @@ def process_advance_automatic_attempt(
     node_run = _node_run(db, attempt.node_run_id)
     run = _locked_run(db, node_run.flow_run_id)
     if prepared is not None and prepared.sidecar_binding_id:
-        db.execute(
-            update(AgentConversationBinding)
-            .where(AgentConversationBinding.id == prepared.sidecar_binding_id)
-            .values(lifecycle="DELETED", deleted_at=now())
-        )
+        agent_sessions.delete_binding_records(db, prepared.sidecar_binding_id)
     if error:
         run.state = FlowRunState.WAITING_HUMAN
         _event(
@@ -5329,14 +5319,23 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
     return run_detail(db, run.id)
 
 
-def delete_run(db: Session, run_id: str) -> None:
+def _delete_run_records(db: Session, run_id: str) -> None:
     """Permanently remove a run and all durable execution data it owns.
 
-    The Runtime Provider owns physical cleanup. Conversation bindings cascade
-    with the FlowRun; OpenHands state is deleted only through that Run lifecycle.
+    The Runtime Provider owns physical cleanup. The application explicitly
+    removes Conversation bindings and their children before the FlowRun row.
     """
 
     run = _run(db, run_id)
+    child_run_ids = list(
+        db.scalars(
+            select(FlowRun.id)
+            .where(FlowRun.parent_flow_run_id == run.id)
+            .order_by(FlowRun.started_at, FlowRun.id)
+        )
+    )
+    for child_run_id in child_run_ids:
+        _delete_run_records(db, child_run_id)
     node_run_ids = list(db.scalars(select(NodeRun.id).where(NodeRun.flow_run_id == run.id)))
     attempt_ids = (
         list(db.scalars(select(NodeAttempt.id).where(NodeAttempt.node_run_id.in_(node_run_ids))))
@@ -5389,6 +5388,11 @@ def delete_run(db: Session, run_id: str) -> None:
         )
     if conversation_ids:
         db.execute(
+            delete(RuntimeConfirmationApproval).where(
+                RuntimeConfirmationApproval.flow_run_conversation_binding_id.in_(conversation_ids)
+            )
+        )
+        db.execute(
             delete(AgentConversationMessageAttachment).where(
                 AgentConversationMessageAttachment.binding_id.in_(conversation_ids)
             )
@@ -5427,6 +5431,11 @@ def delete_run(db: Session, run_id: str) -> None:
         db.execute(delete(AgentWorkDirectory).where(AgentWorkDirectory.id.in_(work_directory_ids)))
     if attempt_ids:
         db.execute(
+            delete(RuntimeConfirmationApproval).where(
+                RuntimeConfirmationApproval.attempt_id.in_(attempt_ids)
+            )
+        )
+        db.execute(
             delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids))
         )
         db.execute(delete(GateEvaluation).where(GateEvaluation.attempt_id.in_(attempt_ids)))
@@ -5446,6 +5455,12 @@ def delete_run(db: Session, run_id: str) -> None:
         register_commit_action(db, lambda key=key: store.delete(key))
     for path in workspace_paths:
         register_commit_action(db, lambda path=path: shutil.rmtree(path, ignore_errors=True))
+
+
+def delete_run(db: Session, run_id: str) -> None:
+    """Permanently remove a run and every nested execution record it owns."""
+
+    _delete_run_records(db, run_id)
     finish(db)
 
 

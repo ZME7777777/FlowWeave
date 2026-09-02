@@ -8,7 +8,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Integer,
     LargeBinary,
     String,
@@ -25,9 +24,7 @@ class NodeDirectory(Base):
     __table_args__ = (UniqueConstraint("parent_id", "name", name="uq_directory_parent_name"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    parent_id: Mapped[str | None] = mapped_column(
-        ForeignKey("node_directories.id", ondelete="RESTRICT"), index=True
-    )
+    parent_id: Mapped[str | None] = mapped_column(String(36), index=True)
     name: Mapped[str] = mapped_column(String(160))
     position: Mapped[int] = mapped_column(Integer, default=0)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -47,9 +44,7 @@ class NodeAsset(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    directory_id: Mapped[str | None] = mapped_column(
-        ForeignKey("node_directories.id", ondelete="RESTRICT"), index=True
-    )
+    directory_id: Mapped[str | None] = mapped_column(String(36), index=True)
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
     icon_kind: Mapped[str] = mapped_column(String(30), default="LUCIDE")
@@ -69,9 +64,7 @@ class NodeIOField(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    node_asset_id: Mapped[str] = mapped_column(
-        ForeignKey("node_assets.id", ondelete="CASCADE"), index=True
-    )
+    node_asset_id: Mapped[str] = mapped_column(String(36), index=True)
     direction: Mapped[str] = mapped_column(String(10))
     field_key: Mapped[str] = mapped_column(String(100))
     display_name: Mapped[str] = mapped_column(String(160))
@@ -83,9 +76,7 @@ class NodeIOField(Base):
 class NodeExecutorConfig(Base):
     __tablename__ = "node_executor_configs"
 
-    node_asset_id: Mapped[str] = mapped_column(
-        ForeignKey("node_assets.id", ondelete="CASCADE"), primary_key=True
-    )
+    node_asset_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     startup_prompt: Mapped[str] = mapped_column(Text, default="")
     context_prompt: Mapped[str] = mapped_column(Text, default="")
 
@@ -102,12 +93,8 @@ class NodeContextCapability(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    node_asset_id: Mapped[str] = mapped_column(
-        ForeignKey("node_assets.id", ondelete="CASCADE"), index=True
-    )
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
-    )
+    node_asset_id: Mapped[str] = mapped_column(String(36), index=True)
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     position: Mapped[int] = mapped_column(Integer)
 
 
@@ -182,19 +169,13 @@ class CapabilityVersion(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    package_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_packages.id", ondelete="RESTRICT"), index=True
-    )
-    blob_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_blobs.id", ondelete="RESTRICT"), index=True
-    )
+    package_id: Mapped[str] = mapped_column(String(36), index=True)
+    blob_id: Mapped[str] = mapped_column(String(36), index=True)
     version_no: Mapped[int] = mapped_column(Integer)
     digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     normalized_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_filename: Mapped[str] = mapped_column(String(255))
-    source_import_id: Mapped[str | None] = mapped_column(
-        ForeignKey("capability_imports.id", ondelete="SET NULL"), index=True
-    )
+    source_import_id: Mapped[str | None] = mapped_column(String(36), index=True)
     source_position: Mapped[int | None] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(String(20), default="PUBLISHED", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -212,9 +193,7 @@ class CapabilityDependency(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="CASCADE"), index=True
-    )
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     ecosystem: Mapped[str] = mapped_column(String(40))
     name: Mapped[str] = mapped_column(String(160))
     version: Mapped[str] = mapped_column(String(100))
@@ -230,9 +209,7 @@ class CapabilityValidation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="CASCADE"), index=True
-    )
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     validator: Mapped[str] = mapped_column(String(100), default="flowweave-import-v1")
     status: Mapped[str] = mapped_column(String(20))
     # Migration 0038 installs the cross-module FK. Keep current metadata free
@@ -265,9 +242,7 @@ class MCPOAuthSecretReference(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
-    )
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     # Migration 0039 installs this cross-module FK; historical baseline
     # migrations create catalog metadata before environment tables exist.
     environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -296,15 +271,9 @@ class MCPOAuthSecretAudit(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    secret_reference_id: Mapped[str] = mapped_column(
-        ForeignKey("mcp_oauth_secret_references.id", ondelete="RESTRICT"), index=True
-    )
-    validation_id: Mapped[str | None] = mapped_column(
-        ForeignKey("capability_validations.id", ondelete="SET NULL"), index=True
-    )
-    authorization_id: Mapped[str | None] = mapped_column(
-        ForeignKey("mcp_oauth_authorizations.id", ondelete="SET NULL"), index=True
-    )
+    secret_reference_id: Mapped[str] = mapped_column(String(36), index=True)
+    validation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    authorization_id: Mapped[str | None] = mapped_column(String(36), index=True)
     action: Mapped[str] = mapped_column(String(20))
     state_version: Mapped[int] = mapped_column(Integer)
     oauth_state_digest: Mapped[str | None] = mapped_column(String(64))
@@ -331,12 +300,8 @@ class MCPOAuthAuthorization(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    secret_reference_id: Mapped[str] = mapped_column(
-        ForeignKey("mcp_oauth_secret_references.id", ondelete="RESTRICT"), index=True
-    )
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
-    )
+    secret_reference_id: Mapped[str] = mapped_column(String(36), index=True)
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     # Migration 0040 owns cross-module FKs to Environment and Sandbox.
     environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
     sandbox_id: Mapped[str | None] = mapped_column(String(36), index=True)
@@ -398,9 +363,7 @@ class PluginSourceResolution(Base):
     preview_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     resolver_report_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_detail: Mapped[str | None] = mapped_column(Text)
-    capability_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
-    )
+    capability_version_id: Mapped[str | None] = mapped_column(String(36), index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -461,11 +424,9 @@ class MemorySourceVersion(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    source_id: Mapped[str] = mapped_column(
-        ForeignKey("memory_sources.id", ondelete="RESTRICT"), index=True
-    )
+    source_id: Mapped[str] = mapped_column(String(36), index=True)
     previous_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("memory_source_versions.id", ondelete="RESTRICT"),
+        String(36),
         unique=True,
         index=True,
     )
@@ -511,9 +472,7 @@ class MemorySourceVersionReference(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    memory_source_version_id: Mapped[str] = mapped_column(
-        ForeignKey("memory_source_versions.id", ondelete="RESTRICT"), index=True
-    )
+    memory_source_version_id: Mapped[str] = mapped_column(String(36), index=True)
     reference_kind: Mapped[str] = mapped_column(String(30), index=True)
     reference_id: Mapped[str] = mapped_column(String(36), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -543,12 +502,8 @@ class CapabilityCollectionItem(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    collection_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_collections.id", ondelete="CASCADE"), index=True
-    )
-    capability_version_id: Mapped[str] = mapped_column(
-        ForeignKey("capability_versions.id", ondelete="RESTRICT"), index=True
-    )
+    collection_id: Mapped[str] = mapped_column(String(36), index=True)
+    capability_version_id: Mapped[str] = mapped_column(String(36), index=True)
     position: Mapped[int] = mapped_column(Integer)
 
 

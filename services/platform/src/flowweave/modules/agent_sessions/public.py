@@ -41,6 +41,16 @@ def ssh_remote_descriptor(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return descriptor(*args, **kwargs)
 
 
+def delete_binding_records(*args: Any, **kwargs: Any) -> None:
+    """Physically delete one shared Agent-session binding graph."""
+
+    from flowweave.modules.agent_sessions.application.deletion import (
+        delete_binding_records as delete_records,
+    )
+
+    delete_records(*args, **kwargs)
+
+
 def __getattr__(name: str) -> Any:
     """Load application modules only for callers that need their services.
 
@@ -125,4 +135,5 @@ __all__ = [
     "WRITE_SESSIONS",
     "process_agent_conversation_title",
     "ssh_remote_descriptor",
+    "delete_binding_records",
 ]

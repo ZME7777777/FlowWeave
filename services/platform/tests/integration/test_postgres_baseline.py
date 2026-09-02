@@ -18,12 +18,7 @@ def test_postgresql_schema_has_core_constraints_and_indexes(db_session_factory) 
     setup_columns = {item["name"] for item in inspector.get_columns("environment_setup_sessions")}
     assert "sandbox_id" in setup_columns
     assert "published_version_id" in setup_columns
-    setup_foreign_keys = inspector.get_foreign_keys("environment_setup_sessions")
-    assert any(
-        item["referred_table"] == "managed_sandboxes"
-        and item["constrained_columns"] == ["sandbox_id"]
-        for item in setup_foreign_keys
-    )
+    assert not any(inspector.get_foreign_keys(table) for table in inspector.get_table_names())
     assert {
         "oauth_sessions",
         "credential_connections",

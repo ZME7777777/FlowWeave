@@ -37,6 +37,7 @@ from flowweave.shared.models import (
     NodeRun,
     RunEvent,
     RunSnapshot,
+    RuntimeConfirmationApproval,
     TaskState,
     TerminalEnvironment,
 )
@@ -2239,6 +2240,20 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
                 ),
             ]
         )
+        confirmation_id = str(uuid4())
+        db.add(
+            RuntimeConfirmationApproval(
+                id=confirmation_id,
+                flow_run_conversation_binding_id=conversation_id,
+                attempt_id=attempt["id"],
+                pending_actions_digest="e" * 64,
+                pending_actions_json=[{"tool_name": "shell"}],
+                risk_summary_json=[],
+                action_count=1,
+                state="CANCELLED",
+                state_version=1,
+            )
+        )
         db.add(
             BackgroundTask(
                 id=task_id,
@@ -2295,6 +2310,7 @@ def test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies(
             == []
         )
         assert db.get(AgentConversationBinding, conversation_id) is None
+        assert db.get(RuntimeConfirmationApproval, confirmation_id) is None
         assert (
             db.scalars(
                 select(AgentConversationCapability).where(

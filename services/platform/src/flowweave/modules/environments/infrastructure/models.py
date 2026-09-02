@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flowweave.shared.database import Base, now, uid
@@ -35,13 +35,9 @@ class EnvironmentVersion(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    environment_id: Mapped[str] = mapped_column(
-        ForeignKey("terminal_environments.id", ondelete="CASCADE"), index=True
-    )
+    environment_id: Mapped[str] = mapped_column(String(36), index=True)
     version_no: Mapped[int] = mapped_column(Integer)
-    parent_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("environment_versions.id", ondelete="RESTRICT")
-    )
+    parent_version_id: Mapped[str | None] = mapped_column(String(36))
     state: Mapped[str] = mapped_column(String(30), default="PUBLISHING", index=True)
     base_image_reference: Mapped[str] = mapped_column(String(500), default="")
     base_image_digest: Mapped[str] = mapped_column(String(100), default="")
@@ -56,18 +52,10 @@ class EnvironmentSetupSession(Base):
     __tablename__ = "environment_setup_sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    environment_id: Mapped[str] = mapped_column(
-        ForeignKey("terminal_environments.id", ondelete="CASCADE"), index=True
-    )
-    base_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("environment_versions.id", ondelete="RESTRICT")
-    )
-    sandbox_id: Mapped[str | None] = mapped_column(
-        ForeignKey("managed_sandboxes.id", ondelete="SET NULL"), unique=True, index=True
-    )
-    published_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("environment_versions.id", ondelete="SET NULL"), unique=True, index=True
-    )
+    environment_id: Mapped[str] = mapped_column(String(36), index=True)
+    base_version_id: Mapped[str | None] = mapped_column(String(36))
+    sandbox_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
+    published_version_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     state: Mapped[str] = mapped_column(String(30), default="STARTING", index=True)
     container_id: Mapped[str] = mapped_column(String(100), default="")
     base_image_reference: Mapped[str] = mapped_column(String(500))

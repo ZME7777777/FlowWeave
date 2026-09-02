@@ -445,7 +445,7 @@ export interface AgentConversation {
 export interface AgentSessionWorkDirectory {
   id: string;
   display_name: string;
-  state: 'ACTIVE' | 'ARCHIVED';
+  state: 'ACTIVE';
   current_version: {
     id: string;
     version: number;
