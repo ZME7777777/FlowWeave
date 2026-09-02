@@ -380,6 +380,7 @@ def test_image_cleanup_refuses_a_retargeted_tag(monkeypatch):
 
 def test_publish_preserves_container_files_before_commit(monkeypatch):
     calls: list[str] = []
+    commit_commands: list[list[str]] = []
     _mock_formal_publish_pipeline(monkeypatch, calls)
 
     monkeypatch.setattr(environment_docker, "require_backend", lambda: None)
@@ -416,6 +417,7 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
         nonlocal committed, wrapped
         if "commit" in command:
             calls.append("commit")
+            commit_commands.append(command)
             committed = True
             return "sha256:" + "c" * 64
         if command[1] == "build":
@@ -457,9 +459,21 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
     )
 
     assert calls == ["scan", "commit", "formal-build", "wrap", "probe"]
+    assert commit_commands == [[
+        "docker",
+        "commit",
+        "--pause=true",
+        "--change",
+        "ENTRYPOINT []",
+        "--change",
+        "USER 0:0",
+        "container-1",
+        "flowweave/environment-environment-1-base:v1-version1",
+    ]]
     assert published.reference == "flowweave/environment-environment-1:v1-version1"
     assert published.manifest["filesystem_change_count"] == 2
     assert published.manifest["build"]["install_acp_providers"] == ""
+    assert published.manifest["build"]["customized_base_image_user"] == "0:0"
 
 
 def test_publish_refuses_a_tag_owned_by_another_version(monkeypatch):

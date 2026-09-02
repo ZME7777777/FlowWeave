@@ -1111,7 +1111,12 @@ def publish_container(
         return PublishedImage(reference=reference, digest=digest, manifest=manifest)
 
     # Freeze the interactive setup filesystem first. This intermediate image
-    # becomes the immutable user base passed to OpenHands BuildOptions.
+    # becomes the immutable user base passed to OpenHands BuildOptions. A
+    # published Runtime normally defaults to the non-root ``openhands`` user,
+    # but OpenHands' base-image-minimal stage must begin as root so it can
+    # install system packages before restoring ``USER openhands``. Normalize
+    # only this build input; the formal output keeps the upstream non-root
+    # runtime contract.
     diff = container_diff(container_id)
     customized_digest = _run(
         [
@@ -1120,6 +1125,8 @@ def publish_container(
             "--pause=true",
             "--change",
             "ENTRYPOINT []",
+            "--change",
+            "USER 0:0",
             container_id,
             customized_reference,
         ],
@@ -1264,6 +1271,7 @@ def publish_container(
             "user_base_image_reference": base_image_reference,
             "user_base_image_digest": base_image_digest,
             "customized_base_image_digest": customized_digest,
+            "customized_base_image_user": "0:0",
             "openhands_output_reference": build.reference,
             "openhands_output_digest": official_digest,
             "runtime_image_reference": reference,
