@@ -2058,6 +2058,30 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 
 完成：新增唯一 `NodeConfigurationPanel`，手动节点控制台和自动运行草稿编辑器均由其装配。自动草稿通过受控参数禁用会话启动，并继续提供既有保存、输入、Agent、门禁与执行记录内容；手动面板保持原有会话启动、输入校验和错误反馈。新增浏览器断言确认两个入口均渲染同一受测面板壳。
 
+### FR-142 Web 前缀部署 API 基址空值回归 — DONE
+
+依赖：FR-139。
+
+事故与根因：FR-139（`7667c4d`）将 Docker 生产构建的 `VITE_BASE_PATH` 默认值从 `/` 改为
+`/flowweave/`，修复了静态 JS/CSS 被根站 FastGPT 接管的问题；但 Dockerfile 仍无条件声明
+`VITE_API_BASE_URL`。未传构建参数时 Vite 将它编译为空字符串。前端原先使用
+`import.meta.env.VITE_API_BASE_URL ?? deploymentBasePath`，而空字符串不是 nullish 值，因而覆盖了
+`/flowweave`。浏览器错误请求根域 `/api/v1/node-assets`，被 FastGPT 返回 404；React Query 将请求
+失败降级为默认空数组，页面误显示“0 个节点”。这不是资产、流程、运行、Workspace 或 PostgreSQL 数据删除。
+
+数据取证：事故发生时远端 PostgreSQL `node_assets=3`、`node_io_fields=38`、
+`node_executor_configs=12`、`flow_nodes=9`、`flow_runs=2`；受保护的 FlowWeave API
+`/flowweave/api/v1/node-assets` 返回三条完整资产，而真实浏览器网络记录确认错误的根路径
+`/api/v1/node-assets` 返回 FastGPT HTML 404。普通 Web 镜像替换没有数据库凭据、迁移或卷删除操作，
+不得将“空列表”叙述为数据丢失或尝试从镜像包恢复数据库。
+
+预防与完成：API 基址改为真值回退 `VITE_API_BASE_URL || deploymentBasePath`，使未设置和空字符串都
+使用 Vite `BASE_URL` 推导的部署前缀；显式非空 API 覆盖继续生效。新增前缀部署浏览器回归：以
+`VITE_BASE_PATH=/flowweave/ VITE_API_BASE_URL=''` 启动 Web 时，节点资产页必须请求
+`/flowweave/api/v1/node-directories` 和 `/flowweave/api/v1/node-assets`，并渲染返回资产。
+今后所有非根路径 Web 部署必须同时验收 HTML 静态资源**与**至少一个真实 API 请求的完整前缀；
+`VITE_*` 变量的空字符串必须视为未配置，不能使用 `??` 覆盖部署默认值。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2073,6 +2097,7 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-03 | FR-142 | 前缀部署环境下的定向 Playwright（2 passed：空 API 基址时节点目录／资产请求保留 `/flowweave` 前缀并渲染返回资产）；Web ESLint、TypeScript typecheck、production build、`git diff --check` | PASS：FR-139 的前缀静态资源修复曾将 Docker 声明的空 `VITE_API_BASE_URL` 当作有效根 API 基址，令真实浏览器错误请求 FastGPT 的 `/api/v1/node-assets` 并把 404 降级显示为 0 条。远端只读取证确认 PostgreSQL 与受保护 FlowWeave API 中的节点资产完整；API 基址现将空值视作未配置并回退 `/flowweave`。后续非根路径部署必须验证一个真实 API 请求的完整前缀。 |
 | 2026-09-02 | FR-140 | FlowRun Workbench 定向 Playwright（3 passed，覆盖节点拖拽、控制／产物流转边和可见端口）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行快照图复用流程编排的节点、端口和边样式；节点可在当前浏览器视图自由拖拽，运行状态刷新与节点选择均不重置布局，且不写回冻结 Snapshot 或流程定义。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-03 | FR-141 | Web TypeScript typecheck、ESLint、production build；当前隔离工作树 Vite（4174）上的 `flow-run-workbench-feedback.spec.ts`（3 passed）；`git diff --check`、任务状态唯一性 | PASS：手动节点控制台和自动运行草稿编辑器均通过同一 `NodeConfigurationPanel` 渲染，标题、启动方式、四个配置页签、内容滚动和保存反馈壳统一；手动会话启动仍可用，自动草稿会话启动继续禁用。先前 5173 指向另一工作树的旧 Vite bundle，已改用当前隔离工作树的 4174 服务重新验证。未修改后端、迁移、Runtime 或 OpenHands 契约。 |
 | 2026-09-02 | FR-139 | 前缀生产构建 HTML 路径断言；Web ESLint、TypeScript typecheck；linux/amd64 Web 镜像构建、Compose Web 单服务替换；公网 JS/CSS、FlowWeave API、FastGPT 登录页与浏览器应用外壳验证 | PASS：Dockerfile 默认生产基路径为 `/flowweave/`，HTML 只引用 `/flowweave/assets/index-DBMHJl84.js` 和前缀 CSS。远端 Web 镜像为 `sha256:32a80a…ff7d4c`（linux/amd64），仅 Web 容器重建；公网前缀 JS/CSS 均为 200，浏览器可加载“终端环境”入口，API 与 FastGPT 登录页保持成功。 |

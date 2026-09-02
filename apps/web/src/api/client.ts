@@ -5,7 +5,11 @@ import type {
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? deploymentBasePath;
+// Docker declares VITE_API_BASE_URL even when no explicit override is given.
+// Treat that empty value as absent so prefix deployments keep requests under
+// /flowweave instead of accidentally sending them to the host application's
+// root-level /api route.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || deploymentBasePath;
 const ROOT = '/api/v1';
 const absoluteApiUrl = (path: string) => new URL(`${API_BASE}${ROOT}${path}`, window.location.origin);
 export const randomId = () => {
