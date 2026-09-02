@@ -3,9 +3,11 @@ import type {
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
   AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
 } from '../types';
+import { deploymentBasePath } from '../deploymentPath';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? deploymentBasePath;
 const ROOT = '/api/v1';
+const absoluteApiUrl = (path: string) => new URL(`${API_BASE}${ROOT}${path}`, window.location.origin);
 export const randomId = () => {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   const bytes = new Uint8Array(16);
@@ -431,8 +433,7 @@ export const api = {
 };
 
 export function environmentTerminalUrl(sessionId: string, rows = 24, columns = 80): string {
-  const base = API_BASE || window.location.origin;
-  const url = new URL(`${ROOT}/environment-setup-sessions/${encodeURIComponent(sessionId)}/terminal`, base);
+  const url = absoluteApiUrl(`/environment-setup-sessions/${encodeURIComponent(sessionId)}/terminal`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('rows', String(rows));
   url.searchParams.set('columns', String(columns));
@@ -440,8 +441,7 @@ export function environmentTerminalUrl(sessionId: string, rows = 24, columns = 8
 }
 
 export function agentTerminalUrl(runId: string, conversationId: string, rows = 24, columns = 80): string {
-  const base = API_BASE || window.location.origin;
-  const url = new URL(`${ROOT}/flow-runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(conversationId)}/terminal`, base);
+  const url = absoluteApiUrl(`/flow-runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(conversationId)}/terminal`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('rows', String(rows));
   url.searchParams.set('columns', String(columns));
@@ -455,8 +455,7 @@ export interface AgentStreamEvent {
 }
 
 export function agentStreamUrl(runId: string, conversationId: string): string {
-  const base = API_BASE || window.location.origin;
-  const url = new URL(`${ROOT}/flow-runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(conversationId)}/stream`, base);
+  const url = absoluteApiUrl(`/flow-runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(conversationId)}/stream`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();
 }
@@ -509,8 +508,7 @@ export function subscribeToConversationStream(
 }
 
 export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, columns = 80, options: { terminalInstanceId: string; bindingId?: string; workDirectoryId?: string }): string {
-  const base = API_BASE || window.location.origin;
-  const url = new URL(`${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/terminal`, base);
+  const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/terminal`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('rows', String(rows));
   url.searchParams.set('columns', String(columns));
@@ -521,7 +519,7 @@ export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, column
 }
 
 export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; download?: boolean } = {}): string {
-  const url = new URL(`${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/file`, API_BASE || window.location.origin);
+  const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/file`);
   url.searchParams.set('path', path);
   if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
   if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
@@ -530,8 +528,7 @@ export function agentWorkspaceFileUrl(workspaceId: string, path: string, options
 }
 
 export function agentWorkspaceStreamUrl(workspaceId: string, bindingId: string): string {
-  const base = API_BASE || window.location.origin;
-  const url = new URL(`${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/stream`, base);
+  const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/stream`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();
 }
@@ -658,17 +655,15 @@ export const nodeSessionApi = {
     return `${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/workspace/file?${query}`;
   },
   terminal: (flowRunId: string, attemptId: string, bindingId: string | undefined, rows = 24, columns = 80) => {
-    const base = API_BASE || window.location.origin;
     const suffix = bindingId ? `/${encodeURIComponent(bindingId)}/terminal` : '/terminal';
-    const url = new URL(`${ROOT}${nodeSessionBase(flowRunId, attemptId)}${suffix}`, base);
+    const url = absoluteApiUrl(`${nodeSessionBase(flowRunId, attemptId)}${suffix}`);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     url.searchParams.set('rows', String(rows));
     url.searchParams.set('columns', String(columns));
     return url.toString();
   },
   stream: (flowRunId: string, attemptId: string, bindingId: string) => {
-    const base = API_BASE || window.location.origin;
-    const url = new URL(`${ROOT}${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/stream`, base);
+    const url = absoluteApiUrl(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/stream`);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     return url.toString();
   },

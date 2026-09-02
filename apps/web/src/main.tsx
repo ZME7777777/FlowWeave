@@ -6,6 +6,7 @@ import './styles.css';
 import { App } from './App';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { ProductDialogProvider } from './components/ProductDialog';
+import { withDeploymentBase } from './deploymentPath';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, retry: 1 } } });
 
@@ -15,7 +16,7 @@ let updateReloading = false;
 async function reloadWhenDeploymentChanges(): Promise<void> {
   if (!appEntry || updateReloading || document.visibilityState !== 'visible') return;
   try {
-    const response = await fetch(`/?deployment-check=${Date.now()}`, { cache: 'no-store' });
+    const response = await fetch(`${withDeploymentBase('/')}?deployment-check=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) return;
     const html = await response.text();
     const match = html.match(/<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/i)

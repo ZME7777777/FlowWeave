@@ -10,6 +10,7 @@ import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
 import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, GateAgentPreset, GateEvaluation, GatePolicy, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
+import { withDeploymentBase } from '../deploymentPath';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 
@@ -73,7 +74,7 @@ function openNodeSession(
   window.history.replaceState({
     flowweaveFlowRun: { runId: flowRunId, nodeRunId, attemptId },
   }, '', window.location.href);
-  window.history.pushState({ flowweaveNodeSession: true }, '', bindingId ? `${base}/${encodeURIComponent(bindingId)}` : base);
+  window.history.pushState({ flowweaveNodeSession: true }, '', withDeploymentBase(bindingId ? `${base}/${encodeURIComponent(bindingId)}` : base));
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
 

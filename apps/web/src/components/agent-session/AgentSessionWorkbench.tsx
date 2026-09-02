@@ -7,6 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from 'react-dom';
 import { ApiError, randomId } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
+import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface } from '../ConversationSurface';
 import { useEscapeClose } from '../useEscapeClose';
@@ -1230,7 +1231,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
-  const selectedBindingId = host.bindingIdFromPathname(window.location.pathname);
+  const selectedBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
   // A FlowRun may briefly report a recoverable 409 while its Attempt and
   // Runtime records are being published.  Do not leave the node workbench
   // permanently stuck on the first transient response.

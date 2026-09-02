@@ -11,6 +11,7 @@ import { StandaloneAgentTerminal } from './components/AgentRuntimeSidebar';
 import { AgentWorkbenchPage } from './pages/AgentWorkbenchPage';
 import { FlowNodeSessionPage } from './pages/FlowNodeSessionPage';
 import { useWorkbenchStore } from './store/workbench';
+import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 
 const nav = [
   { view: 'nodes' as const, label: '节点资产', icon: Boxes },
@@ -50,14 +51,16 @@ export function App() {
     return () => window.removeEventListener('popstate', update);
   }, []);
   const navigate = (path: string, replace = false) => {
-    if (replace) window.history.replaceState({}, '', path);
-    else window.history.pushState({}, '', path);
+    const deployedPath = withDeploymentBase(path);
+    if (replace) window.history.replaceState({}, '', deployedPath);
+    else window.history.pushState({}, '', deployedPath);
     setRouteVersion(value => value + 1);
   };
-  const nodeSessionRoute = window.location.pathname.match(
+  const routePathname = withoutDeploymentBase(window.location.pathname);
+  const nodeSessionRoute = routePathname.match(
     /^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/([^/]+))?$/,
   );
-  const isAgentRoute = window.location.pathname === '/agent' || window.location.pathname.startsWith('/agent/conversations/') || Boolean(nodeSessionRoute);
+  const isAgentRoute = routePathname === '/agent' || routePathname.startsWith('/agent/conversations/') || Boolean(nodeSessionRoute);
   const leaveAgentRoute = () => {
     if (isAgentRoute) navigate('/', true);
   };
