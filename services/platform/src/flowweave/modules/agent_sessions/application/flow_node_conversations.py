@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
@@ -38,6 +38,7 @@ from flowweave.modules.agent_sessions.application.runtime_config import (
 from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
+    AgentConversationCommand,
     AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
@@ -342,7 +343,7 @@ def list_node_session_views(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
             AgentConversationBinding.node_attempt_id == attempt_id,
-            AgentConversationBinding.lifecycle != "DELETED",
+            AgentConversationBinding.lifecycle == "ACTIVE",
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -374,6 +375,7 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == run.id,
+            AgentConversationBinding.lifecycle == "ACTIVE",
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -400,6 +402,7 @@ def list_node_conversations(
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
+            AgentConversationBinding.lifecycle == "ACTIVE",
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -448,6 +451,7 @@ def list_flow_run_conversations(db: Session, flow_run_id: str) -> list[dict[str,
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
+            AgentConversationBinding.lifecycle == "ACTIVE",
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -756,6 +760,200 @@ def create_node_conversation(
     )
 
 
+def _node_bootstrap_command(
+    db: Session, *, flow_run_id: str, attempt_id: str, idempotency_key: str
+) -> tuple[AgentConversationBinding | None, AgentConversationCommand | None]:
+    binding = db.scalar(
+        select(AgentConversationBinding)
+        .where(AgentConversationBinding.create_idempotency_key == idempotency_key)
+        .with_for_update()
+    )
+    if binding is None:
+        return None, None
+    if (
+        binding.host_kind != _FLOW_NODE
+        or binding.flow_run_id != flow_run_id
+        or binding.node_attempt_id != attempt_id
+    ):
+        raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话创建请求冲突", 409)
+    command = db.scalar(
+        select(AgentConversationCommand)
+        .where(
+            AgentConversationCommand.binding_id == binding.id,
+            AgentConversationCommand.command_type == "CREATE",
+        )
+        .with_for_update()
+    )
+    if command is None:
+        raise DomainError("AGENT_CONVERSATION_BOOTSTRAP_INVALID", "会话创建命令数据不完整", 409)
+    return binding, command
+
+
+def _delete_node_bootstrap_reservation(
+    db: Session, binding: AgentConversationBinding, command: AgentConversationCommand
+) -> None:
+    """Remove a definitively failed node bootstrap before it becomes visible."""
+
+    db.execute(
+        delete(AgentConversationMessageAttachment).where(
+            AgentConversationMessageAttachment.binding_id == binding.id
+        )
+    )
+    db.execute(
+        delete(AgentConversationCapability).where(
+            AgentConversationCapability.binding_id == binding.id
+        )
+    )
+    db.delete(command)
+    db.flush()
+    db.delete(binding)
+    db.commit()
+
+
+def _activate_node_bootstrap(
+    db: Session,
+    *,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    initial_event_id: str,
+    content: str,
+    attachments: tuple[dict[str, str | int], ...],
+) -> dict[str, Any]:
+    binding.initial_user_event_id = initial_event_id
+    binding.display_title = normalized_first_sentence(content)
+    binding.title_state = "PENDING"
+    binding.lifecycle = "ACTIVE"
+    activated_at = now()
+    binding.last_connected_at = activated_at
+    binding.updated_at = activated_at
+    command.state = "SUCCEEDED"
+    command.updated_at = binding.updated_at
+    record_message_attachments(db, binding, initial_event_id, content, attachments)
+    enqueue_title_task(db, binding, content)
+    db.add(
+        HumanAction(
+            flow_run_id=binding.flow_run_id,
+            node_run_id=binding.node_run_id,
+            attempt_id=binding.node_attempt_id,
+            action_type="CREATE_FLOW_RUN_CONVERSATION",
+            idempotency_key=binding.create_idempotency_key,
+            payload_json={"binding_id": binding.id},
+        )
+    )
+    db.commit()
+    return {
+        "conversation": _node_session_dict(db, binding),
+        "accepted": True,
+        "cursor": initial_event_id,
+    }
+
+
+def _create_or_reload_node_bootstrap(
+    db: Session,
+    *,
+    binding: AgentConversationBinding,
+    run: FlowRun,
+    snapshot: RunSnapshot,
+    allow_existing: bool,
+) -> tuple[RuntimeHandle, str | None]:
+    """Create one reserved native Conversation, or recover its fixed UUID."""
+
+    if (
+        not run.environment_version_id
+        or not snapshot.environment_version_id
+        or snapshot.environment_version_id != run.environment_version_id
+    ):
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED",
+            "The FlowRun and Snapshot must share one frozen Environment Version",
+            409,
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The frozen FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": run.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
+    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+    if connection.runtime_session_id != binding.runtime_session_id:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_SESSION_DRIFT",
+            "The Conversation reservation no longer matches the FlowRun Runtime Session",
+            409,
+        )
+    handle = RuntimeHandle(
+        job_id=f"env-chat:{connection.resource_name}",
+        conversation_id=binding.openhands_conversation_id,
+        runtime_resource_id=connection.managed_runtime_id,
+        runtime_resource_name=connection.resource_name,
+    )
+    runtime = get_runtime()
+    if allow_existing:
+        try:
+            identity = runtime.reload_conversation(handle)
+        except DomainError as exc:
+            if exc.code != "RUNTIME_CONVERSATION_MISSING":
+                raise
+        else:
+            return handle, identity.event_id
+
+    working_directory = binding.working_directory or str(_RUNTIME_PROJECT)
+    config = config_from_binding(db, binding)
+    provider = provider_for_config(db, config)
+    host_root = sandboxes.flow_run_capability_path(
+        runtime_owner_id, snapshot.runtime_manifest_hash, "conversations", binding.id
+    )
+    runtime_root = Path(
+        sandboxes.openhands_flow_run_capability_path(
+            snapshot.runtime_manifest_hash, "conversations", binding.id
+        )
+    )
+    agent_spec = build_agent_spec(
+        config,
+        provider=provider,
+        binding_id=binding.id,
+        working_directory=working_directory,
+        host_root=host_root,
+        runtime_root=runtime_root,
+        system_message_suffix_append=_node_context_suffix(
+            db, snapshot=snapshot, attempt_id=binding.node_attempt_id
+        ),
+    )
+    request = build_runtime_request(
+        db,
+        flow_run_id=runtime_owner_id,
+        runtime_manifest_hash=snapshot.runtime_manifest_hash,
+        attempt_id=binding.id,
+        execution_key=f"flow-run:{run.id}:conversation:create",
+        node={},
+        bindings=[],
+        workspace_ref=working_directory,
+        interaction_mode="COLLABORATION",
+        environment_image=environment.image_digest,
+        environment_id=environment.environment_id,
+        environment_version_id=environment.id,
+        environment_version_no=environment.version_no,
+        agent_spec=agent_spec,
+        conversation_id=binding.openhands_conversation_id,
+    )
+    request = replace(
+        request,
+        workspace_ref=working_directory,
+        runtime_sandbox_id=connection.managed_runtime_id,
+        runtime_resource_name=connection.resource_name,
+        runtime_base_url=f"http://{connection.resource_name}:8000",
+    )
+    created = runtime.create_conversation(request)
+    if created.conversation_id != binding.openhands_conversation_id:
+        raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
+    identity = runtime.reload_conversation(handle)
+    return handle, identity.event_id
+
+
 def bootstrap_node_conversation(
     db: Session,
     *,
@@ -769,13 +967,7 @@ def bootstrap_node_conversation(
     idempotency_key: str,
     session_config: FrozenSessionConfig | None = None,
 ) -> dict[str, Any]:
-    """Create a node binding only while delivering its first user event.
-
-    The browser's node draft has no server representation.  This command is
-    intentionally the only node entrypoint that creates a binding for an
-    interactive draft, and it reloads the native Conversation before sending
-    so the first event cannot race OpenHands initialization.
-    """
+    """Lazily create a node Conversation and durably reconcile its first event."""
 
     text = content.strip()
     if not text and not attachments and not legacy_image_urls:
@@ -784,83 +976,184 @@ def bootstrap_node_conversation(
         binding_id = str(UUID(conversation_id)) if conversation_id else str(uuid4())
     except ValueError as exc:
         raise DomainError("AGENT_CONVERSATION_ID_INVALID", "会话标识无效", 422) from exc
-    agent_sessions.resolve_flow_node_session_host(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=True
-    )
-    attempt = _attempt(db, attempt_id)
-    node_run, run, snapshot = _attempt_context(db, attempt)
-    work_directory_version_id, working_directory = (
-        agent_workspace_host.flow_run_conversation_work_directory_context(
-            db, run.id, attempt.id, work_directory_id
-        )
-    )
-    created = _create_native_conversation(
-        db,
-        run=run,
-        snapshot=snapshot,
-        title=None,
-        idempotency_key=idempotency_key,
-        binding_id=str(uuid4()),
-        node_run_id=node_run.id,
-        attempt_id=attempt.id,
-        work_directory_version_id=work_directory_version_id,
-        runtime_working_directory=working_directory,
-        session_config=session_config,
-        session_binding_id=binding_id,
-    )
-    binding_id = str(created["id"])
-    binding = _binding_for_attempt(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
-    )
-    handle = _handle(db, binding_id)
-    previous_event_id = get_runtime().reload_conversation(handle).event_id
+    validate_attachment_owners(binding_id, attachments)
     if legacy_image_urls:
         for value in legacy_image_urls:
             if not value.startswith("data:image/"):
                 raise DomainError("AGENT_ATTACHMENT_INVALID", "图片附件无效", 422)
             base64.b64decode(value.partition(",")[2], validate=True)
-        runtime = get_runtime()
-        if not runtime.can_accept_input(handle):
-            raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理上一条消息，请稍候", 409)
-        delivered = {
-            "accepted": True,
-            "cursor": runtime.send_message(handle, text, legacy_image_urls).cursor,
-        }
-    else:
-        delivered = send_node_message(
-            db,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-            content=text,
-            attachments=attachments,
-        )
-    initial_event_id = (
-        binding.initial_user_event_id
-        or cast(str | None, delivered.get("cursor"))
-        or initial_user_event_id(handle, previous_event_id)
+    prompt, image_urls = message_payload(text, attachments)
+    if legacy_image_urls:
+        image_urls = legacy_image_urls
+    agent_sessions.resolve_flow_node_session_host(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=True
     )
+    attempt = _attempt(db, attempt_id)
+    node_run, run, snapshot = _attempt_context(db, attempt)
+    binding, command = _node_bootstrap_command(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        idempotency_key=idempotency_key,
+    )
+    if binding is not None and command is not None:
+        if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
+            return {
+                "conversation": _node_session_dict(db, binding),
+                "accepted": True,
+                "cursor": binding.initial_user_event_id,
+            }
+        if command.state == "AMBIGUOUS":
+            try:
+                reconciled = initial_user_event_id(
+                    _handle(db, binding.id), binding.bootstrap_parent_event_id
+                )
+            except DomainError:
+                reconciled = None
+            if reconciled is not None:
+                return _activate_node_bootstrap(
+                    db,
+                    binding=binding,
+                    command=command,
+                    initial_event_id=reconciled,
+                    content=text,
+                    attachments=attachments,
+                )
+            raise DomainError(
+                "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
+                "首条消息正在安全对账，请稍后重试；系统不会重复发送",
+                504,
+                {"binding_id": binding.id},
+            )
+        if binding.lifecycle != "PROVISIONING" or command.state != "PENDING":
+            raise DomainError("AGENT_CONVERSATION_PROVISIONING", "会话创建仍在处理中", 409)
+        command.attempt_count += 1
+        db.commit()
+        allow_existing = True
+    else:
+        count = db.scalar(
+            select(func.count(AgentConversationBinding.id)).where(
+                AgentConversationBinding.host_kind == _FLOW_NODE,
+                AgentConversationBinding.flow_run_id == run.id,
+            )
+        )
+        if int(count or 0) >= get_settings().conversation_limit_per_flow_run:
+            raise DomainError(
+                "CONVERSATION_LIMIT_REACHED", "FlowRun conversation limit reached", 422
+            )
+        work_directory_version_id, working_directory = (
+            agent_workspace_host.flow_run_conversation_work_directory_context(
+                db, run.id, attempt.id, work_directory_id
+            )
+        )
+        connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+        binding = reserve_flow_node_binding(
+            db,
+            runtime_session_id=connection.runtime_session_id,
+            flow_run_id=run.id,
+            node_run_id=node_run.id,
+            node_attempt_id=attempt.id,
+            working_directory=working_directory,
+            create_idempotency_key=idempotency_key,
+            work_directory_version_id=work_directory_version_id,
+            config=session_config,
+            binding_id=binding_id,
+        )
+        command = AgentConversationCommand(
+            workspace_id=None,
+            host_kind=_FLOW_NODE,
+            host_id=run.id,
+            binding_id=binding.id,
+            command_type="CREATE",
+            idempotency_key=idempotency_key,
+            attempt_count=1,
+        )
+        db.add(command)
+        db.commit()
+        allow_existing = False
+
+    try:
+        handle, previous_event_id = _create_or_reload_node_bootstrap(
+            db,
+            binding=binding,
+            run=run,
+            snapshot=snapshot,
+            allow_existing=allow_existing,
+        )
+        binding.bootstrap_parent_event_id = previous_event_id
+        db.commit()
+    except DomainError as exc:
+        if exc.details.get("outcome_unknown") is True:
+            command.last_error_code = exc.code
+            command.failure_summary = "Conversation creation requires retry with the original UUID"
+            db.commit()
+            raise DomainError(
+                "AGENT_BOOTSTRAP_CREATION_AMBIGUOUS",
+                "会话创建结果不确定，请使用同一请求标识重试",
+                504,
+            ) from exc
+        _delete_node_bootstrap_reservation(db, binding, command)
+        raise
+
+    runtime = get_runtime()
+    try:
+        delivered = runtime.send_message(handle, prompt, image_urls)
+    except DomainError as exc:
+        if exc.details.get("outcome_unknown") is True:
+            try:
+                reconciled = initial_user_event_id(handle, previous_event_id)
+            except DomainError:
+                reconciled = None
+            if reconciled is not None:
+                return _activate_node_bootstrap(
+                    db,
+                    binding=binding,
+                    command=command,
+                    initial_event_id=reconciled,
+                    content=text,
+                    attachments=attachments,
+                )
+            command.state = "AMBIGUOUS"
+            command.last_error_code = exc.code
+            command.failure_summary = (
+                "First user event delivery requires native identity reconciliation"
+            )
+            db.commit()
+            raise DomainError(
+                "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
+                "首条消息正在安全对账，请稍后重试；系统不会重复发送",
+                504,
+                {"binding_id": binding.id},
+            ) from exc
+        try:
+            runtime.delete_conversation(handle)
+        except DomainError:
+            pass
+        _delete_node_bootstrap_reservation(db, binding, command)
+        raise
+
+    try:
+        initial_event_id = delivered.cursor or initial_user_event_id(handle, previous_event_id)
+    except DomainError:
+        initial_event_id = None
     if initial_event_id is None:
-        initial_event_id = get_runtime().reload_conversation(handle).event_id
-    if initial_event_id is None:
+        command.state = "AMBIGUOUS"
+        command.failure_summary = "First user event ID was unavailable after accepted delivery"
+        db.commit()
         raise DomainError(
             "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS",
             "首条消息正在安全对账，请稍后重试；系统不会重复发送",
             504,
             {"binding_id": binding.id},
         )
-    if binding.initial_user_event_id is None:
-        binding.initial_user_event_id = initial_event_id
-        binding.display_title = normalized_first_sentence(text)
-        binding.title_state = "PENDING"
-        binding.updated_at = now()
-        enqueue_title_task(db, binding, text)
-        finish(db)
-    return {
-        "conversation": _node_session_dict(db, binding),
-        "accepted": bool(delivered.get("accepted", True)),
-        "cursor": initial_event_id,
-    }
+    return _activate_node_bootstrap(
+        db,
+        binding=binding,
+        command=command,
+        initial_event_id=initial_event_id,
+        content=text,
+        attachments=attachments,
+    )
 
 
 def record_attempt_input_attachments(

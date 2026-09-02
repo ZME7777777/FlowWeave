@@ -15,6 +15,8 @@ from flowweave.modules.agent_workspaces.public import (
     AgentWorkDirectoryVersion,
 )
 from flowweave.modules.orchestration.application import service as orchestration_service
+from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch
+from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversationBinding,
@@ -455,18 +457,125 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
         client.put(f"{scope}/capabilities", json={"capability_version_ids": []}).status_code == 405
     )
 
-    conversation = client.post(
+    class RejectedBootstrapRuntime(MockRuntime):
+        deleted = 0
+
+        def send_message(self, handle, content, image_urls=()):
+            del handle, content, image_urls
+            raise DomainError(
+                "OPENHANDS_REQUEST_FAILED",
+                "OpenHands rejected the first event",
+                502,
+                {"status_code": 500, "outcome_unknown": False},
+            )
+
+        def delete_conversation(self, handle):
+            super().delete_conversation(handle)
+            self.deleted += 1
+
+    original_runtime = client.app.state.container.runtime
+    rejected_runtime = RejectedBootstrapRuntime()
+    client.app.state.container.runtime = rejected_runtime
+    rejected = client.post(
         f"{scope}/bootstrap",
         json={
-            "client_question_id": "selected-node-first-message",
-            "content": [{"type": "text", "text": "首条节点消息"}],
+            "content": "明确失败不能留下空会话",
             "model_provider_id": provider["id"],
             "model_name": "gpt-node",
             "reasoning_effort": None,
         },
-        headers={"Idempotency-Key": "selected-node-first-conversation"},
+        headers={"Idempotency-Key": "selected-node-rejected-bootstrap"},
+    )
+    assert rejected.status_code == 502, rejected.text
+    assert rejected.json()["error"]["code"] == "OPENHANDS_REQUEST_FAILED"
+    assert rejected_runtime.deleted == 1
+    assert client.get(scope).json() == []
+    with db_session_factory() as db:
+        assert (
+            db.scalar(
+                select(AgentConversationBinding).where(
+                    AgentConversationBinding.create_idempotency_key
+                    == "selected-node-rejected-bootstrap"
+                )
+            )
+            is None
+        )
+        assert (
+            db.scalar(
+                select(AgentConversationCommand).where(
+                    AgentConversationCommand.idempotency_key == "selected-node-rejected-bootstrap"
+                )
+            )
+            is None
+        )
+
+    class ReconciledBootstrapRuntime(MockRuntime):
+        sent = 0
+        expose_first_event = False
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent += 1
+            if self.sent == 1:
+                raise DomainError(
+                    "EXECUTOR_UNAVAILABLE",
+                    "first event response was lost",
+                    503,
+                    {"outcome_unknown": True},
+                )
+            return super().send_message(handle, content, image_urls)
+
+        def read_active_events(self, handle):
+            del handle
+            if not self.expose_first_event:
+                return RuntimeEventBatch(events=())
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="node-native-first-user",
+                        event_type="MESSAGE",
+                        payload={"source": "user", "parent_id": "__root__"},
+                    ),
+                )
+            )
+
+    recovered_runtime = ReconciledBootstrapRuntime()
+    client.app.state.container.runtime = recovered_runtime
+    bootstrap_headers = {"Idempotency-Key": "selected-node-first-conversation"}
+    bootstrap_payload = {
+        "client_question_id": "selected-node-first-message",
+        "content": [{"type": "text", "text": "首条节点消息"}],
+        "model_provider_id": provider["id"],
+        "model_name": "gpt-node",
+        "reasoning_effort": None,
+    }
+    ambiguous = client.post(f"{scope}/bootstrap", json=bootstrap_payload, headers=bootstrap_headers)
+    assert ambiguous.status_code == 504, ambiguous.text
+    assert ambiguous.json()["error"]["code"] == "AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS"
+    assert recovered_runtime.sent == 1
+    assert client.get(scope).json() == []
+    with db_session_factory() as db:
+        reservation = db.scalar(
+            select(AgentConversationBinding).where(
+                AgentConversationBinding.create_idempotency_key
+                == "selected-node-first-conversation"
+            )
+        )
+        command = db.scalar(
+            select(AgentConversationCommand).where(
+                AgentConversationCommand.idempotency_key == "selected-node-first-conversation"
+            )
+        )
+        assert reservation is not None and reservation.lifecycle == "PROVISIONING"
+        assert command is not None and command.state == "AMBIGUOUS"
+
+    recovered_runtime.expose_first_event = True
+    conversation = client.post(
+        f"{scope}/bootstrap",
+        json=bootstrap_payload,
+        headers=bootstrap_headers,
     )
     assert conversation.status_code == 201, conversation.text
+    assert recovered_runtime.sent == 1
     assert conversation.json()["conversation"]["id"]
     assert conversation.json()["conversation"]["display_title"] == "首条节点消息"
     binding_id = conversation.json()["conversation"]["id"]
@@ -496,6 +605,7 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
         # writable so rootless bind mounts can publish and roll back bundles.
         assert capabilities.stat().st_mode & 0o777 == 0o700
     assert node_run["flow_node_snapshot_key"] == "design_b"
+    client.app.state.container.runtime = original_runtime
 
 
 def test_human_cannot_create_a_second_node_run_in_one_manual_group(client, skill_capability):
