@@ -57,6 +57,10 @@ function ioFields(value: unknown): NodeAsset['inputs'] {
   );
 }
 
+function portLabel(field: NodeAsset['inputs'][number] | undefined, fallback = ''): string {
+  return field?.display_name?.trim() || field?.field_key || fallback;
+}
+
 function flowSaveError(reason: Error): string {
   return reason.message;
 }
@@ -69,7 +73,7 @@ function FlowAssetNode({ id, data, selected }: NodeProps<Node<FlowNodeData>>) {
     <div className="flow-node-head"><span className="flow-node-kind">AGENT</span><button type="button" className="flow-node-delete nodrag nopan" aria-label={`删除节点 ${data.label}`} title="删除节点" onClick={event => { event.stopPropagation(); data.onDelete?.(id); }}><Trash2 size={13}/></button></div>
     <strong>{data.label}</strong>
     <small>标准端口来自节点资产</small>
-    <div className="flow-port-groups"><section><span>INPUTS</span>{inputs.map(field => <div className="flow-port-row flow-port-input" key={`input-${field.field_key}`}><Handle id={`input:${field.field_key}`} className="data-port-handle" type="target" position={Position.Left} isConnectable={data.linkMode === 'data'}/><b>{field.field_key}</b><small>{field.data_type}</small></div>)}</section><section><span>OUTPUTS</span>{outputs.map(field => <div className="flow-port-row flow-port-output" key={`output-${field.field_key}`}><b>{field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'data'}/></div>)}</section></div>
+    <div className="flow-port-groups"><section><span>INPUTS</span>{inputs.map(field => <div className="flow-port-row flow-port-input" key={`input-${field.field_key}`}><Handle id={`input:${field.field_key}`} className="data-port-handle" type="target" position={Position.Left} isConnectable={data.linkMode === 'data'}/><b>{portLabel(field)}</b><small>{field.data_type}</small></div>)}</section><section><span>OUTPUTS</span>{outputs.map(field => <div className="flow-port-row flow-port-output" key={`output-${field.field_key}`}><b>{portLabel(field)}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'data'}/></div>)}</section></div>
     <Handle id="flow-source" className="flow-direction-handle" type="source" position={Position.Right} isConnectable={data.linkMode === 'flow'}/>
   </article>;
 }
@@ -87,35 +91,36 @@ function nodeData(asset: NodeAsset): FlowNodeData {
 
 function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNodeData>[], Edge[], Edge[]] {
   if (!flow) return [[], [], []];
+  const canvasNodes = asArray<FlowDefinition['nodes'][number]>(flow.nodes).filter(item =>
+    item && typeof item.instance_key === 'string' && typeof item.node_asset_id === 'string',
+  ).map(item => {
+    const asset = assets.find(candidate => candidate.id === item.node_asset_id);
+    const fallback: NodeAsset = {
+      id: item.node_asset_id,
+      name: item.instance_key,
+      description: '',
+      icon_kind: 'LUCIDE',
+      icon_value: 'bot',
+      row_version: 1,
+      inputs: [],
+      outputs: [],
+      executor: null,
+      context_capabilities: [],
+      created_at: '',
+      updated_at: '',
+    };
+    return {
+      id: item.instance_key,
+      type: 'flowAsset',
+      position: {
+        x: Number.isFinite(item.position_x) ? item.position_x : 0,
+        y: Number.isFinite(item.position_y) ? item.position_y : 0,
+      },
+      data: nodeData(asset ?? fallback),
+    };
+  });
   return [
-    asArray<FlowDefinition['nodes'][number]>(flow.nodes).filter(item =>
-      item && typeof item.instance_key === 'string' && typeof item.node_asset_id === 'string',
-    ).map(item => {
-      const asset = assets.find(candidate => candidate.id === item.node_asset_id);
-      const fallback: NodeAsset = {
-        id: item.node_asset_id,
-        name: item.instance_key,
-        description: '',
-        icon_kind: 'LUCIDE',
-        icon_value: 'bot',
-        row_version: 1,
-        inputs: [],
-        outputs: [],
-        executor: null,
-        context_capabilities: [],
-        created_at: '',
-        updated_at: '',
-      };
-      return {
-        id: item.instance_key,
-        type: 'flowAsset',
-        position: {
-          x: Number.isFinite(item.position_x) ? item.position_x : 0,
-          y: Number.isFinite(item.position_y) ? item.position_y : 0,
-        },
-        data: nodeData(asset ?? fallback),
-      };
-    }),
+    canvasNodes,
     asArray<FlowDefinition['edges'][number]>(flow.edges).filter(item =>
       item && typeof item.source_instance_key === 'string' && typeof item.target_instance_key === 'string',
     ).map(item => ({
@@ -130,16 +135,22 @@ function toCanvas(flow?: FlowDefinition, assets: NodeAsset[] = []): [Node<FlowNo
     asArray<FlowDefinition['port_mappings'][number]>(flow.port_mappings).filter(item =>
       item && typeof item.source_instance_key === 'string' && typeof item.target_instance_key === 'string'
         && typeof item.source_output_key === 'string' && typeof item.target_input_key === 'string',
-    ).map(item => ({
-      id: `mapping:${item.id ?? randomId()}`,
-      source: item.source_instance_key,
-      sourceHandle: `output:${item.source_output_key}`,
-      target: item.target_instance_key,
-      targetHandle: `input:${item.target_input_key}`,
-      type: 'bezier',
-      className: 'flow-mapping-edge',
-      label: `${item.source_output_key} → ${item.target_input_key}`,
-    })),
+    ).map(item => {
+      const source = canvasNodes.find(node => node.id === item.source_instance_key)?.data.outputs
+        .find(field => field.field_key === item.source_output_key);
+      const target = canvasNodes.find(node => node.id === item.target_instance_key)?.data.inputs
+        .find(field => field.field_key === item.target_input_key);
+      return {
+        id: `mapping:${item.id ?? randomId()}`,
+        source: item.source_instance_key,
+        sourceHandle: `output:${item.source_output_key}`,
+        target: item.target_instance_key,
+        targetHandle: `input:${item.target_input_key}`,
+        type: 'bezier',
+        className: 'flow-mapping-edge',
+        label: `${portLabel(source, item.source_output_key)} → ${portLabel(target, item.target_input_key)}`,
+      };
+    }),
   ];
 }
 
@@ -317,10 +328,10 @@ export function FlowsPage() {
       id: `mapping:${randomId()}`,
       type: 'bezier',
       className: 'flow-mapping-edge',
-      label: `${source.field_key} → ${target.field_key}`,
+      label: `${portLabel(source)} → ${portLabel(target)}`,
     }]);
     setError('');
-    setNotice(`已连接 ${sourceNode?.data.label}.${source.field_key} → ${targetNode?.data.label}.${target.field_key}。`);
+    setNotice(`已连接 ${sourceNode?.data.label}.${portLabel(source)} → ${targetNode?.data.label}.${portLabel(target)}。`);
   };
   const dropAsset = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();

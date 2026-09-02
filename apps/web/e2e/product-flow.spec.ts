@@ -1689,6 +1689,35 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await expect(library.getByRole('button', { name: `UI流程-${suffix}`, exact: true })).toBeVisible();
 });
 
+test('flow canvas uses application names instead of variable keys', async ({ page, request }) => {
+  const assetName = `端口名称-${suffix}`;
+  const asset = await createAsset(request, assetName);
+  const flow = await post(request, '/flows', {
+    name: `端口名称流程-${suffix}`,
+    description: '验证流程画布使用展示名称',
+    default_entry_key: null,
+    nodes: [
+      { instance_key: 'source', node_asset_id: asset.id, alias: null, position_x: 100, position_y: 160, config_override: {}, gates: [] },
+      { instance_key: 'target', node_asset_id: asset.id, alias: null, position_x: 500, position_y: 160, config_override: {}, gates: [] },
+    ],
+    edges: [{ source_instance_key: 'source', target_instance_key: 'target', position: 0 }],
+    port_mappings: [{ source_instance_key: 'source', source_output_key: 'design', target_instance_key: 'target', target_input_key: 'prd' }],
+  });
+  await login(page);
+  await page.getByRole('button', { name: '流程编排' }).click();
+  await page.getByTestId('flow-library').getByRole('button', { name: flow.name, exact: true }).click();
+
+  const canvas = page.getByTestId('flow-designer');
+  await expect(canvas.getByText('需求文档', { exact: true })).toHaveCount(2);
+  await expect(canvas.getByText('技术方案', { exact: true })).toHaveCount(2);
+  await expect(canvas.getByText('prd', { exact: true })).toHaveCount(0);
+  await expect(canvas.getByText('design', { exact: true })).toHaveCount(0);
+  await expect(canvas.getByText('技术方案 → 需求文档', { exact: true })).toBeVisible();
+  await canvas.getByRole('button', { name: '产物流转' }).click();
+  await connectArtifact(canvas.locator('.react-flow__node').nth(0), canvas.locator('.react-flow__node').nth(1));
+  await expect(canvas.getByRole('status')).toContainText(`${assetName}.技术方案 → ${assetName}.需求文档`);
+});
+
 test('run keeps attempts, snapshots, gates and artifact lineage visible', async ({ page, request }) => {
   const asset = await createAsset(request, `运行资产-${suffix}`);
   const flow = await createFlow(request, asset.id, `运行流程-${suffix}`);

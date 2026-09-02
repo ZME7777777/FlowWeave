@@ -1948,6 +1948,22 @@ Agent Workspace 默认能力、会话首发、节点 Context 和运行 Agent 预
 本地 Compose 已用当前源码重建并统一替换 Migration、Runtime Provider、API、Worker 和 Web；实际 5173 页面已验证
 新会话一次选择 31 项及当前会话从 30 项追加第 31 项。
 
+### FR-134 流程编排端口展示名称 — DONE
+
+依赖：FR-133。
+
+目标：流程编排画布中的节点输入／输出端口、产物流转连线标签和连接成功提示统一优先展示节点资产定义的
+展示名称，不再把供机器识别的变量名作为正常人机界面文案；历史或异常资产缺少展示名称时才回退变量名。
+端口 Handle、流程映射保存载荷和后端合同继续使用不可变的 field_key，不得因展示文案改变连接身份或
+已保存流程语义。
+
+验收：流程编排定向 Playwright 覆盖节点端口、连线标签和连接提示仅显示展示名称；Web ESLint、TypeScript
+typecheck、production build、Alembic head、任务状态唯一性与 git diff --check 通过。
+
+完成：流程画布节点端口、已保存与新建产物流转连线、连接成功提示均优先使用节点资产展示名称，缺失时
+回退 field_key；Handle 和保存载荷继续使用 field_key。Web ESLint、TypeScript typecheck、production
+build、源码 Vite 上的定向 Playwright、唯一 Alembic head、任务状态唯一性与 git diff --check 均通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
