@@ -10113,7 +10113,6 @@
               "type": "string"
             },
             "type": "array",
-            "maxItems": 30,
             "title": "Capability Version Ids"
           }
         },
@@ -10251,7 +10250,6 @@
               "type": "string"
             },
             "type": "array",
-            "maxItems": 30,
             "title": "Capability Version Ids"
           },
           "model_provider_id": {
@@ -10482,7 +10480,6 @@
               "type": "string"
             },
             "type": "array",
-            "maxItems": 30,
             "title": "Capability Version Ids"
           }
         },
@@ -11320,7 +11317,6 @@
               "type": "string"
             },
             "type": "array",
-            "maxItems": 30,
             "title": "Context Capability Ids"
           }
         },

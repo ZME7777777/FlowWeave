@@ -90,6 +90,10 @@ source lock 与适配代码、历史兼容源码和镜像、版本明确匹配�
   `/opt/flowweave/.env`；镜像包：`/opt/flowweave/images`；构建日志：`/opt/flowweave/build-logs`。
 - 管理 SSH：`root@192.168.91.154`，现有管理密钥由本机 SSH Agent/`~/.ssh/id_ed25519` 提供。不得把
   私钥、`.env` 内容或任何 API Key 写入仓库、聊天记录、构建日志或飞书文档。
+- 本机部署凭据保存在仅本机文件 `.local/secrets/flowweave-server-154.env`，该路径通过
+  `.git/info/exclude` 排除且文件权限必须为 `0600`。部署脚本需要 root 登录信息时读取该文件中的
+  `FLOWWEAVE_SERVER_HOST`、`FLOWWEAVE_SERVER_USER` 和 `FLOWWEAVE_SERVER_PASSWORD`；禁止在命令行、日志或
+  受 Git 跟踪文件中回显其值。优先使用 SSH 密钥；只有密钥不可用且确有必要时才使用密码。
 - 服务器是 `linux/amd64`，本地 Mac 构建必须显式使用 `--platform linux/amd64`；部署前用
   `docker image inspect --format '{{.Os}}/{{.Architecture}}' <image>` 逐个确认。
 
