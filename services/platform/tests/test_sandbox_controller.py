@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import pytest
@@ -762,6 +765,37 @@ def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, m
         "kind": "agent-runtime",
         "timeout": 30,
     }
+
+
+def test_blocking_terminal_read_does_not_block_controller_health(settings, monkeypatch):
+    reading = threading.Event()
+    release = threading.Event()
+
+    def blocking_read(_self, _terminal_id):
+        reading.set()
+        assert release.wait(timeout=5)
+        return b"", False
+
+    monkeypatch.setattr(controller_module._TerminalManager, "read", blocking_read)
+
+    with TestClient(create_app(_settings(settings))) as client:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(
+                client.post,
+                "/v1/terminals/read",
+                headers=_api_headers(),
+                json={"manager_scope": _SCOPE, "terminal_id": "a" * 32},
+            )
+            assert reading.wait(timeout=2)
+            started = time.monotonic()
+            health = client.get("/health")
+            elapsed = time.monotonic() - started
+            release.set()
+            terminal = pending.result(timeout=2)
+
+    assert health.status_code == 200
+    assert elapsed < 0.5
+    assert terminal.status_code == 200
 
 
 def test_controller_plugin_validation_is_fixed_owned_and_path_scoped(settings, monkeypatch):

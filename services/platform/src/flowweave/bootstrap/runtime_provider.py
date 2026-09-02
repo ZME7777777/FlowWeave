@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -363,6 +364,7 @@ class _TerminalManager:
     def __init__(self, *, idle_seconds: int) -> None:
         self.idle_seconds = idle_seconds
         self.attachments: dict[str, _TerminalAttachment] = {}
+        self._lock = threading.RLock()
 
     def start(
         self,
@@ -382,32 +384,46 @@ class _TerminalManager:
         )
         os.set_blocking(master, False)
         terminal_id = secrets.token_hex(24)
-        self.attachments[terminal_id] = _TerminalAttachment(master, process, time.monotonic())
+        with self._lock:
+            self.attachments[terminal_id] = _TerminalAttachment(
+                master, process, time.monotonic()
+            )
         return terminal_id
 
     def get(self, terminal_id: str) -> _TerminalAttachment:
-        item = self.attachments.get(terminal_id)
-        if item is None:
-            raise DomainError("TERMINAL_NOT_FOUND", "Terminal attachment is unavailable", 404)
-        item.last_activity = time.monotonic()
-        return item
+        with self._lock:
+            item = self.attachments.get(terminal_id)
+            if item is None:
+                raise DomainError(
+                    "TERMINAL_NOT_FOUND", "Terminal attachment is unavailable", 404
+                )
+            item.last_activity = time.monotonic()
+            return item
 
     def read(self, terminal_id: str) -> tuple[bytes, bool]:
-        item = self.get(terminal_id)
-        try:
-            content = os.read(item.master, 65_536)
-        except BlockingIOError:
-            content = b""
-        except OSError:
-            content = b""
-        return content, item.process.poll() is not None
+        with self._lock:
+            item = self.get(terminal_id)
+            try:
+                content = os.read(item.master, 65_536)
+            except BlockingIOError:
+                content = b""
+            except OSError:
+                content = b""
+            return content, item.process.poll() is not None
+
+    def write(self, terminal_id: str, content: bytes) -> None:
+        with self._lock:
+            item = self.get(terminal_id)
+            os.write(item.master, content)
 
     def resize(self, terminal_id: str, rows: int, columns: int) -> None:
-        item = self.get(terminal_id)
-        environments_docker.resize_terminal(item.master, rows, columns, item.process)
+        with self._lock:
+            item = self.get(terminal_id)
+            environments_docker.resize_terminal(item.master, rows, columns, item.process)
 
     def close(self, terminal_id: str) -> None:
-        item = self.attachments.pop(terminal_id, None)
+        with self._lock:
+            item = self.attachments.pop(terminal_id, None)
         if item is None:
             return
         if item.process.poll() is None:
@@ -421,12 +437,20 @@ class _TerminalManager:
 
     def reap(self) -> None:
         now = time.monotonic()
-        for terminal_id, item in list(self.attachments.items()):
-            if item.process.poll() is not None or now - item.last_activity >= self.idle_seconds:
-                self.close(terminal_id)
+        with self._lock:
+            expired = [
+                terminal_id
+                for terminal_id, item in self.attachments.items()
+                if item.process.poll() is not None
+                or now - item.last_activity >= self.idle_seconds
+            ]
+        for terminal_id in expired:
+            self.close(terminal_id)
 
     def close_all(self) -> None:
-        for terminal_id in list(self.attachments):
+        with self._lock:
+            terminal_ids = list(self.attachments)
+        for terminal_id in terminal_ids:
             self.close(terminal_id)
 
 
@@ -598,7 +622,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def reaper() -> None:
             while True:
                 await asyncio.sleep(30)
-                terminals.reap()
+                await asyncio.to_thread(terminals.reap)
 
         task = asyncio.create_task(reaper())
         try:
@@ -606,7 +630,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            terminals.close_all()
+            await asyncio.to_thread(terminals.close_all)
 
     app = FastAPI(title="FlowWeave Runtime Provider", version="1.0.0", lifespan=lifespan)
 
@@ -1027,17 +1051,97 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/terminals/start")
     async def terminal_start(payload: TerminalStartWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
-        # Setup terminals and Agent Workspace terminals use different managed
-        # container kinds.  The latter deliberately have no environment_id.
-        # Resolve them through the same ownership ledger, never by container
-        # name alone.
-        if payload.environment_id is not None:
-            container_id = environments_docker.resolve_setup_container(
-                payload.resource_name,
-                sandbox_id=str(payload.resource_id),
-                environment_id=str(payload.environment_id),
+
+        def start() -> str:
+            # Setup terminals and Agent Workspace terminals use different
+            # managed container kinds. Resolve both through their ownership
+            # ledger, never by container name alone. Docker and PTY operations
+            # are synchronous and must not block the Provider event loop.
+            if payload.environment_id is not None:
+                container_id = environments_docker.resolve_setup_container(
+                    payload.resource_name,
+                    sandbox_id=str(payload.resource_id),
+                    environment_id=str(payload.environment_id),
+                )
+            else:
+                try:
+                    container_id = inspect_owned_container(
+                        configured.docker_binary,
+                        payload.resource_name,
+                        str(payload.resource_id),
+                        expected_manager_scope=configured.sandbox_manager_scope,
+                        expected_kind="agent-runtime",
+                        timeout=30,
+                    )
+                except DockerOwnershipError as exc:
+                    raise DomainError(
+                        "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
+                        "The Agent Runtime container is owned by another resource",
+                        409,
+                    ) from exc
+                except DockerControlError as exc:
+                    raise DomainError(
+                        "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+                        "The Agent Runtime container could not be verified",
+                        503,
+                    ) from exc
+                if container_id is None:
+                    raise DomainError(
+                        "AGENT_TERMINAL_UNAVAILABLE",
+                        "The Agent Runtime container no longer exists",
+                        409,
+                    )
+            return terminals.start(
+                container_id,
+                payload.session_name,
+                payload.rows,
+                payload.columns,
+                working_dir=(
+                    None
+                    if payload.environment_id is not None
+                    else payload.working_dir or "/runtime/workspace/project"
+                )
             )
-        else:
+
+        return {"terminal_id": await asyncio.to_thread(start)}
+
+    @app.post("/v1/terminals/read")
+    async def terminal_read(payload: TerminalIdWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        content, eof = await asyncio.to_thread(terminals.read, payload.terminal_id)
+        return {"content_base64": base64.b64encode(content).decode(), "eof": eof}
+
+    @app.post("/v1/terminals/write")
+    async def terminal_write(payload: TerminalWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        try:
+            content = base64.b64decode(payload.content_base64, validate=True)
+        except ValueError as exc:
+            raise DomainError("TERMINAL_INPUT_INVALID", "Terminal input is invalid", 422) from exc
+        if len(content) > 65_536:
+            raise DomainError("TERMINAL_INPUT_TOO_LARGE", "Terminal input is too large", 422)
+        await asyncio.to_thread(terminals.write, payload.terminal_id, content)
+        return {"written": True}
+
+    @app.post("/v1/terminals/resize")
+    async def terminal_resize(payload: TerminalResizeWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        await asyncio.to_thread(
+            terminals.resize, payload.terminal_id, payload.rows, payload.columns
+        )
+        return {"resized": True}
+
+    @app.post("/v1/terminals/close")
+    async def terminal_close(payload: TerminalIdWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        await asyncio.to_thread(terminals.close, payload.terminal_id)
+        return {"closed": True}
+
+    @app.post("/v1/terminals/destroy-session")
+    async def terminal_destroy_session(payload: TerminalSessionWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+
+        def destroy() -> None:
             try:
                 container_id = inspect_owned_container(
                     configured.docker_binary,
@@ -1065,81 +1169,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "The Agent Runtime container no longer exists",
                     409,
                 )
-        return {
-            "terminal_id": terminals.start(
-                container_id,
-                payload.session_name,
-                payload.rows,
-                payload.columns,
-                working_dir=(
-                    None
-                    if payload.environment_id is not None
-                    else payload.working_dir or "/runtime/workspace/project"
-                ),
-            )
-        }
+            environments_docker.destroy_terminal_session(container_id, payload.session_name)
 
-    @app.post("/v1/terminals/read")
-    async def terminal_read(payload: TerminalIdWrite) -> dict[str, Any]:
-        check_scope(payload.manager_scope)
-        content, eof = terminals.read(payload.terminal_id)
-        return {"content_base64": base64.b64encode(content).decode(), "eof": eof}
-
-    @app.post("/v1/terminals/write")
-    async def terminal_write(payload: TerminalWrite) -> dict[str, bool]:
-        check_scope(payload.manager_scope)
-        try:
-            content = base64.b64decode(payload.content_base64, validate=True)
-        except ValueError as exc:
-            raise DomainError("TERMINAL_INPUT_INVALID", "Terminal input is invalid", 422) from exc
-        if len(content) > 65_536:
-            raise DomainError("TERMINAL_INPUT_TOO_LARGE", "Terminal input is too large", 422)
-        os.write(terminals.get(payload.terminal_id).master, content)
-        return {"written": True}
-
-    @app.post("/v1/terminals/resize")
-    async def terminal_resize(payload: TerminalResizeWrite) -> dict[str, bool]:
-        check_scope(payload.manager_scope)
-        terminals.resize(payload.terminal_id, payload.rows, payload.columns)
-        return {"resized": True}
-
-    @app.post("/v1/terminals/close")
-    async def terminal_close(payload: TerminalIdWrite) -> dict[str, bool]:
-        check_scope(payload.manager_scope)
-        terminals.close(payload.terminal_id)
-        return {"closed": True}
-
-    @app.post("/v1/terminals/destroy-session")
-    async def terminal_destroy_session(payload: TerminalSessionWrite) -> dict[str, bool]:
-        check_scope(payload.manager_scope)
-        try:
-            container_id = inspect_owned_container(
-                configured.docker_binary,
-                payload.resource_name,
-                str(payload.resource_id),
-                expected_manager_scope=configured.sandbox_manager_scope,
-                expected_kind="agent-runtime",
-                timeout=30,
-            )
-        except DockerOwnershipError as exc:
-            raise DomainError(
-                "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
-                "The Agent Runtime container is owned by another resource",
-                409,
-            ) from exc
-        except DockerControlError as exc:
-            raise DomainError(
-                "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
-                "The Agent Runtime container could not be verified",
-                503,
-            ) from exc
-        if container_id is None:
-            raise DomainError(
-                "AGENT_TERMINAL_UNAVAILABLE",
-                "The Agent Runtime container no longer exists",
-                409,
-            )
-        environments_docker.destroy_terminal_session(container_id, payload.session_name)
+        await asyncio.to_thread(destroy)
         return {"destroyed": True}
 
     # FastAPI retains these callables through the registered routes/handlers.
