@@ -1231,6 +1231,38 @@ def _gate_artifact(item: ArtifactVersion) -> dict[str, Any]:
     }
 
 
+def _review_artifact(item: ArtifactVersion) -> dict[str, Any]:
+    """Add a bounded, local-only preview for semantic output review."""
+
+    value = _gate_artifact(item)
+    if item.artifact_type == "URL":
+        value["review_preview"] = {"kind": "URL", "value": item.uri}
+        return value
+    raw: bytes | None = None
+    if item.inline_content is not None:
+        raw = item.inline_content.encode()
+    elif item.storage_key:
+        raw = get_artifact_store().read(item.storage_key)
+    if raw is None:
+        return value
+    preview = raw[: 64 * 1024]
+    try:
+        text = preview.decode("utf-8")
+    except UnicodeDecodeError:
+        value["review_preview"] = {
+            "kind": "BINARY",
+            "byte_count": len(raw),
+            "truncated": len(raw) > len(preview),
+        }
+        return value
+    value["review_preview"] = {
+        "kind": "TEXT",
+        "content": text,
+        "truncated": len(raw) > len(preview),
+    }
+    return value
+
+
 def _gate_context(
     db: Session, attempt: NodeAttempt, node_run: NodeRun, node: dict[str, Any], stage: str
 ) -> dict[str, Any]:
@@ -1271,9 +1303,70 @@ def _gate_context(
             "outputs": node.get("asset", {}).get("outputs", []),
         },
         "input_bindings": bindings,
-        "outputs": [_gate_artifact(item) for item in outputs],
+        # Candidate content is exposed only as a bounded local preview. The
+        # reviewer never receives a credentialed Artifact-store handle or an
+        # unrestricted workspace path.
+        "outputs": [_review_artifact(item) for item in outputs],
         "artifacts": [item["artifact"] for item in bindings]
         + [_gate_artifact(item) for item in outputs],
+    }
+
+
+_PLATFORM_OUTPUT_REVIEW_POLICY_ID = "__platform_output_contract__"
+_PLATFORM_OUTPUT_REVIEW_POSITION = -10_000
+_PLATFORM_OUTPUT_REVIEW_PROMPT = """
+You are the platform's mandatory output-contract reviewer. Evaluate whether the
+candidate outputs actually satisfy the node's declared output contract, not
+merely whether every field exists. Use only the supplied frozen node definition,
+input bindings, candidate artifacts, and evidence. Check each required output's
+purpose, type, completeness, and whether the candidate is usable by the next
+node. Do not infer success from the executing Agent's claim.
+
+Return PASS only when every declared output is substantively fit for its stated
+purpose. Return FAIL when revision or human review is needed. Your reasons must
+identify the missing or inadequate field(s); include the selected artifact ids in
+details.selected_output_artifact_ids when they are usable.
+"""
+
+
+def _platform_output_review_policy(db: Session, attempt: NodeAttempt) -> dict[str, Any]:
+    """Build the unskippable first END gate from the execution binding.
+
+    This is deliberately a normal isolated Gate Agent invocation: it gets a new
+    native Conversation, no primary-Agent history or capabilities, and its result
+    is persisted in ``GateEvaluation``.  The only special property is ownership:
+    the platform injects it from the output contract, so a flow author cannot
+    disable, reorder, or replace it with a weaker end gate.
+    """
+
+    binding = agent_sessions.flow_node_binding_for_attempt(db, attempt.id)
+    if binding.model_provider_id is None and get_settings().runtime_adapter != "mock":
+        raise DomainError(
+            "OUTPUT_REVIEWER_CONFIGURATION_MISSING",
+            "The execution conversation has no frozen model for output review",
+            409,
+            {"attempt_id": attempt.id},
+        )
+    return {
+        "id": _PLATFORM_OUTPUT_REVIEW_POLICY_ID,
+        "stage": "END",
+        "position": _PLATFORM_OUTPUT_REVIEW_POSITION,
+        "gate_type": "PROMPT",
+        "enabled": True,
+        "timeout_seconds": 300,
+        "config": {
+            "prompt": _PLATFORM_OUTPUT_REVIEW_PROMPT,
+            "system_owned": True,
+            "review_kind": "OUTPUT_CONTRACT",
+        },
+        # The review is a separate Agent call, but its model identity comes
+        # from the node's already-frozen execution binding rather than a mutable
+        # workspace default or an author-supplied gate preset.
+        "agent_preset": {
+            "model_provider_id": binding.model_provider_id,
+            "model_name": binding.model_name,
+            "reasoning_effort": binding.reasoning_effort,
+        },
     }
 
 
@@ -1407,10 +1500,15 @@ def _prepare_gate_stage(
     node_run = _node_run(db, attempt.node_run_id)
     node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
     context = _gate_context(db, attempt, node_run, node, stage)
-    policies = sorted(
-        [x for x in attempt.gate_policies_json if x["stage"] == stage and x.get("enabled", True)],
-        key=lambda x: x["position"],
-    )
+    policies = [
+        x for x in attempt.gate_policies_json if x["stage"] == stage and x.get("enabled", True)
+    ]
+    if stage == "END":
+        # Output acceptance is always reviewed before author-configured end
+        # gates.  The latter answer additional policy questions; they cannot
+        # substitute for the platform's output-contract decision.
+        policies.append(_platform_output_review_policy(db, attempt))
+    policies.sort(key=lambda x: int(x["position"]))
     prepared: list[_PreparedGate] = []
     for policy in policies:
         execution_no = (
@@ -1512,25 +1610,36 @@ def _prepare_gate_plan(
         )
     try:
         connection = _flow_run_sidecar_connection(db, run.id)
-        session_config = agent_sessions.resolve_session_config(
-            db,
-            model_provider_id=(
-                str(typed_preset["model_provider_id"])
-                if typed_preset.get("model_provider_id")
-                else None
-            ),
-            model_name=(
-                str(typed_preset["model_name"]) if typed_preset.get("model_name") else None
-            ),
-            reasoning_effort=(
-                str(typed_preset["reasoning_effort"])
-                if typed_preset.get("reasoning_effort")
-                else None
-            ),
-            # A gate never inherits the primary Agent's skills, plugins or
-            # context. Its only inputs are the explicit gate payload below.
-            capability_version_ids=(),
-        )
+        if config.get("system_owned") is True:
+            # The mandatory review must use exactly the model frozen on the
+            # execution Conversation.  In particular it must not fall back to
+            # a mutable workspace default if that binding is malformed.
+            session_config = replace(
+                agent_sessions.config_from_binding(
+                    db, agent_sessions.flow_node_binding_for_attempt(db, attempt.id)
+                ),
+                capabilities=(),
+            )
+        else:
+            session_config = agent_sessions.resolve_session_config(
+                db,
+                model_provider_id=(
+                    str(typed_preset["model_provider_id"])
+                    if typed_preset.get("model_provider_id")
+                    else None
+                ),
+                model_name=(
+                    str(typed_preset["model_name"]) if typed_preset.get("model_name") else None
+                ),
+                reasoning_effort=(
+                    str(typed_preset["reasoning_effort"])
+                    if typed_preset.get("reasoning_effort")
+                    else None
+                ),
+                # A gate never inherits the primary Agent's skills, plugins or
+                # context. Its only inputs are the explicit gate payload below.
+                capability_version_ids=(),
+            )
         binding = agent_sessions.reserve_flow_node_binding(
             db,
             runtime_session_id=connection.runtime_session_id,
@@ -1630,13 +1739,21 @@ def _execute_gate_stage(
 ) -> tuple[list[tuple[_PreparedGate, GateResult]], bool]:
     evaluations: list[tuple[_PreparedGate, GateResult]] = []
     blocked = False
-    for item in prepared:
-        result = execute_gate_plan(item.plan, context)
-        if item.plan.sidecar_binding_id:
-            agent_sessions.delete_binding_records(db, item.plan.sidecar_binding_id)
+    for position, item in enumerate(prepared):
+        try:
+            result = execute_gate_plan(item.plan, context)
+        finally:
+            if item.plan.sidecar_binding_id:
+                agent_sessions.delete_binding_records(db, item.plan.sidecar_binding_id)
         evaluations.append((item, result))
         if result.decision != "PASS":
             blocked = True
+            # All sidecar bindings are reserved before external I/O so their
+            # frozen configuration survives a worker failure.  A short-circuit
+            # must nevertheless clean reservations for policies never run.
+            for remaining in prepared[position + 1 :]:
+                if remaining.plan.sidecar_binding_id:
+                    agent_sessions.delete_binding_records(db, remaining.plan.sidecar_binding_id)
             break
     return evaluations, blocked
 
@@ -3138,8 +3255,10 @@ def recover_runtime_tasks(db: Session) -> int:
         if attempt.runtime_phase == "STARTING":
             task_type = "START_RUNTIME"
         elif attempt.runtime_phase == "RUNNING":
-            task_type = "POLL_RUNTIME"
-            payload = {"poll_no": 1}
+            # Event wakeups are the normal driver. Recovery only reinstates the
+            # long-poll subscription; it does not restore the old poll loop.
+            task_type = "WAIT_RUNTIME_WAKEUP"
+            payload = {"wakeup_no": 1}
         elif attempt.runtime_phase == "CANCELLING":
             task_type = "CANCEL_RUNTIME"
             latest_cancel_task = db.scalar(
@@ -3934,10 +4053,23 @@ def process_poll_runtime(
         if result.status == "CONFIRMATION_REQUIRED"
         else None
     )
-    try:
-        _require_current_lease(db, lease)
-    except Exception:
-        raise
+    _require_current_lease(db, lease)
+    if result.status == "RUNNING":
+        # A reconciliation observation is not an Attempt command or business
+        # transition.  In particular, it must not consume ``state_version``
+        # and race a user pause/cancel/accept action merely because the Runtime
+        # has not changed.  ``WAIT_RUNTIME_WAKEUP`` is the normal driver for
+        # the next projection; a periodic recovery/reconciliation task may
+        # later invoke this function, but this observation must never recreate
+        # a tight polling loop.
+        current = _attempt(db, current_attempt_id)
+        if (
+            current.state == AttemptState.EXECUTING
+            and current.runtime_phase == "RUNNING"
+            and current.state_version == expected_version
+        ):
+            _finish_transaction(db, commit)
+        return
     claimed = _claim_runtime_phase(
         db,
         current_attempt_id,
@@ -3967,14 +4099,6 @@ def process_poll_runtime(
         failure_code=failure_code,
         commit=commit,
     )
-    if result.status == "RUNNING":
-        _dispatch_poll(
-            db,
-            claimed,
-            poll_no + 1,
-            delayed=True,
-        )
-        _finish_transaction(db, commit)
 
 
 def human_input(
@@ -4900,7 +5024,9 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
                 RuntimeConfirmationApproval.attempt_id.in_(attempt_ids)
             )
         )
-        db.execute(delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids)))
+        db.execute(
+            delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids))
+        )
         db.execute(delete(GateEvaluation).where(GateEvaluation.attempt_id.in_(attempt_ids)))
     db.execute(delete(HumanAction).where(HumanAction.node_run_id == node_run.id))
     db.execute(delete(RunEvent).where(RunEvent.node_run_id == node_run.id))
@@ -5876,6 +6002,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
     snapshots_by_id = {item.id: item for item in snapshots}
     pending_states = {
         AttemptState.WAITING_START_CONFIRMATION,
+        AttemptState.PAUSED,
         AttemptState.WAITING_HUMAN,
         AttemptState.WAITING_ACCEPTANCE,
         AttemptState.START_BLOCKED,

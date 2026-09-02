@@ -51,6 +51,10 @@ class AttemptState(StrEnum):
     START_BLOCKED = "START_BLOCKED"
     WAITING_START_CONFIRMATION = "WAITING_START_CONFIRMATION"
     EXECUTING = "EXECUTING"
+    # A user-paused native conversation is a stable orchestration wait state.
+    # It is intentionally distinct from WAITING_HUMAN: the latter means the
+    # Agent requested information, while PAUSED is an explicit operator stop.
+    PAUSED = "PAUSED"
     WAITING_HUMAN = "WAITING_HUMAN"
     WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
     END_GATES = "END_GATES"

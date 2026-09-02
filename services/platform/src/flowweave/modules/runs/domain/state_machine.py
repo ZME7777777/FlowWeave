@@ -6,6 +6,8 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     (AttemptState.START_GATES, "GATES_PASS"): AttemptState.WAITING_START_CONFIRMATION,
     (AttemptState.START_GATES, "GATES_BLOCK"): AttemptState.START_BLOCKED,
     (AttemptState.WAITING_START_CONFIRMATION, "CONFIRM_START"): AttemptState.EXECUTING,
+    (AttemptState.EXECUTING, "PAUSE"): AttemptState.PAUSED,
+    (AttemptState.PAUSED, "RESUME"): AttemptState.EXECUTING,
     (AttemptState.EXECUTING, "HUMAN_REQUIRED"): AttemptState.WAITING_HUMAN,
     (AttemptState.EXECUTING, "CONFIRMATION_REQUIRED"): AttemptState.WAITING_CONFIRMATION,
     (AttemptState.WAITING_HUMAN, "HUMAN_INPUT"): AttemptState.EXECUTING,

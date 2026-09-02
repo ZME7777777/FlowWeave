@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
@@ -50,6 +50,7 @@ from flowweave.modules.environments.public import (
 )
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
+from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.base import RuntimeCondenser, RuntimeEventBatch, RuntimeHandle, RuntimeResult
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import runtime_node
@@ -66,10 +67,13 @@ from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     AgentWorkDirectoryVersion,
+    AttemptState,
     FlowRun,
+    FlowRunState,
     HumanAction,
     NodeAttempt,
     NodeRun,
+    RunEvent,
     RunSnapshot,
 )
 from flowweave.shared.schemas import (
@@ -1946,18 +1950,127 @@ def condense_node_conversation(
 def interrupt_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, bool]:
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    attempt = _attempt(db, attempt_id)
+    expected_version = attempt.state_version
+    should_pause = attempt.state == AttemptState.EXECUTING and attempt.runtime_phase == "RUNNING"
     get_runtime().interrupt(
         _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     )
+    if should_pause:
+        claimed_id = db.scalar(
+            update(NodeAttempt)
+            .where(
+                NodeAttempt.id == attempt_id,
+                NodeAttempt.state == AttemptState.EXECUTING,
+                NodeAttempt.runtime_phase == "RUNNING",
+                NodeAttempt.state_version == expected_version,
+            )
+            .values(
+                state=AttemptState.PAUSED,
+                runtime_phase="PAUSED",
+                state_version=NodeAttempt.state_version + 1,
+            )
+            .returning(NodeAttempt.id)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed_id is None:
+            db.expire_all()
+            return {"accepted": True}
+        db.expire_all()
+        paused = _attempt(db, attempt_id)
+        node_run, run, _ = _attempt_context(db, paused)
+        run.state = FlowRunState.WAITING_HUMAN
+        db.add(
+            RunEvent(
+                flow_run_id=run.id,
+                node_run_id=node_run.id,
+                attempt_id=paused.id,
+                event_type="ATTEMPT_PAUSED",
+                payload_json={"conversation_id": binding.openhands_conversation_id},
+            )
+        )
+        finish(db)
     return {"accepted": True}
 
 
 def resume_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    attempt = _attempt(db, attempt_id)
+    if attempt.state != AttemptState.PAUSED or attempt.runtime_phase != "PAUSED":
+        raise conflict("node attempt is not paused", attempt_id=attempt.id, state=attempt.state)
+    expected_version = attempt.state_version
+    claimed_id = db.scalar(
+        update(NodeAttempt)
+        .where(
+            NodeAttempt.id == attempt_id,
+            NodeAttempt.state == AttemptState.PAUSED,
+            NodeAttempt.runtime_phase == "PAUSED",
+            NodeAttempt.state_version == expected_version,
+        )
+        .values(
+            state=AttemptState.EXECUTING,
+            runtime_phase="RESUMING",
+            state_version=NodeAttempt.state_version + 1,
+        )
+        .returning(NodeAttempt.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_id is None:
+        db.expire_all()
+        raise conflict("node attempt changed while resuming", attempt_id=attempt_id)
+    db.expire_all()
+    resuming = _attempt(db, attempt_id)
     result = get_runtime().run(
         _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     )
+    running_id = db.scalar(
+        update(NodeAttempt)
+        .where(
+            NodeAttempt.id == attempt_id,
+            NodeAttempt.state == AttemptState.EXECUTING,
+            NodeAttempt.runtime_phase == "RESUMING",
+            NodeAttempt.state_version == resuming.state_version,
+        )
+        .values(
+            runtime_phase="RUNNING",
+            state_version=NodeAttempt.state_version + 1,
+        )
+        .returning(NodeAttempt.id)
+        .execution_options(synchronize_session=False)
+    )
+    if running_id is None:
+        db.expire_all()
+        return {"accepted": True, "cursor": result.cursor}
+    db.expire_all()
+    running = _attempt(db, attempt_id)
+    node_run, run, _ = _attempt_context(db, running)
+    run.state = FlowRunState.ACTIVE
+    db.add(
+        RunEvent(
+            flow_run_id=run.id,
+            node_run_id=node_run.id,
+            attempt_id=running.id,
+            event_type="ATTEMPT_RESUMED",
+            payload_json={"conversation_id": binding.openhands_conversation_id},
+        )
+    )
+    task = enqueue(
+        db,
+        task_type="WAIT_RUNTIME_WAKEUP",
+        aggregate_type="ATTEMPT",
+        aggregate_id=running.id,
+        idempotency_key=f"wait-runtime-wakeup:{running.id}:v{running.state_version}:1",
+        payload={"wakeup_no": 1},
+    )
+    task.max_attempts = max(task.max_attempts, 100)
+    finish(db)
     return {"accepted": True, "cursor": result.cursor}
 
 
