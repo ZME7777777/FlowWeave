@@ -424,6 +424,28 @@ class AttemptVersionWrite(ApiModel):
     expected_state_version: int = Field(ge=1)
 
 
+class ManualAttemptOutputWrite(ApiModel):
+    artifact_type: Literal["URL", "FILE"]
+    uri: str | None = None
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def validate_value(self) -> ManualAttemptOutputWrite:
+        if self.artifact_type == "URL":
+            if self.path is not None or self.uri is None:
+                raise ValueError("URL output requires uri and does not accept path")
+            self.uri = _http_url(self.uri, "manual output uri")
+            return self
+        if self.uri is not None or self.path is None or not self.path.strip():
+            raise ValueError("FILE output requires path and does not accept uri")
+        self.path = self.path.strip()
+        return self
+
+
+class ManualAttemptOutputsWrite(AttemptVersionWrite):
+    outputs: dict[str, ManualAttemptOutputWrite] = Field(max_length=100)
+
+
 class RuntimeCancelRecoveryWrite(AttemptVersionWrite):
     mode: Literal["RECONCILE_PARENT", "DELETE_MANAGED_RUNTIME"] = "RECONCILE_PARENT"
 

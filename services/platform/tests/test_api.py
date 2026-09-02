@@ -700,7 +700,7 @@ def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_executi
     assert attempt["state"] == "WAITING_START_CONFIRMATION"
     assert attempt["startup_mode"] == "CHAT"
     assert attempt["input_bindings"] == []
-    assert attempt["gate_policies"] == []
+    assert [gate["stage"] for gate in attempt["gate_policies"]] == ["END"]
     assert attempt["gate_evaluations"] == []
     assert attempt["output_targets"] == {}
     assert attempt["artifacts"] == []
@@ -722,6 +722,122 @@ def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_executi
             "ATTEMPT_CREATED",
             "ATTEMPT_SESSION_READY",
         ]
+
+
+def test_session_only_node_can_submit_explicit_outputs_and_enter_acceptance(
+    client, skill_capability
+):
+    asset = create_asset(client, skill_capability, name="人工会话产出节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    launched = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"startup_mode": "CHAT"},
+    ).json()
+    attempt = launched["attempts"][0]
+
+    missing = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/manual-outputs",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "outputs": {"extra": {"artifact_type": "URL", "uri": "https://example.test/extra"}},
+        },
+    )
+    assert missing.status_code == 422, missing.text
+    assert missing.json()["error"]["code"] == "MANUAL_OUTPUT_CONTRACT_INVALID"
+
+    submitted = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/manual-outputs",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "outputs": {
+                "design": {
+                    "artifact_type": "URL",
+                    "uri": "https://example.test/manual-design",
+                }
+            },
+        },
+    )
+    assert submitted.status_code == 200, submitted.text
+    result = submitted.json()
+    assert result["state"] == "WAITING_ACCEPTANCE"
+    assert result["runtime_phase"] == "MANUAL_OUTPUTS_SUBMITTED"
+    assert result["artifacts"][0]["source"] == "HUMAN_SESSION"
+    assert result["artifacts"][0]["uri"] == "https://example.test/manual-design"
+
+    stale = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/manual-outputs",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "outputs": {
+                "design": {
+                    "artifact_type": "URL",
+                    "uri": "https://example.test/stale",
+                }
+            },
+        },
+    )
+    assert stale.status_code == 409, stale.text
+
+
+def test_session_only_file_output_is_copied_from_authorized_project(
+    client, skill_capability, monkeypatch
+):
+    payload = asset_payload("人工文件产出节点")
+    payload["inputs"][0]["data_type"] = "FILE"
+    payload["outputs"][0]["data_type"] = "FILE"
+    created = client.post("/api/v1/node-assets", json=payload)
+    assert created.status_code == 201, created.text
+    flow = create_flow(client, created.json()["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    attempt = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"startup_mode": "CHAT"},
+    ).json()["attempts"][0]
+
+    escaped = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/manual-outputs",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "outputs": {
+                "design": {
+                    "artifact_type": "FILE",
+                    "path": "/etc/passwd",
+                }
+            },
+        },
+    )
+    assert escaped.status_code == 422, escaped.text
+    assert escaped.json()["error"]["code"] == "FLOW_RUN_WORKSPACE_PATH_INVALID"
+
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions.flow_node_workspace,
+        "read_file",
+        lambda *args, **kwargs: (b"frozen manual output", "text/markdown", "design.md"),
+    )
+    submitted = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/manual-outputs",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "outputs": {
+                "design": {
+                    "artifact_type": "FILE",
+                    "path": "/runtime/workspace/project/design.md",
+                }
+            },
+        },
+    )
+    assert submitted.status_code == 200, submitted.text
+    artifact = submitted.json()["artifacts"][0]
+    assert artifact["metadata"]["runtime_path"] == "/runtime/workspace/project/design.md"
+    downloaded = client.get(f"/api/v1/artifact-versions/{artifact['id']}/content")
+    assert downloaded.content == b"frozen manual output"
 
 
 def test_human_start_freezes_selected_node_context_and_chat_starts_without_it(

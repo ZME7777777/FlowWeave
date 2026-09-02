@@ -387,6 +387,8 @@ export const api = {
     request<NodeAttempt>(`/node-attempts/${attemptId}/input-bindings`, json('PUT', { bindings, expected_state_version: version })),
   confirmStart: (attemptId: string, version: number, startup: { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string }) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version, ...startup }, true)),
   humanInput: (attemptId: string, content: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version }, true)),
+  submitManualOutputs: (attemptId: string, version: number, outputs: Record<string, { artifact_type: 'URL'; uri: string } | { artifact_type: 'FILE'; path: string }>) =>
+    request<NodeAttempt>(`/node-attempts/${attemptId}/manual-outputs`, json('POST', { expected_state_version: version, outputs }, true)),
   decideRuntimeConfirmation: (batchId: string, accept: boolean, reason: string) =>
     request<RuntimeConfirmationBatch>(`/runtime-confirmation-batches/${batchId}/decision`, json('POST', { accept, reason }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),

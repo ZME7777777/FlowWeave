@@ -78,6 +78,31 @@ const frozenAutomaticBase = {
   },
 };
 
+const chatAttempt = {
+  ...attempt, id: 'chat-attempt-1', state: 'WAITING_START_CONFIRMATION', startup_mode: 'CHAT',
+};
+const chatNodeRun = { ...nodeRun, id: 'chat-node-run-1', attempts: [chatAttempt] };
+const chatRun = {
+  ...run, node_runs: [chatNodeRun], current_attempt_state: 'WAITING_START_CONFIRMATION',
+};
+const automaticAttempt = {
+  ...attempt, id: 'automatic-attempt-1', node_run_id: 'automatic-node-run-1', state: 'END_BLOCKED',
+  state_version: 4, error_code: 'AUTOMATIC_TRANSITION_INVALID',
+  error_detail: '流转 Agent 选择了未授权节点',
+};
+const automaticNodeRun = {
+  ...nodeRun, id: 'automatic-node-run-1', flow_run_id: automaticBase.id, attempts: [automaticAttempt],
+};
+const runningAutomatic = {
+  ...frozenAutomaticBase, state: 'WAITING_HUMAN', runtime_status: 'ACTIVE', runtime_write_available: true,
+  current_node_key: 'first', current_node_name: '测试节点', current_attempt_state: 'END_BLOCKED',
+  progress: { accepted: 0, terminal: 0, active: 1 }, node_runs: [automaticNodeRun],
+  automation_plan: {
+    ...frozenAutomaticBase.automation_plan, status: 'FROZEN',
+    readiness: { ready: true, issues: [] },
+  },
+};
+
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
   let saveRequests = 0;
   let submittedBody: Record<string, unknown> | undefined;
@@ -244,4 +269,62 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.getByRole('alert')).toContainText('保存失败：当前自动运行记录已启动，不能继续修改。');
+});
+
+test('FR-130 running automatic records show execution facts and chat attempts submit explicit outputs', async ({ page }) => {
+  let currentRun = chatRun;
+  let submittedOutputs: unknown;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}`) return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs` && request.method() === 'GET') return respond([runningAutomatic]);
+    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/node-attempts/${chatAttempt.id}/manual-outputs` && request.method() === 'POST') {
+      submittedOutputs = request.postDataJSON();
+      const acceptedAttempt = {
+        ...chatAttempt, state: 'WAITING_ACCEPTANCE', state_version: 2, runtime_phase: 'MANUAL_OUTPUTS_SUBMITTED',
+        artifacts: [{
+          id: 'manual-output-1', flow_run_id: run.id, producer_attempt_id: chatAttempt.id, consumer_node_key: null,
+          field_key: 'output_1', version_no: 1, artifact_type: 'URL', storage_key: null,
+          uri: 'https://example.com/result', inline_content: null, content_hash: 'manual-output-hash', byte_size: 26,
+          mime_type: 'text/uri-list', source: 'HUMAN_SESSION', metadata: {}, created_at: now,
+        }],
+      };
+      currentRun = { ...currentRun, current_attempt_state: 'WAITING_ACCEPTANCE', node_runs: [{ ...chatNodeRun, attempts: [acceptedAttempt] }] };
+      return respond(acceptedAttempt);
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+
+  await page.locator('.timeline button').filter({ hasText: '测试节点' }).click();
+  const manualPanel = page.locator('.attempt-control');
+  await expect(manualPanel.getByRole('heading', { name: '提交会话产出' })).toBeVisible();
+  await expect(manualPanel).toContainText('会话回复不会自动成为节点输出');
+  await manualPanel.getByLabel('提交输出 output_1').fill('https://example.com/result');
+  await manualPanel.getByRole('button', { name: '提交候选输出并运行完成门禁' }).click();
+  await expect(manualPanel.getByRole('button', { name: '完成节点并流转' })).toBeVisible();
+  expect(submittedOutputs).toEqual({
+    expected_state_version: 1,
+    outputs: { output_1: { artifact_type: 'URL', uri: 'https://example.com/result' } },
+  });
+
+  await page.getByRole('tab', { name: '自动运行' }).click();
+  await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
+  await expect(page.locator('.automatic-record-editor')).toHaveCount(0);
+  await expect(page.getByTestId('attempt-state')).toHaveText('END_BLOCKED');
+  await expect(page.locator('.attempt-control')).toContainText('自动运行需要人工处理');
+  await expect(page.locator('.attempt-control')).toContainText('流转 Agent 选择了未授权节点');
+  await expect(page.locator('.run-graph-node.failed')).toContainText('完成条件未通过');
+  await expect(page.locator('.run-graph-node.automatic-locked')).toContainText('测试节点2');
+  await expect(page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' })).toHaveCount(0);
 });

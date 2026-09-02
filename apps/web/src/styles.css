@@ -428,3 +428,9 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .agent-preset-capability-dialog{display:flex;flex-direction:column}
 .agent-preset-capability-dialog .agent-capability-toolbar,.agent-preset-capability-dialog .agent-capability-collections,.agent-preset-capability-dialog .agent-capability-summary,.agent-preset-capability-dialog>footer{flex:0 0 auto}
 .agent-preset-capability-dialog .agent-capability-list{flex:1 1 auto;min-height:180px}
+
+/* Manual node sessions promote only explicit contract values into immutable
+   workflow artifacts; keep that control visually separate from chat. */
+.manual-session-outputs{margin:12px 0;padding:12px;border:1px solid #cddbd2;border-radius:8px;background:#fff}
+.manual-session-outputs h4{margin-bottom:5px;font-size:11px}.manual-session-outputs p{margin-bottom:10px;color:var(--muted);font-size:10px;line-height:1.55}
+.manual-session-outputs input{width:100%;border:1px solid #ccd6d0;border-radius:6px;background:#fbfcfb;padding:9px;outline:none}

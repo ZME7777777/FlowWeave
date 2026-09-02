@@ -254,7 +254,7 @@ export interface NodeAttempt {
   context_ids?: string[] | null;
   agent_preset?: AgentPreset | null;
   gate_policies: GatePolicy[];
-  output_targets?: Record<string, { url: string; token: string; template_url: string; title: string }>;
+  output_targets?: Record<string, { artifact_type: 'URL' | 'FILE'; display_name?: string; description?: string; title?: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
   gate_evaluations: GateEvaluation[]; runtime_confirmation_batches: RuntimeConfirmationBatch[];
   created_at: string; updated_at: string;
@@ -298,6 +298,7 @@ export interface RunSnapshot {
 export interface FlowRunSummary {
   id: string; flow_definition_id: string; flow_name?: string | null;
   flow_row_version?: number | null; run_no: number; name: string; state: string;
+  run_mode?: 'MANUAL' | 'AUTOMATIC';
   completion_mode?: string | null; active_snapshot_version?: number | null;
   environment_version_id?: string | null;
   current_node_key?: string | null; current_node_name?: string | null;

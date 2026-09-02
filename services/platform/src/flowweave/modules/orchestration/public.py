@@ -50,6 +50,7 @@ from flowweave.modules.orchestration.application.service import (
     start_automatic_run,
     start_flow,
     start_node_run,
+    submit_manual_outputs,
     sync_snapshot,
     update_automatic_run_draft,
 )
@@ -109,5 +110,6 @@ __all__ = (
     "start_automatic_run",
     "start_node_run",
     "sync_snapshot",
+    "submit_manual_outputs",
     "update_automatic_run_draft",
 )

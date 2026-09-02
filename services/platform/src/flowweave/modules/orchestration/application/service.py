@@ -108,6 +108,7 @@ from flowweave.shared.schemas import (
     AutomaticRunStartWrite,
     HumanInputWrite,
     InputBindingsWrite,
+    ManualAttemptOutputsWrite,
     NodeRunStart,
     RejectWrite,
     RunStart,
@@ -2095,7 +2096,7 @@ def _create_node_run(
             latest.startup_mode = "CHAT"
             latest.context_ids_json = []
             latest.agent_preset_json = agent_preset
-            latest.gate_policies_json = []
+            latest.gate_policies_json = gate_policies or []
             latest.state = AttemptState.WAITING_START_CONFIRMATION
             latest.state_version += 1
             run.state = FlowRunState.WAITING_HUMAN
@@ -2787,13 +2788,27 @@ def start_node_run(
         # A reached node can already carry immutable PORT_MAPPING bindings;
         # those remain attached as transition audit facts but are not consumed
         # by this session-only launch.
+        node = _node(_active_snapshot(db, run), instance_key)
+        completion_gates: list[dict[str, Any]] = []
+        for frozen_gate in cast(list[dict[str, Any]], node.get("gates") or []):
+            if frozen_gate.get("stage") != "END":
+                continue
+            completion_gate = copy.deepcopy(frozen_gate)
+            # Flow-definition gates predate the per-Attempt Gate Agent
+            # contract. CHAT does not expose a gate editor, so retain the
+            # frozen END policy with an explicit zero-capability/default-model
+            # preset instead of inheriting the primary Conversation.
+            completion_gate["agent_preset"] = dict(
+                cast(dict[str, Any], completion_gate.get("agent_preset") or {})
+            )
+            completion_gates.append(completion_gate)
         node_run, _ = _create_node_run(
             db,
             run,
             instance_key,
             {},
             "HUMAN_CHAT",
-            [],
+            completion_gates,
             session_only=True,
             context_ids=[],
             agent_preset=(payload.agent_preset.model_dump() if payload.agent_preset else None),
@@ -3994,6 +4009,117 @@ def human_input(
     if _inline_execution():
         process_resume_runtime(db, attempt.id, action.id)
     return attempt_detail(db, attempt.id)
+
+
+def submit_manual_outputs(
+    db: Session, attempt_id: str, payload: ManualAttemptOutputsWrite
+) -> dict[str, Any]:
+    """Freeze explicit CHAT-session outputs and enter the normal end gates.
+
+    Conversation text remains OpenHands-owned and is never interpreted here.
+    The operator supplies the frozen output contract values explicitly; files
+    are re-authorized in the Attempt's shared project scope and copied into the
+    immutable Artifact store before the workflow can advance.
+    """
+
+    current = _attempt(db, attempt_id)
+    if current.startup_mode != "CHAT":
+        raise illegal("only a CHAT attempt accepts manual session outputs", state=current.state)
+    node_run = _node_run(db, current.node_run_id)
+    run = _locked_run(db, node_run.flow_run_id)
+    if run.run_mode != "MANUAL":
+        raise illegal(
+            "automatic attempts cannot submit manual session outputs", state=current.state
+        )
+    node = _node(_snapshot(db, current.snapshot_id), node_run.flow_node_snapshot_key)
+    targets = _create_output_targets(db, run, current, node)
+    expected_fields = set(targets)
+    provided_fields = set(payload.outputs)
+    if provided_fields != expected_fields:
+        raise DomainError(
+            "MANUAL_OUTPUT_CONTRACT_INVALID",
+            "Manual session outputs must match every declared output field",
+            422,
+            {
+                "missing_fields": sorted(expected_fields - provided_fields),
+                "unknown_fields": sorted(provided_fields - expected_fields),
+            },
+        )
+
+    prepared: list[PreparedArtifact] = []
+    try:
+        for field_key, value in payload.outputs.items():
+            expected_type = str(targets[field_key]["artifact_type"])
+            if value.artifact_type != expected_type:
+                raise DomainError(
+                    "MANUAL_OUTPUT_CONTRACT_INVALID",
+                    "Manual session output type does not match the declared field",
+                    422,
+                    {"field": field_key, "expected_type": expected_type},
+                )
+            if value.artifact_type == "URL":
+                prepared.append(
+                    prepare_artifact(
+                        ArtifactWrite(
+                            field_key=field_key,
+                            artifact_type="URL",
+                            uri=value.uri,
+                            metadata={"manual_session_output": True},
+                        )
+                    )
+                )
+                continue
+            content, mime_type, filename = agent_sessions.flow_node_workspace.read_file(
+                db,
+                flow_run_id=run.id,
+                attempt_id=current.id,
+                binding_id=None,
+                work_directory_id=None,
+                path=value.path or "",
+            )
+            prepared.append(
+                prepare_file_artifact(
+                    field_key=field_key,
+                    filename=filename,
+                    mime_type=mime_type,
+                    content=content,
+                    metadata={
+                        "manual_session_output": True,
+                        "runtime_path": value.path,
+                    },
+                )
+            )
+
+        attempt = _claim_attempt_version(
+            db,
+            attempt_id,
+            payload.expected_state_version,
+            {AttemptState.WAITING_START_CONFIRMATION},
+            next_state=AttemptState.END_GATES,
+            runtime_phase="MANUAL_OUTPUTS_SUBMITTED",
+        )
+        attempt.output_targets_json = targets
+        for item in prepared:
+            _register_artifact(db, run.id, item, source="HUMAN_SESSION", attempt_id=attempt.id)
+        run.state = FlowRunState.ACTIVE
+        _event(
+            db,
+            run.id,
+            "MANUAL_SESSION_OUTPUTS_SUBMITTED",
+            {"fields": sorted(payload.outputs)},
+            node_run.id,
+            attempt.id,
+        )
+        _dispatch_gates(db, attempt, "END")
+        finish(db)
+        # The Artifact rows and their object-store references are committed.
+        # From this point onward, an unexpected response-projection failure
+        # must not compensate storage that is already durably referenced.
+        prepared = []
+        return attempt_detail(db, attempt.id)
+    except BaseException:
+        discard_prepared_artifacts(prepared)
+        raise
 
 
 def decide_runtime_confirmation(

@@ -23,6 +23,7 @@ from flowweave.shared.schemas import (
     AutomaticRunStartWrite,
     HumanInputWrite,
     InputBindingsWrite,
+    ManualAttemptOutputsWrite,
     NodeRunStart,
     RejectWrite,
     RunStart,
@@ -360,6 +361,15 @@ async def human_input(
         lambda session: service.human_input(
             session, attempt_id, payload, _key(idempotency_key, "human-input", attempt_id)
         ),
+    )
+
+
+@router.post("/node-attempts/{attempt_id}/manual-outputs")
+async def submit_manual_outputs(
+    attempt_id: str, payload: ManualAttemptOutputsWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.submit_manual_outputs(session, attempt_id, payload)
     )
 
 

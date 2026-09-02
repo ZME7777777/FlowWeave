@@ -1858,6 +1858,29 @@ FlowRun、NodeRun、Runtime、OpenHands 或数据库契约。
 伪造不可持久化配置。自动 Tab 未选记录时恢复可点击的中性流程，点击节点打开普通单节点控制台；选择记录后才
 显示该记录的可达范围、解锁状态和节点计划。FR-128 已在并行切片完成，两项功能合并后保持相互独立。
 
+### FR-130 运行态投影与人工会话产出闭环 — DONE
+
+依赖：`FR-120`、`FR-122`、`FR-129`。
+
+目标：自动运行记录启动后，右侧不得继续显示草稿配置器；流程图和详情必须投影该自动记录自己的持久 NodeRun／
+Attempt，明确区分当前执行、尚未激活、已完成和需要人工处理的节点，并为已有门禁、Runtime 或调度失败提供可操作的
+查看、重试或人工输入入口。自动运行仍由平台调度，不要求用户进入会话推动正常执行。
+
+单节点的“会话启动”升级为可完成的人工会话执行：保持 OpenHands Conversation/Event 为会话唯一事实源，平台不把
+任意聊天文本猜成产物；用户必须按冻结输出合同显式提交 URL 或受管节点工作区文件引用。服务端重新校验输出字段、
+类型、路径和 Attempt CAS，登记候选 Artifact 后运行既有结束门禁；通过后继续使用“确认完成”将正式产物沿冻结端口
+映射流转。不得给 CHAT Attempt 启动自动 Runtime 轮询，不得让 Agent 直接写流程状态，也不得改变自动运行调度契约。
+
+验收：平台定向测试覆盖 CHAT 输出合同、URL／文件登记、非法或缺失输出、CAS 与结束门禁；Web 定向回归覆盖自动运行
+启动后的节点执行详情、未激活节点置灰、人工处理入口，以及会话节点提交产出和完成流转提示。运行受影响 Python
+Ruff/Pyright/pytest、Web ESLint/typecheck/build、Alembic head、任务状态唯一性与 `git diff --check`。完成后独立提交。
+
+完成：已启动自动记录只投影其自身持久 NodeRun／Attempt，未激活节点保持置灰，执行、等待人工、失败和完成状态在
+流程图与右栏一致呈现；自动 Attempt 不再显示会被服务端拒绝的人工验收或取消动作，门禁／调度失败按既有恢复合同
+展示详情和重试入口。CHAT Attempt 仍不启动自动 Runtime，也不解析 Conversation 文本；用户按冻结输出合同显式提交
+全部 URL 或共享项目工作区文件路径，服务端重新校验字段、类型、HTTP(S)、路径范围和 CAS，将文件复制为不可变
+Artifact，再运行冻结的完成门禁。通过后复用既有人工验收和 FR-120 端口流转；未修改数据库、自动调度或 OpenHands。
+
 ### FR-124A Agent 会话标题与最近发送排序修复 — DONE
 
 依赖：`FR-123`。
@@ -1889,6 +1912,7 @@ FlowRun、NodeRun、Runtime、OpenHands 或数据库契约。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-02 | FR-130 | CHAT 人工产出平台定向 pytest（3 passed，覆盖 URL／FILE、越界路径、合同缺失、CAS 与完成门禁）；受影响 Python Ruff 与定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；当前源码 Vite Workbench 定向 Playwright（2 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：已启动自动记录投影自身 NodeRun／Attempt，未激活节点置灰，人工处理与可恢复失败显示既有合法入口且不提供无效人工验收／取消。CHAT 会话不解析聊天正文；显式合同提交由服务端复核 URL 或共享项目文件，复制不可变 Artifact 并运行冻结完成门禁，通过后复用人工验收与 FR-120 流转。完整平台 Pyright 仍被未改动 `capability_imports.py` 的 10 个既有 Context 类型错误阻塞，本切片涉及文件定向检查为 0 errors。唯一 Alembic head 为 `0087_nested_automatic_runs`；无 `CURRENT` 或下一切片。 |
 |---|---|---|---|
 | 2026-09-02 | FR-128 | Context Bundle／Context capability 定向 pytest（43 passed）；受影响 Python Ruff；Web ESLint、TypeScript typecheck、production build；当前源码 Vite 定向 Playwright（3 passed，覆盖 ZIP 解析、目录编辑/确认发布与冻结资料目录预览）；`git diff --check` | PASS：Context 保持唯一能力类型。资料包先由服务端安全解析，再只允许用户调整已验证文档的标题、顺序和入口；服务端复核全量文档、内容身份与唯一固定的“后文覆盖前文”规则。查看接口及前端资料包预览同时显示冻结目录、入口、全量加载事实和编译文本。普通文本拒绝 Bundle Manifest；未修改 Runtime、OpenHands 或数据库契约。FR-128 完成后无 `CURRENT`。 |
 | 2026-09-02 | FR-129 | 独立 worktree 当前源码 Vite 定向 Playwright（1 passed，覆盖自动 Tab 中性单节点配置入口、自动记录专属流程、共享配置页签／卡片和保存反馈）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动记录节点配置复用单节点运行的启动方式、输入与上下文、Agent、门禁和执行记录结构，保存仍写入既有自动节点计划；自动 Tab 未选择记录时恢复可发起普通单节点运行的中性流程，选择记录后才绑定该记录。唯一 Alembic head 为 `0087_nested_automatic_runs`；无 `CURRENT` 或下一切片。 |
