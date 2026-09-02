@@ -11,6 +11,7 @@ import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
 import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, GateAgentPreset, GateEvaluation, GatePolicy, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
 import { withDeploymentBase } from '../deploymentPath';
+import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
 
 const attemptState = (run: NodeRun) => run.attempts.at(-1)?.state ?? run.state;
 
@@ -460,31 +461,21 @@ function CapabilityPresetDialog({ selectedIds, onClose, onSave }: { selectedIds:
   const [draft, setDraft] = useState(selectedIds);
   useEscapeClose(onClose);
   const capabilities = useMemo(() => (catalog.data ?? []).filter(item => ['SKILL', 'MCP', 'PLUGIN', 'CONTEXT'].includes(item.capability_type) && item.is_latest), [catalog.data]);
+  const capabilitiesById = useMemo(() => new Map(capabilities.map(item => [item.id, item])), [capabilities]);
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return capabilities.filter(item => (kind === 'ALL' || item.capability_type === kind) && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)));
   }, [capabilities, kind, query]);
   const toggle = (item: CapabilityAsset) => setDraft(current => {
     if (current.includes(item.id)) return current.filter(id => id !== item.id);
-    const sameCapability = current.filter(id => {
-      const existing = capabilities.find(candidate => candidate.id === id);
-      return existing?.capability_type === item.capability_type && existing.capability_key === item.capability_key;
-    });
-    return [...current.filter(id => !sameCapability.includes(id)), item.id].slice(0, 30);
+    return selectCapabilityVersion(current, item, capabilitiesById);
   });
   const toggleCollection = (collection: CapabilityCollection) => setDraft(current => {
     const members = collection.members.filter(item => capabilities.some(candidate => candidate.id === item.id));
     const ids = members.map(item => item.id);
     if (!ids.length) return current;
     if (ids.every(id => current.includes(id))) return current.filter(id => !ids.includes(id));
-    return members.reduce((next, item) => {
-      if (next.includes(item.id)) return next;
-      const sameCapability = next.filter(id => {
-        const existing = capabilities.find(candidate => candidate.id === id);
-        return existing?.capability_type === item.capability_type && existing.capability_key === item.capability_key;
-      });
-      return [...next.filter(id => !sameCapability.includes(id)), item.id].slice(0, 30);
-    }, current);
+    return selectCapabilityVersions(current, members, capabilitiesById);
   });
   return <div className="modal-backdrop"><section className="modal agent-preset-capability-dialog" role="dialog" aria-modal="true" aria-label="配置能力"><header><div><span className="eyebrow">LAUNCH CAPABILITIES</span><h2>配置能力</h2><p>选择这次自动启动首个会话可用的能力。</p></div><button type="button" className="ghost" onClick={onClose}><X size={17}/></button></header><div className="agent-capability-toolbar"><nav className="agent-capability-tabs" aria-label="能力类型">{(['ALL', 'SKILL', 'MCP', 'PLUGIN', 'CONTEXT'] as const).map(value => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{value === 'ALL' ? '全部' : value === 'SKILL' ? '技能' : value === 'MCP' ? 'MCP' : value === 'PLUGIN' ? '插件' : '上下文'}</button>)}</nav><label className="agent-capability-search"><input aria-label="搜索能力" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索能力"/></label></div>{(kind === 'ALL' || kind === 'SKILL') && collections.data?.length ? <section className="agent-capability-collections"><span>Skill 组合</span><div>{collections.data.map(collection => { const ids = collection.members.map(item => item.id).filter(id => capabilities.some(item => item.id === id)); const selected = ids.length > 0 && ids.every(id => draft.includes(id)); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><Layers3 size={13}/><b>{collection.name}</b><em>{ids.length}</em>{selected && <Check size={13}/>}</button>; })}</div></section> : null}<div className="agent-capability-summary"><span>已选 <b>{draft.length}</b> 项</span><span>仅加载已发布的最新版本</span></div><div className="agent-capability-list">{catalog.isLoading ? <p>正在读取能力目录…</p> : visible.length ? visible.map(item => <button type="button" key={item.id} className={draft.includes(item.id) ? 'selected' : ''} aria-pressed={draft.includes(item.id)} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}>{item.capability_type.slice(0, 1)}</span><span><b>{item.capability_key}</b><small>{item.description || item.filename || '未填写说明'}</small><em>{item.capability_type}</em></span><i aria-hidden="true">{draft.includes(item.id) ? '✓' : ''}</i></button>) : <p>没有匹配的能力。</p>}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" onClick={() => onSave(draft)}>保存能力</button></footer></section></div>;
 }

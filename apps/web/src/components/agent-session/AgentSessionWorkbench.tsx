@@ -11,6 +11,7 @@ import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface } from '../ConversationSurface';
 import { useEscapeClose } from '../useEscapeClose';
+import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
 import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
@@ -306,40 +307,18 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
       if (bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)) return current;
       return current.filter(id => id !== item.id);
     }
-    const sameName = current.filter(id => {
-      const selected = byId.get(id);
-      return selected?.capability_type === item.capability_type && selected.capability_key === item.capability_key;
-    });
-    return [...current.filter(id => !sameName.includes(id)), item.id];
+    return selectCapabilityVersion(current, item, byId);
   });
   const toggleVisible = () => setSelectedIds(current => {
     if (allVisibleSelected) return current.filter(id => !selectableVisibleIds.includes(id));
-    return selectableVisibleIds.reduce((next, id) => {
-      if (next.includes(id)) return next;
-      const item = byId.get(id);
-      if (!item) return next;
-      const sameName = next.filter(selectedId => {
-        const selected = byId.get(selectedId);
-        return selected?.capability_type === item.capability_type && selected.capability_key === item.capability_key;
-      });
-      return [...next.filter(selectedId => !sameName.includes(selectedId)), id];
-    }, current);
+    return selectCapabilityVersions(current, selectableVisibleIds.map(id => byId.get(id)).filter((item): item is CapabilityAsset => Boolean(item)), byId);
   });
   const toggleCollection = (collection: CapabilityCollection) => setSelectedIds(current => {
     const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id));
     if (!memberIds.length) return current;
     const isSelected = memberIds.every(id => current.includes(id));
     if (isSelected) return current.filter(id => !memberIds.includes(id) || (bindingId && (conversationCapabilities ?? []).some(item => item.id === id)));
-    return memberIds.reduce((next, id) => {
-      if (next.includes(id)) return next;
-      const item = byId.get(id);
-      if (!item) return next;
-      const sameName = next.filter(selectedId => {
-        const selected = byId.get(selectedId);
-        return selected?.capability_type === item.capability_type && selected.capability_key === item.capability_key;
-      });
-      return [...next.filter(selectedId => !sameName.includes(selectedId)), id];
-    }, current);
+    return selectCapabilityVersions(current, memberIds.map(id => byId.get(id)).filter((item): item is CapabilityAsset => Boolean(item)), byId);
   });
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Tab') return;

@@ -106,6 +106,10 @@ const runningAutomatic = {
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
   let saveRequests = 0;
   let submittedBody: Record<string, unknown> | undefined;
+  const capabilityCatalog = Array.from({ length: 31 }, (_, index) => ({
+    id: `automatic-skill-${index}`, capability_type: 'SKILL', capability_key: `automatic-skill-${index}`,
+    description: `自动运行能力 ${index}`, filename: `automatic-skill-${index}.zip`, is_latest: true, document: {},
+  }));
   const inputArtifacts = [
     {
       id: 'artifact-url', flow_run_id: automaticBase.id, producer_attempt_id: null, consumer_node_key: 'first',
@@ -130,7 +134,8 @@ test('run projection stays neutral until record selection and automatic save rep
     if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs` && request.method() === 'GET') return respond([frozenAutomaticBase]);
-    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === '/api/v1/capabilities') return respond(capabilityCatalog);
+    if (path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${automaticBase.id}/nodes/first/input-artifacts` && request.method() === 'POST') return respond(inputArtifacts[0], 201);
     if (path === `/api/v1/flow-runs/${automaticBase.id}/nodes/first/input-artifacts/upload` && request.method() === 'POST') return respond(inputArtifacts[1], 201);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticBase.id}` && request.method() === 'PUT') {
@@ -238,6 +243,14 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await automaticEditor.getByRole('button', { name: 'Agent 配置' }).click();
   await expect(automaticEditor.getByRole('heading', { name: '首会话 Agent 配置' })).toBeVisible();
+  await automaticEditor.locator('.agent-preset-module').first().click();
+  const capabilityDialog = page.getByRole('dialog', { name: '配置能力' });
+  const capabilityOptions = capabilityDialog.locator('.agent-capability-list > button');
+  await expect(capabilityOptions).toHaveCount(31);
+  for (let index = 0; index < 31; index += 1) await capabilityOptions.nth(index).click();
+  await expect(capabilityDialog).toContainText('已选 31 项');
+  await capabilityDialog.getByRole('button', { name: '保存能力' }).click();
+  await expect(automaticEditor).toContainText('已选 31 项');
   const [agentHintBox, firstAgentModuleBox] = await Promise.all([
     automaticEditor.locator('.agent-preset-editor > header small').boundingBox(),
     automaticEditor.locator('.agent-preset-module').first().boundingBox(),
@@ -284,6 +297,7 @@ test('run projection stays neutral until record selection and automatic save rep
     artifact_ids: { input_1: 'artifact-url', input_2: 'artifact-file' },
   }));
   expect(((submittedBody?.node_plans as Record<string, { agent_preset: Record<string, unknown> }>).first.agent_preset)).not.toHaveProperty('capabilities');
+  expect((submittedBody?.node_plans as Record<string, { agent_preset: { capability_version_ids: string[] } }>).first.agent_preset.capability_version_ids).toEqual(capabilityCatalog.map(item => item.id));
   await expect(automaticEditor.getByRole('link', { name: 'https://example.com/input' })).toBeVisible();
   await expect(automaticEditor.getByRole('link', { name: 'example.md' })).toBeVisible();
 
