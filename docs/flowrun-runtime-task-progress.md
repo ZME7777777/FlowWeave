@@ -1843,6 +1843,20 @@ typecheck、production build、Alembic head、任务状态唯一性和 `git diff
 
 完成：Context 表单支持 UTF-8 文本和 ZIP 资料包；ZIP 首次校验只返回服务器生成的安全目录，用户可编辑标题、顺序和入口后才用白名单 Manifest 再校验并发布。服务端仍以原始 ZIP 重新解析，要求每个已验证文档恰好一次，保留内容哈希、拒绝伪造条目，且仅接受固定的“后文覆盖前文”冲突规则；普通文本 Context 明确拒绝 Bundle Manifest。查看接口返回内容格式与冻结 Manifest，前端先展示资料目录、入口和全量加载事实，再展示完整编译文本。未新增 `CONTEXT_BUNDLE` 类型、迁移、Runtime 或 OpenHands 私有协议。
 
+### FR-129 自动运行节点配置与单节点配置对齐 — DONE
+
+依赖：`FR-127`。
+
+目标：自动运行记录中的节点配置必须复用单节点运行的配置结构，包括启动方式、输入与上下文、Agent 配置、
+门禁配置和执行记录，不再维护一套纵向自动配置表单。切换到自动运行 Tab 但尚未选择自动记录时，流程图仍是
+可发起普通单节点运行的中性流程；只有选择自动记录后，流程图和节点配置才绑定到该记录。不得改变自动运行计划、
+FlowRun、NodeRun、Runtime、OpenHands 或数据库契约。
+
+完成：单节点与自动记录共享配置页签、输入摘要、启动提示词、Agent、门禁和执行记录组件；自动记录仅将顶部动作
+替换为“保存配置”，并继续写入既有节点计划。自动记录没有会话启动计划字段，因此保留同位入口但明确禁用，避免
+伪造不可持久化配置。自动 Tab 未选记录时恢复可点击的中性流程，点击节点打开普通单节点控制台；选择记录后才
+显示该记录的可达范围、解锁状态和节点计划。FR-128 已在并行切片完成，两项功能合并后保持相互独立。
+
 ### FR-124A Agent 会话标题与最近发送排序修复 — DONE
 
 依赖：`FR-123`。
@@ -1876,6 +1890,7 @@ typecheck、production build、Alembic head、任务状态唯一性和 `git diff
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
 | 2026-09-02 | FR-128 | Context Bundle／Context capability 定向 pytest（43 passed）；受影响 Python Ruff；Web ESLint、TypeScript typecheck、production build；当前源码 Vite 定向 Playwright（3 passed，覆盖 ZIP 解析、目录编辑/确认发布与冻结资料目录预览）；`git diff --check` | PASS：Context 保持唯一能力类型。资料包先由服务端安全解析，再只允许用户调整已验证文档的标题、顺序和入口；服务端复核全量文档、内容身份与唯一固定的“后文覆盖前文”规则。查看接口及前端资料包预览同时显示冻结目录、入口、全量加载事实和编译文本。普通文本拒绝 Bundle Manifest；未修改 Runtime、OpenHands 或数据库契约。FR-128 完成后无 `CURRENT`。 |
+| 2026-09-02 | FR-129 | 独立 worktree 当前源码 Vite 定向 Playwright（1 passed，覆盖自动 Tab 中性单节点配置入口、自动记录专属流程、共享配置页签／卡片和保存反馈）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动记录节点配置复用单节点运行的启动方式、输入与上下文、Agent、门禁和执行记录结构，保存仍写入既有自动节点计划；自动 Tab 未选择记录时恢复可发起普通单节点运行的中性流程，选择记录后才绑定该记录。唯一 Alembic head 为 `0087_nested_automatic_runs`；无 `CURRENT` 或下一切片。 |
 | 2026-09-01 | FR-124A | Agent Workspace／OpenHands／FlowRun 会话／架构边界合并 pytest（181 passed）；受影响 Python Ruff、全量 Pyright（0 errors）；Web TypeScript typecheck、ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：一级 Agent Workspace 首发后由一次性 FlowWeave 元数据任务按冻结供应商的 Chat Completions 或 streaming Responses 正式协议生成标题；失败保留首句兜底，generation CAS 防止延迟结果覆盖手动改名，任务完成不伪造发送活动且首条消息种子及时脱敏。固定 OpenHands `1.44.0` 原生 `autotitle` 关闭，源码 overlay 不再修改标题路径。一级工作区和 FlowRun 节点会话在正式发送或重发被 Runtime 接受后更新 binding 活动时间，列表按活动时间及稳定次级键倒序；待生成标题仅在可见 `PENDING` 会话存在时轮询。唯一 Alembic head 为 `0087_nested_automatic_runs`；无 `CURRENT`，下一切片仍为 FR-128。 |
 | 2026-09-01 | FR-127 | 当前源码独立 Vite 定向 Playwright（1 passed，覆盖手动／自动记录重复点击、左栏／标题／画布空白退出、自动中性图不可配置、反馈条几何可见性和服务端拒绝反馈）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：所有退出入口统一关闭右栏并恢复中性流程图；自动模式无记录时节点不可选，选中草稿后恢复配置；保存反馈位于侧栏标题下方且完整处于侧栏可见区域。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-127 完成后无 `CURRENT`，下一切片为 FR-128 Context Bundle 表单编辑与资料包预览。 |
 | 2026-09-01 | FR-126 | Context Bundle 定向 pytest（7 passed）；完整 `test_capability_imports.py`（42 passed）与 `test_context_capabilities.py`（3 passed）；受影响 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：Bundle 仍是单个 `CONTEXT` Version，内部确定性生成 Manifest 并编译全部文档到现有系统后缀兼容文本；ZIP 单顶层目录自动归一化，根 README 被建议为入口，原始 ZIP 以 `application/zip` 不可变保存，查看接口可返回可读编译内容。路径穿越、Windows／POSIX 绝对路径、重复路径、空文件、明文 Secret 与符号链接均被拒绝。唯一 Alembic head 为 `0087_nested_automatic_runs`；FR-126 完成后无 `CURRENT`，下一切片为 FR-127 表单编辑与资料包预览。 |
