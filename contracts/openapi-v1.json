@@ -8187,6 +8187,45 @@
             }
           }
         }
+      },
+      "delete": {
+        "operationId": "delete_node_run_api_v1_flow_runs__run_id__nodes__node_run_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_run_id",
+            "required": true,
+            "schema": {
+              "title": "Node Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Node Run"
       }
     },
     "/api/v1/flow-runs/{run_id}/artifacts": {

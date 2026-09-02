@@ -359,6 +359,8 @@ export const api = {
     request<void>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
+  deleteNodeRun: (runId: string, nodeRunId: string) =>
+    request<void>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}`, json('DELETE')),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
   addNodeInputArtifact: (runId: string, nodeKey: string, body: ArtifactInput) =>
     request<ArtifactVersion>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeKey)}/input-artifacts`, json('POST', body)),

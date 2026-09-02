@@ -199,6 +199,14 @@ async def node_run(run_id: str, node_run_id: str, db: Db) -> dict[str, Any]:
     return result
 
 
+@router.delete(
+    "/flow-runs/{run_id}/nodes/{node_run_id}", status_code=204, response_class=Response
+)
+async def delete_node_run(run_id: str, node_run_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_node_run(session, run_id, node_run_id))
+    return Response(status_code=204)
+
+
 @router.post("/flow-runs/{run_id}/artifacts", status_code=201)
 async def add_artifact(run_id: str, payload: ArtifactWrite, db: Db) -> dict[str, Any]:
     await db.rollback()

@@ -1824,14 +1824,15 @@ test('run keeps attempts, snapshots, gates and artifact lineage visible', async 
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
   await expect(page.locator('.timeline button')).toHaveCount(2);
   await expect(attemptControl.getByRole('button', { name: '取消整个流程' })).toHaveCount(0);
-  await expect(page.locator('.flow-run-management').getByRole('button', { name: '取消整个流程' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消整个流程' })).toHaveCount(0);
   await confirmProductDialog(
     page,
     attemptControl.getByRole('button', { name: '取消本轮节点执行' }),
     '取消本轮执行',
     '其他节点执行和整个流程不会被取消',
   );
-  await expect(page.getByTestId('attempt-state')).toHaveText('CANCELLED');
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+  await expect(page.locator('.timeline button.active')).toHaveCount(0);
   await expect(page.getByTestId('flow-run-state')).toHaveText('运行中');
 
   const runResponse = await request.get(`${apiBase}/api/v1/flow-runs/${createdRun.id}`);
@@ -1875,12 +1876,11 @@ test('cancelled run becomes read-only and can be permanently deleted', async ({ 
   await expect(page.locator('.timeline button')).toHaveCount(2);
   await page.locator('.timeline button').first().click();
 
-  await confirmProductDialog(
-    page,
-    page.locator('.flow-run-management').getByRole('button', { name: '取消整个流程' }),
-    '取消流程',
-    '未结束的执行会被取消',
-  );
+  const cancelled = await request.post(`${apiBase}/api/v1/flow-runs/${started.id}/cancel`, {
+    headers: { 'Idempotency-Key': `cancel-terminal-${suffix}` },
+  });
+  expect(cancelled.ok(), await cancelled.text()).toBeTruthy();
+  await page.reload();
   await expect(page.getByTestId('flow-run-state')).toHaveText('已取消');
   await expect(page.locator('.run-progress')).toContainText('0 已验收');
   await expect(page.locator('.run-progress')).toContainText('2 已结束');

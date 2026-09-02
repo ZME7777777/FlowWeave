@@ -2390,6 +2390,109 @@ def test_hard_delete_uses_flow_run_runtime_lifecycle_not_attempt_cancel(
     assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
 
 
+def test_cancelled_manual_node_run_keeps_parent_active_and_allows_fresh_same_node(
+    client, skill_capability
+):
+    asset = create_asset(client, skill_capability, "取消后重新运行节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    first = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={
+            "startup_mode": "CHAT",
+            "agent_preset": {
+                "capability_version_ids": [],
+                "node_context_enabled": False,
+            },
+        },
+    ).json()
+    attempt = first["attempts"][0]
+
+    cancelled = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/cancel",
+        json={"expected_state_version": attempt["state_version"]},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["runtime_phase"] == "CANCELLED"
+    assert client.get(f"/api/v1/flow-runs/{run['id']}").json()["state"] == "ACTIVE"
+
+    second = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={
+            "startup_mode": "CHAT",
+            "agent_preset": {
+                "capability_version_ids": [],
+                "node_context_enabled": False,
+            },
+        },
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["id"] != first["id"]
+
+
+def test_delete_cancelled_manual_node_run_preserves_runtime_and_restores_neutral_graph(
+    client, skill_capability, db_session_factory
+):
+    asset = create_asset(client, skill_capability, "删除单节点运行记录")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    created = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={
+            "startup_mode": "CHAT",
+            "agent_preset": {
+                "capability_version_ids": [],
+                "node_context_enabled": False,
+            },
+        },
+    ).json()
+    attempt = created["attempts"][0]
+
+    rejected = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{created['id']}")
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "NODE_RUN_DELETE_REQUIRES_CANCELLED"
+
+    cancelled = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/cancel",
+        json={"expected_state_version": attempt["state_version"]},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    with db_session_factory() as db:
+        runtime_id = db.scalar(
+            select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
+        )
+        assert runtime_id is not None
+
+    deleted = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{created['id']}")
+    assert deleted.status_code == 204, deleted.text
+    detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
+    assert detail["state"] == "ACTIVE"
+    assert detail["node_runs"] == []
+    with db_session_factory() as db:
+        assert db.scalar(
+            select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
+        ) == runtime_id
+
+    other = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
+        json={
+            "startup_mode": "CHAT",
+            "agent_preset": {
+                "capability_version_ids": [],
+                "node_context_enabled": False,
+            },
+        },
+    )
+    assert other.status_code == 201, other.text
+    assert other.json()["flow_node_snapshot_key"] == "design_b"
+
+
 def test_hard_delete_detaches_active_runtime_generation(
     client, skill_capability, db_session_factory, monkeypatch
 ):

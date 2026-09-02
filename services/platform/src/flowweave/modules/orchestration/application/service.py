@@ -2062,14 +2062,15 @@ def _create_node_run(
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
     _validate_input_bindings(db, run, node, artifact_ids)
-    # A manual FlowRun owns at most one durable NodeRun for each frozen graph
-    # node. Downstream transitions create that work item in WAITING_INPUT; the
-    # user's later configuration updates its first Attempt instead of creating
-    # another NodeRun. Revisions after a rejected result remain Attempts.
+    # A manual FlowRun owns at most one non-cancelled NodeRun for each frozen
+    # graph node. Cancelled records remain independent history and do not block
+    # a fresh run from the neutral Workbench. Downstream transitions create a
+    # WAITING_INPUT work item; revisions after rejection remain Attempts.
     existing = db.scalar(
         select(NodeRun).where(
             NodeRun.flow_run_id == run.id,
             NodeRun.flow_node_snapshot_key == instance_key,
+            NodeRun.state != NodeRunState.CANCELLED,
         )
     )
     if existing:
@@ -2757,10 +2758,19 @@ def start_node_run(
         select(NodeRun).where(
             NodeRun.flow_run_id == run.id,
             NodeRun.flow_node_snapshot_key == instance_key,
+            NodeRun.state != NodeRunState.CANCELLED,
         )
     )
     has_group_work = (
-        db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1)) is not None
+        db.scalar(
+            select(NodeRun.id)
+            .where(
+                NodeRun.flow_run_id == run.id,
+                NodeRun.state != NodeRunState.CANCELLED,
+            )
+            .limit(1)
+        )
+        is not None
     )
     if has_group_work and existing_node is None:
         raise DomainError(
@@ -2769,6 +2779,8 @@ def start_node_run(
             409,
             {"flow_node_key": instance_key},
         )
+    # Once every prior record is cancelled, the manual Workbench is neutral
+    # again and any frozen node may start a fresh independent NodeRun.
     if payload.startup_mode == "CHAT":
         # A session-only launch is human-directed collaboration, not an
         # automated node execution. Its Attempt is only an authorization and
@@ -4707,7 +4719,14 @@ def cancel_attempt(
     else:
         attempt.runtime_phase = "CANCELLED"
     _event(db, run.id, "ATTEMPT_CANCELLED", {}, node_run.id, attempt.id)
-    _recompute_run(db, run)
+    if run.run_mode == "MANUAL":
+        # A manual FlowRun is a reusable neutral workspace. Cancelling one
+        # node execution must not terminate the parent run.
+        run.state = FlowRunState.ACTIVE
+        run.completion_mode = None
+        run.finished_at = None
+    else:
+        _recompute_run(db, run)
     finish(db)
     return attempt_detail(db, attempt.id)
 
@@ -4745,6 +4764,150 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
             run.state = FlowRunState.ACTIVE
 
 
+def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
+    """Delete one cancelled manual execution without deleting OpenHands state."""
+
+    run = _locked_run(db, flow_run_id)
+    if run.run_mode != "MANUAL":
+        raise illegal("automatic execution records are deleted through their automatic run")
+    node_run = _node_run(db, node_run_id)
+    if node_run.flow_run_id != run.id:
+        raise not_found("node_run", node_run_id)
+    attempts = list(
+        db.scalars(
+            select(NodeAttempt)
+            .where(NodeAttempt.node_run_id == node_run.id)
+            .order_by(NodeAttempt.attempt_no)
+        )
+    )
+    latest = attempts[-1] if attempts else None
+    terminal_states = {
+        AttemptState.ACCEPTED,
+        AttemptState.REJECTED,
+        AttemptState.CANCELLED,
+    }
+    if (
+        node_run.state != NodeRunState.CANCELLED
+        or latest is None
+        or latest.state != AttemptState.CANCELLED
+        or latest.runtime_phase != "CANCELLED"
+        or any(attempt.state not in terminal_states for attempt in attempts)
+    ):
+        raise DomainError(
+            "NODE_RUN_DELETE_REQUIRES_CANCELLED",
+            "请先取消该单节点运行，并等待运行时停止后再删除",
+            409,
+        )
+
+    attempt_ids = [attempt.id for attempt in attempts]
+    bindings = list(
+        db.scalars(
+            select(AgentConversationBinding).where(
+                AgentConversationBinding.host_kind == "FLOW_NODE",
+                AgentConversationBinding.flow_run_id == run.id,
+                AgentConversationBinding.node_run_id == node_run.id,
+            )
+        )
+    )
+    for binding in bindings:
+        # The OpenHands conversation remains in the FlowRun-owned persistence
+        # root until the parent FlowRun is deleted. Remove only FlowWeave's
+        # locator/projection graph so no product record points at a deleted
+        # NodeRun or Attempt.
+        agent_sessions.delete_binding_records(db, binding.id)
+
+    work_directories = (
+        list(
+            db.scalars(
+                select(AgentWorkDirectory).where(
+                    AgentWorkDirectory.flow_run_id == run.id,
+                    AgentWorkDirectory.node_attempt_id.in_(attempt_ids),
+                )
+            )
+        )
+        if attempt_ids
+        else []
+    )
+    work_directory_ids = [item.id for item in work_directories]
+    work_directory_version_ids = (
+        list(
+            db.scalars(
+                select(AgentWorkDirectoryVersion.id).where(
+                    AgentWorkDirectoryVersion.work_directory_id.in_(work_directory_ids)
+                )
+            )
+        )
+        if work_directory_ids
+        else []
+    )
+    if work_directory_version_ids:
+        db.execute(
+            delete(AgentWorkDirectoryPath).where(
+                AgentWorkDirectoryPath.version_id.in_(work_directory_version_ids)
+            )
+        )
+        db.execute(
+            delete(AgentWorkDirectoryVersion).where(
+                AgentWorkDirectoryVersion.id.in_(work_directory_version_ids)
+            )
+        )
+    if work_directory_ids:
+        db.execute(delete(AgentWorkDirectory).where(AgentWorkDirectory.id.in_(work_directory_ids)))
+
+    artifacts = (
+        list(
+            db.scalars(
+                select(ArtifactVersion).where(ArtifactVersion.producer_attempt_id.in_(attempt_ids))
+            )
+        )
+        if attempt_ids
+        else []
+    )
+    artifact_ids = [item.id for item in artifacts]
+    if artifact_ids and db.scalar(
+        select(AttemptInputBinding.id)
+        .where(
+            AttemptInputBinding.artifact_version_id.in_(artifact_ids),
+            AttemptInputBinding.attempt_id.not_in(attempt_ids),
+        )
+        .limit(1)
+    ):
+        raise DomainError(
+            "NODE_RUN_DELETE_HAS_DOWNSTREAM_REFERENCES",
+            "该单节点运行的产物仍被其他执行引用，不能删除",
+            409,
+        )
+
+    if attempt_ids:
+        db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id.in_(attempt_ids)))
+        db.execute(
+            delete(RuntimeConfirmationApproval).where(
+                RuntimeConfirmationApproval.attempt_id.in_(attempt_ids)
+            )
+        )
+        db.execute(delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids)))
+        db.execute(delete(GateEvaluation).where(GateEvaluation.attempt_id.in_(attempt_ids)))
+    db.execute(delete(HumanAction).where(HumanAction.node_run_id == node_run.id))
+    db.execute(delete(RunEvent).where(RunEvent.node_run_id == node_run.id))
+    if artifact_ids:
+        db.execute(delete(ArtifactVersion).where(ArtifactVersion.id.in_(artifact_ids)))
+    if attempt_ids:
+        db.execute(delete(NodeAttempt).where(NodeAttempt.id.in_(attempt_ids)))
+    db.delete(node_run)
+    run.state = FlowRunState.ACTIVE
+    run.completion_mode = None
+    run.finished_at = None
+    run.row_version += 1
+
+    store = get_artifact_store()
+    for artifact in artifacts:
+        if artifact.storage_key:
+            register_commit_action(db, lambda key=artifact.storage_key: store.delete(key))
+    # Physical OpenHands persistence and Workspace content remain FlowRun-owned
+    # and are reclaimed only when the parent FlowRun is deleted.
+    finish(db)
+
+
 def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -> None:
     """Expose frozen downstream work without starting its Agent or gates."""
 
@@ -4777,6 +4940,7 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
             select(NodeRun).where(
                 NodeRun.flow_run_id == run.id,
                 NodeRun.flow_node_snapshot_key == target_key,
+                NodeRun.state != NodeRunState.CANCELLED,
             )
         )
         if existing is not None:
