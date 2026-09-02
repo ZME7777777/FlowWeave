@@ -2042,6 +2042,14 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 
 完成：Web Dockerfile 的 `VITE_BASE_PATH` 默认值改为 `/flowweave/`。生产 HTML 现在引用带部署前缀的静态 JS/CSS；本地 Vite 开发仍在未设置该变量时使用根路径。远端仅替换 Web 镜像，公网浏览器已验证应用外壳可装配。
 
+### FR-140 FlowRun 快照图编排交互与样式一致性 — DONE
+
+依赖：FR-139。
+
+目标：流程运行中的冻结快照图必须复用流程编排的节点、端口、控制流边和产物流转边视觉规格；用户可以在运行页自由拖拽节点并平移、缩放画布，但这只调整当前浏览器视图，绝不改写冻结 Snapshot 或流程定义。运行状态、节点选择和只读连线语义继续保留。
+
+完成：运行快照图改为使用编排页同款节点卡片、可见端口和 `flow-direction-edge`／`flow-mapping-edge` 样式；节点位置由浏览器内存维护，状态刷新与选择不会重置已拖拽布局，Snapshot 内容仍完全只读。定向浏览器回归覆盖控制/产物流转边、可见端口与节点拖拽。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2057,6 +2065,7 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-02 | FR-140 | FlowRun Workbench 定向 Playwright（3 passed，覆盖节点拖拽、控制／产物流转边和可见端口）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行快照图复用流程编排的节点、端口和边样式；节点可在当前浏览器视图自由拖拽，运行状态刷新与节点选择均不重置布局，且不写回冻结 Snapshot 或流程定义。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-02 | FR-139 | 前缀生产构建 HTML 路径断言；Web ESLint、TypeScript typecheck；linux/amd64 Web 镜像构建、Compose Web 单服务替换；公网 JS/CSS、FlowWeave API、FastGPT 登录页与浏览器应用外壳验证 | PASS：Dockerfile 默认生产基路径为 `/flowweave/`，HTML 只引用 `/flowweave/assets/index-DBMHJl84.js` 和前缀 CSS。远端 Web 镜像为 `sha256:32a80a…ff7d4c`（linux/amd64），仅 Web 容器重建；公网前缀 JS/CSS 均为 200，浏览器可加载“终端环境”入口，API 与 FastGPT 登录页保持成功。 |
 | 2026-09-02 | FR-138 | 环境配置终端定向 Playwright（tmux 鼠标上报下普通拖拽复制且不发送 PTY 鼠标序列）；Web ESLint、TypeScript typecheck、production build、`git diff --check`；linux/amd64 Web 镜像构建、Compose 配置与 Web 单服务替换、静态资产 SHA-256、远端服务/公网入口健康检查 | PASS：环境配置终端捕获普通左键拖拽并使用 xterm 公共 selection API 保留选区，复制内容为终端文本，PTY 未收到鼠标序列。Web 构建产物 `index-szfa_8IM.js` SHA-256 为 `9b9cda…4c033e`，远端 `flowweave-web:remote-amd64` 更新为 `sha256:caf3bc…5868d`（linux/amd64）；仅 `web` 容器 force-recreate，API、Runtime Provider、Worker 与数据库未重启。`/flowweave/`、`/flowweave/api/v1/flows` 和 FastGPT 登录页均返回成功。公网匿名浏览器会话不能进入受当前登录入口保护的“终端环境”菜单，未将该项伪记为通过；已通过静态产物一致性和本机精确交互回归验证。 |
 | 2026-09-02 | FR-137 | 已保存流程校验定向 API pytest（2 passed）；受影响 Python Ruff、生产源码 Pyright（0 errors）与 `py_compile`；Alembic head、任务状态唯一性与 `git diff --check`；linux/amd64 平台镜像构建、Migration、运行镜像、服务健康、原 500 流程及公网入口实测 | PASS：严格写模型由持久化读取投影显式重建，合法流程返回 200，非法自环仍返回 `FLOW_GRAPH_INVALID` 422。远端 API／Runtime Provider healthy、Worker Up、Migration Exited (0)，三个常驻平台进程统一运行镜像 `sha256:bcb3239fb69dc9c991c4af43e503545dd015d0a483baae88f3a9f105a25a2331`；公网 FlowWeave API、页面、Agent 深层路由及 FastGPT 登录页均为 200。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |

@@ -1,4 +1,4 @@
-import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, Download, ExternalLink, Eye, FileText, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -35,7 +35,7 @@ const FLOW_STATE_LABELS: Record<string, string> = {
 // Bump this whenever graph rendering changes. It also guarantees that a web
 // deployment produces a new content-hashed bundle instead of reusing an
 // immutable asset cached by an earlier graph renderer.
-const GRAPH_RENDER_REVISION = '2026-09-03.1';
+const GRAPH_RENDER_REVISION = '2026-09-03.2';
 
 const nodeForRun = (run: FlowRun, nodeRun: NodeRun) => {
   const snapshotId = nodeRun.attempts.at(-1)?.snapshot_id;
@@ -106,14 +106,14 @@ type SnapshotGraphNodeData = {
 };
 
 function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeData>>) {
-  return <article className={`run-graph-node ${data.status}${selected ? ' snapshot-selected' : ''}`}>
-    <Handle id="flow-target" className="run-flow-handle" type="target" position={Position.Left} style={{ top: 18 }}/>
-    <Handle id="flow-source" className="run-flow-handle" type="source" position={Position.Right} style={{ top: 18 }}/>
-    <header><b>{data.label}</b>{(data.stateLabel || data.visits) && <small>{data.stateLabel}{data.stateLabel && data.visits ? ' · ' : ''}{data.visits ? `运行 ${data.visits} 次` : ''}</small>}</header>
-    <div className="run-node-contract">
-      <section aria-label="输入端口"><span>输入</span>{data.inputs.length ? data.inputs.map(field => <div key={field.field_key}><Handle id={`input:${field.field_key}`} className="run-data-handle input" type="target" position={Position.Left} style={{ top: '50%' }}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small></div>) : <em>无输入</em>}</section>
-      <section aria-label="输出端口"><span>输出</span>{data.outputs.length ? data.outputs.map(field => <div key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="run-data-handle output" type="source" position={Position.Right} style={{ top: '50%' }}/></div>) : <em>无输出</em>}</section>
-    </div>
+  const execution = data.stateLabel || (data.visits ? `运行 ${data.visits} 次` : '');
+  return <article className={`flow-asset-node run-graph-node ${data.status}${selected ? ' snapshot-selected' : ''}`}>
+    <Handle id="flow-target" className="flow-direction-handle run-flow-handle" type="target" position={Position.Left} isConnectable={false}/>
+    <div className="flow-node-head"><span className="flow-node-kind">AGENT</span>{execution && <small className="run-node-execution">{execution}{data.stateLabel && data.visits ? ` · 运行 ${data.visits} 次` : ''}</small>}</div>
+    <strong>{data.label}</strong>
+    <small>标准端口来自节点资产</small>
+    <div className="flow-port-groups"><section aria-label="输入端口"><span>INPUTS</span>{data.inputs.length ? data.inputs.map(field => <div className="flow-port-row flow-port-input" key={field.field_key}><Handle id={`input:${field.field_key}`} className="data-port-handle run-data-handle input" type="target" position={Position.Left} isConnectable={false}/><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small></div>) : <div className="flow-port-row flow-port-input"><em>无输入</em></div>}</section><section aria-label="输出端口"><span>OUTPUTS</span>{data.outputs.length ? data.outputs.map(field => <div className="flow-port-row flow-port-output" key={field.field_key}><b>{field.display_name || field.field_key}</b><small>{field.data_type}</small><Handle id={`output:${field.field_key}`} className="data-port-handle run-data-handle output" type="source" position={Position.Right} isConnectable={false}/></div>) : <div className="flow-port-row flow-port-output"><em>无输出</em></div>}</section></div>
+    <Handle id="flow-source" className="flow-direction-handle run-flow-handle" type="source" position={Position.Right} isConnectable={false}/>
   </article>;
 }
 
@@ -177,7 +177,7 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
   const selectable = useMemo(() => new Set(selectableKeys ?? reachable), [reachable, selectableKeys]);
   const configuredPlans = useMemo(() => new Set(configuredPlanKeys), [configuredPlanKeys]);
   const missingPlans = useMemo(() => new Set(missingPlanKeys), [missingPlanKeys]);
-  const [nodes, edges] = useMemo(() => {
+  const [graphNodes, edges] = useMemo(() => {
     const graphNodes: Node<SnapshotGraphNodeData>[] = (snapshot?.definition.nodes ?? []).map(item => {
       const visits = (executionRun?.node_runs ?? []).filter(nodeRun => nodeRun.flow_node_snapshot_key === item.instance_key);
       const latest = visits.at(-1);
@@ -202,7 +202,7 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
         : undefined;
       return { id: item.instance_key, type: 'snapshotNode', selected: item.instance_key === selectedKey, selectable: selectable.has(item.instance_key), position: { x: item.position_x, y: item.position_y }, data: { label: item.alias || item.asset.name, status, stateLabel, visits: showExecutionState ? visits.length : 0, inputs: item.asset.inputs, outputs: item.asset.outputs } };
     });
-    const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'bezier', className: 'run-direction-edge' }));
+    const directionEdges: Edge[] = (snapshot?.definition.edges ?? []).map((item, index) => ({ id: `flow-${item.id ?? index}`, source: item.source_instance_key, sourceHandle: 'flow-source', target: item.target_instance_key, targetHandle: 'flow-target', type: 'bezier', className: 'flow-direction-edge' }));
     const mappingEdges = withMappingLabelOffsets((snapshot?.definition.port_mappings ?? []).map((item, index) => ({
       id: `mapping-${item.id ?? index}`,
       source: item.source_instance_key,
@@ -210,7 +210,7 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
       target: item.target_instance_key,
       targetHandle: `input:${item.target_input_key}`,
       type: 'bezier',
-      className: 'run-mapping-edge',
+      className: 'flow-mapping-edge',
       label: `${item.source_output_key} → ${item.target_input_key}`,
     })));
     const graphEdges = [
@@ -219,9 +219,18 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
     ];
     return [graphNodes, graphEdges] as const;
   }, [configuredPlans, executionRun?.node_runs, executionRun?.run_mode, linkMode, missingPlans, neutralView, reachable, selectable, selectedKey, showExecutionState, snapshot]);
-  const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}:${selectedKey ?? 'node-run'}`;
-  const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成自动运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。' : neutralHelp ?? '选择一条运行记录后查看执行状态。';
-  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} nodesDraggable={false} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<SnapshotGraphNodeData>>([]);
+  useEffect(() => {
+    setNodes(current => graphNodes.map(node => ({
+      ...node,
+      // A FlowRun always renders its frozen definition, but arranging this
+      // read-only view is a local browser preference and must not mutate it.
+      position: current.find(item => item.id === node.id)?.position ?? node.position,
+    })));
+  }, [graphNodes, setNodes]);
+  const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}`;
+  const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成自动运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
+  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
 function GateList({ evaluations, policies = [] }: { evaluations: GateEvaluation[]; policies?: GatePolicy[] }) {
   const configured = [...policies].sort((left, right) => left.stage.localeCompare(right.stage) || left.position - right.position);
