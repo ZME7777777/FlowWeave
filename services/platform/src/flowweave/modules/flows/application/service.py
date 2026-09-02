@@ -136,8 +136,62 @@ def list_flows(db: Session) -> list[dict[str, Any]]:
     ]
 
 
+def _saved_flow_write(saved: dict[str, Any]) -> FlowWrite:
+    """Rebuild the strict write contract from a persisted read projection."""
+    return FlowWrite.model_validate(
+        {
+            "name": saved["name"],
+            "description": saved["description"],
+            "default_entry_key": saved["default_entry_key"],
+            "row_version": saved["row_version"],
+            "nodes": [
+                {
+                    "instance_key": node["instance_key"],
+                    "node_asset_id": node["node_asset_id"],
+                    "alias": node["alias"],
+                    "position_x": node["position_x"],
+                    "position_y": node["position_y"],
+                    "config_override": node["config_override"],
+                    "gates": [
+                        {
+                            "stage": gate["stage"],
+                            "position": gate["position"],
+                            "gate_type": gate["gate_type"],
+                            "enabled": gate["enabled"],
+                            "timeout_seconds": gate["timeout_seconds"],
+                            "config": gate["config"],
+                            # Gate Agent presets are launch-scoped and are not
+                            # persisted on reusable Flow Definitions.
+                            "agent_preset": {},
+                        }
+                        for gate in node["gates"]
+                    ],
+                }
+                for node in saved["nodes"]
+            ],
+            "edges": [
+                {
+                    "source_instance_key": edge["source_instance_key"],
+                    "target_instance_key": edge["target_instance_key"],
+                    "position": edge["position"],
+                }
+                for edge in saved["edges"]
+            ],
+            "port_mappings": [
+                {
+                    "source_instance_key": mapping["source_instance_key"],
+                    "source_output_key": mapping["source_output_key"],
+                    "target_instance_key": mapping["target_instance_key"],
+                    "target_input_key": mapping["target_input_key"],
+                }
+                for mapping in saved["port_mappings"]
+            ],
+        }
+    )
+
+
 def validate_saved_flow(db: Session, flow_id: str) -> dict[str, Any]:
-    payload = FlowWrite.model_validate(flow_dict(db, get_flow(db, flow_id)))
+    payload = _saved_flow_write(flow_dict(db, get_flow(db, flow_id)))
     validate_flow(
         payload.model_dump(),
         _ports(db, {node.node_asset_id for node in payload.nodes}),

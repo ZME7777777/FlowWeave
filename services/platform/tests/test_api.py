@@ -28,6 +28,7 @@ from flowweave.shared.models import (
     BackgroundTask,
     EnvironmentVersion,
     FlowDefinition,
+    FlowEdge,
     FlowRun,
     FlowRunRuntime,
     FlowRunRuntimeAllocation,
@@ -304,6 +305,47 @@ def create_flow(client, asset_id):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_saved_flow_validation_rebuilds_the_strict_write_contract(client, skill_capability):
+    asset = create_asset(client, skill_capability, "已保存流程校验节点")
+    flow = create_flow(client, asset["id"])
+
+    persisted = client.get(f"/api/v1/flows/{flow['id']}")
+    assert persisted.status_code == 200, persisted.text
+    saved = persisted.json()
+    assert saved["id"]
+    assert saved["created_at"]
+    assert saved["updated_at"]
+    assert all(node["id"] for node in saved["nodes"])
+    assert all(edge["id"] for edge in saved["edges"])
+    assert all(mapping["id"] for mapping in saved["port_mappings"])
+    assert all(
+        gate["id"] and gate["content_hash"] for node in saved["nodes"] for gate in node["gates"]
+    )
+    assert all("agent_preset" not in gate for node in saved["nodes"] for gate in node["gates"])
+
+    validated = client.post(f"/api/v1/flows/{flow['id']}/validate")
+    assert validated.status_code == 200, validated.text
+    assert validated.json() == {"valid": True, "errors": []}
+
+
+def test_saved_flow_validation_still_rejects_an_invalid_persisted_graph(
+    client, skill_capability, db_session_factory
+):
+    asset = create_asset(client, skill_capability, "非法持久图校验节点")
+    flow = create_flow(client, asset["id"])
+    with db_session_factory() as db:
+        edge = db.scalar(select(FlowEdge).where(FlowEdge.flow_id == flow["id"]))
+        assert edge is not None
+        edge.target_flow_node_id = edge.source_flow_node_id
+        db.commit()
+
+    validated = client.post(f"/api/v1/flows/{flow['id']}/validate")
+    assert validated.status_code == 422, validated.text
+    error = validated.json()["error"]
+    assert error["code"] == "FLOW_GRAPH_INVALID"
+    assert error["message"] == "Flow edge cannot connect a node to itself"
 
 
 def test_flow_template_does_not_bind_environment_and_each_run_freezes_its_selection(
