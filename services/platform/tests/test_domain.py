@@ -1,5 +1,9 @@
 import pytest
 
+from flowweave.modules.agent_workspaces.presentation.router import (
+    AgentConversationBootstrapWrite,
+    AgentWorkspaceCapabilitiesWrite,
+)
 from flowweave.modules.flows.domain.rules import validate_flow
 from flowweave.modules.runs.domain.readiness import (
     Artifact,
@@ -10,7 +14,27 @@ from flowweave.modules.runs.domain.readiness import (
 from flowweave.modules.runs.domain.state_machine import transition
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import AttemptState
-from flowweave.shared.schemas import FlowWrite
+from flowweave.shared.schemas import AgentPresetWrite, ExecutorWrite, FlowWrite
+
+
+def test_agent_capability_request_models_have_no_flowweave_count_limit():
+    capability_ids = [f"capability-{index}" for index in range(31)]
+
+    assert AgentWorkspaceCapabilitiesWrite(
+        capability_version_ids=capability_ids
+    ).capability_version_ids == capability_ids
+    assert AgentConversationBootstrapWrite(
+        model_provider_id="provider",
+        model_name="model",
+        content="start",
+        capability_version_ids=capability_ids,
+    ).capability_version_ids == capability_ids
+    assert AgentPresetWrite(capability_version_ids=capability_ids).capability_version_ids == (
+        capability_ids
+    )
+    assert ExecutorWrite(context_capability_ids=capability_ids).context_capability_ids == (
+        capability_ids
+    )
 
 
 def test_readiness_is_explicit_typed_and_version_frozen():

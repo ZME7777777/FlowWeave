@@ -201,8 +201,6 @@ def _validated_capabilities(
     *,
     allowed_types: frozenset[str] = _DYNAMIC_CAPABILITY_TYPES,
 ) -> tuple[tuple[Any, ...], ...]:
-    if len(capability_version_ids) > 30:
-        raise DomainError("AGENT_WORKSPACE_CAPABILITY_LIMIT", "最多启用 30 项能力", 422)
     selected: list[tuple[Any, ...]] = []
     seen_versions: set[str] = set()
     seen_names: set[tuple[str, str]] = set()

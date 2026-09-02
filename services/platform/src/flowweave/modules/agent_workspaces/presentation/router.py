@@ -41,7 +41,7 @@ class AgentWorkspaceSettingsWrite(_Write):
 
 
 class AgentWorkspaceCapabilitiesWrite(_Write):
-    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list)
 
 
 AgentWorkDirectoryPathWrite = Annotated[str, Field(min_length=1, max_length=500)]
@@ -89,7 +89,7 @@ class AgentConversationBootstrapWrite(_Write):
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
-    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list)
 
 
 class AgentMessageWrite(_Write):

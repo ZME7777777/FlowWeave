@@ -53,7 +53,7 @@ def _empty_io_fields() -> list[IOFieldWrite]:
 class ExecutorWrite(ApiModel):
     startup_prompt: str = ""
     context_prompt: str = ""
-    context_capability_ids: list[str] = Field(default_factory=list, max_length=30)
+    context_capability_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_context_capabilities(self) -> ExecutorWrite:
@@ -192,7 +192,7 @@ class AgentPresetWrite(ApiModel):
     freezes their identities when it reserves the native Conversation.
     """
 
-    capability_version_ids: list[str] = Field(default_factory=list, max_length=30)
+    capability_version_ids: list[str] = Field(default_factory=list)
     model_provider_id: str | None = Field(default=None, min_length=1, max_length=36)
     model_name: str | None = Field(default=None, min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)

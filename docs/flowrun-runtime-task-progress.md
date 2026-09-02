@@ -1930,6 +1930,24 @@ Flow 节点会话；运行列表的动态 GET 不得复用恢复前的浏览器�
 `DELETED` binding；新增回归覆盖“更早无效预留 + 后续 ACTIVE 会话”，只以 ACTIVE 原 ID 和事件身份完成
 N→N+1 验证。Web 动态 API GET 使用 `no-store`，Runtime 恢复后列表不再长期显示旧故障响应。
 
+### FR-133 Agent 会话能力数量上限移除 — DONE
+
+依赖：`FR-132`。
+
+目标：移除 FlowWeave 对会话 Skill、MCP、Plugin、节点 Context 和运行预设合计 30 项的人为限制。前端单选、
+筛选结果批量选择和 Skill 组合不得在第 30 项静默截断；API 请求模型与领域校验不得用同一固定数量拒绝请求。
+能力版本唯一性、同类型同名版本冲突、发布状态、类型、MCP readiness 和 OpenHands 原生加载校验继续生效。
+
+验收：平台回归覆盖 31 项请求模型与领域校验；Web 定向回归覆盖新会话一次选择并显示 31 项；运行受影响
+Python Ruff/Pyright/pytest、Web ESLint/typecheck/build、Alembic head、任务状态唯一性与 `git diff --check`。
+完成后独立提交，并按用户要求部署到本地 Compose。
+
+完成：前端单选、筛选结果批量选择和 Skill 组合不再按 30 项静默截断，计数只显示实际已选择／已注册项数；
+Agent Workspace 默认能力、会话首发、节点 Context 和运行 Agent 预设请求模型及领域校验均移除 FlowWeave 固定数量
+限制。能力版本唯一性、同类型同名冲突、发布状态、类型、MCP readiness 和 OpenHands 原生加载门禁保持不变。
+本地 Compose 已用当前源码重建并统一替换 Migration、Runtime Provider、API、Worker 和 Web；实际 5173 页面已验证
+新会话一次选择 31 项及当前会话从 30 项追加第 31 项。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1945,6 +1963,7 @@ N→N+1 验证。Web 动态 API GET 使用 `no-store`，Runtime 恢复后列表�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-02 | FR-133 | 平台能力请求模型／领域校验定向 pytest（11 passed）；受影响 Ruff、定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；源码 Vite 与部署后 5173 定向 Playwright（各 2 passed，覆盖新会话一次选择 31 项及当前会话 30→31）；Alembic head、任务状态唯一性、静态包与 `git diff --check`；本地共享平台和 Web 镜像重建、Migration 与健康检查 | PASS：FlowWeave 的 Skill、MCP、Plugin、Context 和运行预设合计 30 项人为限制已从前端、请求模型和领域校验移除；真实能力冲突、发布／类型、MCP readiness 与 OpenHands 原生加载校验保持。无缓存构建因外部 `uv` wheel 下载长期停滞后中止，随后复用固定依赖缓存成功打包当前源码；Migration `Exited (0)`，API／Runtime Provider healthy，Worker／Web Up，部署后两条 31 项浏览器回归通过，新静态包不含 `/ 30` 计数。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-02 | FR-132 | Runtime replacement pytest（4 passed）；受影响 Ruff；生产源码 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；定向 API/Worker/Web 重建部署；真实 Run generation 2、ACTIVE locator、原 Conversation persistence 与 5173 代理复验；Alembic head、任务状态唯一性与 `git diff --check` | PASS：replacement 只以 ACTIVE Flow 节点 Conversation 做原 ID／事件身份探针，不再选择已删除或未完成预留；事故 Run 从错误 DEGRADED 状态安全恢复为 ACTIVE，原 Workspace、Conversation/Event 和 generation 2 保持不变。动态 API GET 禁止浏览器缓存，运行列表可读取恢复后的状态。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-02 | FR-131 | 平台完整 pytest（567 passed）；删除／会话／工作目录／架构相关回归（101 passed）与确认批次阻塞定向回归（11 passed）；能力删除及环境 Sandbox 先回收竞态回归；受影响 Ruff、定向 Pyright（0 errors）；OpenAPI 契约；Web ESLint、TypeScript typecheck、production build；PostgreSQL 空库、历史基线 downgrade／upgrade 迁移矩阵；ORM 与数据库零外键门禁；Alembic head、任务状态唯一性与 `git diff --check` | PASS：用户显式删除改为完整记录图物理删除；FlowRun 显式递归清理嵌套自动运行及全部 Attempt 级引用，截图中的确认批次约束冲突已回归覆盖。环境清理在 Provider 先删除 Sandbox 账本时也显式清空 Setup Session locator，不依赖 `ON DELETE SET NULL`。迁移清理历史墓碑并移除全部数据库外键，ORM 元数据保持零外键。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。完整平台 Pyright 仍仅有 `capability_imports.py` 的 10 个既有 Context Bundle 类型错误，本切片新增／受影响路径定向检查为 0 errors。 |
 | 2026-09-02 | FR-130 | CHAT 人工产出平台定向 pytest（3 passed，覆盖 URL／FILE、越界路径、合同缺失、CAS 与完成门禁）；受影响 Python Ruff 与定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；当前源码 Vite Workbench 定向 Playwright（2 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：已启动自动记录投影自身 NodeRun／Attempt，未激活节点置灰，人工处理与可恢复失败显示既有合法入口且不提供无效人工验收／取消。CHAT 会话不解析聊天正文；显式合同提交由服务端复核 URL 或共享项目文件，复制不可变 Artifact 并运行冻结完成门禁，通过后复用人工验收与 FR-120 流转。完整平台 Pyright 仍被未改动 `capability_imports.py` 的 10 个既有 Context 类型错误阻塞，本切片涉及文件定向检查为 0 errors。唯一 Alembic head 为 `0087_nested_automatic_runs`；无 `CURRENT` 或下一切片。 |

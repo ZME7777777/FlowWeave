@@ -2039,7 +2039,11 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   expect(bulkAssetB.id).toBeTruthy();
 });
 
-test('Agent new-session slash opens MCP guidance before a Conversation exists', async ({ page }) => {
+test('Agent new-session capability selection is not truncated at 30 items', async ({ page }) => {
+  const catalog = Array.from({ length: 31 }, (_, index) => ({
+    id: `unlimited-skill-${index}`, capability_type: 'SKILL', capability_key: `unlimited-skill-${index}`,
+    description: `能力 ${index}`, filename: `unlimited-skill-${index}.zip`, is_latest: true, document: {},
+  }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
@@ -2062,7 +2066,7 @@ test('Agent new-session slash opens MCP guidance before a Conversation exists', 
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(catalog) }));
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
     { id: 'draft-capability-provider', name: '草稿模型', connection_state: 'CONNECTED', models: [{ model_name: 'draft-model', enabled: true, is_default: true }] },
   ]) }));
@@ -2075,23 +2079,31 @@ test('Agent new-session slash opens MCP guidance before a Conversation exists', 
   await expect(commandMenu).toContainText('当前会话还没有加载命令或 MCP');
   await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
   await commandMenu.getByRole('button', { name: '管理' }).click();
-  await expect(page.getByRole('dialog', { name: '能力' })).toContainText('选择新会话默认挂载的已发布能力');
+  const manager = page.getByRole('dialog', { name: '能力' });
+  await manager.getByRole('button', { name: '选择筛选结果 (31)' }).click();
+  await expect(manager).toContainText('已选择 31 项');
 });
 
-test('historical Agent conversation exposes capability guidance and frozen Context', async ({ page }) => {
+test('current Agent conversation can select a 31st capability and keeps frozen Context', async ({ page }) => {
+  const loadedSkills = Array.from({ length: 29 }, (_, index) => ({
+    id: index === 0 ? 'history-skill' : `history-skill-${index}`,
+    capability_type: 'SKILL',
+    capability_key: index === 0 ? 'history-skill' : `history-skill-${index}`,
+    digest: `history-skill-${index}-digest`,
+  }));
   const historicalConversation = {
     id: 'history-capability-conversation', workspace_id: 'history-capability-workspace',
     external_conversation_id: 'history-capability-openhands', display_title: '历史会话', title_state: 'FALLBACK', lifecycle: 'ACTIVE',
     working_directory: '/runtime/workspace/project', work_directory_id: null,
     model_provider_id: 'history-provider', model_name: 'history-model', reasoning_effort: null,
     streaming_callback_ready: true, capabilities: [
-      { id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', digest: 'history-skill-digest' },
+      ...loadedSkills,
       { id: 'history-context-v1', capability_type: 'CONTEXT', capability_key: '历史上下文', digest: 'history-context-v1-digest' },
     ],
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   };
   const defaultCapabilities = [
-    { id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', digest: 'history-skill-digest' },
+    ...loadedSkills,
     { id: 'history-new-skill', capability_type: 'SKILL', capability_key: 'history-new-skill', digest: 'history-new-skill-digest' },
   ];
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -2141,7 +2153,7 @@ test('historical Agent conversation exposes capability guidance and frozen Conte
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
   await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
-    { id: 'history-skill', capability_type: 'SKILL', capability_key: 'history-skill', description: '历史会话迁移验证 Skill', filename: 'history-skill.zip', is_latest: true, document: {} },
+    ...loadedSkills.map(item => ({ ...item, description: '历史会话迁移验证 Skill', filename: `${item.id}.zip`, is_latest: true, document: {} })),
     { id: 'history-new-skill', capability_type: 'SKILL', capability_key: 'history-new-skill', description: '可追加的历史会话 Skill', filename: 'history-new-skill.zip', is_latest: true, document: {} },
     { id: 'history-context-v1', capability_type: 'CONTEXT', capability_key: '历史上下文', description: '创建时冻结的历史 Context', filename: 'history-context-v1.md', is_latest: false, document: {} },
   ]) }));
@@ -2157,13 +2169,16 @@ test('historical Agent conversation exposes capability guidance and frozen Conte
   await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
   await composer.fill('$');
   const skillMenu = page.getByRole('listbox', { name: '选择技能' });
-  await expect(skillMenu.getByRole('option', { name: /history-skill/ })).toBeVisible();
+  await expect(skillMenu.getByRole('option', { name: /^\$history-skill history-skill / })).toBeVisible();
   await expect(skillMenu.getByText('管理当前会话能力')).toBeVisible();
   await skillMenu.getByRole('button', { name: '管理' }).click();
   const manager = page.getByRole('dialog', { name: '能力' });
+  await expect(manager).toContainText('已注册 30 项');
   const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册，不能取消）' });
   await expect(lockedSkill).toBeDisabled();
   await expect(lockedSkill).toHaveClass(/locked/);
+  await manager.getByRole('button', { name: /history-new-skill/ }).click();
+  await expect(manager).toContainText('已注册 31 项');
   await manager.getByRole('button', { name: 'Context', exact: true }).click();
   await expect(manager).toContainText('已装配 1 个 Context');
   const lockedContext = manager.getByRole('button', { name: '历史上下文（创建时已装配，只读）' });

@@ -116,3 +116,22 @@ def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch)
         ("context-version",),
         allowed_types=conversations._CREATION_CAPABILITY_TYPES,
     ) == ((published, "CONTEXT"),)
+
+
+def test_agent_capability_validation_has_no_flowweave_count_limit(monkeypatch):
+    published = {
+        f"capability-{index}": SimpleNamespace(
+            package=SimpleNamespace(
+                capability_type="SKILL", capability_key=f"skill-{index}"
+            ),
+            version=SimpleNamespace(id=f"capability-{index}", digest=f"{index:064x}"),
+        )
+        for index in range(31)
+    }
+    monkeypatch.setattr(
+        conversations, "resolve_version", lambda _db, version_id: published[version_id]
+    )
+
+    selected = conversations._validated_capabilities(None, tuple(published))
+
+    assert len(selected) == 31
