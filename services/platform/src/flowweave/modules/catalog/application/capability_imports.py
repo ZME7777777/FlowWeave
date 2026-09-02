@@ -339,12 +339,57 @@ def _compile_context_bundle(
     return "\n".join(lines).strip()
 
 
+def _apply_context_bundle_manifest(
+    documents: list[tuple[dict[str, str], str]],
+    manifest: dict[str, Any],
+    requested: object,
+) -> list[tuple[dict[str, str], str]]:
+    """Apply only safe presentation choices to the validated document set."""
+
+    if not isinstance(requested, dict):
+        return documents
+    requested_documents = requested.get("documents")
+    if not isinstance(requested_documents, list):
+        raise _reject("Context Bundle manifest documents are invalid")
+    by_path = {document["path"]: (document, text) for document, text in documents}
+    requested_paths: list[str] = []
+    ordered: list[tuple[dict[str, str], str]] = []
+    for raw_document in requested_documents:
+        if not isinstance(raw_document, dict):
+            raise _reject("Context Bundle manifest documents are invalid")
+        path = raw_document.get("path")
+        title = raw_document.get("title")
+        if not isinstance(path, str) or not isinstance(title, str):
+            raise _reject("Context Bundle manifest documents are invalid")
+        normalized_title = title.strip()
+        if not normalized_title or len(normalized_title) > 200:
+            raise _reject("Context Bundle document titles must be between 1 and 200 characters")
+        if path in requested_paths or path not in by_path:
+            raise _reject(
+                "Context Bundle manifest must contain each validated document exactly once"
+            )
+        requested_paths.append(path)
+        document, text = by_path[path]
+        ordered.append(({**document, "title": normalized_title}, text))
+    if set(requested_paths) != set(by_path):
+        raise _reject("Context Bundle manifest must contain each validated document exactly once")
+    entrypoint = requested.get("entrypoint")
+    if entrypoint is not None and (not isinstance(entrypoint, str) or entrypoint not in by_path):
+        raise _reject("Context Bundle entrypoint must be one of its validated documents")
+    if requested.get("conflict_policy") != "ORDERED_DOCUMENTS_LATER_WINS":
+        raise _reject("Context Bundle conflict policy is invalid")
+    manifest["entrypoint"] = entrypoint
+    manifest["documents"] = [document for document, _ in ordered]
+    return ordered
+
+
 def _context_bundle_capability(
     content: bytes,
     filename: str,
     *,
     title: str | None = None,
     description: str | None = None,
+    manifest_override: object = None,
 ) -> dict[str, Any]:
     """Validate one related Context document set and build its immutable draft manifest."""
 
@@ -487,6 +532,7 @@ def _context_bundle_capability(
         "documents": [document for document, _ in documents],
         "conflict_policy": "ORDERED_DOCUMENTS_LATER_WINS",
     }
+    documents = _apply_context_bundle_manifest(documents, manifest, manifest_override)
     compiled_text = _compile_context_bundle(key, manifest, documents)
     if len(compiled_text.encode("utf-8")) > CONFIG_MAX_BYTES:
         raise _reject("Context Bundle compiled text exceeds 1 MiB")
@@ -1517,6 +1563,11 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
                 filename,
                 title=payload.context_title,
                 description=payload.context_description,
+                manifest_override=(
+                    payload.context_bundle_manifest.model_dump()
+                    if payload.context_bundle_manifest is not None
+                    else None
+                ),
             )
             return content, {
                 "capabilities": [
@@ -1528,6 +1579,8 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
                 "document_count": bundle["document_count"],
                 "ignored_entry_count": bundle["ignored_entry_count"],
             }
+        if payload.context_bundle_manifest is not None:
+            raise _reject("Context Bundle manifest is only valid for ZIP imports")
         return content, {
             "capabilities": [
                 _context_capability(
@@ -1906,6 +1959,12 @@ def read_context_source(db: Session, capability_id: str) -> dict[str, Any]:
         "capability_key": published.package.capability_key,
         "filename": published.version.source_filename,
         "description": str(normalized.get("description") or ""),
+        "content_format": str(normalized.get("content_format") or "TEXT"),
+        "manifest": (
+            normalized.get("manifest")
+            if normalized.get("content_format") == "BUNDLE"
+            else None
+        ),
         "content": content,
     }
 

@@ -9,7 +9,7 @@ import { MarketplaceCatalogDialog } from '../components/MarketplaceCatalogDialog
 import { AgentProfileHistoryDialog } from '../components/AgentProfileHistoryDialog';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
-import type { BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityCollection, CapabilityCollectionWrite, PluginSourceResolution } from '../types';
+import type { BlockedCapabilityDelete, CapabilityAsset, CapabilityAssetType, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, PluginSourceResolution } from '../types';
 
 const SKILL_ZIP_MAX_BYTES = 25 * 1024 * 1024;
 const MCP_JSON_MAX_BYTES = 1024 * 1024;
@@ -71,6 +71,17 @@ type McpConnectionKind = 'REMOTE' | 'LOCAL';
 type McpServerConfig = Record<string, unknown>;
 interface McpDocument { mcpServers: Record<string, McpServerConfig> }
 interface McpScriptAsset { server: string; filename: string; contentBase64: string; byteSize: number }
+
+type ContextBundleDraft = Omit<ContextBundleManifest, 'documents'> & {
+  documents: Array<{ path: string; title: string; content_sha256: string }>
+};
+
+type ContextPreview = {
+  item: CapabilityAsset;
+  content: string;
+  contentFormat: 'TEXT' | 'BUNDLE';
+  manifest: ContextBundleManifest | null;
+};
 
 function capabilityPageSize() {
   const columns = window.innerWidth >= 1320 ? 4 : window.innerWidth >= 1100 ? 3 : 2;
@@ -209,7 +220,8 @@ export function CapabilitiesPage() {
   const [contextTitle, setContextTitle] = useState('');
   const [contextDescription, setContextDescription] = useState('');
   const [contextFile, setContextFile] = useState<File>();
-  const [viewingContext, setViewingContext] = useState<{ item: CapabilityAsset; content: string }>();
+  const [contextBundleManifest, setContextBundleManifest] = useState<ContextBundleDraft>();
+  const [viewingContext, setViewingContext] = useState<ContextPreview>();
   useEscapeClose(() => setContextOpen(false), contextOpen);
   useEscapeClose(() => setViewingContext(undefined), Boolean(viewingContext));
   const [editingCollection, setEditingCollection] = useState<CapabilityCollection | null | undefined>();
@@ -359,7 +371,7 @@ export function CapabilitiesPage() {
     } catch (reason) { setError(errorMessage(reason)); } finally { setImportingSkill(false); }
   };
   const closeContextForm = () => {
-    setContextOpen(false); setContextTitle(''); setContextDescription(''); setContextFile(undefined);
+    setContextOpen(false); setContextTitle(''); setContextDescription(''); setContextFile(undefined); setContextBundleManifest(undefined);
   };
   const createContext = async () => {
     setImportingSkill(true); setError(''); setNotice('');
@@ -367,12 +379,23 @@ export function CapabilitiesPage() {
       const title = contextTitle.trim();
       if (!title) throw new Error('请填写 Context 标题。');
       if (!contextFile) throw new Error('请选择一个 Context 文件。');
-      if (contextFile.size > MCP_JSON_MAX_BYTES) throw new Error('Context 文本不能超过 1 MiB。');
+      if (contextFile.size > MCP_JSON_MAX_BYTES) throw new Error('Context 文本或资料包 ZIP 不能超过 1 MiB。');
       const validated = await api.validateCapability({
         capability_type: 'CONTEXT', filename: contextFile.name,
         content_base64: toBase64(await contextFile.arrayBuffer()),
         context_title: title, context_description: contextDescription.trim(),
+        context_bundle_manifest: contextBundleManifest && {
+          entrypoint: contextBundleManifest.entrypoint,
+          documents: contextBundleManifest.documents.map(({ path, title: documentTitle }) => ({ path, title: documentTitle })),
+          conflict_policy: contextBundleManifest.conflict_policy,
+        },
       });
+      const normalized = validated.preview.capabilities?.[0]?.normalized_config;
+      const suggestedManifest = normalized?.manifest as ContextBundleDraft | undefined;
+      if (contextFile.name.toLowerCase().endsWith('.zip') && !contextBundleManifest && suggestedManifest) {
+        setContextBundleManifest(suggestedManifest);
+        return;
+      }
       const committed = await api.commitCapability(validated.import_token);
       await refresh(); closeContextForm();
       setNotice(`已发布 Context“${committed.capabilities[0]?.capability_key ?? title}”。`);
@@ -382,7 +405,7 @@ export function CapabilitiesPage() {
     setBusy(true); setError('');
     try {
       const source = await api.contextSource(item.id);
-      setViewingContext({ item, content: source.content });
+      setViewingContext({ item, content: source.content, contentFormat: source.content_format, manifest: source.manifest });
     } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   };
   const openMcpEditor = async (item?: CapabilityAsset) => {
@@ -598,8 +621,8 @@ export function CapabilitiesPage() {
     {isLoading ? <div className="empty">加载 {typeLabel(type)}…</div> : visible.length ? <><div className="capability-card-grid compact-capability-list">{pagedVisible.map(group => <CapabilityCard key={group.id} group={group} selected={selectedLineageIds.has(group.id)} onToggle={() => toggleLineage(group.id)} onEdit={() => group.latest.capability_type === 'MCP' ? void openMcpEditor(group.latest) : void openEditor(group.latest)} onViewContext={() => void openContextSource(group.latest)} onProfileHistory={() => setProfileHistory(group)} onDelete={() => void remove([group])}/>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></> : <div className="empty"><FileArchive size={30}/><b>{repositoryQuery ? `没有匹配的 ${typeLabel(type)}` : `暂无 ${typeLabel(type)}`}</b><span>{repositoryQuery ? '调整搜索条件，或清除搜索查看全部能力。' : '使用本模块右上角的功能创建或导入。'}</span></div>}</div>
 
     {profileHistory && <AgentProfileHistoryDialog packageId={profileHistory.id} capabilityKey={profileHistory.latest.capability_key} onClose={() => setProfileHistory(undefined)}/>}
-    {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} file={contextFile} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onFileChange={setContextFile} onClose={closeContextForm} onSave={() => void createContext()}/>}
-    {viewingContext && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewingContext.item.capability_key}`}><header><div><span className="eyebrow">FROZEN CONTEXT</span><h2>{viewingContext.item.capability_key}</h2></div><button className="ghost" onClick={() => setViewingContext(undefined)}>关闭</button></header><p>{viewingContext.item.description || '暂无说明'} · {viewingContext.item.filename}</p><pre>{viewingContext.content}</pre><footer><button className="primary" onClick={() => setViewingContext(undefined)}>完成</button></footer></section></div>}
+    {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} file={contextFile} manifest={contextBundleManifest} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onFileChange={file => { setContextFile(file); setContextBundleManifest(undefined); }} onManifestChange={setContextBundleManifest} onClose={closeContextForm} onSave={() => void createContext()}/>}
+    {viewingContext && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewingContext.item.capability_key}`}><header><div><span className="eyebrow">{viewingContext.contentFormat === 'BUNDLE' ? 'FROZEN CONTEXT BUNDLE' : 'FROZEN CONTEXT'}</span><h2>{viewingContext.item.capability_key}</h2></div><button className="ghost" onClick={() => setViewingContext(undefined)}>关闭</button></header><p>{viewingContext.item.description || '暂无说明'} · {viewingContext.item.filename}</p>{viewingContext.manifest && <section className="context-bundle-preview-directory"><b>资料目录</b><small>入口：{viewingContext.manifest.entrypoint ?? '未指定'} · 全部文档均已加载</small><ol>{viewingContext.manifest.documents.map(document => <li key={document.path}><b>{document.title}</b><span>{document.path}</span></li>)}</ol></section>}<pre>{viewingContext.content}</pre><footer><button className="primary" onClick={() => setViewingContext(undefined)}>完成</button></footer></section></div>}
     {editing && <div className="modal-backdrop"><section className="modal capability-source-editor" role="dialog" aria-label={`编辑 Skill ${editing.capability_key}`}><header><div><span className="eyebrow">EDIT SKILL</span><h2>编辑 {editing.capability_key}</h2></div><button className="ghost" onClick={() => setEditing(undefined)}>关闭</button></header><p>保存会发布新的不可变 Skill 版本；已有节点和 Run Snapshot 继续引用原版本，升级必须显式重新绑定。</p><textarea aria-label="Skill 源码" value={source} onChange={event => setSource(event.target.value)}/><div className="dependency-policy"><b>声明依赖（写入 SKILL.md frontmatter）</b><code>{DEPENDENCY_EXAMPLE}</code><span>所有版本必须精确固定。CLI 必须在平台白名单中；不接受终端命令。</span></div><footer><button className="ghost" onClick={() => setEditing(undefined)}>取消</button><button className="primary" disabled={busy} onClick={() => void saveSource()}>{busy ? '保存中…' : '发布新版本'}</button></footer></section></div>}
     {editingCollection !== undefined && <CapabilityCollectionEditorDialog collection={editingCollection ?? undefined} capabilities={capabilities} busy={busy} onClose={() => setEditingCollection(undefined)} onSave={payload => void saveCollection(payload)}/>}
     {mcpOpen && <McpEditorDialog editing={Boolean(editingMcp)} mode={mcpMode} json={mcpJson} jsonError={mcpJsonError || parsedMcp.error || mcpContractError} selectedServer={activeMcpServerName} server={activeMcpServer} transport={activeMcpTransport} connectionKind={activeMcpConnectionKind} scripts={mcpScripts.filter(script => script.server === activeMcpServerName)} busy={busy} onModeChange={switchMcpMode} onJsonChange={value => { setMcpJson(value); setMcpJsonError(''); }} onConnectionKindChange={switchMcpConnectionKind} onRenameServer={renameMcpServer} onUpdateServer={updateMcpServer} onAddScripts={(server, files) => void addMcpScripts(server, files).catch(reason => setMcpJsonError(errorMessage(reason)))} onRemoveScript={removeMcpScript} onClose={() => { setMcpOpen(false); setEditingMcp(undefined); }} onSave={() => void createMcp()}/>}
@@ -673,23 +696,32 @@ interface ContextDialogProps {
   title: string;
   description: string;
   file?: File;
+  manifest?: ContextBundleDraft;
   busy: boolean;
   onTitleChange: (value: string) => void;
   onDescriptionChange: (value: string) => void;
   onFileChange: (file?: File) => void;
+  onManifestChange: (manifest: ContextBundleDraft) => void;
   onClose: () => void;
   onSave: () => void;
 }
 
-function ContextDialog({ title, description, file, busy, onTitleChange, onDescriptionChange, onFileChange, onClose, onSave }: ContextDialogProps) {
+function ContextDialog({ title, description, file, manifest, busy, onTitleChange, onDescriptionChange, onFileChange, onManifestChange, onClose, onSave }: ContextDialogProps) {
+  const moveDocument = (index: number, direction: -1 | 1) => {
+    if (!manifest || index + direction < 0 || index + direction >= manifest.documents.length) return;
+    const documents = [...manifest.documents];
+    [documents[index], documents[index + direction]] = [documents[index + direction], documents[index]];
+    onManifestChange({ ...manifest, documents });
+  };
   return <div className="modal-backdrop"><section className="modal context-dialog" role="dialog" aria-modal="true" aria-label="新增 Context">
     <header><div><span className="eyebrow">NEW CONTEXT</span><h2>新增 Context</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
-    <p>填写标题和说明后上传文本。发布后内容、标题和说明都会被冻结；更新请新建 Context 并显式重新绑定。</p>
+    <p>{manifest ? '资料包已安全解析。可调整阅读目录；全部文档仍会共同冻结并加载到同一个 Context。' : '填写标题和说明后上传文本或资料包。发布后内容、标题和说明都会被冻结；更新请新建 Context 并显式重新绑定。'}</p>
     <label><span>标题 *</span><input aria-label="Context 标题" value={title} maxLength={200} placeholder="例如：产品发布手册" onChange={event => onTitleChange(event.target.value)}/></label>
     <label><span>说明</span><textarea aria-label="Context 说明" value={description} maxLength={2000} placeholder="说明这份背景信息适用于哪些任务" onChange={event => onDescriptionChange(event.target.value)}/></label>
-    <label className="context-file-upload"><input aria-label="Context 文件" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={event => onFileChange(event.target.files?.[0])}/><span><b>{file ? file.name : '选择 Context 文件'}</b><small>{file ? `${formatBytes(file.size)} · ${file.type || '文本文件'}` : '支持 .txt、.md、.markdown，UTF-8 编码，最大 1 MiB。'}</small></span><em>选择文件</em></label>
+    <label className="context-file-upload"><input aria-label="Context 文件" type="file" accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip" onChange={event => onFileChange(event.target.files?.[0])}/><span><b>{file ? file.name : '选择 Context 文件或资料包'}</b><small>{file ? `${formatBytes(file.size)} · ${file.type || '文件'}` : '支持 UTF-8 .txt、.md、.markdown 或只含这些文档的 ZIP，最大 1 MiB。'}</small></span><em>选择文件</em></label>
+    {manifest && <section className="context-bundle-editor"><header><div><b>资料包目录</b><small>文档顺序决定冲突覆盖顺序；后面的文档覆盖前面的文档。</small></div><span>{manifest.documents.length} 份文档</span></header><label><span>阅读入口</span><select aria-label="资料包入口" value={manifest.entrypoint ?? ''} onChange={event => onManifestChange({ ...manifest, entrypoint: event.target.value || null })}><option value="">不指定入口</option>{manifest.documents.map(document => <option key={document.path} value={document.path}>{document.path}</option>)}</select></label><ol>{manifest.documents.map((document, index) => <li key={document.path}><div><input aria-label={`资料标题 ${document.path}`} value={document.title} maxLength={200} onChange={event => onManifestChange({ ...manifest, documents: manifest.documents.map(item => item.path === document.path ? { ...item, title: event.target.value } : item) })}/><small>{document.path}</small></div><span><button type="button" className="ghost" aria-label={`上移 ${document.path}`} disabled={index === 0} onClick={() => moveDocument(index, -1)}>↑</button><button type="button" className="ghost" aria-label={`下移 ${document.path}`} disabled={index === manifest.documents.length - 1} onClick={() => moveDocument(index, 1)}>↓</button></span></li>)}</ol></section>}
     <div className="mcp-security-note"><b>安全校验</b><span>只接受非空 UTF-8 文本；包含明文 API Key、Token、Secret、Password 或 Authorization 赋值的文件会被拒绝。</span></div>
-    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || !file} onClick={onSave}>{busy ? '发布中…' : '校验并发布'}</button></footer>
+    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || !file} onClick={onSave}>{busy ? '处理中…' : manifest ? '确认并发布' : file?.name.toLowerCase().endsWith('.zip') ? '解析资料包' : '校验并发布'}</button></footer>
   </section></div>;
 }
 

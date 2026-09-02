@@ -19,8 +19,93 @@ test('Context module opens a titled text upload form', async ({ page }) => {
   await expect(dialog.getByLabel('Context 说明')).toBeVisible();
   await expect(dialog.getByLabel('Context 文件')).toHaveAttribute(
     'accept',
-    '.txt,.md,.markdown,text/plain,text/markdown',
+    '.txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip',
   );
+});
+
+test('Context Bundle is parsed before its editable directory is published', async ({ page }) => {
+  let validateCount = 0;
+  let confirmedManifest: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capability-imports/validate', async route => {
+    validateCount += 1;
+    const manifest = route.request().postDataJSON().context_bundle_manifest as Record<string, unknown> | undefined;
+    if (validateCount === 2) confirmedManifest = manifest;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        import_token: `token-${validateCount}`, content_hash: 'a'.repeat(64),
+        preview: { capabilities: [{ capability_key: '资料包', normalized_config: { manifest: {
+          entrypoint: 'README.md', conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS', documents: [
+            { path: 'README.md', title: '总览', content_sha256: '1'.repeat(64) },
+            { path: 'guides/02.md', title: '第二章', content_sha256: '2'.repeat(64) },
+          ],
+        } } }] },
+      }),
+    });
+  });
+  await page.route('**/api/v1/capability-imports', route => route.fulfill({
+    status: 201, contentType: 'application/json', body: JSON.stringify({ capabilities: [{ capability_key: '资料包' }] }),
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
+  await page.getByRole('button', { name: '新增 Context' }).click();
+  const dialog = page.getByRole('dialog', { name: '新增 Context' });
+  await dialog.getByLabel('Context 标题').fill('资料包');
+  await dialog.getByLabel('Context 文件').setInputFiles({ name: 'bundle.zip', mimeType: 'application/zip', buffer: Buffer.from('zip') });
+  await dialog.getByRole('button', { name: '解析资料包' }).click();
+  await expect(dialog.getByText('资料包目录')).toBeVisible();
+  await dialog.getByLabel('资料标题 guides/02.md').fill('最终章节');
+  await dialog.getByRole('button', { name: '上移 guides/02.md' }).click();
+  await dialog.getByLabel('资料包入口').selectOption('guides/02.md');
+  await dialog.getByRole('button', { name: '确认并发布' }).click();
+  await expect(page.getByRole('status')).toContainText('已发布 Context“资料包”');
+  expect(confirmedManifest).toEqual({
+    entrypoint: 'guides/02.md', conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS', documents: [
+      { path: 'guides/02.md', title: '最终章节' }, { path: 'README.md', title: '总览' },
+    ],
+  });
+});
+
+test('published Context Bundle shows its frozen document directory before compiled text', async ({ page }) => {
+  const bundle = {
+    id: 'bundle-version', lineage_id: 'bundle-lineage', revision_number: 1, is_latest: true,
+    capability_type: 'CONTEXT', capability_key: '资料包', description: '关联背景资料', version: '',
+    filename: 'bundle.zip', content_hash: 'b'.repeat(64), byte_size: 1024, import_id: 'bundle-import',
+    created_at: '2026-09-02T00:00:00Z', reference_count: 0, is_builtin: false, document: {},
+    dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
+  };
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([bundle]) }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities/bundle-version/context-source', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      id: bundle.id, capability_key: bundle.capability_key, filename: bundle.filename,
+      description: bundle.description, content_format: 'BUNDLE',
+      manifest: {
+        entrypoint: 'README.md', conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS', documents: [
+          { path: 'README.md', title: '总览', content_sha256: '1'.repeat(64) },
+          { path: 'guides/02.md', title: '最终说明', content_sha256: '2'.repeat(64) },
+        ],
+      },
+      content: '[资料包 · 关联资料包]\n\n## 文档：总览',
+    }),
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
+  await page.getByRole('button', { name: '查看内容' }).click();
+  const dialog = page.getByRole('dialog', { name: '查看 Context 资料包' });
+  await expect(dialog.getByText('资料目录')).toBeVisible();
+  await expect(dialog.getByText('入口：README.md · 全部文档均已加载')).toBeVisible();
+  await expect(dialog.getByText('最终说明')).toBeVisible();
+  await expect(dialog.locator('pre')).toContainText('## 文档：总览');
 });
 
 test('capability repository exposes module-specific menus and actions', async ({ page }) => {

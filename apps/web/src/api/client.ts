@@ -1,7 +1,7 @@
 import type {
   AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -229,11 +229,11 @@ export const api = {
   updateNode: (id: string, body: NodeAssetWrite) => request<NodeAsset>(`/node-assets/${id}`, json('PUT', body)),
   deleteNode: (id: string) => request<void>(`/node-assets/${id}`, json('DELETE')),
   deleteNodes: (ids: string[]) => request<BulkDeleteResult<BlockedNodeDelete>>('/node-assets', json('DELETE', { ids })),
-  validateCapability: (body: { capability_type: string; filename: string; content_base64: string; context_title?: string; context_description?: string; mcp_scripts?: Array<{ server: string; filename: string; content_base64: string }>; hook_scripts?: Array<{ filename: string; content_base64: string }> }) =>
+  validateCapability: (body: { capability_type: string; filename: string; content_base64: string; context_title?: string; context_description?: string; context_bundle_manifest?: { entrypoint: string | null; documents: Array<{ path: string; title: string }>; conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' }; mcp_scripts?: Array<{ server: string; filename: string; content_base64: string }>; hook_scripts?: Array<{ filename: string; content_base64: string }> }) =>
     request<{
       import_token: string;
       preview: {
-        capabilities?: Array<{ capability_key?: string }>;
+        capabilities?: Array<{ capability_key?: string; normalized_config?: Record<string, unknown> }>;
         file_count?: number;
         raw_entry_count?: number;
         effective_entry_count?: number;
@@ -264,7 +264,7 @@ export const api = {
   deleteCapabilityCollection: (id: string) =>
     request<void>(`/capability-collections/${id}`, json('DELETE')),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
-  contextSource: (id: string) => request<{ id: string; capability_key: string; filename: string; description: string; content: string }>(`/capabilities/${encodeURIComponent(id)}/context-source`),
+  contextSource: (id: string) => request<{ id: string; capability_key: string; filename: string; description: string; content_format: 'TEXT' | 'BUNDLE'; manifest: ContextBundleManifest | null; content: string }>(`/capabilities/${encodeURIComponent(id)}/context-source`),
   updateCapabilitySource: (id: string, content: string) =>
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
   deleteCapability: (id: string) => request<void>(`/capabilities/${encodeURIComponent(id)}`, json('DELETE')),

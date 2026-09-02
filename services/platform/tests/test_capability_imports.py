@@ -101,6 +101,8 @@ def test_context_import_persists_explicit_title_description_and_readonly_source(
         "capability_key": "产品发布手册",
         "filename": "playbook.md",
         "description": "发布前的固定背景和检查项",
+        "content_format": "TEXT",
+        "manifest": None,
         "content": content.decode(),
     }
 
@@ -171,6 +173,8 @@ def test_context_bundle_import_generates_deterministic_manifest_and_readable_sou
     source = client.get(f"/api/v1/capabilities/{capability_id}/context-source")
     assert source.status_code == 200, source.text
     assert source.json()["content"] == normalized["text"]
+    assert source.json()["content_format"] == "BUNDLE"
+    assert source.json()["manifest"] == normalized["manifest"]
     with db_session_factory() as db:
         blob = db.scalar(
             select(CapabilityBlob).where(
@@ -179,6 +183,74 @@ def test_context_bundle_import_generates_deterministic_manifest_and_readable_sou
         )
         assert blob is not None
         assert blob.media_type == "application/zip"
+
+
+def test_context_bundle_manifest_override_only_changes_validated_presentation(client):
+    content = context_bundle_zip(
+        {
+            "README.md": "# Overview\nShared context.\n",
+            "guides/02.md": "# Second\nLater rule.\n",
+            "guides/01.md": "# First\nEarlier rule.\n",
+        }
+    )
+    payload = {
+        "capability_type": "CONTEXT",
+        "filename": "guide.zip",
+        "context_title": "Guides",
+        "content_base64": content,
+        "context_bundle_manifest": {
+            "entrypoint": "guides/02.md",
+            "documents": [
+                {"path": "README.md", "title": "Read me first"},
+                {"path": "guides/02.md", "title": "Final guidance"},
+                {"path": "guides/01.md", "title": "Initial guidance"},
+            ],
+            "conflict_policy": "ORDERED_DOCUMENTS_LATER_WINS",
+        },
+    }
+    validated = client.post("/api/v1/capability-imports/validate", json=payload)
+    assert validated.status_code == 200, validated.text
+    normalized = validated.json()["preview"]["capabilities"][0]["normalized_config"]
+    manifest = normalized["manifest"]
+    assert manifest["entrypoint"] == "guides/02.md"
+    assert [(document["path"], document["title"]) for document in manifest["documents"]] == [
+        ("README.md", "Read me first"),
+        ("guides/02.md", "Final guidance"),
+        ("guides/01.md", "Initial guidance"),
+    ]
+    assert "资料入口：guides/02.md" in normalized["text"]
+    assert normalized["text"].index("## 文档：Final guidance") < normalized["text"].index(
+        "## 文档：Initial guidance"
+    )
+
+    invalid = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            **payload,
+            "context_bundle_manifest": {
+                **payload["context_bundle_manifest"],
+                "documents": payload["context_bundle_manifest"]["documents"][:-1],
+            },
+        },
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["message"] == (
+        "Context Bundle manifest must contain each validated document exactly once"
+    )
+
+    text_manifest = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "single.md",
+            "content_base64": base64.b64encode(b"# Single\nContext").decode(),
+            "context_bundle_manifest": payload["context_bundle_manifest"],
+        },
+    )
+    assert text_manifest.status_code == 422
+    assert text_manifest.json()["error"]["message"] == (
+        "Context Bundle manifest is only valid for ZIP imports"
+    )
 
 
 @pytest.mark.parametrize(

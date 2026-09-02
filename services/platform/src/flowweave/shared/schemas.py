@@ -487,6 +487,21 @@ def _empty_hook_scripts() -> list[HookScriptWrite]:
     return []
 
 
+class ContextBundleDocumentWrite(ApiModel):
+    path: str = Field(min_length=1, max_length=1000)
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ContextBundleManifestWrite(ApiModel):
+    """User-confirmed presentation metadata for an already validated Bundle."""
+
+    entrypoint: str | None = Field(default=None, max_length=1000)
+    documents: list[ContextBundleDocumentWrite] = Field(min_length=1, max_length=100)
+    conflict_policy: Literal["ORDERED_DOCUMENTS_LATER_WINS"] = (
+        "ORDERED_DOCUMENTS_LATER_WINS"
+    )
+
+
 class CapabilityValidateWrite(ApiModel):
     capability_type: Literal[
         "SKILL",
@@ -504,6 +519,7 @@ class CapabilityValidateWrite(ApiModel):
     content_base64: str
     context_title: str | None = Field(default=None, max_length=200)
     context_description: str | None = Field(default=None, max_length=2000)
+    context_bundle_manifest: ContextBundleManifestWrite | None = None
     mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
     hook_scripts: list[HookScriptWrite] = Field(default_factory=_empty_hook_scripts, max_length=20)
 

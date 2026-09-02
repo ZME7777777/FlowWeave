@@ -29,6 +29,8 @@ export interface CapabilityAsset {
   dependency_build_state: 'NOT_REQUIRED' | 'PENDING' | 'READY' | 'FAILED';
   dependency_build_error?: string | null;
 }
+export interface ContextBundleDocument { path: string; title: string; content_sha256: string }
+export interface ContextBundleManifest { entrypoint: string | null; documents: ContextBundleDocument[]; conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' }
 export interface CapabilityCollection {
   id: string; name: string; category: string; description: string; row_version: number;
   members: CapabilityAsset[]; created_at: string; updated_at: string;
