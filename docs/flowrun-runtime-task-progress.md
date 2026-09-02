@@ -1964,6 +1964,29 @@ typecheck、production build、Alembic head、任务状态唯一性与 git diff 
 回退 field_key；Handle 和保存载荷继续使用 field_key。Web ESLint、TypeScript typecheck、production
 build、源码 Vite 上的定向 Playwright、唯一 Alembic head、任务状态唯一性与 git diff --check 均通过。
 
+### FR-135 远端终端环境动态镜像 ACP-free 构建 — DONE
+
+依赖：FR-134。
+
+目标：修复远端终端环境发布调用固定 OpenHands 1.44.0 正式动态构建入口时，隐式采用上游独立镜像的
+ACP 全量默认值，导致无 ACP 产品需求的 Environment Runtime 在 `acp-providers` 阶段额外访问 HTTP Debian
+源并因远端网络返回 `NOSPLIT` 失败。FlowWeave 必须通过正式 `BuildOptions.install_acp_providers` 显式冻结
+空集合，与平台 Runtime 种子既有 ACP-free 边界一致；不得修改 OpenHands 源码、生成 Dockerfile、
+Runtime Provider 权限或既有 Environment Version。该构建输入必须进入最终 Runtime manifest。
+
+验收：固定 OpenHands 1.44.0 `BuildOptions` 和 Dockerfile 空集合早退契约取证；Environment 定向 pytest
+覆盖正式构建参数与 manifest；受影响 Ruff、Pyright、Python 语法、Alembic head、任务状态唯一性与
+`git diff --check`；构建 linux/amd64 平台镜像并按共享代码边界更新远端 Migration、Runtime Provider、
+API 和 Worker；发布新的不可变版本，确认 BuildKit 不再执行 ACP APT、版本进入 READY、Runtime
+contract/probe 通过且正式 Environment API 可读。
+
+完成：动态发布通过正式 `BuildOptions.install_acp_providers=""` 冻结 ACP-free 输入，并将该事实写入最终
+镜像标签和 Runtime manifest；上游 `acp-providers` 阶段在 APT 前明确早退。同步修正环境校验器中已落后于
+当前受跟踪补丁文件的精确 overlay SHA-256，并以读取真实补丁文件的测试防止再次漂移。原失败 v2 与旧会话
+已按产品删除语义物理清理，因此使用正式 API 发布追加式 v3；唯一 `source-minimal` 构建 5 分 38 秒完成，
+幂等重试复用同一最终镜像。v3 为 `READY`、`runtime_compatible=true`，contract/tool probe 均为 `PASSED`。
+远端 Migration 退出 0，Runtime Provider/API healthy、Worker Up，四个共享进程统一运行 linux/amd64 镜像。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -1979,6 +2002,7 @@ build、源码 Vite 上的定向 Playwright、唯一 Alembic head、任务状态
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-02 | FR-135 | 固定 OpenHands 1.44.0 `BuildOptions.install_acp_providers` 与 Dockerfile 空集合早退取证；Environment pytest（36 passed）；受影响 Ruff、生产源码 Pyright（0 errors）与 `py_compile`；Alembic head、任务状态唯一性和 `git diff --check`；远端 BuildKit、Runtime contract/provenance、数据库、正式 API、Migration 与服务健康实测 | PASS：远端动态 Environment Runtime 显式使用 ACP-free 正式构建输入，`acp-providers` 输出空集合早退且未执行自身 APT，`source-minimal` 由此前 4.3 秒 `NOSPLIT` 失败变为 5 分 38 秒完成。精确 overlay allowlist 与仓库补丁 SHA-256 `19715a…f56a` 对齐。追加式 v3 `987d6124-68a8-4aac-b5a3-0c301706d9e8` 为 READY、Runtime compatible，contract/tool probe PASSED；幂等重试未创建第二次 source-minimal 构建。Migration Exited (0)，Runtime Provider/API healthy、Worker Up，四进程镜像 ID 均为 `4eccd7…cea85`。本机 Docker Desktop 两次 amd64 QEMU `uv sync` 均以 139 失败，远端完整重建又受同一 HTTP Debian `NOSPLIT` 阻断，故在已验收的 linux/amd64 平台镜像上以受控增量层部署当前两个生产文件；无 `CURRENT`。 |
 | 2026-09-02 | FR-133 | 平台能力请求模型／领域校验定向 pytest（11 passed）；受影响 Ruff、定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；源码 Vite 与部署后 5173 定向 Playwright（各 2 passed，覆盖新会话一次选择 31 项及当前会话 30→31）；Alembic head、任务状态唯一性、静态包与 `git diff --check`；本地共享平台和 Web 镜像重建、Migration 与健康检查 | PASS：FlowWeave 的 Skill、MCP、Plugin、Context 和运行预设合计 30 项人为限制已从前端、请求模型和领域校验移除；真实能力冲突、发布／类型、MCP readiness 与 OpenHands 原生加载校验保持。无缓存构建因外部 `uv` wheel 下载长期停滞后中止，随后复用固定依赖缓存成功打包当前源码；Migration `Exited (0)`，API／Runtime Provider healthy，Worker／Web Up，部署后两条 31 项浏览器回归通过，新静态包不含 `/ 30` 计数。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-02 | FR-132 | Runtime replacement pytest（4 passed）；受影响 Ruff；生产源码 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；定向 API/Worker/Web 重建部署；真实 Run generation 2、ACTIVE locator、原 Conversation persistence 与 5173 代理复验；Alembic head、任务状态唯一性与 `git diff --check` | PASS：replacement 只以 ACTIVE Flow 节点 Conversation 做原 ID／事件身份探针，不再选择已删除或未完成预留；事故 Run 从错误 DEGRADED 状态安全恢复为 ACTIVE，原 Workspace、Conversation/Event 和 generation 2 保持不变。动态 API GET 禁止浏览器缓存，运行列表可读取恢复后的状态。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-02 | FR-131 | 平台完整 pytest（567 passed）；删除／会话／工作目录／架构相关回归（101 passed）与确认批次阻塞定向回归（11 passed）；能力删除及环境 Sandbox 先回收竞态回归；受影响 Ruff、定向 Pyright（0 errors）；OpenAPI 契约；Web ESLint、TypeScript typecheck、production build；PostgreSQL 空库、历史基线 downgrade／upgrade 迁移矩阵；ORM 与数据库零外键门禁；Alembic head、任务状态唯一性与 `git diff --check` | PASS：用户显式删除改为完整记录图物理删除；FlowRun 显式递归清理嵌套自动运行及全部 Attempt 级引用，截图中的确认批次约束冲突已回归覆盖。环境清理在 Provider 先删除 Sandbox 账本时也显式清空 Setup Session locator，不依赖 `ON DELETE SET NULL`。迁移清理历史墓碑并移除全部数据库外键，ORM 元数据保持零外键。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。完整平台 Pyright 仍仅有 `capability_imports.py` 的 10 个既有 Context Bundle 类型错误，本切片新增／受影响路径定向检查为 0 errors。 |

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -119,10 +122,11 @@ def test_runtime_manifest_allows_only_the_reviewed_fork_overlay() -> None:
     manifest = _runtime_manifest()
     provenance = manifest["runtime_provenance"]
     assert isinstance(provenance, dict)
+    patch_path = (
+        Path(__file__).resolve().parents[3] / "infra/openhands/patch_fork_condenser.py"
+    )
     provenance["overlays"] = {
-        "patch_fork_condenser.py": (
-            "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3"
-        )
+        "patch_fork_condenser.py": hashlib.sha256(patch_path.read_bytes()).hexdigest()
     }
     environment_service.validate_runtime_manifest(manifest)
 
@@ -198,6 +202,7 @@ def _mock_formal_publish_pipeline(monkeypatch, calls: list[str] | None = None) -
             telemetry={"duration_seconds": 1},
             target="source-minimal",
             platform=str(kwargs["platform"]),
+            install_acp_providers="",
         )
 
     def probe(_image_digest, *, probe_token):
@@ -208,6 +213,40 @@ def _mock_formal_publish_pipeline(monkeypatch, calls: list[str] | None = None) -
 
     monkeypatch.setattr(environment_docker, "_build_openhands_runtime", build)
     monkeypatch.setattr(environment_docker, "_probe_runtime_image", probe)
+
+
+def test_formal_openhands_build_keeps_environment_runtime_acp_free(monkeypatch):
+    captured_options: dict[str, object] = {}
+    monkeypatch.setattr(
+        environment_docker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            docker_binary="docker",
+            openhands_runtime_builder_image="flowweave-openhands-runtime:1",
+            terminal_environment_publish_timeout_seconds=60,
+        ),
+    )
+
+    def fake_run(command, **_kwargs):
+        captured_options.update(json.loads(command[-1]))
+        return (
+            'FLOWWEAVE_OPENHANDS_BUILD={"tags":'
+            '["flowweave/environment-environment-1-runtime:v1-version1"],'
+            '"telemetry":{"buildx_wall_clock_seconds":1.0}}'
+        )
+
+    monkeypatch.setattr(environment_docker, "_run", fake_run)
+    result = environment_docker._build_openhands_runtime(
+        base_image="flowweave/environment-environment-1-base:v1-version1",
+        environment_id="environment-1",
+        version_id="version-1",
+        version_no=1,
+        platform="linux/amd64",
+    )
+
+    assert captured_options["install_acp_providers"] == ""
+    assert captured_options["target"] == "source-minimal"
+    assert result.install_acp_providers == ""
 
 
 def test_legacy_container_cleanup_requires_matching_ownership_labels(monkeypatch):
@@ -420,6 +459,7 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
     assert calls == ["scan", "commit", "formal-build", "wrap", "probe"]
     assert published.reference == "flowweave/environment-environment-1:v1-version1"
     assert published.manifest["filesystem_change_count"] == 2
+    assert published.manifest["build"]["install_acp_providers"] == ""
 
 
 def test_publish_refuses_a_tag_owned_by_another_version(monkeypatch):

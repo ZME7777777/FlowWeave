@@ -197,6 +197,7 @@ class OpenHandsBuild:
     telemetry: dict[str, Any]
     target: str
     platform: str
+    install_acp_providers: str
 
 
 _OPENHANDS_BUILD_SCRIPT = r"""
@@ -895,6 +896,12 @@ def _build_openhands_runtime(
         "include_versioned_tag": False,
         "git_sha": "9a24f6c8866f353042a57df0514ccc900e3a0691",
         "git_ref": "9a24f6c8866f353042a57df0514ccc900e3a0691",
+        # FlowWeave's fixed Runtime seed is intentionally ACP-free. Preserve
+        # that product boundary when invoking OpenHands' formal dynamic build
+        # API instead of accepting its broader standalone-image default. An
+        # empty value also makes the upstream acp-providers stage exit before
+        # it performs an unrelated Debian APT transaction.
+        "install_acp_providers": "",
     }
     output = _run(
         [
@@ -942,6 +949,7 @@ def _build_openhands_runtime(
         telemetry=telemetry,
         target="source-minimal",
         platform=platform,
+        install_acp_providers="",
     )
 
 
@@ -1086,6 +1094,9 @@ def publish_container(
                 "user_base_image_digest": base_image_digest,
                 "runtime_image_reference": reference,
                 "runtime_image_digest": digest,
+                "install_acp_providers": labels.get(
+                    "flowweave.openhands-install-acp-providers"
+                ),
             },
             "validation": {
                 "contract_check": {"status": "PASSED", "output_digest": contract_digest},
@@ -1188,6 +1199,7 @@ def publish_container(
             f'LABEL flowweave.openhands-build-log-digest="{build.log_digest}"',
             f'LABEL flowweave.openhands-build-target="{build.target}"',
             f'LABEL flowweave.openhands-build-platform="{build.platform}"',
+            f'LABEL flowweave.openhands-install-acp-providers="{build.install_acp_providers}"',
             f'LABEL flowweave.user-base-image-digest="{base_image_digest}"',
             'ENV PATH="/agent-server/.venv/bin:${PATH}"',
             "ENTRYPOINT []",
@@ -1256,6 +1268,7 @@ def publish_container(
             "openhands_output_digest": official_digest,
             "runtime_image_reference": reference,
             "runtime_image_digest": digest,
+            "install_acp_providers": build.install_acp_providers,
         },
         "validation": {
             "contract_check": {

@@ -103,7 +103,7 @@ _APPROVED_OPENHANDS_OVERLAYS: dict[str, str] = {
     # to retain native conversation-fork condensation behavior.  Treat this
     # exact content hash as part of the frozen Runtime contract; reject every
     # other overlay rather than broadly allowing source modifications.
-    "patch_fork_condenser.py": "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3",
+    "patch_fork_condenser.py": "19715a644888dc829299ebe555ef2cd682ca739dde97f9c046e626434d39f56a",
 }
 
 
