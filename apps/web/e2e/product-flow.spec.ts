@@ -206,6 +206,7 @@ test('environment publishing reopens as progress instead of reconnecting the ter
 
 test('closing an environment terminal only hides its existing connection', async ({ page }) => {
   let terminalAttachments = 0;
+  const terminalInputs: string[] = [];
   const environment = {
     id: 'environment-running', name: '持续连接终端环境', description: '', row_version: 1, versions: [],
     active_sessions: [{
@@ -226,12 +227,34 @@ test('closing an environment terminal only hides its existing connection', async
   await page.routeWebSocket('**/api/v1/environment-setup-sessions/*/terminal*', socket => {
     terminalAttachments += 1;
     socket.send('connected\\r\\n$ ');
+    socket.send('\u001b[?1000h\u001b[?1006h');
+    socket.onMessage(message => {
+      const payload = JSON.parse(message.toString()) as { type?: string; data?: string };
+      if (payload.type === 'input' && payload.data) terminalInputs.push(payload.data);
+    });
   });
 
   await login(page);
   await page.getByRole('button', { name: '终端环境' }).click();
   await page.getByRole('button', { name: '继续配置' }).click();
   await expect.poll(() => terminalAttachments).toBe(1);
+  const terminalScreen = page.locator('.terminal-screen .xterm-screen');
+  const screenBox = await terminalScreen.boundingBox();
+  if (!screenBox) throw new Error('Expected environment terminal screen');
+  await page.mouse.move(screenBox.x + 18, screenBox.y + 12);
+  await page.mouse.down();
+  await page.mouse.move(screenBox.x + 92, screenBox.y + 12, { steps: 5 });
+  await page.mouse.up();
+  expect(terminalInputs.some(data => data.startsWith('\u001b[<'))).toBe(false);
+  const copiedTerminalSelection = await terminalScreen.evaluate(screen => {
+    const terminal = screen.closest('.xterm');
+    if (!terminal) throw new Error('Expected xterm root');
+    const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() });
+    terminal.dispatchEvent(event);
+    return { copied: event.clipboardData?.getData('text/plain'), prevented: event.defaultPrevented };
+  });
+  expect(copiedTerminalSelection.copied).toContain('nnected');
+  expect(copiedTerminalSelection.prevented).toBe(true);
   await page.getByRole('button', { name: '关闭视图' }).click();
   await page.getByRole('button', { name: '继续配置' }).click();
   await expect.poll(() => terminalAttachments).toBe(1);

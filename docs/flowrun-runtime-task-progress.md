@@ -2022,6 +2022,16 @@ Agent 预设使用空预设，不得放宽公开写模型的 `extra="forbid"` �
 API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流程现返回
 `{"valid":true,"errors":[]}`。
 
+### FR-138 环境配置终端文本选择修复 — DONE
+
+依赖：FR-137。
+
+目标：环境配置终端与 Agent 会话终端同样使用持久 tmux，并开启 xterm 鼠标上报以支持滚动历史。普通左键拖拽不得再被转发到 PTY 后清除浏览器选区；必须使用 xterm 的公开 Buffer/selection API 保留选区，使认证链接等终端文本可复制，同时保留 Shift 强制选择、滚动、键盘输入、终端连接保活和发布语义。
+
+验收：环境配置终端定向 Playwright 覆盖启用鼠标上报后的普通拖拽选区、复制内容以及不向 PTY 转发鼠标事件；Web ESLint、TypeScript typecheck、production build、Alembic head、任务状态唯一性与 `git diff --check` 通过。构建 linux/amd64 Web 镜像，仅重建远端 Web 服务并验证带 `/flowweave` 前缀的静态资源和终端交互。
+
+完成：环境配置终端现使用与 Agent 会话终端相同的 xterm 公开 Buffer/selection API，在 tmux 鼠标上报开启时捕获普通左键拖拽并阻止该手势进入 PTY。Shift 拖拽、滚动、键盘输入、连接保活和发布语义不变。新增浏览器回归确认鼠标序列不转发且选区可复制；远端仅更新 Web 镜像，新的内容哈希静态脚本与本机构建一致。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2037,6 +2047,7 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-02 | FR-138 | 环境配置终端定向 Playwright（tmux 鼠标上报下普通拖拽复制且不发送 PTY 鼠标序列）；Web ESLint、TypeScript typecheck、production build、`git diff --check`；linux/amd64 Web 镜像构建、Compose 配置与 Web 单服务替换、静态资产 SHA-256、远端服务/公网入口健康检查 | PASS：环境配置终端捕获普通左键拖拽并使用 xterm 公共 selection API 保留选区，复制内容为终端文本，PTY 未收到鼠标序列。Web 构建产物 `index-szfa_8IM.js` SHA-256 为 `9b9cda…4c033e`，远端 `flowweave-web:remote-amd64` 更新为 `sha256:caf3bc…5868d`（linux/amd64）；仅 `web` 容器 force-recreate，API、Runtime Provider、Worker 与数据库未重启。`/flowweave/`、`/flowweave/api/v1/flows` 和 FastGPT 登录页均返回成功。公网匿名浏览器会话不能进入受当前登录入口保护的“终端环境”菜单，未将该项伪记为通过；已通过静态产物一致性和本机精确交互回归验证。 |
 | 2026-09-02 | FR-137 | 已保存流程校验定向 API pytest（2 passed）；受影响 Python Ruff、生产源码 Pyright（0 errors）与 `py_compile`；Alembic head、任务状态唯一性与 `git diff --check`；linux/amd64 平台镜像构建、Migration、运行镜像、服务健康、原 500 流程及公网入口实测 | PASS：严格写模型由持久化读取投影显式重建，合法流程返回 200，非法自环仍返回 `FLOW_GRAPH_INVALID` 422。远端 API／Runtime Provider healthy、Worker Up、Migration Exited (0)，三个常驻平台进程统一运行镜像 `sha256:bcb3239fb69dc9c991c4af43e503545dd015d0a483baae88f3a9f105a25a2331`；公网 FlowWeave API、页面、Agent 深层路由及 FastGPT 登录页均为 200。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-02 | FR-136 | Web ESLint、TypeScript typecheck、production build；当前源码 Vite 定向 Playwright（1 passed，覆盖长说明省略及卡片几何边界）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：节点卡片使用稳定三列两行布局，标题与说明占据可收缩中列，长说明单行省略且不越过卡片右边界或底边；25 张卡片首屏与无分页行为保持。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |
 | 2026-09-02 | FR-135 | 固定 OpenHands 1.44.0 `BuildOptions.install_acp_providers` 与 Dockerfile 空集合早退取证；Environment pytest（36 passed）；受影响 Ruff、生产源码 Pyright（0 errors）与 `py_compile`；Alembic head、任务状态唯一性和 `git diff --check`；远端 BuildKit、Runtime contract/provenance、数据库、正式 API、Migration 与服务健康实测 | PASS：远端动态 Environment Runtime 显式使用 ACP-free 正式构建输入，`acp-providers` 输出空集合早退且未执行自身 APT，`source-minimal` 由此前 4.3 秒 `NOSPLIT` 失败变为 5 分 38 秒完成。精确 overlay allowlist 与仓库补丁 SHA-256 `19715a…f56a` 对齐。追加式 v3 `987d6124-68a8-4aac-b5a3-0c301706d9e8` 为 READY、Runtime compatible，contract/tool probe PASSED；幂等重试未创建第二次 source-minimal 构建。Migration Exited (0)，Runtime Provider/API healthy、Worker Up，四进程镜像 ID 均为 `4eccd7…cea85`。本机 Docker Desktop 两次 amd64 QEMU `uv sync` 均以 139 失败，远端完整重建又受同一 HTTP Debian `NOSPLIT` 阻断，故在已验收的 linux/amd64 平台镜像上以受控增量层部署当前两个生产文件；无 `CURRENT`。 |

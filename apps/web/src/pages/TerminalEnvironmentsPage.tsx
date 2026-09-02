@@ -55,6 +55,61 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    let removeForcedSelectionListeners: (() => void) | undefined;
+    const terminalCellForMouseEvent = (event: MouseEvent) => {
+      const screen = host.querySelector<HTMLElement>('.xterm-screen');
+      if (!screen) return undefined;
+      const bounds = screen.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return undefined;
+      const column = Math.max(0, Math.min(term.cols - 1, Math.floor((event.clientX - bounds.left) * term.cols / bounds.width)));
+      const viewportRow = Math.max(0, Math.min(term.rows - 1, Math.floor((event.clientY - bounds.top) * term.rows / bounds.height)));
+      return { column, row: term.buffer.active.viewportY + viewportRow };
+    };
+    const forceTextSelection = (event: MouseEvent) => {
+      // The persistent tmux session enables mouse reporting for scrollback.
+      // When it is active, xterm forwards a normal drag to the PTY and tmux
+      // clears the browser selection on mouseup. Keep ordinary left drags in
+      // xterm's public selection API, just as the Agent workspace terminal.
+      if (event.button !== 0 || event.shiftKey || term.modes.mouseTrackingMode === 'none') return;
+      const start = terminalCellForMouseEvent(event);
+      if (!start) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const document = host.ownerDocument;
+      let selecting = false;
+      const updateSelection = (current: MouseEvent) => {
+        const end = terminalCellForMouseEvent(current);
+        if (!end) return;
+        const startOffset = start.row * term.cols + start.column;
+        const endOffset = end.row * term.cols + end.column;
+        const first = startOffset <= endOffset ? start : end;
+        term.select(first.column, first.row, Math.abs(endOffset - startOffset));
+      };
+      const removeListeners = () => {
+        document.removeEventListener('mousemove', moveSelection, true);
+        document.removeEventListener('mouseup', finishSelection, true);
+        removeForcedSelectionListeners = undefined;
+      };
+      const moveSelection = (current: MouseEvent) => {
+        current.preventDefault();
+        current.stopImmediatePropagation();
+        if (!selecting && Math.hypot(current.clientX - event.clientX, current.clientY - event.clientY) > 2) selecting = true;
+        if (selecting) updateSelection(current);
+      };
+      const finishSelection = (current: MouseEvent) => {
+        current.preventDefault();
+        current.stopImmediatePropagation();
+        if (selecting) updateSelection(current);
+        else term.focus();
+        removeListeners();
+      };
+      removeForcedSelectionListeners?.();
+      removeForcedSelectionListeners = removeListeners;
+      document.addEventListener('mousemove', moveSelection, true);
+      document.addEventListener('mouseup', finishSelection, true);
+    };
+    const terminalScreen = host.querySelector<HTMLElement>('.xterm-screen');
+    terminalScreen?.addEventListener('mousedown', forceTextSelection, { capture: true });
     term.writeln('正在连接隔离终端…');
     let disposed = false;
     let reconnectTimer: number | undefined;
@@ -140,6 +195,8 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
       observer.disconnect();
+      removeForcedSelectionListeners?.();
+      terminalScreen?.removeEventListener('mousedown', forceTextSelection, true);
       input.dispose();
       socket.current?.close(1000);
       socket.current = null;
