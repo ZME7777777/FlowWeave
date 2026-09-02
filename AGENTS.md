@@ -181,6 +181,77 @@ flowweave-alpine:3.22-amd64
 7. 验证失败时先保留日志和数据库错误状态，再把 Compose 标签恢复到部署前记录的镜像 ID/回滚标签并
    force-recreate 受影响服务。不要用 `reset --hard`、`clean -f`、删除 volume 或清空 Workspace 代替回滚。
 
+### Commit 绑定的远端构建与定向发布（2026-09-02 起强制）
+
+当本机 Docker 不可用、不能可靠地产出 `linux/amd64` 镜像，或需要确保远端构建**精确对应已提交版本**时，
+使用下面的流程。它是最近 Web 发布（FR-142，`0b23ccc`）实际采用并验证过的路径；不得在远端用未提交的
+工作树、`git pull` 的浮动分支或手工复制部分源码构建。
+
+1. **先提交、再确定发布范围。** 记录目标 commit，例如 `commit=0b23ccc`；确认 `git status` 干净或只含
+   与发布无关的已知改动。运行受影响检查、`git diff --check`。发布包必须由该 commit 导出，不能从当前
+   工作目录 `tar`，否则本地未提交文件会混入生产镜像。
+2. **生成并校验不可变源码包。** 使用唯一的包名和远端目录，避免覆盖历史可回滚构建证据；禁止为方便而
+   清理 `/opt/flowweave/build-src`：
+
+   ```bash
+   commit=0b23ccc
+   archive="/tmp/flowweave-${commit}-web-source.tar.gz"
+   git archive --format=tar.gz --prefix="flowweave-${commit}/" "$commit" > "$archive"
+   shasum -a 256 "$archive"
+   ssh root@192.168.91.154 "mkdir -p /opt/flowweave/build-src/${commit}"
+   scp "$archive" "root@192.168.91.154:/opt/flowweave/build-src/${commit}/"
+   ```
+
+   在服务器复算同一 SHA-256；不一致时停止，既不要构建也不要替换容器。
+3. **在远端从该包构建，并核验架构。** 解包到该 commit 专用目录，使用固定 Dockerfile 和固定标签构建；
+   不要改远端 `deploy/compose.yaml` 或 `.env`：
+
+   ```bash
+   cd /opt/flowweave/build-src/${commit}
+   sha256sum "flowweave-${commit}-web-source.tar.gz"
+   mkdir "source-${commit}"
+   tar -xzf "flowweave-${commit}-web-source.tar.gz" -C "source-${commit}" --strip-components=1
+   cd "source-${commit}"
+   docker build --platform linux/amd64 -f apps/web/Dockerfile \
+     -t flowweave-web:remote-amd64 .
+   docker image inspect --format 'image={{.Id}} platform={{.Os}}/{{.Architecture}}' \
+     flowweave-web:remote-amd64
+   ```
+
+   记录替换前后的 image ID；输出必须是 `linux/amd64`。若构建或检查失败，保持运行中的容器不变。
+4. **按影响范围替换服务，而不是重启整套栈。** Web 变更只允许如下操作（不会触碰 PostgreSQL、Artifact
+   volume、Workspace、API、Worker 或 Runtime Provider）：
+
+   ```bash
+   cd /opt/flowweave
+   docker compose --env-file .env -f deploy/compose.yaml config --quiet
+   docker compose --env-file .env -f deploy/compose.yaml \
+     up -d --no-deps --force-recreate web
+   docker compose --env-file .env -f deploy/compose.yaml ps -a web api runtime-provider worker migration
+   ```
+
+   平台共享代码仍遵循上一节：先运行 `migration` 并确认 `Exited (0)`，再一起替换
+   `runtime-provider api worker`。禁止以 `down -v`、删除 volume、清空 Workspace 或重建数据库作为部署或
+   排障手段。
+5. **验证“真实浏览器请求”，不只验证 HTML 或容器状态。** Web 前缀部署必须同时检查静态资源、带前缀 API、
+   FastGPT 根入口和受影响页面。至少：
+
+   ```bash
+   curl -fsSI http://127.0.0.1:15173/flowweave/
+   curl -fsS http://127.0.0.1:15173/flowweave/api/v1/node-assets | python3 -c \
+     'import json,sys; print("node_assets=" + str(len(json.load(sys.stdin))))'
+   curl -fsS https://hq-ai.hszq8.com/flowweave/api/v1/node-assets >/dev/null
+   curl -fsS https://hq-ai.hszq8.com/login >/dev/null
+   ```
+
+   然后在全新浏览器上下文打开 `https://hq-ai.hszq8.com/flowweave/`，检查 Network：API 必须是
+   `/flowweave/api/v1/...`（而非根路径 `/api/v1/...`），并确认受影响 UI 实际渲染响应数据。FR-139 曾只
+   验证前缀静态资源，漏掉该检查；空 `VITE_API_BASE_URL` 使页面请求被 FastGPT 接管的根路径 API，造成
+   “0 个节点”假象而非数据删除。今后所有非根路径部署都必须验收这条网络断言。
+6. **失败处理。** 先保存容器日志、浏览器请求 URL/响应和数据库只读计数。空列表先分别核对带前缀 API 与
+   PostgreSQL，不能将 UI 空态直接当作数据丢失，更不能从镜像包恢复数据库。确认是本次镜像回归时，用已记录
+   的旧 image ID/回滚标签 force-recreate **同一个服务**；保留故障构建目录与 SHA-256 作为证据。
+
 ### 已知部署陷阱
 
 - 外网域名实际进入 `.154:3000`。只改 `/etc/nginx/conf.d/openwebui.conf` 的 `8001` server，直连测试可能

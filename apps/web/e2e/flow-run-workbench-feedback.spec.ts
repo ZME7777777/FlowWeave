@@ -217,6 +217,13 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(automaticEditor.getByRole('heading', { name: '输入' })).toBeVisible();
   await expect(automaticEditor.getByRole('heading', { name: '启动提示词' })).toBeVisible();
   await expect(automaticEditor).toContainText('读取流程输入并完成节点工作。');
+  // Automatic drafts use the same tab-content layout as the manual node console.
+  // Their persistence differs, but input and prompt cards must retain the shared
+  // spacing and normal block flow rather than a draft-only grid layout.
+  const automaticContent = automaticEditor.locator('.action-content');
+  await expect(automaticContent).toHaveCSS('display', 'block');
+  await expect(automaticEditor.locator('.input-summary')).toHaveCSS('margin-top', '14px');
+  await expect(automaticEditor.locator('.startup-prompt-summary')).toHaveCSS('margin-bottom', '12px');
 
   await automaticEditor.getByRole('button', { name: '填写节点输入' }).click();
   const inputDialog = page.getByRole('dialog', { name: '填写节点输入' });
