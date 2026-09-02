@@ -19,6 +19,9 @@ dependencies = [
   "uvicorn[standard]==0.34.2",
   "websockets==17.0.1",
 ]
+
+[project.scripts]
+flowweave = "flowweave.cli.main:main"
 [dependency-groups]
 dev = [
     "jsonschema==4.24.0",
