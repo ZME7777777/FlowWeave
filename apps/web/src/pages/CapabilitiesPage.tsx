@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Braces, CheckSquare, Eye, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, ShieldCheck, Trash2, Upload } from 'lucide-react';
+import { Braces, CheckSquare, ChevronDown, Eye, FileArchive, Layers3, LockKeyhole, Pencil, PlugZap, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../api/client';
 import { HookEditorDialog, type HookScriptAsset } from '../components/HookEditorDialog';
@@ -707,19 +707,26 @@ interface ContextDialogProps {
 }
 
 function ContextDialog({ title, description, file, manifest, busy, onTitleChange, onDescriptionChange, onFileChange, onManifestChange, onClose, onSave }: ContextDialogProps) {
+  const [entrypointMenuOpen, setEntrypointMenuOpen] = useState(false);
   const moveDocument = (index: number, direction: -1 | 1) => {
     if (!manifest || index + direction < 0 || index + direction >= manifest.documents.length) return;
     const documents = [...manifest.documents];
     [documents[index], documents[index + direction]] = [documents[index + direction], documents[index]];
     onManifestChange({ ...manifest, documents });
   };
+  const selectEntrypoint = (entrypoint: string | null) => {
+    if (!manifest) return;
+    onManifestChange({ ...manifest, entrypoint });
+    setEntrypointMenuOpen(false);
+  };
+  const selectedEntrypoint = manifest?.entrypoint ?? '';
   return <div className="modal-backdrop"><section className="modal context-dialog" role="dialog" aria-modal="true" aria-label="新增 Context">
     <header><div><span className="eyebrow">NEW CONTEXT</span><h2>新增 Context</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
     <p>{manifest ? '资料包已安全解析。可调整阅读目录；全部文档仍会共同冻结并加载到同一个 Context。' : '填写标题和说明后上传文本或资料包。发布后内容、标题和说明都会被冻结；更新请新建 Context 并显式重新绑定。'}</p>
     <label><span>标题 *</span><input aria-label="Context 标题" value={title} maxLength={200} placeholder="例如：产品发布手册" onChange={event => onTitleChange(event.target.value)}/></label>
     <label><span>说明</span><textarea aria-label="Context 说明" value={description} maxLength={2000} placeholder="说明这份背景信息适用于哪些任务" onChange={event => onDescriptionChange(event.target.value)}/></label>
     <label className="context-file-upload"><input aria-label="Context 文件" type="file" accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip" onChange={event => onFileChange(event.target.files?.[0])}/><span><b>{file ? file.name : '选择 Context 文件或资料包'}</b><small>{file ? `${formatBytes(file.size)} · ${file.type || '文件'}` : '支持 UTF-8 .txt、.md、.markdown 或只含这些文档的 ZIP，最大 1 MiB。'}</small></span><em>选择文件</em></label>
-    {manifest && <section className="context-bundle-editor"><header><div><b>资料包目录</b><small>文档顺序决定冲突覆盖顺序；后面的文档覆盖前面的文档。</small></div><span>{manifest.documents.length} 份文档</span></header><label><span>阅读入口</span><select aria-label="资料包入口" value={manifest.entrypoint ?? ''} onChange={event => onManifestChange({ ...manifest, entrypoint: event.target.value || null })}><option value="">不指定入口</option>{manifest.documents.map(document => <option key={document.path} value={document.path}>{document.path}</option>)}</select></label><ol>{manifest.documents.map((document, index) => <li key={document.path}><div><input aria-label={`资料标题 ${document.path}`} value={document.title} maxLength={200} onChange={event => onManifestChange({ ...manifest, documents: manifest.documents.map(item => item.path === document.path ? { ...item, title: event.target.value } : item) })}/><small>{document.path}</small></div><span><button type="button" className="ghost" aria-label={`上移 ${document.path}`} disabled={index === 0} onClick={() => moveDocument(index, -1)}>↑</button><button type="button" className="ghost" aria-label={`下移 ${document.path}`} disabled={index === manifest.documents.length - 1} onClick={() => moveDocument(index, 1)}>↓</button></span></li>)}</ol></section>}
+    {manifest && <section className="context-bundle-editor"><header><div><b>资料包目录</b><small>文档顺序决定冲突覆盖顺序；后面的文档覆盖前面的文档。</small></div><span>{manifest.documents.length} 份文档</span></header><div className="context-entrypoint-menu"><span id="context-entrypoint-label">阅读入口</span><button type="button" className="context-entrypoint-trigger" aria-label="资料包入口" aria-describedby="context-entrypoint-label" aria-haspopup="listbox" aria-expanded={entrypointMenuOpen} onClick={() => setEntrypointMenuOpen(open => !open)}><span>{selectedEntrypoint || '不指定入口'}</span><ChevronDown size={14} aria-hidden="true"/></button>{entrypointMenuOpen && <div className="context-entrypoint-options" role="listbox" aria-label="资料包入口"><button type="button" role="option" aria-selected={!selectedEntrypoint} onClick={() => selectEntrypoint(null)}>不指定入口</button>{manifest.documents.map(document => <button type="button" role="option" key={document.path} aria-selected={selectedEntrypoint === document.path} onClick={() => selectEntrypoint(document.path)}>{document.path}</button>)}</div>}</div><ol>{manifest.documents.map((document, index) => <li key={document.path}><div><input aria-label={`资料标题 ${document.path}`} value={document.title} maxLength={200} onChange={event => onManifestChange({ ...manifest, documents: manifest.documents.map(item => item.path === document.path ? { ...item, title: event.target.value } : item) })}/><small>{document.path}</small></div><span><button type="button" className="ghost" aria-label={`上移 ${document.path}`} disabled={index === 0} onClick={() => moveDocument(index, -1)}>↑</button><button type="button" className="ghost" aria-label={`下移 ${document.path}`} disabled={index === manifest.documents.length - 1} onClick={() => moveDocument(index, 1)}>↓</button></span></li>)}</ol></section>}
     <div className="mcp-security-note"><b>安全校验</b><span>只接受非空 UTF-8 文本；包含明文 API Key、Token、Secret、Password 或 Authorization 赋值的文件会被拒绝。</span></div>
     <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !title.trim() || !file} onClick={onSave}>{busy ? '处理中…' : manifest ? '确认并发布' : file?.name.toLowerCase().endsWith('.zip') ? '解析资料包' : '校验并发布'}</button></footer>
   </section></div>;

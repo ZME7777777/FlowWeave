@@ -41,6 +41,21 @@ def context_bundle_zip(
     return base64.b64encode(buffer.getvalue()).decode()
 
 
+class LegacyGbkZipInfo(zipfile.ZipInfo):
+    """Model Windows ZIP writers that store GBK names without bit 11."""
+
+    def _encodeFilenameFlags(self):  # type: ignore[override]
+        return self.filename.encode("gbk"), self.flag_bits & ~0x800
+
+
+def legacy_gbk_context_bundle_zip(entries: dict[str, str]) -> str:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for filename, content in entries.items():
+            archive.writestr(LegacyGbkZipInfo(filename), content)
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
 def test_context_import_is_frozen_as_utf8_text_and_rejects_plaintext_secrets(client):
     content = "# 产品背景\n\n回答前先核对需求、约束和验收标准。\n".encode()
     validated = client.post(
@@ -183,6 +198,25 @@ def test_context_bundle_import_generates_deterministic_manifest_and_readable_sou
         )
         assert blob is not None
         assert blob.media_type == "application/zip"
+
+
+def test_context_bundle_recovers_unflagged_windows_gbk_document_names(client):
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "代码规范.zip",
+            "content_base64": legacy_gbk_context_bundle_zip(
+                {"01-系统边界与模块归属.md": "# 系统边界\n保持职责清晰。"}
+            ),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    normalized = validated.json()["preview"]["capabilities"][0]["normalized_config"]
+    document = normalized["manifest"]["documents"][0]
+    assert document["path"] == "01-系统边界与模块归属.md"
+    assert document["title"] == "系统边界"
+    assert "01-系统边界与模块归属.md" in normalized["text"]
 
 
 def test_context_bundle_manifest_override_only_changes_validated_presentation(client):

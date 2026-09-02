@@ -61,7 +61,8 @@ test('Context Bundle is parsed before its editable directory is published', asyn
   await expect(dialog.getByText('资料包目录')).toBeVisible();
   await dialog.getByLabel('资料标题 guides/02.md').fill('最终章节');
   await dialog.getByRole('button', { name: '上移 guides/02.md' }).click();
-  await dialog.getByLabel('资料包入口').selectOption('guides/02.md');
+  await dialog.getByRole('button', { name: '资料包入口' }).click();
+  await dialog.getByRole('option', { name: 'guides/02.md' }).click();
   await dialog.getByRole('button', { name: '确认并发布' }).click();
   await expect(page.getByRole('status')).toContainText('已发布 Context“资料包”');
   expect(confirmedManifest).toEqual({

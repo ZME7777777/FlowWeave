@@ -295,6 +295,35 @@ def _context_document_title(path: str, text: str) -> str:
     return PurePosixPath(path).stem[:200] or PurePosixPath(path).name[:200]
 
 
+def _context_bundle_entry_name(item: zipfile.ZipInfo) -> str:
+    """Recover Unicode names from legacy ZIPs that omitted bit 11.
+
+    Python correctly follows the ZIP specification and decodes an unflagged name
+    as CP437. Some ZIP writers nevertheless store UTF-8 or Windows GBK/GB18030
+    bytes without setting the UTF-8 flag, which would otherwise surface as
+    mojibake in the immutable Manifest. Only attempt recovery for names with
+    CP437 box-drawing characters, retaining valid legacy CP437 names.
+    """
+
+    name = item.filename
+    if (
+        item.flag_bits & 0x800
+        or name.isascii()
+        or not any("\u2500" <= character <= "\u259f" for character in name)
+    ):
+        return name
+    try:
+        raw_name = name.encode("cp437")
+    except UnicodeError:
+        return name
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return raw_name.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return name
+
+
 def _bundle_root(paths: list[PurePosixPath]) -> str | None:
     """Remove the conventional single top-level folder created by ZIP tools."""
 
@@ -408,7 +437,7 @@ def _context_bundle_capability(
             ignored_entries = 0
             file_entries: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
             for item in entries:
-                archive_name = item.filename.replace("\\", "/")
+                archive_name = _context_bundle_entry_name(item).replace("\\", "/")
                 path = PurePosixPath(archive_name)
                 if (
                     path.is_absolute()
@@ -1961,9 +1990,7 @@ def read_context_source(db: Session, capability_id: str) -> dict[str, Any]:
         "description": str(normalized.get("description") or ""),
         "content_format": str(normalized.get("content_format") or "TEXT"),
         "manifest": (
-            normalized.get("manifest")
-            if normalized.get("content_format") == "BUNDLE"
-            else None
+            normalized.get("manifest") if normalized.get("content_format") == "BUNDLE" else None
         ),
         "content": content,
     }
