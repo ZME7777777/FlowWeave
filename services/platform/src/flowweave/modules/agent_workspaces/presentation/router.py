@@ -649,7 +649,9 @@ async def agent_interrupt(workspace_id: str, binding_id: str, db: Db) -> dict[st
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/input-readiness")
-async def agent_input_readiness(workspace_id: str, binding_id: str, db: Db) -> dict[str, bool]:
+async def agent_input_readiness(
+    workspace_id: str, binding_id: str, db: Db
+) -> dict[str, bool | str]:
     return await run_sync(
         db,
         lambda session: conversations.input_readiness(session, workspace_id, binding_id),

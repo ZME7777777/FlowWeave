@@ -13,6 +13,7 @@ from flowweave.runtime.base import (
     RuntimeForkRecovery,
     RuntimeForkResult,
     RuntimeHandle,
+    RuntimeInputReadiness,
     RuntimeMCPOAuthCallbackRequest,
     RuntimeMCPOAuthJobRequest,
     RuntimeMCPOAuthStartRequest,
@@ -248,6 +249,21 @@ class MockRuntime:
 
     def interrupt(self, handle: RuntimeHandle) -> None:
         del handle
+
+    def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness:
+        ready = self.can_accept_input(handle)
+        status = self._results.get(handle.job_id, RuntimeResult(status="IDLE")).status.lower()
+        if ready and status != "paused":
+            status = "idle"
+        elif not ready and status not in {
+            "starting",
+            "running",
+            "executing",
+            "stopping",
+            "waiting_for_confirmation",
+        }:
+            status = "running"
+        return RuntimeInputReadiness(ready=ready, execution_status=status)
 
     def can_accept_input(self, handle: RuntimeHandle) -> bool:
         return self._results.get(handle.job_id, RuntimeResult(status="IDLE")).status != "RUNNING"

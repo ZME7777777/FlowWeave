@@ -399,7 +399,10 @@ export interface AgentSessionMcpReadiness {
 }
 export type AgentWorkspaceMcpReadiness = AgentSessionMcpReadiness;
 
-export interface AgentConversationInputReadiness { ready: boolean }
+export interface AgentConversationInputReadiness {
+  ready: boolean;
+  execution_status?: string | null;
+}
 export interface AgentPendingConfirmationAction {
   action_id: string; tool_call_id: string; tool_name: string; arguments: Record<string, unknown>;
   security_risk: string; summary: string; digest: string;

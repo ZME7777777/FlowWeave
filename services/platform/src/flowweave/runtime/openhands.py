@@ -31,6 +31,7 @@ from flowweave.runtime.base import (
     RuntimeForkRecovery,
     RuntimeForkResult,
     RuntimeHandle,
+    RuntimeInputReadiness,
     RuntimeMCP,
     RuntimeMCPOAuthCallbackRequest,
     RuntimeMCPOAuthJobRequest,
@@ -3202,8 +3203,8 @@ class OpenHandsRuntime:
             json={},
         )
 
-    def can_accept_input(self, handle: RuntimeHandle) -> bool:
-        """Read the native execution state before allowing another user turn.
+    def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness:
+        """Read one native execution-state snapshot for input and UI recovery.
 
         This is deliberately a transient OpenHands read rather than a
         FlowWeave conversation state projection.  Interrupt is asynchronous,
@@ -3212,13 +3213,17 @@ class OpenHandsRuntime:
 
         state = self._conversation_state(handle)
         status = str(state.get("execution_status") or "").lower()
-        return status not in {
+        ready = status not in {
             "starting",
             "running",
             "executing",
             "stopping",
             "waiting_for_confirmation",
         }
+        return RuntimeInputReadiness(ready=ready, execution_status=status or "unknown")
+
+    def can_accept_input(self, handle: RuntimeHandle) -> bool:
+        return self.input_readiness(handle).ready
 
     def navigate(self, handle: RuntimeHandle, event_id: str | None) -> None:
         self._request(

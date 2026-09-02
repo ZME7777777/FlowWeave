@@ -380,6 +380,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let bootstrapConversationId: string | null = null;
   let bootstrapIdempotencyKey: string | null = null;
   const bootstrapIdempotencyKeys: Array<string | null> = [];
+  let releaseFirstBootstrap: (() => void) | undefined;
+  const firstBootstrapGate = new Promise<void>(resolve => { releaseFirstBootstrap = resolve; });
   let renameRequests = 0;
   let contextAvailable = false;
   let manualCondensations = 0;
@@ -462,6 +464,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       bootstrapIdempotencyKey = await request.headerValue('Idempotency-Key');
       bootstrapIdempotencyKeys.push(bootstrapIdempotencyKey);
       if (bootstrapRequests === 1) {
+        // Keep the first create request in flight until the test has observed
+        // the draft in the conversation rail.
+        await firstBootstrapGate;
         await route.fulfill({ status: 504, contentType: 'application/json', body: JSON.stringify({
           error: { code: 'AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS', message: '首条消息正在安全对账，请稍后重试；系统不会重复发送' },
         }) });
@@ -619,7 +624,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/input-readiness')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: !modelIsResponding || interrupted }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ready: !modelIsResponding || interrupted,
+        execution_status: modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
+      }) });
       return;
     }
     if (path.endsWith('/resume') && request.method() === 'POST') {
@@ -655,6 +663,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '检查工作目录' })).toHaveCount(0);
   await page.getByLabel('发送 Agent 消息').fill('检查工作目录');
   await page.getByLabel('发送消息').click();
+  const pendingConversation = page.locator('.agent-workbench-list').getByRole('button', { name: '检查工作目录，正在创建会话' });
+  await expect(pendingConversation).toBeVisible();
+  releaseFirstBootstrap?.();
   await expect(page.getByText('正在安全核对首条消息', { exact: true })).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
@@ -1050,6 +1061,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByLabel('工具执行确认')).toBeVisible();
@@ -1064,6 +1077,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('工具执行确认')).toHaveCount(0);
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await expect(page.getByText('Agent 正在处理上一条消息或停止请求，请稍候')).toHaveCount(0);
+  modelIsResponding = false;
+  interrupted = false;
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'live-tool-result', event_name: 'FinishAction', content: longFinalReply, thought: '核对已经完成，下面给出最终结果。', summary: '整理最终结果', timestamp: new Date().toISOString() } },

@@ -3322,7 +3322,10 @@ def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
         else:
             raise AssertionError("a second message cannot be sent before interrupt settles")
         assert runtime.sent == ["first"]
-        assert conversations.input_readiness(db, workspace.id, created["id"]) == {"ready": False}
+        assert conversations.input_readiness(db, workspace.id, created["id"]) == {
+            "ready": False,
+            "execution_status": "running",
+        }
 
         runtime.ready = True
         conversations.message(db, workspace.id, created["id"], "second")

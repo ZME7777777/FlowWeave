@@ -1863,12 +1863,10 @@ def _node_handle(
 
 def node_input_readiness(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
-) -> dict[str, bool]:
-    return {
-        "ready": get_runtime().can_accept_input(
-            _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-        )
-    }
+) -> dict[str, bool | str]:
+    return get_runtime().input_readiness(
+        _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    ).as_dict()
 
 
 def node_conversation_context(

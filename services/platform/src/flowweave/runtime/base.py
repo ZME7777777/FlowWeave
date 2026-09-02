@@ -559,6 +559,20 @@ class RuntimeResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeInputReadiness:
+    """One atomic snapshot of a conversation's native execution state."""
+
+    ready: bool
+    execution_status: str
+
+    def as_dict(self) -> dict[str, bool | str]:
+        return {
+            "ready": self.ready,
+            "execution_status": self.execution_status,
+        }
+
+
 class RuntimePort(Protocol):
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult: ...
 
@@ -613,6 +627,8 @@ class RuntimePort(Protocol):
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None: ...
 
     def interrupt(self, handle: RuntimeHandle) -> None: ...
+
+    def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness: ...
 
     def can_accept_input(self, handle: RuntimeHandle) -> bool: ...
 

@@ -466,6 +466,12 @@ function conversationName(conversation: AgentConversation) {
   return conversation.display_title || '新会话';
 }
 
+function pendingConversationName(message: QueuedMessage | undefined) {
+  const firstLine = message?.content.trim().split(/\r?\n/, 1)[0]?.trim();
+  if (!firstLine) return message?.items.length ? '附件会话' : '新会话';
+  return firstLine.length > 36 ? `${firstLine.slice(0, 36)}…` : firstLine;
+}
+
 function mergeConversationEvents(
   durable: OpenHandsConversationEvent[],
   transient: OpenHandsConversationEvent[],
@@ -1192,6 +1198,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const [liveText, setLiveText] = useState('');
   const [liveEvents, setLiveEvents] = useState<OpenHandsConversationEvent[]>([]);
   const [optimisticBootstrapTurn, setOptimisticBootstrapTurn] = useState<OptimisticBootstrapTurn>();
+  const [pendingBootstrap, setPendingBootstrap] = useState<{ draft: ConversationDraft; message: QueuedMessage } | undefined>(() => {
+    const recovery = initialBootstrapRecovery.current;
+    return recovery ? { draft: recovery.draft, message: recovery.message } : undefined;
+  });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
@@ -1496,6 +1506,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     if (turnState === 'pausing' && inputReadinessQuery.data?.ready) setTurnState('paused');
   }, [inputReadinessQuery.data?.ready, turnState]);
   useEffect(() => {
+    if (!selected || inputReadinessQuery.data?.execution_status?.toLowerCase() !== 'paused') return;
+    setTurnState(current => current === 'idle' ? 'paused' : current);
+  }, [inputReadinessQuery.data?.execution_status, selected]);
+  useEffect(() => {
     if (!selected || inputReadinessQuery.data?.ready !== false) return;
     const userEventId = latestUnfinishedUserEventId(displayedEvents);
     if (!userEventId) return;
@@ -1531,6 +1545,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     bootstrapTransitionScope.current = conversation.id;
     setActiveTurnEventId(value.cursor ?? undefined);
     setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+    setPendingBootstrap(undefined);
     setConversationDraft(undefined);
     clearBootstrapRecovery();
     setOperationError(undefined);
@@ -1548,6 +1563,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
         id: randomId(),
       };
       setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+      setPendingBootstrap(undefined);
       clearLiveText();
       setActiveTurnEventId(undefined);
       setRequestStartedAt(undefined);
@@ -1589,6 +1605,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
         return;
       }
       setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+      setPendingBootstrap(undefined);
       clearLiveText();
       setActiveTurnEventId(undefined);
       setRequestStartedAt(undefined);
@@ -1608,6 +1625,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
       return;
     }
     setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+    setPendingBootstrap(undefined);
     clearLiveText();
     setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
@@ -1841,6 +1859,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
     clearBootstrapRecovery();
     setConversationDraft({ ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] });
+    setPendingBootstrap(undefined);
     setWorkspaceScopeMigration(undefined);
     setDraft('');
     setAttachments([]);
@@ -1865,6 +1884,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     setAttachments([]);
     if (conversationDraft) {
       if (canBootstrap && !bootstrap.isPending) {
+        setPendingBootstrap({ draft: conversationDraft, message });
         setOptimisticBootstrapTurn({
           scope: conversationDraft.id,
           event: { id: `pending-bootstrap:${message.id}`, event_type: 'MESSAGE', payload: { source: 'user', content, attachments } },
@@ -2012,6 +2032,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     });
   };
   const activeWorkDirectoryIds = new Set(workDirectories.map(item => item.id));
+  const pendingBootstrapItem = pendingBootstrap
+    ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
+    : null;
   const rootConversations = conversations.filter(item => !item.work_directory_id);
   const archivedDirectoryConversations = conversations.filter(item => {
     const workDirectoryId = item.work_directory_id;
@@ -2030,9 +2053,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
       <header>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}<div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : features.workDirectories ? 'AGENT WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : features.workDirectories ? 'Agent 会话' : '节点会话'}</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
         <WorkspaceConversationGroup groupId="root" label="根工作区" canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
+          {pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}
           {rootConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
         </WorkspaceConversationGroup>
         {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })}>
+          {pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}
           {conversationsForDirectory(directory.id).map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
         </WorkspaceConversationGroup>)}
         {features.workDirectories && archivedDirectoryConversations.length > 0 && <WorkspaceConversationGroup groupId="archived" label="已归档工作目录">

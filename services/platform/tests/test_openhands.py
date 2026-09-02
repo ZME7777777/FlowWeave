@@ -227,6 +227,26 @@ def _handle(cursor: str | None = None) -> RuntimeHandle:
     )
 
 
+@pytest.mark.parametrize(
+    ("execution_status", "ready"),
+    [("running", False), ("waiting_for_confirmation", False), ("paused", True), ("idle", True)],
+)
+def test_openhands_input_readiness_returns_atomic_native_execution_state(
+    openhands_settings, monkeypatch, execution_status, ready
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _handle: {"execution_status": execution_status},
+    )
+
+    snapshot = runtime.input_readiness(_handle())
+
+    assert snapshot.ready is ready
+    assert snapshot.execution_status == execution_status
+
+
 def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_settings):
     runtime = OpenHandsRuntime(openhands_settings)
     request = replace(

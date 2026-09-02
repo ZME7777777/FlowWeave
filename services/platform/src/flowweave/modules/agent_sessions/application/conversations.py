@@ -2303,12 +2303,14 @@ def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     )
 
 
-def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str, bool]:
+def input_readiness(
+    db: Session, workspace_id: str, binding_id: str
+) -> dict[str, bool | str]:
     workspace = _workspace(db, workspace_id)
-    ready = get_runtime().can_accept_input(
+    readiness = get_runtime().input_readiness(
         _handle(db, workspace, _binding(db, workspace_id, binding_id))
     )
-    return {"ready": ready}
+    return readiness.as_dict()
 
 
 def rewrite_message(

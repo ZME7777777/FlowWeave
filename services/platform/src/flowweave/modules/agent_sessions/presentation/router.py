@@ -468,7 +468,7 @@ async def node_session_events(
 @router.get(f"{_BASE}/{{binding_id}}/input-readiness")
 async def node_session_input_readiness(
     flow_run_id: str, attempt_id: str, binding_id: str, db: Db
-) -> dict[str, bool]:
+) -> dict[str, bool | str]:
     return await run_sync(
         db,
         lambda session: agent_sessions.flow_node_conversations.node_input_readiness(
