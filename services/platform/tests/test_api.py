@@ -2475,7 +2475,7 @@ def test_cancelled_manual_node_run_keeps_parent_active_and_allows_fresh_same_nod
     assert second.json()["id"] != first["id"]
 
 
-def test_delete_cancelled_manual_node_run_preserves_runtime_and_restores_neutral_graph(
+def test_delete_unstarted_manual_node_run_preserves_runtime_and_restores_neutral_graph(
     client, skill_capability, db_session_factory
 ):
     asset = create_asset(client, skill_capability, "删除单节点运行记录")
@@ -2494,17 +2494,9 @@ def test_delete_cancelled_manual_node_run_preserves_runtime_and_restores_neutral
             },
         },
     ).json()
-    attempt = created["attempts"][0]
+    assert created["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
+    assert created["attempts"][0]["runtime_phase"] is None
 
-    rejected = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{created['id']}")
-    assert rejected.status_code == 409, rejected.text
-    assert rejected.json()["error"]["code"] == "NODE_RUN_DELETE_REQUIRES_CANCELLED"
-
-    cancelled = client.post(
-        f"/api/v1/node-attempts/{attempt['id']}/cancel",
-        json={"expected_state_version": attempt["state_version"]},
-    )
-    assert cancelled.status_code == 200, cancelled.text
     with db_session_factory() as db:
         runtime_id = db.scalar(
             select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])

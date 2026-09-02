@@ -4765,7 +4765,14 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
 
 
 def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
-    """Delete one cancelled manual execution without deleting OpenHands state."""
+    """Delete a manual execution that has not started, or has stopped.
+
+    A chat-only Attempt pauses at ``WAITING_START_CONFIRMATION`` before it
+    claims a Runtime phase.  It is only a draft execution record at that
+    point, so requiring a cancel round-trip makes its delete action appear to
+    do nothing.  Its FlowRun-owned Conversation persistence is still retained
+    below, exactly as it is for a cancelled record.
+    """
 
     run = _locked_run(db, flow_run_id)
     if run.run_mode != "MANUAL":
@@ -4786,16 +4793,24 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
         AttemptState.REJECTED,
         AttemptState.CANCELLED,
     }
-    if (
-        node_run.state != NodeRunState.CANCELLED
-        or latest is None
-        or latest.state != AttemptState.CANCELLED
-        or latest.runtime_phase != "CANCELLED"
-        or any(attempt.state not in terminal_states for attempt in attempts)
-    ):
+    cancelled_and_stopped = (
+        node_run.state == NodeRunState.CANCELLED
+        and latest is not None
+        and latest.state == AttemptState.CANCELLED
+        and latest.runtime_phase == "CANCELLED"
+        and all(attempt.state in terminal_states for attempt in attempts)
+    )
+    waiting_to_start = (
+        node_run.state == NodeRunState.ACTIVE
+        and latest is not None
+        and latest.state == AttemptState.WAITING_START_CONFIRMATION
+        and latest.runtime_phase is None
+        and all(attempt.state in terminal_states for attempt in attempts[:-1])
+    )
+    if not (cancelled_and_stopped or waiting_to_start):
         raise DomainError(
             "NODE_RUN_DELETE_REQUIRES_CANCELLED",
-            "请先取消该单节点运行，并等待运行时停止后再删除",
+            "运行中的单节点记录请先取消，并等待运行时停止后再删除",
             409,
         )
 

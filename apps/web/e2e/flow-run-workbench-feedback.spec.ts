@@ -494,3 +494,40 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
   await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
   await expect(page.locator('.run-side-panel .node-console')).toBeVisible();
 });
+
+test('unstarted chat records can be deleted without a cancellation round trip', async ({ page }) => {
+  let currentRun = chatRun;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
+    });
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/nodes/${chatNodeRun.id}` && request.method() === 'DELETE') {
+      currentRun = { ...currentRun, state: 'ACTIVE', progress: { accepted: 0, terminal: 0, active: 0 }, node_runs: [] };
+      return respond(undefined, 204);
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.locator('.timeline button').filter({ hasText: '测试节点' }).click();
+
+  const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
+  await expect(deleteButton).toBeEnabled();
+  await deleteButton.click();
+  const deleteDialog = page.getByRole('alertdialog');
+  await expect(deleteDialog).toContainText('FlowRun、共享 Runtime 和 OpenHands 状态继续保留');
+  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
+
+  await expect(page.locator('.timeline button')).toHaveCount(0);
+});
