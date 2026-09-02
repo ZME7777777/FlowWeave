@@ -127,6 +127,38 @@ const automaticRecord = (run: AutomaticRunResponse): FlowRunAutomaticRecord => {
   };
 };
 
+/** Automatic-run responses contain frozen, read-only audit fields (for
+ * example agent_preset.capabilities). The strict write schema deliberately
+ * rejects those fields, so project the editable record back to its command
+ * shape instead of echoing the response object verbatim. */
+const automaticNodePlansWrite = (nodePlans: FlowRunAutomaticRecordUpdate['node_plans']): FlowRunAutomaticRecordUpdate['node_plans'] =>
+  Object.fromEntries(Object.entries(nodePlans).map(([nodeKey, plan]) => [nodeKey, {
+    startup_prompt: plan.startup_prompt,
+    agent_preset: {
+      capability_version_ids: plan.agent_preset.capability_version_ids,
+      model_provider_id: plan.agent_preset.model_provider_id,
+      model_name: plan.agent_preset.model_name,
+      reasoning_effort: plan.agent_preset.reasoning_effort,
+      node_context_enabled: plan.agent_preset.node_context_enabled,
+      node_context_prompt: plan.agent_preset.node_context_prompt,
+    },
+    gates: plan.gates.map(gate => ({
+      stage: gate.stage,
+      position: gate.position,
+      gate_type: gate.gate_type,
+      enabled: gate.enabled,
+      timeout_seconds: gate.timeout_seconds,
+      config: gate.config,
+      agent_preset: {
+        model_provider_id: gate.agent_preset?.model_provider_id,
+        model_name: gate.agent_preset?.model_name,
+        reasoning_effort: gate.agent_preset?.reasoning_effort,
+      },
+    })),
+    artifact_ids: plan.artifact_ids,
+    input_urls: plan.input_urls,
+  }]));
+
 /** The upload response includes display metadata which strict write schemas do
  * not accept. Only send the native attachment reference back to the API. */
 const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map(({ path, image_data_url, filename, mime_type, byte_size }) =>
@@ -313,7 +345,10 @@ export const api = {
   createAutomaticRecord: async (runId: string, body: FlowRunAutomaticRecordWrite) =>
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`, json('POST', body))),
   updateAutomaticRecord: async (runId: string, recordId: string, body: FlowRunAutomaticRecordUpdate) =>
-    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}`, json('PUT', body))),
+    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}`, json('PUT', {
+      ...body,
+      node_plans: automaticNodePlansWrite(body.node_plans),
+    }))),
   startAutomaticRecord: async (runId: string, recordId: string, expected_row_version: number) =>
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/start`, json('POST', { expected_row_version }, true))),
   deleteAutomaticRecord: (runId: string, recordId: string) =>

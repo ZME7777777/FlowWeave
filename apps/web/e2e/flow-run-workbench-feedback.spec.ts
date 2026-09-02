@@ -3,7 +3,10 @@ import { expect, test } from '@playwright/test';
 const now = '2026-09-01T00:00:00Z';
 const asset = {
   id: 'asset-1', name: '测试节点', description: '', icon_kind: 'LUCIDE', icon_value: 'bot', row_version: 1,
-  inputs: [{ field_key: 'input_1', display_name: 'input_1', data_type: 'URL', description: '' }],
+  inputs: [
+    { field_key: 'input_1', display_name: 'input_1', data_type: 'URL', description: '' },
+    { field_key: 'input_2', display_name: 'input_2', data_type: 'FILE', description: '' },
+  ],
   outputs: [{ field_key: 'output_1', display_name: 'output_1', data_type: 'URL', description: '' }],
   executor: { startup_prompt: '读取流程输入并完成节点工作。', context_prompt: '', context_capability_ids: [] },
   context_capabilities: [], created_at: now, updated_at: now,
@@ -58,9 +61,40 @@ const automaticBase = {
   },
 };
 
+const frozenAutomaticBase = {
+  ...automaticBase,
+  automation_plan: {
+    ...automaticBase.automation_plan,
+    node_plans: {
+      first: {
+        startup_prompt: asset.executor.startup_prompt,
+        agent_preset: {
+          capability_version_ids: [], node_context_enabled: false, node_context_prompt: '',
+          model_provider_id: null, model_name: null, reasoning_effort: null, capabilities: [],
+        },
+        gates: [], artifact_ids: {}, input_urls: {},
+      },
+    },
+  },
+};
+
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
   let saveRequests = 0;
   let submittedBody: Record<string, unknown> | undefined;
+  const inputArtifacts = [
+    {
+      id: 'artifact-url', flow_run_id: automaticBase.id, producer_attempt_id: null, consumer_node_key: 'first',
+      field_key: 'input_1', version_no: 1, artifact_type: 'URL', storage_key: null,
+      uri: 'https://example.com/input', inline_content: null, content_hash: 'url-hash', byte_size: 25,
+      mime_type: 'text/uri-list', source: 'HUMAN_INPUT', metadata: { display_name: 'input_1' }, created_at: now,
+    },
+    {
+      id: 'artifact-file', flow_run_id: automaticBase.id, producer_attempt_id: null, consumer_node_key: 'first',
+      field_key: 'input_2', version_no: 1, artifact_type: 'FILE', storage_key: 'inputs/example.md',
+      uri: null, inline_content: null, content_hash: 'file-hash', byte_size: 12,
+      mime_type: 'text/markdown', source: 'HUMAN_INPUT', metadata: { display_name: 'input_2', filename: 'example.md' }, created_at: now,
+    },
+  ];
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -70,19 +104,20 @@ test('run projection stays neutral until record selection and automatic save rep
     if (path === '/api/v1/terminal-environments') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs` && request.method() === 'GET') return respond([automaticBase]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs` && request.method() === 'GET') return respond([frozenAutomaticBase]);
     if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${automaticBase.id}/nodes/first/input-artifacts` && request.method() === 'POST') return respond(inputArtifacts[0], 201);
+    if (path === `/api/v1/flow-runs/${automaticBase.id}/nodes/first/input-artifacts/upload` && request.method() === 'POST') return respond(inputArtifacts[1], 201);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticBase.id}` && request.method() === 'PUT') {
       saveRequests += 1;
       submittedBody = request.postDataJSON() as Record<string, unknown>;
       if (saveRequests > 1) return respond({ error: { code: 'ILLEGAL_STATE_TRANSITION', message: '当前自动运行记录已启动，不能继续修改。', details: {} } }, 409);
       const plans = submittedBody.node_plans as Record<string, unknown>;
       return respond({
-        ...automaticBase, row_version: 2,
+        ...automaticBase, row_version: 2, artifacts: inputArtifacts,
         automation_plan: {
           ...automaticBase.automation_plan, node_plans: plans,
           readiness: { ready: false, issues: [
-            { code: 'NODE_INPUT_REQUIRED', node_key: 'first', message: '请配置未映射输入：input_1' },
             { code: 'NODE_PLAN_REQUIRED', node_key: 'second', message: '请配置此节点的自动执行预设' },
           ] },
         },
@@ -144,10 +179,36 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(automaticEditor.getByRole('heading', { name: '输入' })).toBeVisible();
   await expect(automaticEditor.getByRole('heading', { name: '启动提示词' })).toBeVisible();
   await expect(automaticEditor).toContainText('读取流程输入并完成节点工作。');
+
+  await automaticEditor.getByRole('button', { name: '填写节点输入' }).click();
+  const inputDialog = page.getByRole('dialog', { name: '填写节点输入' });
+  await inputDialog.getByRole('textbox', { name: '填写输入 input_1' }).fill('https://example.com/input');
+  await inputDialog.getByLabel('上传输入文件 input_2').setInputFiles({
+    name: 'example.md', mimeType: 'text/markdown', buffer: Buffer.from('hello input'),
+  });
+  await inputDialog.getByRole('button', { name: '保存输入并继续' }).click();
+  await expect(inputDialog).toHaveCount(0);
+  await expect(automaticEditor.getByRole('link', { name: 'https://example.com/input' })).toBeVisible();
+  await expect(automaticEditor.getByRole('link', { name: 'example.md' })).toBeVisible();
+
   await automaticEditor.getByRole('button', { name: 'Agent 配置' }).click();
   await expect(automaticEditor.getByRole('heading', { name: '首会话 Agent 配置' })).toBeVisible();
+  const [agentHintBox, firstAgentModuleBox] = await Promise.all([
+    automaticEditor.locator('.agent-preset-editor > header small').boundingBox(),
+    automaticEditor.locator('.agent-preset-module').first().boundingBox(),
+  ]);
+  expect(agentHintBox).not.toBeNull();
+  expect(firstAgentModuleBox).not.toBeNull();
+  expect(firstAgentModuleBox!.y - (agentHintBox!.y + agentHintBox!.height)).toBeLessThan(40);
   await automaticEditor.getByRole('button', { name: '门禁配置' }).click();
   await expect(automaticEditor).toContainText('门禁只应用于即将创建的这一次执行');
+  const [gateHintBox, firstGateStageBox] = await Promise.all([
+    automaticEditor.locator('.gate-draft-editor > .field-hint').boundingBox(),
+    automaticEditor.locator('.gate-draft-stage').first().boundingBox(),
+  ]);
+  expect(gateHintBox).not.toBeNull();
+  expect(firstGateStageBox).not.toBeNull();
+  expect(firstGateStageBox!.y - (gateHintBox!.y + gateHintBox!.height)).toBeLessThan(40);
   await automaticEditor.getByRole('button', { name: '输入与上下文' }).click();
   await automaticRecord.click();
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
@@ -161,7 +222,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(page.locator('.automatic-record-editor')).toBeVisible();
   await page.getByRole('button', { name: '保存配置' }).click();
 
-  await expect(page.getByRole('status')).toContainText('配置已保存，仍有 2 项待补齐');
+  await expect(page.getByRole('status')).toContainText('配置已保存，仍有 1 项待补齐');
   const feedbackBanner = page.locator('.automatic-save-feedback-banner');
   await expect(feedbackBanner).toBeVisible();
   const [bannerBox, panelBox] = await Promise.all([
@@ -175,7 +236,11 @@ test('run projection stays neutral until record selection and automatic save rep
   expect(bannerBox!.y + bannerBox!.height).toBeLessThanOrEqual(panelBox!.y + panelBox!.height);
   expect((submittedBody?.node_plans as Record<string, unknown>).first).toEqual(expect.objectContaining({
     startup_prompt: '读取流程输入并完成节点工作。',
+    artifact_ids: { input_1: 'artifact-url', input_2: 'artifact-file' },
   }));
+  expect(((submittedBody?.node_plans as Record<string, { agent_preset: Record<string, unknown> }>).first.agent_preset)).not.toHaveProperty('capabilities');
+  await expect(automaticEditor.getByRole('link', { name: 'https://example.com/input' })).toBeVisible();
+  await expect(automaticEditor.getByRole('link', { name: 'example.md' })).toBeVisible();
 
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.getByRole('alert')).toContainText('保存失败：当前自动运行记录已启动，不能继续修改。');
