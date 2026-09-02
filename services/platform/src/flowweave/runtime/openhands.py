@@ -762,16 +762,18 @@ class OpenHandsRuntime:
             # provider (notably Codex OAuth) does not inherit a callback-less
             # Conversation and get downgraded to a non-streaming request.
             "stream": True,
-            # Keep network failures bounded while still tolerating short
-            # provider interruptions. OpenHands implements num_retries with
-            # stop_after_attempt, so this is five total calls, not five calls
-            # after the initial request. Exhaustion is emitted as its native
-            # ConversationErrorEvent and terminates the active turn.
+            # Retry only disconnected or explicitly failed upstream requests.
+            # ``None`` is intentional: OpenHands passes it to LiteLLM to
+            # disable the HTTP read timeout, so a live streaming connection
+            # may wait for a long model-thinking interval rather than being
+            # misclassified as a ReadTimeout. This shared payload is used for
+            # FlowRun node sessions, external Agent Workspace conversations,
+            # LLM switches, and LLM condensers.
             "num_retries": 5,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": 20,
+            "timeout": None,
         }
         # This is pinned Runtime catalog metadata, not a platform estimate.
         # Supplying it before the first request makes OpenHands initialize the

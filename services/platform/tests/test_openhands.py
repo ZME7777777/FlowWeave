@@ -520,7 +520,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "retry_multiplier": 2.0,
         "retry_min_wait": 1,
         "retry_max_wait": 4,
-        "timeout": 20,
+        "timeout": None,
         "max_input_tokens": 922000,
     }
 
@@ -1025,7 +1025,7 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
     assert llm["retry_multiplier"] == 2.0
     assert llm["retry_min_wait"] == 1
     assert llm["retry_max_wait"] == 4
-    assert llm["timeout"] == 20
+    assert llm["timeout"] is None
     assert llm["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
@@ -1954,7 +1954,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert payload["llm"]["retry_multiplier"] == 2.0
     assert payload["llm"]["retry_min_wait"] == 1
     assert payload["llm"]["retry_max_wait"] == 4
-    assert payload["llm"]["timeout"] == 20
+    assert payload["llm"]["timeout"] is None
     assert payload["llm"]["litellm_extra_body"] == {
         "store": False,
         "reasoning": {"effort": "high"},
@@ -2189,7 +2189,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": 20,
+            "timeout": None,
             "max_input_tokens": 922000,
         },
         "max_size": 80,
@@ -2319,7 +2319,7 @@ def test_openhands_fork_replaces_only_the_governed_condenser(openhands_settings,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": 20,
+            "timeout": None,
             "max_input_tokens": 922_000,
         },
         "max_size": 10_000,
