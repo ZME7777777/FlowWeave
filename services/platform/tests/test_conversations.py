@@ -617,6 +617,69 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         assert second_runtime_path not in scoped_paths
 
 
+def test_node_candidate_output_preview_resolves_only_a_declared_relative_file(
+    settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A candidate preview never trusts a path from the Conversation transcript."""
+
+    from flowweave.modules.sandboxes.application.runtime_allocation import (
+        flow_run_workspace_nodes_path,
+    )
+
+    with settings_context(settings), db_session_factory() as db:
+        flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        nodes_root = flow_run_workspace_nodes_path(flow_run_id)
+        attempt_root = nodes_root / "asset-1" / "sessions" / attempt.node_run_id / "1"
+        attempt_root.mkdir(parents=True)
+        (attempt_root / "report.md").write_text("# Candidate report\n")
+        attempt.workspace_ref = str(attempt_root)
+        attempt.output_targets_json = {
+            "report": {"artifact_type": "FILE"},
+            "link": {"artifact_type": "URL"},
+        }
+        db.flush()
+        monkeypatch.setattr(
+            flow_node_workspace,
+            "resolve_flow_node_session_host",
+            lambda _db, **_kwargs: SimpleNamespace(
+                working_directory=str(attempt_root),
+                node={"asset": {"id": "asset-1"}},
+            ),
+        )
+
+        content, content_type, filename = flow_node_workspace.read_candidate_output_file(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            field_key="report",
+            path="report.md",
+        )
+
+        assert content == b"# Candidate report\n"
+        assert content_type == "text/markdown"
+        assert filename == "report.md"
+        with pytest.raises(DomainError) as invalid_path:
+            flow_node_workspace.read_candidate_output_file(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                field_key="report",
+                path="../other.txt",
+            )
+        assert invalid_path.value.code == "RUNTIME_OUTPUT_INVALID"
+        with pytest.raises(DomainError) as invalid_slot:
+            flow_node_workspace.read_candidate_output_file(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                field_key="link",
+                path="report.md",
+            )
+        assert invalid_slot.value.code == "RUNTIME_OUTPUT_INVALID"
+
+
 def test_flow_run_creation_resolves_the_node_host_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

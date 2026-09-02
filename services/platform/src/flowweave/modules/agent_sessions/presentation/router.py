@@ -351,6 +351,38 @@ async def node_session_workspace_file(
     )
 
 
+@router.get(f"{_BASE}/candidate-output/file")
+async def node_session_candidate_output_file(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    field_key: str = Query(...),
+    path: str = Query(...),
+) -> Response:
+    content, content_type, filename = await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.read_candidate_output_file(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            field_key=field_key,
+            path=path,
+        ),
+    )
+    # The candidate is Agent-controlled content.  Keep it inline for preview,
+    # but sandbox it so a generated HTML/SVG file cannot execute in the
+    # FlowWeave origin before the platform has accepted it as an Artifact.
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get(f"{_BASE}/work-directories")
 async def list_flow_run_work_directories(
     flow_run_id: str, attempt_id: str, db: Db

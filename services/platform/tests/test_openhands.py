@@ -1275,13 +1275,15 @@ def test_openhands_accepts_declared_safe_http_output_urls(openhands_settings, ur
 @pytest.mark.parametrize(
     ("path", "accepted"),
     (
-        ("/runtime/workspace/nodes/asset/attempt/report.pdf", True),
-        ("/runtime/workspace/nodes/asset/other/report.pdf", False),
-        ("/runtime/workspace/nodes/asset/attempt/../secret.txt", False),
-        ("relative/report.pdf", False),
+        ("report.pdf", True),
+        ("reports/report.pdf", True),
+        ("/runtime/workspace/nodes/asset/attempt/report.pdf", False),
+        ("../secret.txt", False),
+        ("./report.pdf", False),
+        ("reports/../report.pdf", False),
     ),
 )
-def test_openhands_accepts_file_outputs_only_inside_declared_node_workspace(
+def test_openhands_resolves_relative_file_outputs_inside_declared_node_workspace(
     openhands_settings, path, accepted
 ):
     runtime = OpenHandsRuntime(openhands_settings)
@@ -1299,8 +1301,40 @@ def test_openhands_accepts_file_outputs_only_inside_declared_node_workspace(
         json.dumps({"outputs": {"report": {"artifact_type": "FILE", "path": path}}}),
     )
 
-    expected = {"report": ("FILE", path)} if accepted else {}
+    expected = (
+        {"report": ("FILE", f"/runtime/workspace/nodes/asset/attempt/{path}")}
+        if accepted
+        else {}
+    )
     assert outputs == expected
+
+
+def test_openhands_hides_managed_workspace_root_from_execution_output_prompt(
+    openhands_settings,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    request = StartAttemptRequest(
+        attempt_id="attempt-1",
+        execution_key="execution-1",
+        node={"asset": {"name": "报告节点", "executor": {}}},
+        bindings=[],
+        workspace_ref="/tmp/workspace",
+        node_workspace_ref="/runtime/workspace/nodes/asset/attempt",
+        output_targets={
+            "report": {
+                "artifact_type": "FILE",
+                "display_name": "报告",
+                "description": "生成的报告",
+            }
+        },
+    )
+
+    context = runtime._context_text(request)
+
+    assert "/runtime/workspace/nodes/asset/attempt" not in context
+    assert "节点持久工作目录" not in context
+    assert '"path":"report.pdf"' in context
+    assert '"workspace_root"' not in context
 
 
 def test_openhands_normalizes_incremental_events_and_terminal_result(

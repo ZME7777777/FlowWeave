@@ -25,6 +25,7 @@ from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.workspace import ensure_flow_run_attempt_workspace
 from flowweave.shared.errors import DomainError
+from flowweave.shared.models import NodeAttempt
 
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _MAX_INDEX_ENTRIES = 20_000
@@ -358,6 +359,82 @@ def read_file(
     return content, content_type, filename
 
 
+def read_candidate_output_file(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    field_key: str,
+    path: str,
+) -> tuple[bytes, str, str]:
+    """Read one unaccepted FILE candidate without exposing a workspace path.
+
+    The caller supplies a declared output slot and its relative submission.
+    Both are revalidated against the Attempt before the server resolves the
+    actual persistent location.  This endpoint deliberately does not create
+    an ArtifactVersion or alter any gate/transition state.
+    """
+
+    host = resolve_flow_node_session_host(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        require_start_permission=False,
+    )
+    attempt = db.get(NodeAttempt, attempt_id)
+    target = (attempt.output_targets_json or {}).get(field_key) if attempt else None
+    if not isinstance(target, dict) or target.get("artifact_type") != "FILE":
+        raise DomainError("RUNTIME_OUTPUT_INVALID", "输出字段不是文件候选", 422)
+    raw_path = path.strip()
+    relative = PurePosixPath(raw_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or relative.as_posix() != raw_path
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件路径无效", 422)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
+    nodes_root = sandboxes.flow_run_workspace_nodes_path(runtime_owner_id)
+    attempt_root = Path(host.working_directory)
+    try:
+        attempt_relative = attempt_root.relative_to(nodes_root)
+    except ValueError as exc:
+        raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件不在受管节点工作区", 409) from exc
+    if not attempt_relative.parts:
+        raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件工作区无效", 409)
+    asset = cast(dict[str, Any], host.node.get("asset") or {})
+    ensure_flow_run_attempt_workspace(
+        flow_run_id=runtime_owner_id,
+        asset_id=str(asset.get("id") or ""),
+        workspace_ref=str(attempt_root),
+    )
+    try:
+        root_metadata = attempt_root.lstat()
+        resolved_root = attempt_root.resolve(strict=True)
+        candidate = attempt_root.joinpath(*relative.parts)
+        metadata = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise DomainError("RUNTIME_OUTPUT_FILE_NOT_FOUND", "候选文件不存在或不可读取", 404) from exc
+    if (
+        stat.S_ISLNK(root_metadata.st_mode)
+        or not stat.S_ISDIR(root_metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or not resolved.is_relative_to(resolved_root)
+    ):
+        raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件不在受管节点工作区", 422)
+    try:
+        content = resolved.read_bytes()
+    except OSError as exc:
+        raise DomainError("RUNTIME_OUTPUT_FILE_NOT_FOUND", "候选文件不存在或不可读取", 404) from exc
+    if len(content) > _MAX_FILE_BYTES:
+        raise DomainError("RUNTIME_OUTPUT_FILE_TOO_LARGE", "候选文件超过预览大小限制", 422)
+    content_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+    return content, content_type, resolved.name
+
+
 def conversation_working_directory(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> str:
@@ -370,4 +447,9 @@ def conversation_working_directory(
     return str(_RUNTIME_PROJECT)
 
 
-__all__ = ("conversation_working_directory", "details", "read_file")
+__all__ = (
+    "conversation_working_directory",
+    "details",
+    "read_candidate_output_file",
+    "read_file",
+)

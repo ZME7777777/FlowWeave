@@ -658,6 +658,10 @@ export const nodeSessionApi = {
     if (download) query.set('download', 'true');
     return `${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/workspace/file?${query}`;
   },
+  candidateOutputFile: (flowRunId: string, attemptId: string, fieldKey: string, path: string) => {
+    const query = new URLSearchParams({ field_key: fieldKey, path });
+    return `${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/candidate-output/file?${query}`;
+  },
   terminal: (flowRunId: string, attemptId: string, bindingId: string | undefined, rows = 24, columns = 80) => {
     const suffix = bindingId ? `/${encodeURIComponent(bindingId)}/terminal` : '/terminal';
     const url = absoluteApiUrl(`${nodeSessionBase(flowRunId, attemptId)}${suffix}`);

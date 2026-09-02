@@ -111,6 +111,8 @@ export interface AgentSessionGateway {
   readonly api: AgentSessionApi;
   readonly terminalUrl: (hostId: AgentSessionHostId, rows: number | undefined, columns: number | undefined, options: AgentSessionTerminalOptions) => string;
   readonly fileUrl: (hostId: AgentSessionHostId, path: string, options?: AgentSessionFileOptions) => string;
+  /** A host-authorized inline URL for one unaccepted execution FILE output. */
+  readonly candidateOutputUrl?: (hostId: AgentSessionHostId, fieldKey: string, relativePath: string) => string;
   readonly subscribe: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, onEvent: (event: AgentStreamEvent) => void, onStatus?: (status: AgentSessionStreamStatus) => void) => () => void;
 }
 
@@ -243,6 +245,8 @@ export function flowNodeSessionGateway(
     },
     fileUrl: (_hostId, path, options) =>
       nodeSessionApi.file(flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, options?.download),
+    candidateOutputUrl: (_hostId, fieldKey, relativePath) =>
+      nodeSessionApi.candidateOutputFile(flowRunId, attemptId, fieldKey, relativePath),
     subscribe: (_hostId, bindingId, onEvent, onStatus) =>
       subscribeToNodeSessionStream(flowRunId, attemptId, bindingId, onEvent, onStatus),
   };

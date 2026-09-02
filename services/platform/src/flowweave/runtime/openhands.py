@@ -982,6 +982,21 @@ class OpenHandsRuntime:
             for field_key, target in request.output_targets.items()
         ]
 
+    @staticmethod
+    def _public_output_contract(contract: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Return only the node-declared output facts visible to the Agent.
+
+        ``workspace_root`` is Runtime parser state, not part of the node
+        contract.  In particular, an execution Agent must not learn where
+        FlowWeave persists an Attempt or where its output will later flow.
+        """
+
+        visible_keys = ("field_key", "artifact_type", "display_name", "description")
+        return [
+            {key: item[key] for key in visible_keys if key in item}
+            for item in contract
+        ]
+
     def _initial_text(self, request: StartAttemptRequest) -> str:
         asset = cast(dict[str, Any], request.node.get("asset") or {})
         executor = cast(dict[str, Any], asset.get("executor") or {})
@@ -1074,9 +1089,7 @@ class OpenHandsRuntime:
             )
         if request.node_workspace_ref:
             resource_lines = [
-                f"节点持久工作目录：{request.node_workspace_ref}",
-                f"文本与附件目录：{request.node_workspace_ref}/files",
-                f"代码仓库目录：{request.node_workspace_ref}/repositories",
+                "当前工作目录已由运行环境准备好；需要保留的工作文件请在其中创建。",
             ]
             if request.agent_spec.mcp_servers:
                 resource_lines.append("可用 MCP Servers：")
@@ -1099,12 +1112,13 @@ class OpenHandsRuntime:
         if outputs:
             sections.append(
                 "请严格按下列字段和 artifact_type 生成输出。URL 输出返回安全 HTTP(S) uri；"
-                "FILE 输出必须先写入节点持久工作目录，再返回该文件的绝对 path。完成后调用 finish，"
+                "FILE 输出在当前工作目录中创建文件，并返回从当前工作目录起的规范相对 POSIX path。"
+                "平台会在服务端验证并收集该候选文件。完成后调用 finish，"
                 "并把 message 严格写成 JSON，例如："
                 '{"outputs":{"link":{"artifact_type":"URL","uri":"https://..."},'
-                '"report":{"artifact_type":"FILE","path":"/runtime/workspace/nodes/.../report.pdf"}}}'
-                "。不得返回工作目录外的文件，也不得写入 token、cookie 或凭据。\n"
-                + json.dumps(outputs, ensure_ascii=False)
+                '"report":{"artifact_type":"FILE","path":"report.pdf"}}}'
+                "。不得提交当前工作目录外的文件，也不得写入 token、cookie 或凭据。\n"
+                + json.dumps(self._public_output_contract(outputs), ensure_ascii=False)
             )
         return "\n\n".join(sections)
 
@@ -2200,8 +2214,16 @@ class OpenHandsRuntime:
             elif artifact_type == "FILE":
                 path = PurePosixPath(value)
                 root = PurePosixPath(contract.get("workspace_root") or "/invalid")
-                if not path.is_absolute() or ".." in path.parts or not path.is_relative_to(root):
+                if (
+                    path.is_absolute()
+                    or not path.parts
+                    or path.as_posix() != value
+                    or any(part in {"", ".", ".."} for part in path.parts)
+                    or not root.is_absolute()
+                    or ".." in root.parts
+                ):
                     continue
+                value = str(root.joinpath(*path.parts))
             else:
                 continue
             outputs[key] = (artifact_type, value)
