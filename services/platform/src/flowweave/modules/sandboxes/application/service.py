@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
@@ -533,6 +533,17 @@ def delete_sandbox_now(db: Session, sandbox_id: str) -> None:
     except DomainError as exc:
         _error(resource, exc)
         raise
+    # Do not rely on the database's ON DELETE SET NULL here. Older production
+    # databases can legitimately lack that FK action, and SQLAlchemy does not
+    # infer it from the model. Once the provider has confirmed physical
+    # deletion, detach every immutable generation explicitly before deleting
+    # the replaceable sandbox ledger row. This also lets the Runtime Session
+    # deletion guard observe the real post-provider state in the same UoW.
+    db.execute(
+        update(RuntimeGeneration)
+        .where(RuntimeGeneration.managed_runtime_id == resource.id)
+        .values(managed_runtime_id=None)
+    )
     # The deletion intent remains durable until the external resource is gone.
     # Once Docker confirms cleanup, absence of the ledger row is authoritative.
     db.delete(resource)

@@ -15,6 +15,7 @@ from flowweave.modules.agent_workspaces.public import (
     AgentWorkDirectoryVersion,
 )
 from flowweave.modules.orchestration.application import service as orchestration_service
+from flowweave.modules.sandboxes.infrastructure.docker import DockerSandboxProvider
 from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch
 from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.errors import DomainError
@@ -32,12 +33,14 @@ from flowweave.shared.models import (
     FlowRunRuntimeAllocation,
     GateEvaluation,
     HumanAction,
+    ManagedSandbox,
     NodeAsset,
     NodeAttempt,
     NodeRun,
     RunEvent,
     RunSnapshot,
     RuntimeConfirmationApproval,
+    RuntimeGeneration,
     TaskState,
     TerminalEnvironment,
 )
@@ -2385,6 +2388,78 @@ def test_hard_delete_uses_flow_run_runtime_lifecycle_not_attempt_cancel(
     assert deleted.status_code == 204, deleted.text
     assert cleanup_calls == []
     assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
+
+
+def test_hard_delete_detaches_active_runtime_generation(
+    client, skill_capability, db_session_factory, monkeypatch
+):
+    asset = create_asset(client, skill_capability, "活跃运行时删除节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+
+    with db_session_factory() as db:
+        runtime = db.scalar(
+            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == run["id"])
+        )
+        allocation = db.scalar(
+            select(FlowRunRuntimeAllocation).where(
+                FlowRunRuntimeAllocation.flow_run_id == run["id"]
+            )
+        )
+        assert runtime is not None and allocation is not None
+        sandbox = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="FLOW_RUN",
+            owner_id=run["id"],
+            backend="docker",
+            backend_resource_name=f"fw-sbx-delete-{run['id'][:8]}",
+            desired_state="RUNNING",
+            observed_state="RUNNING",
+            generation=1,
+            image_reference="runtime:locked",
+            runtime_allocation_id=allocation.id,
+            spec_json={},
+            hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            next_reconcile_at=datetime.now(UTC),
+        )
+        db.add(sandbox)
+        db.flush()
+        db.add(
+            RuntimeGeneration(
+                runtime_session_id=runtime.id,
+                generation=1,
+                managed_runtime_id=sandbox.id,
+                runtime_image_digest=runtime.runtime_image_digest,
+                state="READY",
+                fence_token=str(uuid4()),
+                row_version=1,
+                started_at=datetime.now(UTC),
+                ready_at=datetime.now(UTC),
+            )
+        )
+        db.flush()
+        runtime.active_generation = 1
+        runtime.status = "ACTIVE"
+        db.commit()
+        sandbox_id = sandbox.id
+
+    deleted_sandboxes: list[str] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "delete",
+        lambda _provider, resource: deleted_sandboxes.append(resource.id),
+    )
+
+    deleted = client.delete(f"/api/v1/flow-runs/{run['id']}")
+
+    assert deleted.status_code == 204, deleted.text
+    assert deleted_sandboxes == [sandbox_id]
+    assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
+    with db_session_factory() as db:
+        assert db.get(ManagedSandbox, sandbox_id) is None
 
 
 def test_failed_runtime_cancel_is_visible_and_can_be_retried(

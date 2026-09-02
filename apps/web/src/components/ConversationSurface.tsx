@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, FileText, GitFork, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -87,6 +87,35 @@ function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<'a'>) {
 
 function MessageMarkdown({ children }: { children: string }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage }}>{children}</ReactMarkdown>;
+}
+
+interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
+
+function candidateOutputs(content: string): CandidateOutput[] | undefined {
+  let raw = content.trim();
+  if (raw.startsWith('```')) raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return undefined; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const outputs = (value as Record<string, unknown>).outputs;
+  if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return undefined;
+  const parsed: CandidateOutput[] = [];
+  for (const [fieldKey, rawOutput] of Object.entries(outputs)) {
+    if (!rawOutput || typeof rawOutput !== 'object' || Array.isArray(rawOutput)) return undefined;
+    const output = rawOutput as Record<string, unknown>;
+    const artifactType = output.artifact_type;
+    const outputValue = artifactType === 'URL' ? output.uri : artifactType === 'FILE' ? output.path : undefined;
+    if ((artifactType !== 'URL' && artifactType !== 'FILE') || typeof outputValue !== 'string' || !outputValue.trim()) return undefined;
+    if (artifactType === 'URL') {
+      try { if (!['http:', 'https:'].includes(new URL(outputValue).protocol)) return undefined; } catch { return undefined; }
+    }
+    parsed.push({ fieldKey, artifactType, value: outputValue.trim() });
+  }
+  return parsed.length ? parsed : undefined;
+}
+
+function CandidateOutputReply({ outputs }: { outputs: CandidateOutput[] }) {
+  return <section className="conversation-candidate-outputs" aria-label="Agent 候选输出"><header><b>Agent 已提交 {outputs.length} 个候选输出</b><small>等待平台校验并登记为正式 Artifact；文件路径不会作为下载地址公开。</small></header><div>{outputs.map(output => <article key={output.fieldKey}>{output.artifactType === 'URL' ? <Link size={15}/> : <FileText size={15}/>}<span><b>{output.fieldKey}</b><small>{output.artifactType === 'URL' ? 'URL 候选产物' : '文件候选产物'}</small><p>{output.artifactType === 'URL' ? output.value : output.value.split('/').at(-1)}</p></span>{output.artifactType === 'URL' && <a href={output.value} target="_blank" rel="noopener noreferrer"><ExternalLink size={13}/>打开</a>}</article>)}</div><p>只有右侧“输出”页出现版本、哈希、预览或下载入口后，才表示产物已正式冻结。</p></section>;
 }
 
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
@@ -708,9 +737,13 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt }: {
   </details>;
 }
 
-function AgentReply({ eventId, content, onFork }: { eventId: string; content: string; onFork?: () => void }) {
+function AgentReply({ event, content, onFork }: { event: OpenHandsConversationEvent; content: string; onFork?: () => void }) {
+  const eventId = event.id;
+  const outputs = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction'
+    ? candidateOutputs(content)
+    : undefined;
   return <article className="conversation-message assistant" data-turn-terminal="true" data-event-id={eventId}>
-    {content ? <MessageMarkdown>{content}</MessageMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
+    {outputs ? <CandidateOutputReply outputs={outputs}/> : content ? <MessageMarkdown>{content}</MessageMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
     {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
   </article>;
 }
@@ -909,7 +942,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
               finishedAt={block.finishedAt}
             />)}
           {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting}/>}
-          {turn.assistant && <AgentReply eventId={turn.assistant.event.id} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
         </section>;
       })}
