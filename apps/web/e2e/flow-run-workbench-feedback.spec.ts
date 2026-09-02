@@ -363,6 +363,71 @@ test('FR-130 running automatic records show execution facts and chat attempts su
   await expect(page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' })).toHaveCount(0);
 });
 
+test('returning from an automatic node session preserves the selected automatic record', async ({ page }) => {
+  const conversation = {
+    id: 'automatic-conversation-1', display_title: '自动运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    model_provider_id: null, model_name: null, reasoning_effort: null, streaming_callback_ready: true,
+    created_at: now, updated_at: now, last_connected_at: now, capabilities: [],
+  };
+  await page.routeWebSocket('**/api/v1/flow-runs/**/node-attempts/**/agent-sessions/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status, contentType: 'application/json', body: JSON.stringify(body),
+    });
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([runningAutomatic]);
+
+    const sessionBase = `/api/v1/flow-runs/${runningAutomatic.id}/node-attempts/${automaticAttempt.id}/agent-sessions`;
+    if (path === `${sessionBase}/host`) return respond({
+      id: 'automatic-host', display_name: '自动运行节点', desired_state: 'RUNNING', updated_at: now,
+    });
+    if (path === `${sessionBase}/runtime`) return respond({
+      state: 'ACTIVE', write_available: true, message: null, updated_at: now,
+    });
+    if (path === sessionBase && request.method() === 'GET') return respond([conversation]);
+    if (path === `${sessionBase}/work-directories`) return respond({
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path === `${sessionBase}/workspace`) return respond({
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path === `${sessionBase}/${conversation.id}/events`) return respond({ events: [], cursor: null });
+    if (path === `${sessionBase}/${conversation.id}/input-readiness`) return respond({ ready: true, execution_status: 'IDLE' });
+    if (path === `${sessionBase}/${conversation.id}/context`) return respond({});
+    if (path === `${sessionBase}/${conversation.id}/pending-confirmation`) return respond({ pending: false });
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.getByRole('tab', { name: '自动运行' }).click();
+  await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
+  const attemptPanel = page.locator('.attempt-control');
+  await expect(attemptPanel).toContainText('END_BLOCKED');
+  await attemptPanel.getByRole('button', { name: '进入节点会话' }).click();
+  await expect(page.getByRole('button', { name: '返回节点执行' })).toBeVisible();
+
+  // This pushes a nested node-session URL. Its history state must retain the
+  // parent FlowRun and automatic-record identity for the explicit return.
+  await page.getByRole('button', { name: /自动运行会话/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
+  await page.getByRole('button', { name: '返回节点执行' }).click();
+
+  await expect(page.getByRole('tab', { name: '自动运行' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1');
+  await expect(page.locator('.attempt-control')).toContainText('END_BLOCKED');
+});
+
 test('cancelled manual records return to the neutral graph and can be deleted', async ({ page }) => {
   let currentRun = run;
   await page.route('**/api/v1/**', async route => {

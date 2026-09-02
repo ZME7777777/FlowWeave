@@ -43,6 +43,10 @@ export function App() {
           selectedRunId: flowRun.runId,
           selectedNodeRunId: flowRun.nodeRunId,
           selectedAttemptId: flowRun.attemptId,
+          selectedWorkbenchMode: flowRun.mode === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL',
+          selectedAutomaticRecordId: flowRun.mode === 'AUTOMATIC' && typeof flowRun.automaticRecordId === 'string'
+            ? flowRun.automaticRecordId
+            : undefined,
         });
       }
       setRouteVersion(value => value + 1);
@@ -52,8 +56,13 @@ export function App() {
   }, []);
   const navigate = (path: string, replace = false) => {
     const deployedPath = withDeploymentBase(path);
-    if (replace) window.history.replaceState({}, '', deployedPath);
-    else window.history.pushState({}, '', deployedPath);
+    // Conversations may push their own binding URL. Keep the source Workbench
+    // selection on those entries so an explicit return works after switching
+    // between conversations, not only from the initial session route.
+    const source = nodeSessionRoute ? window.history.state?.flowweaveFlowRun : undefined;
+    const state = source ? { flowweaveFlowRun: source } : {};
+    if (replace) window.history.replaceState(state, '', deployedPath);
+    else window.history.pushState(state, '', deployedPath);
     setRouteVersion(value => value + 1);
   };
   const routePathname = withoutDeploymentBase(window.location.pathname);

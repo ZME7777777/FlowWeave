@@ -11,6 +11,9 @@ interface WorkbenchState {
   selectedRunId?: string;
   selectedNodeRunId?: string;
   selectedAttemptId?: string;
+  /** Browser-history restoration only; never persisted as a deep link. */
+  selectedWorkbenchMode?: 'MANUAL' | 'AUTOMATIC';
+  selectedAutomaticRecordId?: string;
   setView: (view: ViewName) => void;
   openRun: (runId: string, nodeRunId?: string) => void;
   selectNodeRun: (id: string) => void;
@@ -62,6 +65,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       setView: view => set({ view }),
       openRun: (selectedRunId, selectedNodeRunId) => set({
         view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId: undefined,
+        selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined,
       }),
       selectNodeRun: selectedNodeRunId => set({ selectedNodeRunId, selectedAttemptId: undefined }),
       selectAttempt: selectedAttemptId => set({ selectedAttemptId }),

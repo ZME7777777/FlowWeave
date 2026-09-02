@@ -29,11 +29,15 @@ export function FlowNodeSessionPage({
     [attemptId, flowRunId],
   );
   const returnToNodeAttempt = () => {
+    const source = window.history.state?.flowweaveFlowRun;
+    const automatic = source?.mode === 'AUTOMATIC' && typeof source.automaticRecordId === 'string';
     useWorkbenchStore.setState({
       view: 'workbench',
-      selectedRunId: flowRunId,
+      selectedRunId: typeof source?.runId === 'string' ? source.runId : flowRunId,
       selectedNodeRunId: nodeRunId,
       selectedAttemptId: attemptId,
+      selectedWorkbenchMode: automatic ? 'AUTOMATIC' : 'MANUAL',
+      selectedAutomaticRecordId: automatic ? source.automaticRecordId : undefined,
     });
     onNavigate('/', true);
   };
