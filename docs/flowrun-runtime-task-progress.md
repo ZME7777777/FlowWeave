@@ -2082,6 +2082,16 @@ API／Runtime Provider healthy、Worker Up；原先稳定返回 500 的远端流
 今后所有非根路径 Web 部署必须同时验收 HTML 静态资源**与**至少一个真实 API 请求的完整前缀；
 `VITE_*` 变量的空字符串必须视为未配置，不能使用 `??` 覆盖部署默认值。
 
+### FR-143A Agent 工作台新会话原生能力可见性 — DONE
+
+依赖：`FR-143`。
+
+目标：新建 Agent 会话尚未创建 OpenHands Conversation 时，`/` 能力菜单也必须展示已由固定 Runtime 提供的原生能力，而不能被“未加载命令或 MCP”的注册能力空态遮蔽。每项原生能力必须按其真实生命周期标记可调用性；当前 `压缩上下文` 在首条消息创建正式 Conversation 前只读展示，不能被插入或调用。命令与 MCP 的加载状态保持独立展示，为后续原生能力按同一模型扩展入口。
+
+完成：Composer suggestion 增加可调用状态。新会话的 `/` 菜单现在展示禁用的 OpenHands 原生 `/condense`，明确说明“首条消息创建 OpenHands 原生会话后可调用”；已有可写空闲会话仍可按原路径调用，运行中的会话同样只读展示。命令/MCP 尚未加载的提示与原生能力分区并列，避免将两类能力混为一谈。
+
+验收：Web TypeScript typecheck、ESLint、production build，以及定向 Playwright（新会话同时显示禁用的原生压缩、独立命令/MCP 空态和能力管理入口）通过；`git diff --check` 通过。本切片不修改 Runtime、OpenHands API、会话持久化或 FlowRun 契约。
+
 ### FR-143 节点标准输出路径去耦与候选文件受控预览 — DONE
 
 依赖：`FR-142`。
@@ -2123,6 +2133,7 @@ Finish JSON 兼容桥，FILE 只能提交相对于当前工作目录的规范相
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-03 | FR-143A | Web TypeScript typecheck、ESLint、production build；定向 Playwright（1 passed）；`git diff --check` | PASS：新会话 `/` 菜单同时显示 OpenHands 原生能力分区与命令/MCP 加载空态。`/condense` 在 OpenHands Conversation 尚未由首条消息创建前为禁用项且不可选；已有会话继续走原生压缩路径。未修改 Runtime、OpenHands API 或会话持久化。 |
 | 2026-09-03 | FR-143 | OpenHands 输出适配器 pytest（16 passed）；Python `py_compile` 与定向 Ruff；Web TypeScript typecheck、ESLint；`git diff --check` | PASS：执行提示词不再泄露节点持久目录或 `workspace_root`，FILE 只接收相对 POSIX 路径并在服务端解析。节点会话的候选 FILE 预览经冻结字段和 Attempt 工作区重新校验后以 sandboxed inline 响应打开，不暴露实际路径且不登记 Artifact。新增服务层候选预览测试受本机 Docker 守护进程不可用阻塞（testcontainers 无法创建 PostgreSQL），未伪记为通过。 |
 | 2026-09-03 | FR-142 | 前缀部署环境下的定向 Playwright（2 passed：空 API 基址时节点目录／资产请求保留 `/flowweave` 前缀并渲染返回资产）；Web ESLint、TypeScript typecheck、production build、`git diff --check` | PASS：FR-139 的前缀静态资源修复曾将 Docker 声明的空 `VITE_API_BASE_URL` 当作有效根 API 基址，令真实浏览器错误请求 FastGPT 的 `/api/v1/node-assets` 并把 404 降级显示为 0 条。远端只读取证确认 PostgreSQL 与受保护 FlowWeave API 中的节点资产完整；API 基址现将空值视作未配置并回退 `/flowweave`。后续非根路径部署必须验证一个真实 API 请求的完整前缀。 |
 | 2026-09-02 | FR-140 | FlowRun Workbench 定向 Playwright（3 passed，覆盖节点拖拽、控制／产物流转边和可见端口）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行快照图复用流程编排的节点、端口和边样式；节点可在当前浏览器视图自由拖拽，运行状态刷新与节点选择均不重置布局，且不写回冻结 Snapshot 或流程定义。唯一 Alembic head 为 `0088_physical_delete_no_fks`；无 `CURRENT`。 |

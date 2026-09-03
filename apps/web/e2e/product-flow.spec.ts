@@ -2127,7 +2127,11 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
   await page.getByRole('button', { name: '新建会话' }).first().click();
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('/');
-  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
+  const commandMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
+  const pendingCondense = commandMenu.getByRole('option', { name: /压缩上下文/ });
+  await expect(pendingCondense).toBeVisible();
+  await expect(pendingCondense).toBeDisabled();
+  await expect(pendingCondense).toContainText('首条消息创建 OpenHands 原生会话后可调用');
   await expect(commandMenu).toContainText('当前会话还没有加载命令或 MCP');
   await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
   await commandMenu.getByRole('button', { name: '管理' }).click();

@@ -133,6 +133,7 @@ interface ComposerSuggestion {
   token: string;
   label: string;
   detail: string;
+  available?: boolean;
   nativeAction?: NativeComposerAction;
 }
 
@@ -165,7 +166,7 @@ function ComposerCapabilityAutocomplete({
   }, [suggestions, trigger]);
   useEffect(() => setActiveIndex(0), [draft]);
   const select = (item: ComposerSuggestion) => {
-    if (!trigger) return;
+    if (!trigger || item.available === false) return;
     if (item.kind === 'NATIVE' && item.nativeAction) {
       onDraftChange(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
       onNativeAction?.(item.nativeAction);
@@ -194,7 +195,7 @@ function ComposerCapabilityAutocomplete({
       if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
     }}/>
-    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '/' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && item.kind !== 'NATIVE' && <div className="agent-composer-capability-section">MCP 与命令</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}<button type="button" role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : 'MCP'}</em></button></div>) : <div className="agent-composer-capability-empty"><span><b>{!suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{!suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
+    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '/' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && item.kind !== 'NATIVE' && <div className="agent-composer-capability-section">MCP 与命令</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : 'MCP'}</em></button></div>)}{trigger!.sigil === '/' && !visible.some(item => item.kind !== 'NATIVE') && <div className="agent-composer-capability-empty"><span><b>当前会话还没有加载命令或 MCP</b><small>先为此会话加载能力，随后可在这里用 / 选择并插入。</small></span></div>}</> : <div className="agent-composer-capability-empty"><span><b>{!suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{!suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
   </div>;
 }
 
@@ -1278,16 +1279,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
         ...skills.map(skill => add({ id: `plugin-skill:${reference.id}:${skill}`, kind: 'SKILL', token: `$${skill}`, label: skill, detail: `${reference.capability_key} 提供的技能 · ${description}` })).filter((item): item is ComposerSuggestion => Boolean(item)),
       ];
     });
-    const native: ComposerSuggestion[] = selected && (turnState === 'idle' || turnState === 'paused') ? [{
+    const native: ComposerSuggestion[] = (selected || conversationDraft) ? [{
       id: 'native:condense',
       kind: 'NATIVE',
       token: '/condense',
       label: '压缩上下文',
-      detail: '调用 OpenHands 原生 condenser，完成后保留正式 Condensation 事件',
+      detail: selected && (turnState === 'idle' || turnState === 'paused')
+        ? '调用 OpenHands 原生 condenser，完成后保留正式 Condensation 事件'
+        : conversationDraft
+          ? '首条消息创建 OpenHands 原生会话后可调用'
+          : '当前会话处理完成后可调用',
+      available: Boolean(selected && (turnState === 'idle' || turnState === 'paused')),
       nativeAction: 'CONDENSE',
     }] : [];
     return [...native, ...capabilities];
-  }, [capabilityCatalogQuery.data, composerCapabilityReferences, selected, turnState]);
+  }, [capabilityCatalogQuery.data, composerCapabilityReferences, conversationDraft, selected, turnState]);
   const composerScope = selected?.id ?? conversationDraft?.id;
   const activeComposerScope = useRef<string | undefined>(undefined);
   activeComposerScope.current = composerScope;
