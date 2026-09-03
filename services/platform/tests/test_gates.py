@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flowweave.modules.gates.application.executor import (
     GateExecutionPlan,
+    _normalize,
     execute_gate,
     execute_gate_plan,
 )
@@ -26,6 +27,14 @@ def test_python_gate_executes_in_restricted_runner(db_session_factory):
         )
     assert result.decision == "PASS"
     assert result.summary == "checked"
+
+
+def test_gate_normalizes_surrounding_decision_whitespace():
+    result = _normalize(
+        {"decision": "  pass\n", "summary": "checked", "reasons": [], "evidence": [], "details": {}}
+    )
+
+    assert result.decision == "PASS"
 
 
 def test_agent_sidecar_gate_uses_isolated_conversation_and_json_result():

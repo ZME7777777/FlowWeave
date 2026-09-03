@@ -48,9 +48,16 @@ def _normalize(value: object) -> GateResult:
     if not isinstance(value, dict):
         return _error("Gate result must be a JSON object", code="GATE_RESULT_INVALID")
     mapping = cast(dict[str, object], value)
-    decision = str(mapping.get("decision", "ERROR")).upper()
+    # Models occasionally preserve harmless surrounding whitespace despite the
+    # JSON contract. Normalize that transport detail, while retaining a strict
+    # closed set of actual decisions.
+    decision = str(mapping.get("decision", "ERROR")).strip().upper()
     if decision not in DECISIONS:
-        return _error("Gate decision must be PASS, FAIL, or ERROR", code="GATE_RESULT_INVALID")
+        return _error(
+            "Gate decision must be PASS, FAIL, or ERROR",
+            log=f"unsupported gate decision={decision[:80]!r}",
+            code="GATE_RESULT_INVALID",
+        )
     summary = str(mapping.get("summary") or f"Gate returned {decision}")[:2000]
     reasons_raw = mapping.get("reasons", [])
     evidence_raw = mapping.get("evidence", [])
