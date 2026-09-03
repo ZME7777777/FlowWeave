@@ -423,7 +423,7 @@ def test_openhands_refreshes_only_the_same_frozen_oracle_binding(openhands_setti
     assert methods == ["GET", "POST"]
 
 
-def test_openhands_keeps_existing_oracle_when_primary_provider_differs(
+def test_openhands_replaces_stale_codex_oracle_with_api_key_provider(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
@@ -433,15 +433,19 @@ def test_openhands_keeps_existing_oracle_when_primary_provider_differs(
         model="gpt-5.6-sol",
         api_key="secret",
     )
-    methods: list[str] = []
+    requests: list[tuple[str, object]] = []
 
-    def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
-        methods.append(method)
+    def fake_request(method: str, _path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, kwargs.get("json")))
+        if method == "POST":
+            return {"name": "oracle", "message": "saved"}
         return {
             "name": "oracle",
             "config": {
-                "model": "openai/other-model",
-                "usage_id": "flowweave-oracle:other-provider:deadbeef",
+                "model": "openai/gpt-5.6-terra",
+                "usage_id": "flowweave-oracle:stale-codex:deadbeef",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_mode": "responses",
             },
             "api_key_set": True,
         }
@@ -454,10 +458,13 @@ def test_openhands_keeps_existing_oracle_when_primary_provider_differs(
         session_api_key="session-key",
     )
 
-    # ``oracle`` is a Runtime-wide OpenHands singleton. A Conversation using
-    # another primary provider must neither overwrite it nor be blocked from
-    # creation/switch_llm because it exists.
-    assert methods == ["GET"]
+    assert [method for method, _ in requests] == ["GET", "POST"]
+    body = requests[1][1]
+    assert isinstance(body, dict)
+    assert body["llm"]["usage_id"].startswith("flowweave-oracle:provider-1:")
+    assert body["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert body["llm"]["base_url"] == "https://provider.example/v1"
+    assert "api_mode" not in body["llm"]
 
 
 def test_openhands_starts_real_agent_with_selected_provider_and_skill(
@@ -1971,8 +1978,19 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     captured: dict[str, object] = {}
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
-        captured.update({"method": method, "path": path, **kwargs})
-        return {"success": True}
+        if method == "POST":
+            captured.update({"method": method, "path": path, **kwargs})
+            return {"success": True}
+        return _state(
+            agent={
+                "llm": {
+                    "usage_id": "flowweave:codex-oauth",
+                    "model": "openai/gpt-5.6-sol",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "api_mode": "responses",
+                }
+            }
+        )
 
     monkeypatch.setattr(runtime, "_request", fake_request)
     runtime.switch_model(
@@ -2004,6 +2022,47 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
         "reasoning": {"effort": "high"},
     }
     assert payload["llm"]["extra_headers"] == {"chatgpt-account-id": "account-123"}
+
+
+def test_openhands_rejects_stale_codex_llm_after_api_key_switch(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+
+    def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+        if method == "POST":
+            return {"success": True}
+        return _state(
+            agent={
+                "llm": {
+                    "usage_id": "flowweave:unexpected-provider",
+                    "model": "openai/gpt-5.6-terra",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "api_mode": "responses",
+                    "model_canonical_name": "openai/codex-auto-review",
+                }
+            }
+        )
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    with pytest.raises(DomainError) as raised:
+        runtime.switch_model(
+            _handle("cursor-1"),
+            RuntimeProvider(
+                provider_id="api-key-provider",
+                base_url="https://provider.example/v1",
+                model="gpt-5.6-sol",
+                api_key="configured-secret",
+            ),
+        )
+
+    assert raised.value.code == "RUNTIME_LLM_BINDING_DRIFT"
+    assert raised.value.details["expected"] == {
+        "provider_id": "api-key-provider",
+        "model": "openai/gpt-5.6-sol",
+        "base_url": "https://provider.example/v1",
+        "auth_type": "API_KEY",
+    }
+    assert raised.value.details["actual"]["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
 def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(

@@ -873,36 +873,27 @@ class OpenHandsRuntime:
         a second Conversation using a different provider fail before its
         primary LLM is even created.
 
-        The first configured Oracle remains stable for the lifetime of the
-        Runtime generation.  A caller whose primary provider differs still
-        creates and switches its own Conversation LLM normally; it simply
-        does not overwrite the shared auxiliary Oracle profile.
+        The profile belongs to the Runtime rather than a Conversation, so it
+        can outlive a deleted provider or an older Runtime generation.  Always
+        replace it with the caller's binding (including a rotated credential):
+        retaining it is unsafe because a current API-key Conversation could
+        otherwise invoke ``ask_oracle`` through stale Codex OAuth credentials
+        even though its primary LLM is correctly bound.  OpenHands does not
+        offer a conversation-scoped Oracle profile, so a later Conversation
+        may replace this singleton again; callers refresh it immediately before
+        binding/sending their own primary LLM.
         """
 
         llm = self._llm_payload(provider)
         binding_id = self._oracle_binding_id(provider)
         llm["usage_id"] = binding_id
-        existing = self._request(
+        self._request(
             "GET",
             "/api/profiles/oracle",
             missing_ok=True,
             base_url=base_url,
             session_api_key=session_api_key,
         )
-        if not existing.get("_flowweave_missing"):
-            config = existing.get("config")
-            config_map = cast(dict[str, Any], config) if isinstance(config, dict) else {}
-            if (
-                config_map
-                and config_map.get("usage_id") != binding_id
-                or config_map.get("model") != llm["model"]
-            ):
-                # ``oracle`` is a shared OpenHands profile, not the primary
-                # Conversation LLM.  Do not let a different Conversation's
-                # provider prevent creating or rebinding this Conversation.
-                # Equally importantly, do not overwrite the existing profile
-                # and silently change Oracle behaviour for its owner.
-                return
         self._request(
             "POST",
             "/api/profiles/oracle",
@@ -3213,13 +3204,70 @@ class OpenHandsRuntime:
         }
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
+        expected = self._llm_payload(provider)
+        # ``ask_oracle`` resolves OpenHands' Runtime-wide ``oracle`` profile.
+        # The application invokes this method before every user turn, so
+        # refresh the auxiliary profile here as well as at Conversation
+        # creation; otherwise an existing Conversation can retain an OAuth
+        # profile restored from an old Runtime volume.
+        self._ensure_oracle_profile(
+            provider,
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/switch_llm",
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
-            json={"llm": self._llm_payload(provider)},
+            json={"llm": expected},
         )
+        # A successful switch endpoint response alone is not evidence that
+        # OpenHands installed that LLM.  Conversations persist in the Runtime
+        # and an old/configured LLM can otherwise remain active after a
+        # restart or a server-side switch failure.  In particular, never let
+        # an API-key conversation silently continue with a Codex OAuth LLM.
+        state = self._conversation_state(handle)
+        agent = state.get("agent")
+        agent_config = cast(dict[str, Any], agent) if isinstance(agent, dict) else {}
+        llm_value = agent_config.get("llm")
+        actual = cast(dict[str, Any], llm_value) if isinstance(llm_value, dict) else {}
+        expected_base_url = str(expected["base_url"]).rstrip("/")
+        actual_base_url = (
+            actual.get("base_url").rstrip("/")
+            if isinstance(actual.get("base_url"), str)
+            else None
+        )
+        matches = (
+            actual.get("usage_id") == expected["usage_id"]
+            and actual.get("model") == expected["model"]
+            and actual_base_url == expected_base_url
+        )
+        if provider.auth_type == "CODEX_OAUTH":
+            matches = matches and actual.get("api_mode") == "responses"
+        else:
+            matches = matches and actual.get("api_mode") != "responses"
+        if not matches:
+            raise DomainError(
+                "RUNTIME_LLM_BINDING_DRIFT",
+                "OpenHands did not apply the selected model provider",
+                409,
+                {
+                    "expected": {
+                        "provider_id": provider.provider_id,
+                        "model": expected["model"],
+                        "base_url": expected_base_url,
+                        "auth_type": provider.auth_type,
+                    },
+                    "actual": {
+                        "provider_id": actual.get("usage_id"),
+                        "model": actual.get("model"),
+                        "base_url": actual_base_url,
+                        "api_mode": actual.get("api_mode"),
+                        "model_canonical_name": actual.get("model_canonical_name"),
+                    },
+                },
+            )
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         """Use OpenHands' formal conversation-level dynamic Plugin loader."""
