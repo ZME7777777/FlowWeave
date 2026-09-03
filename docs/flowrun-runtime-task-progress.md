@@ -2218,7 +2218,7 @@ Skill，使执行者先读取真实 ID、用 `--dry-run` 审核请求，并遵�
 
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-04 | FR-148 | CLI `npm test`（5 passed）、Node 语法检查、Skill 快速校验、`git diff --check` | PASS：维护快捷命令均以平台 API 和可审计 dry-run 映射实现，Skill 操作说明与服务端保护语义一致。 |
-| 2026-09-04 | FR-147 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint；Alembic heads；`git diff --check` | PASS：唯一迁移 head 为 `0090_environment_version_description`。目录提升、工作区范围校验、批量认证精确 ID 校验和版本说明持久化均已落入平台服务层；未运行容器/数据库行为测试。 |
+| 2026-09-04 | FR-147 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint；Alembic heads；`git diff --check` | PASS：唯一迁移 head 为 `0090_env_version_desc`。目录提升、工作区范围校验、批量认证精确 ID 校验和版本说明持久化均已落入平台服务层；未运行容器/数据库行为测试。 |
 | 2026-09-04 | FR-149 | Web ESLint、TypeScript typecheck、production build；FlowRun Workbench 定向 Playwright（5 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行主区不再渲染重复标题；保留返回入口、快照同步和终态删除。选中节点在画布内显示高对比边框、外圈和“已选中”徽标。唯一 Alembic head 为 `0089_website_credentials`，无 `CURRENT` 或下一切片。 |
 | 2026-09-03 | FR-146 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck；`git diff --check` | PASS：仅 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 中明确的 `RUNTIME_OUTPUT_MISSING` 可经版本 CAS 回到运行态并对账；其他失败路径未放宽。生产 FlowRun 将作为本切片的真实状态机验收。 |
 | 2026-09-03 | FR-145 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器定向 pytest（17 passed）；`git diff --check` | PASS：重启后的正式 FinishAction 继续按冻结合同解析；相对 FILE 路径只落在共享项目根。完整 `test_openhands.py` 另有 1 个 FR-143 后遗断言（仍期待已从 Agent 可见输出合同移除的 `run_name`）失败，和本切片无关，未伪记为通过。 |

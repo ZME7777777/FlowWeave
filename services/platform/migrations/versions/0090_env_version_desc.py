@@ -1,13 +1,13 @@
 """add environment version description
 
-Revision ID: 0090_environment_version_description
+Revision ID: 0090_env_version_desc
 Revises: 0089_website_credentials
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0090_environment_version_description"
+revision = "0090_env_version_desc"
 down_revision = "0089_website_credentials"
 branch_labels = None
 depends_on = None
