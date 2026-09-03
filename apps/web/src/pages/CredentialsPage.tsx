@@ -81,18 +81,30 @@ function CredentialEditor({ credential, onClose }: { credential?: WebsiteCredent
   const [form, setForm] = useState<WebsiteCredentialWrite>(empty());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  useEffect(() => setForm(credential ? { name: credential.name, target_host: credential.target_host, include_subdomains: credential.include_subdomains, auth_type: credential.auth_type, username: '', secret: '', row_version: credential.row_version } : empty()), [credential]);
+  // Existing secrets are deliberately never hydrated.  Keep separate evidence of a
+  // user edit so a password manager's DOM-only (or synthetic) fill cannot become an
+  // update request merely because the form is submitted.
+  const editedUsername = useRef(false);
+  const editedSecret = useRef(false);
+  useEffect(() => {
+    editedUsername.current = false;
+    editedSecret.current = false;
+    setForm(credential ? { name: credential.name, target_host: credential.target_host, include_subdomains: credential.include_subdomains, auth_type: credential.auth_type, username: '', secret: '', row_version: credential.row_version } : empty());
+  }, [credential]);
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      if (credential) await api.updateWebsiteCredential(credential.id, form);
+      // On an edit, blank means retain the server-side value.  In particular, do not
+      // transmit a value the browser may have filled into an existing credential form.
+      const write = credential ? { ...form, username: editedUsername.current ? form.username : '', secret: editedSecret.current ? form.secret : '' } : form;
+      if (credential) await api.updateWebsiteCredential(credential.id, write);
       else await api.createWebsiteCredential(form);
       await client.invalidateQueries({ queryKey: ['website-credentials'] }); onClose();
     } catch (reason) { setError(reason instanceof Error ? reason.message : '保存认证信息失败'); }
     finally { setBusy(false); }
   };
   const usernamePassword = form.auth_type === 'USERNAME_PASSWORD';
-  return <div className="modal-backdrop"><form className="modal credential-editor" onSubmit={submit}><header><div><span className="eyebrow">WEBSITE AUTHENTICATION</span><h2>{credential ? '编辑认证条目' : '新增认证条目'}</h2><p>Secret 会加密保存；保存后不再返回浏览器，也不会进入终端镜像。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header><div className="form-grid"><label>名称<input required value={form.name} placeholder="例如：内部检索只读账号" onChange={event => setForm({ ...form, name: event.target.value })}/></label><label>认证方式<AuthTypeSelect value={form.auth_type} onChange={auth_type => setForm({ ...form, auth_type, username: '' })}/></label><label className="wide">目标域名<input required value={form.target_host} placeholder="search.example.com" autoCapitalize="none" onChange={event => setForm({ ...form, target_host: event.target.value })}/><small>填写主机名，不要包含 http(s)、路径、端口或用户名。</small></label><label className="wide credential-subdomain"><input type="checkbox" checked={form.include_subdomains} onChange={event => setForm({ ...form, include_subdomains: event.target.checked })}/><span><b>允许匹配子域名</b><small>仅开启后，api.search.example.com 才可使用 search.example.com 的条目。</small></span></label>{usernamePassword && <label>用户名<input required={!credential || Boolean(form.username)} value={form.username ?? ''} placeholder={credential?.has_username ? '留空保留现有用户名' : '输入用户名'} onChange={event => setForm({ ...form, username: event.target.value })}/></label>}<label className={usernamePassword ? '' : 'wide'}>{usernamePassword ? '密码' : 'Token'}<input type="password" required={!credential} value={form.secret ?? ''} placeholder={credential ? `留空保留现有 Secret ${credential.secret_hint ? `••••${credential.secret_hint}` : ''}` : usernamePassword ? '输入密码' : '输入 Token'} onChange={event => setForm({ ...form, secret: event.target.value })}/></label>{error && <p className="error wide">{error}</p>}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy}>{busy ? '保存中…' : '保存认证信息'}</button></footer></form></div>;
+  return <div className="modal-backdrop"><form className="modal credential-editor" autoComplete={credential ? 'off' : 'on'} onSubmit={submit}><header><div><span className="eyebrow">WEBSITE AUTHENTICATION</span><h2>{credential ? '编辑认证条目' : '新增认证条目'}</h2><p>Secret 会加密保存；保存后不再返回浏览器，也不会进入终端镜像。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header><div className="form-grid"><label>名称<input required value={form.name} placeholder="例如：内部检索只读账号" onChange={event => setForm({ ...form, name: event.target.value })}/></label><label>认证方式<AuthTypeSelect value={form.auth_type} onChange={auth_type => setForm({ ...form, auth_type, username: '' })}/></label><label className="wide">目标域名<input required value={form.target_host} placeholder="search.example.com" autoCapitalize="none" onChange={event => setForm({ ...form, target_host: event.target.value })}/><small>填写主机名，不要包含 http(s)、路径、端口或用户名。</small></label><label className="wide credential-subdomain"><input type="checkbox" checked={form.include_subdomains} onChange={event => setForm({ ...form, include_subdomains: event.target.checked })}/><span><b>允许匹配子域名</b><small>仅开启后，api.search.example.com 才可使用 search.example.com 的条目。</small></span></label>{usernamePassword && <label>用户名<input required={!credential || Boolean(form.username)} name={credential ? 'website-credential-username' : 'username'} autoComplete={credential ? 'off' : 'username'} value={form.username ?? ''} placeholder={credential?.has_username ? '留空保留现有用户名' : '输入用户名'} onBeforeInput={() => { editedUsername.current = true; }} onChange={event => setForm({ ...form, username: event.target.value })}/></label>}<label className={usernamePassword ? '' : 'wide'}>{usernamePassword ? '密码' : 'Token'}<input type="password" required={!credential} name={credential ? 'website-credential-replacement-secret' : 'password'} autoComplete={credential ? 'new-password' : 'current-password'} value={form.secret ?? ''} placeholder={credential ? `留空保留现有 Secret ${credential.secret_hint ? `••••${credential.secret_hint}` : ''}` : usernamePassword ? '输入密码' : '输入 Token'} onBeforeInput={() => { editedSecret.current = true; }} onChange={event => setForm({ ...form, secret: event.target.value })}/></label>{error && <p className="error wide">{error}</p>}</div><footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy}>{busy ? '保存中…' : '保存认证信息'}</button></footer></form></div>;
 }
 
 export function CredentialsPage() {
