@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, randomId } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
@@ -16,6 +16,7 @@ import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
+const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 interface QueuedMessage {
@@ -153,13 +154,18 @@ function writeConversationDraft(storageKey: string, recovery: ConversationDraftR
   }
 }
 
-function clipboardFiles(clipboard: DataTransfer): File[] {
-  const files = Array.from(clipboard.files);
+function transferredFiles(transfer: DataTransfer): File[] {
+  const files = Array.from(transfer.files);
   if (files.length) return files;
-  return Array.from(clipboard.items)
+  return Array.from(transfer.items)
     .filter(item => item.kind === 'file')
     .map(item => item.getAsFile())
     .filter((file): file is File => file !== null);
+}
+
+function transferredWorkspacePaths(transfer: DataTransfer): string[] {
+  if (!transfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE)) return [];
+  return transfer.getData(WORKSPACE_FILE_TRANSFER_TYPE).split('\n').map(path => path.trim()).filter(Boolean);
 }
 
 function isBootstrapAmbiguous(error: Error): boolean {
@@ -193,15 +199,17 @@ function stringValues(value: unknown): string[] {
 }
 
 function ComposerCapabilityAutocomplete({
-  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onSubmit, onManageCapabilities, onNativeAction,
+  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onManageCapabilities, onNativeAction,
 }: {
   draft: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
-  onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onSubmit: () => void;
+  onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onDropFiles?: (files: File[]) => void; onDropWorkspaceFiles?: (paths: string[]) => void; onSubmit: () => void;
   onManageCapabilities?: () => void;
   onNativeAction?: (action: NativeComposerAction) => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
+  const dragDepth = useRef(0);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [fileDragActive, setFileDragActive] = useState(false);
   const trigger = composerTrigger(draft);
   const visible = useMemo(() => {
     if (!trigger) return [];
@@ -226,7 +234,32 @@ function ComposerCapabilityAutocomplete({
   const showCapabilityManager = Boolean(trigger && onManageCapabilities);
   const hasMenu = Boolean(trigger && (hasSuggestions || showCapabilityManager));
   const hasNativeSuggestions = suggestions.some(item => item.kind === 'NATIVE');
-  return <div className="agent-composer-input">
+  const acceptsFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes('Files');
+  const acceptsWorkspaceFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE);
+  const acceptsAttachmentDrag = (event: ReactDragEvent<HTMLElement>) => (Boolean(onDropFiles) && acceptsFileDrag(event)) || (Boolean(onDropWorkspaceFiles) && acceptsWorkspaceFileDrag(event));
+  const clearFileDrag = () => { dragDepth.current = 0; setFileDragActive(false); };
+  return <div className={`agent-composer-input${fileDragActive ? ' file-drag-active' : ''}`} onDragEnter={event => {
+    if (disabled || !acceptsAttachmentDrag(event)) return;
+    event.preventDefault();
+    dragDepth.current += 1;
+    setFileDragActive(true);
+  }} onDragOver={event => {
+    if (disabled || !acceptsAttachmentDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }} onDragLeave={() => {
+    if (!fileDragActive) return;
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) clearFileDrag();
+  }} onDrop={event => {
+    if (!acceptsAttachmentDrag(event)) return;
+    event.preventDefault();
+    const workspacePaths = disabled ? [] : transferredWorkspacePaths(event.dataTransfer);
+    const files = disabled ? [] : transferredFiles(event.dataTransfer);
+    clearFileDrag();
+    if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
+    if (files.length) onDropFiles?.(files);
+  }}>
     <textarea ref={input} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (hasMenu && event.key === 'Escape') { onDraftChange(draft.slice(0, -trigger!.query.length - 1)); return; }
@@ -240,6 +273,7 @@ function ComposerCapabilityAutocomplete({
       if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
     }}/>
+    {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">松开以添加附件</div>}
     {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '/' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && item.kind !== 'NATIVE' && <div className="agent-composer-capability-section">MCP 与命令</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : 'MCP'}</em></button></div>)}{trigger!.sigil === '/' && !visible.some(item => item.kind !== 'NATIVE') && <div className="agent-composer-capability-empty"><span><b>当前会话还没有加载命令或 MCP</b><small>先为此会话加载能力，随后可在这里用 / 选择并插入。</small></span></div>}</> : <div className="agent-composer-capability-empty"><span><b>{!suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{!suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
   </div>;
 }
@@ -801,7 +835,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, onSelect }: { entries:
   const renderNodes = (items: WorkspaceTreeNode[], depth = 0): ReactNode => items.map(node => {
     const open = expanded.has(node.path);
     return <div key={node.path} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined}>
-      <button type="button" className={`${node.kind}${selectedFile === node.path ? ' active' : ''}`} style={{ '--tree-depth': depth } as CSSProperties} onClick={() => {
+      <button type="button" draggable={node.kind === 'file'} className={`${node.kind}${selectedFile === node.path ? ' active' : ''}`} style={{ '--tree-depth': depth } as CSSProperties} onDragStart={event => {
+        if (node.kind !== 'file') return;
+        event.dataTransfer.effectAllowed = 'copy';
+        event.dataTransfer.setData(WORKSPACE_FILE_TRANSFER_TYPE, node.path);
+      }} onClick={() => {
         if (node.kind === 'file') onSelect(node.path);
         else setExpanded(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; });
       }}>
@@ -1221,7 +1259,7 @@ export function AgentSessionWorkbench({
 }
 
 function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDraft = false, hideDraftTitle = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
-  const { api, subscribe, features, candidateOutputUrl } = useAgentSessionGateway();
+  const { api, subscribe, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
   const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery(host.bootstrapRecoveryStorageKey));
@@ -2111,7 +2149,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">
           <ShieldAlert size={17}/><div><b>当前上下文用量较低</b><p>Token {contextProgress?.usedLabel} / {contextProgress?.windowLabel}（{contextProgress?.percentage}%），事件 {activeEventCount.toLocaleString()} / {eventLimit.toLocaleString()}（{eventProgress}%）。现在压缩可能没有足够的可压缩区间，并且仍会调用摘要模型。</p><footer><button type="button" onClick={() => setCondensationConfirmationOpen(false)}>取消</button><button type="button" className="primary" onClick={() => condense.mutate()}>仍然压缩</button></footer></div>
         </section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择 OpenHands 原生能力、命令或 MCP）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = clipboardFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onSubmit={enqueueDraft} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择 OpenHands 原生能力、命令或 MCP）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={features.attachments && composerScope ? paths => { for (const path of paths) { void fetch(fileUrl(workspace.id, path, { bindingId: selected?.id, workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId, download: false })).then(async response => { if (!response.ok) throw new Error('无法读取工作区文件，请稍后重试。'); const blob = await response.blob(); const filename = path.split('/').filter(Boolean).pop() || 'attachment'; upload.mutate({ file: new File([blob], filename, { type: blob.type || 'application/octet-stream' }), scope: composerScope }); }).catch(error => reportOperationError(composerScope, error)); } } : undefined} onSubmit={enqueueDraft} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
