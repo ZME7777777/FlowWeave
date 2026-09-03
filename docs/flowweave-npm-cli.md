@@ -64,7 +64,7 @@ flowweave run start --flow <flow-id> --environment-version <ready-version-id>
 从公开仓库安装全部页面 skill：
 
 ```bash
-npx skills add ZME7777777/FlowWeave -g -y --full-depth
+npx skills add ZME7777777/FlowWeave -g -y
 ```
 
 如果只需要一项，可在上述命令追加 `--skill <skill-name>`。安装后的 skill 使用已配置的 `flowweave` CLI；它们不直接操作 Docker、Runtime Provider、数据库或 OpenHands 私有 API。

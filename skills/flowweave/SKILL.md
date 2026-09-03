@@ -38,7 +38,7 @@ Agent Workspace 是另一条“交互式 Agent 工作台”路径：它有自己
 
 ```bash
 npm install -g @flowweave-ai/cli
-npx skills add ZME7777777/FlowWeave -g -y --full-depth
+npx skills add ZME7777777/FlowWeave -g -y
 flowweave config init --base-url https://host.example/flowweave
 flowweave health --ready
 flowweave config show

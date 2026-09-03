@@ -21,7 +21,7 @@ flowweave health --ready
 安装页面域 skill：
 
 ```bash
-npx skills add ZME7777777/FlowWeave -g -y --full-depth
+npx skills add ZME7777777/FlowWeave -g -y
 ```
 
 仓库尚未发布该 npm 包前，进入 `packages/cli` 后运行 `npm pack` 生成 tarball，并以 `npm install -g ./flowweave-ai-cli-*.tgz` 安装。发布到 npm registry 需要拥有 `@flowweave-ai` scope 的发布权限；本仓库不会自动发布。
