@@ -79,7 +79,9 @@ export interface AgentSessionApi {
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceDetails>;
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
+  readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<void>;
   readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, signal?: AbortSignal) => Promise<string>;
+  readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
@@ -133,7 +135,9 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     addConversationCapability: api.addAgentConversationCapability,
     workspaceDetails: api.agentWorkspaceDetails,
     createWorkDirectory: api.createAgentWorkDirectory,
+    deleteWorkDirectory: api.deleteAgentWorkDirectory,
     filePreview: api.agentWorkspaceFilePreview,
+    deleteFile: api.deleteAgentWorkspaceFile,
     closeTerminal: api.closeAgentWorkspaceTerminal,
     bootstrapConversation: api.bootstrapAgentConversation,
     updateConversation: api.updateAgentConversation,

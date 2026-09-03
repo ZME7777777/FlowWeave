@@ -92,7 +92,10 @@ def save_credential(
         db.add(item)
     else:
         item.name, item.target_host, item.include_subdomains, item.auth_type = (
-            payload.name, payload.target_host, payload.include_subdomains, payload.auth_type
+            payload.name,
+            payload.target_host,
+            payload.include_subdomains,
+            payload.auth_type,
         )
         if payload.username is not None:
             item.encrypted_username = encrypt_secret(payload.username) if payload.username else None
@@ -105,6 +108,20 @@ def save_credential(
 
 def delete_credential(db: Session, credential_id: str) -> None:
     db.delete(_item(db, credential_id, lock=True))
+
+
+def delete_credentials(db: Session, credential_ids: list[str]) -> list[str]:
+    ids = sorted(set(credential_ids))
+    items = db.scalars(
+        select(WebsiteCredential).where(WebsiteCredential.id.in_(ids)).with_for_update()
+    ).all()
+    found = {item.id for item in items}
+    missing = next((credential_id for credential_id in ids if credential_id not in found), None)
+    if missing is not None:
+        raise not_found("website_credential", missing)
+    for item in items:
+        db.delete(item)
+    return ids
 
 
 def matches_host(item: WebsiteCredential, host: str) -> bool:

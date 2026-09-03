@@ -48,6 +48,7 @@ def _version_dict(
         "environment_id": item.environment_id,
         "version_no": item.version_no,
         "parent_version_id": item.parent_version_id,
+        "description": item.description,
         "state": item.state,
         "base_image_reference": item.base_image_reference,
         "base_image_digest": item.base_image_digest,
@@ -864,7 +865,7 @@ def terminal_session_details(
     )
 
 
-def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
+def publish_setup_session(db: Session, session_id: str, description: str = "") -> dict[str, Any]:
     db.rollback()
     engine = _control_engine(db)
     with engine.connect() as connection:
@@ -939,6 +940,7 @@ def publish_setup_session(db: Session, session_id: str) -> dict[str, Any]:
                         environment_id=item.environment_id,
                         version_no=version_no,
                         parent_version_id=item.base_version_id,
+                        description=description,
                         state="PUBLISHING",
                         base_image_reference=item.base_image_reference,
                         base_image_digest=item.base_image_digest,

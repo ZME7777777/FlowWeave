@@ -110,6 +110,14 @@ class WebsiteCredentialWrite(ApiModel):
         return self
 
 
+class CredentialBulkDeleteWrite(ApiModel):
+    ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class EnvironmentPublishWrite(ApiModel):
+    description: str = Field(default="", max_length=2000)
+
+
 class EnvironmentSetupWrite(ApiModel):
     base_version_id: str | None = None
 
@@ -549,9 +557,7 @@ class ContextBundleManifestWrite(ApiModel):
 
     entrypoint: str | None = Field(default=None, max_length=1000)
     documents: list[ContextBundleDocumentWrite] = Field(min_length=1, max_length=100)
-    conflict_policy: Literal["ORDERED_DOCUMENTS_LATER_WINS"] = (
-        "ORDERED_DOCUMENTS_LATER_WINS"
-    )
+    conflict_policy: Literal["ORDERED_DOCUMENTS_LATER_WINS"] = "ORDERED_DOCUMENTS_LATER_WINS"
 
 
 class CapabilityValidateWrite(ApiModel):

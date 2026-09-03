@@ -224,6 +224,12 @@ async def create_directory(payload: DirectoryWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_directory(session, payload))
 
 
+@router.delete("/node-directories/{directory_id}", status_code=204)
+async def delete_node_directory(directory_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_directory(session, directory_id))
+    return Response(status_code=204)
+
+
 @router.get("/node-assets")
 async def assets(
     db: Db, directory_id: str | None = None, q: str | None = Query(default=None, max_length=200)

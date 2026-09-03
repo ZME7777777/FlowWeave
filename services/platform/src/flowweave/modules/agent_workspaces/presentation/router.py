@@ -286,6 +286,23 @@ async def download_agent_workspace_file(
     )
 
 
+@router.delete("/agent-workspaces/{workspace_id}/workspace/file", status_code=204)
+async def delete_agent_workspace_file(
+    workspace_id: str,
+    db: Db,
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: workspace.delete_entry(
+            session, workspace_id, path, binding_id, work_directory_id
+        ),
+    )
+    return Response(status_code=204)
+
+
 @router.post("/agent-workspaces/{workspace_id}/work-directories", status_code=201)
 async def create_agent_work_directory(
     workspace_id: str, payload: AgentWorkDirectoryCreateWrite, db: Db

@@ -21,6 +21,7 @@ function PublishingPanel({ onClose }: { onClose: () => void }) {
 
 function TerminalPanel({ session, visible, publishError, onClose, onUnavailable, onPublishing, onPublishFailed }: { session: EnvironmentSetupSession; visible: boolean; publishError: string; onClose: () => void; onUnavailable: () => void; onPublishing: () => void; onPublishFailed: (message: string) => void }) {
   useEscapeClose(onClose, visible);
+  const dialog = useProductDialog();
   const queryClient = useQueryClient();
   const [connected, setConnected] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
@@ -204,9 +205,11 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
     };
   }, [onClose, onUnavailable, queryClient, session.id]);
   const publish = async () => {
+    const description = await dialog.prompt({ title: '发布环境版本', message: '可为这次不可变版本补充说明，便于后续选择和审计。', inputLabel: '版本说明（可选）', placeholder: '例如：增加内部 PyPI 镜像和数据处理依赖', confirmLabel: '开始发布' });
+    if (description === null) return;
     setBusy(true); setError('');
     onPublishing();
-    try { await api.publishEnvironmentSetup(session.id); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); onClose(); }
+    try { await api.publishEnvironmentSetup(session.id, description); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); onClose(); }
     catch (reason) { onPublishFailed(reason instanceof Error ? reason.message : '发布失败'); }
     finally { setBusy(false); }
   };
@@ -378,6 +381,7 @@ export function TerminalEnvironmentsPage() {
         return <section key={version.id}>
           <div><b>v{version.version_no}</b><span className={`environment-version-state ${version.state.toLowerCase()}`}>{version.state}</span></div>
           <small>{new Date(version.created_at).toLocaleString()} · {version.image_digest ? `${version.image_digest.slice(0, 19)}…` : '无镜像摘要'}</small>
+          <p>{version.description || '未填写版本说明'}</p>
           <span className={occupied ? 'environment-version-usage occupied' : 'environment-version-usage'}>{version.state === 'READY' && !version.runtime_compatible ? '缺少运行契约，需重新发布' : occupied ? `${version.run_reference_count} 个运行` : '未被占用'}</span>
           <button className="ghost" disabled={occupied} title={occupied ? '解除运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button>
         </section>;

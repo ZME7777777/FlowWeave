@@ -142,6 +142,48 @@ def create_directory(db: Session, payload: DirectoryWrite) -> dict[str, Any]:
     return directory_dict(item)
 
 
+def delete_directory(db: Session, directory_id: str) -> None:
+    """Remove a directory while retaining its direct children and assets.
+
+    Direct children are promoted to the deleted directory's parent and assets
+    become members of that same parent.  Refuse promotion on a name collision
+    rather than silently merging independent directory identities.
+    """
+    item = db.scalar(
+        select(NodeDirectory).where(NodeDirectory.id == directory_id).with_for_update()
+    )
+    if item is None:
+        raise not_found("node_directory", directory_id)
+    children = db.scalars(
+        select(NodeDirectory).where(NodeDirectory.parent_id == item.id).with_for_update()
+    ).all()
+    for child in children:
+        conflict_id = db.scalar(
+            select(NodeDirectory.id).where(
+                NodeDirectory.parent_id == item.parent_id,
+                NodeDirectory.name == child.name,
+                NodeDirectory.id != child.id,
+            )
+        )
+        if conflict_id is not None:
+            raise DomainError(
+                "NODE_DIRECTORY_PROMOTION_CONFLICT",
+                "删除后父目录中会出现同名子目录，请先调整目录名称或层级。",
+                409,
+                {"directory_id": item.id, "child_directory_id": child.id, "name": child.name},
+            )
+    for child in children:
+        child.parent_id = item.parent_id
+    for asset in db.scalars(
+        select(NodeAsset).where(NodeAsset.directory_id == item.id).with_for_update()
+    ):
+        asset.directory_id = item.parent_id
+        asset.row_version += 1
+        asset.updated_at = datetime.now(UTC)
+    db.delete(item)
+    finish(db)
+
+
 def list_assets(
     db: Session, directory_id: str | None = None, query: str | None = None
 ) -> list[dict[str, Any]]:

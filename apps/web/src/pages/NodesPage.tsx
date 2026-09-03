@@ -28,6 +28,7 @@ interface FolderRowProps {
   selected: string;
   depth: number;
   onSelect: (id: string) => void;
+  onDelete: (item: NodeDirectory) => void;
 }
 
 function descendantIds(id: string, directories: NodeDirectory[]): string[] {
@@ -35,15 +36,16 @@ function descendantIds(id: string, directories: NodeDirectory[]): string[] {
   return [id, ...children.flatMap(child => descendantIds(child.id, directories))];
 }
 
-function FolderRow({ item, directories, nodes, selected, depth, onSelect }: FolderRowProps) {
+function FolderRow({ item, directories, nodes, selected, depth, onSelect, onDelete }: FolderRowProps) {
   const children = directories.filter(child => child.parent_id === item.id);
   const ids = descendantIds(item.id, directories);
   const count = nodes.filter(node => node.directory_id && ids.includes(node.directory_id)).length;
   return <>
-    <button className={`folder-row ${selected === item.id ? 'active' : ''}`} style={{ paddingLeft: 9 + depth * 16 }} onClick={() => onSelect(item.id)}>
+    <div className={`folder-row ${selected === item.id ? 'active' : ''}`} style={{ paddingLeft: 9 + depth * 16 }}>
+    <button type="button" onClick={() => onSelect(item.id)}>
       {children.length ? <ChevronRight size={12}/> : <span/>}<Folder size={14}/><span>{item.name}</span><small>{count}</small>
-    </button>
-    {children.map(child => <FolderRow key={child.id} item={child} directories={directories} nodes={nodes} selected={selected} depth={depth + 1} onSelect={onSelect}/>)}
+    </button><button type="button" className="folder-delete" title={`删除目录 ${item.name}`} aria-label={`删除目录 ${item.name}`} onClick={() => onDelete(item)}><Trash2 size={13}/></button></div>
+    {children.map(child => <FolderRow key={child.id} item={child} directories={directories} nodes={nodes} selected={selected} depth={depth + 1} onSelect={onSelect} onDelete={onDelete}/>)}
   </>;
 }
 
@@ -125,12 +127,17 @@ export function NodesPage() {
     try { await api.createDirectory({ name: directoryName, parent_id: directory === 'all' ? null : directory, position: directories.length }); await qc.invalidateQueries({ queryKey: ['directories'] }); }
     catch (reason) { setError(reason instanceof Error ? reason.message : '创建目录失败'); }
   };
+  const removeDirectory = async (item: NodeDirectory) => {
+    if (!await dialog.confirm({ title: `删除目录“${item.name}”？`, message: '该目录中的节点会移动到上级目录；直接子目录也会提升到上级目录。发生同名冲突时会拒绝删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    try { await api.deleteDirectory(item.id); if (directory === item.id) setDirectory(item.parent_id ?? 'all'); await Promise.all([qc.invalidateQueries({ queryKey: ['directories'] }), qc.invalidateQueries({ queryKey: ['nodes'] })]); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '删除目录失败'); }
+  };
   const currentDirectory = directories.find(item => item.id === directory)?.name ?? '全部节点';
   const roots = directories.filter(item => !item.parent_id);
 
   return <section className="page node-assets-page"><div className="page-action-row"><button className="primary" onClick={() => setEditing(null)}><Plus size={16}/>新建节点</button></div>
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
-    <div className="asset-layout"><aside className="directory-panel"><header><b>节点目录</b><button title="新建目录" onClick={() => void createDirectory()}><Plus size={14}/></button></header><button className={`folder-row all ${directory === 'all' ? 'active' : ''}`} onClick={() => setDirectory('all')}><span/><Folder size={14}/><span>全部节点</span><small>{nodes.length}</small></button>{roots.map(item => <FolderRow key={item.id} item={item} directories={directories} nodes={nodes} selected={directory} depth={0} onSelect={setDirectory}/>)}</aside>
+    <div className="asset-layout"><aside className="directory-panel"><header><b>节点目录</b><button title="新建目录" onClick={() => void createDirectory()}><Plus size={14}/></button></header><button className={`folder-row all ${directory === 'all' ? 'active' : ''}`} onClick={() => setDirectory('all')}><span/><Folder size={14}/><span>全部节点</span><small>{nodes.length}</small></button>{roots.map(item => <FolderRow key={item.id} item={item} directories={directories} nodes={nodes} selected={directory} depth={0} onSelect={setDirectory} onDelete={target => void removeDirectory(target)}/>)}</aside>
       <main className="asset-content"><div className="asset-tools"><div><span>节点资产</span><strong>{currentDirectory}</strong><small>{visible.length} 个节点</small></div><div className="bulk-actions"><button className="secondary" disabled={!visible.length || deleting} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前结果'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个节点`)}><Trash2 size={14}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></div><label><Search size={14}/><input aria-label="搜索节点" value={search} placeholder={`搜索 ${currentDirectory}`} onChange={event => setSearch(event.target.value)}/></label></div>
         {isLoading ? <div className="empty">加载中…</div> : <><div className="card-grid compact-node-list">{pagedVisible.map(node => <article tabIndex={0} className={`node-card product-card ${selectedIds.has(node.id) ? 'selected' : ''}`} data-testid="node-card" key={node.id} onClick={() => setDetail(node)} onKeyDown={event => { if (event.key === 'Enter') setDetail(node); }}><div className="node-card-head"><label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择节点 ${node.name}`} checked={selectedIds.has(node.id)} onChange={() => toggle(node.id)}/><span className="node-icon">{node.icon_value.slice(0, 2).toUpperCase()}</span></label><div className="card-actions"><button title="复制" onClick={event => action(event, () => setEditing({ ...node, id: '', name: `${node.name} 副本`, row_version: 1 }))}><Copy size={15}/></button><button title="编辑" onClick={event => action(event, () => setEditing(node))}><Pencil size={15}/></button><button title="删除" aria-label={`删除节点资产 ${node.name}`} onClick={event => action(event, () => void removeMany([node.id], `节点“${node.name}”`))}><Trash2 size={15}/></button></div></div><div className="node-list-summary"><h3>{node.name}</h3><p>{node.description || '暂无说明'}</p></div></article>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></>}
         {!isLoading && !visible.length && <div className="empty">当前目录没有匹配节点。</div>}

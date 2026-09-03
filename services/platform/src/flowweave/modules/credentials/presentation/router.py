@@ -6,9 +6,19 @@ from fastapi import APIRouter, Response
 
 from flowweave.modules.credentials.application import service
 from flowweave.shared.http import Db, run_sync
-from flowweave.shared.schemas import WebsiteCredentialWrite
+from flowweave.shared.schemas import CredentialBulkDeleteWrite, WebsiteCredentialWrite
 
 router = APIRouter()
+
+
+@router.delete("/website-credentials")
+async def delete_website_credentials(
+    payload: CredentialBulkDeleteWrite, db: Db
+) -> dict[str, list[str]]:
+    return await run_sync(
+        db,
+        lambda session: {"deleted_ids": service.delete_credentials(session, payload.ids)},
+    )
 
 
 @router.get("/website-credentials")

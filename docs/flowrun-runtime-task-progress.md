@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-146 后续范围待拆分）
+> 下一可执行切片：`无`（FR-147 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2167,6 +2167,19 @@ Finish、Artifact、门禁和流转状态机决定结果。其他运行时失败
 投递有界 `POLL_RUNTIME`。自动运行页面也为该安全错误显示“重试当前阶段”；其他 Runtime 和门禁错误保持
 不可重试。
 
+### FR-147 目录、认证和环境版本维护操作 — DONE
+
+依赖：`FR-146`。
+
+目标：补齐产品维护面的受控删除与可追溯版本说明。节点目录删除不得丢弃节点资产或子目录；Agent 工作区目录
+与文件删除必须继续由授权工作区范围、冻结会话目录和附件保护约束；认证管理支持一次性删除多个精确 ID；
+终端环境发布可选记录不可变版本说明，历史版本不得被后续请求改写。
+
+完成：节点目录删除会将直接节点与子目录提升到父级并在同名冲突时 fail closed；Agent 会话目录和文件栏提供
+确认后删除，其中只允许当前范围的普通文件或空目录，私有附件、隐藏路径、符号链接和工作区根继续拒绝。认证
+管理增加当前页选择与批量删除，服务端锁定并校验完整 ID 集合。Environment Version 新增可选 description 字段、
+迁移和发布表单提示，并在版本历史中展示；重复发布已冻结版本不会覆盖其说明。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2182,6 +2195,7 @@ Finish、Artifact、门禁和流转状态机决定结果。其他运行时失败
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-147 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint；Alembic heads；`git diff --check` | PASS：唯一迁移 head 为 `0090_environment_version_description`。目录提升、工作区范围校验、批量认证精确 ID 校验和版本说明持久化均已落入平台服务层；未运行容器/数据库行为测试。 |
 | 2026-09-03 | FR-146 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck；`git diff --check` | PASS：仅 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 中明确的 `RUNTIME_OUTPUT_MISSING` 可经版本 CAS 回到运行态并对账；其他失败路径未放宽。生产 FlowRun 将作为本切片的真实状态机验收。 |
 | 2026-09-03 | FR-145 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器定向 pytest（17 passed）；`git diff --check` | PASS：重启后的正式 FinishAction 继续按冻结合同解析；相对 FILE 路径只落在共享项目根。完整 `test_openhands.py` 另有 1 个 FR-143 后遗断言（仍期待已从 Agent 可见输出合同移除的 `run_name`）失败，和本切片无关，未伪记为通过。 |
 | 2026-09-03 | FR-144 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器 pytest（7 passed）；`git diff --check`；任务状态唯一性 | PASS：候选 FILE 读取与实际共享项目根对齐，输出解析根保持私有且受限于 `/runtime/workspace/project`；无 wake-up 通知时会投递有界、幂等 REST 协调，不直接改写业务状态。候选预览和 Worker 集成 pytest 均因本机 Docker 守护进程未运行、Testcontainers 无法创建 PostgreSQL 而未执行，未伪记为通过。 |

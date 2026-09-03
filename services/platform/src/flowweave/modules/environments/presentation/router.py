@@ -11,7 +11,11 @@ from flowweave.modules.environments.application import service
 from flowweave.modules.environments.infrastructure import docker
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
-from flowweave.shared.schemas import EnvironmentSetupWrite, TerminalEnvironmentWrite
+from flowweave.shared.schemas import (
+    EnvironmentPublishWrite,
+    EnvironmentSetupWrite,
+    TerminalEnvironmentWrite,
+)
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -70,8 +74,15 @@ async def create_setup_session(
 
 
 @router.post("/environment-setup-sessions/{session_id}/publish", status_code=201)
-async def publish_setup_session(session_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(db, lambda session: service.publish_setup_session(session, session_id))
+async def publish_setup_session(
+    session_id: str, db: Db, payload: EnvironmentPublishWrite | None = None
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.publish_setup_session(
+            session, session_id, payload.description if payload else ""
+        ),
+    )
 
 
 @router.delete("/environment-setup-sessions/{session_id}", status_code=204)

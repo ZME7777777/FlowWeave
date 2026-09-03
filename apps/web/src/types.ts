@@ -95,6 +95,7 @@ export interface CapabilityBulkDeleteResult extends BulkDeleteResult<BlockedCapa
 }
 export interface EnvironmentVersion {
   id: string; environment_id: string; version_no: number; parent_version_id?: string | null;
+  description: string;
   state: 'PUBLISHING' | 'READY' | 'FAILED'; image_reference: string; image_digest: string;
   base_image_reference: string; base_image_digest: string;
   manifest: { commands?: Record<string, string>; [key: string]: unknown };

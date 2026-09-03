@@ -38,6 +38,7 @@ class EnvironmentVersion(Base):
     environment_id: Mapped[str] = mapped_column(String(36), index=True)
     version_no: Mapped[int] = mapped_column(Integer)
     parent_version_id: Mapped[str | None] = mapped_column(String(36))
+    description: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[str] = mapped_column(String(30), default="PUBLISHING", index=True)
     base_image_reference: Mapped[str] = mapped_column(String(500), default="")
     base_image_digest: Mapped[str] = mapped_column(String(100), default="")

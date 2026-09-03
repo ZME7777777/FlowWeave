@@ -593,3 +593,44 @@ def download(
         content_type=content_type,
         content=content,
     )
+
+
+def delete_entry(
+    db: Session,
+    workspace_id: str,
+    path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> None:
+    """Delete a user-visible ordinary file or empty directory in the active scope."""
+    _workspace(db, workspace_id)
+    parsed = PurePosixPath(path)
+    if (
+        path == _PROJECT_ROOT
+        or not path.startswith(_PROJECT_ROOT + "/")
+        or parsed.as_posix() != path
+        or ".." in parsed.parts
+        or any(part.startswith(".") for part in parsed.parts)
+    ):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
+    _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
+    file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
+    if not any(path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
+    if _is_bound_attachment(db, binding_id, path):
+        raise DomainError("AGENT_WORKSPACE_ATTACHMENT_PROTECTED", "会话附件不能从文件栏删除", 409)
+    host_path = _host_path(_project_root(db, workspace_id), path, require_file=False)
+    try:
+        mode = host_path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "不能删除符号链接", 422)
+        if stat.S_ISREG(mode):
+            host_path.unlink()
+        elif stat.S_ISDIR(mode):
+            host_path.rmdir()
+        else:
+            raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "只能删除普通文件或空目录", 422)
+    except OSError as exc:
+        raise DomainError(
+            "AGENT_WORKSPACE_DELETE_FAILED", "文件删除失败；目录必须为空。", 409
+        ) from exc

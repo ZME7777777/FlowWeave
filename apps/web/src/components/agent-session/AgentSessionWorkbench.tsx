@@ -10,6 +10,7 @@ import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../ap
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface } from '../ConversationSurface';
+import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
 import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
@@ -62,6 +63,7 @@ interface WorkspaceConversationGroupProps {
   children: ReactNode;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
+  onDelete?: () => void;
 }
 
 function sessionQueryKey(host: AgentSessionHost, resource: string, ...identifiers: Array<string | undefined>) {
@@ -81,7 +83,7 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, canCreateConversation = false, onCreateConversation }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
   const contentId = `agent-workspace-group-${groupId}`;
 
@@ -91,6 +93,7 @@ function WorkspaceConversationGroup({ groupId, label, children, canCreateConvers
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
       </button>
       {onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
+      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>{children}</div>
   </section>;
@@ -826,7 +829,7 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
   return roots;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, onSelect }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; onSelect: (path: string) => void }) {
+function WorkspaceFileTree({ entries, root, selectedFile, onSelect, onDelete }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; onSelect: (path: string) => void; onDelete?: (path: string, kind: 'file' | 'directory') => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   useEffect(() => {
@@ -848,6 +851,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, onSelect }: { entries:
         <span>{node.name}</span>
         {node.kind === 'file' && <em>{node.size ? `${Math.ceil(node.size / 1024)} KB` : '0 KB'}</em>}
       </button>
+      {onDelete && node.path !== root && <button type="button" className="agent-file-delete" aria-label={`删除 ${node.name}`} title={`删除 ${node.name}`} onClick={() => onDelete(node.path, node.kind)}><Trash2 size={13}/></button>}
       {node.kind === 'directory' && open && <div role="group">{renderNodes(node.children, depth + 1)}</div>}
     </div>;
   });
@@ -994,6 +998,8 @@ function WorkspaceDrawer({
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
+  const dialog = useProductDialog();
+  const queryClient = useQueryClient();
   const toolsStorageKey = host.workspaceToolsStorageKey(workspaceId);
   const [scopeStates, setScopeStates] = useState<Record<string, WorkspaceToolScopeState>>(() => readWorkspaceToolState(toolsStorageKey));
   const [panelWidth, setPanelWidth] = useState(() => {
@@ -1111,6 +1117,14 @@ function WorkspaceDrawer({
     onOpen();
   }, [onOpen, runtimeAvailable, updateScope]);
   const selectFile = (path: string) => { setCandidatePreview(undefined); openFiles(path); };
+  const removeEntry = async (path: string, kind: 'file' | 'directory') => {
+    if (!api.deleteFile || !await dialog.confirm({ title: `删除${kind === 'directory' ? '目录' : '文件'}？`, message: kind === 'directory' ? '只能删除空目录；该操作无法撤销。' : '文件会被永久删除，且无法撤销。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    try {
+      await api.deleteFile(workspaceId, path, { bindingId, workDirectoryId });
+      if (selectedFile === path) updateScope(current => ({ ...current, selectedFile: undefined }));
+      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
+    } catch (reason) { setPanelError(reason instanceof Error ? reason.message : '删除文件失败'); }
+  };
   const closeTab = async (tab: WorkspaceToolTab) => {
     if (tab.kind === 'terminal') {
       setPanelError('');
@@ -1214,7 +1228,7 @@ function WorkspaceDrawer({
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
-              <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} onSelect={selectFile}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} onSelect={selectFile} onDelete={api.deleteFile ? (path, kind) => void removeEntry(path, kind) : undefined}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>
@@ -1260,6 +1274,7 @@ export function AgentSessionWorkbench({
 
 function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDraft = false, hideDraftTitle = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
   const { api, subscribe, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
+  const dialog = useProductDialog();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
   const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery(host.bootstrapRecoveryStorageKey));
@@ -2122,6 +2137,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     clearConversationDraft();
     onNavigate(host.conversationPath(bindingId));
   };
+  const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
+    if (!api.deleteWorkDirectory || !await dialog.confirm({ title: `删除工作区“${directory.display_name}”？`, message: '仅删除工作区目录记录，已有会话仍会保留其冻结目录版本；正在使用该目录的会话会阻止删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    try {
+      await api.deleteWorkDirectory(workspace!.id, directory.id);
+      if (conversationDraft?.workDirectoryId === directory.id) setConversationDraft(undefined);
+      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace!.id) });
+    } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
+  };
 
   return <main className="agent-workbench-page">
     <aside className="agent-workbench-rail">
@@ -2131,7 +2154,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
           {pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}
           {rootConversations.map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
         </WorkspaceConversationGroup>
-        {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })}>
+        {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory ? () => void removeWorkDirectory(directory) : undefined}>
           {pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}
           {conversationsForDirectory(directory.id).map(item => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b><small>{item.title_state === 'PENDING' ? '正在生成标题' : '可继续会话'}</small></span><ChevronRight size={13}/></button>)}
         </WorkspaceConversationGroup>)}

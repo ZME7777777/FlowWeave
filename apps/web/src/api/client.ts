@@ -190,6 +190,8 @@ export const api = {
   agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),
+  deleteAgentWorkDirectory: (id: string, directoryId: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
   agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -201,6 +203,12 @@ export const api = {
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return requestText(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, signal);
+  },
+  deleteAgentWorkspaceFile: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ path });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, json('DELETE'));
   },
   closeAgentWorkspaceTerminal: (id: string, terminalInstanceId: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams();
@@ -265,6 +273,7 @@ export const api = {
   directories: () => request<NodeDirectory[]>('/node-directories'),
   createDirectory: (body: { name: string; parent_id?: string | null; position?: number }) =>
     request<NodeDirectory>('/node-directories', json('POST', body)),
+  deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
   nodes: (directoryId?: string) => request<NodeAsset[]>(`/node-assets${directoryId ? `?directory_id=${directoryId}` : ''}`),
   node: (id: string) => request<NodeAsset>(`/node-assets/${id}`),
   createNode: (body: NodeAssetWrite) => request<NodeAsset>('/node-assets', json('POST', body)),
@@ -323,8 +332,8 @@ export const api = {
     request<void>(`/terminal-environments/${environmentId}/versions/${versionId}`, json('DELETE')),
   createEnvironmentSetup: (id: string, base_version_id?: string) =>
     request<EnvironmentSetupSession>(`/terminal-environments/${id}/setup-sessions`, json('POST', { base_version_id: base_version_id || null })),
-  publishEnvironmentSetup: (id: string) =>
-    request<EnvironmentVersion>(`/environment-setup-sessions/${id}/publish`, json('POST')),
+  publishEnvironmentSetup: (id: string, description = '') =>
+    request<EnvironmentVersion>(`/environment-setup-sessions/${id}/publish`, json('POST', { description })),
   stopEnvironmentSetup: (id: string) => request<void>(`/environment-setup-sessions/${id}`, json('DELETE')),
   websiteCredentials: () => request<WebsiteCredential[]>('/website-credentials'),
   createWebsiteCredential: (body: WebsiteCredentialWrite) =>
@@ -333,6 +342,8 @@ export const api = {
     request<WebsiteCredential>(`/website-credentials/${encodeURIComponent(id)}`, json('PUT', body)),
   deleteWebsiteCredential: (id: string) =>
     request<void>(`/website-credentials/${encodeURIComponent(id)}`, json('DELETE')),
+  deleteWebsiteCredentials: (ids: string[]) =>
+    request<{ deleted_ids: string[] }>('/website-credentials', json('DELETE', { ids })),
 
   providers: () => request<ModelProvider[]>('/model-providers'),
   createProvider: (body: ModelProviderWrite) => request<ModelProvider>('/model-providers', json('POST', body)),

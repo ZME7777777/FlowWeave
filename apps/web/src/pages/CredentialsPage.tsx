@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Globe2, KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserRound } from 'lucide-react';
+import { CheckSquare, ChevronDown, Globe2, KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 import { FormEvent, KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { Pagination } from '../components/Pagination';
@@ -113,6 +113,7 @@ export function CredentialsPage() {
   const [editing, setEditing] = useState<WebsiteCredential | null | undefined>(); const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(credentialPageSize);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const pagedCredentials = credentials.slice((page - 1) * pageSize, page * pageSize);
   useEffect(() => { if (page > Math.max(1, Math.ceil(credentials.length / pageSize))) setPage(1); }, [credentials.length, page, pageSize]);
   useEffect(() => {
@@ -124,16 +125,24 @@ export function CredentialsPage() {
     if (!await dialog.confirm({ title: `删除“${credential.name}”？`, message: '加密保存的认证信息会被永久删除；之后新建会话将无法使用它。', confirmLabel: '确认删除', tone: 'danger' })) return;
     try { await api.deleteWebsiteCredential(credential.id); await client.invalidateQueries({ queryKey: ['website-credentials'] }); } catch (reason) { setError(reason instanceof Error ? reason.message : '删除失败'); }
   };
+  const toggle = (id: string) => setSelectedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const allCurrentSelected = pagedCredentials.length > 0 && pagedCredentials.every(item => selectedIds.has(item.id));
+  const removeSelected = async () => {
+    const ids = [...selectedIds];
+    if (!ids.length || !await dialog.confirm({ title: `删除选中的 ${ids.length} 个认证？`, message: '加密保存的认证信息会被永久删除；之后新建会话将无法使用它们。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    try { await api.deleteWebsiteCredentials(ids); setSelectedIds(new Set()); await client.invalidateQueries({ queryKey: ['website-credentials'] }); } catch (reason) { setError(reason instanceof Error ? reason.message : '批量删除失败'); }
+  };
   return <section className="page credentials-page">
     <div className="credential-fixed-tools">
       <div><span className="eyebrow">AUTHENTICATION MANAGEMENT</span><b>认证管理</b><small>网站认证仅在新建 Agent 会话时以 Secret 注入。</small></div>
-      <div><span>共 {credentials.length} 个认证</span><button className="primary" onClick={() => setEditing(null)}><Plus size={16}/>新增认证</button></div>
+      <div><span>共 {credentials.length} 个认证</span><button className="secondary" disabled={!pagedCredentials.length} onClick={() => setSelectedIds(current => allCurrentSelected ? new Set([...current].filter(id => !pagedCredentials.some(item => item.id === id))) : new Set([...current, ...pagedCredentials.map(item => item.id)]))}><CheckSquare size={15}/>{allCurrentSelected ? '取消全选' : '全选当前页'}</button><button className="danger" disabled={!selectedIds.size} onClick={() => void removeSelected()}><Trash2 size={15}/>批量删除 ({selectedIds.size})</button><button className="primary" onClick={() => setEditing(null)}><Plus size={16}/>新增认证</button></div>
     </div>
     <div className="credentials-page-scroll">
       <div className="credential-policy"><ShieldCheck size={17}/><span>默认精确匹配域名；勾选后才匹配子域名。Secret 不会返回浏览器或写入镜像。</span></div>
       {error && <p className="notice error">{error}</p>}
       {isLoading ? <div className="empty">加载中…</div> : credentials.length === 0 ? <div className="empty credential-empty"><KeyRound size={26}/><b>尚未保存认证信息</b><span>添加站点认证后，新创建的 Agent 会话可在匹配的站点访问中使用它。</span></div> : <>
-        <div className="credential-grid compact-credential-list">{pagedCredentials.map(credential => <article className="credential-card" key={credential.id}>
+        <div className="credential-grid compact-credential-list">{pagedCredentials.map(credential => <article className={`credential-card${selectedIds.has(credential.id) ? ' selected' : ''}`} key={credential.id}>
+          <label className="resource-check"><input type="checkbox" aria-label={`选择 ${credential.name}`} checked={selectedIds.has(credential.id)} onChange={() => toggle(credential.id)}/></label>
           <span className="credential-icon">{credential.auth_type === 'USERNAME_PASSWORD' ? <UserRound size={17}/> : <KeyRound size={17}/>}</span>
           <div className="credential-summary"><h3>{credential.name}</h3><small><Globe2 size={11}/>{credential.target_host}{credential.include_subdomains ? ' · 包含子域' : ' · 仅此主机'}</small></div>
           <span className="credential-type">{credential.auth_type === 'USERNAME_PASSWORD' ? '用户名与密码' : 'Bearer Token'}</span>
