@@ -1,5 +1,5 @@
 {
-  "name": "@flowweave/cli",
+  "name": "@flowweave-ai/cli",
   "version": "0.1.0",
   "description": "FlowWeave 平台命令行客户端",
   "type": "module",
