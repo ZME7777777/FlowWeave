@@ -852,56 +852,6 @@ class OpenHandsRuntime:
                 payload["max_tokens"] = int(raw_window * condenser.max_tokens_ratio)
         return payload
 
-    @staticmethod
-    def _oracle_binding_id(provider: RuntimeProvider) -> str:
-        model_digest = hashlib.sha256(provider.model.encode()).hexdigest()[:16]
-        return f"flowweave-oracle:{provider.provider_id}:{model_digest}"
-
-    def _ensure_oracle_profile(
-        self,
-        provider: RuntimeProvider,
-        *,
-        base_url: str,
-        session_api_key: str,
-    ) -> None:
-        """Ensure the singleton Runtime-wide Oracle profile exists.
-
-        OpenHands' built-in ``ask_oracle`` tool resolves the fixed profile
-        name ``oracle``.  That makes the profile Runtime-wide rather than
-        Conversation-scoped.  In particular, it must not be treated as a
-        frozen copy of the primary LLM for every Conversation: doing so makes
-        a second Conversation using a different provider fail before its
-        primary LLM is even created.
-
-        The profile belongs to the Runtime rather than a Conversation, so it
-        can outlive a deleted provider or an older Runtime generation.  Always
-        replace it with the caller's binding (including a rotated credential):
-        retaining it is unsafe because a current API-key Conversation could
-        otherwise invoke ``ask_oracle`` through stale Codex OAuth credentials
-        even though its primary LLM is correctly bound.  OpenHands does not
-        offer a conversation-scoped Oracle profile, so a later Conversation
-        may replace this singleton again; callers refresh it immediately before
-        binding/sending their own primary LLM.
-        """
-
-        llm = self._llm_payload(provider)
-        binding_id = self._oracle_binding_id(provider)
-        llm["usage_id"] = binding_id
-        self._request(
-            "GET",
-            "/api/profiles/oracle",
-            missing_ok=True,
-            base_url=base_url,
-            session_api_key=session_api_key,
-        )
-        self._request(
-            "POST",
-            "/api/profiles/oracle",
-            base_url=base_url,
-            session_api_key=session_api_key,
-            json={"llm": llm, "include_secrets": True},
-        )
-
     def _workspace_path(self, value: str) -> str:
         path = Path(value)
         try:
@@ -1286,24 +1236,6 @@ class OpenHandsRuntime:
             base_url=target_base_url,
             session_api_key=target_session_key,
         )
-        if spec.oracle_provider is not None:
-            if not any(tool.name == "ask_oracle" for tool in spec.tools):
-                raise DomainError(
-                    "RUNTIME_AGENT_SPEC_INVALID",
-                    "Oracle provider is not enabled by the fixed Runtime tool set",
-                    409,
-                )
-            self._ensure_oracle_profile(
-                spec.oracle_provider,
-                base_url=target_base_url,
-                session_api_key=target_session_key,
-            )
-        elif any(tool.name == "ask_oracle" for tool in spec.tools):
-            raise DomainError(
-                "RUNTIME_AGENT_SPEC_INVALID",
-                "The fixed ask_oracle Tool requires the session model provider",
-                409,
-            )
         created = self._request(
             "POST",
             "/api/conversations",
@@ -3205,16 +3137,6 @@ class OpenHandsRuntime:
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         expected = self._llm_payload(provider)
-        # ``ask_oracle`` resolves OpenHands' Runtime-wide ``oracle`` profile.
-        # The application invokes this method before every user turn, so
-        # refresh the auxiliary profile here as well as at Conversation
-        # creation; otherwise an existing Conversation can retain an OAuth
-        # profile restored from an old Runtime volume.
-        self._ensure_oracle_profile(
-            provider,
-            base_url=self._base_url_for_handle(handle),
-            session_api_key=self._session_key_for_handle(handle),
-        )
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/switch_llm",

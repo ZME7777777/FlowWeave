@@ -714,19 +714,12 @@ def build_runtime_request(
         if get_settings().runtime_adapter != "mock"
         else None
     )
-    if frozen_spec.get("oracle_profile") is not None:
-        raise DomainError(
-            "SNAPSHOT_TOOL_POLICY_REQUIRES_RERUN",
-            "This historical Snapshot contains an Oracle Tool Policy binding and must be rerun",
-            409,
-        )
     agent_spec = RuntimeAgentSpec(
         schema_version=int(frozen_spec.get("schema_version") or 0),
         agent_kind=cast(Literal["OPENHANDS", "ACP"], frozen_spec.get("agent_kind")),
         runtime_contract=runtime_contract,
         agent_profile=agent_profile,
         provider=provider,
-        oracle_provider=provider,
         tools=tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES),
         tool_concurrency_limit=FIXED_TOOL_CONCURRENCY_LIMIT,
         agent_context=RuntimeAgentContext(

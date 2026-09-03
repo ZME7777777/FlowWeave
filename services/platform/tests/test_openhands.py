@@ -352,128 +352,15 @@ def test_openhands_serializes_native_critic_without_invalid_zero_iteration_refin
         assert critic["iterative_refinement"] == expected_refinement
 
 
-def test_openhands_materializes_oracle_profile_with_frozen_binding(openhands_settings, monkeypatch):
-    runtime = OpenHandsRuntime(openhands_settings)
-    provider = RuntimeProvider(
-        provider_id="provider-1",
-        base_url="https://provider.example/v1",
-        model="gpt-5.6-sol",
-        api_key="rotatable-secret",
-    )
-    requests: list[tuple[str, str, dict[str, object]]] = []
-
-    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
-        requests.append((method, path, kwargs))
-        if method == "GET":
-            return {"_flowweave_missing": True}
-        return {"name": "oracle", "message": "saved"}
-
-    monkeypatch.setattr(runtime, "_request", fake_request)
-
-    runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
-        provider,
-        base_url="http://runtime.test:8000",
-        session_api_key="session-key",
-    )
-
-    assert [(method, path) for method, path, _ in requests] == [
-        ("GET", "/api/profiles/oracle"),
-        ("POST", "/api/profiles/oracle"),
-    ]
-    body = requests[1][2]["json"]
-    assert isinstance(body, dict)
-    assert body["include_secrets"] is True
-    assert body["llm"]["model"] == "openai/gpt-5.6-sol"
-    assert body["llm"]["api_key"] == "rotatable-secret"
-    assert body["llm"]["usage_id"].startswith("flowweave-oracle:provider-1:")
-
-
-def test_openhands_refreshes_only_the_same_frozen_oracle_binding(openhands_settings, monkeypatch):
-    runtime = OpenHandsRuntime(openhands_settings)
-    provider = RuntimeProvider(
-        provider_id="provider-1",
-        base_url="https://provider.example/v1",
-        model="gpt-5.6-sol",
-        api_key="rotated-secret",
-    )
-    binding_id = runtime._oracle_binding_id(  # pyright: ignore[reportPrivateUsage]
-        provider
-    )
-    methods: list[str] = []
-
-    def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
-        methods.append(method)
-        if method == "GET":
-            return {
-                "name": "oracle",
-                "config": {
-                    "model": "openai/gpt-5.6-sol",
-                    "usage_id": binding_id,
-                },
-                "api_key_set": True,
-            }
-        return {"name": "oracle", "message": "saved"}
-
-    monkeypatch.setattr(runtime, "_request", fake_request)
-
-    runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
-        provider, base_url="http://runtime.test:8000", session_api_key="session-key"
-    )
-
-    assert methods == ["GET", "POST"]
-
-
-def test_openhands_replaces_stale_codex_oracle_with_api_key_provider(
-    openhands_settings, monkeypatch
-):
-    runtime = OpenHandsRuntime(openhands_settings)
-    provider = RuntimeProvider(
-        provider_id="provider-1",
-        base_url="https://provider.example/v1",
-        model="gpt-5.6-sol",
-        api_key="secret",
-    )
-    requests: list[tuple[str, object]] = []
-
-    def fake_request(method: str, _path: str, **kwargs: object) -> dict[str, object]:
-        requests.append((method, kwargs.get("json")))
-        if method == "POST":
-            return {"name": "oracle", "message": "saved"}
-        return {
-            "name": "oracle",
-            "config": {
-                "model": "openai/gpt-5.6-terra",
-                "usage_id": "flowweave-oracle:stale-codex:deadbeef",
-                "base_url": "https://chatgpt.com/backend-api/codex",
-                "api_mode": "responses",
-            },
-            "api_key_set": True,
-        }
-
-    monkeypatch.setattr(runtime, "_request", fake_request)
-
-    runtime._ensure_oracle_profile(  # pyright: ignore[reportPrivateUsage]
-        provider,
-        base_url="http://runtime.test:8000",
-        session_api_key="session-key",
-    )
-
-    assert [method for method, _ in requests] == ["GET", "POST"]
-    body = requests[1][1]
-    assert isinstance(body, dict)
-    assert body["llm"]["usage_id"].startswith("flowweave-oracle:provider-1:")
-    assert body["llm"]["model"] == "openai/gpt-5.6-sol"
-    assert body["llm"]["base_url"] == "https://provider.example/v1"
-    assert "api_mode" not in body["llm"]
-
-
 def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
+    requests: list[tuple[str, str]] = []
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path))
         captured.update({"method": method, "path": path, **kwargs})
         return {"id": "10000000-0000-4000-8000-000000000002", "leaf_event_id": "event-1"}
 
@@ -508,6 +395,8 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     assert payload["confirmation_policy"] == {"kind": "NeverConfirm"}
     assert payload["agent"]["condenser"] == {"kind": "NoOpCondenser"}
     assert payload["agent"]["tool_concurrency_limit"] == 1
+    assert "ask_oracle" not in [tool["name"] for tool in payload["agent"]["tools"]]
+    assert requests == [("POST", "/api/conversations")]
     initial_text = payload["initial_message"]["content"][0]["text"]
     assert initial_text.startswith("生成技术方案\n\n本次节点输入：")
     assert "https://example.feishu.cn/docx/prd-input" in initial_text
@@ -528,7 +417,6 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     assert "https://example.feishu.cn/docx/prd-input" in system_context
     assert "https://example.feishu.cn/docx/prd-template" not in system_context
     assert "流程输入" in system_context
-    assert "Run 1" in system_context
     assert "URL 输出返回安全 HTTP(S) uri" in system_context
     assert "不得写入 token、cookie 或凭据" in system_context
     assert payload["agent"]["llm"] == {

@@ -12,7 +12,6 @@ OPENHANDS_VERSION = "1.44.0"
 OPENHANDS_SOURCE_COMMIT = "9a24f6c8866f353042a57df0514ccc900e3a0691"
 
 FIXED_RUNTIME_TOOL_NAMES: tuple[str, ...] = (
-    "ask_oracle",
     "file_editor",
     # ``task`` is the executor-backed child Tool returned by TaskToolSet and
     # is not a public factory: resolving it directly makes the SDK inject

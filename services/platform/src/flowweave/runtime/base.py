@@ -316,7 +316,6 @@ class RuntimeAgentSpec:
     runtime_contract: RuntimeContract | None = None
     agent_profile: RuntimeAgentProfile | None = None
     provider: RuntimeProvider | None = None
-    oracle_provider: RuntimeProvider | None = None
     tools: tuple[RuntimeTool, ...] = ()
     tool_concurrency_limit: int = 1
     agent_context: RuntimeAgentContext = field(default_factory=RuntimeAgentContext)

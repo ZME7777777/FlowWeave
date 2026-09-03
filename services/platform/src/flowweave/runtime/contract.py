@@ -75,21 +75,13 @@ def governed_runtime_contract(required_tools: tuple[str, ...]) -> RuntimeContrac
     normalized_tools = tuple(sorted(set(required_tools)))
     if not normalized_tools or len(normalized_tools) != len(required_tools):
         raise ValueError("Runtime contract tools must be non-empty and unique")
-    required_operations = set(REQUIRED_HTTP_OPERATIONS)
-    if "ask_oracle" in normalized_tools:
-        required_operations.update(
-            {
-                ("GET", "/api/profiles/{name}"),
-                ("POST", "/api/profiles/{name}"),
-            }
-        )
     return RuntimeContract(
         schema_version=RUNTIME_CONTRACT_SCHEMA_VERSION,
         openhands_version=OPENHANDS_VERSION,
         source_commit=OPENHANDS_SOURCE_COMMIT,
         source_ref=OPENHANDS_SOURCE_COMMIT,
         package_versions=OPENHANDS_PACKAGE_VERSIONS,
-        required_http_operations=tuple(sorted(required_operations)),
+        required_http_operations=REQUIRED_HTTP_OPERATIONS,
         required_start_fields=REQUIRED_START_FIELDS,
         required_server_capabilities=REQUIRED_SERVER_CAPABILITIES,
         required_tools=normalized_tools,

@@ -371,7 +371,6 @@ def build_agent_spec(
     )
     return RuntimeAgentSpec(
         provider=provider,
-        oracle_provider=provider,
         confirmation_policy="NEVER",
         agent_context=RuntimeAgentContext(
             system_message_suffix="\n\n".join(

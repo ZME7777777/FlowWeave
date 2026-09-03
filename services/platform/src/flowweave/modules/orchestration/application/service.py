@@ -154,40 +154,6 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _preserve_runtime_oracle_profile(
-    current_manifest: dict[str, Any], candidate_manifest: dict[str, Any]
-) -> dict[str, Any]:
-    """Keep the Runtime-global ``oracle`` name immutable for one FlowRun.
-
-    OpenHands 1.44 resolves auxiliary LLM profiles from a Runtime-global store,
-    not from a Conversation-scoped store.  Once any Snapshot binds that name,
-    later Snapshots may stop using the Tool but cannot recycle the name for a
-    different provider/model while historical Conversations remain resumable.
-    """
-
-    if candidate_manifest.get("schema_version") == 3:
-        return candidate_manifest
-    current = current_manifest.get("oracle_profile")
-    candidate = candidate_manifest.get("oracle_profile")
-    if current is None:
-        return candidate_manifest
-    if not isinstance(current, dict):
-        raise DomainError(
-            "SNAPSHOT_MANIFEST_INVALID",
-            "The active Snapshot Oracle profile is invalid",
-            409,
-        )
-    current_profile = cast(dict[str, Any], current)
-    if candidate is not None and candidate != current_profile:
-        raise DomainError(
-            "RUNTIME_ORACLE_PROFILE_IMMUTABLE",
-            "The FlowRun Runtime Oracle profile cannot change across Snapshots",
-            409,
-        )
-    candidate_manifest["oracle_profile"] = copy.deepcopy(current_profile)
-    return candidate_manifest
-
-
 def _runtime_node(snapshot: RunSnapshot, instance_key: str) -> dict[str, Any]:
     return runtime_node(
         definition=snapshot.definition_json,
@@ -5572,9 +5538,7 @@ def sync_snapshot(
     if _hash(definition) == current.definition_hash:
         return run_detail(db, run.id)
     action = _action(db, run.id, "SYNC_SNAPSHOT", idempotency_key)
-    runtime_manifest = _preserve_runtime_oracle_profile(
-        current.runtime_manifest_json or {}, _compile_runtime_manifest(definition)
-    )
+    runtime_manifest = _compile_runtime_manifest(definition)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=current.version + 1,
