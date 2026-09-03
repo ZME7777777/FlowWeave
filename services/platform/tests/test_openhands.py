@@ -978,6 +978,28 @@ def test_openhands_disables_native_autotitle_for_collaboration(openhands_setting
     assert payload["autotitle"] is False
 
 
+def test_openhands_serializes_conversation_secrets_as_native_static_sources(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000004", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    runtime.create_conversation(
+        replace(_request(), conversation_secrets={"WEBSITE_TOKEN": "secret-value"})
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["secrets"] == {
+        "WEBSITE_TOKEN": {"kind": "StaticSecret", "value": "secret-value"}
+    }
+
+
 def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
     openhands_settings, monkeypatch
 ):

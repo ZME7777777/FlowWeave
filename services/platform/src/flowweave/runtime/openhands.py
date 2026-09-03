@@ -1166,7 +1166,16 @@ class OpenHandsRuntime:
         # these values out of Runtime manifests, image configuration, and the
         # persisted FlowWeave conversation locator.
         if request.conversation_secrets:
-            payload["secrets"] = dict(request.conversation_secrets)
+            # ``StartConversationRequest.secrets`` is a mapping to OpenHands
+            # ``SecretSource`` instances, not raw strings.  A raw credential
+            # reaches the SDK's discriminated-union validator as ``str`` and
+            # makes it attempt ``pop("kind")`` on that string.  Materialize
+            # the formal StaticSecret wire form at this boundary; values remain
+            # request-only and are never persisted in FlowWeave state.
+            payload["secrets"] = {
+                name: {"kind": "StaticSecret", "value": value}
+                for name, value in request.conversation_secrets.items()
+            }
         if request.conversation_id is not None:
             try:
                 payload["conversation_id"] = str(UUID(request.conversation_id))
