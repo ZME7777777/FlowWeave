@@ -1,12 +1,40 @@
 ---
 name: flowweave-runs
-description: 创建、查询、取消、完成、诊断或替换 FlowWeave FlowRun 时使用；适用于手动和自动运行记录。
+description: 创建、查询、取消、完成、诊断或替换 FlowWeave FlowRun；节点层面的输入、产物和门禁转 flowweave-flowrun-workbench。
 ---
 
-# FlowWeave 运行
+# FlowWeave FlowRun
 
-先用 `flowweave run list` 或 `run get <id>` 获取真实状态。启动手动运行必须显式指定 Flow 与 READY Environment Version：
+**开始前先完整阅读 `../flowweave/SKILL.md`。** FlowRun 是一次冻结运行：它将已校验的 Flow 与用户显式选择的 READY Environment Version 关联到运行 Snapshot、Runtime、节点执行和事件。
 
-`flowweave run start --flow <flow-id> --environment-version <version-id> [--name <name>]`。
+## 启动前检查
 
-运行时状态用 `run runtime <run-id>` 查看，事件使用 `run events <run-id>`。仅在用户明确要求且给出预期 generation/row version 请求体时使用 `run replace <run-id> --data-file ...`；它会触发受 fence 保护的 Runtime replacement。取消、完成和删除都会改变业务状态，执行前先读取 Run 并核对 ID。
+不要只凭名称启动。先读取 Flow，执行校验；再读取 Environment 并从返回版本中选择 `READY` 的真实 version ID。Flow 不拥有环境版本字段，不能省略这个选择。
+
+```bash
+flowweave flow get <flow-id>
+flowweave flow validate <flow-id>
+flowweave environment get <environment-id>
+```
+
+## 创建与观察
+
+```bash
+flowweave run start --flow <flow-id> --environment-version <ready-version-id> --name "可选名称"
+flowweave run get <run-id>
+flowweave run runtime <run-id>
+flowweave run events <run-id>
+```
+
+创建后立即读取 Run，确认 Flow ID、冻结的 Environment Version、Snapshot 与状态均符合预期。异步状态以 `run get`、`run runtime` 和 `run events` 为准；不要因 UI 暂未刷新而重复创建。Run 内节点、Attempt、产物、人工输入/输出、门禁、自动运行草稿和节点会话由 `flowweave-flowrun-workbench` 处理。
+
+## 诊断和受限变更
+
+诊断时先读 Run 详情、Runtime 与事件，记录真实 `run_id`、generation、session `row_version` 和失败原因。Runtime replacement 是受 fence 保护的动作，只有用户明确要求替换且请求体含从当前状态读取的 `expected_generation` 与 `expected_session_row_version` 时，才执行：
+
+```bash
+flowweave run replace <run-id> --data-file ./replacement.json --dry-run
+flowweave run replace <run-id> --data-file ./replacement.json
+```
+
+取消、完成和删除都改变业务状态。先读取 Run，确认它就是目标且用户意图明确，再使用 `run cancel`、`run complete` 或 `run delete`；操作后重新读取或查看事件验证结果。不能用 Docker 重启或数据库写入来替代平台的取消/恢复语义。
