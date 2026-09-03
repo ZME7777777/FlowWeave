@@ -1,12 +1,44 @@
 ---
 name: flowweave-agent-workspace
-description: 管理 FlowWeave Agent Workspace、会话、消息、运行状态、工作目录或能力绑定时使用。
+description: 管理 FlowWeave Agent Workspace、会话、消息、运行状态、工作目录、附件或能力绑定；FlowRun 节点会话转 flowweave-flowrun-workbench。
 ---
 
 # FlowWeave Agent 工作台
 
-先执行 `flowweave agent default` 获取默认工作区，再用 `agent workspace <workspace-id>`、`agent runtime <workspace-id>` 和 `agent conversations <workspace-id>` 读取实时状态。
+**开始前先完整阅读 `../flowweave/SKILL.md`。** 本 Skill 是顶层交互式 Agent Workspace 的操作手册。它不等于 FlowRun 中某个节点的会话；若用户正在处理流程节点执行，转 FlowRun 工作台。
 
-新会话使用 `agent create <workspace-id> --data-file ...`，发送消息使用 `agent send <workspace-id> <binding-id> --data-file ...`，中断/恢复使用 `agent interrupt`、`agent resume`。会话事件、附件、工作目录、终端和新能力绑定等所有未列为快捷命令的原子操作，先从在线 OpenAPI 发现路径，再使用 `flowweave api`、`upload` 或 `ws`。
+## 对象关系
 
-不要通过 Docker、Runtime Provider、OpenHands 私有 API 或数据库绕过工作台；会话和 Runtime 的授权、可替换性与审计必须保持由 FlowWeave 控制。
+默认 Agent Workspace 是平台分配的受控工作区。其下有 Conversation binding、消息/事件、附件、工作目录、能力绑定与 Runtime 概览。所有身份都必须由平台读取结果给出，不从聊天标题或前端 URL 推断。
+
+```bash
+flowweave agent default
+flowweave agent workspace <workspace-id>
+flowweave agent runtime <workspace-id>
+flowweave agent conversations <workspace-id>
+```
+
+## 会话闭环
+
+1. 从 `agent default` 或用户提供的 ID 取得 workspace，读取其状态与现有会话。
+2. 创建会话时按 OpenAPI schema 准备 JSON，写后保存返回的 binding ID：
+
+   ```bash
+   flowweave agent create <workspace-id> --data-file ./conversation.json
+   flowweave agent conversation <workspace-id> <binding-id>
+   ```
+
+3. 发送消息后读取会话与事件。请求返回 `202` 说明异步受理，应观察状态/事件而不是重复发送：
+
+   ```bash
+   flowweave agent send <workspace-id> <binding-id> --data-file ./message.json
+   flowweave api get /agent-workspaces/<workspace-id>/conversations/<binding-id>/events
+   ```
+
+4. 只有用户明确要求时才中断/恢复：`agent interrupt`、`agent resume`；操作后重新读取会话确认状态。
+
+## 工作目录、附件、能力与高级操作
+
+工作目录、附件上传、能力绑定、MCP readiness、模型选择、pending confirmation、fork、condense、rerun 和 terminal 都是同一工作区域的原子 API。先读取目标会话/工作区和在线 OpenAPI，再使用 `flowweave api` 或 `upload`。能力必须是平台已治理的版本，先转 `flowweave-capabilities` 导入或定位；不能将文件复制进 Runtime 作为绑定。
+
+对确认、附件、删除、停止或 fork 等改变状态的操作，先核对真实 workspace/binding ID 与用户意图；不得直接使用 Docker、Runtime Provider 或 OpenHands 私有接口。

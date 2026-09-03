@@ -20,7 +20,7 @@ CLI 分为两层：第一层以页面/业务域提供中文快捷命令，覆盖
 
 配置只有 `base_url`，默认保存到 `~/.config/flowweave/config.json`。客户端会保留部署前缀，并自动补全 `/api/v1`。平台当前不要求 CLI 登录，因此不实现 `auth login`；模型供应商的 Codex OAuth 只属于 `model oauth-*` 业务操作。
 
-Skill 以产品页面拆分，分别指导节点资产、能力、环境、流程、FlowRun、模型服务和 Agent 工作台。所有写请求先通过 FlowWeave 控制面；CLI 与 Skill 均不直接连接 Docker、Runtime Provider、数据库或 OpenHands 私有接口。
+Skill 以产品页面拆分，分别指导节点资产、能力、环境、流程、FlowRun、模型服务和 Agent 工作台。所有页面 Skill 都以 `flowweave` 平台基准 Skill 为前置知识：新会话会先获得平台资源关系、安装配置、端到端生命周期、OpenAPI 发现方式和安全边界，再执行页面操作。所有写请求先通过 FlowWeave 控制面；CLI 与 Skill 均不直接连接 Docker、Runtime Provider、数据库或 OpenHands 私有接口。
 
 ## 页面原子命令
 
@@ -51,6 +51,7 @@ flowweave run start --flow <flow-id> --environment-version <ready-version-id>
 
 本仓库按 UI/业务页面提供独立 skill：
 
+- `flowweave`：平台基准，所有页面 Skill 的共同前置知识；
 - `flowweave-node-assets`：节点资产与目录；
 - `flowweave-capabilities`：Skill、MCP、Plugin、Context 等能力；
 - `flowweave-environments`：终端环境和不可变版本；
