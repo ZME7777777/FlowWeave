@@ -91,41 +91,50 @@ function MessageMarkdown({ children }: { children: string }) {
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
 
-function candidateOutputs(content: string): CandidateOutput[] | undefined {
-  let raw = content.trim();
+const OUTPUT_BLOCK_MARKER = '---FLOWWEAVE_OUTPUTS---';
+
+interface CandidateOutputMessage {
+  businessConclusion: string;
+  outputs?: CandidateOutput[];
+}
+
+function candidateOutputMessage(content: string): CandidateOutputMessage {
+  const marker = content.lastIndexOf(OUTPUT_BLOCK_MARKER);
+  const businessConclusion = marker >= 0 ? content.slice(0, marker).trim() : '';
+  let raw = (marker >= 0 ? content.slice(marker + OUTPUT_BLOCK_MARKER.length) : content).trim();
   if (raw.startsWith('```')) raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   let value: unknown;
-  try { value = JSON.parse(raw); } catch { return undefined; }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  try { value = JSON.parse(raw); } catch { return { businessConclusion: marker >= 0 ? businessConclusion : content }; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { businessConclusion: marker >= 0 ? businessConclusion : content };
   const outputs = (value as Record<string, unknown>).outputs;
-  if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return undefined;
+  if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return { businessConclusion: marker >= 0 ? businessConclusion : content };
   const parsed: CandidateOutput[] = [];
   for (const [fieldKey, rawOutput] of Object.entries(outputs)) {
-    if (!rawOutput || typeof rawOutput !== 'object' || Array.isArray(rawOutput)) return undefined;
+    if (!rawOutput || typeof rawOutput !== 'object' || Array.isArray(rawOutput)) return { businessConclusion: marker >= 0 ? businessConclusion : content };
     const output = rawOutput as Record<string, unknown>;
     const artifactType = output.artifact_type;
     const outputValue = artifactType === 'URL' ? output.uri : artifactType === 'FILE' ? output.path : undefined;
-    if ((artifactType !== 'URL' && artifactType !== 'FILE') || typeof outputValue !== 'string' || !outputValue.trim()) return undefined;
+    if ((artifactType !== 'URL' && artifactType !== 'FILE') || typeof outputValue !== 'string' || !outputValue.trim()) return { businessConclusion: marker >= 0 ? businessConclusion : content };
     if (artifactType === 'URL') {
-      try { if (!['http:', 'https:'].includes(new URL(outputValue).protocol)) return undefined; } catch { return undefined; }
+      try { if (!['http:', 'https:'].includes(new URL(outputValue).protocol)) return { businessConclusion: marker >= 0 ? businessConclusion : content }; } catch { return { businessConclusion: marker >= 0 ? businessConclusion : content }; }
     }
     if (artifactType === 'FILE' && (
       outputValue.startsWith('/')
       || outputValue.includes('\\')
       || outputValue.split('/').some(part => !part || part === '.' || part === '..')
-    )) return undefined;
+    )) return { businessConclusion: marker >= 0 ? businessConclusion : content };
     parsed.push({ fieldKey, artifactType, value: outputValue.trim() });
   }
-  return parsed.length ? parsed : undefined;
+  return { businessConclusion, outputs: parsed.length ? parsed : undefined };
 }
 
 function CandidateOutputReply({ outputs, onPreviewFile }: {
   outputs: CandidateOutput[];
   onPreviewFile?: (output: CandidateOutput) => void;
 }) {
-  return <section className="conversation-candidate-outputs" aria-label="Agent 候选输出"><header><b>Agent 已提交 {outputs.length} 个候选输出</b><small>平台会校验候选；文件预览由当前节点作用域授权，不公开工作区路径。</small></header><div>{outputs.map(output => {
+  return <section className="conversation-candidate-outputs" aria-label="Agent 候选交付物"><header><b>执行 Agent 已提交 {outputs.length} 个候选交付物</b><small>文件预览仅限当前节点的授权范围。</small></header><div>{outputs.map(output => {
     return <article key={output.fieldKey}>{output.artifactType === 'URL' ? <Link size={15}/> : <FileText size={15}/>}<span><b>{output.fieldKey}</b><small>{output.artifactType === 'URL' ? 'URL 候选产物' : '文件候选产物'}</small><p>{output.artifactType === 'URL' ? output.value : output.value.split('/').at(-1)}</p></span>{output.artifactType === 'URL' ? <a href={output.value} target="_blank" rel="noopener noreferrer"><ExternalLink size={13}/>打开</a> : onPreviewFile ? <button type="button" onClick={() => onPreviewFile(output)}><PanelRightOpen size={13}/>预览</button> : null}</article>;
-  })}</div><p>预览只读取候选文件；只有右侧“输出”页出现版本、哈希、预览或下载入口后，才表示产物已正式冻结。</p></section>;
+  })}</div></section>;
 }
 
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
@@ -754,11 +763,13 @@ function AgentReply({ event, content, onFork, onPreviewCandidateFile }: {
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
 }) {
   const eventId = event.id;
-  const outputs = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction'
-    ? candidateOutputs(content)
-    : undefined;
+  const candidateMessage = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction'
+    ? candidateOutputMessage(content)
+    : { businessConclusion: content };
   return <article className="conversation-message assistant" data-turn-terminal="true" data-event-id={eventId}>
-    {outputs ? <CandidateOutputReply outputs={outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/> : content ? <MessageMarkdown>{content}</MessageMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
+    {candidateMessage.businessConclusion ? <MessageMarkdown>{candidateMessage.businessConclusion}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{content}</MessageMarkdown> : null}
+    {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
+    {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
   </article>;
 }

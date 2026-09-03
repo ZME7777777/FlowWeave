@@ -1063,13 +1063,15 @@ class OpenHandsRuntime:
         sections.append(f"{input_heading}：\n{rendered_inputs}")
         if outputs:
             sections.append(
-                "请严格按下列字段和 artifact_type 生成输出。URL 输出返回安全 HTTP(S) uri；"
-                "FILE 输出在当前工作目录中创建文件，并返回从当前工作目录起的规范相对 POSIX path。"
-                "平台会在服务端验证并收集该候选文件。完成后调用 finish，"
-                "并把 message 严格写成 JSON，例如："
+                "请先用自然语言给出本次业务结论：明确目标是否完成，并列出实质失败、"
+                "阻塞条件或未完成项；不得把文件已生成等同于业务成功，也不得声称平台门禁、"
+                "验收或流程流转已经完成。随后在回复末尾另起一行写"
+                "---FLOWWEAVE_OUTPUTS---，并只在该标记后附上候选输出 JSON，例如："
                 '{"outputs":{"link":{"artifact_type":"URL","uri":"https://..."},'
                 '"report":{"artifact_type":"FILE","path":"report.pdf"}}}'
-                "。不得提交当前工作目录外的文件，也不得写入 token、cookie 或凭据。\n"
+                "。URL 输出必须是安全 HTTP(S) uri；FILE 输出必须在当前工作目录中创建，"
+                "并返回从当前工作目录起的规范相对 POSIX path。不得提交当前工作目录外的文件，"
+                "也不得写入 token、cookie 或凭据。平台会在服务端单独校验候选输出。\n"
                 + json.dumps(self._public_output_contract(outputs), ensure_ascii=False)
             )
         return "\n\n".join(sections)
@@ -2106,7 +2108,12 @@ class OpenHandsRuntime:
         expected = handle.output_contract or {
             item["field_key"]: item for item in self._contracts.get(handle.conversation_id, [])
         }
-        candidate = text.strip()
+        # New execution replies preserve the Agent's natural-language business
+        # conclusion and place the machine-readable delivery contract behind a
+        # stable marker.  Keep accepting legacy whole-message JSON so existing
+        # conversations and in-flight Attempts remain recoverable.
+        marker = "---FLOWWEAVE_OUTPUTS---"
+        candidate = text.rsplit(marker, 1)[-1].strip() if marker in text else text.strip()
         if candidate.startswith("```"):
             lines = candidate.splitlines()
             candidate = "\n".join(lines[1:-1]).strip() if len(lines) >= 3 else ""

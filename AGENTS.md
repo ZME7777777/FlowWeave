@@ -3,6 +3,21 @@
 本文件适用于整个 FlowWeave 仓库，并补充上级
 `/Users/zhengmengen/WorkSpace/AGENTS.md`。若目标目录存在更近的 `AGENTS.md`，优先遵守离目标文件最近的说明。
 
+## 远程部署：先预检，后执行（不可跳过）
+
+只要请求涉及“部署”“发布”“远端镜像”“生产”“SSH”或远端排障，任何 SSH、`scp`、`docker save/load`、
+`docker compose` 或 Nginx 变更之前，必须先完整读取本文件的“远程服务器部署基线”和
+`docs/local-build-and-deploy.md`，并运行：
+
+```bash
+scripts/verify-remote-deploy-154.sh --commit <已提交的完整或短 SHA> --scope <web|platform|runtime|other>
+```
+
+预检输出必须先明确复述目标 `root@192.168.91.154`、部署根 `/opt/flowweave`、发布范围和 commit。
+未完成预检、目标不是上述主机、或用户未明确指定其他环境时，停止，不得猜测 SSH 别名或改用其他服务器。
+普通部署严禁 `docker compose down -v`、删除 volume/Workspace、覆盖远端 `deploy/compose.yaml` 或 `.env`。
+`make rebuild-deploy` 和 `infra/compose.yaml` 仅用于本地；绝不可当作 `.154` 的部署入口。
+
 ## OpenHands-first 架构原则
 
 - FlowWeave 的产品设计、用户流程和业务边界是需求来源；OpenHands 是 Agent 执行能力的实现依赖，
@@ -59,6 +74,13 @@ source lock 与适配代码、历史兼容源码和镜像、版本明确匹配�
 
 源码、迁移、测试和实际运行结果是当前进度的权威证据。旧的 OpenHands 重构文档和历史验收结论不得
 替代当前 `FR-*` 任务重新实施与验证。
+
+## 本地临时产物（强制）
+
+- 一次性 API 请求体、dry-run 结果、平台响应快照、临时能力包、调试导出和工具中间文件必须写入仓库根目录的 `.tmp/`。
+- 禁止在仓库根目录或任何受版本控制的源码/文档目录创建 `.flow-*`、`*-dry-run.json`、`*-created.json`、`*-response.json` 等临时文件。
+- `.tmp/` 已由 `.gitignore` 忽略；提交前仍须检查 `git status`，确保没有临时产物被暂存。
+- 仅在需要保留为正式、可复现资产时，才将内容移入相应的版本化目录并使用明确、非临时的文件名。
 
 ## 切片验证与提交规则
 
