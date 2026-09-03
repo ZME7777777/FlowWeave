@@ -289,10 +289,11 @@ async function waitForStartGate(runId: string, initial: NodeRun): Promise<NodeRu
 
 type InputContract = SnapshotFlowNode['asset']['inputs'][number];
 
-function InputSummary({ fields, bindings, artifacts }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[] }) {
+function InputSummary({ fields, bindings, artifacts, inputUrls = {} }: { fields: InputContract[]; bindings: Record<string, string>; artifacts: ArtifactVersion[]; inputUrls?: Record<string, string> }) {
   return <section className="input-summary" aria-label="节点输入"><h4>输入</h4>{fields.length ? fields.map(field => {
     const artifact = artifacts.find(item => item.id === bindings[field.field_key]);
-    return <article key={field.field_key}><header><span><b>{field.display_name || field.field_key}</b><small>{field.description || '未填写字段说明'}</small></span><code>{field.field_key} · {field.data_type}</code></header>{artifact ? <><strong>{artifactLabel(artifact)}</strong><a href={artifactHref(artifact)} target="_blank" rel="noreferrer">{artifact.uri || String(artifact.metadata?.filename || '查看文件')}</a></> : <span className="input-summary-empty">尚未填写</span>}</article>;
+    const inputUrl = inputUrls[field.field_key];
+    return <article key={field.field_key}><header><span><b>{field.display_name || field.field_key}</b><small>{field.description || '未填写字段说明'}</small></span><code>{field.field_key} · {field.data_type}</code></header>{artifact ? <><strong>{artifactLabel(artifact)}</strong><a href={artifactHref(artifact)} target="_blank" rel="noreferrer">{artifact.uri || String(artifact.metadata?.filename || '查看文件')}</a></> : inputUrl ? <><strong>已配置 URL</strong><a href={inputUrl} target="_blank" rel="noreferrer">{inputUrl}</a></> : <span className="input-summary-empty">尚未填写</span>}</article>;
   }) : <div className="empty compact">该节点无需输入。</div>}</section>;
 }
 
@@ -303,12 +304,12 @@ function mergeArtifacts(current: ArtifactVersion[], incoming: ArtifactVersion[])
   return [...current.map(item => replacements.get(item.id) ?? item), ...incoming.filter(item => !current.some(existing => existing.id === item.id))];
 }
 
-function NodeInputDialog({ run, node, initialBindings = {}, onClose, onSubmit }: { run: FlowRun; node: SnapshotFlowNode; initialBindings?: Record<string, string>; onClose: () => void; onSubmit: (result: NodeInputResult) => void }) {
+function NodeInputDialog({ run, node, initialBindings = {}, initialUrls = {}, onClose, onSubmit }: { run: FlowRun; node: SnapshotFlowNode; initialBindings?: Record<string, string>; initialUrls?: Record<string, string>; onClose: () => void; onSubmit: (result: NodeInputResult) => void }) {
   useEscapeClose(onClose);
   const fields = node.asset.inputs;
   const [urls, setUrls] = useState<Record<string, string>>(() => Object.fromEntries(fields.filter(field => field.data_type === 'URL').map(field => {
     const artifact = run.artifacts.find(item => item.id === initialBindings[field.field_key]);
-    return [field.field_key, artifact?.uri ?? ''];
+    return [field.field_key, artifact?.uri ?? initialUrls[field.field_key] ?? ''];
   })));
   const [files, setFiles] = useState<Record<string, File | undefined>>({});
   const [error, setError] = useState('');
@@ -777,9 +778,10 @@ function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }
   if (!node || !plan) return <aside className="action-panel automatic-record-editor"><div className="action-content automatic-empty">请在流程图中选择一个可配置节点。</div></aside>;
   const feedback = save.error ? `保存失败：${save.error.message}` : saveFeedback;
   const history = <NodeExecutionHistory run={record} node={node}/>;
-  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '自动运行草稿配置' : '自动运行配置（只读）'}`} mode="PROMPT" onModeChange={() => undefined} chatEnabled={false} promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} action={editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts}/>{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="自动运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '工作区默认模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
+  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '自动运行草稿配置' : '自动运行配置（只读）'}`} mode="PROMPT" onModeChange={() => undefined} chatEnabled={false} promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} action={editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts} inputUrls={plan.input_urls}/>{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="自动运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '工作区默认模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} initialUrls={plan.input_urls} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
     const nextArtifacts = mergeArtifacts(inputArtifacts, artifacts);
-    const nextPlans = { ...plans, [node.instance_key]: { ...plan, artifact_ids } };
+    const input_urls = Object.fromEntries(Object.entries(plan.input_urls).filter(([fieldKey]) => !artifact_ids[fieldKey]));
+    const nextPlans = { ...plans, [node.instance_key]: { ...plan, artifact_ids, input_urls } };
     setPlans(nextPlans);
     setInputArtifacts(nextArtifacts);
     onDraft({ ...record, node_plans: nextPlans, artifacts: nextArtifacts });

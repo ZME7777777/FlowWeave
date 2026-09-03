@@ -72,7 +72,7 @@ const frozenAutomaticBase = {
           capability_version_ids: [], node_context_enabled: false, node_context_prompt: '',
           model_provider_id: null, model_name: null, reasoning_effort: null, capabilities: [],
         },
-        gates: [], artifact_ids: {}, input_urls: {},
+        gates: [], artifact_ids: {}, input_urls: { input_1: 'https://example.com/default-input' },
       },
     },
   },
@@ -220,6 +220,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(automaticEditor.getByRole('button', { name: /会话启动/ })).toBeDisabled();
   await expect(automaticEditor.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
   await expect(automaticEditor.getByRole('heading', { name: '输入' })).toBeVisible();
+  await expect(automaticEditor.getByRole('link', { name: 'https://example.com/default-input' })).toBeVisible();
   await expect(automaticEditor.getByRole('heading', { name: '启动提示词' })).toBeVisible();
   await expect(automaticEditor).toContainText('读取流程输入并完成节点工作。');
   // Automatic drafts use the same tab-content layout as the manual node console.
@@ -232,6 +233,7 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await automaticEditor.getByRole('button', { name: '填写节点输入' }).click();
   const inputDialog = page.getByRole('dialog', { name: '填写节点输入' });
+  await expect(inputDialog.getByRole('textbox', { name: '填写输入 input_1' })).toHaveValue('https://example.com/default-input');
   await inputDialog.getByRole('textbox', { name: '填写输入 input_1' }).fill('https://example.com/input');
   await inputDialog.getByLabel('上传输入文件 input_2').setInputFiles({
     name: 'example.md', mimeType: 'text/markdown', buffer: Buffer.from('hello input'),
@@ -295,6 +297,7 @@ test('run projection stays neutral until record selection and automatic save rep
   expect((submittedBody?.node_plans as Record<string, unknown>).first).toEqual(expect.objectContaining({
     startup_prompt: '读取流程输入并完成节点工作。',
     artifact_ids: { input_1: 'artifact-url', input_2: 'artifact-file' },
+    input_urls: {},
   }));
   expect(((submittedBody?.node_plans as Record<string, { agent_preset: Record<string, unknown> }>).first.agent_preset)).not.toHaveProperty('capabilities');
   expect((submittedBody?.node_plans as Record<string, { agent_preset: { capability_version_ids: string[] } }>).first.agent_preset.capability_version_ids).toEqual(capabilityCatalog.map(item => item.id));
