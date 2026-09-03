@@ -1,0 +1,4 @@
+interface:
+  display_name: "Collect and Analyze App Exceptions"
+  short_description: "全量收集异常并审查历史终态指纹"
+  default_prompt: "使用 $collect-app-exception-logs 收集指定应用的 HK 异常，完成全量闭合和调查；委托修复时在仓库 tmp 下建账，排除历史跳过项，并对历史已完成同指纹在轮到时询问是否跳过。"

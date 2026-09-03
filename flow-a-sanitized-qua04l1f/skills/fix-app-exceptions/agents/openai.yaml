@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fix App Exceptions"
+  short_description: "在 tmp 建账并审查历史终态后串行修复"
+  default_prompt: "使用 $fix-app-exceptions 在当前仓库 tmp 下创建 TASK.md，排除历史已跳过同指纹，对历史已完成同指纹在轮到时询问是否跳过，再按结果保真串行修复。"

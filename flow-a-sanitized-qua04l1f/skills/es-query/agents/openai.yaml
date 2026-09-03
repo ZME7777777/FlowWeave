@@ -1,0 +1,4 @@
+interface:
+  display_name: "ES Query"
+  short_description: "行情系统日志查询"
+  default_prompt: "使用 es-query 技能查询行情系统日志，先根据用户意图推断环境、应用和时间范围。HK / SG 先从 app-index 将应用名映射到 hostname；MAS 优先按已知规则推导 hostname，不足时要求用户补充映射。查询时优先使用 --env 选择环境，再仅使用 --host 执行查询；不带 * 时精确匹配 agent.hostname，带 * 时前缀通配 agent.hostname.keyword；禁止使用 appName（--app）作为过滤条件。"

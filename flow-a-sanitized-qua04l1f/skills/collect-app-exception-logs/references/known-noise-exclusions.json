@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "profile": "collection-known-noise",
+  "description": "已确认不纳入异常清理批次的低优先级日志。仅用于 collect-app-exception-logs 的 Phase 1 双轨发现；不改变临时 es-query 或 Phase 2 定向取证。",
+  "message_contains": [
+    "Error while validating pooled Jedis object.",
+    "[DUBBO] [Serialization Security] Serialized class java.util.ArrayList$SubList has not implement Serializable interface.",
+    "聚源的美股ADR比例变更异常",
+    "消息发送异常",
+    "org.apache.kafka.common.errors.TimeoutException",
+    "获取数据错误",
+    "Got unchecked and undeclared exception",
+    "UNAVAILABLE: Network closed for unknown reason",
+    "refresh-set-channelType",
+    "Unexpected error occurred in scheduled task.",
+    "关闭eventLoopGroup",
+    "关闭连接Socket",
+    "Get Token failed",
+    "SessionMonitor connect error",
+    "钉钉通知发送异常 fail",
+    "java.nio.channels.UnresolvedAddressException: null",
+    "handleReturnValue error",
+    "Client not connected, current status:UNHEALTHY",
+    "Send request fail",
+    "Server check fail",
+    "Connection is unregistered",
+    "Client-side timeout.",
+    "HeaderExchangeClient",
+    "open.vtradesa.com",
+    "open.sahmcapital.com",
+    "openbeta.vtradesa.com",
+    "line-data-type-probe"
+  ],
+  "hostname_wildcards": [
+    "*beta*"
+  ]
+}

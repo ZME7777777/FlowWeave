@@ -1,0 +1,290 @@
+{
+  "id": "e18bbf6b-cd6e-4c92-9383-c81874943d07",
+  "capability_type": "SKILL",
+  "filename": "flow-a-exception-automation-skills.zip",
+  "content_hash": "fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1",
+  "storage_key": "capability-imports/fa/fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1-e18bbf6b-cd6e-4c92-9383-c81874943d07",
+  "byte_size": 75354,
+  "preview": {
+    "capabilities": [
+      {
+        "capability_key": "collect-app-exception-logs",
+        "normalized_config": {
+          "entry": "skills/collect-app-exception-logs/SKILL.md",
+          "description": "仅当用户明确要求收集应用异常日志或写入异常清理文档时使用：在 HK 业务窗口内完成 ERROR/Exception 全量闭合，按 endpoint/任务、root msg、业务栈拆分指纹，逐指纹补齐 reqId、上下游与 SkyWalking 证据，并在飞书生成只含阶段一/二事实的窗口总览和 1–7 章指纹文档；委托修复时在当前仓库 tmp 下建立独立修复账本，排除历史已跳过同指纹，并对历史已完成同指纹在轮到时询问是否跳过。",
+          "version": "",
+          "codex_metadata": {
+            "source": "skills/collect-app-exception-logs/agents/openai.yaml",
+            "interface": {
+              "display_name": "Collect and Analyze App Exceptions",
+              "short_description": "全量收集异常并审查历史终态指纹",
+              "default_prompt": "使用 $collect-app-exception-logs 收集指定应用的 HK 异常，完成全量闭合和调查；委托修复时在仓库 tmp 下建账，排除历史跳过项，并对历史已完成同指纹在轮到时询问是否跳过。"
+            },
+            "policy": {}
+          },
+          "dependencies": {},
+          "dependency_build_state": "NOT_REQUIRED"
+        }
+      },
+      {
+        "capability_key": "es-query",
+        "normalized_config": {
+          "entry": "skills/es-query/SKILL.md",
+          "description": "Query market-system ES service, access, and reqId trace logs. Use for targeted logs; full exception collection is orchestrated by collect-app-exception-logs.",
+          "version": "",
+          "codex_metadata": {
+            "source": "skills/es-query/agents/openai.yaml",
+            "interface": {
+              "display_name": "ES Query",
+              "short_description": "行情系统日志查询",
+              "default_prompt": "使用 es-query 技能查询行情系统日志，先根据用户意图推断环境、应用和时间范围。HK / SG 先从 app-index 将应用名映射到 hostname；MAS 优先按已知规则推导 hostname，不足时要求用户补充映射。查询时优先使用 --env 选择环境，再仅使用 --host 执行查询；不带 * 时精确匹配 agent.hostname，带 * 时前缀通配 agent.hostname.keyword；禁止使用 appName（--app）作为过滤条件。"
+            },
+            "policy": {}
+          },
+          "dependencies": {},
+          "dependency_build_state": "NOT_REQUIRED"
+        }
+      },
+      {
+        "capability_key": "find-and-pull-hq-git",
+        "normalized_config": {
+          "entry": "skills/find-and-pull-hq-git/SKILL.md",
+          "description": "根据应用名、项目名或其他相关名称，在 HQ 团队 Git 映射中进行模糊检索并按匹配度排序，展示项目、VOPS 应用和 Git 地址，待用户选择并明确确认后克隆新仓库或更新已有仓库。用于查找、定位、下载、克隆或拉取 hq.team 项目代码，以及用户只知道应用别名、项目名称片段或近似名称的场景。",
+          "version": "",
+          "codex_metadata": {
+            "source": "skills/find-and-pull-hq-git/agents/openai.yaml",
+            "interface": {
+              "display_name": "查找并拉取 HQ Git",
+              "short_description": "模糊定位 HQ 项目或应用，确认后拉取对应 Git 仓库",
+              "default_prompt": "使用 $find-and-pull-hq-git 查找与给定名称相关的仓库，并让我选择要拉取的项目。"
+            },
+            "policy": {}
+          },
+          "dependencies": {},
+          "dependency_build_state": "NOT_REQUIRED"
+        }
+      },
+      {
+        "capability_key": "fix-app-exceptions",
+        "normalized_config": {
+          "entry": "skills/fix-app-exceptions/SKILL.md",
+          "description": "串行分析和修复已收集的应用异常，在当前 AI Playbook 仓库 tmp 下以独立 TASK.md 作为唯一事实源；初始化时过滤历史已跳过同指纹，并对历史已完成同指纹在轮到时询问是否跳过，再重建跨服务因果链和多调用方契约，按消费者可观察结果保真优先选择修复层，完成最小修改、验证、延迟创建批次基准、提交归并、即时清理任务分支和批次 push；支持条件批量跳过，不回写飞书。",
+          "version": "",
+          "codex_metadata": {
+            "source": "skills/fix-app-exceptions/agents/openai.yaml",
+            "interface": {
+              "display_name": "Fix App Exceptions",
+              "short_description": "在 tmp 建账并审查历史终态后串行修复",
+              "default_prompt": "使用 $fix-app-exceptions 在当前仓库 tmp 下创建 TASK.md，排除历史已跳过同指纹，对历史已完成同指纹在轮到时询问是否跳过，再按结果保真串行修复。"
+            },
+            "policy": {}
+          },
+          "dependencies": {},
+          "dependency_build_state": "NOT_REQUIRED"
+        }
+      },
+      {
+        "capability_key": "skywalking-query",
+        "normalized_config": {
+          "entry": "skills/skywalking-query/SKILL.md",
+          "description": "Query SkyWalking trace details, topology, endpoint evidence, and error traces for Phase 2 exception investigation or explicit trace analysis.",
+          "version": "",
+          "codex_metadata": {
+            "source": "skills/skywalking-query/agents/openai.yaml",
+            "interface": {
+              "display_name": "SkyWalking Query",
+              "short_description": "查询 SkyWalking 链路、拓扑、trace 与慢请求",
+              "default_prompt": "Use $skywalking-query to inspect SkyWalking traces, topology, dependencies, or slow request evidence for a service, endpoint, or traceId."
+            },
+            "policy": {}
+          },
+          "dependencies": {},
+          "dependency_build_state": "NOT_REQUIRED"
+        }
+      }
+    ],
+    "skill_files": [
+      "skills/collect-app-exception-logs/SKILL.md",
+      "skills/es-query/SKILL.md",
+      "skills/find-and-pull-hq-git/SKILL.md",
+      "skills/fix-app-exceptions/SKILL.md",
+      "skills/skywalking-query/SKILL.md"
+    ],
+    "files": [
+      "skills/collect-app-exception-logs/SKILL.md",
+      "skills/collect-app-exception-logs/agents/openai.yaml",
+      "skills/collect-app-exception-logs/references/document-templates.md",
+      "skills/collect-app-exception-logs/references/known-noise-exclusions.json",
+      "skills/collect-app-exception-logs/scripts/filter_historical_skips.py",
+      "skills/es-query/SKILL.md",
+      "skills/es-query/agents/openai.yaml",
+      "skills/es-query/references/app-index.md",
+      "skills/es-query/scripts/es-query.py",
+      "skills/find-and-pull-hq-git/SKILL.md",
+      "skills/find-and-pull-hq-git/agents/openai.yaml",
+      "skills/find-and-pull-hq-git/references/hq_team_project_git_mapping.md",
+      "skills/find-and-pull-hq-git/scripts/search_hq_git.py",
+      "skills/find-and-pull-hq-git/scripts/sync_hq_git.py",
+      "skills/fix-app-exceptions/SKILL.md",
+      "skills/fix-app-exceptions/agents/openai.yaml",
+      "skills/fix-app-exceptions/references/task-template.md",
+      "skills/fix-app-exceptions/scripts/batch_skip_task.py",
+      "skills/skywalking-query/SKILL.md",
+      "skills/skywalking-query/agents/openai.yaml",
+      "skills/skywalking-query/references/query-recipes.md",
+      "skills/skywalking-query/scripts/sw-query.js"
+    ],
+    "file_count": 22,
+    "raw_entry_count": 22,
+    "effective_entry_count": 22,
+    "ignored_entry_count": 0
+  },
+  "capabilities": [
+    {
+      "capability_id": "20d00497-bb39-4d43-86aa-6645199212a2",
+      "capability_type": "SKILL",
+      "capability_key": "collect-app-exception-logs",
+      "normalized_config": {
+        "entry": "skills/collect-app-exception-logs/SKILL.md",
+        "description": "仅当用户明确要求收集应用异常日志或写入异常清理文档时使用：在 HK 业务窗口内完成 ERROR/Exception 全量闭合，按 endpoint/任务、root msg、业务栈拆分指纹，逐指纹补齐 reqId、上下游与 SkyWalking 证据，并在飞书生成只含阶段一/二事实的窗口总览和 1–7 章指纹文档；委托修复时在当前仓库 tmp 下建立独立修复账本，排除历史已跳过同指纹，并对历史已完成同指纹在轮到时询问是否跳过。",
+        "version": "",
+        "codex_metadata": {
+          "source": "skills/collect-app-exception-logs/agents/openai.yaml",
+          "interface": {
+            "display_name": "Collect and Analyze App Exceptions",
+            "short_description": "全量收集异常并审查历史终态指纹",
+            "default_prompt": "使用 $collect-app-exception-logs 收集指定应用的 HK 异常，完成全量闭合和调查；委托修复时在仓库 tmp 下建账，排除历史跳过项，并对历史已完成同指纹在轮到时询问是否跳过。"
+          },
+          "policy": {}
+        },
+        "dependencies": {},
+        "dependency_build_state": "NOT_REQUIRED",
+        "capability_id": "20d00497-bb39-4d43-86aa-6645199212a2",
+        "capability_version_id": "20d00497-bb39-4d43-86aa-6645199212a2",
+        "package_id": "aaa76099-b410-4d6c-95a6-eaa46b3e79f3",
+        "version_no": 1,
+        "digest": "542cc3cdab582e966f6b313a4b211f49c516323279e0418ff9a0e53be9fb977e",
+        "filename": "flow-a-exception-automation-skills.zip",
+        "content_hash": "fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1",
+        "storage_key": "capability-imports/fa/fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1-e18bbf6b-cd6e-4c92-9383-c81874943d07"
+      }
+    },
+    {
+      "capability_id": "2cc94766-a49f-4c84-80c1-10c7efd5416c",
+      "capability_type": "SKILL",
+      "capability_key": "es-query",
+      "normalized_config": {
+        "entry": "skills/es-query/SKILL.md",
+        "description": "Query market-system ES service, access, and reqId trace logs. Use for targeted logs; full exception collection is orchestrated by collect-app-exception-logs.",
+        "version": "",
+        "codex_metadata": {
+          "source": "skills/es-query/agents/openai.yaml",
+          "interface": {
+            "display_name": "ES Query",
+            "short_description": "行情系统日志查询",
+            "default_prompt": "使用 es-query 技能查询行情系统日志，先根据用户意图推断环境、应用和时间范围。HK / SG 先从 app-index 将应用名映射到 hostname；MAS 优先按已知规则推导 hostname，不足时要求用户补充映射。查询时优先使用 --env 选择环境，再仅使用 --host 执行查询；不带 * 时精确匹配 agent.hostname，带 * 时前缀通配 agent.hostname.keyword；禁止使用 appName（--app）作为过滤条件。"
+          },
+          "policy": {}
+        },
+        "dependencies": {},
+        "dependency_build_state": "NOT_REQUIRED",
+        "capability_id": "2cc94766-a49f-4c84-80c1-10c7efd5416c",
+        "capability_version_id": "2cc94766-a49f-4c84-80c1-10c7efd5416c",
+        "package_id": "0cccedf9-d284-43ab-a244-0e650de24456",
+        "version_no": 1,
+        "digest": "4f772344e328fec68a68389d34cf622a295792c44c331908ae8dc24a7305f3af",
+        "filename": "flow-a-exception-automation-skills.zip",
+        "content_hash": "fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1",
+        "storage_key": "capability-imports/fa/fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1-e18bbf6b-cd6e-4c92-9383-c81874943d07"
+      }
+    },
+    {
+      "capability_id": "33546790-8bfd-404d-8e10-cc1499ce48c1",
+      "capability_type": "SKILL",
+      "capability_key": "find-and-pull-hq-git",
+      "normalized_config": {
+        "entry": "skills/find-and-pull-hq-git/SKILL.md",
+        "description": "根据应用名、项目名或其他相关名称，在 HQ 团队 Git 映射中进行模糊检索并按匹配度排序，展示项目、VOPS 应用和 Git 地址，待用户选择并明确确认后克隆新仓库或更新已有仓库。用于查找、定位、下载、克隆或拉取 hq.team 项目代码，以及用户只知道应用别名、项目名称片段或近似名称的场景。",
+        "version": "",
+        "codex_metadata": {
+          "source": "skills/find-and-pull-hq-git/agents/openai.yaml",
+          "interface": {
+            "display_name": "查找并拉取 HQ Git",
+            "short_description": "模糊定位 HQ 项目或应用，确认后拉取对应 Git 仓库",
+            "default_prompt": "使用 $find-and-pull-hq-git 查找与给定名称相关的仓库，并让我选择要拉取的项目。"
+          },
+          "policy": {}
+        },
+        "dependencies": {},
+        "dependency_build_state": "NOT_REQUIRED",
+        "capability_id": "33546790-8bfd-404d-8e10-cc1499ce48c1",
+        "capability_version_id": "33546790-8bfd-404d-8e10-cc1499ce48c1",
+        "package_id": "5ebde70e-cead-4b37-bea6-565dd0f8082d",
+        "version_no": 1,
+        "digest": "95f2938b99d2ea14c857144a156ab230843c6de734e3c35f8d1ece943745f0ba",
+        "filename": "flow-a-exception-automation-skills.zip",
+        "content_hash": "fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1",
+        "storage_key": "capability-imports/fa/fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1-e18bbf6b-cd6e-4c92-9383-c81874943d07"
+      }
+    },
+    {
+      "capability_id": "8f6ec79b-a782-4b43-9a65-7dcd66a113ab",
+      "capability_type": "SKILL",
+      "capability_key": "fix-app-exceptions",
+      "normalized_config": {
+        "entry": "skills/fix-app-exceptions/SKILL.md",
+        "description": "串行分析和修复已收集的应用异常，在当前 AI Playbook 仓库 tmp 下以独立 TASK.md 作为唯一事实源；初始化时过滤历史已跳过同指纹，并对历史已完成同指纹在轮到时询问是否跳过，再重建跨服务因果链和多调用方契约，按消费者可观察结果保真优先选择修复层，完成最小修改、验证、延迟创建批次基准、提交归并、即时清理任务分支和批次 push；支持条件批量跳过，不回写飞书。",
+        "version": "",
+        "codex_metadata": {
+          "source": "skills/fix-app-exceptions/agents/openai.yaml",
+          "interface": {
+            "display_name": "Fix App Exceptions",
+            "short_description": "在 tmp 建账并审查历史终态后串行修复",
+            "default_prompt": "使用 $fix-app-exceptions 在当前仓库 tmp 下创建 TASK.md，排除历史已跳过同指纹，对历史已完成同指纹在轮到时询问是否跳过，再按结果保真串行修复。"
+          },
+          "policy": {}
+        },
+        "dependencies": {},
+        "dependency_build_state": "NOT_REQUIRED",
+        "capability_id": "8f6ec79b-a782-4b43-9a65-7dcd66a113ab",
+        "capability_version_id": "8f6ec79b-a782-4b43-9a65-7dcd66a113ab",
+        "package_id": "a95d04f8-52d0-4978-b620-e6a2a8d6a0b3",
+        "version_no": 1,
+        "digest": "dd0dc2f8b637cfb19ac85fce53e0362c8134cd32514729f7fe3af63b0ef3e90a",
+        "filename": "flow-a-exception-automation-skills.zip",
+        "content_hash": "fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1",
+        "storage_key": "capability-imports/fa/fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1-e18bbf6b-cd6e-4c92-9383-c81874943d07"
+      }
+    },
+    {
+      "capability_id": "2b72e17f-6109-4863-aee6-43c3a48fdb27",
+      "capability_type": "SKILL",
+      "capability_key": "skywalking-query",
+      "normalized_config": {
+        "entry": "skills/skywalking-query/SKILL.md",
+        "description": "Query SkyWalking trace details, topology, endpoint evidence, and error traces for Phase 2 exception investigation or explicit trace analysis.",
+        "version": "",
+        "codex_metadata": {
+          "source": "skills/skywalking-query/agents/openai.yaml",
+          "interface": {
+            "display_name": "SkyWalking Query",
+            "short_description": "查询 SkyWalking 链路、拓扑、trace 与慢请求",
+            "default_prompt": "Use $skywalking-query to inspect SkyWalking traces, topology, dependencies, or slow request evidence for a service, endpoint, or traceId."
+          },
+          "policy": {}
+        },
+        "dependencies": {},
+        "dependency_build_state": "NOT_REQUIRED",
+        "capability_id": "2b72e17f-6109-4863-aee6-43c3a48fdb27",
+        "capability_version_id": "2b72e17f-6109-4863-aee6-43c3a48fdb27",
+        "package_id": "628c9dc0-65cf-4b4b-9e8a-696599a7c8a4",
+        "version_no": 1,
+        "digest": "396479b415f5086e52f88443dc67910ccf3152556d3061bff4142b2094a3e418",
+        "filename": "flow-a-exception-automation-skills.zip",
+        "content_hash": "fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1",
+        "storage_key": "capability-imports/fa/fa8fceabe6d46f772e897de477c30cf4cda80dc11304524747dff11fa3378cf1-e18bbf6b-cd6e-4c92-9383-c81874943d07"
+      }
+    }
+  ],
+  "committed_at": "2026-09-03T05:41:54.282248+00:00"
+}

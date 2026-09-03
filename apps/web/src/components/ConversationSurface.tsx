@@ -121,11 +121,10 @@ function candidateOutputs(content: string): CandidateOutput[] | undefined {
 
 function CandidateOutputReply({ outputs, onPreviewFile }: {
   outputs: CandidateOutput[];
-  onPreviewFile?: (output: CandidateOutput) => string | undefined;
+  onPreviewFile?: (output: CandidateOutput) => void;
 }) {
   return <section className="conversation-candidate-outputs" aria-label="Agent 候选输出"><header><b>Agent 已提交 {outputs.length} 个候选输出</b><small>平台会校验候选；文件预览由当前节点作用域授权，不公开工作区路径。</small></header><div>{outputs.map(output => {
-    const previewUrl = output.artifactType === 'FILE' ? onPreviewFile?.(output) : undefined;
-    return <article key={output.fieldKey}>{output.artifactType === 'URL' ? <Link size={15}/> : <FileText size={15}/>}<span><b>{output.fieldKey}</b><small>{output.artifactType === 'URL' ? 'URL 候选产物' : '文件候选产物'}</small><p>{output.artifactType === 'URL' ? output.value : output.value.split('/').at(-1)}</p></span>{output.artifactType === 'URL' ? <a href={output.value} target="_blank" rel="noopener noreferrer"><ExternalLink size={13}/>打开</a> : previewUrl ? <a href={previewUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={13}/>预览</a> : null}</article>;
+    return <article key={output.fieldKey}>{output.artifactType === 'URL' ? <Link size={15}/> : <FileText size={15}/>}<span><b>{output.fieldKey}</b><small>{output.artifactType === 'URL' ? 'URL 候选产物' : '文件候选产物'}</small><p>{output.artifactType === 'URL' ? output.value : output.value.split('/').at(-1)}</p></span>{output.artifactType === 'URL' ? <a href={output.value} target="_blank" rel="noopener noreferrer"><ExternalLink size={13}/>打开</a> : onPreviewFile ? <button type="button" onClick={() => onPreviewFile(output)}><PanelRightOpen size={13}/>预览</button> : null}</article>;
   })}</div><p>预览只读取候选文件；只有右侧“输出”页出现版本、哈希、预览或下载入口后，才表示产物已正式冻结。</p></section>;
 }
 
@@ -752,14 +751,14 @@ function AgentReply({ event, content, onFork, onPreviewCandidateFile }: {
   event: OpenHandsConversationEvent;
   content: string;
   onFork?: () => void;
-  onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => string | undefined;
+  onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
 }) {
   const eventId = event.id;
   const outputs = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction'
     ? candidateOutputs(content)
     : undefined;
   return <article className="conversation-message assistant" data-turn-terminal="true" data-event-id={eventId}>
-    {outputs ? <CandidateOutputReply outputs={outputs} onPreviewFile={output => onPreviewCandidateFile?.(output.fieldKey, output.value)}/> : content ? <MessageMarkdown>{content}</MessageMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
+    {outputs ? <CandidateOutputReply outputs={outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/> : content ? <MessageMarkdown>{content}</MessageMarkdown> : <span className="conversation-typing"><i/><i/><i/></span>}
     {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
   </article>;
 }
@@ -806,7 +805,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
   onOpenAttachment?: (attachment: AgentAttachment) => void;
-  onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => string | undefined;
+  onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
 }) {
   const surface = useRef<HTMLElement>(null);
   const shell = useRef<HTMLDivElement>(null);

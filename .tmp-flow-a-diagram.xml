@@ -1,0 +1,49 @@
+<h3>流程图：节点、端口与边界</h3>
+<p>实线表示 FlowWeave 的控制与 Artifact 流转；虚线表示节点写入或读取的外部事实源。三个节点处理整张应用表，应用内循环由既有 Skill 的批量模式完成。</p>
+<whiteboard type="mermaid">
+flowchart TB
+    input["运行时输入\napplication_sheet · URL\nbatch_options.md · FILE"]
+    n1["N1 批量收集异常\ncollect-app-exception-logs / collect\nes-query"]
+    n2["N2 批量分析与证据发布\ncollect-app-exception-logs / investigate\nes-query + skywalking-query"]
+    n3["N3 批量代码修复\nfix-app-exceptions / batch-auto\nfind-and-pull-hq-git"]
+    table1["batch_task_table.md · FILE\n应用、指纹、闭合状态"]
+    collect["collection_report.md · FILE\n双轨结果、去重、闭合等式"]
+    table2["analyzed_task_table.md · FILE\n调查状态、修复候选、证据链接"]
+    evidence["exception_evidence_index.md · FILE\n窗口父文档与指纹文档 URL"]
+    final["repaired_task_table.md · FILE\n修复、验证、Git 状态"]
+    summary["repair_summary.md · FILE\n完成、阻塞、待发布汇总"]
+    sheet["飞书应用清理表\n及既有 Wiki 节点"]
+    logs["HK ES 日志\n已知低优先级排除配置"]
+    traces["SkyWalking / access / 归档"]
+    docs["飞书阶段一、二证据库\n父文档 + 1 至 7 章指纹文档"]
+    code["代码工作空间 · URL\nGit 仓库与每应用 TASK.md"]
+
+    input --> n1
+    n1 --> table1
+    n1 --> collect
+    table1 --> n2
+    collect --> n2
+    n2 --> table2
+    n2 --> evidence
+    table2 --> n3
+    evidence --> n3
+    code --> n3
+    n3 --> final
+    n3 --> summary
+
+    sheet -.读取.-> n1
+    logs -.双轨查询.-> n1
+    traces -.逐指纹取证.-> n2
+    n2 -.写入并回读.-> docs
+    n3 -.拉取、修复、验证.-> code
+
+    classDef input fill:#e8f4ff,stroke:#1677ff,color:#102a43
+    classDef node fill:#eef8f1,stroke:#2f9e44,color:#143d20
+    classDef artifact fill:#fff7e6,stroke:#d97706,color:#5c3a00
+    classDef external fill:#f3f4f6,stroke:#6b7280,color:#1f2937
+    class input input
+    class n1,n2,n3 node
+    class table1,collect,table2,evidence,final,summary artifact
+    class sheet,logs,traces,docs,code external
+</whiteboard>
+<callout emoji="🔎" background-color="light-blue" border-color="blue"><p>审查重点：N1 只收集和闭合；N2 才调查并写飞书证据；N3 只依据 N2 已回读的证据修复代码。总任务表以 FILE Artifact 版本在节点间传递；每应用 TASK.md 仍是修复细节的事实源。</p></callout>

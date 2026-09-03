@@ -1,0 +1,4 @@
+interface:
+  display_name: "SkyWalking Query"
+  short_description: "查询 SkyWalking 链路、拓扑、trace 与慢请求"
+  default_prompt: "Use $skywalking-query to inspect SkyWalking traces, topology, dependencies, or slow request evidence for a service, endpoint, or traceId."

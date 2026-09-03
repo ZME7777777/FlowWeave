@@ -1,0 +1,54 @@
+{
+  "id": "dee86084-b0ad-4a98-b6cf-300f1a967264",
+  "directory_id": "496fc37a-b6a3-46c2-a18f-cfaee1745a6e",
+  "name": "N2 批量分析异常与证据发布",
+  "description": "对已闭合指纹完成 reqId/access/SkyWalking 调查，并发布和回读飞书阶段一、二证据。",
+  "icon_kind": "LUCIDE",
+  "icon_value": "git-fork",
+  "workspace_ref": "nodes/dee86084-b0ad-4a98-b6cf-300f1a967264",
+  "row_version": 1,
+  "inputs": [
+    {
+      "id": "89099d52-17d9-4764-8e1f-f6a51c07ed81",
+      "field_key": "batch_task_table",
+      "display_name": "批次总任务表",
+      "data_type": "FILE",
+      "description": "N1 产出的应用、指纹与闭合状态",
+      "position": 0
+    },
+    {
+      "id": "5b512706-f4c7-4ba2-be1f-554b78476491",
+      "field_key": "collection_report",
+      "display_name": "收集报告",
+      "data_type": "FILE",
+      "description": "N1 产出的完整发现与闭合证据",
+      "position": 1
+    }
+  ],
+  "outputs": [
+    {
+      "id": "87e1241e-e496-4288-9405-73fbb9b9b102",
+      "field_key": "analyzed_task_table",
+      "display_name": "已分析总任务表",
+      "data_type": "FILE",
+      "description": "Markdown：调查状态、修复候选和证据链接",
+      "position": 0
+    },
+    {
+      "id": "a7748602-2ae7-4e49-91c2-8b9f0746b438",
+      "field_key": "exception_evidence_index",
+      "display_name": "异常证据索引",
+      "data_type": "FILE",
+      "description": "Markdown：窗口父文档与指纹子文档 URL",
+      "position": 1
+    }
+  ],
+  "executor": {
+    "startup_prompt": "使用已导入的 collect-app-exception-logs（investigate 模式）、es-query 和 skywalking-query。只处理 batch_task_table 中 CLOSED 且有异常的指纹；依次补齐代表时间、reqId/access、上下游、SkyWalking ERROR/ALL、同簇或归档证据。按既有模板写入并回读飞书窗口父文档和一至七章指纹文档，成功后更新 analyzed_task_table 与 exception_evidence_index。不得读取代码，不得把修复状态写入飞书；任何调查或回读失败必须保留 FAILED 证据。",
+    "context_prompt": "运行前必须具备受控 ES、SkyWalking 与飞书运行时配置；缺失时 fail closed。",
+    "context_capability_ids": []
+  },
+  "context_capabilities": [],
+  "created_at": "2026-09-03T05:43:20.436857+00:00",
+  "updated_at": "2026-09-03T05:43:20.436860+00:00"
+}

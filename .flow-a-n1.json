@@ -1,0 +1,20 @@
+{
+  "directory_id": "496fc37a-b6a3-46c2-a18f-cfaee1745a6e",
+  "name": "N1 批量收集异常",
+  "description": "从应用清理表批量完成 ERROR/Exception 双轨发现、低优先级排除、精确计数闭合和指纹初分组。",
+  "icon_kind": "LUCIDE",
+  "icon_value": "scan-search",
+  "inputs": [
+    {"field_key":"application_sheet","display_name":"应用清理表","data_type":"URL","description":"飞书应用异常清理表或 Wiki 链接"},
+    {"field_key":"batch_options","display_name":"批次选项","data_type":"FILE","description":"Markdown：窗口、环境、应用范围、并发数和自动化策略"}
+  ],
+  "outputs": [
+    {"field_key":"batch_task_table","display_name":"批次总任务表","data_type":"FILE","description":"Markdown：应用、指纹、闭合状态和失败项"},
+    {"field_key":"collection_report","display_name":"收集报告","data_type":"FILE","description":"Markdown：双轨结果、ES ID 去重、闭合等式和代表日志"}
+  ],
+  "executor": {
+    "startup_prompt":"使用已导入的 collect-app-exception-logs（collect 模式）和 es-query。读取 application_sheet 与 batch_options；对每个目标应用按 hostname 执行 ERROR 和 Exception 双轨发现，应用已知低优先级排除配置，完成精确计数闭合和指纹初分组。仅写 batch_task_table 与 collection_report；不得查询 SkyWalking、写飞书证据文档、读取代码或执行 Git 操作。映射、权限或闭合失败必须在产物中标为 FAILED 并继续其他应用。",
+    "context_prompt":"运行前必须具备受控 ES 运行时配置；缺失时 fail closed，不得使用 Skill 包中的凭据。",
+    "context_capability_ids": []
+  }
+}

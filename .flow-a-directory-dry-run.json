@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "url": "https://hq-ai.hszq8.com/flowweave/api/v1/node-directories",
+  "payload": {
+    "name": "Flow A 批量异常收集分析修复",
+    "parent_id": null,
+    "position": 2
+  }
+}

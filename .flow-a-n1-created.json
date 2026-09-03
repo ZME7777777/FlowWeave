@@ -1,0 +1,54 @@
+{
+  "id": "ec87ad1c-4db5-4f8f-947a-84feb15deeaa",
+  "directory_id": "496fc37a-b6a3-46c2-a18f-cfaee1745a6e",
+  "name": "N1 批量收集异常",
+  "description": "从应用清理表批量完成 ERROR/Exception 双轨发现、低优先级排除、精确计数闭合和指纹初分组。",
+  "icon_kind": "LUCIDE",
+  "icon_value": "scan-search",
+  "workspace_ref": "nodes/ec87ad1c-4db5-4f8f-947a-84feb15deeaa",
+  "row_version": 1,
+  "inputs": [
+    {
+      "id": "57d9aaea-ab9f-41e9-9333-f94c3da87f5f",
+      "field_key": "application_sheet",
+      "display_name": "应用清理表",
+      "data_type": "URL",
+      "description": "飞书应用异常清理表或 Wiki 链接",
+      "position": 0
+    },
+    {
+      "id": "cfbc1f1d-21ea-4aae-b5f5-c0010cee13db",
+      "field_key": "batch_options",
+      "display_name": "批次选项",
+      "data_type": "FILE",
+      "description": "Markdown：窗口、环境、应用范围、并发数和自动化策略",
+      "position": 1
+    }
+  ],
+  "outputs": [
+    {
+      "id": "5f7ad403-4835-4bbc-a2e4-35417899ff99",
+      "field_key": "batch_task_table",
+      "display_name": "批次总任务表",
+      "data_type": "FILE",
+      "description": "Markdown：应用、指纹、闭合状态和失败项",
+      "position": 0
+    },
+    {
+      "id": "dd1cce64-7eca-43e1-b6f4-3be1838237b5",
+      "field_key": "collection_report",
+      "display_name": "收集报告",
+      "data_type": "FILE",
+      "description": "Markdown：双轨结果、ES ID 去重、闭合等式和代表日志",
+      "position": 1
+    }
+  ],
+  "executor": {
+    "startup_prompt": "使用已导入的 collect-app-exception-logs（collect 模式）和 es-query。读取 application_sheet 与 batch_options；对每个目标应用按 hostname 执行 ERROR 和 Exception 双轨发现，应用已知低优先级排除配置，完成精确计数闭合和指纹初分组。仅写 batch_task_table 与 collection_report；不得查询 SkyWalking、写飞书证据文档、读取代码或执行 Git 操作。映射、权限或闭合失败必须在产物中标为 FAILED 并继续其他应用。",
+    "context_prompt": "运行前必须具备受控 ES 运行时配置；缺失时 fail closed，不得使用 Skill 包中的凭据。",
+    "context_capability_ids": []
+  },
+  "context_capabilities": [],
+  "created_at": "2026-09-03T05:43:20.362794+00:00",
+  "updated_at": "2026-09-03T05:43:20.362797+00:00"
+}

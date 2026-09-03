@@ -1,0 +1,4 @@
+interface:
+  display_name: "查找并拉取 HQ Git"
+  short_description: "模糊定位 HQ 项目或应用，确认后拉取对应 Git 仓库"
+  default_prompt: "使用 $find-and-pull-hq-git 查找与给定名称相关的仓库，并让我选择要拉取的项目。"

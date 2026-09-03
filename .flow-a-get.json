@@ -1,0 +1,85 @@
+{
+  "id": "e5993288-5d90-4ee4-907b-97f9cb96fd39",
+  "name": "Flow A - 批量异常收集、分析与修复",
+  "description": "三个节点串联：N1 批量收集异常，N2 分析并发布阶段一二飞书证据，N3 按应用修复代码。运行时显式提供应用表、批次选项和代码工作区；Flow 不绑定环境版本。",
+  "default_entry_key": "collect",
+  "row_version": 1,
+  "nodes": [
+    {
+      "id": "77293338-514e-4e50-97b3-a8d98573db48",
+      "instance_key": "collect",
+      "node_asset_id": "ec87ad1c-4db5-4f8f-947a-84feb15deeaa",
+      "alias": "N1 批量收集异常",
+      "position_x": 0,
+      "position_y": 180,
+      "config_override": {},
+      "gates": []
+    },
+    {
+      "id": "6abcfc3d-35f1-4b3c-8aeb-9ebc4ff3e340",
+      "instance_key": "investigate",
+      "node_asset_id": "dee86084-b0ad-4a98-b6cf-300f1a967264",
+      "alias": "N2 批量分析异常与证据发布",
+      "position_x": 400,
+      "position_y": 180,
+      "config_override": {},
+      "gates": []
+    },
+    {
+      "id": "a774c2d9-1022-4e06-a71f-7beeeec84825",
+      "instance_key": "repair",
+      "node_asset_id": "15b3385b-b981-4173-bc2c-2430ddba6842",
+      "alias": "N3 批量代码修复",
+      "position_x": 800,
+      "position_y": 180,
+      "config_override": {},
+      "gates": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "55be67b2-2836-4400-b8dc-91723bca9649",
+      "source_instance_key": "collect",
+      "target_instance_key": "investigate",
+      "position": 0
+    },
+    {
+      "id": "3861b1ce-1edc-4cf4-b29f-2fa76d5f82fa",
+      "source_instance_key": "investigate",
+      "target_instance_key": "repair",
+      "position": 1
+    }
+  ],
+  "port_mappings": [
+    {
+      "id": "cadec60b-a234-4a11-af21-1f516dd675f4",
+      "source_instance_key": "collect",
+      "source_output_key": "batch_task_table",
+      "target_instance_key": "investigate",
+      "target_input_key": "batch_task_table"
+    },
+    {
+      "id": "e1900800-28ff-4e36-bc84-d09eb2f1dacf",
+      "source_instance_key": "collect",
+      "source_output_key": "collection_report",
+      "target_instance_key": "investigate",
+      "target_input_key": "collection_report"
+    },
+    {
+      "id": "5897bf4d-665e-496b-a940-625b2af55632",
+      "source_instance_key": "investigate",
+      "source_output_key": "analyzed_task_table",
+      "target_instance_key": "repair",
+      "target_input_key": "analyzed_task_table"
+    },
+    {
+      "id": "d9d86636-70e2-4f7f-abb3-84d5c56aa323",
+      "source_instance_key": "investigate",
+      "source_output_key": "exception_evidence_index",
+      "target_instance_key": "repair",
+      "target_input_key": "exception_evidence_index"
+    }
+  ],
+  "created_at": "2026-09-03T05:44:02.585278+00:00",
+  "updated_at": "2026-09-03T05:44:02.585282+00:00"
+}
