@@ -1347,6 +1347,7 @@ class OpenHandsRuntime:
             cursor=cursor,
             runtime_resource_id=request.runtime_sandbox_id,
             runtime_resource_name=request.runtime_resource_name,
+            output_contract={item["field_key"]: item for item in self._contracts[conversation_id]},
         )
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
@@ -2178,8 +2179,10 @@ class OpenHandsRuntime:
         )
         return RuntimeResult(status="RUNNING", cursor=pending.cursor)
 
-    def _outputs(self, conversation_id: str, text: str) -> dict[str, tuple[str, str]]:
-        expected = {item["field_key"]: item for item in self._contracts.get(conversation_id, [])}
+    def _outputs(self, handle: RuntimeHandle, text: str) -> dict[str, tuple[str, str]]:
+        expected = handle.output_contract or {
+            item["field_key"]: item for item in self._contracts.get(handle.conversation_id, [])
+        }
         candidate = text.strip()
         if candidate.startswith("```"):
             lines = candidate.splitlines()
@@ -2242,7 +2245,7 @@ class OpenHandsRuntime:
 
     def _result_from_events(
         self,
-        conversation_id: str,
+        handle: RuntimeHandle,
         items: list[dict[str, Any]],
         cursor: str | None,
         *,
@@ -2254,7 +2257,7 @@ class OpenHandsRuntime:
                 text = self._event_text(item)
                 return RuntimeResult(
                     status="COMPLETED",
-                    outputs=self._outputs(conversation_id, text),
+                    outputs=self._outputs(handle, text),
                     final_message=text,
                     cursor=cursor,
                 )
@@ -2283,7 +2286,7 @@ class OpenHandsRuntime:
                     if text:
                         return RuntimeResult(
                             status="COMPLETED",
-                            outputs=self._outputs(conversation_id, text),
+                            outputs=self._outputs(handle, text),
                             final_message=text,
                             cursor=cursor,
                         )
@@ -2376,7 +2379,7 @@ class OpenHandsRuntime:
         return RuntimeEventBatch(
             events=events,
             cursor=cursor,
-            result=self._result_from_events(handle.conversation_id, items, cursor),
+            result=self._result_from_events(handle, items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
             usage=self._usage_snapshots(state),
         )
@@ -2442,7 +2445,7 @@ class OpenHandsRuntime:
         return RuntimeEventBatch(
             events=events,
             cursor=cursor,
-            result=self._result_from_events(handle.conversation_id, active_items, cursor),
+            result=self._result_from_events(handle, active_items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
             usage=self._usage_snapshots(state),
         )
@@ -2936,7 +2939,7 @@ class OpenHandsRuntime:
                 session_api_key=self._session_key_for_handle(handle),
             )
             result = self._result_from_events(
-                handle.conversation_id,
+                handle,
                 items,
                 event_cursor or cursor,
                 assistant_message_is_final=True,

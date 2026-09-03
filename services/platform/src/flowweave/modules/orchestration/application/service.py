@@ -490,19 +490,38 @@ def _active_attempt_runtime_handle(
             {"attempt_id": attempt.id},
         )
     flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
+    binding = agent_sessions.flow_node_locator.conversation_binding(
+        db,
+        flow_run_id=flow_run_id,
+        openhands_conversation_id=openhands_conversation_id,
+    )
+    output_root = binding.working_directory or "/runtime/workspace/project"
+    output_contract = {
+        field_key: {
+            "artifact_type": str(target.get("artifact_type") or "URL"),
+            "workspace_root": output_root,
+        }
+        for field_key, raw_target in (attempt.output_targets_json or {}).items()
+        if isinstance(raw_target, dict)
+        for target in (cast(dict[str, Any], raw_target),)
+    }
     if get_settings().runtime_adapter == "mock":
         return RuntimeHandle(
             job_id=f"mock-job-{attempt.id}",
             conversation_id=openhands_conversation_id,
             cursor=cursor,
+            output_contract=output_contract,
         )
-    return agent_sessions.flow_node_locator.active_runtime_handle(
-        db,
-        flow_run_id=flow_run_id,
-        openhands_conversation_id=openhands_conversation_id,
-        # Runtime cursors are transport-local and are never persisted by FlowWeave.
-        cursor=cursor,
-        route_kind=route_kind,
+    return replace(
+        agent_sessions.flow_node_locator.active_runtime_handle(
+            db,
+            flow_run_id=flow_run_id,
+            openhands_conversation_id=openhands_conversation_id,
+            # Runtime cursors are transport-local and are never persisted by FlowWeave.
+            cursor=cursor,
+            route_kind=route_kind,
+        ),
+        output_contract=output_contract,
     )
 
 
@@ -4009,16 +4028,16 @@ def _prepare_runtime_outputs(
                 raise DomainError("RUNTIME_OUTPUT_INVALID", "Unsupported runtime output type", 422)
             path = content.strip()
             workspace_path = PurePosixPath(path)
-            nodes_root = PurePosixPath("/runtime/workspace/nodes")
+            project_root = PurePosixPath("/runtime/workspace/project")
             if (
                 not workspace_path.is_absolute()
                 or ".." in workspace_path.parts
-                or not workspace_path.is_relative_to(nodes_root)
-                or workspace_path == nodes_root
+                or not workspace_path.is_relative_to(project_root)
+                or workspace_path == project_root
             ):
                 raise DomainError(
                     "RUNTIME_OUTPUT_INVALID",
-                    "The Agent returned a file outside the managed node workspace",
+                    "The Agent returned a file outside the managed project workspace",
                     422,
                     {"field": field_key},
                 )
@@ -4055,13 +4074,9 @@ def process_poll_runtime(
     _release_worker_read_transaction(db, lease)
     runtime = get_runtime()
     batch = runtime.read_events(handle)
-    result = batch.result or runtime.inspect(
-        RuntimeHandle(handle.job_id, handle.conversation_id, batch.cursor or handle.cursor)
-    )
+    result = batch.result or runtime.inspect(replace(handle, cursor=batch.cursor or handle.cursor))
     pending_confirmation = (
-        runtime.get_pending_confirmation(
-            RuntimeHandle(handle.job_id, handle.conversation_id, batch.cursor or handle.cursor)
-        )
+        runtime.get_pending_confirmation(replace(handle, cursor=batch.cursor or handle.cursor))
         if result.status == "CONFIRMATION_REQUIRED"
         else None
     )

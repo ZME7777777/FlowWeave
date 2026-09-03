@@ -370,6 +370,10 @@ class RuntimeHandle:
     cursor: str | None = None
     runtime_resource_id: str = ""
     runtime_resource_name: str = ""
+    # Private, durable reconstruction input for parsing a completed execution
+    # after a Worker/adapter process restart. It never enters an OpenHands
+    # request or the Agent-visible output contract.
+    output_contract: dict[str, dict[str, str]] = field(default_factory=_empty_output_targets)
 
 
 @dataclass(frozen=True, slots=True)

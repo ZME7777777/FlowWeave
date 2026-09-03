@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`FR-145`（依赖 FR-144）
+> 下一可执行切片：`FR-146`（依赖 FR-145）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2138,6 +2138,21 @@ Finish JSON 兼容桥，FILE 只能提交相对于当前工作目录的规范相
 次 `POLL_RUNTIME` REST 协调；正式 FinishAction/Observation 继续由既有输出、门禁和流转状态机处理，未直接
 写入 Attempt、Artifact 或流程状态。
 
+### FR-145 终态输出合同恢复与共享项目文件准备 — DONE
+
+依赖：`FR-144`。
+
+目标：Worker 或 Runtime 适配器进程重启后，已完成 OpenHands Conversation 的正式 FinishAction 必须继续使用
+Attempt 冻结的输出字段、类型和 FlowRun 共享项目根解析。该私有恢复合同不得进入 Agent 可见提示或公开 API；
+它只用于重建正式 Finish 的候选输出并交给既有结束门禁与 Artifact 准备状态机。FILE 输出准备必须与候选预览
+使用同一受管项目根，继续拒绝绝对路径越界、符号链接和未声明字段；不得用数据库补丁伪造 Attempt、Artifact
+或流程状态。
+
+完成：Worker 现在在每次轮询时从冻结 Attempt 与已绑定 Conversation 重建私有输出合同；OpenHands 适配器也把
+该合同随瞬态 RuntimeHandle 保留，因此进程重启不会把已持久化 FinishAction 的有效输出解析为空。FILE 的
+Finish 路径与候选预览统一限制在 FlowRun 共享项目根，仍由既有状态机下载、准备与校验，未直接修改流程或
+Artifact 记录。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2153,6 +2168,7 @@ Finish JSON 兼容桥，FILE 只能提交相对于当前工作目录的规范相
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-03 | FR-145 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器定向 pytest（17 passed）；`git diff --check` | PASS：重启后的正式 FinishAction 继续按冻结合同解析；相对 FILE 路径只落在共享项目根。完整 `test_openhands.py` 另有 1 个 FR-143 后遗断言（仍期待已从 Agent 可见输出合同移除的 `run_name`）失败，和本切片无关，未伪记为通过。 |
 | 2026-09-03 | FR-144 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器 pytest（7 passed）；`git diff --check`；任务状态唯一性 | PASS：候选 FILE 读取与实际共享项目根对齐，输出解析根保持私有且受限于 `/runtime/workspace/project`；无 wake-up 通知时会投递有界、幂等 REST 协调，不直接改写业务状态。候选预览和 Worker 集成 pytest 均因本机 Docker 守护进程未运行、Testcontainers 无法创建 PostgreSQL 而未执行，未伪记为通过。 |
 | 2026-09-03 | FR-143A | Web TypeScript typecheck、ESLint、production build；定向 Playwright（1 passed）；`git diff --check` | PASS：新会话 `/` 菜单同时显示 OpenHands 原生能力分区与命令/MCP 加载空态。`/condense` 在 OpenHands Conversation 尚未由首条消息创建前为禁用项且不可选；已有会话继续走原生压缩路径。未修改 Runtime、OpenHands API 或会话持久化。 |
 | 2026-09-03 | FR-143 | OpenHands 输出适配器 pytest（16 passed）；Python `py_compile` 与定向 Ruff；Web TypeScript typecheck、ESLint；`git diff --check` | PASS：执行提示词不再泄露节点持久目录或 `workspace_root`，FILE 只接收相对 POSIX 路径并在服务端解析。节点会话的候选 FILE 预览经冻结字段和 Attempt 工作区重新校验后以 sandboxed inline 响应打开，不暴露实际路径且不登记 Artifact。新增服务层候选预览测试受本机 Docker 守护进程不可用阻塞（testcontainers 无法创建 PostgreSQL），未伪记为通过。 |

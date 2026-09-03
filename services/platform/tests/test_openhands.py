@@ -217,13 +217,16 @@ def test_collaboration_request_drops_all_node_execution_business_context():
     assert request.agent_spec is shared_spec
 
 
-def _handle(cursor: str | None = None) -> RuntimeHandle:
+def _handle(
+    cursor: str | None = None, output_contract: dict[str, dict[str, str]] | None = None
+) -> RuntimeHandle:
     return RuntimeHandle(
         "env-exec:fw-sbx-flow-run-1",
         "10000000-0000-4000-8000-000000000002",
         cursor,
         "runtime-1",
         "fw-sbx-flow-run-1",
+        output_contract or {},
     )
 
 
@@ -476,6 +479,17 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "event-1",
         "runtime-1",
         "fw-sbx-flow-run-1",
+        {
+            "design": {
+                "field_key": "design",
+                "artifact_type": "URL",
+                "run_name": "Run 1",
+                "title": "技术方案",
+                "display_name": "design",
+                "description": "",
+                "workspace_root": "/runtime/workspace/project",
+            }
+        },
     )
     payload = captured["json"]
     assert isinstance(payload, dict)
@@ -1260,10 +1274,9 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(
 )
 def test_openhands_accepts_declared_safe_http_output_urls(openhands_settings, uri, accepted):
     runtime = OpenHandsRuntime(openhands_settings)
-    runtime._contracts["10000000-0000-4000-8000-000000000002"] = [{"field_key": "design"}]
 
     outputs = runtime._outputs(
-        "10000000-0000-4000-8000-000000000002",
+        _handle(output_contract={"design": {"artifact_type": "URL"}}),
         '{"outputs": {"design": {"uri": ' + repr(uri).replace("'", '"') + "}, "
         '"undeclared": "https://example.feishu.cn/docx/other"}}',
     )
@@ -1287,17 +1300,16 @@ def test_openhands_resolves_relative_file_outputs_inside_declared_node_workspace
     openhands_settings, path, accepted
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    conversation_id = "10000000-0000-4000-8000-000000000002"
-    runtime._contracts[conversation_id] = [
-        {
-            "field_key": "report",
-            "artifact_type": "FILE",
-            "workspace_root": "/runtime/workspace/project",
-        }
-    ]
 
     outputs = runtime._outputs(
-        conversation_id,
+        _handle(
+            output_contract={
+                "report": {
+                    "artifact_type": "FILE",
+                    "workspace_root": "/runtime/workspace/project",
+                }
+            }
+        ),
         json.dumps({"outputs": {"report": {"artifact_type": "FILE", "path": path}}}),
     )
 
@@ -1410,10 +1422,10 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
-    handle = _handle("10")
+    handle = _handle("10", {"design": {"artifact_type": "URL"}})
 
     running = runtime.read_events(handle)
-    terminal = runtime.read_events(_handle(running.cursor))
+    terminal = runtime.read_events(_handle(running.cursor, handle.output_contract))
 
     assert [event.event_type for event in running.events] == ["MESSAGE", "THOUGHT", "STATE"]
     assert [event.cursor for event in running.events] == ["11", "12", "13"]
@@ -2739,7 +2751,7 @@ def test_openhands_does_not_fail_a_completed_reply_for_late_autotitle_error(
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     result = runtime._result_from_events(
-        "10000000-0000-4000-8000-000000000002",
+        _handle(),
         [
             {
                 "kind": "MessageEvent",
@@ -2771,7 +2783,7 @@ def test_openhands_keeps_an_error_from_a_different_turn_after_an_assistant_reply
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     result = runtime._result_from_events(
-        "10000000-0000-4000-8000-000000000002",
+        _handle(),
         [
             {
                 "kind": "MessageEvent",
