@@ -161,6 +161,9 @@ test('run projection stays neutral until record selection and automatic save rep
   await page.locator('.run-open').click();
 
   const graph = page.locator('.run-graph');
+  await expect(page.locator('.run-main .run-title')).toHaveCount(0);
+  await expect(page.locator('.run-main h1')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '返回运行列表' })).toBeVisible();
   await expect(graph).toContainText('未选择运行记录，当前显示中性流程定义');
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
   await expect(graph.getByText('运行 1 次', { exact: true })).toHaveCount(0);
@@ -169,6 +172,9 @@ test('run projection stays neutral until record selection and automatic save rep
   const manualRecord = page.locator('.timeline button').filter({ hasText: '测试节点' });
   await manualRecord.click();
   await expect(graph.locator('.run-graph-node.current')).toContainText('当前激活 · 运行 1 次');
+  const selectedGraphNode = graph.locator('.run-graph-node.snapshot-selected');
+  await expect(selectedGraphNode).toHaveAttribute('data-selected', 'true');
+  await expect(selectedGraphNode.getByText('已选中', { exact: true })).toBeVisible();
   await expect(graph.locator('.flow-direction-edge .react-flow__edge-path')).toHaveCount(1);
   await expect(graph.locator('.flow-mapping-edge .react-flow__edge-path')).toHaveCount(1);
   await expect(graph.locator('.run-graph-node .data-port-handle')).toHaveCount(6);
@@ -182,11 +188,6 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect.poll(async () => (await draggableNode.boundingBox())?.x ?? 0).toBeGreaterThan(beforeDrag!.x + 50);
   await expect(page.locator('.timeline button.active')).toHaveCount(1);
   await manualRecord.click();
-  await expect(page.locator('.timeline button.active')).toHaveCount(0);
-  await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
-
-  await manualRecord.click();
-  await page.locator('.run-title > div').first().click();
   await expect(page.locator('.timeline button.active')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 

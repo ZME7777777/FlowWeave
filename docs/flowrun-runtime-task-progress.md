@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-146 后续范围待拆分）
+> 下一可执行切片：`无`（FR-147 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2167,6 +2167,16 @@ Finish、Artifact、门禁和流转状态机决定结果。其他运行时失败
 投递有界 `POLL_RUNTIME`。自动运行页面也为该安全错误显示“重试当前阶段”；其他 Runtime 和门禁错误保持
 不可重试。
 
+### FR-147 FlowRun 运行画布标题收口与节点选择反馈 — DONE
+
+依赖：`FR-146`。
+
+目标：移除 FlowRun 运行工作台中与左侧运行栏重复的主标题、运行摘要和状态区，使流程快照图优先占用主体可视区域；保留返回运行列表、快照同步、终态删除和既有运行操作。画布节点被选中时必须以高对比边框、外圈与明确的“已选中”标识呈现，不能只依赖右侧配置栏标题判断。不得改变 FlowRun、NodeRun、自动调度、Runtime、OpenHands 或数据库契约。
+
+验收：补充 FlowRun Workbench 定向 Playwright，覆盖重复主标题不渲染、返回入口保留，以及单击节点后画布内出现明确选中反馈；运行 Web ESLint、TypeScript typecheck、production build、Alembic head、任务状态唯一性与 `git diff --check`。本切片使用独立 Git commit。
+
+完成：运行工作台已移除与左侧栏重复的主标题、摘要和状态区；返回列表、手动快照同步及终态运行的永久删除仍保留在紧凑工具栏中。选中的流程节点以深色边框、外圈、阴影和“已选中”徽标反馈，右侧栏不再是唯一判断依据。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2182,6 +2192,7 @@ Finish、Artifact、门禁和流转状态机决定结果。其他运行时失败
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-147 | Web ESLint、TypeScript typecheck、production build；FlowRun Workbench 定向 Playwright（5 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行主区不再渲染重复标题；保留返回入口、快照同步和终态删除。选中节点在画布内显示高对比边框、外圈和“已选中”徽标。唯一 Alembic head 为 `0089_website_credentials`，无 `CURRENT` 或下一切片。 |
 | 2026-09-03 | FR-146 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck；`git diff --check` | PASS：仅 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 中明确的 `RUNTIME_OUTPUT_MISSING` 可经版本 CAS 回到运行态并对账；其他失败路径未放宽。生产 FlowRun 将作为本切片的真实状态机验收。 |
 | 2026-09-03 | FR-145 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器定向 pytest（17 passed）；`git diff --check` | PASS：重启后的正式 FinishAction 继续按冻结合同解析；相对 FILE 路径只落在共享项目根。完整 `test_openhands.py` 另有 1 个 FR-143 后遗断言（仍期待已从 Agent 可见输出合同移除的 `run_name`）失败，和本切片无关，未伪记为通过。 |
 | 2026-09-03 | FR-144 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器 pytest（7 passed）；`git diff --check`；任务状态唯一性 | PASS：候选 FILE 读取与实际共享项目根对齐，输出解析根保持私有且受限于 `/runtime/workspace/project`；无 wake-up 通知时会投递有界、幂等 REST 协调，不直接改写业务状态。候选预览和 Worker 集成 pytest 均因本机 Docker 守护进程未运行、Testcontainers 无法创建 PostgreSQL 而未执行，未伪记为通过。 |
