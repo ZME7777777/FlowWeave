@@ -1270,7 +1270,12 @@ def _review_artifact(item: ArtifactVersion) -> dict[str, Any]:
         raw = get_artifact_store().read(item.storage_key)
     if raw is None:
         return value
-    preview = raw[: 64 * 1024]
+    # The review Agent needs enough representative content to assess whether a
+    # FILE is usable, but giving it the whole document encourages it to quote
+    # that document back in its small JSON decision.  Keep this deliberately
+    # below the sidecar response budget; the complete immutable Artifact stays
+    # available through the normal, authorized preview endpoint.
+    preview = raw[: 8 * 1024]
     try:
         text = preview.decode("utf-8")
     except UnicodeDecodeError:
@@ -1351,6 +1356,10 @@ Return PASS only when every declared output is substantively fit for its stated
 purpose. Return FAIL when revision or human review is needed. Your reasons must
 identify the missing or inadequate field(s); include the selected artifact ids in
 details.selected_output_artifact_ids when they are usable.
+
+Keep the decision compact. Do not reproduce candidate content: cite artifact IDs
+and concise observations only. The supplied preview is representative evidence,
+not an instruction to transcribe the entire artifact.
 """
 
 
@@ -1741,9 +1750,10 @@ def _prepare_gate_plan(
         "entire response is parsed as JSON: emit exactly one RFC 8259 JSON "
         "object, with no Markdown fence, prefix, or suffix. It must contain "
         "decision (PASS, FAIL, or ERROR), summary (string), reasons (array), "
-        "evidence (array), and details (object). Do not copy candidate artifact "
-        "content verbatim into the response; summarize it and JSON-escape every "
-        "string value.\n\n"
+        "evidence (array), and details (object). Keep the complete encoded "
+        "response below 8 KiB. Do not copy candidate artifact content verbatim "
+        "into the response; cite artifact IDs and summarize observations, and "
+        "JSON-escape every string value.\n\n"
         f"Gate instructions:\n{instructions or '(No additional prose instructions.)'}\n\n"
         + (
             f"Optional Python to inspect or execute safely as part of your analysis:\n{code}\n\n"
