@@ -1,0 +1,17 @@
+{
+  "name": "@flowweave/cli",
+  "version": "0.1.0",
+  "description": "FlowWeave 平台命令行客户端",
+  "type": "module",
+  "bin": {
+    "flowweave": "./bin/flowweave.mjs"
+  },
+  "files": ["bin", "README.md"],
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "lint": "node --check bin/flowweave.mjs",
+    "typecheck": "node --check bin/flowweave.mjs"
+  },
+  "license": "MIT"
+}

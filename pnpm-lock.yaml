@@ -81,6 +81,8 @@ importers:
         specifier: 6.3.5
         version: 6.3.5
 
+  packages/cli: {}
+
 packages:
 
   '@babel/code-frame@7.29.7':
