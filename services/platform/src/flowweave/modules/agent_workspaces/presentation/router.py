@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -65,6 +65,12 @@ class AgentConversationPatchWrite(_Write):
 
 class AgentConversationCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
+
+
+class AgentWorkspaceEntryCreateWrite(_Write):
+    parent_path: str = Field(min_length=1, max_length=500)
+    name: str = Field(min_length=1, max_length=240)
+    kind: Literal["FILE", "DIRECTORY"]
 
 
 class AgentAttachmentReference(_Write):
@@ -293,14 +299,38 @@ async def delete_agent_workspace_file(
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
+    recursive: bool = Query(default=False),
 ) -> Response:
     await run_sync(
         db,
         lambda session: workspace.delete_entry(
-            session, workspace_id, path, binding_id, work_directory_id
+            session, workspace_id, path, binding_id, work_directory_id, recursive=recursive
         ),
     )
     return Response(status_code=204)
+
+
+@router.post("/agent-workspaces/{workspace_id}/workspace/entries", status_code=201)
+async def create_agent_workspace_entry(
+    workspace_id: str,
+    payload: AgentWorkspaceEntryCreateWrite,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: workspace.create_entry(
+            session,
+            workspace_id,
+            payload.parent_path,
+            payload.name,
+            payload.kind,
+            binding_id,
+            work_directory_id,
+        ),
+    )
+    return Response(status_code=201)
 
 
 @router.post("/agent-workspaces/{workspace_id}/work-directories", status_code=201)

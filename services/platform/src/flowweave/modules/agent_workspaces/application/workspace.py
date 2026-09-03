@@ -401,6 +401,32 @@ def _is_bound_attachment(db: Session, binding_id: str | None, path: str) -> bool
     )
 
 
+def _subtree_has_bound_attachment(db: Session, workspace_id: str, path: str) -> bool:
+    """Keep every conversation attachment out of recursive removal.
+
+    Workspace files are shared between conversations.  Checking only the
+    currently displayed binding would allow one conversation to delete a file
+    still referenced by another, so the protection deliberately spans all
+    bindings in this workspace.
+    """
+
+    return (
+        db.scalar(
+            select(AgentConversationMessageAttachment.id)
+            .join(
+                AgentConversationBinding,
+                AgentConversationBinding.id == AgentConversationMessageAttachment.binding_id,
+            )
+            .where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                (AgentConversationMessageAttachment.path == path)
+                | AgentConversationMessageAttachment.path.startswith(path.rstrip("/") + "/"),
+            )
+        )
+        is not None
+    )
+
+
 _PRIVATE_ATTACHMENT_PATH = re.compile(
     r"^/runtime/workspace/project/uploads/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
@@ -601,8 +627,10 @@ def delete_entry(
     path: str,
     binding_id: str | None = None,
     work_directory_id: str | None = None,
+    *,
+    recursive: bool = False,
 ) -> None:
-    """Delete a user-visible ordinary file or empty directory in the active scope."""
+    """Delete a user-visible ordinary file or a verified directory subtree."""
     _workspace(db, workspace_id)
     parsed = PurePosixPath(path)
     if (
@@ -617,9 +645,34 @@ def delete_entry(
     file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
     if not any(path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
-    if _is_bound_attachment(db, binding_id, path):
+    if _subtree_has_bound_attachment(db, workspace_id, path):
         raise DomainError("AGENT_WORKSPACE_ATTACHMENT_PROTECTED", "会话附件不能从文件栏删除", 409)
     host_path = _host_path(_project_root(db, workspace_id), path, require_file=False)
+
+    def validate_tree(target: Path) -> None:
+        try:
+            children = list(os.scandir(target))
+        except OSError as exc:
+            raise DomainError("AGENT_WORKSPACE_DELETE_FAILED", "目录暂时无法删除", 409) from exc
+        for child in children:
+            try:
+                mode = child.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
+                raise DomainError("AGENT_WORKSPACE_DELETE_FAILED", "目录暂时无法删除", 409) from exc
+            if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "目录包含不能删除的特殊文件", 422)
+            if stat.S_ISDIR(mode):
+                validate_tree(Path(child.path))
+
+    def remove_tree(target: Path) -> None:
+        for child in os.scandir(target):
+            child_path = Path(child.path)
+            if child.is_dir(follow_symlinks=False):
+                remove_tree(child_path)
+            else:
+                child_path.unlink()
+        target.rmdir()
+
     try:
         mode = host_path.lstat().st_mode
         if stat.S_ISLNK(mode):
@@ -627,10 +680,73 @@ def delete_entry(
         if stat.S_ISREG(mode):
             host_path.unlink()
         elif stat.S_ISDIR(mode):
-            host_path.rmdir()
+            if recursive:
+                # Reject unsafe descendants before any entry is removed.  This
+                # keeps a malformed tree fail-closed instead of deleting a
+                # prefix and only then discovering a protected node.
+                validate_tree(host_path)
+                remove_tree(host_path)
+            else:
+                host_path.rmdir()
         else:
-            raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "只能删除普通文件或空目录", 422)
+            raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "只能删除普通文件或目录", 422)
     except OSError as exc:
         raise DomainError(
-            "AGENT_WORKSPACE_DELETE_FAILED", "文件删除失败；目录必须为空。", 409
+            "AGENT_WORKSPACE_DELETE_FAILED", "文件删除失败；目录必须为空或选择递归删除。", 409
         ) from exc
+
+
+def create_entry(
+    db: Session,
+    workspace_id: str,
+    parent_path: str,
+    name: str,
+    kind: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> None:
+    """Create an empty ordinary file or directory in the authorized scope."""
+
+    _workspace(db, workspace_id)
+    name = name.strip()
+    if not name or name in {".", ".."} or name.startswith(".") or "/" in name or "\\" in name:
+        raise DomainError("AGENT_WORKSPACE_ENTRY_NAME_INVALID", "名称必须是非隐藏的单级文件名", 422)
+    if kind not in {"FILE", "DIRECTORY"}:
+        raise DomainError("AGENT_WORKSPACE_ENTRY_KIND_INVALID", "只支持创建文件或目录", 422)
+    parsed = PurePosixPath(parent_path)
+    if parent_path != _PROJECT_ROOT and (
+        not parent_path.startswith(_PROJECT_ROOT + "/")
+        or parsed.as_posix() != parent_path
+        or ".." in parsed.parts
+        or any(part.startswith(".") for part in parsed.parts)
+    ):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父目录不在工作区范围内", 422)
+    _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
+    file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
+    if not any(
+        parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in file_roots
+    ):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父目录不在当前工作目录范围内", 422)
+    project_root = _project_root(db, workspace_id)
+    parent = (
+        project_root
+        if parent_path == _PROJECT_ROOT
+        else _host_path(project_root, parent_path, require_file=False)
+    )
+    try:
+        parent_mode = parent.lstat().st_mode
+    except OSError as exc:
+        raise DomainError("AGENT_WORKSPACE_FILE_NOT_FOUND", "父目录不存在", 404) from exc
+    if stat.S_ISLNK(parent_mode) or not stat.S_ISDIR(parent_mode):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父路径不是可用目录", 422)
+    target = parent / name
+    try:
+        if kind == "DIRECTORY":
+            target.mkdir(mode=0o700)
+        else:
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(descriptor)
+    except FileExistsError as exc:
+        raise DomainError("AGENT_WORKSPACE_ENTRY_EXISTS", "同名文件或目录已存在", 409) from exc
+    except OSError as exc:
+        raise DomainError("AGENT_WORKSPACE_CREATE_FAILED", "文件或目录创建失败", 409) from exc

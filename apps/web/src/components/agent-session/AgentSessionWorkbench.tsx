@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, randomId } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
@@ -92,8 +92,8 @@ function WorkspaceConversationGroup({ groupId, label, children, canCreateConvers
       <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => !current)}>
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
       </button>
-      {onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
-      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}
+      <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
+      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}</div>
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>{children}</div>
   </section>;
@@ -829,7 +829,7 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
   return roots;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, onSelect, onDelete }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; onSelect: (path: string) => void; onDelete?: (path: string, kind: 'file' | 'directory') => void }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, onSelect, onToggle, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; onSelect: (path: string) => void; onToggle: (path: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   useEffect(() => {
@@ -837,7 +837,8 @@ function WorkspaceFileTree({ entries, root, selectedFile, onSelect, onDelete }: 
   }, [nodes]);
   const renderNodes = (items: WorkspaceTreeNode[], depth = 0): ReactNode => items.map(node => {
     const open = expanded.has(node.path);
-    return <div key={node.path} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined}>
+    return <div key={node.path} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined}>
+      <label className="resource-check" style={{ '--tree-depth': depth } as CSSProperties}><input type="checkbox" aria-label={`选择 ${node.name}`} checked={selectedPaths.has(node.path)} onChange={() => onToggle(node.path)}/></label>
       <button type="button" draggable={node.kind === 'file'} className={`${node.kind}${selectedFile === node.path ? ' active' : ''}`} style={{ '--tree-depth': depth } as CSSProperties} onDragStart={event => {
         if (node.kind !== 'file') return;
         event.dataTransfer.effectAllowed = 'copy';
@@ -845,13 +846,12 @@ function WorkspaceFileTree({ entries, root, selectedFile, onSelect, onDelete }: 
       }} onClick={() => {
         if (node.kind === 'file') onSelect(node.path);
         else setExpanded(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; });
-      }}>
+      }} onContextMenu={event => { event.preventDefault(); onContextMenu(node.path, node.kind, event); }}>
         {node.kind === 'directory' ? open ? <ChevronDown size={13}/> : <ChevronRight size={13}/> : <span className="agent-tree-spacer"/>}
         {node.kind === 'directory' ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}
         <span>{node.name}</span>
         {node.kind === 'file' && <em>{node.size ? `${Math.ceil(node.size / 1024)} KB` : '0 KB'}</em>}
       </button>
-      {onDelete && node.path !== root && <button type="button" className="agent-file-delete" aria-label={`删除 ${node.name}`} title={`删除 ${node.name}`} onClick={() => onDelete(node.path, node.kind)}><Trash2 size={13}/></button>}
       {node.kind === 'directory' && open && <div role="group">{renderNodes(node.children, depth + 1)}</div>}
     </div>;
   });
@@ -1021,6 +1021,9 @@ function WorkspaceDrawer({
   const handledAttachmentRequestKey = useRef<string | undefined>(undefined);
   const handledCandidatePreviewRequestKey = useRef<string | undefined>(undefined);
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
+  const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
+  const [entryMenu, setEntryMenu] = useState<{ path: string; kind: 'file' | 'directory'; x: number; y: number }>();
+  useEscapeClose(() => setEntryMenu(undefined), Boolean(entryMenu));
   const scopeState = scopeStates[scopeKey] ?? { tabs: [] };
   const updateScope = useCallback((updater: (current: WorkspaceToolScopeState) => WorkspaceToolScopeState) => {
     setScopeStates(current => ({ ...current, [scopeKey]: updater(current[scopeKey] ?? { tabs: [] }) }));
@@ -1058,6 +1061,13 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!open) setFullScreen(false);
   }, [open]);
+  useEffect(() => {
+    if (!entryMenu) return;
+    const close = () => setEntryMenu(undefined);
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
+  }, [entryMenu]);
   const detailsQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.workspaceDetails(workspaceId, { bindingId, workDirectoryId }),
@@ -1117,13 +1127,27 @@ function WorkspaceDrawer({
     onOpen();
   }, [onOpen, runtimeAvailable, updateScope]);
   const selectFile = (path: string) => { setCandidatePreview(undefined); openFiles(path); };
-  const removeEntry = async (path: string, kind: 'file' | 'directory') => {
-    if (!api.deleteFile || !await dialog.confirm({ title: `删除${kind === 'directory' ? '目录' : '文件'}？`, message: kind === 'directory' ? '只能删除空目录；该操作无法撤销。' : '文件会被永久删除，且无法撤销。', confirmLabel: '确认删除', tone: 'danger' })) return;
+  const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
+  const toggleEntry = (path: string) => setSelectedEntryPaths(current => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; });
+  const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
+    if (!api.deleteFile || !items.length) return;
+    const directories = items.filter(item => item.kind === 'directory');
+    if (!await dialog.confirm({ title: `删除 ${items.length} 项？`, message: directories.length ? '目录将递归删除其内容；此操作无法撤销。会话附件和不安全路径会受到保护。' : '所选文件会被永久删除，且无法撤销。', confirmLabel: '确认删除', tone: 'danger' })) return;
     try {
-      await api.deleteFile(workspaceId, path, { bindingId, workDirectoryId });
-      if (selectedFile === path) updateScope(current => ({ ...current, selectedFile: undefined }));
+      await Promise.all(items.map(item => api.deleteFile!(workspaceId, item.path, { bindingId, workDirectoryId, recursive: item.kind === 'directory' })));
+      if (items.some(item => selectedFile === item.path || selectedFile?.startsWith(`${item.path}/`))) updateScope(current => ({ ...current, selectedFile: undefined }));
+      setSelectedEntryPaths(new Set());
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
     } catch (reason) { setPanelError(reason instanceof Error ? reason.message : '删除文件失败'); }
+  };
+  const createEntry = async (parentPath: string, kind: 'FILE' | 'DIRECTORY') => {
+    if (!api.createFile) return;
+    const name = await dialog.prompt({ title: `新建${kind === 'DIRECTORY' ? '目录' : '文件'}`, message: '名称不能包含路径分隔符、隐藏前缀或上级目录。', inputLabel: '名称', placeholder: kind === 'DIRECTORY' ? '例如：assets' : '例如：notes.md', confirmLabel: '创建' });
+    if (!name) return;
+    try {
+      await api.createFile(workspaceId, parentPath, name, kind, { bindingId, workDirectoryId });
+      await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
+    } catch (reason) { setPanelError(reason instanceof Error ? reason.message : '创建失败'); }
   };
   const closeTab = async (tab: WorkspaceToolTab) => {
     if (tab.kind === 'terminal') {
@@ -1228,7 +1252,8 @@ function WorkspaceDrawer({
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
-              <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} onSelect={selectFile} onDelete={api.deleteFile ? (path, kind) => void removeEntry(path, kind) : undefined}/>
+              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div><button type="button" title="新建文件" aria-label="新建文件" onClick={() => void createEntry(details.working_directory, 'FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => void createEntry(details.working_directory, 'DIRECTORY')}><FolderPlus size={13}/></button><button type="button" title="全选当前文件" aria-label="全选当前文件" onClick={() => setSelectedEntryPaths(current => current.size === visibleFiles.length ? new Set() : new Set(visibleFiles.map(item => item.path)))}><Check size={13}/></button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
+              <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} onSelect={selectFile} onToggle={toggleEntry} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 150) }); }}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>
@@ -1242,7 +1267,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
         </div>)}
       </div>
-    </section>
+    </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { if (entryMenu.kind === 'file') selectFile(entryMenu.path); setEntryMenu(undefined); }}>{entryMenu.kind === 'file' ? <><FileCode2 size={14}/>预览文件</> : <><FolderOpen size={14}/>目录操作</>}</button>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>删除{entryMenu.kind === 'directory' ? '目录及内容' : '文件'}</button></div>}
   </aside>{sshAccessOpen && sshRemoteReady && <SshAccessGuide host={details!.ide.gateway.host!} port={details!.ide.gateway.port!} path={details!.ide.gateway.path!} onClose={() => setSshAccessOpen(false)}/>} {pendingTerminalClose && <div className="agent-terminal-close-backdrop" onPointerDown={event => { if (event.target === event.currentTarget && !closingTerminalId) setPendingTerminalClose(undefined); }}><section role="dialog" aria-modal="true" aria-labelledby="agent-terminal-close-title" className="agent-terminal-close-dialog"><header><span className="eyebrow">TERMINAL</span><h2 id="agent-terminal-close-title">关闭此终端？</h2></header><p>关闭后会停止该终端中正在执行的命令，并清除这一个终端会话；其他终端和当前会话不会受影响。</p><footer><button type="button" className="secondary" disabled={Boolean(closingTerminalId)} onClick={() => setPendingTerminalClose(undefined)}>取消</button><button type="button" className="danger" autoFocus disabled={Boolean(closingTerminalId)} onClick={() => { const tab = pendingTerminalClose; setPendingTerminalClose(undefined); void closeTab(tab); }}>{closingTerminalId ? '正在关闭…' : '关闭终端'}</button></footer></section></div>}</>;
 }
 

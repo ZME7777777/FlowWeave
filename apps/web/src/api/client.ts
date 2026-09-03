@@ -204,11 +204,18 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return requestText(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, signal);
   },
-  deleteAgentWorkspaceFile: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+  deleteAgentWorkspaceFile: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; recursive?: boolean } = {}) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    if (options.recursive) query.set('recursive', 'true');
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, json('DELETE'));
+  },
+  createAgentWorkspaceEntry: (id: string, parent_path: string, name: string, kind: 'FILE' | 'DIRECTORY', options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/entries${query.size ? `?${query}` : ''}`, json('POST', { parent_path, name, kind }));
   },
   closeAgentWorkspaceTerminal: (id: string, terminalInstanceId: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams();
