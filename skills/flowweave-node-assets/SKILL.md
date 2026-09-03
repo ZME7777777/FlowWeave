@@ -39,4 +39,6 @@ description: 创建、修改、查询或删除 FlowWeave 节点资产和节点�
 
 更新会影响之后使用此资产的流程定义。先读取目标和相关 Flow，再使用 `flowweave node update <id> --data-file ./node-asset.json`，随后重新读取并在受影响 Flow 上校验。删除前先确认用户不需要保留引用它的 Flow 或运行历史；只有精确 ID 与删除授权都明确时执行 `node delete <id>`。
 
+删除节点目录使用 `flowweave node-directory delete <directory-id> --dry-run` 先检查目标，再去掉 `--dry-run` 执行。平台会将目录内的直接节点和直接子目录提升到父目录；若提升会产生同名目录则拒绝，不会合并或丢弃任何节点资产。
+
 若用户要“运行节点”或“上传节点输入”，不要在此处猜 Run/Attempt：先读取 FlowRun 详情，再转 FlowRun 工作台 Skill。

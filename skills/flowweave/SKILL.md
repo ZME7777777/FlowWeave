@@ -48,7 +48,7 @@ flowweave config show
 
 ## 统一调用方式
 
-页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`environment`、`flow`、`run`、`model`、`agent`。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
+页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`environment`、`credential`、`flow`、`run`、`model`、`agent`。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
 
 ```bash
 # 先查看当前服务真正暴露的路径和 schema
@@ -72,6 +72,12 @@ flowweave ws /some-stream --max-messages 20
 3. **最小写入**：只修改用户指明的资源，复杂请求存为 JSON 文件；不知道请求体时先看 OpenAPI。
 4. **写后验证**：重新读取目标资源，必要时读取事件、Runtime、产物或校验结果。异步请求返回 `202` 时，轮询对应的读取接口，不要重复发起创建。
 5. **失败诊断**：保留 HTTP 错误、资源 ID 和事件上下文；先读状态再决定重试、取消或替换。未经用户明确授权，不删除、取消、完成、拒绝、撤销或替换已有资源。
+
+## 维护性删除与版本说明
+
+删除前先读取精确资源 ID，并先用 `--dry-run` 核对请求。节点目录删除会保留节点资产和子目录并提升到父级，若会造成同名目录冲突则被平台拒绝；不要把“删除目录”理解成删除其中全部节点。认证可用 `flowweave credential delete-many --id <id> --id <id>` 批量删除，Secret 一经删除无法恢复。
+
+Agent Workspace 的工作目录删除由已绑定会话保护；文件删除只接受当前授权范围内的普通文件或空目录，不能删除工作区根、隐藏路径、符号链接或会话私有附件。环境发布可以用 `flowweave environment publish <setup-session-id> --description '说明'` 记录可选版本说明；该说明随发布版本冻结，后续不能修改。
 
 ## 生命周期推荐顺序
 
@@ -97,6 +103,7 @@ flowweave ws /some-stream --max-messages 20
 - 节点执行、Attempt、Artifact、人工门禁与节点会话：`flowweave-flowrun-workbench`
 - 大模型供应商、测试和 Codex OAuth：`flowweave-model-providers`
 - 顶层 Agent Workspace、会话、消息、工作目录与附件：`flowweave-agent-workspace`
+- 认证条目与批量删除：使用本 Skill 的 `credential` 快捷命令；不把 Secret 写入 Skill、命令历史或请求快照。
 
 ## 不可跨越的边界
 

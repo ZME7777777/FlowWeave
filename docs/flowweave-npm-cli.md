@@ -26,13 +26,14 @@ Skill 以产品页面拆分，分别指导节点资产、能力、环境、流�
 
 | 页面/业务域 | 命令 | 常用原子操作 |
 | --- | --- | --- |
-| 节点资产 | `node`、`node-directory` | list/get/create/update/delete、目录创建 |
+| 节点资产 | `node`、`node-directory` | list/get/create/update/delete、目录创建和删除 |
 | 能力仓库 | `capability` | list/validate/commit/import |
-| 终端环境 | `environment` | create/update/delete、setup/publish/stop/version-delete |
+| 终端环境 | `environment` | create/update/delete、setup/publish（可选 `--description`）/stop/version-delete |
+| 认证管理 | `credential` | list/create/update/delete、`delete-many --id <id>` 批量删除 |
 | 流程编排 | `flow` | list/get/create/update/validate/delete |
 | FlowRun | `run`、`api`、`upload` | start/list/get/runtime/events/replace/cancel/complete/delete；节点执行、门禁与产物 |
 | 大模型配置 | `model` | list/create/update/delete、发现模型、连接测试、Codex OAuth 设备授权 |
-| Agent 工作台 | `agent` | 默认工作区、会话创建/查询、消息发送、中断/恢复 |
+| Agent 工作台 | `agent` | 默认工作区、会话创建/查询、消息发送、中断/恢复、工作目录和文件删除 |
 
 所有快捷命令都只是已存在 REST 原子接口的路径映射。JSON 请求体始终应以在线 OpenAPI 为准：
 

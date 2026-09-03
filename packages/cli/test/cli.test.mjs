@@ -76,3 +76,20 @@ test('能力、环境版本、流程与运行原子命令映射正确', async ()
   assert.equal(events.status, 0, events.stderr);
   assert.equal(JSON.parse(events.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/events');
 });
+
+test('维护快捷命令保留删除目标和环境版本说明', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const directory = invoke(config, 'node-directory', 'delete', 'directory-1', '--dry-run');
+  assert.equal(directory.status, 0, directory.stderr);
+  assert.equal(JSON.parse(directory.stdout).url, 'https://example.test/flowweave/api/v1/node-directories/directory-1');
+  const credentials = invoke(config, 'credential', 'delete-many', '--id', 'credential-1', '--id', 'credential-2', '--dry-run');
+  assert.equal(credentials.status, 0, credentials.stderr);
+  assert.deepEqual(JSON.parse(credentials.stdout).payload, { ids: ['credential-1', 'credential-2'] });
+  const publish = invoke(config, 'environment', 'publish', 'setup-1', '--description', '更新 Python 依赖', '--dry-run');
+  assert.equal(publish.status, 0, publish.stderr);
+  assert.deepEqual(JSON.parse(publish.stdout).payload, { description: '更新 Python 依赖' });
+  const file = invoke(config, 'agent', 'file-delete', 'workspace-1', '--path', '/runtime/workspace/project/report.md', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
+  assert.equal(file.status, 0, file.stderr);
+  assert.equal(JSON.parse(file.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2Freport.md&binding_id=binding-1&work_directory_id=directory-1');
+});

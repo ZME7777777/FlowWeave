@@ -26,13 +26,14 @@ function usage() {
 
 页面域原子操作：
   node <list|get|create|update|delete> [ID] [--data JSON|--data-file FILE]
-  node-directory <list|create> [--data JSON|--data-file FILE]
+  node-directory <list|create|delete> [ID] [--data JSON|--data-file FILE]
   capability <list|validate|commit|import> ...
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
+  credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
   run <list|get|start|delete|runtime|replace|cancel|complete|events> ...
   model <list|create|update|delete|discover|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
-  agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume> ...
+  agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete> ...
 
 所有写入操作都可加 --dry-run 仅查看最终请求。运行 flowweave <命令> --help 查看该命令说明。`;
 }
@@ -130,9 +131,9 @@ function pathUrl(baseUrl, path, { raw = false, query = [] } = {}) {
 function headers(args) { return Object.fromEntries(pairs(optionValues(args, '-H').concat(optionValues(args, '--header')), ':', '--header').map(([name, value]) => [name.trim(), value.trim()])); }
 function queries(args) { return pairs(optionValues(args, '-q').concat(optionValues(args, '--query')), '=', '--query'); }
 
-async function request(method, path, args, { raw = false, body, form } = {}) {
+async function request(method, path, args, { raw = false, body, form, query = [] } = {}) {
   const { baseUrl } = await loadConfig();
-  const url = pathUrl(baseUrl, path, { raw, query: queries(args) });
+  const url = pathUrl(baseUrl, path, { raw, query: [...queries(args), ...query] });
   const requestBody = body === undefined ? await payload(args) : body;
   if (flag(args, '--dry-run')) return { method, url: url.toString(), payload: requestBody ?? form ?? null };
   const requestHeaders = { Accept: 'application/json', ...headers(args) };
@@ -189,6 +190,17 @@ async function crud(command, args) {
   return request(methods[action], id ? `${route}/${id}` : route, args);
 }
 
+async function nodeDirectory(args) {
+  const [action, id] = positional(args);
+  if (action === 'list') return request('GET', '/node-directories', args);
+  if (action === 'create') return request('POST', '/node-directories', args);
+  if (action === 'delete') {
+    if (!id) throw new CliError('node-directory delete 必须提供目录 ID');
+    return request('DELETE', `/node-directories/${id}`, args);
+  }
+  throw new CliError('node-directory 支持 list|create|delete');
+}
+
 async function capability(args) {
   const [action, id] = positional(args);
   if (action === 'list') return request('GET', '/capabilities', args);
@@ -215,7 +227,13 @@ async function environment(args) {
   const [action, id] = positional(args);
   if (['list', 'get', 'create', 'update', 'delete'].includes(action)) return crud('environment', args);
   if (action === 'setup') { if (!id) throw new CliError('environment setup 需要环境 ID'); return request('POST', `/terminal-environments/${id}/setup-sessions`, args, { body: await objectPayload(args) }); }
-  if (action === 'publish') { if (!id) throw new CliError('environment publish 需要 Setup Session ID'); return request('POST', `/environment-setup-sessions/${id}/publish`, args, { body: {} }); }
+  if (action === 'publish') {
+    if (!id) throw new CliError('environment publish 需要 Setup Session ID');
+    const description = option(args, '--description');
+    return request('POST', `/environment-setup-sessions/${id}/publish`, args, {
+      body: await objectPayload(args, description === undefined ? {} : { description }),
+    });
+  }
   if (action === 'stop') { if (!id) throw new CliError('environment stop 需要 Setup Session ID'); return request('DELETE', `/environment-setup-sessions/${id}`, args); }
   if (action === 'version-delete') {
     const versionId = option(args, '--version');
@@ -223,6 +241,21 @@ async function environment(args) {
     return request('DELETE', `/terminal-environments/${id}/versions/${versionId}`, args);
   }
   throw new CliError('environment 支持 list|get|create|update|delete|setup|publish|stop|version-delete');
+}
+
+async function credential(args) {
+  const [action, id] = positional(args);
+  if (action === 'list') return request('GET', '/website-credentials', args);
+  if (action === 'create') return request('POST', '/website-credentials', args);
+  if (action === 'delete-many') {
+    const ids = optionValues(args, '--id');
+    if (!ids.length) throw new CliError('credential delete-many 至少需要一个 --id');
+    return request('DELETE', '/website-credentials', args, { body: { ids } });
+  }
+  if (!id) throw new CliError(`credential ${action || ''} 需要认证 ID`);
+  if (action === 'update') return request('PUT', `/website-credentials/${id}`, args);
+  if (action === 'delete') return request('DELETE', `/website-credentials/${id}`, args);
+  throw new CliError('credential 支持 list|create|update|delete|delete-many');
 }
 
 async function flow(args) {
@@ -283,13 +316,34 @@ async function agent(args) {
   if (action === 'workspace') return request('GET', base, args);
   if (action === 'runtime') return request('GET', `${base}/runtime`, args);
   if (action === 'conversations') return request('GET', `${base}/conversations`, args);
+  if (action === 'work-directories') return request('GET', `${base}/work-directories`, args);
+  if (action === 'work-directory-create') {
+    return request('POST', `${base}/work-directories`, args);
+  }
+  if (action === 'work-directory-delete') {
+    if (!binding) throw new CliError('agent work-directory-delete 需要工作目录 ID');
+    return request('DELETE', `${base}/work-directories/${binding}`, args);
+  }
+  if (action === 'file-delete') {
+    const path = option(args, '--path');
+    if (!path) throw new CliError('agent file-delete 需要 --path <runtime-path>');
+    const bindingId = option(args, '--binding');
+    const workDirectoryId = option(args, '--work-directory');
+    return request('DELETE', `${base}/workspace/file`, args, {
+      query: [
+        ['path', path],
+        ...(bindingId ? [['binding_id', bindingId]] : []),
+        ...(workDirectoryId ? [['work_directory_id', workDirectoryId]] : []),
+      ],
+    });
+  }
   if (action === 'create') return request('POST', `${base}/conversations`, args);
   if (!binding) throw new CliError(`agent ${action || ''} 需要会话 binding ID`);
   if (action === 'conversation') return request('GET', `${base}/conversations/${binding}`, args);
   if (action === 'send') return request('POST', `${base}/conversations/${binding}/messages`, args);
   if (action === 'interrupt') return request('POST', `${base}/conversations/${binding}/interrupt`, args, { body: {} });
   if (action === 'resume') return request('POST', `${base}/conversations/${binding}/resume`, args, { body: {} });
-  throw new CliError('agent 支持 default|workspace|runtime|conversations|conversation|create|send|interrupt|resume');
+  throw new CliError('agent 支持 default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete');
 }
 
 async function upload(args) {
@@ -362,9 +416,11 @@ async function main(argv) {
   else if (command === 'api') { const [method, path] = positional(args); if (!method || !path) throw new CliError('api 用法：api <method> <PATH>'); result = request(method.toUpperCase(), path, args, { raw: flag(args, '--raw') }); }
   else if (command === 'upload') result = upload(args);
   else if (command === 'ws') result = websocket(args);
-  else if (['node', 'node-directory'].includes(command)) result = crud(command, args);
+  else if (command === 'node') result = crud(command, args);
+  else if (command === 'node-directory') result = nodeDirectory(args);
   else if (command === 'capability') result = capability(args);
   else if (command === 'environment') result = environment(args);
+  else if (command === 'credential') result = credential(args);
   else if (command === 'flow') result = flow(args);
   else if (command === 'run') result = run(args);
   else if (command === 'model') result = model(args);

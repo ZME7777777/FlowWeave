@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-147 后续范围待拆分）
+> 下一可执行切片：`无`（FR-148 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2180,6 +2180,18 @@ Finish、Artifact、门禁和流转状态机决定结果。其他运行时失败
 管理增加当前页选择与批量删除，服务端锁定并校验完整 ID 集合。Environment Version 新增可选 description 字段、
 迁移和发布表单提示，并在版本历史中展示；重复发布已冻结版本不会覆盖其说明。
 
+### FR-148 维护操作 CLI 与 Skill 交付 — DONE
+
+依赖：`FR-147`。
+
+目标：将 FR-147 的受控删除与版本说明能力暴露为可审查的 FlowWeave CLI 快捷命令，并更新随仓库发布的页面
+Skill，使执行者先读取真实 ID、用 `--dry-run` 审核请求，并遵守目录提升、工作目录引用、文件范围与版本不可变
+约束。
+
+完成：CLI 新增节点目录删除、认证 CRUD/批量删除、Agent 工作目录与文件删除快捷命令；环境发布支持可选
+`--description`。CLI 测试覆盖部署前缀、请求体与文件范围 query。平台基准、节点、Agent Workspace 与环境 Skills
+均补充了实际命令和删除/不可变性边界；不会引导直接访问 Docker、数据库或 Runtime。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2195,6 +2207,7 @@ Finish、Artifact、门禁和流转状态机决定结果。其他运行时失败
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-148 | CLI `npm test`（5 passed）、Node 语法检查、Skill 快速校验、`git diff --check` | PASS：维护快捷命令均以平台 API 和可审计 dry-run 映射实现，Skill 操作说明与服务端保护语义一致。 |
 | 2026-09-04 | FR-147 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint；Alembic heads；`git diff --check` | PASS：唯一迁移 head 为 `0090_environment_version_description`。目录提升、工作区范围校验、批量认证精确 ID 校验和版本说明持久化均已落入平台服务层；未运行容器/数据库行为测试。 |
 | 2026-09-03 | FR-146 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck；`git diff --check` | PASS：仅 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 中明确的 `RUNTIME_OUTPUT_MISSING` 可经版本 CAS 回到运行态并对账；其他失败路径未放宽。生产 FlowRun 将作为本切片的真实状态机验收。 |
 | 2026-09-03 | FR-145 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器定向 pytest（17 passed）；`git diff --check` | PASS：重启后的正式 FinishAction 继续按冻结合同解析；相对 FILE 路径只落在共享项目根。完整 `test_openhands.py` 另有 1 个 FR-143 后遗断言（仍期待已从 Agent 可见输出合同移除的 `run_name`）失败，和本切片无关，未伪记为通过。 |

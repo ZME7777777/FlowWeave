@@ -42,3 +42,7 @@ flowweave agent conversations <workspace-id>
 工作目录、附件上传、能力绑定、MCP readiness、模型选择、pending confirmation、fork、condense、rerun 和 terminal 都是同一工作区域的原子 API。先读取目标会话/工作区和在线 OpenAPI，再使用 `flowweave api` 或 `upload`。能力必须是平台已治理的版本，先转 `flowweave-capabilities` 导入或定位；不能将文件复制进 Runtime 作为绑定。
 
 对确认、附件、删除、停止或 fork 等改变状态的操作，先核对真实 workspace/binding ID 与用户意图；不得直接使用 Docker、Runtime Provider 或 OpenHands 私有接口。
+
+删除逻辑工作目录前，先用 `flowweave agent work-directories <workspace-id>` 读取真实 ID，再执行 `flowweave agent work-directory-delete <workspace-id> <work-directory-id> --dry-run`。被 Conversation 冻结引用的工作目录会被平台拒绝删除。
+
+删除文件使用 `flowweave agent file-delete <workspace-id> --path <runtime-path> [--binding <binding-id>] [--work-directory <directory-id>]`。路径必须来自当前 Workspace 详情；只允许授权范围内的普通文件或空目录。不得尝试删除 `/runtime/workspace/project`、隐藏路径、符号链接或会话私有附件。
