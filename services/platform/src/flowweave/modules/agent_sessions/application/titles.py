@@ -67,7 +67,6 @@ def _chat_title(snapshot: TitleProviderSnapshot, first_message: str) -> str:
     payload = {
         "model": snapshot.model,
         "stream": False,
-        "temperature": 0,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": first_message},

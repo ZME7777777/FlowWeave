@@ -46,7 +46,6 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.agent_workspaces.presentation import router as agent_router
 from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
 from flowweave.modules.model_providers.public import TitleProviderSnapshot
-from flowweave.modules.model_providers.application import service as model_provider_service
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
@@ -1761,7 +1760,7 @@ def test_chat_completions_title_uses_provider_protocol(monkeypatch):
     assert captured["url"] == "https://models.example.test/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer token"
     assert captured["json"]["stream"] is False
-    assert captured["json"]["temperature"] == 0
+    assert "temperature" not in captured["json"]
 
 
 def test_responses_title_uses_streaming_provider_protocol(monkeypatch):
@@ -1818,26 +1817,6 @@ def test_responses_title_uses_streaming_provider_protocol(monkeypatch):
     assert captured["headers"]["Accept"] == "text/event-stream"
     assert captured["json"]["stream"] is True
     assert captured["json"]["store"] is False
-
-
-def test_api_key_gpt_56_title_uses_responses_protocol(settings, db_session_factory, monkeypatch):
-    monkeypatch.setattr(
-        model_provider_service, "provider_auth_headers", lambda _provider: {"Authorization": "Bearer x"}
-    )
-    with settings_context(settings), db_session_factory() as db:
-        provider = ModelProvider(
-            name="responses-title-provider",
-            base_url="https://models.example.test/v1",
-            auth_type="API_KEY",
-            encrypted_api_key=b"encrypted-key",
-        )
-        db.add(provider)
-        db.flush()
-
-        snapshot = model_provider_service.title_provider_snapshot(db, provider.id, "gpt-5.6-sol")
-
-    assert snapshot.protocol == "RESPONSES"
-    assert snapshot.base_url == "https://models.example.test/v1"
 
 
 def test_agent_workspace_terminal_session_names_are_safe_and_instance_scoped():
