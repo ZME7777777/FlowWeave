@@ -124,7 +124,8 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 
 /* The workbench graph is the primary business view and fills the remaining viewport. */
 .run-main{display:flex;min-height:0;flex-direction:column;overflow:hidden}
-.run-main>.run-title,.run-main>.snapshot-sync{flex:0 0 auto}
+.run-workbench-toolbar{display:flex;flex:0 0 auto;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.run-workbench-toolbar>.back{position:static;width:max-content;margin:0;padding:8px 11px;border:1px solid #cbd6d0;border-radius:6px;background:#fff;color:var(--green);box-shadow:0 4px 14px #17342612;font-size:12px;font-weight:600}.run-workbench-toolbar>.back:hover{border-color:#8fb5a0;background:#f4f9f5}.run-workbench-toolbar .flow-run-management{align-items:flex-end}
+.run-main>.snapshot-sync{flex:0 0 auto}
 .run-main>.run-graph{display:flex;min-height:320px;flex:1 1 auto;flex-direction:column}
 .run-main>.run-graph>.run-graph-canvas{min-height:0;height:auto;flex:1 1 auto}
 
@@ -390,7 +391,8 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .run-graph-node.automatic-configured{border:2px solid #5b9a72!important;background:#edf8f1!important;color:#276840!important;box-shadow:0 0 0 3px #dcefe2!important}
 .run-graph-node.automatic-configured .flow-node-head{border-color:#c7e2d0!important}.run-graph-node.automatic-configured b,.run-graph-node.automatic-configured .flow-port-groups b{color:#276840!important}
 .run-graph-node.automatic-locked{border-color:#d9dfdb!important;background:#f4f6f4!important;color:#98a39d!important;box-shadow:none!important;opacity:.68}.run-graph-node.automatic-locked .flow-node-head{border-color:#e1e6e3!important}.run-graph-node.automatic-locked b{color:#87928c!important}.run-graph-node.automatic-locked .flow-port-groups{opacity:.55}
-.run-graph-node.snapshot-selected{border-color:var(--green)!important;background:#e8f3eb!important;box-shadow:0 0 0 4px #dcece2!important}
+.run-graph-node.snapshot-selected{border-color:#0b6b4a!important;background:#edf9f1!important;box-shadow:0 0 0 5px #b9e8cd,0 12px 26px #17624935!important;outline:2px solid #0b6b4a;outline-offset:3px}
+.snapshot-selected-marker{display:none!important}.run-graph-node.snapshot-selected .snapshot-selected-marker{display:inline-flex!important;align-items:center;margin-left:auto;margin-right:6px;border-radius:999px;background:#0b6b4a;padding:3px 6px;color:#fff!important;font:600 8px/1 'DM Mono',monospace;letter-spacing:.25px;white-space:nowrap}
 .run-graph-node.automatic-missing.snapshot-selected{border-color:#b84848!important;background:#fff0f0!important;box-shadow:0 0 0 4px #f3cccc!important}
 
 /* Automatic mode edits one node at a time and intentionally shares the
