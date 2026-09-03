@@ -342,6 +342,9 @@ class StartAttemptRequest:
     conversation_id: str | None = None
     agent_spec: RuntimeAgentSpec = field(default_factory=RuntimeAgentSpec)
     node_workspace_ref: str = ""
+    # Private Runtime parser state for relative FILE candidates. It never
+    # enters the Agent-visible output contract.
+    output_workspace_root: str = ""
     interaction_mode: Literal["EXECUTION", "COLLABORATION"] = "EXECUTION"
     startup_prompt: str | None = None
     startup_capability_key: str | None = None

@@ -969,6 +969,20 @@ class OpenHandsRuntime:
     def _output_contract(request: StartAttemptRequest) -> list[dict[str, str]]:
         if request.interaction_mode == "COLLABORATION":
             return []
+        workspace_root = request.output_workspace_root or "/runtime/workspace/project"
+        root = PurePosixPath(workspace_root)
+        project_root = PurePosixPath("/runtime/workspace/project")
+        if (
+            not root.is_absolute()
+            or root.as_posix() != workspace_root
+            or ".." in root.parts
+            or not root.is_relative_to(project_root)
+        ):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The execution output workspace is invalid",
+                422,
+            )
         return [
             {
                 "field_key": field_key,
@@ -977,7 +991,7 @@ class OpenHandsRuntime:
                 "title": target.get("title", field_key),
                 "display_name": target.get("display_name", field_key),
                 "description": target.get("description", ""),
-                "workspace_root": request.node_workspace_ref,
+                "workspace_root": workspace_root,
             }
             for field_key, target in request.output_targets.items()
         ]
@@ -992,10 +1006,7 @@ class OpenHandsRuntime:
         """
 
         visible_keys = ("field_key", "artifact_type", "display_name", "description")
-        return [
-            {key: item[key] for key in visible_keys if key in item}
-            for item in contract
-        ]
+        return [{key: item[key] for key in visible_keys if key in item} for item in contract]
 
     def _initial_text(self, request: StartAttemptRequest) -> str:
         asset = cast(dict[str, Any], request.node.get("asset") or {})

@@ -624,6 +624,7 @@ def test_node_candidate_output_preview_resolves_only_a_declared_relative_file(
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
         flow_run_workspace_nodes_path,
+        flow_run_workspace_project_path,
     )
 
     with settings_context(settings), db_session_factory() as db:
@@ -633,7 +634,9 @@ def test_node_candidate_output_preview_resolves_only_a_declared_relative_file(
         nodes_root = flow_run_workspace_nodes_path(flow_run_id)
         attempt_root = nodes_root / "asset-1" / "sessions" / attempt.node_run_id / "1"
         attempt_root.mkdir(parents=True)
-        (attempt_root / "report.md").write_text("# Candidate report\n")
+        project_root = flow_run_workspace_project_path(flow_run_id)
+        project_root.mkdir(parents=True)
+        (project_root / "report.md").write_text("# Candidate report\n")
         attempt.workspace_ref = str(attempt_root)
         attempt.output_targets_json = {
             "report": {"artifact_type": "FILE"},

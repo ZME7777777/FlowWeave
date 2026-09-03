@@ -1057,16 +1057,22 @@ def process_runtime_wakeup(
         or current.state_version != expected_version
     ):
         return
-    if wakeup is not None and wakeup.notified:
-        poll_task = enqueue(
-            db,
-            task_type="POLL_RUNTIME",
-            aggregate_type="ATTEMPT",
-            aggregate_id=current.id,
-            idempotency_key=f"poll-runtime-wakeup:{current.id}:v{current.state_version}:{wakeup_no}",
-            payload={"poll_no": wakeup_no},
-        )
-        poll_task.max_attempts = max(poll_task.max_attempts, 10)
+    # Wake-up frames reduce latency, but are not a durable terminal-state
+    # guarantee.  On a timeout or unavailable channel, enqueue one bounded
+    # REST reconciliation through the normal state machine so a persisted
+    # OpenHands Finish lifecycle cannot strand this Attempt in EXECUTING.
+    poll_kind = "wakeup" if wakeup is not None and wakeup.notified else "reconcile"
+    poll_task = enqueue(
+        db,
+        task_type="POLL_RUNTIME",
+        aggregate_type="ATTEMPT",
+        aggregate_id=current.id,
+        idempotency_key=(
+            f"poll-runtime-{poll_kind}:{current.id}:v{current.state_version}:{wakeup_no}"
+        ),
+        payload={"poll_no": wakeup_no},
+    )
+    poll_task.max_attempts = max(poll_task.max_attempts, 10)
     next_backoff = 0 if wakeup is not None else min(backoff_no + 1, 8)
     task = enqueue(
         db,
@@ -3627,7 +3633,13 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         agent_spec=agent_spec,
         conversation_id=session_binding.openhands_conversation_id,
     )
-    return request
+    # Attempt-local paths remain provenance/materialization roots.  The
+    # FlowRun Agent writes relative outputs in its frozen shared project
+    # working directory, which is the only valid FILE parser root.
+    return replace(
+        request,
+        output_workspace_root=session_binding.working_directory or "/runtime/workspace/project",
+    )
 
 
 def _upload_runtime_input_attachments(

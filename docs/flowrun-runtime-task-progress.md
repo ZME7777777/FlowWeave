@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`FR-144`（依赖 FR-143）
+> 下一可执行切片：`FR-145`（依赖 FR-144）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2118,6 +2118,26 @@ Finish JSON 兼容桥，FILE 只能提交相对于当前工作目录的规范相
 自动化服务层回归因本机 Docker 守护进程不可用、无法创建测试 PostgreSQL 而未执行；适配器输出回归、Python
 语法／Ruff、Web TypeScript／ESLint 和 `git diff --check` 已通过。
 
+### FR-144 候选输出受限读取与完成态协调 — DONE
+
+依赖：`FR-143`。
+
+目标：将未接受 FILE 候选的受限预览与实际 FlowRun 共享项目根对齐。候选路径继续只能是冻结 FILE 槽位提交的
+规范相对 POSIX 路径；服务端必须以当前 Attempt 已授权的共享项目根重新校验普通目录、非符号链接、普通文件、
+范围和大小，且不得将候选读取登记为 Artifact、门禁结论或流转结果。Runtime 的私有 FILE 解析根必须使用实际
+冻结的 Agent 工作目录，而不是已弃用的节点持久目录。
+
+同时修复无 wake-up 通知或 wake-up 通道暂不可用时无法再次观察 OpenHands 正式 Finish 生命周期的问题：Worker
+必须以有界、幂等的 REST 轮询补偿进入既有状态机，由该状态机决定候选输出、门禁、Artifact 晋升和 FlowRun
+状态；不得直接改写 Attempt、Artifact 或流程状态。FR-145 仍负责把结束门禁后的 Artifact 创建明确收敛为平台
+接受服务对已选候选的晋升，FR-144 不扩展候选的持久化或自动晋升边界。
+
+完成：候选 FILE 预览现在从已授权 FlowRun 共享项目根重新校验并读取，继续拒绝路径穿越、符号链接、非普通文件、
+越界解析和超限内容。自动执行的私有 FILE 输出解析根由实际冻结 Agent 工作目录提供，且仍不会出现在执行 Agent
+可见合同中。每次 Conversation wake-up 无通知或不可用时，Worker 都会按 Attempt 版本和 wake-up 序号幂等投递一
+次 `POLL_RUNTIME` REST 协调；正式 FinishAction/Observation 继续由既有输出、门禁和流转状态机处理，未直接
+写入 Attempt、Artifact 或流程状态。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2133,6 +2153,7 @@ Finish JSON 兼容桥，FILE 只能提交相对于当前工作目录的规范相
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-03 | FR-144 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器 pytest（7 passed）；`git diff --check`；任务状态唯一性 | PASS：候选 FILE 读取与实际共享项目根对齐，输出解析根保持私有且受限于 `/runtime/workspace/project`；无 wake-up 通知时会投递有界、幂等 REST 协调，不直接改写业务状态。候选预览和 Worker 集成 pytest 均因本机 Docker 守护进程未运行、Testcontainers 无法创建 PostgreSQL 而未执行，未伪记为通过。 |
 | 2026-09-03 | FR-143A | Web TypeScript typecheck、ESLint、production build；定向 Playwright（1 passed）；`git diff --check` | PASS：新会话 `/` 菜单同时显示 OpenHands 原生能力分区与命令/MCP 加载空态。`/condense` 在 OpenHands Conversation 尚未由首条消息创建前为禁用项且不可选；已有会话继续走原生压缩路径。未修改 Runtime、OpenHands API 或会话持久化。 |
 | 2026-09-03 | FR-143 | OpenHands 输出适配器 pytest（16 passed）；Python `py_compile` 与定向 Ruff；Web TypeScript typecheck、ESLint；`git diff --check` | PASS：执行提示词不再泄露节点持久目录或 `workspace_root`，FILE 只接收相对 POSIX 路径并在服务端解析。节点会话的候选 FILE 预览经冻结字段和 Attempt 工作区重新校验后以 sandboxed inline 响应打开，不暴露实际路径且不登记 Artifact。新增服务层候选预览测试受本机 Docker 守护进程不可用阻塞（testcontainers 无法创建 PostgreSQL），未伪记为通过。 |
 | 2026-09-03 | FR-142 | 前缀部署环境下的定向 Playwright（2 passed：空 API 基址时节点目录／资产请求保留 `/flowweave` 前缀并渲染返回资产）；Web ESLint、TypeScript typecheck、production build、`git diff --check` | PASS：FR-139 的前缀静态资源修复曾将 Docker 声明的空 `VITE_API_BASE_URL` 当作有效根 API 基址，令真实浏览器错误请求 FastGPT 的 `/api/v1/node-assets` 并把 404 降级显示为 0 条。远端只读取证确认 PostgreSQL 与受保护 FlowWeave API 中的节点资产完整；API 基址现将空值视作未配置并回退 `/flowweave`。后续非根路径部署必须验证一个真实 API 请求的完整前缀。 |

@@ -1292,7 +1292,7 @@ def test_openhands_resolves_relative_file_outputs_inside_declared_node_workspace
         {
             "field_key": "report",
             "artifact_type": "FILE",
-            "workspace_root": "/runtime/workspace/nodes/asset/attempt",
+            "workspace_root": "/runtime/workspace/project",
         }
     ]
 
@@ -1301,11 +1301,7 @@ def test_openhands_resolves_relative_file_outputs_inside_declared_node_workspace
         json.dumps({"outputs": {"report": {"artifact_type": "FILE", "path": path}}}),
     )
 
-    expected = (
-        {"report": ("FILE", f"/runtime/workspace/nodes/asset/attempt/{path}")}
-        if accepted
-        else {}
-    )
+    expected = {"report": ("FILE", f"/runtime/workspace/project/{path}")} if accepted else {}
     assert outputs == expected
 
 
@@ -1320,6 +1316,7 @@ def test_openhands_hides_managed_workspace_root_from_execution_output_prompt(
         bindings=[],
         workspace_ref="/tmp/workspace",
         node_workspace_ref="/runtime/workspace/nodes/asset/attempt",
+        output_workspace_root="/runtime/workspace/project",
         output_targets={
             "report": {
                 "artifact_type": "FILE",
@@ -1335,6 +1332,7 @@ def test_openhands_hides_managed_workspace_root_from_execution_output_prompt(
     assert "节点持久工作目录" not in context
     assert '"path":"report.pdf"' in context
     assert '"workspace_root"' not in context
+    assert runtime._output_contract(request)[0]["workspace_root"] == "/runtime/workspace/project"
 
 
 def test_openhands_normalizes_incremental_events_and_terminal_result(

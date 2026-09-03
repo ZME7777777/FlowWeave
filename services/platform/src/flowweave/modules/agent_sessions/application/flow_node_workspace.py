@@ -375,12 +375,6 @@ def read_candidate_output_file(
     an ArtifactVersion or alter any gate/transition state.
     """
 
-    host = resolve_flow_node_session_host(
-        db,
-        flow_run_id=flow_run_id,
-        attempt_id=attempt_id,
-        require_start_permission=False,
-    )
     attempt = db.get(NodeAttempt, attempt_id)
     target = (attempt.output_targets_json or {}).get(field_key) if attempt else None
     if not isinstance(target, dict) or target.get("artifact_type") != "FILE":
@@ -394,25 +388,13 @@ def read_candidate_output_file(
         or any(part in {"", ".", ".."} for part in relative.parts)
     ):
         raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件路径无效", 422)
-    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
-    nodes_root = sandboxes.flow_run_workspace_nodes_path(runtime_owner_id)
-    attempt_root = Path(host.working_directory)
+    # The Attempt-local directory is server-side provenance only. FlowRun
+    # Agents write their candidate files in the shared project mount, so use
+    # the same fully authorized root as the node workspace drawer.
+    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     try:
-        attempt_relative = attempt_root.relative_to(nodes_root)
-    except ValueError as exc:
-        raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件不在受管节点工作区", 409) from exc
-    if not attempt_relative.parts:
-        raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件工作区无效", 409)
-    asset = cast(dict[str, Any], host.node.get("asset") or {})
-    ensure_flow_run_attempt_workspace(
-        flow_run_id=runtime_owner_id,
-        asset_id=str(asset.get("id") or ""),
-        workspace_ref=str(attempt_root),
-    )
-    try:
-        root_metadata = attempt_root.lstat()
-        resolved_root = attempt_root.resolve(strict=True)
-        candidate = attempt_root.joinpath(*relative.parts)
+        root_metadata = project_root.lstat()
+        candidate = project_root.joinpath(*relative.parts)
         metadata = candidate.lstat()
         resolved = candidate.resolve(strict=True)
     except OSError as exc:
@@ -422,7 +404,7 @@ def read_candidate_output_file(
         or not stat.S_ISDIR(root_metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
         or not stat.S_ISREG(metadata.st_mode)
-        or not resolved.is_relative_to(resolved_root)
+        or not resolved.is_relative_to(project_root)
     ):
         raise DomainError("RUNTIME_OUTPUT_INVALID", "候选文件不在受管节点工作区", 422)
     try:
