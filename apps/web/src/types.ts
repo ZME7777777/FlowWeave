@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -114,6 +114,18 @@ export interface TerminalEnvironment {
 }
 export interface TerminalEnvironmentWrite {
   name: string; description: string; row_version?: number | null;
+}
+export interface WebsiteCredential {
+  id: string; name: string; target_host: string; include_subdomains: boolean;
+  auth_type: 'USERNAME_PASSWORD' | 'BEARER_TOKEN'; has_username: boolean; has_secret: boolean;
+  secret_hint?: string | null; row_version: number;
+  environment_names: { username?: string; password?: string; token?: string };
+  created_at: string; updated_at: string;
+}
+export interface WebsiteCredentialWrite {
+  name: string; target_host: string; include_subdomains: boolean;
+  auth_type: 'USERNAME_PASSWORD' | 'BEARER_TOKEN'; username?: string | null; secret?: string | null;
+  row_version?: number | null;
 }
 export interface NodeAsset {
   id: string; directory_id?: string | null; name: string; description: string;

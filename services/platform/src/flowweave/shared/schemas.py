@@ -80,6 +80,36 @@ class TerminalEnvironmentWrite(ApiModel):
     row_version: int | None = None
 
 
+class WebsiteCredentialWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    target_host: str = Field(min_length=1, max_length=253)
+    include_subdomains: bool = False
+    auth_type: Literal["USERNAME_PASSWORD", "BEARER_TOKEN"] = "USERNAME_PASSWORD"
+    username: str | None = Field(default=None, max_length=320)
+    secret: SecretStr | None = Field(default=None, max_length=4096)
+    row_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def normalize_target_host(self) -> WebsiteCredentialWrite:
+        value = self.target_host.strip().rstrip(".").lower()
+        if (
+            not value
+            or "/" in value
+            or ":" in value
+            or "@" in value
+            or not all(
+                part and len(part) <= 63 and part.replace("-", "").isalnum()
+                for part in value.split(".")
+            )
+        ):
+            raise ValueError("target_host must be a DNS host without scheme, path, or port")
+        self.target_host = value
+        self.name = self.name.strip()
+        if self.username is not None:
+            self.username = self.username.strip() or None
+        return self
+
+
 class EnvironmentSetupWrite(ApiModel):
     base_version_id: str | None = None
 

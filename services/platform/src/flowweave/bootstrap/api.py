@@ -17,6 +17,7 @@ from flowweave.modules.agent_sessions.presentation.router import router as agent
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
 from flowweave.modules.catalog.presentation.router import router as catalog_router
 from flowweave.modules.conversations.presentation.router import router as conversations_router
+from flowweave.modules.credentials.presentation.router import router as credentials_router
 from flowweave.modules.environments.presentation.router import router as environments_router
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
@@ -149,6 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         flows_router,
         runs_router,
         conversations_router,
+        credentials_router,
     ):
         app.include_router(router, prefix="/api/v1")
     return app

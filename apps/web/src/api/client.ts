@@ -1,7 +1,7 @@
 import type {
   AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
@@ -326,6 +326,13 @@ export const api = {
   publishEnvironmentSetup: (id: string) =>
     request<EnvironmentVersion>(`/environment-setup-sessions/${id}/publish`, json('POST')),
   stopEnvironmentSetup: (id: string) => request<void>(`/environment-setup-sessions/${id}`, json('DELETE')),
+  websiteCredentials: () => request<WebsiteCredential[]>('/website-credentials'),
+  createWebsiteCredential: (body: WebsiteCredentialWrite) =>
+    request<WebsiteCredential>('/website-credentials', json('POST', body)),
+  updateWebsiteCredential: (id: string, body: WebsiteCredentialWrite) =>
+    request<WebsiteCredential>(`/website-credentials/${encodeURIComponent(id)}`, json('PUT', body)),
+  deleteWebsiteCredential: (id: string) =>
+    request<void>(`/website-credentials/${encodeURIComponent(id)}`, json('DELETE')),
 
   providers: () => request<ModelProvider[]>('/model-providers'),
   createProvider: (body: ModelProviderWrite) => request<ModelProvider>('/model-providers', json('POST', body)),

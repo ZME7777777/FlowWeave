@@ -13,6 +13,10 @@ def _empty_output_targets() -> dict[str, dict[str, str]]:
     return {}
 
 
+def _empty_conversation_secrets() -> dict[str, str]:
+    return {}
+
+
 def _empty_semantic_history() -> tuple[dict[str, str], ...]:
     return ()
 
@@ -360,6 +364,11 @@ class StartAttemptRequest:
     runtime_sandbox_id: str = ""
     runtime_resource_name: str = ""
     runtime_base_url: str = ""
+    # Values are sent only through OpenHands' native conversation-secret field.
+    # They are never persisted in a FlowWeave Runtime manifest or image.
+    conversation_secrets: dict[str, str] = field(
+        default_factory=_empty_conversation_secrets, repr=False
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Literal, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.model_providers.application.service import (
     codex_runtime_credentials,
     get_provider,
@@ -362,6 +364,18 @@ def build_runtime_request(
     agent_spec: RuntimeAgentSpec | None = None,
     conversation_id: str | None = None,
 ) -> StartAttemptRequest:
+    conversation_secrets, credential_context = credentials_for_agent(db)
+    if credential_context and agent_spec is not None:
+        context = agent_spec.agent_context
+        agent_spec = replace(
+            agent_spec,
+            agent_context=replace(
+                context,
+                system_message_suffix="\n\n".join(
+                    part for part in (context.system_message_suffix, credential_context) if part
+                ),
+            ),
+        )
     # Interactive Agent conversations are only hosted by the selected node
     # Attempt. They deliberately do not inherit that node's execution
     # contract, inputs, startup prompt, output targets, memory, hooks, or
@@ -393,6 +407,7 @@ def build_runtime_request(
             runtime_sandbox_id=runtime_sandbox_id,
             runtime_resource_name=runtime_resource_name,
             runtime_base_url=runtime_base_url,
+            conversation_secrets=conversation_secrets,
         )
     runtime_allocation = runtime_allocation_for_flow_run(
         db, flow_run_id, manifest_digest=runtime_manifest_hash
@@ -442,6 +457,7 @@ def build_runtime_request(
             runtime_sandbox_id=runtime_sandbox_id,
             runtime_resource_name=runtime_resource_name,
             runtime_base_url=runtime_base_url,
+            conversation_secrets=conversation_secrets,
         )
     raw_agent_spec = node.get("runtime_agent_spec")
     if not isinstance(raw_agent_spec, dict):
@@ -767,4 +783,5 @@ def build_runtime_request(
         runtime_sandbox_id=runtime_sandbox_id,
         runtime_resource_name=runtime_resource_name,
         runtime_base_url=runtime_base_url,
+        conversation_secrets=conversation_secrets,
     )

@@ -1162,6 +1162,11 @@ class OpenHandsRuntime:
                 )
             },
         }
+        # Conversation secrets are a native OpenHands request field.  Keep
+        # these values out of Runtime manifests, image configuration, and the
+        # persisted FlowWeave conversation locator.
+        if request.conversation_secrets:
+            payload["secrets"] = dict(request.conversation_secrets)
         if request.conversation_id is not None:
             try:
                 payload["conversation_id"] = str(UUID(request.conversation_id))
@@ -3162,9 +3167,10 @@ class OpenHandsRuntime:
         llm_value = agent_config.get("llm")
         actual = cast(dict[str, Any], llm_value) if isinstance(llm_value, dict) else {}
         expected_base_url = str(expected["base_url"]).rstrip("/")
+        actual_base_url_value = actual.get("base_url")
         actual_base_url = (
-            actual.get("base_url").rstrip("/")
-            if isinstance(actual.get("base_url"), str)
+            actual_base_url_value.rstrip("/")
+            if isinstance(actual_base_url_value, str)
             else None
         )
         matches = (

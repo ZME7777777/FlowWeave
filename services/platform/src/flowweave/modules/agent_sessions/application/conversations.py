@@ -26,6 +26,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
+from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
@@ -591,6 +592,22 @@ def _create_native_conversation(
         host_root=host_root,
         runtime_root=runtime_root,
     )
+    conversation_secrets, credential_context = credentials_for_agent(db)
+    if credential_context:
+        agent_spec = replace(
+            agent_spec,
+            agent_context=replace(
+                agent_spec.agent_context,
+                system_message_suffix="\n\n".join(
+                    part
+                    for part in (
+                        agent_spec.agent_context.system_message_suffix,
+                        credential_context,
+                    )
+                    if part
+                ),
+            ),
+        )
     request = StartAttemptRequest(
         attempt_id=binding.id,
         execution_key=f"agent-workspace:{workspace.id}:conversation:{binding.id}",
@@ -606,6 +623,7 @@ def _create_native_conversation(
         runtime_sandbox_id=handle.runtime_resource_id,
         runtime_resource_name=handle.runtime_resource_name,
         runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
+        conversation_secrets=conversation_secrets,
     )
     created = get_runtime().create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:

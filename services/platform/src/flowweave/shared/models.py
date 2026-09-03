@@ -42,6 +42,7 @@ from flowweave.modules.catalog.infrastructure.models import (
     PluginSourceResolution,
 )
 from flowweave.modules.conversations.infrastructure.models import RuntimeConfirmationApproval
+from flowweave.modules.credentials.infrastructure.models import WebsiteCredential
 from flowweave.modules.environments.infrastructure.models import (
     EnvironmentSetupSession,
     EnvironmentVersion,
@@ -143,6 +144,7 @@ __all__ = (
     "RunSnapshot",
     "RuntimeGeneration",
     "RuntimeConfirmationApproval",
+    "WebsiteCredential",
     "TaskState",
     "TerminalEnvironment",
     "now",
