@@ -110,6 +110,14 @@ def _decode_gate_response(answer: str) -> object:
     raise ValueError("Gate sidecar response contains no JSON object")
 
 
+_GATE_JSON_RETRY_QUESTION = (
+    "Your previous gate result was not valid JSON and cannot be used. Return a "
+    "fresh, concise result now: exactly one RFC 8259 JSON object and nothing "
+    "else. Include decision, summary, reasons, evidence, and details. Do not "
+    "quote or reproduce any candidate artifact content."
+)
+
+
 def _script(
     language: SandboxLanguage, code: str, context: dict[str, Any], timeout: int
 ) -> GateResult:
@@ -313,7 +321,18 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
         answer = runtime.ask_agent(
             handle, plan.sidecar_question, timeout_seconds=float(plan.timeout)
         ).response
-        return _normalize(_decode_gate_response(answer))
+        try:
+            return _normalize(_decode_gate_response(answer))
+        except (ValueError, json.JSONDecodeError):
+            # ``ask_agent`` returns rendered model text.  A malformed result
+            # must never be repaired or treated as a decision, but the same
+            # isolated Gate Agent may make one short native correction turn.
+            # It retains the frozen context while the retry prompt prevents
+            # copying large candidate text back into its JSON envelope.
+            corrected = runtime.ask_agent(
+                handle, _GATE_JSON_RETRY_QUESTION, timeout_seconds=float(plan.timeout)
+            ).response
+            return _normalize(_decode_gate_response(corrected))
     except (ValueError, json.JSONDecodeError) as exc:
         return _error(
             "Gate sidecar returned invalid JSON", log=str(exc), code="GATE_RESULT_INVALID"

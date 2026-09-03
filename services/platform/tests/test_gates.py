@@ -105,6 +105,51 @@ def test_agent_sidecar_gate_accepts_fenced_json_response():
     assert result.decision == "PASS"
 
 
+def test_agent_sidecar_gate_retries_once_for_malformed_json():
+    class CorrectingRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.questions: list[str] = []
+
+        def ask_agent(self, handle, question, *, timeout_seconds):
+            del handle, timeout_seconds
+            self.questions.append(question)
+            if len(self.questions) == 1:
+                return RuntimeAskAgentResult(
+                    response='{"decision": "PASS", "summary": invalid}'
+                )
+            return RuntimeAskAgentResult(
+                response=(
+                    '{"decision":"PASS","summary":"checked",'
+                    '"reasons":[],"evidence":[],"details":{}}'
+                )
+            )
+
+    runtime = CorrectingRuntime()
+    request = StartAttemptRequest(
+        attempt_id="gate-sidecar-binding",
+        execution_key="gate-sidecar:test",
+        node={},
+        bindings=[],
+        workspace_ref="/runtime/workspace/project",
+        conversation_id="gate-sidecar-conversation",
+        interaction_mode="COLLABORATION",
+    )
+    plan = GateExecutionPlan(
+        "PROMPT",
+        {"prompt": "check"},
+        2,
+        sidecar_request=request,
+        sidecar_question="You are an isolated workflow gate Agent.",
+    )
+
+    with runtime_context(runtime):
+        result = execute_gate_plan(plan, {})
+
+    assert result.decision == "PASS"
+    assert len(runtime.questions) == 2
+
+
 def test_python_gate_rejects_imports_and_host_access(db_session_factory):
     with db_session_factory() as db:
         result = execute_gate(
