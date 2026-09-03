@@ -46,6 +46,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.agent_workspaces.presentation import router as agent_router
 from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
 from flowweave.modules.model_providers.public import TitleProviderSnapshot
+from flowweave.modules.model_providers.application import service as model_provider_service
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
@@ -1535,7 +1536,7 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         )
         assert first["conversation"]["work_directory_id"] == directory["id"]
         assert first["conversation"]["working_directory"] == "/runtime/workspace/project/backend"
-        assert first["conversation"]["display_title"] is None
+        assert first["conversation"]["display_title"] == "实现接口"
         assert first["conversation"]["title_state"] == "PENDING"
         title_task = db.scalar(
             select(BackgroundTask).where(
@@ -1596,7 +1597,7 @@ def test_agent_workspace_title_task_generates_title_and_preserves_activity_time(
             content="当前目录下有没有 hello world 的项目",
             idempotency_key="title-task-001",
         )
-        assert created["conversation"]["display_title"] is None
+        assert created["conversation"]["display_title"] == "当前目录下有没有 hello world 的项目"
         assert created["conversation"]["title_state"] == "PENDING"
         task = db.scalar(
             select(BackgroundTask).where(
@@ -1671,7 +1672,7 @@ def test_agent_workspace_manual_title_wins_over_late_title_task(
         assert task.payload_json == {"title_generation": 1}
 
 
-def test_agent_workspace_title_task_hides_title_when_generation_fails(
+def test_agent_workspace_title_task_retains_first_sentence_and_logs_failure(
     settings, db_session_factory, monkeypatch, caplog
 ):
     monkeypatch.setattr(
@@ -1710,10 +1711,10 @@ def test_agent_workspace_title_task_hides_title_when_generation_fails(
         )
         binding = db.get(AgentConversationBinding, created["conversation"]["id"])
         assert binding is not None
-        assert binding.display_title is None
+        assert binding.display_title == "修复会话标题生成的失败兜底。"
         assert binding.title_state == "FALLBACK"
         assert any(
-            record.message == "Agent conversation title generation failed; hiding title"
+            record.message == "Agent conversation title generation failed; retaining fallback title"
             and "binding_id=" + binding.id in record.getMessage()
             and "reason=unknown_title_generation_error" in record.getMessage()
             and "error_type=ValueError" in record.getMessage()
@@ -1817,6 +1818,26 @@ def test_responses_title_uses_streaming_provider_protocol(monkeypatch):
     assert captured["headers"]["Accept"] == "text/event-stream"
     assert captured["json"]["stream"] is True
     assert captured["json"]["store"] is False
+
+
+def test_api_key_gpt_56_title_uses_responses_protocol(settings, db_session_factory, monkeypatch):
+    monkeypatch.setattr(
+        model_provider_service, "provider_auth_headers", lambda _provider: {"Authorization": "Bearer x"}
+    )
+    with settings_context(settings), db_session_factory() as db:
+        provider = ModelProvider(
+            name="responses-title-provider",
+            base_url="https://models.example.test/v1",
+            auth_type="API_KEY",
+            encrypted_api_key=b"encrypted-key",
+        )
+        db.add(provider)
+        db.flush()
+
+        snapshot = model_provider_service.title_provider_snapshot(db, provider.id, "gpt-5.6-sol")
+
+    assert snapshot.protocol == "RESPONSES"
+    assert snapshot.base_url == "https://models.example.test/v1"
 
 
 def test_agent_workspace_terminal_session_names_are_safe_and_instance_scoped():

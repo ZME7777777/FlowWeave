@@ -516,12 +516,7 @@ function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boole
 }
 
 function conversationName(conversation: AgentConversation) {
-  // The initial user message is deliberately never used as a title.  Only a
-  // generated or explicitly manual title may be rendered; pending/failed
-  // title generation remains visually anonymous.
-  return ['GENERATED', 'MANUAL'].includes(conversation.title_state ?? '') && conversation.display_title
-    ? conversation.display_title
-    : '…';
+  return conversation.display_title || '新会话';
 }
 
 function pendingConversationName(message: QueuedMessage | undefined) {

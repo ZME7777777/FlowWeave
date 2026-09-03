@@ -398,8 +398,9 @@ def title_provider_snapshot(
 ) -> TitleProviderSnapshot:
     """Resolve a title-only request without exposing stored credentials in a task.
 
-    API-key providers use OpenAI-compatible chat completions. Codex OAuth uses
-    its native Responses endpoint with a freshly obtained OAuth credential.
+    API-key providers normally use OpenAI-compatible chat completions. The
+    governed gpt-5.6 family uses Responses even when it is supplied through an
+    API-key-compatible gateway. Codex OAuth always uses native Responses.
     Neither route reaches the OpenHands Agent Server or a Conversation.
     """
 
@@ -422,8 +423,13 @@ def title_provider_snapshot(
         return TitleProviderSnapshot(CODEX_BASE_URL, headers, model, "RESPONSES")
     if item.auth_type != "API_KEY" or not item.encrypted_api_key:
         raise ValueError("title provider credentials are unavailable")
+    protocol = (
+        "RESPONSES"
+        if model == "gpt-5.6" or model.startswith("gpt-5.6-")
+        else "CHAT_COMPLETIONS"
+    )
     return TitleProviderSnapshot(
-        item.base_url.rstrip("/"), provider_auth_headers(item), model, "CHAT_COMPLETIONS"
+        item.base_url.rstrip("/"), provider_auth_headers(item), model, protocol
     )
 
 

@@ -27,13 +27,13 @@ _MECHANICAL_TITLE = re.compile(
 _logger = logging.getLogger(__name__)
 
 
-def _clean_title(value: object) -> str | None:
+def _clean_title(value: object, fallback: str) -> str:
     if not isinstance(value, str):
-        return None
+        return fallback
     cleaned = " ".join(value.split()).strip(" '“”‘’\"")
     cleaned = cleaned[:80]
     if not cleaned or _MECHANICAL_TITLE.fullmatch(cleaned):
-        return None
+        return fallback
     return cleaned
 
 
@@ -184,6 +184,7 @@ def process_agent_conversation_title(
 
     generation = payload.get("title_generation")
     first_message = payload.get("first_message")
+    fallback = _clean_title(payload.get("fallback_title"), "新会话")
     if not isinstance(generation, int) or generation < 1 or not isinstance(first_message, str):
         _redact_task_seed(db, lease, generation if isinstance(generation, int) else 0)
         return
@@ -199,7 +200,7 @@ def process_agent_conversation_title(
         return
 
     state = "GENERATED"
-    title: str | None = None
+    title = fallback
     provider_id: object = None
     model_name: object = None
     try:
@@ -208,16 +209,15 @@ def process_agent_conversation_title(
         if not isinstance(provider_id, str) or not isinstance(model_name, str):
             raise ValueError("title provider metadata is invalid")
         title = _clean_title(
-            generate_title(title_provider_snapshot(db, provider_id, model_name), first_message)
+            generate_title(title_provider_snapshot(db, provider_id, model_name), first_message),
+            fallback,
         )
-        if title is None:
-            raise ValueError("title provider returned no usable title")
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
         # Title generation is optional metadata.  Preserve the conversation
         # workflow, but leave an operational trace without logging the user's
         # first message or model response.
         _logger.warning(
-            "Agent conversation title generation failed; hiding title "
+            "Agent conversation title generation failed; retaining fallback title "
             "binding_id=%s generation=%s provider_id=%s model=%s "
             "reason=%s error_type=%s",
             binding_id,

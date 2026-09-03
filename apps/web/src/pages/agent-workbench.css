@@ -118,3 +118,7 @@
 .agent-file-tree-resizer:hover::after{background:#79a78f}
 .agent-workspace-drawer.fullscreen .agent-workspace-files{grid-template-columns:var(--file-tree-width,300px) 8px minmax(0,1fr)}
 @media(max-width:680px){.agent-workspace-files,.agent-workspace-drawer.fullscreen .agent-workspace-files{grid-template-columns:1fr;grid-template-rows:minmax(130px,.8fr) minmax(170px,1.2fr)}.agent-file-tree-resizer{display:none}.agent-file-tree-pane{border:1px solid #dfe7e1}}
+
+/* Keep conversation titles readable; truncate only after their available row width is exhausted. */
+.agent-workbench-header>div:first-child{min-width:0;flex:1}
+.agent-workbench-header h2{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
