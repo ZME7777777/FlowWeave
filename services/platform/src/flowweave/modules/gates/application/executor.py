@@ -78,6 +78,38 @@ def _normalize(value: object) -> GateResult:
     )
 
 
+def _decode_gate_response(answer: str) -> object:
+    """Decode the one JSON result emitted by an isolated Gate Agent.
+
+    ``ask_agent`` returns the model's rendered text rather than a structured
+    response-format payload.  The prompt requires a bare JSON object, but a
+    compliant result may still be enclosed in a Markdown fence or have a short
+    presentation prefix.  Decode a complete object from the first few JSON
+    object boundaries and only accept one that carries the gate decision; this
+    never attempts to repair malformed JSON.
+    """
+
+    decoder = json.JSONDecoder()
+    last_error: json.JSONDecodeError | None = None
+    scanned = 0
+    for offset, character in enumerate(answer):
+        if character != "{":
+            continue
+        scanned += 1
+        if scanned > 32:
+            break
+        try:
+            value, _ = decoder.raw_decode(answer, offset)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(value, dict) and "decision" in value:
+            return value
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Gate sidecar response contains no JSON object")
+
+
 def _script(
     language: SandboxLanguage, code: str, context: dict[str, Any], timeout: int
 ) -> GateResult:
@@ -281,7 +313,7 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
         answer = runtime.ask_agent(
             handle, plan.sidecar_question, timeout_seconds=float(plan.timeout)
         ).response
-        return _normalize(json.loads(answer))
+        return _normalize(_decode_gate_response(answer))
     except (ValueError, json.JSONDecodeError) as exc:
         return _error(
             "Gate sidecar returned invalid JSON", log=str(exc), code="GATE_RESULT_INVALID"

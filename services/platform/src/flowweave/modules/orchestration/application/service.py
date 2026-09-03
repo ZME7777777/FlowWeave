@@ -1737,9 +1737,13 @@ def _prepare_gate_plan(
     code = str(config.get("code") or "").strip()
     question = (
         "You are an isolated workflow gate Agent. Do not access any other "
-        "Conversation history. Evaluate only the supplied gate context. Return "
-        "only a JSON object with decision (PASS, FAIL, or ERROR), summary, "
-        "reasons (array), evidence (array), and details (object).\n\n"
+        "Conversation history. Evaluate only the supplied gate context. Your "
+        "entire response is parsed as JSON: emit exactly one RFC 8259 JSON "
+        "object, with no Markdown fence, prefix, or suffix. It must contain "
+        "decision (PASS, FAIL, or ERROR), summary (string), reasons (array), "
+        "evidence (array), and details (object). Do not copy candidate artifact "
+        "content verbatim into the response; summarize it and JSON-escape every "
+        "string value.\n\n"
         f"Gate instructions:\n{instructions or '(No additional prose instructions.)'}\n\n"
         + (
             f"Optional Python to inspect or execute safely as part of your analysis:\n{code}\n\n"
