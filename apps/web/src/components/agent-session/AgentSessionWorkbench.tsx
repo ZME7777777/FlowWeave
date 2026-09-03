@@ -34,6 +34,14 @@ interface BootstrapRecovery {
   reasoningEffort: string | null;
   attempts: number;
 }
+interface ConversationDraftRecovery {
+  draft: ConversationDraft;
+  content: string;
+  attachments: AgentAttachment[];
+  providerId: string;
+  modelName: string;
+  reasoningEffort: string | null;
+}
 interface OptimisticBootstrapTurn {
   scope: string;
   event: OpenHandsConversationEvent;
@@ -115,6 +123,43 @@ function writeBootstrapRecovery(storageKey: string, recovery: BootstrapRecovery 
     // Browser storage is only a recovery aid. The server-side command remains
     // the source of truth and retries still use the stable draft UUID.
   }
+}
+
+function readConversationDraft(storageKey: string): ConversationDraftRecovery | undefined {
+  try {
+    const stored = window.sessionStorage.getItem(storageKey);
+    if (!stored) return undefined;
+    const value = JSON.parse(stored) as Partial<ConversationDraftRecovery>;
+    if (!value.draft?.id || typeof value.draft.displayName !== 'string'
+      || typeof value.content !== 'string' || !Array.isArray(value.attachments)
+      || typeof value.providerId !== 'string' || typeof value.modelName !== 'string'
+      || (value.reasoningEffort !== null && typeof value.reasoningEffort !== 'string')) return undefined;
+    if (value.attachments.some(item => !item || typeof item.filename !== 'string'
+      || typeof item.mime_type !== 'string' || typeof item.byte_size !== 'number'
+      || typeof item.path !== 'string')) return undefined;
+    return value as ConversationDraftRecovery;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeConversationDraft(storageKey: string, recovery: ConversationDraftRecovery | undefined) {
+  try {
+    if (recovery) window.sessionStorage.setItem(storageKey, JSON.stringify(recovery));
+    else window.sessionStorage.removeItem(storageKey);
+  } catch {
+    // This recovery aid deliberately remains browser-only. A first message is
+    // still the only action that creates a server-side Conversation.
+  }
+}
+
+function clipboardFiles(clipboard: DataTransfer): File[] {
+  const files = Array.from(clipboard.files);
+  if (files.length) return files;
+  return Array.from(clipboard.items)
+    .filter(item => item.kind === 'file')
+    .map(item => item.getAsFile())
+    .filter((file): file is File => file !== null);
 }
 
 function isBootstrapAmbiguous(error: Error): boolean {
@@ -1180,7 +1225,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
   const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery(host.bootstrapRecoveryStorageKey));
-  const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? '');
+  const initialConversationDraft = useRef<ConversationDraftRecovery | undefined>(
+    initialBootstrapRecovery.current ? undefined : readConversationDraft(host.draftStorageKey),
+  );
+  const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? initialConversationDraft.current?.content ?? '');
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
   const [liveEvents, setLiveEvents] = useState<OpenHandsConversationEvent[]>([]);
@@ -1199,13 +1247,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState('');
-  const [newConversationProviderId, setNewConversationProviderId] = useState(() => initialBootstrapRecovery.current?.providerId ?? '');
-  const [newConversationModelName, setNewConversationModelName] = useState(() => initialBootstrapRecovery.current?.modelName ?? '');
-  const [newConversationReasoningEffort, setNewConversationReasoningEffort] = useState<string | null>(() => initialBootstrapRecovery.current?.reasoningEffort ?? null);
+  const [newConversationProviderId, setNewConversationProviderId] = useState(() => initialBootstrapRecovery.current?.providerId ?? initialConversationDraft.current?.providerId ?? '');
+  const [newConversationModelName, setNewConversationModelName] = useState(() => initialBootstrapRecovery.current?.modelName ?? initialConversationDraft.current?.modelName ?? '');
+  const [newConversationReasoningEffort, setNewConversationReasoningEffort] = useState<string | null>(() => initialBootstrapRecovery.current?.reasoningEffort ?? initialConversationDraft.current?.reasoningEffort ?? null);
   const [conversationProviderId, setConversationProviderId] = useState('');
   const [conversationModelName, setConversationModelName] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<AgentAttachment[]>(() => initialBootstrapRecovery.current?.message.items ?? []);
+  const [attachments, setAttachments] = useState<AgentAttachment[]>(() => initialBootstrapRecovery.current?.message.items ?? initialConversationDraft.current?.attachments ?? []);
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [operationError, setOperationError] = useState<Error>();
@@ -1213,7 +1261,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const [condensationConfirmationOpen, setCondensationConfirmationOpen] = useState(false);
   const [pendingCreatedId, setPendingCreatedId] = useState<string>();
   const [pendingMigratedSend, setPendingMigratedSend] = useState<BoundQueuedMessage>();
-  const [conversationDraft, setConversationDraft] = useState<ConversationDraft | undefined>(() => initialBootstrapRecovery.current?.draft);
+  const [conversationDraft, setConversationDraft] = useState<ConversationDraft | undefined>(() => initialBootstrapRecovery.current?.draft ?? initialConversationDraft.current?.draft);
   const [bootstrapRecovery, setBootstrapRecovery] = useState<BootstrapRecovery | undefined>(() => initialBootstrapRecovery.current);
   const [workspaceScopeMigration, setWorkspaceScopeMigration] = useState<string>();
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
@@ -1226,6 +1274,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
+  const previousComposerScope = useRef<string | undefined>(undefined);
   // A FlowRun may briefly report a recoverable 409 while its Attempt and
   // Runtime records are being published.  Do not leave the node workbench
   // permanently stuck on the first transient response.
@@ -1318,6 +1367,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     setBootstrapRecovery(undefined);
     writeBootstrapRecovery(host.bootstrapRecoveryStorageKey, undefined);
   }, [host.bootstrapRecoveryStorageKey]);
+  const clearConversationDraft = useCallback(() => {
+    writeConversationDraft(host.draftStorageKey, undefined);
+  }, [host.draftStorageKey]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
@@ -1472,6 +1524,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribe(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, subscribe, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useEffect(() => {
+    if (previousComposerScope.current === composerScope) return;
+    previousComposerScope.current = composerScope;
     if (bootstrapTransitionScope.current === composerScope) {
       bootstrapTransitionScope.current = undefined;
       return;
@@ -1504,6 +1558,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
       setNewConversationReasoningEffort(model.default_reasoning_effort ?? null);
     }
   }, [connectedProviders, newConversationModelName, newConversationProviderId]);
+  useEffect(() => {
+    if (!conversationDraft || pendingBootstrap || bootstrapRecovery) {
+      clearConversationDraft();
+      return;
+    }
+    writeConversationDraft(host.draftStorageKey, {
+      draft: conversationDraft, content: draft, attachments, providerId: newConversationProviderId,
+      modelName: newConversationModelName, reasoningEffort: newConversationReasoningEffort,
+    });
+  }, [attachments, bootstrapRecovery, clearConversationDraft, conversationDraft, draft, host.draftStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap]);
   useEffect(() => {
     if (turnState === 'pausing' && inputReadinessQuery.data?.ready) setTurnState('paused');
   }, [inputReadinessQuery.data?.ready, turnState]);
@@ -1549,6 +1613,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
     setPendingBootstrap(undefined);
     setConversationDraft(undefined);
+    clearConversationDraft();
     clearBootstrapRecovery();
     setOperationError(undefined);
     queryClient.setQueryData<AgentConversation[]>(sessionQueryKey(host, 'conversations', workspace.id), current => [conversation, ...(current ?? []).filter(item => item.id !== conversation.id)]);
@@ -1833,6 +1898,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   }, [interrupt, rewrite, turnState]);
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
     clearBootstrapRecovery();
+    clearConversationDraft();
     setConversationDraft({ ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] });
     setPendingBootstrap(undefined);
     setWorkspaceScopeMigration(undefined);
@@ -1844,7 +1910,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate(host.rootPath);
-  }, [clearBootstrapRecovery, clearLiveText, host.rootPath, onNavigate]);
+  }, [clearBootstrapRecovery, clearConversationDraft, clearLiveText, host.rootPath, onNavigate]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' });
@@ -2015,6 +2081,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
   );
   const selectConversation = (bindingId: string) => {
     setConversationDraft(undefined);
+    clearConversationDraft();
     onNavigate(host.conversationPath(bindingId));
   };
 
@@ -2044,7 +2111,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">
           <ShieldAlert size={17}/><div><b>当前上下文用量较低</b><p>Token {contextProgress?.usedLabel} / {contextProgress?.windowLabel}（{contextProgress?.percentage}%），事件 {activeEventCount.toLocaleString()} / {eventLimit.toLocaleString()}（{eventProgress}%）。现在压缩可能没有足够的可压缩区间，并且仍会调用摘要模型。</p><footer><button type="button" onClick={() => setCondensationConfirmationOpen(false)}>取消</button><button type="button" className="primary" onClick={() => condense.mutate()}>仍然压缩</button></footer></div>
         </section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择 OpenHands 原生能力、命令或 MCP）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments) return; const images = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => file !== null); if (!images.length || !composerScope) return; event.preventDefault(); for (const image of images) upload.mutate({ file: image, scope: composerScope }); }} onSubmit={enqueueDraft} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择 OpenHands 原生能力、命令或 MCP）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = clipboardFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onSubmit={enqueueDraft} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">

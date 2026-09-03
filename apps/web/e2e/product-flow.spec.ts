@@ -79,7 +79,12 @@ async function createFlow(request: APIRequestContext, assetId: string, name: str
 
 async function login(page: Page) {
   await page.goto('/');
-  await page.evaluate(() => localStorage.removeItem('flowweave-workbench'));
+  await page.evaluate(() => {
+    localStorage.removeItem('flowweave-workbench');
+    for (const key of Object.keys(sessionStorage)) {
+      if (key.startsWith('flowweave.agent.') || key.startsWith('flowweave.node-session.')) sessionStorage.removeItem(key);
+    }
+  });
   await page.reload();
 }
 
@@ -1338,10 +1343,11 @@ test('Agent new session keeps full capabilities and can create an explicit works
     }
     if (path.endsWith('/attachments') && request.method() === 'POST') {
       attachmentUploads += 1;
+      const pasted = attachmentUploads === 2;
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({
-        filename: '需求.png', mime_type: 'image/png', byte_size: 4,
-        path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png',
-        image_data_url: 'data:image/png;base64,iVBORw==',
+        filename: pasted ? '需求说明.md' : '需求.png', mime_type: pasted ? 'text/markdown' : 'image/png', byte_size: 4,
+        path: `/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-${pasted ? '需求说明.md' : '需求.png'}`,
+        image_data_url: pasted ? null : 'data:image/png;base64,iVBORw==',
       }) });
       return;
     }
@@ -1451,6 +1457,24 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.getByLabel('上传附件').setInputFiles({ name: '需求.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
   await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
   expect(attachmentUploads).toBe(1);
+  await composer.evaluate(element => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['# 需求说明'], '需求说明.md', { type: 'text/markdown' }));
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
+  });
+  await expect(page.locator('.agent-attachments').getByText('需求说明.md', { exact: true })).toBeVisible();
+  expect(attachmentUploads).toBe(2);
+
+  await composer.fill('切换页面后仍应保留的首条草稿');
+  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('切换页面后仍应保留的首条草稿');
+  await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-attachments').getByText('需求说明.md', { exact: true })).toBeVisible();
+  await expect(page.getByText('当前供应商：专业供应商 · 前端工作区', { exact: true })).toBeVisible();
+  expect(conversations).toHaveLength(0);
+  expect(bootstrapPayload).toBeNull();
 
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
   const environmentSummary = page.locator('.agent-workspace-overview');
@@ -1489,7 +1513,10 @@ test('Agent new session keeps full capabilities and can create an explicit works
   expect(bootstrapPayload).toMatchObject({
     model_provider_id: 'provider-pro', model_name: 'gpt-pro', reasoning_effort: 'low',
     work_directory_id: 'fr58-frontend', content: '实现前端工作区',
-    attachments: [{ path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png', image_data_url: 'data:image/png;base64,iVBORw==' }],
+    attachments: [
+      { path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png', image_data_url: 'data:image/png;base64,iVBORw==' },
+      { path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求说明.md', image_data_url: null },
+    ],
   });
   await expect(page.locator('.agent-workspace-overview').getByText('前端工作区', { exact: true })).toBeHidden();
   await expect.poll(() => workspaceScopeRequests.at(-1)).toEqual({ bindingId: 'fr58-conversation', workDirectoryId: null });
