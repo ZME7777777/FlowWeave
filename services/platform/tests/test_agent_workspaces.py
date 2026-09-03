@@ -1535,7 +1535,7 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         )
         assert first["conversation"]["work_directory_id"] == directory["id"]
         assert first["conversation"]["working_directory"] == "/runtime/workspace/project/backend"
-        assert first["conversation"]["display_title"] == "实现接口"
+        assert first["conversation"]["display_title"] is None
         assert first["conversation"]["title_state"] == "PENDING"
         title_task = db.scalar(
             select(BackgroundTask).where(
@@ -1596,7 +1596,7 @@ def test_agent_workspace_title_task_generates_title_and_preserves_activity_time(
             content="当前目录下有没有 hello world 的项目",
             idempotency_key="title-task-001",
         )
-        assert created["conversation"]["display_title"] == "当前目录下有没有 hello world 的项目"
+        assert created["conversation"]["display_title"] is None
         assert created["conversation"]["title_state"] == "PENDING"
         task = db.scalar(
             select(BackgroundTask).where(
@@ -1671,8 +1671,8 @@ def test_agent_workspace_manual_title_wins_over_late_title_task(
         assert task.payload_json == {"title_generation": 1}
 
 
-def test_agent_workspace_title_task_falls_back_to_first_sentence(
-    settings, db_session_factory, monkeypatch
+def test_agent_workspace_title_task_hides_title_when_generation_fails(
+    settings, db_session_factory, monkeypatch, caplog
 ):
     monkeypatch.setattr(
         conversations,
@@ -1710,8 +1710,15 @@ def test_agent_workspace_title_task_falls_back_to_first_sentence(
         )
         binding = db.get(AgentConversationBinding, created["conversation"]["id"])
         assert binding is not None
-        assert binding.display_title == "修复会话标题生成的失败兜底。"
+        assert binding.display_title is None
         assert binding.title_state == "FALLBACK"
+        assert any(
+            record.message == "Agent conversation title generation failed; hiding title"
+            and "binding_id=" + binding.id in record.getMessage()
+            and "reason=unknown_title_generation_error" in record.getMessage()
+            and "error_type=ValueError" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 def test_chat_completions_title_uses_provider_protocol(monkeypatch):

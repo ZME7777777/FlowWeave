@@ -19,7 +19,6 @@ from flowweave.modules.agent_sessions.application.conversations import (
     frozen_runtime_capability,
     initial_user_event_id,
     message_payload,
-    normalized_first_sentence,
     record_message_attachments,
     validate_attachment_owners,
 )
@@ -825,7 +824,8 @@ def _activate_node_bootstrap(
     attachments: tuple[dict[str, str | int], ...],
 ) -> dict[str, Any]:
     binding.initial_user_event_id = initial_event_id
-    binding.display_title = normalized_first_sentence(content)
+    # A user message must never become the visible conversation title.
+    binding.display_title = None
     binding.title_state = "PENDING"
     binding.lifecycle = "ACTIVE"
     activated_at = now()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, cast
 
@@ -23,16 +24,43 @@ _MECHANICAL_TITLE = re.compile(
     r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
     re.IGNORECASE,
 )
+_logger = logging.getLogger(__name__)
 
 
-def _clean_title(value: object, fallback: str) -> str:
+def _clean_title(value: object) -> str | None:
     if not isinstance(value, str):
-        return fallback
+        return None
     cleaned = " ".join(value.split()).strip(" '“”‘’\"")
     cleaned = cleaned[:80]
     if not cleaned or _MECHANICAL_TITLE.fullmatch(cleaned):
-        return fallback
+        return None
     return cleaned
+
+
+def _failure_reason(exc: Exception) -> str:
+    """Return a searchable failure class without recording model/user content."""
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"http_status_{exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "http_timeout"
+    if isinstance(exc, httpx.HTTPError):
+        return "http_transport_error"
+    if isinstance(exc, (KeyError, IndexError, TypeError)):
+        return "malformed_provider_response"
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        if message == "title provider metadata is invalid":
+            return "invalid_provider_metadata"
+        if message == "title provider returned no usable title":
+            return "empty_or_mechanical_title"
+        if message == "Responses title response did not complete":
+            return "responses_not_completed"
+        if message == "Responses title response did not contain output text":
+            return "responses_missing_output_text"
+        if message.startswith("Responses title request failed:"):
+            return "responses_request_failed"
+    return "unknown_title_generation_error"
 
 
 def _chat_title(snapshot: TitleProviderSnapshot, first_message: str) -> str:
@@ -156,7 +184,6 @@ def process_agent_conversation_title(
 
     generation = payload.get("title_generation")
     first_message = payload.get("first_message")
-    fallback = _clean_title(payload.get("fallback_title"), "新会话")
     if not isinstance(generation, int) or generation < 1 or not isinstance(first_message, str):
         _redact_task_seed(db, lease, generation if isinstance(generation, int) else 0)
         return
@@ -172,17 +199,34 @@ def process_agent_conversation_title(
         return
 
     state = "GENERATED"
-    title = fallback
+    title: str | None = None
+    provider_id: object = None
+    model_name: object = None
     try:
         provider_id = payload.get("model_provider_id")
         model_name = payload.get("model_name")
         if not isinstance(provider_id, str) or not isinstance(model_name, str):
             raise ValueError("title provider metadata is invalid")
         title = _clean_title(
-            generate_title(title_provider_snapshot(db, provider_id, model_name), first_message),
-            fallback,
+            generate_title(title_provider_snapshot(db, provider_id, model_name), first_message)
         )
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+        if title is None:
+            raise ValueError("title provider returned no usable title")
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+        # Title generation is optional metadata.  Preserve the conversation
+        # workflow, but leave an operational trace without logging the user's
+        # first message or model response.
+        _logger.warning(
+            "Agent conversation title generation failed; hiding title "
+            "binding_id=%s generation=%s provider_id=%s model=%s "
+            "reason=%s error_type=%s",
+            binding_id,
+            generation,
+            provider_id if isinstance(provider_id, str) else None,
+            model_name if isinstance(model_name, str) else None,
+            _failure_reason(exc),
+            type(exc).__name__,
+        )
         state = "FALLBACK"
 
     # A user rename takes the binding row lock and increments title_generation.

@@ -56,10 +56,6 @@ _COMPACTION_EVENT_WAIT_SECONDS = 120.0
 _SANDBOX_PROJECT_IMAGE = re.compile(
     r"sandbox:(/runtime/workspace/project/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
-_MECHANICAL_TITLE = re.compile(
-    r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
-    re.IGNORECASE,
-)
 _PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
     (
         "当前会话的项目根目录是 /runtime/workspace/project。",
@@ -804,16 +800,6 @@ def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[st
     }
 
 
-def normalized_first_sentence(content: str) -> str:
-    """A useful local title while the independent metadata task is pending."""
-
-    first_line = next((line for line in content.splitlines() if line.strip()), "")
-    normalized = " ".join(first_line.split())[:80]
-    if _MECHANICAL_TITLE.fullmatch(normalized):
-        return f"关于“{normalized}”的请求"[:80]
-    return normalized or "用户请求"
-
-
 def _enqueue_title_task(db: Session, binding: AgentConversationBinding, first_message: str) -> None:
     if not binding.model_provider_id or not binding.model_name:
         return
@@ -832,7 +818,6 @@ def _enqueue_title_task(db: Session, binding: AgentConversationBinding, first_me
             # Redacted by the one-shot handler after its single use. This is
             # metadata input, never an OpenHands Conversation/Event projection.
             "first_message": " ".join(first_message.split())[:4000],
-            "fallback_title": binding.display_title,
         },
     )
 
@@ -846,7 +831,9 @@ def _activate_bootstrapped_conversation(
     attachments: tuple[dict[str, str | int], ...] = (),
 ) -> dict[str, Any]:
     binding.initial_user_event_id = initial_event_id
-    binding.display_title = normalized_first_sentence(first_message)
+    # The first message is not a title.  Keep the label empty while the
+    # independent title task is pending; the UI renders this as an ellipsis.
+    binding.display_title = None
     binding.title_state = "PENDING"
     binding.lifecycle = "ACTIVE"
     binding.updated_at = now()
