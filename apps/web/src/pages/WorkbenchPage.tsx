@@ -677,6 +677,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     'GATE_CONFIG_INVALID',
     'AUTOMATIC_GATE_DELIVERY_FAILED',
     'AUTOMATIC_START_DELIVERY_FAILED',
+    'AUTOMATIC_RUNTIME_DELIVERY_FAILED',
     'AUTOMATIC_TRANSITION_DELIVERY_FAILED',
     'AUTOMATIC_TRANSITION_INVALID',
   ].includes(attempt.error_code);

@@ -5453,6 +5453,36 @@ def reject_attempt(
 
 def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> dict[str, Any]:
     current = _attempt(db, attempt_id)
+    if current.error_code == "AUTOMATIC_RUNTIME_DELIVERY_FAILED":
+        if current.state != AttemptState.END_BLOCKED or not (current.error_detail or "").startswith(
+            "RUNTIME_OUTPUT_MISSING:"
+        ):
+            raise illegal(
+                "attempt runtime delivery failure is not safely recoverable",
+                state=current.state,
+                error_code=current.error_code,
+            )
+        attempt = _claim_attempt_version(
+            db,
+            attempt_id,
+            payload.expected_state_version,
+            {AttemptState.END_BLOCKED},
+            next_state=AttemptState.EXECUTING,
+            runtime_phase="RUNNING",
+        )
+        attempt.error_code = None
+        attempt.error_detail = None
+        task = enqueue(
+            db,
+            task_type="POLL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=attempt.id,
+            idempotency_key=f"retry-runtime-output:{attempt.id}:v{attempt.state_version}",
+            payload={"poll_no": 0},
+        )
+        task.max_attempts = max(task.max_attempts, 10)
+        finish(db)
+        return attempt_detail(db, attempt.id)
     retryable_error_codes = {
         None,
         "GATE_CONFIG_INVALID",

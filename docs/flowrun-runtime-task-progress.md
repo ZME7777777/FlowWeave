@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`FR-146`（依赖 FR-145）
+> 下一可执行切片：`无`（FR-146 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2153,6 +2153,20 @@ Attempt 冻结的输出字段、类型和 FlowRun 共享项目根解析。该私
 Finish 路径与候选预览统一限制在 FlowRun 共享项目根，仍由既有状态机下载、准备与校验，未直接修改流程或
 Artifact 记录。
 
+### FR-146 自动运行终态输出受限重试 — DONE
+
+依赖：`FR-145`。
+
+目标：自动运行因已修复的 `RUNTIME_OUTPUT_MISSING` 进入 `END_BLOCKED` 后，允许操作者通过既有“重试当前阶段”
+动作恢复一次受限协调。服务端只接受 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 且原始错误明确为该缺失输出类型的
+`END_BLOCKED` Attempt；它必须以版本 CAS 恢复 `EXECUTING/RUNNING` 并投递一次幂等 `POLL_RUNTIME`，再由正常
+Finish、Artifact、门禁和流转状态机决定结果。其他运行时失败、门禁失败和状态均必须继续拒绝，且不得直接
+修改 Artifact 或 FlowRun 状态。
+
+完成：既有重试入口现仅为上述可判定的自动运行输出缺失失败恢复 `EXECUTING/RUNNING`，并以 Attempt 新版本
+投递有界 `POLL_RUNTIME`。自动运行页面也为该安全错误显示“重试当前阶段”；其他 Runtime 和门禁错误保持
+不可重试。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2168,6 +2182,7 @@ Artifact 记录。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-03 | FR-146 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck；`git diff --check` | PASS：仅 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 中明确的 `RUNTIME_OUTPUT_MISSING` 可经版本 CAS 回到运行态并对账；其他失败路径未放宽。生产 FlowRun 将作为本切片的真实状态机验收。 |
 | 2026-09-03 | FR-145 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器定向 pytest（17 passed）；`git diff --check` | PASS：重启后的正式 FinishAction 继续按冻结合同解析；相对 FILE 路径只落在共享项目根。完整 `test_openhands.py` 另有 1 个 FR-143 后遗断言（仍期待已从 Agent 可见输出合同移除的 `run_name`）失败，和本切片无关，未伪记为通过。 |
 | 2026-09-03 | FR-144 | 受影响 Python `py_compile`、Ruff format/check；OpenHands 输出适配器 pytest（7 passed）；`git diff --check`；任务状态唯一性 | PASS：候选 FILE 读取与实际共享项目根对齐，输出解析根保持私有且受限于 `/runtime/workspace/project`；无 wake-up 通知时会投递有界、幂等 REST 协调，不直接改写业务状态。候选预览和 Worker 集成 pytest 均因本机 Docker 守护进程未运行、Testcontainers 无法创建 PostgreSQL 而未执行，未伪记为通过。 |
 | 2026-09-03 | FR-143A | Web TypeScript typecheck、ESLint、production build；定向 Playwright（1 passed）；`git diff --check` | PASS：新会话 `/` 菜单同时显示 OpenHands 原生能力分区与命令/MCP 加载空态。`/condense` 在 OpenHands Conversation 尚未由首条消息创建前为禁用项且不可选；已有会话继续走原生压缩路径。未修改 Runtime、OpenHands API 或会话持久化。 |
