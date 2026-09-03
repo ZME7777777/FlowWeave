@@ -1,9 +1,9 @@
-# @flowweave/cli
+# @flowweave-ai/cli
 
-`@flowweave/cli` 是可独立安装的 FlowWeave 平台命令行客户端，要求 Node.js 22 或更高版本。包中不包含 Python、Docker 或平台源码依赖。
+`@flowweave-ai/cli` 是可独立安装的 FlowWeave 平台命令行客户端，要求 Node.js 22 或更高版本。包中不包含 Python、Docker 或平台源码依赖。
 
 ```bash
-npm install -g @flowweave/cli
+npm install -g @flowweave-ai/cli
 flowweave config init --base-url https://host.example/flowweave
 flowweave health --ready
 ```
@@ -24,4 +24,4 @@ flowweave health --ready
 npx skills add ZME7777777/FlowWeave -g -y --full-depth
 ```
 
-仓库尚未发布该 npm 包前，进入 `packages/cli` 后运行 `npm pack` 生成 tarball，并以 `npm install -g ./flowweave-cli-*.tgz` 安装。发布到 npm registry 需要拥有 `@flowweave` scope 的发布权限；本仓库不会自动发布。
+仓库尚未发布该 npm 包前，进入 `packages/cli` 后运行 `npm pack` 生成 tarball，并以 `npm install -g ./flowweave-ai-cli-*.tgz` 安装。发布到 npm registry 需要拥有 `@flowweave-ai` scope 的发布权限；本仓库不会自动发布。

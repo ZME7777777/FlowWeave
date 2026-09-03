@@ -2,17 +2,17 @@
 
 ## 安装
 
-`@flowweave/cli` 是不依赖 Python、Docker 或 FlowWeave 源码的 Node.js 22+ 命令行客户端：
+`@flowweave-ai/cli` 是不依赖 Python、Docker 或 FlowWeave 源码的 Node.js 22+ 命令行客户端：
 
 ```bash
-npm install -g @flowweave/cli
+npm install -g @flowweave-ai/cli
 flowweave config init --base-url https://host.example/flowweave
 flowweave health --ready
 ```
 
 配置只保存基础 URL 到 `~/.config/flowweave/config.json`；可以用 `FLOWWEAVE_CONFIG_PATH` 覆盖。当前平台不提供 CLI 登录，不能也不应添加 `auth login`。
 
-> 包发布需要拥有 npm `@flowweave` scope 的权限。本仓库只提供可发布包与本地安装验证，不会自动执行 `npm publish`。
+> 包发布需要拥有 npm `@flowweave-ai` scope 的权限。本仓库只提供可发布包与本地安装验证，不会自动执行 `npm publish`。
 
 ## 设计方案
 
