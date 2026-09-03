@@ -1,20 +1,20 @@
 # FlowWeave CLI
 
-`flowweave` is a zero-login command-line client for the current FlowWeave Platform API. It stores only a platform base URL; it does not create, retain, or transmit credentials.
+`flowweave` 是当前 FlowWeave 平台 API 的免登录命令行客户端。它只保存平台基础 URL，不会创建、保存或传输凭据。
 
-## Design
+## 设计说明
 
-The CLI has three layers:
+CLI 分为三层：
 
-1. `config init` establishes the one platform fact required by the current deployment: its base URL, including any reverse-proxy prefix.
-2. `health` and `openapi` provide a safe connectivity check and live contract discovery.
-3. `api` is the complete platform surface. It sends a method, relative path, JSON body, query values and optional one-command headers to the configured platform. `resource` only shortens common collection paths and never becomes a second source of endpoint schemas.
+1. `config init` 配置当前部署唯一必要的平台事实：基础 URL，包含反向代理前缀。
+2. `health` 与 `openapi` 分别用于安全连通性检查和在线契约发现。
+3. `api` 是完整的平台接口面：它会向已配置平台发送 HTTP 方法、相对路径、JSON 请求体、查询参数和仅本次生效的请求头。`resource` 仅缩短常用集合路径，绝不成为第二份接口 schema。
 
-This means a newly deployed REST endpoint is immediately usable through `api`, while the CLI remains small and aligned with FlowWeave's server-owned OpenAPI contract. Multipart and WebSocket transports are exposed as explicit `upload` and `ws` commands rather than being approximated as JSON commands.
+因此，平台新部署的 REST 接口可以立刻通过 `api` 调用，无需等待 CLI 版本发布；CLI 仍以服务端 OpenAPI 契约为准。对于 multipart 和 WebSocket，使用显式的 `upload`、`ws` 命令，不把它们错误模拟为 JSON 请求。
 
-## Install and configure
+## 安装与配置
 
-Install the platform package in a Python 3.12 environment, then configure the platform root once. Preserve a deployment prefix such as `/flowweave` in the configured URL.
+在 Python 3.12 环境中安装平台包，然后一次性配置平台根地址。若部署地址包含 `/flowweave` 等前缀，必须保留。
 
 ```bash
 cd services/platform
@@ -23,34 +23,34 @@ uv run flowweave config init --base-url https://hq-ai.hszq8.com/flowweave
 uv run flowweave health --ready
 ```
 
-The default config file is `~/.config/flowweave/config.toml`. Set `FLOWWEAVE_CONFIG_PATH` to use a project-local or test-specific config file.
+默认配置文件为 `~/.config/flowweave/config.toml`。如需使用项目本地或测试专用配置文件，可设置 `FLOWWEAVE_CONFIG_PATH`。
 
-## Platform-wide endpoint access
+## 全平台接口访问
 
-`flowweave api` is the stable, complete surface: it prefixes relative paths with `/api/v1`, so every REST route exposed by the running platform is callable without waiting for a CLI release. It accepts JSON inline or from a file, repeated query values and arbitrary HTTP headers.
+`flowweave api` 是稳定且完整的接口面：它会为相对资源路径加上 `/api/v1`，因此运行中平台暴露的每个 REST 路由都能直接调用，无需等待 CLI 发布。它接受内联 JSON 或 JSON 文件、重复查询参数和任意 HTTP 请求头。
 
 ```bash
-# Discover the live contract first.
+# 先发现在线契约。
 uv run flowweave openapi --paths
 
-# Read any API resource.
+# 读取任意 API 资源。
 uv run flowweave api get /flows
 uv run flowweave api get /flow-runs -q limit=20
 
-# Send a command. Add Idempotency-Key for a retryable mutating endpoint when required by its contract.
+# 发送命令。若可重试的写接口契约要求幂等键，请传入 Idempotency-Key。
 uv run flowweave api post /flows \
   --data-file ./flow.json \
   -H 'Idempotency-Key: create-flow-demo'
 
-# Inspect a request without changing platform state.
+# 在不改变平台状态的情况下检查请求。
 uv run flowweave api delete /flows/flow-id --dry-run
 ```
 
-Use `--raw` only for platform-root routes such as `/health` or `/openapi.json`; use `health` and `openapi` when possible.
+仅对 `/health`、`/openapi.json` 这类平台根路径使用 `--raw`；优先使用 `health` 与 `openapi` 快捷命令。
 
-## Common resources
+## 常用资源
 
-`resource` is a small convenience layer for common collection paths. It does not hide API payloads or invent defaults.
+`resource` 是常用集合路径的小型快捷层，不会隐藏 API 请求体或擅自补充默认值。
 
 ```bash
 uv run flowweave resource flows list
@@ -59,23 +59,23 @@ uv run flowweave resource capabilities get capability-id
 uv run flowweave resource node-assets create --data-file ./node-asset.json
 ```
 
-For nested routes, websocket endpoints, file uploads, or any route not represented by `resource`, use `flowweave openapi --paths` followed by `flowweave api`.
+对于嵌套路由、WebSocket、文件上传或未被 `resource` 覆盖的接口，先执行 `flowweave openapi --paths`，再使用对应通用命令。
 
-## File upload and WebSocket routes
+## 文件上传与 WebSocket 路由
 
-Use the generic transports for platform endpoints that are not JSON REST calls:
+对于不是 JSON REST 的平台接口，请使用通用传输命令：
 
 ```bash
-# A multipart upload; repeat --form or --file as needed.
+# multipart 上传；可按需要重复传入 --form 或 --file。
 uv run flowweave upload post /agent-workspaces/workspace-id/attachments \
   --file file=./brief.pdf
 
-# Subscribe to a WebSocket endpoint. Use Ctrl-C to stop an unbounded stream.
+# 订阅 WebSocket 接口。无边界流可使用 Ctrl-C 停止。
 uv run flowweave ws /agent-workspaces/workspace-id/runtime/stream
 ```
 
-`ws --message-json` sends one JSON message immediately after connection; `--max-messages` makes an event stream bounded for scripts. Both commands retain the configured deployment prefix and never persist headers.
+`ws --message-json` 会在连接后立即发送一条 JSON 消息；`--max-messages` 可将事件流限制为固定消息数，便于脚本使用。两者都会保留配置中的部署前缀，且绝不持久化请求头。
 
-## Safety boundary
+## 安全边界
 
-The current platform has no end-user login endpoint, so this CLI intentionally has no `auth login` command. The CLI rejects URL credentials and absolute endpoint URLs to keep each invocation scoped to the configured platform. It never persists headers supplied with `-H`; treat those headers as one-command input and avoid placing secrets in shell history.
+当前平台没有终端用户登录接口，因此 CLI 有意不提供 `auth login`。CLI 会拒绝 URL 中的凭据和完整接口 URL，确保每次调用都限定在已配置平台内。`-H` 传入的请求头绝不持久化；将其视为仅本次生效的输入，并避免把密钥写入 shell 历史。
