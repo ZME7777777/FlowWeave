@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-154 后续范围待拆分）
+> 下一可执行切片：`无`（FR-155 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2262,6 +2262,18 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 单节点记录新增可选持久名称并在列表中优先展示，自动副本继续使用确认名称作为新草稿名。前端请求、服务端验证、
 复制审计和浏览器回归均覆盖两种记录类型。
 
+### FR-155 执行记录 Command／Shift 多选删除 — DONE
+
+依赖：`FR-154`。
+
+目标：FlowRun 工作台的单节点运行与自动运行记录支持 Command/Control 切换选择及 Shift 连续范围选择。多选只
+用于批量删除；“拷贝”始终只针对最后点击的单条记录。单节点多选必须继续沿用现有运行中不可删除保护，任一
+选中记录不满足删除条件时不得批量删除；自动记录则保持原有逐条删除的服务端状态语义。删除后清空选区。
+
+完成：两类记录均以 Command/Control 切换和 Shift 区间选择展示选区，删除按钮会显示选中数量并依次删除
+精确记录。单节点选区中包含运行中记录时，删除继续禁用；拷贝与右侧详情始终跟随最后点击记录，不会复制整组
+选区。复制、新增自动记录、切换运行或完成删除后会收敛为单一选区或清空，避免残留选择。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2277,6 +2289,7 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-155 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（6 passed，新增 Command/Shift 多选删除与最后点击拷贝目标覆盖）；`git diff --check`、任务状态唯一性 | PASS：单节点与自动运行记录均支持 Command/Control 追加和 Shift 连续选择，删除仅发送选中记录的精确 DELETE；单节点运行中记录继续阻止批量删除，拷贝对话框始终使用最后点击的自动记录名称。 |
 | 2026-09-04 | FR-154 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（5 passed）；受影响 Python `py_compile`、Ruff、Alembic head、`git diff --check` | PASS（静态与浏览器）：两类记录点击“拷贝”后先展示可编辑副本名称，确认时请求体携带名称且列表显示命名副本；取消不提交请求。新增 `0092_node_run_names`，唯一 Alembic head。定向平台 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集阶段失败；未伪记为通过。Pyright 报告 service.py 中本切片外既有 15 项 Unknown/cast 基线错误，本次新增的拷贝代码未产生诊断。 |
 | 2026-09-04 | FR-153 | Web ESLint、TypeScript typecheck/production build；定向 FlowRun Workbench Playwright（5 passed）；受影响 Python `py_compile`、Ruff、`git diff --check`；定向平台 pytest | PASS（静态与浏览器）：两种记录都可从左侧操作区发起拷贝，副本立即插入并选中；单节点副本只保留启动配置和独立输入副本，自动副本仍归属原父 FlowRun 且没有执行历史。定向 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集阶段失败，未伪记为通过。仓库配置的 Pyright 能解析依赖，但受影响 `service.py` 报告 15 个该切片外既有 Unknown/cast 基线错误；本次新增复制代码未产生诊断。 |
 | 2026-09-04 | FR-152 | 受影响 Python `py_compile`、Ruff format/check、生产文件定向 Pyright（0 errors）、`git diff --check`；定向 `test_conversations.py` pytest | PASS：静态检查通过，收敛路径受精确原生 `paused` 与 Attempt CAS 双重限制。pytest 未能执行断言：本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集时失败；未伪记为通过。测试模块的定向 Pyright 另有既有跨模块兼容导入基线错误，生产文件为 0 errors。 |

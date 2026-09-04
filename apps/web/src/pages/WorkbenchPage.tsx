@@ -2,7 +2,7 @@ import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type 
 import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, Copy, Download, ExternalLink, Eye, FileText, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
@@ -102,17 +102,29 @@ type CopyTarget =
   | { mode: 'MANUAL'; record: NodeRun }
   | { mode: 'AUTOMATIC'; record: FlowRunAutomaticRecord };
 
-function RunRail({ run, mode, automaticRecords, automaticError, selected, selectedNodeDeletable, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onDeleteNode, onCopyNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onStartAutomatic }: {
+type SelectionModifiers = { extend: boolean; range: boolean };
+
+function rangeIds<T extends { id: string }>(items: T[], fromId: string, toId: string): string[] {
+  const from = items.findIndex(item => item.id === fromId);
+  const to = items.findIndex(item => item.id === toId);
+  if (from < 0 || to < 0) return [toId];
+  return items.slice(Math.min(from, to), Math.max(from, to) + 1).map(item => item.id);
+}
+
+function RunRail({ run, mode, automaticRecords, automaticError, selected, manualSelectedIds, automaticSelectedIds, manualSelectionDeletable, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onDeleteNode, onCopyNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onStartAutomatic }: {
   run: FlowRun; mode: WorkbenchMode; automaticRecords: FlowRunAutomaticRecord[]; selected?: string;
-  automaticError?: string;
-  selectedNodeDeletable: boolean; manualBusyId?: string;
+  automaticError?: string; manualSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
+  manualSelectionDeletable: boolean; manualBusyId?: string;
   selectedAutomaticId?: string; automaticBusyId?: string; onModeChange: (mode: WorkbenchMode) => void;
-  onSelect: (id: string) => void; onDeleteNode: () => void; onSelectAutomatic: (id: string) => void; onCreateAutomatic: () => void;
+  onSelect: (id: string, modifiers: SelectionModifiers) => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyNode: () => void; onCopyAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecord) => void;
 }) {
   const active = run.node_runs.filter(item => item.state === 'ACTIVE').length;
-  const manualToolbar = <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="secondary" disabled={!selected || Boolean(manualBusyId)} onClick={onCopyNode}><Copy size={13}/>{manualBusyId ? '拷贝中…' : '拷贝'}</button><button type="button" className="danger" title={selected && !selectedNodeDeletable ? '运行中的记录请先在右侧取消本轮节点执行，待运行时停止后再删除' : undefined} disabled={!selectedNodeDeletable || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>删除</button></div>;
-  return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}><span className="eyebrow">流程运行</span><h2>{run.name}</h2><span data-testid="flow-run-state" className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><div className="run-progress"><span>{run.progress.accepted} 已验收</span><span>{run.progress.terminal} 已结束</span><span>{active} 进行中</span></div><nav className="inner-run-mode-tabs" role="tablist" aria-label="当前流程运行方式"><button type="button" role="tab" aria-selected={mode === 'MANUAL'} className={mode === 'MANUAL' ? 'active' : ''} onClick={() => onModeChange('MANUAL')}>单节点运行</button><button type="button" role="tab" aria-selected={mode === 'AUTOMATIC'} className={mode === 'AUTOMATIC' ? 'active' : ''} onClick={() => onModeChange('AUTOMATIC')}>自动运行</button></nav>{mode === 'MANUAL' ? <>{manualToolbar}<div className="run-history-title"><b>节点执行记录</b><small>拷贝会保留启动配置和输入；不会带入会话、执行输出或结果。</small></div><div className="timeline">{run.node_runs.map(item => <button type="button" key={item.id} className={selected === item.id ? 'active' : ''} onClick={() => onSelect(item.id)}><i className={String(attemptState(item)).toLowerCase()}/><span><b>{nodeRunName(run, item)}</b><small>第 {nodeVisitNumber(run, item)} 次执行 · {attemptStateLabel(item)}</small></span></button>)}</div></> : <><div className="automatic-record-toolbar"><button type="button" className="secondary" disabled={!selectedAutomaticId || Boolean(automaticBusyId)} onClick={onCopyAutomatic}><Copy size={13}/>{automaticBusyId ? '拷贝中…' : '拷贝'}</button><button type="button" className="danger" disabled={!selectedAutomaticId || Boolean(automaticBusyId)} onClick={onDeleteAutomatic}><Trash2 size={13}/>删除</button><button type="button" className="primary" disabled={Boolean(automaticBusyId)} onClick={onCreateAutomatic}><Plus size={13}/>新增</button></div><div className="run-history-title"><b>自动运行记录</b><small>拷贝会保留可达节点配置和输入；不会带入执行输出或结果。</small></div><div className="automatic-record-list">{automaticRecords.map(record => <article key={record.id} className={record.id === selectedAutomaticId ? 'active' : ''}><button type="button" className="automatic-record-select" onClick={() => onSelectAutomatic(record.id)}><span><b>{record.name}</b><small>{record.state === 'DRAFT' ? record.readiness.ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state}</small></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动自动运行 ${record.name}`} disabled={!record.readiness.ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>)}{automaticError ? <p className="error">自动运行记录加载失败：{automaticError}</p> : !automaticRecords.length && <p>暂无自动运行记录。</p>}</div></>}</aside>;
+  const manualCount = manualSelectedIds.size;
+  const automaticCount = automaticSelectedIds.size;
+  const modifiers = (event: ReactMouseEvent): SelectionModifiers => ({ extend: event.metaKey || event.ctrlKey, range: event.shiftKey });
+  const manualToolbar = <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="secondary" disabled={!selected || Boolean(manualBusyId)} onClick={onCopyNode}><Copy size={13}/>{manualBusyId ? '拷贝中…' : '拷贝'}</button><button type="button" className="danger" title={manualCount && !manualSelectionDeletable ? '运行中的记录请先在右侧取消本轮节点执行，待运行时停止后再删除' : undefined} disabled={!manualSelectionDeletable || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div>;
+  return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}><span className="eyebrow">流程运行</span><h2>{run.name}</h2><span data-testid="flow-run-state" className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><div className="run-progress"><span>{run.progress.accepted} 已验收</span><span>{run.progress.terminal} 已结束</span><span>{active} 进行中</span></div><nav className="inner-run-mode-tabs" role="tablist" aria-label="当前流程运行方式"><button type="button" role="tab" aria-selected={mode === 'MANUAL'} className={mode === 'MANUAL' ? 'active' : ''} onClick={() => onModeChange('MANUAL')}>单节点运行</button><button type="button" role="tab" aria-selected={mode === 'AUTOMATIC'} className={mode === 'AUTOMATIC' ? 'active' : ''} onClick={() => onModeChange('AUTOMATIC')}>自动运行</button></nav>{mode === 'MANUAL' ? <>{manualToolbar}<div className="run-history-title"><b>节点执行记录</b><small>Command／Shift 可多选后删除；拷贝只作用于最后点击的记录。</small></div><div className="timeline">{run.node_runs.map(item => <button type="button" key={item.id} className={manualSelectedIds.has(item.id) ? 'active' : ''} aria-pressed={manualSelectedIds.has(item.id)} onClick={event => onSelect(item.id, modifiers(event))}><i className={String(attemptState(item)).toLowerCase()}/><span><b>{nodeRunName(run, item)}</b><small>第 {nodeVisitNumber(run, item)} 次执行 · {attemptStateLabel(item)}</small></span></button>)}</div></> : <><div className="automatic-record-toolbar"><button type="button" className="secondary" disabled={!selectedAutomaticId || Boolean(automaticBusyId)} onClick={onCopyAutomatic}><Copy size={13}/>{automaticBusyId ? '拷贝中…' : '拷贝'}</button><button type="button" className="danger" disabled={!automaticCount || Boolean(automaticBusyId)} onClick={onDeleteAutomatic}><Trash2 size={13}/>{automaticCount > 1 ? `删除 (${automaticCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(automaticBusyId)} onClick={onCreateAutomatic}><Plus size={13}/>新增</button></div><div className="run-history-title"><b>自动运行记录</b><small>Command／Shift 可多选后删除；拷贝只作用于最后点击的记录。</small></div><div className="automatic-record-list">{automaticRecords.map(record => <article key={record.id} className={automaticSelectedIds.has(record.id) ? 'active' : ''}><button type="button" className="automatic-record-select" aria-pressed={automaticSelectedIds.has(record.id)} onClick={event => onSelectAutomatic(record.id, modifiers(event))}><span><b>{record.name}</b><small>{record.state === 'DRAFT' ? record.readiness.ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state}</small></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动自动运行 ${record.name}`} disabled={!record.readiness.ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>)}{automaticError ? <p className="error">自动运行记录加载失败：{automaticError}</p> : !automaticRecords.length && <p>暂无自动运行记录。</p>}</div></>}</aside>;
 }
 
 function isInteractiveClick(target: EventTarget | null): boolean {
@@ -871,6 +883,8 @@ export function WorkbenchPage() {
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
   const [mode, setMode] = useState<WorkbenchMode>(selectedWorkbenchMode ?? 'MANUAL');
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
+  const [manualSelectedIds, setManualSelectedIds] = useState<Set<string>>(new Set());
+  const [automaticSelectedIds, setAutomaticSelectedIds] = useState<Set<string>>(new Set());
   const [automaticDrafts, setAutomaticDrafts] = useState<Record<string, FlowRunAutomaticRecord>>({});
   const [automaticDialogOpen, setAutomaticDialogOpen] = useState(false);
   const [copyTarget, setCopyTarget] = useState<CopyTarget>();
@@ -882,7 +896,12 @@ export function WorkbenchPage() {
   const flow = useQuery({ queryKey: ['flow', flowId], queryFn: () => api.flow(flowId!), enabled: Boolean(flowId), refetchInterval: 5000 });
   const automatic = useQuery({ queryKey: ['flow-run-automatic-records', selectedRunId], queryFn: () => api.automaticRecords(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
   const refresh = useCallback(() => { if (selectedRunId) void qc.invalidateQueries({ queryKey: ['flow-run', selectedRunId] }); if (flowId) void qc.invalidateQueries({ queryKey: ['flow', flowId] }); void qc.invalidateQueries({ queryKey: ['runs'] }); }, [flowId, qc, selectedRunId]);
-  useEffect(() => { setSelectedNodeKey(undefined); setAutomaticDrafts({}); }, [selectedRunId]);
+  useEffect(() => {
+    setSelectedNodeKey(undefined);
+    setAutomaticDrafts({});
+    setManualSelectedIds(new Set());
+    setAutomaticSelectedIds(new Set());
+  }, [selectedRunId]);
   useEffect(() => selectedRunId ? subscribeToRun(selectedRunId, refresh) : undefined, [selectedRunId, refresh]);
   useEffect(() => {
     const run = query.data;
@@ -895,6 +914,9 @@ export function WorkbenchPage() {
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
       return;
     }
+    if (selectedNode) {
+      setManualSelectedIds(current => current.size ? current : new Set([selectedNode.id]));
+    }
     if (selectedNode && !selectedAttemptId) {
       const latestAttempt = selectedNode.attempts.at(-1);
       if (latestAttempt) selectAttempt(latestAttempt.id);
@@ -904,7 +926,10 @@ export function WorkbenchPage() {
   useEffect(() => {
     const restored = (automatic.data ?? []).find(item => item.id === selectedAutomaticId)?.node_runs
       .find(item => item.id === selectedNodeRunId);
-    if (restored) setSelectedNodeKey(restored.flow_node_snapshot_key);
+    if (restored && selectedAutomaticId) {
+      setAutomaticSelectedIds(current => current.size ? current : new Set([selectedAutomaticId]));
+      setSelectedNodeKey(restored.flow_node_snapshot_key);
+    }
   }, [automatic.data, selectedAutomaticId, selectedNodeRunId]);
   useEffect(() => {
     // The mode and automatic-record ID are a one-shot browser-history restore
@@ -938,6 +963,8 @@ export function WorkbenchPage() {
   const clearSelection = () => {
     setSelectedNodeKey(undefined);
     setSelectedAutomaticId(undefined);
+    setManualSelectedIds(new Set());
+    setAutomaticSelectedIds(new Set());
     useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
   };
   const navigate = (result: unknown, kind: string) => {
@@ -1050,21 +1077,50 @@ export function WorkbenchPage() {
     setSelectedNodeKey(key);
     useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
   };
-  const selectHistory = (id: string) => {
-    if (useWorkbenchStore.getState().selectedNodeRunId === id) {
+  const selectHistory = (id: string, modifiers: SelectionModifiers) => {
+    const selectedId = useWorkbenchStore.getState().selectedNodeRunId;
+    const isOnlySelected = manualSelectedIds.size === 1 && manualSelectedIds.has(id);
+    if (!modifiers.extend && !modifiers.range && selectedId === id && isOnlySelected) {
       clearSelection();
       return;
     }
     const item = run.node_runs.find(candidate => candidate.id === id);
+    if (!item) return;
+    if (modifiers.range && selectedId) {
+      setManualSelectedIds(new Set(rangeIds(run.node_runs, selectedId, id)));
+    } else if (modifiers.extend) {
+      setManualSelectedIds(current => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    } else {
+      setManualSelectedIds(new Set([id]));
+    }
     setSelectedNodeKey(item?.flow_node_snapshot_key);
     selectExecution(id, item?.attempts.at(-1)?.id);
   };
-  const selectAutomaticHistory = (id: string) => {
-    if (selectedAutomaticId === id) {
+  const selectAutomaticHistory = (id: string, modifiers: SelectionModifiers) => {
+    const isOnlySelected = automaticSelectedIds.size === 1 && automaticSelectedIds.has(id);
+    if (!modifiers.extend && !modifiers.range && selectedAutomaticId === id && isOnlySelected) {
       clearSelection();
       return;
     }
     const record = automaticRecords.find(item => item.id === id);
+    if (!record) return;
+    if (modifiers.range && selectedAutomaticId) {
+      setAutomaticSelectedIds(new Set(rangeIds(automaticRecords, selectedAutomaticId, id)));
+    } else if (modifiers.extend) {
+      setAutomaticSelectedIds(current => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    } else {
+      setAutomaticSelectedIds(new Set([id]));
+    }
     setSelectedAutomaticId(id);
     const activeNode = record?.node_runs.find(item => item.state === 'ACTIVE') ?? record?.node_runs.at(-1);
     setSelectedNodeKey(record?.state === 'DRAFT' ? record.start_node_key : activeNode?.flow_node_snapshot_key);
@@ -1085,13 +1141,16 @@ export function WorkbenchPage() {
     });
     qc.setQueryData<FlowRunAutomaticRecord[]>(['flow-run-automatic-records', run.id], current => (current ?? []).map(item => item.id === record.id ? record : item));
   };
-  const selectedNodeCanDelete = Boolean(nodeRun && (
-    (nodeRun.state === 'CANCELLED' && nodeRun.attempts.at(-1)?.runtime_phase === 'CANCELLED')
-    || (nodeRun.state === 'ACTIVE'
-      && nodeRun.attempts.at(-1)?.state === 'WAITING_START_CONFIRMATION'
-      && !nodeRun.attempts.at(-1)?.runtime_phase)
-  ));
-  const rail = <RunRail run={run} mode={mode} automaticRecords={automaticRecords} selected={mode === 'MANUAL' ? nodeRun?.id : undefined} selectedNodeDeletable={selectedNodeCanDelete} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!nodeRun) return; void dialog.confirm({ title: '删除这条单节点运行？', message: '节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。', confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId(nodeRun.id); try { await api.deleteNodeRun(run.id, nodeRun.id); clearSelection(); await query.refetch(); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (nodeRun) setCopyTarget({ mode: 'MANUAL', record: nodeRun }); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomatic) return; void dialog.confirm({ title: '删除自动运行记录？', message: '该记录的计划、执行历史与产物将被永久删除。', confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId(selectedAutomatic.id); try { await api.deleteAutomaticRecord(run.id, selectedAutomatic.id); clearSelection(); await automatic.refetch(); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}/>;
+  const nodeRunCanDelete = (record: NodeRun) => (
+    (record.state === 'CANCELLED' && record.attempts.at(-1)?.runtime_phase === 'CANCELLED')
+    || (record.state === 'ACTIVE'
+      && record.attempts.at(-1)?.state === 'WAITING_START_CONFIRMATION'
+      && !record.attempts.at(-1)?.runtime_phase)
+  );
+  const selectedManualRuns = run.node_runs.filter(item => manualSelectedIds.has(item.id));
+  const manualSelectionDeletable = selectedManualRuns.length > 0 && selectedManualRuns.every(nodeRunCanDelete);
+  const selectedAutomaticRecords = automaticRecords.filter(item => automaticSelectedIds.has(item.id));
+  const rail = <RunRail run={run} mode={mode} automaticRecords={automaticRecords} selected={mode === 'MANUAL' ? nodeRun?.id : undefined} manualSelectedIds={manualSelectedIds} automaticSelectedIds={automaticSelectedIds} manualSelectionDeletable={manualSelectionDeletable} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!selectedManualRuns.length || !manualSelectionDeletable) return; const count = selectedManualRuns.length; void dialog.confirm({ title: count === 1 ? '删除这条单节点运行？' : `删除 ${count} 条单节点运行？`, message: count === 1 ? '节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。' : `${count} 条节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId('bulk-delete'); try { for (const record of selectedManualRuns) await api.deleteNodeRun(run.id, record.id); clearSelection(); await query.refetch(); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (nodeRun) setCopyTarget({ mode: 'MANUAL', record: nodeRun }); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomaticRecords.length) return; const count = selectedAutomaticRecords.length; void dialog.confirm({ title: count === 1 ? '删除自动运行记录？' : `删除 ${count} 条自动运行记录？`, message: count === 1 ? '该记录的计划、执行历史与产物将被永久删除。' : `${count} 条记录的计划、执行历史与产物将被永久删除。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId('bulk-delete'); try { for (const record of selectedAutomaticRecords) await api.deleteAutomaticRecord(run.id, record.id); clearSelection(); await automatic.refetch(); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}/>;
   return <>
     <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `250px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: '250px minmax(500px, 1fr)' }}>
       {rail}
@@ -1114,6 +1173,7 @@ export function WorkbenchPage() {
         try {
           const copied = await api.copyNodeRun(run.id, copyTarget.record.id, name);
           qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, node_runs: [...current.node_runs, copied] } : current);
+          setManualSelectedIds(new Set([copied.id]));
           setSelectedNodeKey(copied.flow_node_snapshot_key);
           selectExecution(copied.id, copied.attempts.at(-1)?.id);
         } finally { setManualBusyId(undefined); }
@@ -1123,6 +1183,7 @@ export function WorkbenchPage() {
       try {
         const copied = await api.copyAutomaticRecord(run.id, copyTarget.record.id, name);
         qc.setQueryData<FlowRunAutomaticRecord[]>(['flow-run-automatic-records', run.id], current => [copied, ...(current ?? [])]);
+        setAutomaticSelectedIds(new Set([copied.id]));
         setSelectedAutomaticId(copied.id);
         setSelectedNodeKey(copied.start_node_key);
       } finally { setAutomaticBusyId(undefined); }
@@ -1134,6 +1195,7 @@ export function WorkbenchPage() {
         onCreated={record => {
           setAutomaticDialogOpen(false);
           qc.setQueryData<FlowRunAutomaticRecord[]>(['flow-run-automatic-records', run.id], current => [record, ...(current ?? [])]);
+          setAutomaticSelectedIds(new Set([record.id]));
           setSelectedAutomaticId(record.id);
           setSelectedNodeKey(record.start_node_key);
         }}

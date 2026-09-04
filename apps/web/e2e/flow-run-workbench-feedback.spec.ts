@@ -582,3 +582,86 @@ test('unstarted chat records can be deleted without a cancellation round trip', 
 
   await expect(page.locator('.timeline button')).toHaveCount(0);
 });
+
+test('manual and automatic records support modifier selection for deletion while copy uses the last click', async ({ page }) => {
+  const manualRecords = [
+    {
+      ...chatNodeRun, id: 'manual-record-1', name: '手动记录 1', sequence_no: 1,
+      attempts: [{ ...chatAttempt, id: 'manual-attempt-1', node_run_id: 'manual-record-1' }],
+    },
+    {
+      ...chatNodeRun, id: 'manual-record-2', name: '手动记录 2', sequence_no: 2,
+      attempts: [{ ...chatAttempt, id: 'manual-attempt-2', node_run_id: 'manual-record-2' }],
+    },
+  ];
+  let currentRun = { ...chatRun, node_runs: manualRecords };
+  let automaticRecords = [
+    { ...frozenAutomaticBase, id: 'automatic-record-1', name: '自动记录 1' },
+    { ...frozenAutomaticBase, id: 'automatic-record-2', name: '自动记录 2', run_no: 3 },
+  ];
+  const deletedManualIds: string[] = [];
+  const deletedAutomaticIds: string[] = [];
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
+    });
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs` && request.method() === 'GET') return respond(automaticRecords);
+    const manualId = manualRecords.find(record => path === `/api/v1/flow-runs/${run.id}/nodes/${record.id}`)?.id;
+    if (manualId && request.method() === 'DELETE') {
+      deletedManualIds.push(manualId);
+      currentRun = { ...currentRun, node_runs: currentRun.node_runs.filter(record => record.id !== manualId) };
+      return respond(undefined, 204);
+    }
+    const automaticId = automaticRecords.find(record => path === `/api/v1/flow-runs/${run.id}/automatic-runs/${record.id}`)?.id;
+    if (automaticId && request.method() === 'DELETE') {
+      deletedAutomaticIds.push(automaticId);
+      automaticRecords = automaticRecords.filter(record => record.id !== automaticId);
+      return respond(undefined, 204);
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+
+  const manualFirst = page.locator('.timeline button').filter({ hasText: '手动记录 1' });
+  const manualSecond = page.locator('.timeline button').filter({ hasText: '手动记录 2' });
+  await manualFirst.click();
+  await manualSecond.click({ modifiers: ['Meta'] });
+  await expect(page.locator('.timeline button.active')).toHaveCount(2);
+  const manualDelete = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除 (2)' });
+  await expect(manualDelete).toBeEnabled();
+  await manualDelete.click();
+  const manualDialog = page.getByRole('alertdialog');
+  await expect(manualDialog).toContainText('2 条节点执行记录与产物将被永久删除');
+  await manualDialog.getByRole('button', { name: '删除', exact: true }).click();
+  await expect.poll(() => deletedManualIds).toEqual(['manual-record-1', 'manual-record-2']);
+  await expect(page.locator('.timeline button')).toHaveCount(0);
+
+  await page.getByRole('tab', { name: '自动运行' }).click();
+  const automaticFirst = page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' });
+  const automaticSecond = page.locator('.automatic-record-select').filter({ hasText: '自动记录 2' });
+  await automaticFirst.click();
+  await automaticSecond.click({ modifiers: ['Shift'] });
+  await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(2);
+  await page.getByRole('button', { name: '拷贝', exact: true }).click();
+  const copyDialog = page.getByRole('dialog', { name: '拷贝自动运行记录' });
+  await expect(copyDialog.getByRole('textbox', { name: '副本名称' })).toHaveValue('自动记录 2 · 副本');
+  await copyDialog.getByRole('button', { name: '取消' }).click();
+  const automaticDelete = page.locator('.automatic-record-toolbar').getByRole('button', { name: '删除 (2)' });
+  await automaticDelete.click();
+  const automaticDialog = page.getByRole('alertdialog');
+  await expect(automaticDialog).toContainText('2 条记录的计划、执行历史与产物将被永久删除');
+  await automaticDialog.getByRole('button', { name: '删除', exact: true }).click();
+  await expect.poll(() => deletedAutomaticIds).toEqual(['automatic-record-1', 'automatic-record-2']);
+  await expect(page.locator('.automatic-record-list > article')).toHaveCount(0);
+});
