@@ -19,6 +19,7 @@ from flowweave.modules.catalog.public import resolve_version
 from flowweave.runtime.base import (
     RuntimeAgentContext,
     RuntimeAgentSpec,
+    RuntimeBudgets,
     RuntimeCondenser,
     RuntimeProvider,
     RuntimeTool,
@@ -41,6 +42,7 @@ TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
 PROJECT_ROOT = "/runtime/workspace/project"
 PROACTIVE_COMPACTION_RATIO = 0.8
 CONDENSER_MAX_EVENTS = 10_000
+AGENT_WORKSPACE_MAX_ITERATIONS = 300
 MATERIALIZED_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
     (
@@ -397,6 +399,7 @@ def build_agent_spec(
             keep_first=4,
         ),
         condenser_provider=provider,
+        budgets=RuntimeBudgets(max_iterations=AGENT_WORKSPACE_MAX_ITERATIONS),
         tools=TOOLS,
         skills=skills,
         plugins=plugins,

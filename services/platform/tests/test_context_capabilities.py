@@ -8,6 +8,7 @@ import pytest
 
 from flowweave.modules.agent_sessions.application import conversations
 from flowweave.modules.agent_sessions.application.runtime_config import (
+    AGENT_WORKSPACE_MAX_ITERATIONS,
     FrozenSessionCapability,
     FrozenSessionConfig,
     build_agent_spec,
@@ -96,6 +97,8 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert spec.skills == ()
     assert spec.plugins == ()
     assert spec.mcp_servers == ()
+    assert AGENT_WORKSPACE_MAX_ITERATIONS == 300
+    assert spec.budgets.max_iterations == AGENT_WORKSPACE_MAX_ITERATIONS
 
 
 def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch):
