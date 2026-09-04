@@ -10,6 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from flowweave.modules.agent_sessions.application import (
+    conversations as session_conversations,
+)
+from flowweave.modules.agent_sessions.application import (
     flow_node_conversations,
     flow_node_host,
     flow_node_workspace,
@@ -37,6 +40,40 @@ from flowweave.shared.models import (
 )
 from flowweave.shared.schemas import FlowRunConversationCreateWrite
 from flowweave.shared.settings import settings_context
+
+
+def test_conversation_reference_projection_hides_selected_text_from_message_body() -> None:
+    selected_text = "这段引用只能以附件卡片显示"
+    prompt, image_urls = session_conversations.message_payload(
+        "请基于引用继续处理",
+        (),
+        ({"event_id": "assistant-event-1", "content": selected_text},),
+    )
+
+    assert image_urls == ()
+    assert prompt.endswith(
+        '{"references":[{"event_id":"assistant-event-1","content":"这段引用只能以附件卡片显示"}]}'
+    )
+    display_content, references = session_conversations.project_conversation_references(prompt)
+    assert display_content == "请基于引用继续处理"
+    assert selected_text not in display_content
+    assert references == ({"event_id": "assistant-event-1", "content": selected_text},)
+
+
+def test_conversation_reference_projection_composes_with_attachment_context() -> None:
+    attachment_path = (
+        "/runtime/workspace/project/uploads/"
+        "00000000-0000-0000-0000-000000000001-0123456789abcdef0123456789abcdef--design.png"
+    )
+    prompt, _image_urls = session_conversations.message_payload(
+        "",
+        ({"path": attachment_path, "image_data_url": "data:image/png;base64,aGVsbG8="},),
+        ({"event_id": "assistant-event-2", "content": "不要展开此引用"},),
+    )
+
+    display_content, references = session_conversations.project_conversation_references(prompt)
+    assert display_content == f"请查看已上传到共享工作区的附件：\n- {attachment_path}"
+    assert references == ({"event_id": "assistant-event-2", "content": "不要展开此引用"},)
 
 
 def _runtime_context(db: Session) -> tuple[str, str]:

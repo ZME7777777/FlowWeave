@@ -85,7 +85,16 @@ class AgentAttachmentReference(_Write):
     byte_size: int | None = Field(default=None, ge=0, le=25 * 1024 * 1024)
 
 
+class AgentConversationReference(_Write):
+    event_id: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=10_000)
+
+
 def _empty_attachment_references() -> list[AgentAttachmentReference]:
+    return []
+
+
+def _empty_conversation_references() -> list[AgentConversationReference]:
     return []
 
 
@@ -99,6 +108,9 @@ class AgentConversationBootstrapWrite(_Write):
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
+    references: list[AgentConversationReference] = Field(
+        default_factory=_empty_conversation_references, max_length=10
+    )
     capability_version_ids: list[str] = Field(default_factory=list)
 
 
@@ -106,6 +118,9 @@ class AgentMessageWrite(_Write):
     content: str = Field(max_length=200_000)
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
+    )
+    references: list[AgentConversationReference] = Field(
+        default_factory=_empty_conversation_references, max_length=10
     )
 
 
@@ -435,6 +450,7 @@ async def create_agent_conversation(
             reasoning_effort=payload.reasoning_effort,
             content=payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+            references=tuple(item.model_dump() for item in payload.references),
             capability_version_ids=tuple(payload.capability_version_ids),
             idempotency_key=idempotency_key,
         ),
@@ -560,6 +576,7 @@ async def agent_message(
             binding_id,
             payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+            references=tuple(item.model_dump() for item in payload.references),
         ),
     )
 

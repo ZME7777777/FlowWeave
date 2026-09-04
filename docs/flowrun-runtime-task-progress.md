@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-156 后续范围待拆分）
+> 下一可执行切片：`无`（FR-157 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2292,6 +2292,18 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 可与同节点逐步记录并存且不占用图流转槽。为兼容历史 API／旧记录，只有带
 `STEP_RUN_CONFIGURATION_SAVED` 审计事件的新逐步记录启用自动验收，下游返工 revision 会继承该语义。
 
+### FR-157 会话文本引用附件化 — DONE
+
+依赖：`FR-156`。
+
+目标：用户在 Agent Workspace 或 FlowRun 节点会话中选中既有提问或回复文字时，可将其加入当前输入。编辑器中的
+引用须与图片、文件附件使用同一紧凑 chip 交互，支持移除和排队恢复；发送后，用户消息必须仅显示紧凑“会话引用”
+卡片，不能把已选原文展开为消息正文。OpenHands 继续持有原生消息／事件事实，FlowWeave 不创建消息副本。
+
+完成：前端以正式 event ID 和选中文本提交受限 `references`；服务端将引用上下文附加到同一 OpenHands 原生
+用户消息，并在事件读取投影时去除该内部上下文、返回引用元数据。会话流把元数据渲染为与附件同类的紧凑卡片，
+原文只保留在卡片 title 中。引用与普通附件可组合，草稿、首条消息恢复、排队编辑和节点会话路由均保留该字段。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2309,6 +2321,7 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-05 | FR-156 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（7 passed，新增逐步配置保存后启动与直接启动独立分类覆盖）；受影响 Python `py_compile`、Ruff；Alembic head、`git diff --check` 与任务状态唯一性；定向平台 pytest；全量 Pyright 基线复核 | PASS（静态与浏览器）：三类记录与统一右侧面板生效，逐步保存不立即执行，记录行启动使用冻结提示词，直接启动独立建档；唯一 Alembic head 为 `0092_node_run_names`。定向平台 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在 setup 阶段失败，4 个目标测试未执行断言，未伪记为通过。Pyright 仍报告仓库既有 40 项 Unknown／类型基线错误，本切片新增行无新增诊断。 |
 | 2026-09-04 | FR-155 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（6 passed，新增 Command/Shift 多选删除与最后点击拷贝目标覆盖）；`git diff --check`、任务状态唯一性 | PASS：单节点与自动运行记录均支持 Command/Control 追加和 Shift 连续选择，删除仅发送选中记录的精确 DELETE；单节点运行中记录继续阻止批量删除，拷贝对话框始终使用最后点击的自动记录名称。 |
+| 2026-09-04 | FR-157 | Web ESLint、TypeScript typecheck/production build；定向 Playwright（1 passed）；受影响 Python `py_compile`、Ruff、直接投影断言、Alembic head、`git diff --check` | PASS：选中文本可加入编辑器并作为可移除引用 chip 发送；浏览器请求携带 event ID 与文本，发送消息只呈现“会话引用 1”附件卡片、不会展开所选原文；引用和普通附件可共同投影。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在收集阶段失败，未伪记为通过。唯一 Alembic head 为 `0092_node_run_names`。 |
 | 2026-09-04 | FR-154 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（5 passed）；受影响 Python `py_compile`、Ruff、Alembic head、`git diff --check` | PASS（静态与浏览器）：两类记录点击“拷贝”后先展示可编辑副本名称，确认时请求体携带名称且列表显示命名副本；取消不提交请求。新增 `0092_node_run_names`，唯一 Alembic head。定向平台 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集阶段失败；未伪记为通过。Pyright 报告 service.py 中本切片外既有 15 项 Unknown/cast 基线错误，本次新增的拷贝代码未产生诊断。 |
 | 2026-09-04 | FR-153 | Web ESLint、TypeScript typecheck/production build；定向 FlowRun Workbench Playwright（5 passed）；受影响 Python `py_compile`、Ruff、`git diff --check`；定向平台 pytest | PASS（静态与浏览器）：两种记录都可从左侧操作区发起拷贝，副本立即插入并选中；单节点副本只保留启动配置和独立输入副本，自动副本仍归属原父 FlowRun 且没有执行历史。定向 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集阶段失败，未伪记为通过。仓库配置的 Pyright 能解析依赖，但受影响 `service.py` 报告 15 个该切片外既有 Unknown/cast 基线错误；本次新增复制代码未产生诊断。 |
 | 2026-09-04 | FR-152 | 受影响 Python `py_compile`、Ruff format/check、生产文件定向 Pyright（0 errors）、`git diff --check`；定向 `test_conversations.py` pytest | PASS：静态检查通过，收敛路径受精确原生 `paused` 与 Attempt CAS 双重限制。pytest 未能执行断言：本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集时失败；未伪记为通过。测试模块的定向 Pyright 另有既有跨模块兼容导入基线错误，生产文件为 0 errors。 |
