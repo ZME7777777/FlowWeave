@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { api } from '../api/client';
 import { flowNodeSessionGateway } from '../api/agent-session-gateway';
 import { AgentSessionWorkbench } from '../components/agent-session/AgentSessionWorkbench';
 import { flowNodeSessionHost } from '../components/agent-session/session-host';
@@ -30,19 +31,30 @@ export function FlowNodeSessionPage({
     () => flowNodeSessionGateway(flowRunId, attemptId),
     [attemptId, flowRunId],
   );
-  const refreshFlowRunProjection = useCallback(() => {
+  const refreshFlowRunProjection = useCallback(async () => {
     // Node sessions are a separate route and query namespace.  Their native
     // pause/resume commands also mutate the parent Attempt/FlowRun projection,
     // including an automatic record hosted below another FlowRun.
     const sourceRunId = window.history.state?.flowweaveFlowRun?.runId;
-    void queryClient.invalidateQueries({ queryKey: ['flow-run', flowRunId] });
+    const refreshes: Promise<unknown>[] = [
+      queryClient.invalidateQueries({ queryKey: ['flow-run', flowRunId] }),
+      queryClient.invalidateQueries({ queryKey: ['runs'] }),
+    ];
     if (typeof sourceRunId === 'string') {
-      void queryClient.invalidateQueries({ queryKey: ['flow-run', sourceRunId] });
-      void queryClient.invalidateQueries({ queryKey: ['flow-run-automatic-records', sourceRunId] });
+      refreshes.push(
+        queryClient.invalidateQueries({ queryKey: ['flow-run', sourceRunId] }),
+        // The automatic-record query is inactive while this separate route is
+        // open. Invalidation alone therefore leaves its old END_BLOCKED
+        // value in the cache until after the Workbench first renders.
+        queryClient.fetchQuery({
+          queryKey: ['flow-run-automatic-records', sourceRunId],
+          queryFn: () => api.automaticRecords(sourceRunId),
+        }),
+      );
     }
-    void queryClient.invalidateQueries({ queryKey: ['runs'] });
+    await Promise.all(refreshes);
   }, [flowRunId, queryClient]);
-  const returnToNodeAttempt = () => {
+  const returnToNodeAttempt = async () => {
     const source = window.history.state?.flowweaveFlowRun;
     const automatic = source?.mode === 'AUTOMATIC' && typeof source.automaticRecordId === 'string';
     useWorkbenchStore.setState({
@@ -53,7 +65,7 @@ export function FlowNodeSessionPage({
       selectedWorkbenchMode: automatic ? 'AUTOMATIC' : 'MANUAL',
       selectedAutomaticRecordId: automatic ? source.automaticRecordId : undefined,
     });
-    refreshFlowRunProjection();
+    await refreshFlowRunProjection();
     onNavigate('/', true);
   };
   return <AgentSessionWorkbench
