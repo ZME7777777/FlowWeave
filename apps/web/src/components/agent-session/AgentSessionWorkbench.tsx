@@ -13,6 +13,8 @@ import { ConversationSurface } from '../ConversationSurface';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
+import { SubagentAvatar } from '../SubagentAvatar';
+import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
@@ -68,6 +70,7 @@ interface RuntimeTaskProjection {
   startedAt?: string;
   finishedAt?: string;
   status: RuntimeTaskStatus;
+  avatarSlot: SubagentAvatarSlot;
   outcome?: unknown;
 }
 
@@ -77,6 +80,7 @@ interface RuntimeTaskProjection {
  * tool_call_id; event order and text are deliberately never used as a join.
  */
 function runtimeTasksFromEvents(events: OpenHandsConversationEvent[]): RuntimeTaskProjection[] {
+  const avatarSlots = subagentAvatarSlots(events);
   const tasks = new Map<string, RuntimeTaskProjection>();
   const byToolCall = new Map<string, RuntimeTaskProjection>();
   for (const event of events) {
@@ -90,6 +94,7 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[]): RuntimeTa
       description: typeof task.description === 'string' ? task.description : undefined,
       startedAt: typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined,
       status: 'RUNNING',
+      avatarSlot: avatarSlots.get(actionEventId) ?? 'orbit',
     };
     tasks.set(actionEventId, item);
     if (item.toolCallId) byToolCall.set(item.toolCallId, item);
@@ -113,25 +118,8 @@ function runtimeTaskStatus(task: RuntimeTaskProjection): string {
   return task.status === 'RUNNING' ? '运行中' : task.status === 'COMPLETED' ? '已完成' : '失败';
 }
 
-type RuntimeTaskVisual = 'runner' | 'explorer' | 'reviewer' | 'general' | 'custom';
-
-function runtimeTaskVisual(task: RuntimeTaskProjection): RuntimeTaskVisual {
-  const type = task.subagentType.toLowerCase();
-  if (type.includes('bash') || type.includes('runner')) return 'runner';
-  if (type.includes('explor') || type.includes('search')) return 'explorer';
-  if (type.includes('review') || type.includes('audit') || type.includes('security')) return 'reviewer';
-  if (type.includes('general') || type.includes('default')) return 'general';
-  return 'custom';
-}
-
 function RuntimeTaskGlyph({ task, size = 15 }: { task: RuntimeTaskProjection; size?: number }) {
-  const visual = runtimeTaskVisual(task);
-  const Icon = visual === 'runner' ? Square
-    : visual === 'explorer' ? Search
-      : visual === 'reviewer' ? ShieldAlert
-        : visual === 'general' ? Bot
-          : Boxes;
-  return <span className={`agent-subagent-glyph ${visual} ${task.status.toLowerCase()}`} aria-hidden="true"><Icon size={size}/></span>;
+  return <SubagentAvatar slot={task.avatarSlot} status={task.status.toLowerCase() as 'running' | 'completed' | 'error'} size={size}/>;
 }
 
 function definitionStrings(value: unknown): string[] {
@@ -178,7 +166,7 @@ function RuntimeTaskTab({ tasks, definitions, selectedTaskId, onSelect }: {
   const selectedTask = tasks.find(task => task.id === selectedTaskId) ?? tasks[0];
   if (!selectedTask) return <div className="agent-drawer-empty"><b>暂无子智能体记录</b><span>本会话出现 OpenHands TaskAction 后，记录会显示在这里。</span></div>;
   return <section className="agent-subagent-tab" aria-label="子智能体记录">
-    <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><i className={task.status.toLowerCase()}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
+    <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><RuntimeTaskGlyph task={task} size={13}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
     <RuntimeTaskRecord task={selectedTask} definitions={definitions}/>
   </section>;
 }

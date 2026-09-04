@@ -1,8 +1,10 @@
-import { Bot, Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentAttachment, OpenHandsConversationEvent } from '../types';
+import { SubagentAvatar } from './SubagentAvatar';
+import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
@@ -722,12 +724,20 @@ function CurrentTurnStatus({ items, liveText, requestSubmitting }: {
   </div>;
 }
 
-function ActivityGroup({ items, active, liveText, startedAt, finishedAt }: {
+function taskAvatarStatus(entry: ActivityEntry, item: Item): 'running' | 'completed' | 'error' {
+  const phases = [item.event, ...entry.results.map(result => result.event)]
+    .map(event => event.payload.runtime_task?.phase);
+  if (phases.includes('ERROR')) return 'error';
+  return phases.includes('COMPLETED') ? 'completed' : 'running';
+}
+
+function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots }: {
   items: Item[];
   active: boolean;
   liveText?: string;
   startedAt?: number;
   finishedAt?: number;
+  avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
@@ -747,20 +757,22 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt }: {
         const item = entry.action ?? entry.item;
         const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
         const eventName = String(item.event.payload.event_name ?? '');
-        const ToolIcon = eventName === 'TaskAction' || eventName === 'TaskObservation'
-          ? Bot
-          : eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
+        const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
+          ? subagentAvatarSlotForEvent(item.event, avatarSlots)
+          : undefined;
+        const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
+        const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
         const presentation = activityPresentation(entry, active);
         const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName}/> : null;
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
           {presentation.thought && <article className="conversation-activity-row thought"><Sparkles size={14}/><div><MessageMarkdown>{presentation.thought}</MessageMarkdown></div></article>}
           <details className="conversation-activity-row tool conversation-tool-detail">
-            <summary><ToolIcon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
+            <summary>{taskAvatar ?? <ToolIcon size={14}/>}<div><b>{presentation.title}</b><small>{presentation.status}</small></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
             {toolDetail}
           </details>
         </div>;
         return <article className={`conversation-activity-row ${item.kind}`} key={entry.id}>
-          <ToolIcon size={14}/><div><b>{presentation.title}</b><small>{presentation.status}</small>
+          {taskAvatar ?? <ToolIcon size={14}/>}<div><b>{presentation.title}</b><small>{presentation.status}</small>
             {presentation.thought && <MessageMarkdown>{presentation.thought}</MessageMarkdown>}
           </div>
         </article>;
@@ -845,6 +857,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
   const [condensationElapsed, setCondensationElapsed] = useState(0);
   const turns = useMemo(() => turnsFor(events), [events]);
+  const avatarSlots = useMemo(() => subagentAvatarSlots(events), [events]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
     id: turn.user.event.id,
     content: turn.user.content,
@@ -981,13 +994,14 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
               liveText={isCurrent && blockIndex === processBlocks.length - 1 ? liveText : undefined}
               startedAt={block.startedAt}
               finishedAt={block.finishedAt}
+              avatarSlots={avatarSlots}
             />)}
           {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting}/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>
