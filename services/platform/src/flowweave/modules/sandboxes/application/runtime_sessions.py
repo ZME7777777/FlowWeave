@@ -16,7 +16,7 @@ from flowweave.modules.sandboxes.infrastructure.models import (
 )
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import FlowRun
+from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +117,79 @@ def ensure_flow_run_runtime_session(
     return item
 
 
+def ensure_node_attempt_runtime_session(
+    db: Session,
+    *,
+    flow_run_id: str,
+    node_attempt_id: str,
+    environment_version_id: str,
+    runtime_image_digest: str,
+    workspace_allocation: FlowRunRuntimeAllocation,
+) -> FlowRunRuntime:
+    """Create or verify the immutable Runtime Session for one NodeAttempt."""
+
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_image_digest) is None:
+        raise DomainError(
+            "RUNTIME_SESSION_IMAGE_REQUIRED",
+            "The Runtime Session requires an immutable Runtime Image digest",
+            409,
+            {"node_attempt_id": node_attempt_id},
+        )
+    attempt = db.get(NodeAttempt, node_attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id) if attempt else None
+    if (
+        node_run is None
+        or node_run.flow_run_id != flow_run_id
+        or workspace_allocation.flow_run_id != flow_run_id
+        or workspace_allocation.node_attempt_id != node_attempt_id
+    ):
+        raise DomainError(
+            "RUNTIME_SESSION_OWNER_INVALID",
+            "The Runtime Session does not match its Node Attempt allocation",
+            409,
+            {"flow_run_id": flow_run_id, "node_attempt_id": node_attempt_id},
+        )
+    item = db.scalar(
+        select(FlowRunRuntime)
+        .where(FlowRunRuntime.node_attempt_id == node_attempt_id)
+        .with_for_update()
+    )
+    if item is None:
+        item = FlowRunRuntime(
+            id=uid(),
+            flow_run_id=flow_run_id,
+            node_attempt_id=node_attempt_id,
+            environment_version_id=environment_version_id,
+            runtime_image_digest=runtime_image_digest,
+            workspace_allocation_id=workspace_allocation.id,
+            status="STARTING",
+            row_version=1,
+        )
+        db.add(item)
+        db.flush()
+        return item
+    if (
+        item.flow_run_id != flow_run_id
+        or item.environment_version_id != environment_version_id
+        or item.runtime_image_digest != runtime_image_digest
+        or item.workspace_allocation_id != workspace_allocation.id
+    ):
+        raise DomainError(
+            "RUNTIME_SESSION_SPEC_CONFLICT",
+            "The Node Attempt Runtime Session has a different immutable specification",
+            409,
+            {"runtime_session_id": item.id, "node_attempt_id": node_attempt_id},
+        )
+    if item.status == "DELETING":
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_ACTIVE",
+            "The Node Attempt Runtime Session no longer accepts commands",
+            409,
+            {"runtime_session_id": item.id},
+        )
+    return item
+
+
 def next_runtime_generation_number(
     db: Session,
     runtime_session_id: str,
@@ -145,9 +218,11 @@ def ensure_runtime_generation(
 ) -> RuntimeGeneration:
     """Bind one physical provider record to one immutable Session generation."""
 
+    owner_type = "FLOW_NODE_ATTEMPT" if session.node_attempt_id else "FLOW_RUN"
+    owner_id = session.node_attempt_id or session.flow_run_id
     if (
-        managed_runtime.owner_type != "FLOW_RUN"
-        or managed_runtime.owner_id != session.flow_run_id
+        managed_runtime.owner_type != owner_type
+        or managed_runtime.owner_id != owner_id
         or managed_runtime.runtime_allocation_id != session.workspace_allocation_id
         or managed_runtime.image_reference != session.runtime_image_digest
         or managed_runtime.generation != generation
@@ -819,6 +894,49 @@ def active_flow_run_runtime_connection(db: Session, *, flow_run_id: str) -> Acti
     )
 
 
+def active_node_attempt_runtime_connection(
+    db: Session, *, flow_run_id: str, node_attempt_id: str
+) -> ActiveRuntimeConnection:
+    """Resolve the only routable Agent Server generation for one NodeAttempt."""
+
+    match = db.execute(
+        select(FlowRunRuntime, RuntimeGeneration, ManagedSandbox)
+        .join(
+            RuntimeGeneration,
+            (RuntimeGeneration.runtime_session_id == FlowRunRuntime.id)
+            & (RuntimeGeneration.generation == FlowRunRuntime.active_generation),
+        )
+        .join(ManagedSandbox, ManagedSandbox.id == RuntimeGeneration.managed_runtime_id)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.node_attempt_id == node_attempt_id,
+            FlowRunRuntime.status == "ACTIVE",
+            RuntimeGeneration.state == "READY",
+            ManagedSandbox.kind == "AGENT_RUNTIME",
+            ManagedSandbox.owner_type == "FLOW_NODE_ATTEMPT",
+            ManagedSandbox.owner_id == node_attempt_id,
+            ManagedSandbox.desired_state == "RUNNING",
+            ManagedSandbox.observed_state == "RUNNING",
+        )
+    ).one_or_none()
+    if match is None:
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_ACTIVE",
+            "The Node Attempt has no active Agent Server generation",
+            409,
+            {"flow_run_id": flow_run_id, "node_attempt_id": node_attempt_id},
+        )
+    session, generation, managed_runtime = match
+    return ActiveRuntimeConnection(
+        runtime_session_id=session.id,
+        flow_run_id=session.flow_run_id,
+        managed_runtime_id=managed_runtime.id,
+        resource_name=managed_runtime.backend_resource_name,
+        generation=generation.generation,
+        runtime_fence=_fence(session, generation),
+    )
+
+
 def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
     """Remove logical Runtime records after all physical generations are gone."""
 
@@ -955,12 +1073,14 @@ __all__ = (
     "RuntimeSessionFence",
     "acquire_runtime_replacement_lease",
     "active_flow_run_runtime_connection",
+    "active_node_attempt_runtime_connection",
     "activate_runtime_generation",
     "activate_runtime_replacement",
     "attach_runtime_replacement_generation",
     "assert_active_runtime_fence",
     "delete_flow_run_runtime_session",
     "ensure_flow_run_runtime_session",
+    "ensure_node_attempt_runtime_session",
     "ensure_runtime_generation",
     "fail_runtime_generation",
     "mark_runtime_generation_draining",

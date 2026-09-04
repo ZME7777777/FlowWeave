@@ -42,20 +42,20 @@ def bind_openhands_conversation(
             "OpenHands omitted the Conversation identity",
             502,
         )
-    if allow_inactive_session:
-        overview = sandboxes.runtime_overview(db, flow_run_id)
-        runtime_session_id = str(overview.get("runtime_session_id") or "")
-        if not runtime_session_id:
-            raise DomainError(
-                "RUNTIME_SESSION_NOT_ACTIVE",
-                "The FlowRun has no Runtime Session",
-                409,
-                {"flow_run_id": flow_run_id},
-            )
-    else:
-        runtime_session_id = sandboxes.active_flow_run_runtime_connection(
-            db, flow_run_id=flow_run_id
-        ).runtime_session_id
+    if not node_attempt_id:
+        raise DomainError(
+            "NODE_CONVERSATION_CONTEXT_REQUIRED",
+            "A FlowRun Conversation must belong to a Node Attempt",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    # A native Conversation is only bound after its Attempt Runtime is active.
+    # ``allow_inactive_session`` is retained for API compatibility but cannot
+    # weaken this ownership boundary.
+    del allow_inactive_session
+    runtime_session_id = sandboxes.active_node_attempt_runtime_connection(
+        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+    ).runtime_session_id
     item = db.scalar(
         select(AgentConversationBinding)
         .where(
@@ -71,10 +71,9 @@ def bind_openhands_conversation(
             runtime_session_id=runtime_session_id,
             host_kind=_FLOW_NODE,
             host_id=flow_run_id,
-            # The Attempt is durable creation provenance, not an ownership
-            # boundary. Every node entry into the same FlowRun addresses the
-            # same conversation tree.
-            conversation_scope_id=flow_run_id,
+            # The Attempt owns the runtime, persistence and conversation
+            # scope.  Different Attempts never address the same event tree.
+            conversation_scope_id=node_attempt_id,
             flow_run_id=flow_run_id,
             node_run_id=node_run_id,
             node_attempt_id=node_attempt_id,
@@ -177,7 +176,19 @@ def active_runtime_handle(
     locator = conversation_locator(
         db, flow_run_id=flow_run_id, openhands_conversation_id=openhands_conversation_id
     )
-    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
+    binding = _flow_run_binding(
+        db, flow_run_id=flow_run_id, openhands_conversation_id=openhands_conversation_id
+    )
+    if not binding.node_attempt_id:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_SESSION_DRIFT",
+            "The Conversation has no Node Attempt Runtime owner",
+            409,
+            {"flow_run_id": flow_run_id, "binding_id": binding.id},
+        )
+    connection = sandboxes.active_node_attempt_runtime_connection(
+        db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
+    )
     if connection.runtime_session_id != locator.runtime_session_id:
         raise DomainError(
             "RUNTIME_CONVERSATION_SESSION_DRIFT",

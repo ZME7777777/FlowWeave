@@ -574,8 +574,21 @@ def _create_native_conversation(
             {"environment_version_id": run.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
-    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+    if not attempt_id:
+        raise DomainError(
+            "NODE_CONVERSATION_CONTEXT_REQUIRED",
+            "A FlowRun Conversation must belong to a Node Attempt",
+            409,
+        )
+    connection = sandboxes.active_node_attempt_runtime_connection(
+        db, flow_run_id=run.id, node_attempt_id=attempt_id
+    )
+    sandboxes.runtime_allocation_for_node_attempt(
+        db,
+        flow_run_id=run.id,
+        node_attempt_id=attempt_id,
+        manifest_digest=snapshot.runtime_manifest_hash,
+    )
     working_directory = runtime_working_directory or str(_RUNTIME_PROJECT)
     item = reserve_flow_node_binding(
         db,
@@ -592,8 +605,8 @@ def _create_native_conversation(
     )
     config = config_from_binding(db, item)
     provider = provider_for_config(db, config)
-    host_root = sandboxes.flow_run_capability_path(
-        runtime_owner_id, snapshot.runtime_manifest_hash, "conversations", item.id
+    host_root = sandboxes.node_attempt_capability_path(
+        attempt_id, snapshot.runtime_manifest_hash, "conversations", item.id
     )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(
@@ -613,7 +626,7 @@ def _create_native_conversation(
     )
     request = build_runtime_request(
         db,
-        flow_run_id=runtime_owner_id,
+        flow_run_id=run.id,
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=binding_id,
         execution_key=f"flow-run:{run.id}:conversation:create",
@@ -911,8 +924,21 @@ def _create_or_reload_node_bootstrap(
             {"environment_version_id": run.environment_version_id},
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
-    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+    if not binding.node_attempt_id:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_SESSION_DRIFT",
+            "The Conversation reservation has no Node Attempt Runtime owner",
+            409,
+        )
+    connection = sandboxes.active_node_attempt_runtime_connection(
+        db, flow_run_id=run.id, node_attempt_id=binding.node_attempt_id
+    )
+    sandboxes.runtime_allocation_for_node_attempt(
+        db,
+        flow_run_id=run.id,
+        node_attempt_id=binding.node_attempt_id,
+        manifest_digest=snapshot.runtime_manifest_hash,
+    )
     if connection.runtime_session_id != binding.runtime_session_id:
         raise DomainError(
             "RUNTIME_CONVERSATION_SESSION_DRIFT",
@@ -938,8 +964,8 @@ def _create_or_reload_node_bootstrap(
     working_directory = binding.working_directory or str(_RUNTIME_PROJECT)
     config = config_from_binding(db, binding)
     provider = provider_for_config(db, config)
-    host_root = sandboxes.flow_run_capability_path(
-        runtime_owner_id, snapshot.runtime_manifest_hash, "conversations", binding.id
+    host_root = sandboxes.node_attempt_capability_path(
+        binding.node_attempt_id, snapshot.runtime_manifest_hash, "conversations", binding.id
     )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(
@@ -959,7 +985,7 @@ def _create_or_reload_node_bootstrap(
     )
     request = build_runtime_request(
         db,
-        flow_run_id=runtime_owner_id,
+        flow_run_id=run.id,
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=binding.id,
         execution_key=f"flow-run:{run.id}:conversation:create",
@@ -1081,7 +1107,9 @@ def bootstrap_node_conversation(
                 db, run.id, attempt.id, work_directory_id
             )
         )
-        connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=run.id)
+        connection = sandboxes.active_node_attempt_runtime_connection(
+            db, flow_run_id=run.id, node_attempt_id=attempt.id
+        )
         binding = reserve_flow_node_binding(
             db,
             runtime_session_id=connection.runtime_session_id,
@@ -1571,7 +1599,9 @@ def upload_node_attachment(
             owner_id = str(UUID(attachment_owner_id or ""))
         except ValueError as exc:
             raise DomainError("AGENT_CONVERSATION_ID_INVALID", "附件必须关联有效会话", 422) from exc
-        connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
+        connection = sandboxes.active_node_attempt_runtime_connection(
+            db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+        )
         handle = RuntimeHandle(
             job_id=f"flow-run:{flow_run_id}",
             conversation_id="",
@@ -1658,9 +1688,14 @@ def add_node_conversation_capability(
         raise DomainError("AGENT_CONVERSATION_RUNNING", "会话运行中，完成当前回复后再加载能力", 409)
     attempt = _attempt(db, attempt_id)
     _, _, snapshot = _attempt_context(db, attempt)
-    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
-    host_root = sandboxes.flow_run_capability_path(
-        runtime_owner_id, snapshot.runtime_manifest_hash, "conversations", binding.id
+    sandboxes.runtime_allocation_for_node_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        node_attempt_id=attempt_id,
+        manifest_digest=snapshot.runtime_manifest_hash,
+    )
+    host_root = sandboxes.node_attempt_capability_path(
+        attempt_id, snapshot.runtime_manifest_hash, "conversations", binding.id
     )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(
@@ -1917,7 +1952,9 @@ def node_draft_terminal_resource_details(
     host = agent_sessions.resolve_flow_node_session_host(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
     )
-    connection = sandboxes.active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
+    connection = sandboxes.active_node_attempt_runtime_connection(
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+    )
     return (
         connection.resource_name,
         connection.managed_runtime_id,

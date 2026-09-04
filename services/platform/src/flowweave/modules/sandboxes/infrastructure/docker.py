@@ -1044,6 +1044,7 @@ chmod 0700 "$target"
         spec = resource.spec_json or {}
         relative_raw = str(spec.get("runtime_allocation_relative") or "")
         flow_run_id = str(spec.get("flow_run_id") or "")
+        node_attempt_id = str(spec.get("node_attempt_id") or "")
         agent_workspace_id = str(spec.get("agent_workspace_id") or "")
         runtime_allocation_id = str(
             spec.get("runtime_allocation_id") or spec.get("agent_workspace_allocation_id") or ""
@@ -1056,13 +1057,21 @@ chmod 0700 "$target"
             and relative.parts[0] == ".flow-run-runtimes"
             and relative.parts[-1] == flow_run_id
         )
+        is_node_attempt = (
+            resource.owner_type == "FLOW_NODE_ATTEMPT"
+            and resource.owner_id == node_attempt_id
+            and bool(flow_run_id)
+            and len(relative.parts) == 3
+            and relative.parts[0] == ".flow-run-runtimes"
+            and relative.parts[-1] == node_attempt_id
+        )
         is_agent_workspace = (
             resource.owner_type == "AGENT_WORKSPACE"
             and resource.owner_id == agent_workspace_id
             and relative == PurePosixPath(".agent-workspaces/platform-default")
         )
         if (
-            not (is_flow_run or is_agent_workspace)
+            not (is_flow_run or is_node_attempt or is_agent_workspace)
             or relative.is_absolute()
             or not re.fullmatch(r"[0-9a-f-]{36}", runtime_allocation_id)
             or any(part in {"", ".", ".."} for part in relative.parts)
@@ -1123,10 +1132,7 @@ chmod 0700 "$target"
                 f"type=bind,src={allocation_root / 'workspace/project'},"
                 "dst=/runtime/workspace/project"
             ),
-            (
-                f"type=bind,src={allocation_root / 'workspace/nodes'},"
-                "dst=/runtime/workspace/nodes"
-            ),
+            (f"type=bind,src={allocation_root / 'workspace/nodes'},dst=/runtime/workspace/nodes"),
             (
                 f"type=bind,src={allocation_root / 'state/conversations'},"
                 "dst=/runtime/state/conversations"

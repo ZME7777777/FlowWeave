@@ -8,7 +8,7 @@ the Runtime endpoint to callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -23,11 +23,14 @@ from flowweave.modules.agent_sessions.application.host import (
     WRITE_SESSIONS,
     AgentSessionHostContext,
 )
+from flowweave.modules.environments.public import (
+    lock_referenceable_version,
+    validate_runtime_manifest,
+)
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.manifest import runtime_node
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun, RunSnapshot
-from flowweave.shared.settings import get_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,44 +53,19 @@ _WRITE_PERMISSIONS = frozenset({CREATE_SESSIONS, WRITE_SESSIONS, ACCESS_TERMINAL
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 
 
-def _runtime_working_directory(*, flow_run_id: str, workspace_ref: str) -> str:
-    """Authorize an Attempt path while using the shared Runtime project root.
+def _runtime_working_directory(*, workspace_ref: str) -> str:
+    """Map a node session to its Attempt-owned project mount.
 
-    ``NodeAttempt.workspace_ref`` is an absolute host path under the FlowRun
-    allocation.  It remains the server-side provenance and materialization
-    path, but it is not an OpenHands working directory.  Every interactive
-    node session, terminal, and workspace view uses the one project mount so
-    agents can collaborate on the complete FlowRun project.
+    ``workspace_ref`` is historical lineage only.  The Attempt Runtime mounts
+    its own persistent project root at this stable OpenHands path, so it must
+    never be interpreted against another FlowRun's host allocation.
     """
 
-    raw = workspace_ref.strip()
-    runtime_path = PurePosixPath(raw)
-    if (
-        runtime_path.is_absolute()
-        and runtime_path.is_relative_to(_RUNTIME_PROJECT)
-        and runtime_path.as_posix() == raw
-    ):
-        return str(_RUNTIME_PROJECT)
-    # Attempt data is deliberately a sibling of the shared project mount:
-    # ``workspace/nodes/...`` maps to ``/runtime/workspace/nodes/...``.  It
-    # remains an authorization/provenance path only; the returned Agent cwd
-    # below is still the shared project root.
-    nodes_root = sandboxes.flow_run_workspace_nodes_path(flow_run_id)
-    try:
-        relative = Path(raw).relative_to(nodes_root)
-    except ValueError as exc:
+    if not workspace_ref.strip():
         raise DomainError(
-            "NODE_WORKSPACE_INVALID",
-            "The selected node Attempt workspace is outside its FlowRun allocation",
+            "NODE_WORKSPACE_REQUIRED",
+            "The selected node Attempt has no isolated workspace",
             409,
-            {"flow_run_id": flow_run_id},
-        ) from exc
-    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
-        raise DomainError(
-            "NODE_WORKSPACE_INVALID",
-            "The selected node Attempt workspace layout is invalid",
-            409,
-            {"flow_run_id": flow_run_id},
         )
     return str(_RUNTIME_PROJECT)
 
@@ -110,15 +88,6 @@ def resolve_flow_node_session_host(
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
-    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
-    runtime_overview = sandboxes.runtime_overview(db, flow_run_id)
-    if runtime_overview["rerun_required"]:
-        raise DomainError(
-            "LEGACY_RUNTIME_INCOMPATIBLE",
-            "Historical FlowRun Runtime data is incompatible; rerun the Flow",
-            409,
-            {"flow_run_id": flow_run_id},
-        )
     attempt = db.get(NodeAttempt, attempt_id)
     if attempt is None:
         raise DomainError(
@@ -145,16 +114,34 @@ def resolve_flow_node_session_host(
             409,
             {"node_attempt_id": attempt.id, "state": attempt.state},
         )
-    try:
-        runtime_session_id = sandboxes.active_flow_run_runtime_connection(
-            db, flow_run_id=run.id
-        ).runtime_session_id
-    except DomainError as exc:
-        if exc.code != "RUNTIME_SESSION_NOT_ACTIVE" or get_settings().runtime_adapter != "mock":
-            raise
-        runtime_session_id = str(runtime_overview.get("runtime_session_id") or "")
-        if not runtime_session_id:
-            raise
+    if require_start_permission:
+        if not run.environment_version_id:
+            raise DomainError(
+                "RUN_ENVIRONMENT_REQUIRED",
+                "The FlowRun has no Environment Version",
+                409,
+            )
+        environment = lock_referenceable_version(db, run.environment_version_id)
+        if environment is None:
+            raise DomainError(
+                "RUN_ENVIRONMENT_VERSION_INVALID",
+                "The frozen FlowRun Environment Version is unavailable",
+                409,
+            )
+        validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+        sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=attempt.id)
+        sandboxes.ensure_node_attempt_runtime(
+            db,
+            flow_run_id=run.id,
+            node_attempt_id=attempt.id,
+            image=environment.image_digest,
+            environment_id=environment.environment_id,
+            environment_version_id=environment.id,
+            environment_version_no=environment.version_no,
+        )
+    runtime_session_id = sandboxes.active_node_attempt_runtime_connection(
+        db, flow_run_id=run.id, node_attempt_id=attempt.id
+    ).runtime_session_id
     node = runtime_node(
         definition=snapshot.definition_json,
         manifest=snapshot.runtime_manifest_json or {},
@@ -170,9 +157,7 @@ def resolve_flow_node_session_host(
             409,
             {"node_attempt_id": attempt.id},
         )
-    runtime_working_directory = _runtime_working_directory(
-        flow_run_id=runtime_owner_id, workspace_ref=working_directory
-    )
+    runtime_working_directory = _runtime_working_directory(workspace_ref=working_directory)
     return FlowNodeSessionHost(
         session=AgentSessionHostContext.create(
             host_kind="FLOW_NODE",

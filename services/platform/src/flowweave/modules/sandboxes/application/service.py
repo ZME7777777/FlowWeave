@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
+    runtime_allocation_for_node_attempt,
 )
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
@@ -21,6 +22,7 @@ from flowweave.modules.sandboxes.application.runtime_sessions import (
     activate_runtime_generation,
     delete_flow_run_runtime_session,
     ensure_flow_run_runtime_session,
+    ensure_node_attempt_runtime_session,
     ensure_runtime_generation,
     fail_runtime_generation,
     next_runtime_generation_number,
@@ -191,6 +193,7 @@ def _create_managed_runtime(
     db: Session,
     *,
     flow_run_id: str | None = None,
+    node_attempt_id: str | None = None,
     owner_type: str,
     owner_id: str,
     image: str,
@@ -202,10 +205,11 @@ def _create_managed_runtime(
     provider = DockerSandboxProvider(get_settings())
     provider.require_enabled()
     flow_run_runtime = owner_type == "FLOW_RUN"
-    if flow_run_runtime != (flow_run_id is not None):
+    node_attempt_runtime = owner_type == "FLOW_NODE_ATTEMPT"
+    if (flow_run_runtime or node_attempt_runtime) != (flow_run_id is not None):
         raise DomainError(
             "RUNTIME_PROVIDER_OWNER_INVALID",
-            "FlowRun Runtime ownership must include exactly one FlowRun allocation",
+            "Persistent Runtime ownership must include exactly one FlowRun allocation",
             422,
             {"owner_type": owner_type, "owner_id": owner_id},
         )
@@ -216,7 +220,14 @@ def _create_managed_runtime(
             422,
             {"owner_type": owner_type, "owner_id": owner_id},
         )
-    if not flow_run_runtime and owner_type not in {
+    if node_attempt_runtime and (not node_attempt_id or owner_id != node_attempt_id):
+        raise DomainError(
+            "RUNTIME_PROVIDER_OWNER_INVALID",
+            "The Runtime Provider owner must be the allocated Node Attempt",
+            422,
+            {"owner_type": owner_type, "owner_id": owner_id},
+        )
+    if not (flow_run_runtime or node_attempt_runtime) and owner_type not in {
         "CAPABILITY_VALIDATION",
         "MCP_OAUTH_AUTHORIZATION",
     }:
@@ -226,14 +237,34 @@ def _create_managed_runtime(
             422,
             {"owner_type": owner_type, "owner_id": owner_id},
         )
-    if flow_run_runtime == bool(workspace_relative):
+    if (flow_run_runtime or node_attempt_runtime) == bool(workspace_relative):
         raise DomainError(
             "RUNTIME_PROVIDER_WORKSPACE_INVALID",
             "Only temporary Runtimes may select an isolated workspace subdirectory",
             422,
             {"owner_type": owner_type, "owner_id": owner_id},
         )
-    flow_run_allocation = runtime_allocation_for_flow_run(db, flow_run_id) if flow_run_id else None
+    if node_attempt_runtime:
+        if flow_run_id is None or node_attempt_id is None:
+            raise RuntimeError("validated Node Attempt Runtime identity became unavailable")
+        attempt_flow_run_id = flow_run_id
+        attempt_runtime_id = node_attempt_id
+        node_attempt_allocation = runtime_allocation_for_node_attempt(
+            db,
+            flow_run_id=attempt_flow_run_id,
+            node_attempt_id=attempt_runtime_id,
+        )
+    else:
+        attempt_flow_run_id = None
+        attempt_runtime_id = None
+        node_attempt_allocation = None
+    flow_run_allocation = (
+        node_attempt_allocation
+        if node_attempt_runtime
+        else runtime_allocation_for_flow_run(db, flow_run_id)
+        if flow_run_id
+        else None
+    )
     runtime_secret_key = (
         resolve_runtime_secret(db, flow_run_allocation.id)
         if flow_run_allocation is not None
@@ -252,17 +283,31 @@ def _create_managed_runtime(
         connection.commit()
         try:
             with Session(bind=connection, expire_on_commit=False) as control_db:
-                logical_session = (
-                    ensure_flow_run_runtime_session(
+                if node_attempt_runtime:
+                    if (
+                        attempt_flow_run_id is None
+                        or attempt_runtime_id is None
+                        or flow_run_allocation is None
+                    ):
+                        raise RuntimeError("Node Attempt Runtime allocation disappeared")
+                    logical_session = ensure_node_attempt_runtime_session(
+                        control_db,
+                        flow_run_id=attempt_flow_run_id,
+                        node_attempt_id=attempt_runtime_id,
+                        environment_version_id=environment_version_id,
+                        runtime_image_digest=image,
+                        workspace_allocation=flow_run_allocation,
+                    )
+                elif flow_run_id is not None and flow_run_allocation is not None:
+                    logical_session = ensure_flow_run_runtime_session(
                         control_db,
                         flow_run_id=flow_run_id,
                         environment_version_id=environment_version_id,
                         runtime_image_digest=image,
                         workspace_allocation=flow_run_allocation,
                     )
-                    if flow_run_id is not None and flow_run_allocation is not None
-                    else None
-                )
+                else:
+                    logical_session = None
                 active_resources = list(
                     control_db.scalars(
                         select(ManagedSandbox)
@@ -328,6 +373,7 @@ def _create_managed_runtime(
                             "environment_version_no": environment_version_no,
                             "workspace_relative": workspace_relative or None,
                             "flow_run_id": flow_run_id,
+                            "node_attempt_id": node_attempt_id,
                             "runtime_allocation_id": (
                                 flow_run_allocation.id if flow_run_allocation is not None else None
                             ),
@@ -344,7 +390,7 @@ def _create_managed_runtime(
                         },
                         idle_expires_at=created_at
                         + timedelta(seconds=get_settings().sandbox_runtime_idle_ttl_seconds)
-                        if not flow_run_runtime
+                        if not (flow_run_runtime or node_attempt_runtime)
                         else None,
                         hard_expires_at=created_at
                         + timedelta(seconds=get_settings().sandbox_runtime_hard_ttl_seconds),
@@ -449,6 +495,36 @@ def ensure_flow_run_runtime(
         flow_run_id=flow_run_id,
         owner_type="FLOW_RUN",
         owner_id=flow_run_id,
+        image=image,
+        environment_id=environment_id,
+        environment_version_id=environment_version_id,
+        environment_version_no=environment_version_no,
+    )
+
+
+def ensure_node_attempt_runtime(
+    db: Session,
+    *,
+    flow_run_id: str,
+    node_attempt_id: str,
+    image: str,
+    environment_id: str,
+    environment_version_id: str,
+    environment_version_no: int,
+) -> RuntimeProviderAllocation:
+    """Provision or reuse the one durable Runtime for a node Attempt.
+
+    A physical Runtime is deliberately scoped to the Attempt rather than the
+    FlowRun.  Its workspace, OpenHands persistence and secret are therefore
+    never shared with another Attempt.
+    """
+
+    return _create_managed_runtime(
+        db,
+        flow_run_id=flow_run_id,
+        node_attempt_id=node_attempt_id,
+        owner_type="FLOW_NODE_ATTEMPT",
+        owner_id=node_attempt_id,
         image=image,
         environment_id=environment_id,
         environment_version_id=environment_version_id,

@@ -29,6 +29,7 @@ from flowweave.shared.application.transactions import (
 from flowweave.shared.credentials_crypto import decrypt_secret, encrypt_secret
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
+from flowweave.shared.models import NodeAttempt, NodeRun
 from flowweave.shared.settings import get_settings
 
 _ROOT_NAME = ".flow-run-runtimes"
@@ -53,6 +54,7 @@ _DIRECTORY_MODES = {
 class RuntimeStorageAllocation:
     id: str
     flow_run_id: str
+    node_attempt_id: str | None
     secret_reference_id: str
     relative_root: str
 
@@ -75,8 +77,8 @@ def _canonical_uuid(value: str, *, field: str) -> str:
     return canonical
 
 
-def _relative_root(flow_run_id: str) -> PurePosixPath:
-    run_id = _canonical_uuid(flow_run_id, field="FlowRun")
+def _relative_root(owner_id: str, *, field: str = "FlowRun") -> PurePosixPath:
+    run_id = _canonical_uuid(owner_id, field=field)
     scope = get_settings().sandbox_manager_scope
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", scope):
         raise DomainError(
@@ -160,6 +162,32 @@ def flow_run_capability_path(flow_run_id: str, manifest_digest: str, *relative_p
     )
 
 
+def node_attempt_capability_path(
+    node_attempt_id: str, manifest_digest: str, *relative_parts: str
+) -> Path:
+    """Return a server-derived capability path for one NodeAttempt."""
+
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest_digest):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Snapshot Runtime Manifest digest is invalid",
+            409,
+        )
+    relative = PurePosixPath(*relative_parts)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Node Attempt capability path is invalid",
+            409,
+        )
+    return (
+        _host_root(_relative_root(node_attempt_id, field="NodeAttempt"))
+        / "capabilities"
+        / manifest_digest
+        / Path(*relative.parts)
+    )
+
+
 def openhands_flow_run_project_path() -> PurePosixPath:
     return PurePosixPath("/runtime/workspace/project")
 
@@ -231,7 +259,10 @@ def _create_lock_file(root: Path) -> None:
 
 
 def _verify_layout(allocation: FlowRunRuntimeAllocation) -> Path:
-    expected = _relative_root(allocation.flow_run_id).as_posix()
+    owner_id = allocation.node_attempt_id or allocation.flow_run_id
+    expected = _relative_root(
+        owner_id, field="NodeAttempt" if allocation.node_attempt_id else "FlowRun"
+    ).as_posix()
     if allocation.relative_root != expected:
         raise DomainError(
             "RUNTIME_ALLOCATION_CONFLICT",
@@ -366,6 +397,7 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
         return RuntimeStorageAllocation(
             existing.id,
             existing.flow_run_id,
+            existing.node_attempt_id,
             existing.secret_reference_id,
             existing.relative_root,
         )
@@ -419,9 +451,124 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
     return RuntimeStorageAllocation(
         allocation_id,
         run_id,
+        None,
         secret_reference_id,
         relative.as_posix(),
     )
+
+
+def allocate_node_attempt_runtime(
+    db: Session, *, flow_run_id: str, node_attempt_id: str
+) -> RuntimeStorageAllocation:
+    """Allocate the durable Runtime root and stable secret for one Attempt.
+
+    The caller cannot choose a host path.  A second conversation in this same
+    Attempt receives this allocation; a new Attempt receives another root.
+    """
+
+    run_id = _canonical_uuid(flow_run_id, field="FlowRun")
+    attempt_id = _canonical_uuid(node_attempt_id, field="NodeAttempt")
+    attempt = db.get(NodeAttempt, attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id) if attempt else None
+    if node_run is None or node_run.flow_run_id != run_id:
+        raise DomainError(
+            "RUNTIME_ALLOCATION_OWNER_INVALID",
+            "The Runtime Attempt does not belong to this FlowRun",
+            409,
+        )
+    existing = db.scalar(
+        select(FlowRunRuntimeAllocation).where(
+            FlowRunRuntimeAllocation.node_attempt_id == attempt_id
+        )
+    )
+    if existing is not None:
+        if existing.flow_run_id != run_id:
+            raise DomainError(
+                "RUNTIME_ALLOCATION_OWNER_INVALID",
+                "The Runtime allocation owner is invalid",
+                409,
+            )
+        root = _verify_layout(existing)
+        _ensure_profile_store(root)
+        _ensure_nodes_store(root)
+        return RuntimeStorageAllocation(
+            existing.id,
+            run_id,
+            attempt_id,
+            existing.secret_reference_id,
+            existing.relative_root,
+        )
+    relative = _relative_root(attempt_id, field="NodeAttempt")
+    root = _host_root(relative)
+    workspace_root = _workspace_root()
+    _ensure_parent(root.parent, managed_root=workspace_root)
+    if root.exists() or root.is_symlink():
+        raise DomainError(
+            "RUNTIME_ALLOCATION_CONFLICT",
+            "Untracked data already exists at the Attempt Runtime allocation path",
+            409,
+        )
+    allocation_id = uid()
+    secret_reference_id = uid()
+    secret_key = secrets.token_hex(32)
+    try:
+        root.mkdir(mode=0o700)
+        _write_marker(root, allocation_id)
+        _create_lock_file(root)
+        for relative_path, mode in _DIRECTORY_MODES.items():
+            root.joinpath(*relative_path.parts).mkdir(mode=mode, parents=True, exist_ok=True)
+            root.joinpath(*relative_path.parts).chmod(mode)
+        _ensure_profile_store(root)
+        db.add(
+            FlowRunRuntimeSecretReference(
+                id=secret_reference_id,
+                encrypted_secret_key=encrypt_secret(secret_key),
+                secret_digest=hashlib.sha256(secret_key.encode("ascii")).hexdigest(),
+            )
+        )
+        allocation = FlowRunRuntimeAllocation(
+            id=allocation_id,
+            flow_run_id=run_id,
+            node_attempt_id=attempt_id,
+            secret_reference_id=secret_reference_id,
+            relative_root=relative.as_posix(),
+        )
+        db.add(allocation)
+        db.flush()
+        _verify_layout(allocation)
+    except BaseException:
+        _remove_new_allocation_root(root, allocation_id)
+        raise
+    register_rollback_action(
+        db,
+        lambda root=root, allocation_id=allocation_id: _remove_allocation_root(root, allocation_id),
+    )
+    return RuntimeStorageAllocation(
+        allocation_id, run_id, attempt_id, secret_reference_id, relative.as_posix()
+    )
+
+
+def runtime_allocation_for_node_attempt(
+    db: Session, *, flow_run_id: str, node_attempt_id: str, manifest_digest: str | None = None
+) -> FlowRunRuntimeAllocation:
+    allocation = db.scalar(
+        select(FlowRunRuntimeAllocation).where(
+            FlowRunRuntimeAllocation.flow_run_id == flow_run_id,
+            FlowRunRuntimeAllocation.node_attempt_id == node_attempt_id,
+        )
+    )
+    if allocation is None:
+        raise DomainError(
+            "NODE_ATTEMPT_RUNTIME_ALLOCATION_REQUIRED",
+            "This Attempt has no Runtime allocation",
+            409,
+        )
+    root = _verify_layout(allocation)
+    _ensure_nodes_store(root)
+    if manifest_digest is not None:
+        with capability_materialization_lock(allocation):
+            ensure_capability_manifest_directory(allocation, manifest_digest)
+    return allocation
 
 
 def ensure_capability_manifest_directory(

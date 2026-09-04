@@ -30,7 +30,7 @@ class FlowRunRuntimeSecretReference(Base):
 
 
 class FlowRunRuntimeAllocation(Base):
-    """Server-derived external storage allocated for exactly one FlowRun."""
+    """Server-derived storage for a legacy FlowRun or one Node Attempt."""
 
     __tablename__ = "flow_run_runtime_allocations"
     __table_args__ = (
@@ -41,7 +41,10 @@ class FlowRunRuntimeAllocation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_run_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    # NULL identifies a legacy FlowRun allocation retained read-only. New
+    # interactive node Runtime storage is owned by exactly one NodeAttempt.
+    flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     secret_reference_id: Mapped[str] = mapped_column(
         String(36),
         unique=True,
@@ -52,7 +55,7 @@ class FlowRunRuntimeAllocation(Base):
 
 
 class FlowRunRuntime(Base):
-    """Stable logical Runtime Session for exactly one FlowRun."""
+    """Stable Runtime Session for a legacy FlowRun or one Node Attempt."""
 
     __tablename__ = "flow_run_runtimes"
     __table_args__ = (
@@ -93,7 +96,8 @@ class FlowRunRuntime(Base):
     # The primary key is the stable Runtime Session identity. Physical
     # containers and endpoints live in generation/provider records instead.
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    flow_run_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
     workspace_allocation_id: Mapped[str] = mapped_column(
