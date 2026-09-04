@@ -43,6 +43,8 @@ flowweave agent conversations <workspace-id>
 
 对确认、附件、删除、停止或 fork 等改变状态的操作，先核对真实 workspace/binding ID 与用户意图；不得直接使用 Docker、Runtime Provider 或 OpenHands 私有接口。
 
+需要引用既有对话时，先读取该 binding 的正式事件，再在创建或发送消息的 `references` 数组中传 `{"event_id": "…", "content": "…"}`。引用是用户选择的上下文，不会授予其他 Workspace 的访问权限；不可按页面文本、历史 URL 或猜测 event ID 构造引用。
+
 删除逻辑工作目录前，先用 `flowweave agent work-directories <workspace-id>` 读取真实 ID，再执行 `flowweave agent work-directory-delete <workspace-id> <work-directory-id> --dry-run`。被 Conversation 冻结引用的工作目录会被平台拒绝删除。
 
 删除文件或目录树使用 `flowweave agent file-delete <workspace-id> --path <runtime-path> [--path <runtime-path> ...] [--binding <binding-id>] [--work-directory <directory-id>] --dry-run`。路径必须来自当前 Workspace 详情；平台只允许当前范围内的普通文件或目录，并会递归删除目录。不得尝试删除工作区根、隐藏路径、符号链接或会话私有附件。确认 dry-run 中的 `paths` 数组和范围 query 后再执行；同时选择父目录与其后代时，平台只返回实际删除的最高层路径。

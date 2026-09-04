@@ -31,8 +31,8 @@ function usage() {
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
-  run <list|get|start|delete|runtime|replace|cancel|complete|events|workspace-delete|work-directory-delete> ...
-  model <list|create|update|delete|discover|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
+  run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-delete|work-directory-delete> ...
+  model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
   agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete> ...
 
 所有写入操作都可加 --dry-run 仅查看最终请求。运行 flowweave <命令> --help 查看该命令说明。`;
@@ -283,6 +283,14 @@ async function run(args) {
     return request('POST', `/flows/${flowId}/runs`, args, { body });
   }
   if (!id) throw new CliError(`run ${action || ''} 需要 FlowRun ID`);
+  if (action === 'node' || action === 'node-copy' || action === 'node-delete') {
+    const nodeRunId = option(args, '--node');
+    if (!nodeRunId) throw new CliError(`run ${action} 需要 --node <node-run-id>`);
+    const path = `/flow-runs/${id}/nodes/${nodeRunId}`;
+    if (action === 'node') return request('GET', path, args);
+    if (action === 'node-copy') return request('POST', `${path}/copy`, args, { body: await objectPayload(args) });
+    return request('DELETE', path, args);
+  }
   if (action === 'workspace-delete') {
     const attemptId = option(args, '--attempt');
     const paths = optionValues(args, '--path');
@@ -311,10 +319,17 @@ async function run(args) {
   if (action === 'delete') return request('DELETE', `/flow-runs/${id}`, args);
   if (action === 'runtime') return request('GET', `/flow-runs/${id}/runtime`, args);
   if (action === 'replace') return request('POST', `/flow-runs/${id}/runtime/replacements`, args);
+  if (action === 'pause' || action === 'resume') {
+    const body = await objectPayload(args);
+    if (!Number.isInteger(body.expected_generation) || !Number.isInteger(body.expected_session_row_version)) {
+      throw new CliError(`run ${action} 需要 --data 或 --data-file，且必须包含整数 expected_generation 和 expected_session_row_version`);
+    }
+    return request('POST', `/flow-runs/${id}/runtime/${action}`, args, { body });
+  }
   if (action === 'cancel') return request('POST', `/flow-runs/${id}/cancel`, args, { body: {} });
   if (action === 'complete') return request('POST', `/flow-runs/${id}/complete`, args, { body: {} });
   if (action === 'events') return request('GET', `/flow-runs/${id}/events`, args);
-  throw new CliError('run 支持 list|get|start|delete|runtime|replace|cancel|complete|events|workspace-delete|work-directory-delete');
+  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-delete|work-directory-delete');
 }
 
 async function model(args) {
@@ -327,6 +342,7 @@ async function model(args) {
       : request('POST', '/model-providers/discover-models', args);
   }
   if (!id) throw new CliError(`model ${action || ''} 需要模型供应商 ID`);
+  if (action === 'usage') return request('GET', `/model-providers/${id}/usage`, args);
   if (action === 'update') return request('PUT', `/model-providers/${id}`, args);
   if (action === 'delete') return request('DELETE', `/model-providers/${id}`, args);
   if (action === 'test') return request('POST', `/model-providers/${id}/test`, args);
@@ -334,7 +350,7 @@ async function model(args) {
   if (action === 'oauth-poll') return request('POST', `/model-providers/${id}/oauth/device/poll`, args, { body: await objectPayload(args) });
   if (action === 'oauth-status') return request('GET', `/model-providers/${id}/oauth/status`, args);
   if (action === 'oauth-revoke') return request('DELETE', `/model-providers/${id}/oauth`, args);
-  throw new CliError('model 支持 list|create|update|delete|discover|test|oauth-start|oauth-poll|oauth-status|oauth-revoke');
+  throw new CliError('model 支持 list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke');
 }
 
 async function agent(args) {
