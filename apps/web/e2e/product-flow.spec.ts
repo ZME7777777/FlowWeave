@@ -1254,6 +1254,13 @@ test('selected conversation text is sent and rendered as a compact reference car
   await expect(sentMessage).toContainText('请据此继续');
   await expect(sentMessage).toContainText('会话引用 1');
   await expect(sentMessage).not.toContainText(selectedText);
+  await sentMessage.getByRole('button', { name: '查看会话引用 1' }).click();
+  const preview = page.getByRole('dialog', { name: '会话引用内容' });
+  await expect(preview).toContainText('所选文本');
+  await expect(preview).toContainText(selectedText);
+  await preview.getByRole('button', { name: '定位原消息' }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(source).toBeInViewport();
 });
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {

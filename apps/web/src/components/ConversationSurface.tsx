@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentAttachment, AgentConversationReference, OpenHandsConversationEvent } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
+import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import './conversation-surface.css';
 
@@ -55,10 +56,11 @@ function attachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function MessageAttachments({ attachments, references = [], onOpen }: {
+function MessageAttachments({ attachments, references = [], onOpen, onOpenReference }: {
   attachments: AgentAttachment[];
   references?: AgentConversationReference[];
   onOpen?: (attachment: AgentAttachment) => void;
+  onOpenReference?: (reference: AgentConversationReference) => void;
 }) {
   if (!attachments.length && !references.length) return null;
   return <div className="conversation-message-attachments" aria-label="消息附件">
@@ -71,9 +73,25 @@ function MessageAttachments({ attachments, references = [], onOpen }: {
     >
       <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><PanelRightOpen size={13}/>
     </button>)}
-    {references.map((reference, index) => <span key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" title={reference.content}>
+    {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
       <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
-    </span>)}
+      <PanelRightOpen size={13}/>
+    </button>)}
+  </div>;
+}
+
+function ConversationReferencePreview({ reference, onClose, onLocate }: {
+  reference: AgentConversationReference;
+  onClose: () => void;
+  onLocate: () => void;
+}) {
+  useEscapeClose(onClose);
+  return <div className="conversation-reference-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="conversation-reference-preview" role="dialog" aria-modal="true" aria-label="会话引用内容">
+      <header><div><span className="eyebrow">CONVERSATION REFERENCE</span><h2>所选文本</h2></div><button type="button" className="ghost" aria-label="关闭会话引用内容" onClick={onClose}>关闭</button></header>
+      <pre>{reference.content}</pre>
+      <footer><button type="button" className="secondary" onClick={onLocate}>定位原消息</button><button type="button" className="primary" onClick={onClose}>完成</button></footer>
+    </section>
   </div>;
 }
 
@@ -880,6 +898,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
   const [condensationElapsed, setCondensationElapsed] = useState(0);
   const [selectedReference, setSelectedReference] = useState<{ reference: ConversationReference; left: number; top: number }>();
+  const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
   const turns = useMemo(() => turnsFor(events), [events]);
   const avatarSlots = useMemo(() => subagentAvatarSlots(events), [events]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
@@ -993,6 +1012,13 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
       top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
     });
   }, [onAddReference]);
+  const locateReferenceSource = useCallback(() => {
+    if (!viewingReference || !surface.current) return;
+    const source = Array.from(surface.current.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
+      .find(item => item.dataset.conversationEventId === viewingReference.event_id);
+    setViewingReference(undefined);
+    source?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating && !condensationStatus) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
@@ -1026,7 +1052,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
           isCurrent && !turn.assistant && !failures.length,
         );
         return <section className="conversation-turn" key={turn.id}>
-          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
+          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
           {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup
@@ -1058,6 +1084,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         </div>
       </article>}
     </section>
+    {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
     {selectedReference && <button type="button" className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }} onPointerDown={event => event.preventDefault()} onClick={() => {
       onAddReference?.(selectedReference.reference);
       window.getSelection()?.removeAllRanges();
