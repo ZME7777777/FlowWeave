@@ -1,13 +1,13 @@
 """Refresh Skill collection members to their latest published version.
 
-Revision ID: 0091_refresh_skill_collection_members
+Revision ID: 0091_skill_collection_latest
 Revises: 0090_env_version_desc
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0091_refresh_skill_collection_members"
+revision = "0091_skill_collection_latest"
 down_revision = "0090_env_version_desc"
 branch_labels = None
 depends_on = None
