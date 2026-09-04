@@ -45,9 +45,9 @@ function FolderRow({ item, directories, nodes, selected, depth, onSelect, select
   const count = nodes.filter(node => node.directory_id && ids.includes(node.directory_id)).length;
   const expanded = expandedIds.has(item.id);
   return <>
-    <div className={`folder-row ${selected === item.id ? 'active' : ''}`} style={{ '--folder-depth': depth } as React.CSSProperties}>
+    <div className={`folder-row ${children.length ? 'has-children' : 'leaf'} ${selected === item.id ? 'active' : ''}`} style={{ '--folder-depth': depth } as React.CSSProperties}>
     <label className="resource-check" onClick={event => event.stopPropagation()}><input type="checkbox" aria-label={`选择目录 ${item.name}`} checked={selectedIds.has(item.id)} onChange={() => onToggle(item.id)}/></label>
-    {children.length ? <button type="button" className="folder-expand" aria-label={`${expanded ? '收起' : '展开'}目录 ${item.name}`} aria-expanded={expanded} onClick={() => onExpand(item.id)}>{expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="folder-expand-spacer"/>}
+    {children.length ? <button type="button" className="folder-expand" aria-label={`${expanded ? '收起' : '展开'}目录 ${item.name}`} aria-expanded={expanded} onClick={() => onExpand(item.id)}>{expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : null}
     <button type="button" className="folder-select" onClick={() => onSelect(item.id)}>
       {expanded ? <FolderOpen size={14}/> : <Folder size={14}/>}<span>{item.name}</span><small>{count}</small>
     </button></div>
