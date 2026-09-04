@@ -460,3 +460,11 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .credential-card>.credential-summary{grid-column:3!important;grid-row:1!important}
 .credential-card>.credential-type{grid-column:3!important;grid-row:2!important}
 .credential-card>.card-actions{grid-column:4!important;grid-row:1/3!important}
+
+/* Compact provider cards reserve explicit rows for their metadata and actions.
+   Keep the optional upstream-key budget panel in the visible content flow:
+   immediately after API Key metadata and before the enabled-model tags. */
+.compact-model-list .model-provider-state{grid-column:1;grid-row:2}
+.compact-model-list .model-provider-meta{grid-column:1;grid-row:3}
+.compact-model-list .provider-usage{grid-column:1/-1;grid-row:4;margin:0}
+.compact-model-list .model-tags{grid-row:5}
