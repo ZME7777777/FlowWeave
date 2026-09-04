@@ -29,6 +29,7 @@ from flowweave.modules.agent_workspaces.public import (
 from flowweave.modules.catalog.public import (
     describe_asset,
     hold_snapshot_memory_references,
+    resolve_version,
 )
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
@@ -6213,6 +6214,52 @@ def delete_run(db: Session, run_id: str) -> None:
 def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
+    session_binding = db.scalar(
+        select(AgentConversationBinding)
+        .where(
+            AgentConversationBinding.host_kind == "FLOW_NODE",
+            AgentConversationBinding.node_attempt_id == attempt.id,
+            AgentConversationBinding.create_idempotency_key == f"attempt-runtime:{attempt.id}",
+        )
+        .order_by(AgentConversationBinding.created_at.desc())
+    )
+    frozen_session_contexts: list[dict[str, str]] = []
+    if session_binding is not None:
+        for reference in db.scalars(
+            select(AgentConversationCapability)
+            .where(
+                AgentConversationCapability.binding_id == session_binding.id,
+                AgentConversationCapability.capability_type == "CONTEXT",
+            )
+            .order_by(AgentConversationCapability.position)
+        ):
+            published = resolve_version(db, reference.capability_version_id, include_retired=True)
+            if (
+                published.package.capability_type != reference.capability_type
+                or published.package.capability_key != reference.capability_key
+                or published.version.digest != reference.digest
+            ):
+                raise DomainError(
+                    "AGENT_CONVERSATION_CAPABILITY_IDENTITY_DRIFT",
+                    "会话冻结能力身份校验失败",
+                    409,
+                )
+            text = str(published.runtime_config().get("text") or "").strip()
+            if not text:
+                raise DomainError(
+                    "AGENT_CONTEXT_CAPABILITY_INVALID",
+                    "已冻结的 Context 内容缺失",
+                    409,
+                    {"capability_version_id": reference.capability_version_id},
+                )
+            frozen_session_contexts.append(
+                {
+                    "id": reference.capability_version_id,
+                    "capability_key": reference.capability_key,
+                    "digest": reference.digest,
+                    "text": text,
+                }
+            )
     bindings = _bindings(db, attempt.id)
     artifacts = list(
         db.scalars(
@@ -6249,6 +6296,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_capability_key": attempt.startup_capability_key,
         "startup_prompt": attempt.startup_prompt,
         "context_ids": attempt.context_ids_json,
+        "frozen_session_contexts": frozen_session_contexts,
         "agent_preset": attempt.agent_preset_json,
         "gate_policies": attempt.gate_policies_json,
         "output_targets": attempt.output_targets_json,

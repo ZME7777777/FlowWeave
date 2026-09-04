@@ -457,7 +457,7 @@ def _platform_output_contract(context: dict[str, Any]) -> GateResult:
         )
     return GateResult(
         "PASS",
-        "已生成声明产物，且可按冻结端口映射交付下游节点；未评估文件内容或业务质量。",
+        "平台交付与端口映射校验通过。",
         [],
         evidence,
         {"selected_output_artifact_ids": selected_ids},

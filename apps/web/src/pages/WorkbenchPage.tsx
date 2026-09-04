@@ -304,7 +304,7 @@ function GateDetailDialog({ attemptId, evaluation, onClose }: { attemptId: strin
   })));
   const outputChecks = persistedOutputChecks.length ? persistedOutputChecks : legacyOutputChecks;
   const mappingChecks = persistedMappingChecks.length ? persistedMappingChecks : legacyMappingChecks;
-  return <div className="modal-backdrop gate-conversation-backdrop" role="dialog" aria-modal="true" aria-label="门禁详情" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal gate-detail-dialog"><header><div><h2>{platformReview ? '平台交付与映射校验详情' : '审查门禁详情'}</h2><small>只读 · {evaluation.decision} · {platformReview ? '确定性平台校验' : '门禁审查记录'}</small></div><button className="ghost" aria-label="关闭门禁详情" onClick={onClose}><X size={17}/></button></header><div className="gate-detail-body"><section className="gate-detail-summary"><b>{String(evaluation.result.summary ?? '')}</b>{Array.isArray(evaluation.result.reasons) && evaluation.result.reasons.length > 0 && <ul>{evaluation.result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}</section>{platformReview ? <section className="platform-check-details"><h3>逐项校验结果</h3><h4>声明输出</h4><ul>{outputChecks.length ? outputChecks.map((item, index) => checkRow(item, `output-${index}`)) : <li className="fail"><span>未找到冻结产物或逐项校验记录</span></li>}</ul><h4>下游端口映射</h4><ul>{mappingChecks.length ? mappingChecks.map((item, index) => checkRow(item, `mapping-${index}`)) : <li className="pass"><span>当前节点没有冻结的下游端口映射</span></li>}</ul><p className="platform-review-note">平台确定性校验不会创建审查 Agent 会话。</p></section> : <section className="gate-agent-transcript"><h3>完整审查对话</h3>{evaluation.conversation_available ? query.isLoading ? <div className="empty compact">正在读取完整对话…</div> : query.isError ? <p className="error">{query.error.message}</p> : <div className="gate-conversation-body"><ConversationSurface events={events} liveText="" isGenerating={false}/></div> : <div className="empty compact">此门禁没有可用的 Agent 对话记录。</div>}</section>}</div><footer><span>该记录不能继续对话、修改、分叉或删除。</span><button className="secondary" onClick={onClose}>关闭</button></footer></section></div>;
+  return <div className="modal-backdrop gate-conversation-backdrop" role="dialog" aria-modal="true" aria-label="门禁详情" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal gate-detail-dialog"><header><div><h2>{platformReview ? '平台交付与映射校验详情' : '审查门禁详情'}</h2><small>只读 · {evaluation.decision} · {platformReview ? '确定性平台校验' : '门禁审查记录'}</small></div><button className="ghost" aria-label="关闭门禁详情" onClick={onClose}><X size={17}/></button></header><div className="gate-detail-body">{platformReview ? <section className="platform-check-details"><h3>逐项校验结果</h3><h4>输出校验</h4><ul>{outputChecks.length ? outputChecks.map((item, index) => checkRow(item, `output-${index}`)) : <li className="fail"><span>未找到冻结产物或逐项校验记录</span></li>}</ul><h4>下游端口映射</h4><ul>{mappingChecks.length ? mappingChecks.map((item, index) => checkRow(item, `mapping-${index}`)) : <li className="pass"><span>当前节点没有冻结的下游端口映射</span></li>}</ul><p className="platform-review-note">平台确定性校验不会创建审查 Agent 会话。</p></section> : <><section className="gate-detail-summary"><b>{String(evaluation.result.summary ?? '')}</b>{Array.isArray(evaluation.result.reasons) && evaluation.result.reasons.length > 0 && <ul>{evaluation.result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}</section><section className="gate-agent-transcript"><h3>完整审查对话</h3>{evaluation.conversation_available ? query.isLoading ? <div className="empty compact">正在读取完整对话…</div> : query.isError ? <p className="error">{query.error.message}</p> : <div className="gate-conversation-body"><ConversationSurface events={events} liveText="" isGenerating={false}/></div> : <div className="empty compact">此门禁没有可用的 Agent 对话记录。</div>}</section></>}</div><footer><span>该记录不能继续对话、修改、分叉或删除。</span><button className="secondary" onClick={onClose}>关闭</button></footer></section></div>;
 }
 
 function ArtifactList({ artifacts, expectedFields = [] }: { artifacts: ArtifactVersion[]; expectedFields?: SnapshotFlowNode['asset']['outputs'] }) {
@@ -480,11 +480,11 @@ function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (
 
 const MANUAL_NODE_CONTEXT_ID = '__node_context_prompt__';
 
-type NodeContextItem = { id: string; title: string; meta: string; text: string; source: 'NODE' | 'REPOSITORY' };
+type NodeContextItem = { id: string; title: string; meta: string; text: string; source: 'NODE' | 'REPOSITORY' | 'SESSION' };
 
-function nodeContextItems(node: SnapshotFlowNode): NodeContextItem[] {
+function nodeContextItems(node: SnapshotFlowNode, frozenSessionContexts: NonNullable<NodeAttempt['frozen_session_contexts']> = []): NodeContextItem[] {
   const manual = node.asset.executor?.context_prompt?.trim();
-  return [
+  const nodeItems = [
     ...(manual ? [{ id: MANUAL_NODE_CONTEXT_ID, title: '专属上下文', meta: '节点专属 · 自由文本 Context', text: manual, source: 'NODE' as const }] : []),
     ...node.asset.context_capabilities.map(item => ({
       id: item.id,
@@ -494,22 +494,35 @@ function nodeContextItems(node: SnapshotFlowNode): NodeContextItem[] {
       source: 'REPOSITORY' as const,
     })),
   ];
+  const known = new Set(nodeItems.map(item => item.id));
+  return [
+    ...nodeItems,
+    ...frozenSessionContexts.filter(item => !known.has(item.id)).map(item => ({
+      id: item.id,
+      title: item.capability_key,
+      meta: `首会话 Agent 配置 · ${item.digest.slice(0, 12)}`,
+      text: item.text,
+      source: 'SESSION' as const,
+    })),
+  ];
 }
 
-function NodeContextSummary({ node, contextIds, editable = false, onChange, mode }: {
+function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], editable = false, onChange, mode }: {
   node: SnapshotFlowNode; contextIds: string[] | null; editable?: boolean;
+  frozenSessionContexts?: NonNullable<NodeAttempt['frozen_session_contexts']>;
   onChange?: (ids: string[]) => void; mode?: 'PROMPT' | 'CHAT';
 }) {
   const [viewing, setViewing] = useState<NodeContextItem>();
   useEscapeClose(() => setViewing(undefined), Boolean(viewing));
-  const items = nodeContextItems(node);
+  const items = nodeContextItems(node, frozenSessionContexts);
   const selected = contextIds === null ? new Set(items.map(item => item.id)) : new Set(contextIds);
-  const visible = editable ? items : items.filter(item => selected.has(item.id));
+  const frozenSessionIds = new Set(frozenSessionContexts.map(item => item.id));
+  const visible = editable ? items : items.filter(item => selected.has(item.id) || frozenSessionIds.has(item.id));
   const toggle = (id: string) => {
     if (!onChange) return;
     onChange(selected.has(id) ? [...selected].filter(item => item !== id) : [...selected, id]);
   };
-  const empty = mode === 'CHAT'
+  const empty = mode === 'CHAT' && frozenSessionContexts.length === 0
     ? '仅创建会话不会应用节点上下文；进入会话后由你自行决定是否补充上下文。'
     : items.length === 0
       ? '该节点没有可用的 Context。'
@@ -732,7 +745,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     'AUTOMATIC_TRANSITION_DELIVERY_FAILED',
     'AUTOMATIC_TRANSITION_INVALID',
   ].includes(attempt.error_code);
-  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={inputArtifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
+  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={inputArtifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
     <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}

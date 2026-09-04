@@ -1,3 +1,4 @@
+import base64
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -933,6 +934,57 @@ def test_human_start_freezes_selected_node_context_and_chat_starts_without_it(
     )
     assert chat_started.status_code == 201, chat_started.text
     assert chat_started.json()["attempts"][0]["context_ids"] == []
+
+
+def test_attempt_detail_projects_context_frozen_on_first_agent_session(client, skill_capability):
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "code-conventions.md",
+            "content_base64": base64.b64encode("# 代码规范\n必须编写测试。\n".encode()).decode(),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    context = client.post(
+        "/api/v1/capability-imports", json={"import_token": validated.json()["import_token"]}
+    )
+    assert context.status_code == 201, context.text
+    context_capability = context.json()["capabilities"][0]
+
+    asset = create_asset(client, skill_capability, name="首会话 Context 节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    started = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(
+            input_urls={"prd": "https://example.test/first-session-context"},
+            agent_preset={
+                "capability_version_ids": [context_capability["capability_id"]],
+                "node_context_enabled": False,
+            },
+        ),
+    )
+    assert started.status_code == 201, started.text
+    attempt = started.json()["attempts"][0]
+
+    confirmed = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/confirm-start",
+        json={"expected_state_version": attempt["state_version"], "prompt": "按代码规范执行"},
+        headers={"Idempotency-Key": "first-session-context-projection"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["frozen_session_contexts"] == [
+        {
+            "id": context_capability["capability_id"],
+            "capability_key": "code-conventions",
+            "digest": context_capability["normalized_config"]["digest"],
+            "text": "# 代码规范\n必须编写测试。",
+        }
+    ]
 
 
 def test_flow_run_rejects_ready_version_of_deleted_environment(
@@ -2509,9 +2561,10 @@ def test_delete_unstarted_manual_node_run_preserves_runtime_and_restores_neutral
     assert detail["state"] == "ACTIVE"
     assert detail["node_runs"] == []
     with db_session_factory() as db:
-        assert db.scalar(
-            select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
-        ) == runtime_id
+        assert (
+            db.scalar(select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"]))
+            == runtime_id
+        )
 
     other = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_b/runs",
@@ -2538,9 +2591,7 @@ def test_hard_delete_detaches_active_runtime_generation(
     ).json()
 
     with db_session_factory() as db:
-        runtime = db.scalar(
-            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == run["id"])
-        )
+        runtime = db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == run["id"]))
         allocation = db.scalar(
             select(FlowRunRuntimeAllocation).where(
                 FlowRunRuntimeAllocation.flow_run_id == run["id"]

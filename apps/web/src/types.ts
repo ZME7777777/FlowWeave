@@ -273,6 +273,8 @@ export interface NodeAttempt {
   startup_mode?: 'SKILL' | 'PROMPT' | 'CHAT'; startup_capability_key?: string | null;
   startup_prompt?: string | null;
   context_ids?: string[] | null;
+  /** Context versions actually frozen on this Attempt's first Agent session. */
+  frozen_session_contexts?: Array<{ id: string; capability_key: string; digest: string; text: string }>;
   agent_preset?: AgentPreset | null;
   gate_policies: GatePolicy[];
   output_targets?: Record<string, { artifact_type: 'URL' | 'FILE'; display_name?: string; description?: string; title?: string }>;
