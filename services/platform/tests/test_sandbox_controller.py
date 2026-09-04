@@ -94,6 +94,33 @@ def _agent_workspace_runtime_payload() -> dict[str, object]:
     }
 
 
+def _node_attempt_runtime_payload() -> dict[str, object]:
+    return {
+        "manager_scope": _SCOPE,
+        "id": _RESOURCE_ID,
+        "kind": "AGENT_RUNTIME",
+        "owner_type": "FLOW_NODE_ATTEMPT",
+        "owner_id": _OWNER_ID,
+        "backend_resource_name": backend_name(
+            _RESOURCE_ID, owner_type="FLOW_NODE_ATTEMPT", owner_id=_OWNER_ID
+        ),
+        "image_reference": "sha256:" + "a" * 64,
+        "runtime_secret_key": "x" * 32,
+        "spec": {
+            "flow_run_id": _ENVIRONMENT_ID,
+            "node_attempt_id": _OWNER_ID,
+            "runtime_allocation_id": _ENVIRONMENT_ID,
+            "runtime_allocation_relative": ".flow-run-runtimes/" + "a" * 32 + "/" + _OWNER_ID,
+            "runtime_secret_reference_id": _ENVIRONMENT_VERSION_ID,
+            "port": 8000,
+            "environment_id": _ENVIRONMENT_ID,
+            "environment_version_id": _ENVIRONMENT_VERSION_ID,
+            "environment_version_no": 1,
+        },
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def test_controller_rejects_unauthenticated_control_request(settings, monkeypatch):
     touched: list[bool] = []
     monkeypatch.setattr(
@@ -136,6 +163,32 @@ def test_controller_accepts_persistent_agent_workspace_runtime(settings, monkeyp
 
     assert response.status_code == 200, response.text
     assert received == [("AGENT_WORKSPACE", _ENVIRONMENT_ID, "x" * 32)]
+
+
+def test_controller_accepts_persistent_node_attempt_runtime(settings, monkeypatch):
+    received: list[tuple[str, str, str | None]] = []
+
+    def ensure_running(_self, resource, *, runtime_secret_key=None):
+        received.append((resource.owner_type, resource.runtime_allocation_id, runtime_secret_key))
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="node-attempt-container",
+            state="READY",
+            labels={},
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/sandboxes/ensure",
+            headers=_api_headers(),
+            json=_node_attempt_runtime_payload(),
+        )
+
+    assert response.status_code == 200, response.text
+    assert received == [("FLOW_NODE_ATTEMPT", _ENVIRONMENT_ID, "x" * 32)]
 
 
 def test_controller_rejects_wrong_scope_before_docker(settings, monkeypatch):
@@ -252,11 +305,18 @@ def test_controller_requires_strong_key_even_in_local_mode(settings):
 
 def test_controller_enforces_principal_operation_boundaries(settings, monkeypatch):
     touched: list[bool] = []
-    monkeypatch.setattr(
-        DockerSandboxProvider,
-        "ensure_running",
-        lambda self, resource, **_kwargs: touched.append(True),
-    )
+
+    def ensure_running(_self, resource, **_kwargs):
+        touched.append(True)
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="runtime-container",
+            state="READY",
+            labels={},
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
 
     with TestClient(create_app(_settings(settings))) as client:
         api_runtime = client.post(
@@ -268,11 +328,10 @@ def test_controller_enforces_principal_operation_boundaries(settings, monkeypatc
             json={"manager_scope": _SCOPE, "terminal_id": "a" * 32},
         )
 
-    assert api_runtime.status_code == 403
-    assert api_runtime.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
+    assert api_runtime.status_code == 200
     assert worker_terminal.status_code == 403
     assert worker_terminal.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
-    assert touched == []
+    assert touched == [True]
 
 
 @pytest.mark.parametrize("headers", (_api_headers(), _headers()))

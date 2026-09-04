@@ -106,6 +106,12 @@ _APPROVED_OPENHANDS_OVERLAYS: dict[str, str] = {
     # other overlay rather than broadly allowing source modifications.
     "patch_fork_condenser.py": "19715a644888dc829299ebe555ef2cd682ca739dde97f9c046e626434d39f56a",
 }
+_LEGACY_APPROVED_OPENHANDS_OVERLAYS: dict[str, str] = {
+    # Environments published by the reviewed c48deb1 fork-policy fix used
+    # this predecessor patch. Keep those frozen manifests runnable while
+    # continuing to reject every other overlay.
+    "patch_fork_condenser.py": "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3",
+}
 
 
 def validate_runtime_manifest(
@@ -143,9 +149,10 @@ def validate_runtime_manifest(
         or actual_ref != OPENHANDS_SOURCE_COMMIT
         or provenance.get("source_archive_digest") != _OPENHANDS_SOURCE_ARCHIVE_DIGEST
         # Historical Runtime manifests predate the formal fork patch and have
-        # no overlays.  A newly published image may carry only the exact
-        # reviewed patch above; unknown or altered overlays fail closed.
-        or actual_overlays not in ({}, _APPROVED_OPENHANDS_OVERLAYS)
+        # no overlays. A newly published image may carry the current reviewed
+        # patch or the exact reviewed predecessor; unknown overlays fail closed.
+        or actual_overlays
+        not in ({}, _APPROVED_OPENHANDS_OVERLAYS, _LEGACY_APPROVED_OPENHANDS_OVERLAYS)
         or build.get("builder") != "openhands.agent_server.docker.build"
         or build.get("target") not in {"source-minimal", "source"}
         or build.get("platform") not in {"linux/amd64", "linux/arm64"}

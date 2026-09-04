@@ -154,6 +154,31 @@ def ensure_node_attempt_runtime_session(
         .where(FlowRunRuntime.node_attempt_id == node_attempt_id)
         .with_for_update()
     )
+    # Provisioning records are committed independently so a controller failure
+    # can be reconciled. A failed first generation whose allocation was rolled
+    # back has no reusable immutable specification; discard only that exact
+    # empty failure shape and let the caller create a fresh Attempt session.
+    if item is not None and item.workspace_allocation_id != workspace_allocation.id:
+        generations = list(
+            db.scalars(
+                select(RuntimeGeneration)
+                .where(RuntimeGeneration.runtime_session_id == item.id)
+                .with_for_update()
+            )
+        )
+        if (
+            item.status == "DEGRADED"
+            and item.active_generation is None
+            and item.replacement_generation is None
+            and generations
+            and all(generation.state == "FAILED" for generation in generations)
+        ):
+            db.execute(
+                delete(RuntimeGeneration).where(RuntimeGeneration.runtime_session_id == item.id)
+            )
+            db.delete(item)
+            db.flush()
+            item = None
     if item is None:
         item = FlowRunRuntime(
             id=uid(),

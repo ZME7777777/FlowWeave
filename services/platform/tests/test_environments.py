@@ -122,11 +122,16 @@ def test_runtime_manifest_allows_only_the_reviewed_fork_overlay() -> None:
     manifest = _runtime_manifest()
     provenance = manifest["runtime_provenance"]
     assert isinstance(provenance, dict)
-    patch_path = (
-        Path(__file__).resolve().parents[3] / "infra/openhands/patch_fork_condenser.py"
-    )
+    patch_path = Path(__file__).resolve().parents[3] / "infra/openhands/patch_fork_condenser.py"
     provenance["overlays"] = {
         "patch_fork_condenser.py": hashlib.sha256(patch_path.read_bytes()).hexdigest()
+    }
+    environment_service.validate_runtime_manifest(manifest)
+
+    provenance["overlays"] = {
+        "patch_fork_condenser.py": (
+            "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3"
+        )
     }
     environment_service.validate_runtime_manifest(manifest)
 

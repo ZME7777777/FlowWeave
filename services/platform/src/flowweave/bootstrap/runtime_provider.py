@@ -80,6 +80,7 @@ class RuntimeProviderSpec(_StrictModel):
     environment_version_id: UUID | None = None
     environment_version_no: int | None = Field(default=None, ge=1)
     flow_run_id: UUID | None = None
+    node_attempt_id: UUID | None = None
     agent_workspace_id: UUID | None = None
     runtime_allocation_id: UUID | None = None
     runtime_allocation_relative: str | None = Field(
@@ -105,19 +106,23 @@ class RuntimeProviderSpec(_StrictModel):
             self.runtime_allocation_relative,
             self.runtime_secret_reference_id,
         )
-        if self.flow_run_id is not None and self.agent_workspace_id is not None:
-            raise ValueError("FlowRun and Agent Workspace Runtime contracts are mutually exclusive")
-        if self.flow_run_id is not None and not all(allocation_fields):
-            raise ValueError("FlowRun Runtime allocation fields must be provided together")
-        if self.agent_workspace_id is not None and not all(allocation_fields):
-            raise ValueError("Agent Workspace Runtime allocation fields must be provided together")
-        if (
-            self.flow_run_id is None
-            and self.agent_workspace_id is None
-            and any(value is not None for value in allocation_fields)
+        # An Attempt Runtime is still scoped to its containing FlowRun, so its
+        # contract deliberately carries both identities. The Agent Workspace
+        # remains a distinct persistent owner.
+        if self.agent_workspace_id is not None and (
+            self.flow_run_id is not None or self.node_attempt_id is not None
         ):
+            raise ValueError("Persistent Runtime owner contracts are mutually exclusive")
+        if self.node_attempt_id is not None and self.flow_run_id is None:
+            raise ValueError("Node Attempt Runtime requires its FlowRun identity")
+        persistent_runtime = any(
+            value is not None
+            for value in (self.flow_run_id, self.node_attempt_id, self.agent_workspace_id)
+        )
+        if persistent_runtime and not all(allocation_fields):
+            raise ValueError("Persistent Runtime allocation fields must be provided together")
+        if not persistent_runtime and any(value is not None for value in allocation_fields):
             raise ValueError("Persistent Runtime allocation requires an explicit owner")
-        persistent_runtime = self.flow_run_id is not None or self.agent_workspace_id is not None
         if persistent_runtime == (self.workspace_relative is not None):
             raise ValueError(
                 "Persistent and temporary Runtime workspace contracts are mutually exclusive"
@@ -152,6 +157,7 @@ class RuntimeProviderResourceWrite(_SandboxResourceBase):
     kind: Literal["AGENT_RUNTIME"]
     owner_type: Literal[
         "FLOW_RUN",
+        "FLOW_NODE_ATTEMPT",
         "AGENT_WORKSPACE",
         "CAPABILITY_VALIDATION",
         "MCP_OAUTH_AUTHORIZATION",
@@ -167,8 +173,16 @@ class RuntimeProviderResourceWrite(_SandboxResourceBase):
             raise ValueError(
                 "runtime_secret_key must be injected exactly for persistent Runtime allocations"
             )
-        if has_allocation != (self.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}):
+        persistent_owners = {
+            "FLOW_RUN": self.spec.flow_run_id,
+            "FLOW_NODE_ATTEMPT": self.spec.node_attempt_id,
+            "AGENT_WORKSPACE": self.spec.agent_workspace_id,
+        }
+        expected_owner_id = persistent_owners.get(self.owner_type)
+        if has_allocation != (expected_owner_id is not None):
             raise ValueError("Persistent Runtime allocation owner is invalid")
+        if expected_owner_id is not None and expected_owner_id != self.owner_id:
+            raise ValueError("Persistent Runtime owner does not match its allocation")
         if (
             self.runtime_secret_key is not None
             and len(self.runtime_secret_key.get_secret_value()) < 32
@@ -385,18 +399,14 @@ class _TerminalManager:
         os.set_blocking(master, False)
         terminal_id = secrets.token_hex(24)
         with self._lock:
-            self.attachments[terminal_id] = _TerminalAttachment(
-                master, process, time.monotonic()
-            )
+            self.attachments[terminal_id] = _TerminalAttachment(master, process, time.monotonic())
         return terminal_id
 
     def get(self, terminal_id: str) -> _TerminalAttachment:
         with self._lock:
             item = self.attachments.get(terminal_id)
             if item is None:
-                raise DomainError(
-                    "TERMINAL_NOT_FOUND", "Terminal attachment is unavailable", 404
-                )
+                raise DomainError("TERMINAL_NOT_FOUND", "Terminal attachment is unavailable", 404)
             item.last_activity = time.monotonic()
             return item
 
@@ -441,8 +451,7 @@ class _TerminalManager:
             expired = [
                 terminal_id
                 for terminal_id, item in self.attachments.items()
-                if item.process.poll() is not None
-                or now - item.last_activity >= self.idle_seconds
+                if item.process.poll() is not None or now - item.last_activity >= self.idle_seconds
             ]
         for terminal_id in expired:
             self.close(terminal_id)
@@ -590,7 +599,7 @@ def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
         runtime_allocation_id=(
             str(payload.spec.runtime_allocation_id)
             if isinstance(payload, RuntimeProviderResourceWrite)
-            and payload.owner_type == "FLOW_RUN"
+            and payload.owner_type in {"FLOW_RUN", "FLOW_NODE_ATTEMPT"}
             and payload.spec.runtime_allocation_id is not None
             else None
         ),
@@ -759,7 +768,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def ensure(request: Request, payload: SandboxResourceWrite) -> dict[str, Any]:
         check_scope(payload.manager_scope)
         role = cast(str, request.state.controller_role)
-        allowed = (role == "api" and payload.kind == "ENVIRONMENT_SETUP") or (
+        allowed = (role == "api" and payload.kind in {"ENVIRONMENT_SETUP", "AGENT_RUNTIME"}) or (
             role == "worker" and payload.kind == "AGENT_RUNTIME"
         )
         if not allowed:
@@ -1100,7 +1109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     None
                     if payload.environment_id is not None
                     else payload.working_dir or "/runtime/workspace/project"
-                )
+                ),
             )
 
         return {"terminal_id": await asyncio.to_thread(start)}
