@@ -16,7 +16,9 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     runtime_allocation_for_flow_run,
 )
 from flowweave.modules.sandboxes.application.runtime_operations import (
+    request_runtime_pause,
     request_runtime_replacement,
+    request_runtime_resume,
     runtime_overview,
     runtime_readiness_by_flow_run,
 )
@@ -92,6 +94,8 @@ __all__ = (
     "process_flow_run_runtime_replacement",
     "record_terminal_runtime_replacement_failure",
     "request_runtime_replacement",
+    "request_runtime_pause",
+    "request_runtime_resume",
     "reconcile_managed_sandboxes",
     "request_delete",
     "request_delete_durable",

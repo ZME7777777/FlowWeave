@@ -19,6 +19,7 @@ from flowweave.modules.catalog.public import (
 from flowweave.modules.environments import public as environments
 from flowweave.modules.orchestration import public as orchestration
 from flowweave.modules.sandboxes import public as sandboxes
+from flowweave.modules.sandboxes.application.runtime_pause import process_flow_run_runtime_pause
 from flowweave.modules.tasks.public import Lease, lease_is_current
 from flowweave.shared.models import BackgroundTask, TaskState
 
@@ -59,6 +60,14 @@ def _provision_flow_run_runtime(
     db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
 ) -> None:
     orchestration.process_provision_flow_run_runtime(db, aggregate_id, lease, commit=False)
+
+
+def _pause_flow_run_runtime(
+    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
+) -> None:
+    process_flow_run_runtime_pause(
+        db, aggregate_id, int(payload["generation"]), lease, commit=False
+    )
 
 
 def _provision_agent_workspace_runtime(
@@ -192,6 +201,7 @@ HANDLERS: dict[str, Handler] = {
     "START_AUTOMATIC_ATTEMPT": _start_automatic_attempt,
     "ADVANCE_AUTOMATIC_ATTEMPT": _advance_automatic_attempt,
     "PROVISION_FLOW_RUN_RUNTIME": _provision_flow_run_runtime,
+    "PAUSE_FLOW_RUN_RUNTIME": _pause_flow_run_runtime,
     "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
     "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,
     "POLL_RUNTIME": _poll_runtime,

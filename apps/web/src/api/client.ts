@@ -465,6 +465,14 @@ export const api = {
     request<FlowRunRuntimeOverview>(`/flow-runs/${runId}/runtime/replacements`, json('POST', {
       expected_generation: generation, expected_session_row_version: sessionRowVersion,
     }, true)),
+  pauseRuntime: (runId: string, generation: number, sessionRowVersion: number) =>
+    request<FlowRunRuntimeOverview>(`/flow-runs/${runId}/runtime/pause`, json('POST', {
+      expected_generation: generation, expected_session_row_version: sessionRowVersion,
+    }, true)),
+  resumeRuntime: (runId: string, generation: number, sessionRowVersion: number) =>
+    request<FlowRunRuntimeOverview>(`/flow-runs/${runId}/runtime/resume`, json('POST', {
+      expected_generation: generation, expected_session_row_version: sessionRowVersion,
+    }, true)),
   flowEvents: (runId: string, after = 0) => request<RunEvent[]>(`/flow-runs/${runId}/event-history?after=${after}`),
 };
 

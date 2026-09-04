@@ -270,7 +270,7 @@ def _create_managed_runtime(
                             ManagedSandbox.kind == "AGENT_RUNTIME",
                             ManagedSandbox.owner_type == owner_type,
                             ManagedSandbox.owner_id == owner_id,
-                            ManagedSandbox.desired_state == "RUNNING",
+                            ManagedSandbox.desired_state.in_(("RUNNING", "STOPPED")),
                         )
                         .order_by(ManagedSandbox.generation.desc())
                         .limit(2)
@@ -760,6 +760,12 @@ def _perform_reconcile(
             # deletion path even when container inspect returns None.
             provider.delete(resource)
             return _ReconcileOutcome("DELETED")
+        if resource.desired_state == "STOPPED":
+            if observation is not None and observation.resource_id != resource.id:
+                return _ReconcileOutcome("CONFLICT", observation)
+            # A paused FlowRun deliberately keeps its container and persistent
+            # allocation. Reconciliation must never start it again.
+            return _ReconcileOutcome("STOPPED", observation)
         if observation is not None and observation.resource_id != resource.id:
             return _ReconcileOutcome("CONFLICT", observation)
         if (
@@ -821,7 +827,10 @@ def _apply_reconcile_outcome(
             control_db.commit()
             return deleted, errors
 
-        if outcome.kind == "RUNNING" and outcome.observation is not None:
+        if outcome.kind == "STOPPED":
+            current.observed_state = "STOPPED"
+            current.next_reconcile_at = now + timedelta(seconds=interval_seconds)
+        elif outcome.kind == "RUNNING" and outcome.observation is not None:
             current.observed_state = outcome.observation.state
             current.backend_resource_id = outcome.observation.resource_identifier
             current.cleanup_attempts = 0

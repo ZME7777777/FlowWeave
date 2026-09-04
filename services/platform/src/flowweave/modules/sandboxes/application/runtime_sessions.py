@@ -107,7 +107,7 @@ def ensure_flow_run_runtime_session(
             409,
             {"runtime_session_id": item.id, "flow_run_id": flow_run_id},
         )
-    if item.status in {"STOPPED", "DELETING"}:
+    if item.status == "DELETING":
         raise DomainError(
             "RUNTIME_SESSION_NOT_ACTIVE",
             "The FlowRun Runtime Session no longer accepts commands",
@@ -248,7 +248,7 @@ def activate_runtime_generation(
             RuntimeGeneration.generation == generation.generation,
             RuntimeGeneration.fence_token == generation.fence_token,
             RuntimeGeneration.row_version == expected_generation_version,
-            RuntimeGeneration.state.in_(("PROVISIONING", "READY")),
+            RuntimeGeneration.state.in_(("PROVISIONING", "READY", "STOPPED")),
         )
         .values(
             # READY is a physical lifecycle fact. The Session's
@@ -256,6 +256,7 @@ def activate_runtime_generation(
             state="READY",
             instance_id=instance_id,
             ready_at=now,
+            stopped_at=None,
             failure_code=None,
             failure_summary=None,
             row_version=RuntimeGeneration.row_version + 1,
@@ -275,8 +276,11 @@ def activate_runtime_generation(
         .where(
             FlowRunRuntime.id == session.id,
             FlowRunRuntime.row_version == expected_session_version,
-            FlowRunRuntime.active_generation.is_(None),
-            FlowRunRuntime.status.in_(("STARTING", "DEGRADED", "RECONNECTING")),
+            or_(
+                FlowRunRuntime.active_generation.is_(None),
+                FlowRunRuntime.active_generation == generation.generation,
+            ),
+            FlowRunRuntime.status.in_(("STARTING", "STOPPED", "DEGRADED", "RECONNECTING")),
         )
         .values(
             active_generation=generation.generation,
@@ -332,12 +336,13 @@ def prepare_runtime_generation(
             RuntimeGeneration.generation == generation.generation,
             RuntimeGeneration.fence_token == generation.fence_token,
             RuntimeGeneration.row_version == generation.row_version,
-            RuntimeGeneration.state.in_(("PROVISIONING", "READY")),
+            RuntimeGeneration.state.in_(("PROVISIONING", "READY", "STOPPED")),
         )
         .values(
             state="READY",
             instance_id=instance_id,
             ready_at=now,
+            stopped_at=None,
             failure_code=None,
             failure_summary=None,
             row_version=RuntimeGeneration.row_version + 1,

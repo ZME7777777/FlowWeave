@@ -809,3 +809,7 @@ class ConversationQuestionWrite(ApiModel):
 class RuntimeReplacementWrite(ApiModel):
     expected_generation: int = Field(ge=1)
     expected_session_row_version: int = Field(ge=1)
+
+
+class RuntimeLifecycleWrite(RuntimeReplacementWrite):
+    """Optimistic-concurrency fence for a FlowRun Runtime pause/start command."""

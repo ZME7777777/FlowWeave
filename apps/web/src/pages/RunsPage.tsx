@@ -1,4 +1,4 @@
-import { ArrowRight, CheckSquare, ChevronDown, ChevronRight, CircleDot, Filter, Play, Plus, Search, Trash2 } from 'lucide-react';
+import { ArrowRight, CheckSquare, ChevronDown, ChevronRight, CircleDot, Filter, Pause, Play, Plus, Search, Trash2 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { api } from '../api/client';
@@ -11,6 +11,8 @@ const STATUS_LABELS: Record<string, string> = { ACTIVE: '运行中', WAITING_HUM
 const progressLabel = (run: FlowRunSummary) => run.progress.active ? `${run.progress.accepted} 已完成 / ${run.progress.terminal} 终态 / ${run.progress.active} 已激活` : '尚未激活节点';
 const runtimeEntryState = (run: FlowRunSummary) => {
   if (run.runtime_write_available) return { label: STATUS_LABELS[run.state] ?? run.state, detail: `${run.current_node_name || '无当前节点'} · ${run.current_attempt_state || '未开始'}`, pending: false };
+  if (run.runtime_status === 'STOPPED') return { label: '已暂停', detail: '运行容器已停止，工作区和会话数据已保留。', pending: true };
+  if (run.runtime_status === 'STARTING') return { label: '运行环境启动中', detail: '正在恢复运行容器；完成后即可进入流程运行。', pending: true };
   if (run.runtime_status === 'RECONNECTING' || run.runtime_status === 'REPLACING') return { label: '运行环境恢复中', detail: run.runtime_message || 'Runtime 恢复完成后可进入流程运行。', pending: true };
   if (run.runtime_status === 'DEGRADED') return { label: '运行环境暂不可用', detail: run.runtime_message || '请等待 Runtime 恢复后进入流程运行。', pending: true };
   return { label: '运行环境初始化中', detail: '正在预置本 FlowRun 的运行环境；完成后即可进入。', pending: true };
@@ -28,6 +30,7 @@ export function RunsPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [lifecycleRunId, setLifecycleRunId] = useState<string>();
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const { data: runs = [] } = useQuery({ queryKey: ['runs'], queryFn: api.runs, refetchInterval: deleting ? false : 1500 });
@@ -71,13 +74,36 @@ export function RunsPage() {
     await qc.invalidateQueries({ queryKey: ['runs'] });
     setDeleting(false);
   };
+  const toggleRuntime = async (run: FlowRunSummary) => {
+    if (run.runtime_status !== 'ACTIVE' && run.runtime_status !== 'STOPPED') return;
+    if (run.runtime_status === 'STOPPED' && (run.runtime_write_available || run.runtime_status == null)) return;
+    const action = run.runtime_status === 'STOPPED' ? '启动' : '暂停';
+    if (!await dialog.confirm({
+      title: `${action}运行“${run.name}”？`,
+      message: action === '暂停' ? '将停止当前运行容器以回收计算资源；工作区、会话和流程数据会保留。' : '将重新启动保留的运行容器，并恢复已有工作区和会话数据。',
+      confirmLabel: action,
+      tone: action === '暂停' ? 'default' : 'default',
+    })) return;
+    setLifecycleRunId(run.id); setError(''); setNotice('');
+    try {
+      // The list carries the session row version but not physical container data.
+      const overview = await api.runtimeOverview(run.id);
+      if (overview.active_generation == null || overview.session_row_version == null) throw new Error('当前运行环境不可执行该操作。');
+      if (action === '暂停') await api.pauseRuntime(run.id, overview.active_generation, overview.session_row_version);
+      else await api.resumeRuntime(run.id, overview.active_generation, overview.session_row_version);
+      setNotice(action === '暂停' ? '已提交暂停请求，容器停止后将释放计算资源。' : '已提交启动请求，正在恢复运行环境。');
+      await qc.invalidateQueries({ queryKey: ['runs'] });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : `${action}运行失败，请重试。`);
+    } finally { setLifecycleRunId(undefined); }
+  };
 
   return <section className="page runs-page"><div className="page-action-row"><button className="primary" disabled={!flows.length} onClick={() => setStarting(flows[0])}><Plus size={16}/>启动流程</button></div>
     <div className="runs-page-scroll">
     {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
     <div className="run-list-tools"><label><Search size={14}/><input aria-label="搜索流程或运行" value={search} placeholder="搜索流程、运行或当前节点" onChange={event => setSearch(event.target.value)}/></label><label><Filter size={14}/><select aria-label="运行状态筛选" value={status} onChange={event => setStatus(event.target.value)}><option value="ALL">全部状态</option>{statuses.map(value => <option key={value} value={value}>{STATUS_LABELS[value] ?? value}</option>)}</select></label><div className="bulk-actions"><button className="secondary" disabled={!visibleIds.length || deleting} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前结果'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个运行`)}><Trash2 size={14}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></div><span>{groups.length} 个流程 · {visibleIds.length} 个运行</span></div>
     {!runs.length && <div className="empty"><Play size={26}/><b>暂无流程运行</b><span>先创建流程编排，再启动第一个运行。</span></div>}{!!runs.length && !groups.length && <div className="empty"><Search size={24}/><b>没有匹配的流程运行</b><span>调整搜索关键词或状态筛选。</span></div>}
-    <div className="run-groups">{groups.map(group => { const isCollapsed = collapsed.has(group.id); const pending = group.runs.filter(run => run.has_pending_action).length; return <section className="run-group" key={group.id}><header><button className="run-group-toggle" aria-label={`${isCollapsed ? '展开' : '收起'} ${group.name}`} aria-expanded={!isCollapsed} onClick={() => toggleGroup(group.id)}>{isCollapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}<span><b>{group.name}</b><small>{group.flow ? `流程编排 · 当前版本 v${group.rowVersion ?? '—'}` : `历史流程快照 · v${group.rowVersion ?? '—'}`}</small></span></button><span>{group.runs.length} 个运行 · {pending} 个待处理</span>{group.flow ? <button className="secondary" onClick={() => setStarting(group.flow)}><Plus size={13}/>启动</button> : <span className="deleted-resource">流程已删除</span>}</header>{!isCollapsed && <div className="run-table"><div className="table-head"><span/><span>运行实例</span><span>状态 / 当前节点</span><span>进度</span><span>时间</span><span/></div>{group.runs.map(run => { const runtime = runtimeEntryState(run); return <div className={`run-row${runtime.pending ? ' runtime-pending' : ''}`} key={run.id}><label className="resource-check"><input type="checkbox" aria-label={`选择运行 ${run.name}`} checked={selectedIds.has(run.id)} onChange={() => toggleRun(run.id)}/></label><button className="run-open" disabled={runtime.pending} aria-label={runtime.pending ? `${run.name}：${runtime.label}` : undefined} onClick={() => openRun(run.id)}><span><b>Run #{run.run_no} · {run.name}</b><small>Snapshot v{run.active_snapshot_version ?? '—'} · {run.id.slice(0, 8)}</small></span><span><span className={`run-state ${runtime.pending ? 'starting' : run.state.toLowerCase()}`}><CircleDot size={12}/>{runtime.label}</span><small>{runtime.detail}</small></span><span><b>{runtime.pending ? '正在准备运行环境' : progressLabel(run)}</b>{!runtime.pending && run.has_pending_action && <small className="pending-action">需要人工处理</small>}</span><span><b>{new Date(run.started_at).toLocaleString()}</b><small>更新 {new Date(run.updated_at).toLocaleString()}</small></span><ArrowRight size={16}/></button><button className="run-delete" aria-label={`删除运行 ${run.name}`} title="删除运行" onClick={() => void removeMany([run.id], `运行“${run.name}”`)}><Trash2 size={15}/></button></div>; })}</div>}</section>; })}</div>
+    <div className="run-groups">{groups.map(group => { const isCollapsed = collapsed.has(group.id); const pending = group.runs.filter(run => run.has_pending_action).length; return <section className="run-group" key={group.id}><header><button className="run-group-toggle" aria-label={`${isCollapsed ? '展开' : '收起'} ${group.name}`} aria-expanded={!isCollapsed} onClick={() => toggleGroup(group.id)}>{isCollapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}<span><b>{group.name}</b><small>{group.flow ? `流程编排 · 当前版本 v${group.rowVersion ?? '—'}` : `历史流程快照 · v${group.rowVersion ?? '—'}`}</small></span></button><span>{group.runs.length} 个运行 · {pending} 个待处理</span>{group.flow ? <button className="secondary" onClick={() => setStarting(group.flow)}><Plus size={13}/>启动</button> : <span className="deleted-resource">流程已删除</span>}</header>{!isCollapsed && <div className="run-table"><div className="table-head"><span/><span>运行实例</span><span>状态 / 当前节点</span><span>进度</span><span>时间</span><span/><span/></div>{group.runs.map(run => { const runtime = runtimeEntryState(run); const canToggle = run.runtime_status === 'ACTIVE' || run.runtime_status === 'STOPPED'; const isPaused = run.runtime_status === 'STOPPED'; const lifecyclePending = lifecycleRunId === run.id; return <div className={`run-row${runtime.pending ? ' runtime-pending' : ''}`} key={run.id}><label className="resource-check"><input type="checkbox" aria-label={`选择运行 ${run.name}`} checked={selectedIds.has(run.id)} onChange={() => toggleRun(run.id)}/></label><button className="run-open" disabled={runtime.pending} aria-label={runtime.pending ? `${run.name}：${runtime.label}` : undefined} onClick={() => openRun(run.id)}><span><b>Run #{run.run_no} · {run.name}</b><small>Snapshot v{run.active_snapshot_version ?? '—'} · {run.id.slice(0, 8)}</small></span><span><span className={`run-state ${runtime.pending ? 'starting' : run.state.toLowerCase()}`}><CircleDot size={12}/>{runtime.label}</span><small>{runtime.detail}</small></span><span><b>{runtime.pending ? (isPaused ? '容器已停止' : '正在准备运行环境') : progressLabel(run)}</b>{!runtime.pending && run.has_pending_action && <small className="pending-action">需要人工处理</small>}</span><span><b>{new Date(run.started_at).toLocaleString()}</b><small>更新 {new Date(run.updated_at).toLocaleString()}</small></span><ArrowRight size={16}/></button><button className={`run-lifecycle${isPaused ? ' resume' : ''}`} disabled={!canToggle || lifecyclePending || deleting} aria-label={`${isPaused ? '启动' : '暂停'}运行 ${run.name}`} title={isPaused ? '启动运行容器' : '暂停并回收计算资源'} onClick={() => void toggleRuntime(run)}>{isPaused ? <Play size={15}/> : <Pause size={15}/>}<span>{lifecyclePending ? '处理中' : isPaused ? '启动' : '暂停'}</span></button><button className="run-delete" aria-label={`删除运行 ${run.name}`} title="删除运行" onClick={() => void removeMany([run.id], `运行“${run.name}”`)}><Trash2 size={15}/></button></div>; })}</div>}</section>; })}</div>
     </div>
     {starting && <StartRunDialog flow={starting} environments={environments} onClose={() => setStarting(undefined)} onStart={async input => { await api.runFlow(starting.id, input); setStarting(undefined); setNotice('流程运行已创建，正在初始化运行环境；完成后可从列表进入。'); await qc.invalidateQueries({ queryKey: ['runs'] }); }}/>} </section>;
 }

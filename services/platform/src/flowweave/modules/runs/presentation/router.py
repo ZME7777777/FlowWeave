@@ -32,6 +32,7 @@ from flowweave.shared.schemas import (
     RunStart,
     RuntimeCancelRecoveryWrite,
     RuntimeConfirmationDecisionWrite,
+    RuntimeLifecycleWrite,
     RuntimeReplacementWrite,
     SyncSnapshotWrite,
 )
@@ -193,6 +194,36 @@ async def replace_flow_run_runtime(
     return await run_sync(
         db,
         lambda session: sandboxes.request_runtime_replacement(
+            session,
+            run_id,
+            expected_generation=payload.expected_generation,
+            expected_session_row_version=payload.expected_session_row_version,
+        ),
+    )
+
+
+@router.post("/flow-runs/{run_id}/runtime/pause", status_code=202)
+async def pause_flow_run_runtime(
+    run_id: str, payload: RuntimeLifecycleWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: sandboxes.request_runtime_pause(
+            session,
+            run_id,
+            expected_generation=payload.expected_generation,
+            expected_session_row_version=payload.expected_session_row_version,
+        ),
+    )
+
+
+@router.post("/flow-runs/{run_id}/runtime/resume", status_code=202)
+async def resume_flow_run_runtime(
+    run_id: str, payload: RuntimeLifecycleWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: sandboxes.request_runtime_resume(
             session,
             run_id,
             expected_generation=payload.expected_generation,

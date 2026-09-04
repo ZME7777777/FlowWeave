@@ -11,8 +11,10 @@ from flowweave.modules.sandboxes.application.runtime_replacement import (
 )
 from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntime,
+    ManagedSandbox,
     RuntimeGeneration,
 )
+from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
@@ -180,8 +182,178 @@ def request_runtime_replacement(
     return runtime_overview(db, flow_run_id)
 
 
+def request_runtime_pause(
+    db: Session,
+    flow_run_id: str,
+    *,
+    expected_generation: int,
+    expected_session_row_version: int,
+) -> dict[str, Any]:
+    """Fence a FlowRun and ask the Worker to gracefully stop its container.
+
+    The Workspace and OpenHands persistence stay allocated; only compute is
+    reclaimed. A Worker task is used because drain performs Docker I/O.
+    """
+
+    owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    session = db.scalar(
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == owner_id).with_for_update()
+    )
+    if session is None or session.active_generation is None:
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_ACTIVE",
+            "The FlowRun has no active generation to pause",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    if (
+        session.active_generation != expected_generation
+        or session.row_version != expected_session_row_version
+    ):
+        raise conflict(
+            "Runtime Session was modified",
+            expected_generation=expected_generation,
+            actual_generation=session.active_generation,
+            expected_session_row_version=expected_session_row_version,
+            actual_session_row_version=session.row_version,
+        )
+    if session.status != "ACTIVE":
+        raise DomainError(
+            "RUNTIME_PAUSE_NOT_ALLOWED",
+            "Only an active Runtime Session can be paused",
+            409,
+            {"runtime_session_id": session.id, "status": session.status},
+        )
+    generation = db.scalar(
+        select(RuntimeGeneration).where(
+            RuntimeGeneration.runtime_session_id == session.id,
+            RuntimeGeneration.generation == session.active_generation,
+            RuntimeGeneration.state == "READY",
+        )
+    )
+    if generation is None or generation.managed_runtime_id is None:
+        raise DomainError(
+            "RUNTIME_GENERATION_NOT_ACTIVE",
+            "The active Runtime generation has no managed container",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    resource = db.scalar(
+        select(ManagedSandbox)
+        .where(ManagedSandbox.id == generation.managed_runtime_id)
+        .with_for_update()
+    )
+    if resource is None or resource.desired_state != "RUNNING":
+        raise DomainError(
+            "RUNTIME_PAUSE_NOT_ALLOWED",
+            "The active Runtime container is unavailable for pause",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    session.status = "STOPPED"
+    session.stopped_at = now()
+    session.row_version += 1
+    session.updated_at = now()
+    resource.desired_state = "STOPPED"
+    resource.next_reconcile_at = now()
+    enqueue(
+        db,
+        task_type="PAUSE_FLOW_RUN_RUNTIME",
+        aggregate_type="FLOW_RUN",
+        aggregate_id=owner_id,
+        idempotency_key=f"pause-flow-run-runtime:{owner_id}:{expected_session_row_version}",
+        payload={"generation": expected_generation},
+    )
+    finish(db)
+    return runtime_overview(db, flow_run_id)
+
+
+def request_runtime_resume(
+    db: Session,
+    flow_run_id: str,
+    *,
+    expected_generation: int,
+    expected_session_row_version: int,
+) -> dict[str, Any]:
+    """Resume a paused FlowRun Runtime using its retained container and state."""
+
+    owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    session = db.scalar(
+        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == owner_id).with_for_update()
+    )
+    if session is None or session.active_generation is None:
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_STOPPED",
+            "The FlowRun has no paused Runtime Session to start",
+            409,
+            {"flow_run_id": flow_run_id},
+        )
+    if (
+        session.active_generation != expected_generation
+        or session.row_version != expected_session_row_version
+    ):
+        raise conflict(
+            "Runtime Session was modified",
+            expected_generation=expected_generation,
+            actual_generation=session.active_generation,
+            expected_session_row_version=expected_session_row_version,
+            actual_session_row_version=session.row_version,
+        )
+    if session.status != "STOPPED":
+        raise DomainError(
+            "RUNTIME_RESUME_NOT_ALLOWED",
+            "Only a paused Runtime Session can be started",
+            409,
+            {"runtime_session_id": session.id, "status": session.status},
+        )
+    generation = db.scalar(
+        select(RuntimeGeneration).where(
+            RuntimeGeneration.runtime_session_id == session.id,
+            RuntimeGeneration.generation == session.active_generation,
+            RuntimeGeneration.state.in_(("READY", "STOPPED")),
+        )
+    )
+    if generation is None or generation.managed_runtime_id is None:
+        raise DomainError(
+            "RUNTIME_GENERATION_NOT_STOPPED",
+            "The paused Runtime generation cannot be resumed",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    resource = db.scalar(
+        select(ManagedSandbox)
+        .where(ManagedSandbox.id == generation.managed_runtime_id)
+        .with_for_update()
+    )
+    if resource is None or resource.desired_state != "STOPPED":
+        raise DomainError(
+            "RUNTIME_RESUME_NOT_ALLOWED",
+            "The paused Runtime container is unavailable for start",
+            409,
+            {"runtime_session_id": session.id},
+        )
+    session.status = "STARTING"
+    session.stopped_at = None
+    session.row_version += 1
+    session.updated_at = now()
+    resource.desired_state = "RUNNING"
+    resource.observed_state = "PENDING"
+    resource.next_reconcile_at = now()
+    enqueue(
+        db,
+        task_type="PROVISION_FLOW_RUN_RUNTIME",
+        aggregate_type="FLOW_RUN",
+        aggregate_id=owner_id,
+        idempotency_key=f"resume-flow-run-runtime:{owner_id}:{expected_session_row_version}",
+    )
+    finish(db)
+    return runtime_overview(db, flow_run_id)
+
+
 __all__ = (
+    "request_runtime_pause",
     "request_runtime_replacement",
+    "request_runtime_resume",
     "runtime_overview",
     "runtime_readiness_by_flow_run",
 )
