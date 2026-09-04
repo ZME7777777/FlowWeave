@@ -291,15 +291,25 @@ def test_flow_node_host_resolves_a_frozen_shared_session_context(
 ) -> None:
     with db_session_factory() as db:
         flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        starts: list[tuple[str, str]] = []
         monkeypatch.setattr(
             flow_node_host.sandboxes,
-            "runtime_overview",
-            lambda _db, _flow_run_id: {"rerun_required": False},
+            "allocate_node_attempt_runtime",
+            lambda _db, *, flow_run_id, node_attempt_id: starts.append(
+                (flow_run_id, node_attempt_id)
+            ),
         )
         monkeypatch.setattr(
             flow_node_host.sandboxes,
-            "active_flow_run_runtime_connection",
-            lambda _db, *, flow_run_id: _connection(runtime_session_id, flow_run_id),
+            "ensure_node_attempt_runtime",
+            lambda _db, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "active_node_attempt_runtime_connection",
+            lambda _db, *, flow_run_id, node_attempt_id: _connection(
+                runtime_session_id, flow_run_id
+            ),
         )
         monkeypatch.setattr(
             flow_node_host,
@@ -324,6 +334,47 @@ def test_flow_node_host_resolves_a_frozen_shared_session_context(
         assert host.session.permits(CREATE_SESSIONS)
         assert host.session.permits(READ_SESSIONS)
         assert host.node["asset"]["name"] == "Node Agent"
+        assert starts == [(flow_run_id, attempt_id)]
+
+
+def test_flow_node_host_initializes_a_startable_attempt_without_write_permission(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        starts: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "allocate_node_attempt_runtime",
+            lambda _db, *, flow_run_id, node_attempt_id: starts.append(
+                (flow_run_id, node_attempt_id)
+            ),
+        )
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "ensure_node_attempt_runtime",
+            lambda _db, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "active_node_attempt_runtime_connection",
+            lambda _db, *, flow_run_id, node_attempt_id: _connection(
+                runtime_session_id, flow_run_id
+            ),
+        )
+        monkeypatch.setattr(flow_node_host, "runtime_node", lambda **_kwargs: {"asset": {}})
+
+        host = flow_node_host.resolve_flow_node_session_host(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            require_start_permission=False,
+            ensure_startable_runtime=True,
+        )
+
+        assert starts == [(flow_run_id, attempt_id)]
+        assert host.session.permits(READ_SESSIONS)
+        assert not host.session.permits(CREATE_SESSIONS)
 
 
 def test_flow_node_host_rejects_non_startable_or_unscoped_attempts(

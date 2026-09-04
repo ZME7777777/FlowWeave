@@ -314,8 +314,8 @@ def node_host_details(db: Session, *, flow_run_id: str, attempt_id: str) -> dict
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         require_start_permission=False,
+        ensure_startable_runtime=True,
     )
-    overview = sandboxes.runtime_overview(db, flow_run_id)
     asset = cast(dict[str, Any], host.node.get("asset") or {})
     node_name = str(
         host.node.get("display_name")
@@ -329,13 +329,16 @@ def node_host_details(db: Session, *, flow_run_id: str, attempt_id: str) -> dict
         "id": flow_run_id,
         "display_name": node_name or "节点会话",
         "default_model_provider_id": None,
-        "desired_state": "RUNNING" if overview["write_available"] else "MAINTENANCE",
+        # Host resolution has already fenced this specific Attempt to its
+        # active generation. Do not project FlowRun-level Runtime status here:
+        # a FlowRun may now have several independent Attempt Runtimes.
+        "desired_state": "RUNNING",
         "updated_at": now().isoformat(),
     }
 
 
 def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> dict[str, Any]:
-    """Project logical FlowRun Runtime health into the shared host DTO.
+    """Project this Attempt Runtime health into the shared host DTO.
 
     Runtime generation and provider endpoint details remain server-only.
     """
@@ -346,12 +349,10 @@ def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> di
         attempt_id=attempt_id,
         require_start_permission=False,
     )
-    overview = sandboxes.runtime_overview(db, flow_run_id)
-    write_available = bool(overview["write_available"])
     return {
-        "state": "ACTIVE" if write_available else "RECOVERING",
-        "write_available": write_available,
-        "message": overview.get("diagnostic_summary"),
+        "state": "ACTIVE",
+        "write_available": True,
+        "message": None,
         "updated_at": now().isoformat(),
     }
 

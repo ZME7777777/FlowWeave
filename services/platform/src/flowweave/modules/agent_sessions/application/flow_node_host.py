@@ -76,6 +76,7 @@ def resolve_flow_node_session_host(
     flow_run_id: str,
     attempt_id: str,
     require_start_permission: bool,
+    ensure_startable_runtime: bool = False,
 ) -> FlowNodeSessionHost:
     """Resolve one node host without treating a FlowRun as an Agent Workspace.
 
@@ -114,7 +115,10 @@ def resolve_flow_node_session_host(
             409,
             {"node_attempt_id": attempt.id, "state": attempt.state},
         )
-    if require_start_permission:
+    should_ensure_runtime = require_start_permission or (
+        ensure_startable_runtime and attempt.state == "WAITING_START_CONFIRMATION"
+    )
+    if should_ensure_runtime:
         if not run.environment_version_id:
             raise DomainError(
                 "RUN_ENVIRONMENT_REQUIRED",
