@@ -17,6 +17,9 @@ import yaml
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.catalog.application.capability_collections import (
+    refresh_skill_collection_members,
+)
 from flowweave.modules.catalog.application.capability_repository import (
     list_versions,
     publish_dependency_build,
@@ -1894,6 +1897,7 @@ def confirm_commit(db: Session, plan: CapabilityCommitPlan, final_key: str) -> d
     if item is None:
         raise _reject("Import token is invalid, expired, or already consumed")
     published = publish_import(db, item)
+    refresh_skill_collection_members(db, published)
     if published:
         canonical_storage_key = published[0].blob.storage_key
         if canonical_storage_key != final_key:
@@ -2216,6 +2220,7 @@ def confirm_skill_update(
     db.add(imported)
     db.flush()
     published = publish_import(db, imported)
+    refresh_skill_collection_members(db, published)
     if len(published) != 1:
         raise DomainError("CAPABILITY_SOURCE_INVALID", "Capability source is invalid", 422)
     revised = published[0]

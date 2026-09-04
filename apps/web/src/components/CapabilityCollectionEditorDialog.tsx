@@ -17,22 +17,33 @@ export function CapabilityCollectionEditorDialog({ collection, capabilities, bus
   const [description, setDescription] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+  const latestSkillsByLineage = useMemo(() => new Map(
+    capabilities
+      .filter(item => item.capability_type === 'SKILL' && item.is_latest)
+      .map(item => [item.lineage_id, item]),
+  ), [capabilities]);
+  const latestSkillIdByVersionId = useMemo(() => new Map(
+    capabilities
+      .filter(item => item.capability_type === 'SKILL')
+      .map(item => [item.id, latestSkillsByLineage.get(item.lineage_id)?.id ?? item.id]),
+  ), [capabilities, latestSkillsByLineage]);
 
   useEffect(() => {
     setName(collection?.name ?? '');
     setCategory(collection?.category ?? '');
     setDescription(collection?.description ?? '');
-    setSelected(new Set(collection?.members.map(item => item.id) ?? []));
-  }, [collection]);
+    setSelected(new Set(
+      collection?.members.map(item => latestSkillIdByVersionId.get(item.id) ?? item.id) ?? [],
+    ));
+  }, [collection, latestSkillIdByVersionId]);
 
   const available = useMemo(() => {
-    const memberIds = new Set(collection?.members.map(item => item.id) ?? []);
     return capabilities
       .filter(item => item.capability_type === 'SKILL')
-      .filter(item => item.is_latest || memberIds.has(item.id))
+      .filter(item => item.is_latest)
       .filter(item => !search || `${item.capability_key} ${item.description} ${item.version}`.toLowerCase().includes(search.toLowerCase()))
       .sort((left, right) => left.capability_key.localeCompare(right.capability_key));
-  }, [capabilities, collection, search]);
+  }, [capabilities, search]);
   const toggle = (asset: CapabilityAsset) => setSelected(old => {
     const next = new Set(old);
     if (next.has(asset.id)) {
@@ -54,13 +65,13 @@ export function CapabilityCollectionEditorDialog({ collection, capabilities, bus
     });
   }}>
     <header><div><span className="eyebrow">SKILL COLLECTION</span><h2>{collection ? '编辑 Skill 组合' : '新建 Skill 组合'}</h2></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
-    <p>组合只属于 Skill，用于批量选择。节点添加组合后，仍会逐项保存下方真实 Skill 的固定版本引用。</p>
+    <p>组合只属于 Skill，用于批量选择，并始终使用每个 Skill 的最新发布版本。节点添加组合后，仍会逐项冻结当时选中的版本引用。</p>
     <div className="capability-collection-fields">
       <label><span>组合名称 *</span><input required maxLength={200} value={name} onChange={event => setName(event.target.value)} placeholder="例如 产品需求分析"/></label>
       <label><span>分类</span><input maxLength={120} value={category} onChange={event => setCategory(event.target.value)} placeholder="例如 产品、研发、测试"/></label>
       <label className="wide"><span>说明</span><textarea maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} placeholder="描述适用场景"/></label>
     </div>
-    <section className="capability-collection-members"><header><div><b>固定 Skill 版本</b><span>已选择 {selected.size} 项</span></div><input aria-label="搜索组合 Skill" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索 Skill 名称或说明"/></header>
+    <section className="capability-collection-members"><header><div><b>最新 Skill 版本</b><span>已选择 {selected.size} 项</span></div><input aria-label="搜索组合 Skill" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索 Skill 名称或说明"/></header>
       <div>{available.map(item => <label key={item.id} className={selected.has(item.id) ? 'selected' : ''}><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item)}/><span><b>{item.capability_key}</b><small>{item.description || item.filename}</small></span><em>rev {item.revision_number}{item.version ? ` · ${item.version}` : ''}</em></label>)}{!available.length && <p>{capabilities.some(item => item.capability_type === 'SKILL') ? '没有匹配的 Skill 版本，请清空搜索条件后重试。' : '还没有可选的 Skill 版本，请先关闭窗口并上传 Skill ZIP。'}</p>}</div>
     </section>
     <footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !name.trim() || selected.size === 0}>{busy ? '保存中…' : '保存组合'}</button></footer>

@@ -1,3 +1,7 @@
+import base64
+import io
+import zipfile
+
 from sqlalchemy import select
 
 from flowweave.shared.models import (
@@ -16,6 +20,13 @@ def _collection_payload(*capability_ids: str, row_version: int | None = None) ->
     if row_version is not None:
         payload["row_version"] = row_version
     return payload
+
+
+def _revised_skill_zip() -> str:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("test-skill/SKILL.md", "# Test Skill\nUpdated instructions.\n")
+    return base64.b64encode(buffer.getvalue()).decode()
 
 
 def test_capability_collection_is_a_logical_skill_selection_template(
@@ -89,6 +100,35 @@ def test_deleting_skill_detaches_logical_collection_shortcut(client, skill_capab
     deleted = client.delete(f"/api/v1/capabilities/{skill_capability['capability_id']}")
     assert deleted.status_code == 204, deleted.text
     assert client.get("/api/v1/capability-collections").json() == []
+
+
+def test_reimported_skill_replaces_collection_member_with_latest_version(client, skill_capability):
+    created = client.post(
+        "/api/v1/capability-collections",
+        json=_collection_payload(skill_capability["capability_id"]),
+    )
+    assert created.status_code == 201, created.text
+
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "SKILL",
+            "filename": "test-skill.zip",
+            "content_base64": _revised_skill_zip(),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    committed = client.post(
+        "/api/v1/capability-imports", json={"import_token": validated.json()["import_token"]}
+    )
+    assert committed.status_code == 201, committed.text
+    latest_id = committed.json()["capabilities"][0]["capability_id"]
+    assert latest_id != skill_capability["capability_id"]
+
+    collection = client.get("/api/v1/capability-collections").json()[0]
+    assert collection["row_version"] == created.json()["row_version"] + 1
+    assert [member["id"] for member in collection["members"]] == [latest_id]
+    assert collection["members"][0]["is_latest"] is True
 
 
 def test_legacy_skill_collection_routes_are_removed(client):

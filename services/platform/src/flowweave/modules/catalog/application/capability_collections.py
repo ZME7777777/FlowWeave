@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,7 +15,11 @@ from flowweave.modules.catalog.application.capability_repository import (
 )
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import DomainError, conflict, not_found
-from flowweave.shared.models import CapabilityCollection, CapabilityCollectionItem
+from flowweave.shared.models import (
+    CapabilityCollection,
+    CapabilityCollectionItem,
+    CapabilityVersion,
+)
 from flowweave.shared.schemas import CapabilityCollectionWrite
 
 
@@ -24,6 +29,51 @@ def _time(value: datetime) -> str:
 
 def _resolve_capability(db: Session, capability_id: str) -> PublishedCapability:
     return resolve_version(db, capability_id)
+
+
+def refresh_skill_collection_members(
+    db: Session, published_capabilities: Iterable[PublishedCapability]
+) -> None:
+    """Move logical Skill-selection templates to newly published versions.
+
+    Collections are shortcuts for selecting the current version, rather than
+    consumers whose historical identity needs to be frozen.  Other consumers
+    (sessions, nodes, environments, and snapshots) deliberately retain their
+    immutable version references.
+    """
+
+    replacements = {
+        capability.package.id: capability.version.id
+        for capability in published_capabilities
+        if capability.package.capability_type == "SKILL"
+    }
+    if not replacements:
+        return
+
+    members = db.execute(
+        select(CapabilityCollectionItem, CapabilityVersion)
+        .join(
+            CapabilityVersion,
+            CapabilityVersion.id == CapabilityCollectionItem.capability_version_id,
+        )
+        .where(CapabilityVersion.package_id.in_(replacements))
+    ).all()
+    changed_collection_ids: set[str] = set()
+    for member, version in members:
+        latest_version_id = replacements[version.package_id]
+        if member.capability_version_id == latest_version_id:
+            continue
+        member.capability_version_id = latest_version_id
+        changed_collection_ids.add(member.collection_id)
+
+    if not changed_collection_ids:
+        return
+    changed_at = datetime.now(UTC)
+    for collection in db.scalars(
+        select(CapabilityCollection).where(CapabilityCollection.id.in_(changed_collection_ids))
+    ):
+        collection.row_version += 1
+        collection.updated_at = changed_at
 
 
 def _collection_dict(db: Session, item: CapabilityCollection) -> dict[str, Any]:
