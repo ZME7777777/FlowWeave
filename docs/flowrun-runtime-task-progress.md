@@ -2229,6 +2229,14 @@ HOME 下的 `.local`，并让交互终端、Agent Server 及其子进程默认�
 和 Agent Server 入口只在启动时把 `$NPM_CONFIG_PREFIX/bin` 前置到镜像原 PATH。FlowRun 与默认 Agent
 Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 
+### FR-152 FlowRun 节点会话暂停状态收敛 — DONE
+
+依赖：`FR-151`。
+
+目标：修复 OpenHands 原生 Conversation 已明确进入 `paused`，但 FlowRun NodeAttempt 因中间并发状态转换未落库仍为 `EXECUTING/RUNNING` 时，页面显示已暂停而“继续”被平台 `VERSION_CONFLICT` 拒绝的问题。不得将普通运行中、状态未知或传输失败的会话误判为已暂停；不得弱化 generation、Attempt 状态或 CAS fencing。
+
+完成：节点会话恢复前仅在同一受权 Conversation 的原生 `input_readiness.execution_status` 精确为 `paused`、且 Attempt 仍为 `EXECUTING/RUNNING` 时，使用既有 state-version CAS 先补写 `PAUSED/PAUSED`、`ATTEMPT_PAUSED` 审计事件和 FlowRun 等待状态，再走既有恢复链路。CAS 未命中、任何非 `paused` 原生状态和原有暂停以外状态继续 fail closed。定向回归覆盖受控收敛后的恢复、审计／唤醒任务，以及原生 `running` 状态继续拒绝。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2244,6 +2252,7 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-152 | 受影响 Python `py_compile`、Ruff format/check、生产文件定向 Pyright（0 errors）、`git diff --check`；定向 `test_conversations.py` pytest | PASS：静态检查通过，收敛路径受精确原生 `paused` 与 Attempt CAS 双重限制。pytest 未能执行断言：本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集时失败；未伪记为通过。测试模块的定向 Pyright 另有既有跨模块兼容导入基线错误，生产文件为 0 errors。 |
 | 2026-09-04 | FR-151 | 三类容器启动命令直接 smoke、受影响 Python `py_compile`、Ruff check、`git diff --check` | PASS：Setup、FlowRun 和默认 Agent Workspace 均使用持久 HOME 下的 npm prefix，终端与 Agent Server 保留并扩展镜像 PATH。定向 pytest 因本机 Docker daemon 未运行、全局 Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过。 |
 | 2026-09-04 | FR-150 | CLI `npm test`（6 passed）、Node 语法检查、npm pack 清单、三份 Skill `quick_validate.py`、`git diff --check` | PASS：四个新增删除接口均有快捷命令和 dry-run 请求映射；批量命令拒绝缺少精确目标，Skill 与服务端范围、递归和引用保护语义一致。 |
 | 2026-09-04 | FR-148 | CLI `npm test`（5 passed）、Node 语法检查、Skill 快速校验、`git diff --check` | PASS：维护快捷命令均以平台 API 和可审计 dry-run 映射实现，Skill 操作说明与服务端保护语义一致。 |

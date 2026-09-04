@@ -1996,6 +1996,58 @@ def interrupt_node_conversation(
     return {"accepted": True}
 
 
+def _record_native_pause(
+    db: Session,
+    *,
+    attempt_id: str,
+    binding: AgentConversationBinding,
+    expected_version: int,
+) -> NodeAttempt | None:
+    """CAS-project an already-confirmed native pause into the Attempt.
+
+    OpenHands owns Conversation execution state.  FlowWeave keeps only the
+    Attempt-level orchestration projection needed to gate a FlowRun.  An
+    interrupt can therefore succeed upstream while a concurrent worker wins
+    the local state race.  Project only the unambiguous native ``paused``
+    state; never infer a pause from a transport error or a merely writable
+    Conversation.
+    """
+
+    claimed_id = db.scalar(
+        update(NodeAttempt)
+        .where(
+            NodeAttempt.id == attempt_id,
+            NodeAttempt.state == AttemptState.EXECUTING,
+            NodeAttempt.runtime_phase == "RUNNING",
+            NodeAttempt.state_version == expected_version,
+        )
+        .values(
+            state=AttemptState.PAUSED,
+            runtime_phase="PAUSED",
+            state_version=NodeAttempt.state_version + 1,
+        )
+        .returning(NodeAttempt.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_id is None:
+        db.expire_all()
+        return None
+    db.expire_all()
+    paused = _attempt(db, attempt_id)
+    node_run, run, _ = _attempt_context(db, paused)
+    run.state = FlowRunState.WAITING_HUMAN
+    db.add(
+        RunEvent(
+            flow_run_id=run.id,
+            node_run_id=node_run.id,
+            attempt_id=paused.id,
+            event_type="ATTEMPT_PAUSED",
+            payload_json={"conversation_id": binding.openhands_conversation_id},
+        )
+    )
+    return paused
+
+
 def resume_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
@@ -2004,7 +2056,32 @@ def resume_node_conversation(
     )
     attempt = _attempt(db, attempt_id)
     if attempt.state != AttemptState.PAUSED or attempt.runtime_phase != "PAUSED":
-        raise conflict("node attempt is not paused", attempt_id=attempt.id, state=attempt.state)
+        # Recover only the precise split-brain state caused when the native
+        # interrupt succeeded but its local Attempt projection lost a race.
+        # A ready Conversation is not enough: OpenHands must explicitly say it
+        # is paused, otherwise this remains a normal optimistic-lock conflict.
+        handle = _node_handle(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        )
+        readiness = get_runtime().input_readiness(handle)
+        if (
+            attempt.state != AttemptState.EXECUTING
+            or attempt.runtime_phase != "RUNNING"
+            or readiness.execution_status.lower() != "paused"
+            or _record_native_pause(
+                db,
+                attempt_id=attempt_id,
+                binding=binding,
+                expected_version=attempt.state_version,
+            )
+            is None
+        ):
+            raise conflict(
+                "node attempt is not paused",
+                attempt_id=attempt.id,
+                state=attempt.state,
+            )
+        attempt = _attempt(db, attempt_id)
     expected_version = attempt.state_version
     claimed_id = db.scalar(
         update(NodeAttempt)
