@@ -44,6 +44,12 @@ def _start_automatic_run(
     orchestration.process_start_automatic_run(db, aggregate_id, commit=False)
 
 
+def _materialize_flow_run_schedule(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    orchestration.process_flow_run_schedule_occurrence(db, aggregate_id, commit=False)
+
+
 def _start_automatic_attempt(
     db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
 ) -> None:
@@ -198,6 +204,7 @@ HANDLERS: dict[str, Handler] = {
     "RUN_GATE_POLICY": _gates,
     "START_RUNTIME": _start_runtime,
     "START_AUTOMATIC_RUN": _start_automatic_run,
+    "MATERIALIZE_FLOW_RUN_SCHEDULE": _materialize_flow_run_schedule,
     "START_AUTOMATIC_ATTEMPT": _start_automatic_attempt,
     "ADVANCE_AUTOMATIC_ATTEMPT": _advance_automatic_attempt,
     "PROVISION_FLOW_RUN_RUNTIME": _provision_flow_run_runtime,

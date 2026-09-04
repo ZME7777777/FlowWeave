@@ -28,6 +28,8 @@ from flowweave.shared.schemas import (
     ManualAttemptOutputsWrite,
     NodeRunCopyWrite,
     NodeRunStart,
+    FlowRunScheduleStateWrite,
+    FlowRunScheduleWrite,
     RejectWrite,
     RunStart,
     RuntimeCancelRecoveryWrite,
@@ -42,6 +44,36 @@ router = APIRouter()
 
 def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
+
+
+@router.get("/flow-run-schedules")
+async def flow_run_schedules(db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, service.list_flow_run_schedules)
+
+
+@router.post("/flow-run-schedules", status_code=201)
+async def create_flow_run_schedule(payload: FlowRunScheduleWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.create_flow_run_schedule(session, payload))
+
+
+@router.put("/flow-run-schedules/{schedule_id}/state")
+async def set_flow_run_schedule_state(
+    schedule_id: str, payload: FlowRunScheduleStateWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.set_flow_run_schedule_state(session, schedule_id, payload)
+    )
+
+
+@router.post("/flow-run-schedules/{schedule_id}/trigger")
+async def trigger_flow_run_schedule(schedule_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.trigger_flow_run_schedule(session, schedule_id))
+
+
+@router.delete("/flow-run-schedules/{schedule_id}", status_code=204, response_class=Response)
+async def delete_flow_run_schedule(schedule_id: str, db: Db) -> Response:
+    await run_sync(db, lambda session: service.delete_flow_run_schedule(session, schedule_id))
+    return Response(status_code=204)
 
 
 @router.post("/flows/{flow_id}/runs", status_code=201)

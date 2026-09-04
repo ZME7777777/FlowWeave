@@ -18,7 +18,7 @@ from flowweave.modules.environments.public import (
     expire_setup_sessions,
     recover_environment_cleanup_tasks,
 )
-from flowweave.modules.orchestration.public import recover_runtime_deliveries
+from flowweave.modules.orchestration.public import recover_runtime_deliveries, scan_due_flow_run_schedules
 from flowweave.modules.sandboxes.public import reconcile_managed_sandboxes
 from flowweave.modules.tasks.application.handlers import handle, record_terminal_failure
 from flowweave.modules.tasks.application.service import (
@@ -143,6 +143,9 @@ class TaskWorker:
                         lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
                     )
                     await session.run_sync(
+                        lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
+                    )
+                    await session.run_sync(
                         lambda db: (
                             mark_uow_owned(db),
                             recover_environment_cleanup_tasks(db, commit=False),
@@ -264,6 +267,9 @@ class TaskWorker:
                     )
                     await session.run_sync(
                         lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
+                    )
+                    await session.run_sync(
+                        lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
                     )
                     # Publish maintenance intent before the reconciler opens its
                     # independent short control transactions.
