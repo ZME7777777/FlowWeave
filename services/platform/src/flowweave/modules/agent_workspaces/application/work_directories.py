@@ -20,7 +20,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
-from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun
+from flowweave.shared.models import NodeAttempt, NodeRun
 from flowweave.shared.settings import get_settings
 
 _RUNTIME_PROJECT_ROOT = PurePosixPath("/runtime/workspace/project")
@@ -71,7 +71,6 @@ def _flow_run_directory(
 
 
 def _flow_run_attempt(db: Session, flow_run_id: str, node_attempt_id: str) -> NodeAttempt:
-    _flow_run_root(db, flow_run_id)
     attempt = db.get(NodeAttempt, node_attempt_id)
     if attempt is None:
         raise not_found("node_attempt", node_attempt_id)
@@ -190,16 +189,17 @@ def _validate_paths(db: Session, workspace_id: str, values: tuple[str, ...]) -> 
     return _validated_relative_paths(values, _project_root(db, workspace_id))
 
 
-def _flow_run_root(db: Session, flow_run_id: str) -> Path:
-    if db.get(FlowRun, flow_run_id) is None:
-        raise not_found("flow_run", flow_run_id)
-    return sandboxes.flow_run_workspace_project_path(flow_run_id)
+def _flow_run_root(db: Session, flow_run_id: str, node_attempt_id: str) -> Path:
+    _flow_run_attempt(db, flow_run_id, node_attempt_id)
+    return sandboxes.node_attempt_workspace_project_path(
+        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+    )
 
 
 def _validate_flow_run_paths(
-    db: Session, flow_run_id: str, values: tuple[str, ...]
+    db: Session, flow_run_id: str, node_attempt_id: str, values: tuple[str, ...]
 ) -> tuple[str, ...]:
-    return _validated_relative_paths(values, _flow_run_root(db, flow_run_id))
+    return _validated_relative_paths(values, _flow_run_root(db, flow_run_id, node_attempt_id))
 
 
 def _display_name(value: str) -> str:
@@ -482,8 +482,12 @@ def delete_flow_run_work_directory(
             409,
         )
     if version_ids:
-        db.execute(delete(AgentWorkDirectoryPath).where(AgentWorkDirectoryPath.version_id.in_(version_ids)))
-        db.execute(delete(AgentWorkDirectoryVersion).where(AgentWorkDirectoryVersion.id.in_(version_ids)))
+        db.execute(
+            delete(AgentWorkDirectoryPath).where(AgentWorkDirectoryPath.version_id.in_(version_ids))
+        )
+        db.execute(
+            delete(AgentWorkDirectoryVersion).where(AgentWorkDirectoryVersion.id.in_(version_ids))
+        )
     db.delete(item)
     db.flush()
 
@@ -520,7 +524,7 @@ def create_flow_run_work_directory(
     _flow_run_attempt(db, flow_run_id, node_attempt_id)
     name = _display_name(display_name)
     _assert_flow_run_name_available(db, flow_run_id, node_attempt_id, name)
-    paths = _validate_flow_run_paths(db, flow_run_id, selected_paths)
+    paths = _validate_flow_run_paths(db, flow_run_id, node_attempt_id, selected_paths)
     item = AgentWorkDirectory(
         flow_run_id=flow_run_id,
         node_attempt_id=node_attempt_id,
@@ -540,7 +544,7 @@ def flow_run_conversation_context(
         return None, _RUNTIME_PROJECT_ROOT.as_posix()
     item = _flow_run_directory(db, flow_run_id, node_attempt_id, work_directory_id, lock=True)
     version = _version(db, item)
-    _validate_flow_run_paths(db, flow_run_id, _path_values(db, version.id))
+    _validate_flow_run_paths(db, flow_run_id, node_attempt_id, _path_values(db, version.id))
     return version.id, _working_directory(version.working_path)
 
 
@@ -564,7 +568,7 @@ def frozen_flow_run_conversation_context(
     )
     if version is None:
         raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
-    _validate_flow_run_paths(db, flow_run_id, _path_values(db, version.id))
+    _validate_flow_run_paths(db, flow_run_id, node_attempt_id, _path_values(db, version.id))
     return _working_directory(version.working_path)
 
 

@@ -716,10 +716,11 @@ def test_node_session_list_orders_recent_activity_first(
 def test_node_workspace_projection_isolates_node_attempt_work_directories(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Node entries share only the project root, never logical directories."""
+    """Each node entry exposes only its own Attempt Runtime project root."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
-        flow_run_workspace_project_path,
+        allocate_node_attempt_runtime,
+        node_attempt_workspace_project_path,
     )
 
     settings = settings.model_copy(
@@ -749,11 +750,16 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         )
         db.add(second_attempt)
         db.flush()
-        project_root = flow_run_workspace_project_path(flow_run_id)
-        first_root = project_root / "nodes" / "one" / "sessions" / "first" / "1"
-        second_root = project_root / "nodes" / "two" / "sessions" / "second" / "1"
-        first_root.mkdir(parents=True)
-        second_root.mkdir(parents=True)
+        allocate_node_attempt_runtime(db, flow_run_id=flow_run_id, node_attempt_id=first_attempt_id)
+        allocate_node_attempt_runtime(
+            db, flow_run_id=flow_run_id, node_attempt_id=second_attempt.id
+        )
+        first_root = node_attempt_workspace_project_path(
+            db, flow_run_id=flow_run_id, node_attempt_id=first_attempt_id
+        )
+        second_root = node_attempt_workspace_project_path(
+            db, flow_run_id=flow_run_id, node_attempt_id=second_attempt.id
+        )
         (first_root / "first.txt").write_text("first")
         (second_root / "second.txt").write_text("second")
         first_attempt.workspace_ref = str(first_root)
@@ -766,9 +772,9 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
                 attempt_id=_kwargs["attempt_id"],
                 session=SimpleNamespace(
                     working_directory=(
-                        "/runtime/workspace/project/nodes/one/sessions/first/1"
+                        "/runtime/workspace/project"
                         if _kwargs["attempt_id"] == first_attempt_id
-                        else "/runtime/workspace/project/nodes/two/sessions/second/1"
+                        else "/runtime/workspace/project"
                     )
                 ),
             ),
@@ -786,18 +792,15 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
             "port": 22,
             "user": "flowweave",
             "path": str(
-                Path("/srv/flowweave/workspaces")
-                / project_root.relative_to(settings.workspace_root)
+                Path("/srv/flowweave/workspaces") / first_root.relative_to(settings.workspace_root)
             ),
             "ssh_command": "ssh -p 22 flowweave@dev.flowweave.test",
         }
         paths = {item["path"] for item in details["files"]}
-        first_runtime_path = "/runtime/workspace/project/nodes/one/sessions/first/1/first.txt"
-        second_runtime_path = "/runtime/workspace/project/nodes/two/sessions/second/1/second.txt"
-        # With no selected logical work directory, the node page exposes the
-        # shared FlowRun project root.
+        first_runtime_path = "/runtime/workspace/project/first.txt"
+        second_runtime_path = "/runtime/workspace/project/second.txt"
         assert first_runtime_path in paths
-        assert second_runtime_path in paths
+        assert second_runtime_path not in paths
         content, _content_type, filename = flow_node_workspace.read_file(
             db,
             flow_run_id=flow_run_id,
@@ -809,7 +812,7 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         assert content == b"first"
         assert filename == "first.txt"
         directory = work_directories.create_flow_run_work_directory(
-            db, flow_run_id, first_attempt_id, "节点一目录", ("nodes/one",)
+            db, flow_run_id, first_attempt_id, "节点一目录", (".",)
         )
         first_directories = work_directories.list_flow_run_work_directories(
             db, flow_run_id, first_attempt_id
@@ -854,21 +857,20 @@ def test_node_candidate_output_preview_resolves_only_a_declared_relative_file(
     """A candidate preview never trusts a path from the Conversation transcript."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
-        flow_run_workspace_nodes_path,
-        flow_run_workspace_project_path,
+        allocate_node_attempt_runtime,
+        node_attempt_workspace_project_path,
     )
 
     with settings_context(settings), db_session_factory() as db:
         flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None
-        nodes_root = flow_run_workspace_nodes_path(flow_run_id)
-        attempt_root = nodes_root / "asset-1" / "sessions" / attempt.node_run_id / "1"
-        attempt_root.mkdir(parents=True)
-        project_root = flow_run_workspace_project_path(flow_run_id)
-        project_root.mkdir(parents=True)
+        allocate_node_attempt_runtime(db, flow_run_id=flow_run_id, node_attempt_id=attempt_id)
+        project_root = node_attempt_workspace_project_path(
+            db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+        )
         (project_root / "report.md").write_text("# Candidate report\n")
-        attempt.workspace_ref = str(attempt_root)
+        attempt.workspace_ref = str(project_root)
         attempt.output_targets_json = {
             "report": {"artifact_type": "FILE"},
             "link": {"artifact_type": "URL"},
@@ -878,7 +880,7 @@ def test_node_candidate_output_preview_resolves_only_a_declared_relative_file(
             flow_node_workspace,
             "resolve_flow_node_session_host",
             lambda _db, **_kwargs: SimpleNamespace(
-                working_directory=str(attempt_root),
+                working_directory=str(project_root),
                 node={"asset": {"id": "asset-1"}},
             ),
         )

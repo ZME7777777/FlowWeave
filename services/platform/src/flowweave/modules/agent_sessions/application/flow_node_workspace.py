@@ -11,7 +11,7 @@ import os
 import shutil
 import stat
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,7 +24,6 @@ from flowweave.modules.agent_sessions.application.ide import ssh_remote_descript
 from flowweave.modules.agent_sessions.public import AgentConversationMessageAttachment
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
-from flowweave.runtime.workspace import ensure_flow_run_attempt_workspace
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import NodeAttempt
 
@@ -38,27 +37,19 @@ AgentWorkDirectoryVersion = agent_workspace_host.AgentWorkDirectoryVersion
 
 
 def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
-    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
     host = resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         require_start_permission=False,
     )
-    # A waiting Attempt is inspectable before a Conversation/Runtime request
-    # exists. Backfill the same strictly server-derived directory tree used by
-    # Runtime startup so the workspace drawer has no lifecycle gap.
-    node = cast(dict[str, Any], getattr(host, "node", {}))
-    asset = cast(dict[str, Any], node.get("asset")) if isinstance(node.get("asset"), dict) else {}
-    asset_id = str(asset.get("id") or "")
-    working_directory = getattr(host, "working_directory", "")
-    if asset_id and working_directory:
-        ensure_flow_run_attempt_workspace(
-            flow_run_id=runtime_owner_id,
-            asset_id=asset_id,
-            workspace_ref=working_directory,
-        )
-    root = sandboxes.flow_run_workspace_project_path(runtime_owner_id)
+    # The stable in-container project path belongs to this Attempt Runtime
+    # allocation. Never resolve it through the FlowRun allocation: that would
+    # expose files produced by another Attempt.
+    del host
+    root = sandboxes.node_attempt_workspace_project_path(
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+    )
     try:
         metadata = root.lstat()
         resolved = root.resolve(strict=True)
@@ -293,7 +284,6 @@ def details(
             "display_name": directory["display_name"],
         }
     )
-    runtime = sandboxes.runtime_overview(db, flow_run_id)
     return {
         "root": str(_RUNTIME_PROJECT),
         "scope": scope,
@@ -301,12 +291,8 @@ def details(
         "work_directory": directory,
         "files": _entries(project_root, roots),
         "repositories": [],
-        # Physical container identifiers are deliberately never sent to the
-        # browser. Project the FlowRun Runtime lifecycle instead.
-        "runtime": {
-            "state": runtime["status"],
-            "write_available": runtime["write_available"],
-        },
+        # This entry was authorized against an active Attempt Runtime.
+        "runtime": {"state": "ACTIVE", "write_available": True},
         "ide": {
             "workspace_path": working_directory,
             "gateway": ssh_remote_descriptor(project_root, working_directory),
@@ -375,7 +361,10 @@ def delete_entries(
         raise DomainError("FLOW_RUN_WORKSPACE_DELETE_TOO_MANY", "一次最多删除 100 项", 422)
     project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     _, _, roots = _scope(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
         work_directory_id=work_directory_id,
     )
     _validate_scope_roots(project_root, roots)
@@ -415,7 +404,8 @@ def delete_entries(
             )
         candidates.append((path, resolved))
     selected = [
-        item for item in candidates
+        item
+        for item in candidates
         if not any(item[0].startswith(parent[0] + "/") for parent in candidates if parent != item)
     ]
     for _, candidate in selected:

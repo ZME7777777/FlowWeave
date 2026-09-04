@@ -571,6 +571,22 @@ def runtime_allocation_for_node_attempt(
     return allocation
 
 
+def node_attempt_workspace_project_path(
+    db: Session, *, flow_run_id: str, node_attempt_id: str
+) -> Path:
+    """Return the persistent project root owned by one NodeAttempt.
+
+    A FlowRun and each of its Attempts have distinct Runtime allocations.  The
+    browser-visible ``/runtime/workspace/project`` path must therefore resolve
+    through the Attempt allocation, never through the FlowRun allocation.
+    """
+
+    allocation = runtime_allocation_for_node_attempt(
+        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+    )
+    return _host_root(allocation.relative_root) / "workspace" / "project"
+
+
 def ensure_capability_manifest_directory(
     allocation: FlowRunRuntimeAllocation, manifest_digest: str
 ) -> Path:
@@ -795,6 +811,7 @@ __all__ = (
     "flow_run_capability_path",
     "flow_run_workspace_nodes_path",
     "flow_run_workspace_project_path",
+    "node_attempt_workspace_project_path",
     "openhands_flow_run_capability_path",
     "openhands_flow_run_nodes_path",
     "openhands_flow_run_project_path",
