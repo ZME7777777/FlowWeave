@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-157 后续范围待拆分）
+> 下一可执行切片：`无`（FR-158 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2304,6 +2304,16 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 用户消息，并在事件读取投影时去除该内部上下文、返回引用元数据。会话流把元数据渲染为与附件同类的紧凑卡片，
 原文只保留在卡片 title 中。引用与普通附件可组合，草稿、首条消息恢复、排队编辑和节点会话路由均保留该字段。
 
+### FR-158 会话引用内容预览 — DONE
+
+依赖：`FR-157`。
+
+目标：已发送消息中的“会话引用”附件卡片必须可点击查看所选原文，并能够使用引用中保存的正式 event ID 定位
+回当前会话中对应的原始消息；预览不展开到消息正文，也不新增后端存储或会话事件副本。
+
+完成：引用卡片改为可访问按钮；点击后在只读预览中展示保留的所选文本，支持 Esc、遮罩或按钮关闭。预览提供
+“定位原消息”，仅依据已投影事件的正式 ID 平滑滚回源消息。引用卡片继续保持附件式紧凑展示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2319,6 +2329,7 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-158 | Web ESLint、TypeScript typecheck/production build；定向 Playwright（1 passed）；`git diff --check` 与任务状态唯一性 | PASS：发送后的会话引用卡片可点击，弹窗显示完整所选文本，“定位原消息”关闭预览并滚回 source event；正文仍不展开引用内容。 |
 | 2026-09-05 | FR-156 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（7 passed，新增逐步配置保存后启动与直接启动独立分类覆盖）；受影响 Python `py_compile`、Ruff；Alembic head、`git diff --check` 与任务状态唯一性；定向平台 pytest；全量 Pyright 基线复核 | PASS（静态与浏览器）：三类记录与统一右侧面板生效，逐步保存不立即执行，记录行启动使用冻结提示词，直接启动独立建档；唯一 Alembic head 为 `0092_node_run_names`。定向平台 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在 setup 阶段失败，4 个目标测试未执行断言，未伪记为通过。Pyright 仍报告仓库既有 40 项 Unknown／类型基线错误，本切片新增行无新增诊断。 |
 | 2026-09-04 | FR-155 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（6 passed，新增 Command/Shift 多选删除与最后点击拷贝目标覆盖）；`git diff --check`、任务状态唯一性 | PASS：单节点与自动运行记录均支持 Command/Control 追加和 Shift 连续选择，删除仅发送选中记录的精确 DELETE；单节点运行中记录继续阻止批量删除，拷贝对话框始终使用最后点击的自动记录名称。 |
 | 2026-09-04 | FR-157 | Web ESLint、TypeScript typecheck/production build；定向 Playwright（1 passed）；受影响 Python `py_compile`、Ruff、直接投影断言、Alembic head、`git diff --check` | PASS：选中文本可加入编辑器并作为可移除引用 chip 发送；浏览器请求携带 event ID 与文本，发送消息只呈现“会话引用 1”附件卡片、不会展开所选原文；引用和普通附件可共同投影。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在收集阶段失败，未伪记为通过。唯一 Alembic head 为 `0092_node_run_names`。 |

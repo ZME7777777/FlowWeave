@@ -42,7 +42,8 @@
 .conversation-message-attachment b{overflow:hidden;color:#3c4840;font-size:11px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
 .conversation-message-attachment small{overflow:hidden;color:#839087;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
 .conversation-message-attachment>svg:last-child{flex:0 0 auto;color:#77857b}
-.conversation-message-reference{cursor:default}.conversation-message-reference>svg:first-child{color:#5f748a}
+.conversation-message-reference{cursor:pointer}.conversation-message-reference>svg:first-child{color:#5f748a}
+.conversation-reference-preview-backdrop{position:fixed;z-index:60;inset:0;display:grid;place-items:center;background:#1722194d;padding:24px}.conversation-reference-preview{display:grid;width:min(620px,100%);max-height:min(620px,calc(100vh - 48px));gap:14px;border:1px solid #dce4de;border-radius:16px;background:#fff;box-shadow:0 22px 60px #18271d40;padding:20px}.conversation-reference-preview header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.conversation-reference-preview h2{margin:3px 0 0;color:#26352c;font-size:18px}.conversation-reference-preview pre{overflow:auto;margin:0;border:1px solid #e1e7e2;border-radius:10px;background:#f7f9f7;padding:14px;color:#354238;font:13px/1.7 inherit;white-space:pre-wrap;overflow-wrap:anywhere}.conversation-reference-preview footer{display:flex;justify-content:flex-end;gap:8px}.conversation-reference-preview footer button{border-radius:8px;padding:7px 11px;font-size:12px}
 .conversation-activity-group{margin:0 0 14px;border:0;color:#69756d}
 .conversation-activity-group>summary,.conversation-activity-summary{display:flex;align-items:center;gap:7px;width:fit-content;list-style:none;font-size:12px}
 .conversation-activity-group>summary{cursor:pointer}
