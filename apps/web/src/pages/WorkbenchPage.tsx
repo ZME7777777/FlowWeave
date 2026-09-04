@@ -4,12 +4,13 @@ import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, Download, Ext
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
+import { ConversationSurface } from '../components/ConversationSurface';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, GateAgentPreset, GateEvaluation, GatePolicy, NodeAttempt, NodeRun, SnapshotFlowNode } from '../types';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, GateAgentPreset, GateEvaluation, GatePolicy, NodeAttempt, NodeRun, OpenHandsConversationEvent, SnapshotFlowNode } from '../types';
 import { withDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
 
@@ -249,15 +250,25 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
   const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成自动运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
   return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
-function GateList({ evaluations, policies = [] }: { evaluations: GateEvaluation[]; policies?: GatePolicy[] }) {
+function GateList({ evaluations, policies = [], onViewConversation }: { evaluations: GateEvaluation[]; policies?: GatePolicy[]; onViewConversation?: (evaluation: GateEvaluation) => void }) {
   const configured = [...policies].sort((left, right) => left.stage.localeCompare(right.stage) || left.position - right.position);
-  const unconfiguredResults = evaluations.filter(item => !policies.some(policy => policy.id === item.policy_snapshot_key));
+  const latestEvaluation = (items: GateEvaluation[]) => [...items].sort((left, right) => right.evaluation_attempt - left.evaluation_attempt || right.created_at.localeCompare(left.created_at))[0];
+  const unconfiguredResults = [...new Set(evaluations.filter(item => !policies.some(policy => policy.id === item.policy_snapshot_key)).map(item => `${item.stage}:${item.policy_snapshot_key}`))]
+    .map(key => latestEvaluation(evaluations.filter(item => `${item.stage}:${item.policy_snapshot_key}` === key)))
+    .filter((item): item is GateEvaluation => Boolean(item));
   if (!configured.length && !unconfiguredResults.length) return <div className="empty compact">本轮未配置门禁。</div>;
   return <div className="gate-results">{configured.map(policy => {
-    const evaluation = evaluations.find(item => item.policy_snapshot_key === policy.id);
+    const evaluation = latestEvaluation(evaluations.filter(item => item.stage === policy.stage && item.policy_snapshot_key === policy.id));
     const label = `${policy.stage === 'START' ? '启动' : '完成'}门禁 · #${policy.position + 1}`;
-    return <div className="gate-result" key={policy.id ?? `${policy.stage}-${policy.position}`}><span><b>{label}</b><small>{evaluation ? String(evaluation.result.summary ?? '') : `${policy.gate_type === 'PYTHON' ? 'Python 脚本' : 'Prompt 判断'} · 等待执行`}</small></span>{evaluation ? <strong className={evaluation.decision === 'PASS' ? 'good' : 'bad'}>{evaluation.decision}</strong> : <strong className="pending">待执行</strong>}</div>;
-  })}{unconfiguredResults.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span><strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>)}</div>;
+    return <div className="gate-result" key={policy.id ?? `${policy.stage}-${policy.position}`}><span><b>{label}</b><small>{evaluation ? String(evaluation.result.summary ?? '') : `${policy.gate_type === 'PYTHON' ? 'Python 脚本' : 'Prompt 判断'} · 等待执行`}</small></span>{evaluation?.conversation_available && onViewConversation && <button className="ghost gate-conversation-button" onClick={() => onViewConversation(evaluation)}><Eye size={13}/>查看校验记录</button>}{evaluation ? <strong className={evaluation.decision === 'PASS' ? 'good' : 'bad'}>{evaluation.decision}</strong> : <strong className="pending">待执行</strong>}</div>;
+  })}{unconfiguredResults.map(item => <div className="gate-result" key={item.id}><span><b>{item.stage} · #{item.policy_position + 1}</b><small>{String(item.result.summary ?? '')}</small></span>{item.conversation_available && onViewConversation && <button className="ghost gate-conversation-button" onClick={() => onViewConversation(item)}><Eye size={13}/>查看校验记录</button>}<strong className={item.decision === 'PASS' ? 'good' : 'bad'}>{item.decision}</strong></div>)}</div>;
+}
+
+function GateConversationDialog({ attemptId, evaluation, onClose }: { attemptId: string; evaluation: GateEvaluation; onClose: () => void }) {
+  useEscapeClose(onClose);
+  const query = useQuery({ queryKey: ['gate-conversation', attemptId, evaluation.id], queryFn: () => api.gateEvaluationEvents(attemptId, evaluation.id) });
+  const events = query.data?.events ?? [] as OpenHandsConversationEvent[];
+  return <div className="modal-backdrop gate-conversation-backdrop" role="dialog" aria-modal="true" aria-label="校验 Agent 记录" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal gate-conversation-dialog"><header><div><h2>校验 Agent 记录</h2><small>只读 · 原始 OpenHands 事件 · {evaluation.decision}</small></div><button className="ghost" aria-label="关闭校验记录" onClick={onClose}><X size={17}/></button></header><div className="gate-conversation-body">{query.isLoading ? <div className="empty compact">正在读取校验记录…</div> : query.isError ? <p className="error">{query.error.message}</p> : <ConversationSurface events={events} liveText="" isGenerating={false}/>}</div><footer><span>该记录不能继续对话、修改、分叉或删除。</span><button className="secondary" onClick={onClose}>关闭</button></footer></section></div>;
 }
 
 function ArtifactList({ artifacts, expectedFields = [] }: { artifacts: ArtifactVersion[]; expectedFields?: SnapshotFlowNode['asset']['outputs'] }) {
@@ -632,6 +643,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const [tab, setTab] = useState<'overview' | 'gates' | 'outputs'>('overview');
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const [manualOutputs, setManualOutputs] = useState<Record<string, string>>({});
+  const [gateConversation, setGateConversation] = useState<GateEvaluation>();
   const attemptSnapshot = run.snapshots.find(item => item.id === attempt.snapshot_id);
   const activeSnapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   // Older attempts can reference snapshots that were compacted from the run
@@ -644,6 +656,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const currentBinding = (field: string) => bindings[field] ?? attempt.input_bindings.find(item => item.input_field_key === field)?.artifact_version_id ?? '';
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
     if (kind === 'accept') return api.acceptAttempt(attempt.id, attempt.state_version);
+    if (kind === 'accept-gate-risk') return api.acceptGateRisk(attempt.id, attempt.state_version, String((body as { reason: string }).reason));
     if (kind === 'reject') return api.rejectAttempt(attempt.id, String((body as { reason: string }).reason), attempt.state_version);
     if (kind === 'human') return api.humanInput(attempt.id, String((body as { content: string }).content), attempt.state_version);
     if (kind === 'manual-outputs') return api.submitManualOutputs(
@@ -691,9 +704,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && (automaticAttempt ? <section className="terminal-run-panel"><h4>等待平台自动流转</h4><p>完成门禁已通过。平台正在按冻结拓扑和端口映射验收产物并选择后继节点，无需进入会话推动。</p></section> : <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>完成节点并流转</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>)}
-      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{runtimeFailed ? '节点执行失败' : automaticAttempt ? '自动运行需要人工处理' : '门禁未通过'}</h4><p>{attempt.error_detail || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。请检查模型配置和运行日志后重新执行节点。' : '请查看门禁结果，修正问题后重试。')}</p>{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && <button className="secondary full" onClick={() => act('retry')}>重试当前阶段</button>}</section>}
+      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{runtimeFailed ? '节点执行失败' : automaticAttempt ? '自动运行需要人工处理' : '门禁未通过'}</h4><p>{attempt.error_detail || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。请检查模型配置和运行日志后重新执行节点。' : '请查看门禁结果，修正问题后重试。')}</p>{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && <button className="secondary full" onClick={() => act('retry')}>重试当前阶段</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL/ERROR 将原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
       {!automaticAttempt && !attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
-    </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setInputDialogOpen(false); setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); act('bind', nextBindings); }}/>}</aside>;
+    </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies} onViewConversation={setGateConversation}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setInputDialogOpen(false); setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); act('bind', nextBindings); }}/>} {gateConversation && <GateConversationDialog attemptId={attempt.id} evaluation={gateConversation} onClose={() => setGateConversation(undefined)}/>}</aside>;
 }
 
 function SnapshotSync({ run, currentVersion, onSynced }: { run: FlowRun; currentVersion?: number; onSynced: (run: FlowRun) => void }) {
@@ -897,7 +910,7 @@ export function WorkbenchPage() {
     if (kind === 'sync' && result && typeof result === 'object' && 'node_runs' in result) {
       qc.setQueryData(['flow-run', selectedRunId], result as FlowRun);
     }
-    if (kind === 'accept' && result && typeof result === 'object' && 'node_runs' in result) {
+    if ((kind === 'accept' || kind === 'accept-gate-risk') && result && typeof result === 'object' && 'node_runs' in result) {
       const updated = result as FlowRun;
       qc.setQueryData(['flow-run', selectedRunId], updated);
       const next = [...updated.node_runs].reverse().find(item => item.state === 'ACTIVE') ?? updated.node_runs.at(-1);

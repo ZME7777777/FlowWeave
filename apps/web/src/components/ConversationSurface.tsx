@@ -132,7 +132,7 @@ function CandidateOutputReply({ outputs, onPreviewFile }: {
   outputs: CandidateOutput[];
   onPreviewFile?: (output: CandidateOutput) => void;
 }) {
-  return <section className="conversation-candidate-outputs" aria-label="Agent 候选交付物"><header><b>执行 Agent 已提交 {outputs.length} 个候选交付物</b><small>文件预览仅限当前节点的授权范围。</small></header><div>{outputs.map(output => {
+  return <section className="conversation-candidate-outputs" aria-label="Agent 候选交付物"><header><b>执行 Agent 已提交 {outputs.length} 个候选交付物</b><small>此卡片由平台从 Agent 的结构化输出中解析生成，不是 Agent 发送的独立消息；文件预览仅限当前节点的授权范围。</small></header><div>{outputs.map(output => {
     return <article key={output.fieldKey}>{output.artifactType === 'URL' ? <Link size={15}/> : <FileText size={15}/>}<span><b>{output.fieldKey}</b><small>{output.artifactType === 'URL' ? 'URL 候选产物' : '文件候选产物'}</small><p>{output.artifactType === 'URL' ? output.value : output.value.split('/').at(-1)}</p></span>{output.artifactType === 'URL' ? <a href={output.value} target="_blank" rel="noopener noreferrer"><ExternalLink size={13}/>打开</a> : onPreviewFile ? <button type="button" onClick={() => onPreviewFile(output)}><PanelRightOpen size={13}/>预览</button> : null}</article>;
   })}</div></section>;
 }

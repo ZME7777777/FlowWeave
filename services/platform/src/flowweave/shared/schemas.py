@@ -466,6 +466,10 @@ class AttemptVersionWrite(ApiModel):
     expected_state_version: int = Field(ge=1)
 
 
+class GateRiskAcceptanceWrite(AttemptVersionWrite):
+    reason: str = Field(min_length=1, max_length=4000)
+
+
 class ManualAttemptOutputWrite(ApiModel):
     artifact_type: Literal["URL", "FILE"]
     uri: str | None = None

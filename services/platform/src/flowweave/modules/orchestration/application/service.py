@@ -106,6 +106,7 @@ from flowweave.shared.schemas import (
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
     AutomaticRunStartWrite,
+    GateRiskAcceptanceWrite,
     HumanInputWrite,
     InputBindingsWrite,
     ManualAttemptOutputsWrite,
@@ -1429,6 +1430,17 @@ def _record_gate_results(
     node_run = _node_run(db, attempt.node_run_id)
     for prepared, result in evaluations:
         policy = prepared.policy
+        result_json = result.as_dict()
+        if prepared.plan.sidecar_binding_id and result.sidecar_available:
+            result_json["_gate_conversation_binding_id"] = prepared.plan.sidecar_binding_id
+            binding = db.get(AgentConversationBinding, prepared.plan.sidecar_binding_id)
+            if binding is not None:
+                binding.lifecycle = "ACTIVE"
+        elif prepared.plan.sidecar_binding_id:
+            # Reservation is durable before Runtime I/O. If creation never
+            # produced a reloadable Conversation, do not publish a dead audit
+            # locator and reclaim only the unused control-plane records.
+            agent_sessions.delete_binding_records(db, prepared.plan.sidecar_binding_id)
         db.add(
             GateEvaluation(
                 attempt_id=attempt.id,
@@ -1445,7 +1457,7 @@ def _record_gate_results(
                         "evaluation_attempt": prepared.execution_no,
                     }
                 ),
-                result_json=result.as_dict(),
+                result_json=result_json,
                 log_excerpt=result.log_excerpt,
                 error_code=result.error_code,
             )
@@ -1736,6 +1748,7 @@ def _prepare_gate_plan(
         sidecar_request=request,
         sidecar_question=question,
         sidecar_binding_id=binding.id,
+        retain_sidecar=True,
     )
 
 
@@ -1745,11 +1758,7 @@ def _execute_gate_stage(
     evaluations: list[tuple[_PreparedGate, GateResult]] = []
     blocked = False
     for position, item in enumerate(prepared):
-        try:
-            result = execute_gate_plan(item.plan, context)
-        finally:
-            if item.plan.sidecar_binding_id:
-                agent_sessions.delete_binding_records(db, item.plan.sidecar_binding_id)
+        result = execute_gate_plan(item.plan, context)
         evaluations.append((item, result))
         if result.decision != "PASS":
             blocked = True
@@ -5353,6 +5362,124 @@ def accept_attempt(
     return run_detail(db, run.id)
 
 
+def accept_gate_risk(
+    db: Session,
+    attempt_id: str,
+    payload: GateRiskAcceptanceWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Accept failed END-gate risk without rewriting the Agent decision."""
+
+    current = _attempt(db, attempt_id)
+    node_run = _node_run(db, current.node_run_id)
+    run = _locked_run(db, node_run.flow_run_id)
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if existing.action_type != "ACCEPT_GATE_RISK" or existing.attempt_id != attempt_id:
+            raise conflict("gate risk acceptance idempotency key is already used")
+        if (
+            existing.payload_json.get("expected_state_version") != payload.expected_state_version
+            or existing.payload_json.get("reason") != payload.reason
+        ):
+            raise conflict("gate risk acceptance request does not match the idempotent request")
+        return run_detail(db, run.id)
+    if current.state != AttemptState.END_BLOCKED or current.error_code is not None:
+        raise illegal(
+            "only an END gate decision can be accepted as human risk",
+            state=current.state,
+            error_code=current.error_code,
+        )
+    failed = db.scalar(
+        select(GateEvaluation)
+        .where(
+            GateEvaluation.attempt_id == attempt_id,
+            GateEvaluation.stage == "END",
+            GateEvaluation.decision.in_(("FAIL", "ERROR")),
+        )
+        .order_by(
+            GateEvaluation.created_at.desc(),
+            GateEvaluation.evaluation_attempt.desc(),
+            GateEvaluation.id.desc(),
+        )
+        .limit(1)
+    )
+    if failed is None:
+        raise illegal("attempt has no failed END gate evaluation", state=current.state)
+
+    next_state = (
+        AttemptState.WAITING_ACCEPTANCE if run.run_mode == "AUTOMATIC" else AttemptState.ACCEPTED
+    )
+    attempt = _claim_attempt_version(
+        db,
+        attempt_id,
+        payload.expected_state_version,
+        {AttemptState.END_BLOCKED},
+        next_state=next_state,
+    )
+    failed_ids = [failed.id]
+    _action(
+        db,
+        run.id,
+        "ACCEPT_GATE_RISK",
+        idempotency_key,
+        {
+            "expected_state_version": payload.expected_state_version,
+            "reason": payload.reason,
+            "gate_evaluation_ids": failed_ids,
+        },
+        node_run.id,
+        attempt.id,
+    )
+    _event(
+        db,
+        run.id,
+        "GATE_RISK_ACCEPTED",
+        {"reason": payload.reason, "gate_evaluation_ids": failed_ids},
+        node_run.id,
+        attempt.id,
+    )
+    if run.run_mode == "AUTOMATIC":
+        run.state = FlowRunState.ACTIVE
+        _dispatch_automatic_advance(db, attempt)
+    else:
+        node_run.state = NodeRunState.ACCEPTED
+        node_run.accepted_attempt_id = attempt.id
+        _event(
+            db,
+            run.id,
+            "NODE_RUN_COMPLETED",
+            {"gate_risk_accepted": True},
+            node_run.id,
+            attempt.id,
+        )
+        _create_configurable_targets(db, run, node_run)
+        _recompute_run(db, run)
+    finish(db)
+    return run_detail(db, run.id)
+
+
+def gate_evaluation_events(
+    db: Session, attempt_id: str, evaluation_id: str, cursor: str | None = None
+) -> dict[str, Any]:
+    """Read an immutable Gate Agent conversation through its evaluation."""
+
+    attempt = _attempt(db, attempt_id)
+    evaluation = db.get(GateEvaluation, evaluation_id)
+    if evaluation is None or evaluation.attempt_id != attempt.id:
+        raise not_found("gate_evaluation", evaluation_id)
+    binding_id = evaluation.result_json.get("_gate_conversation_binding_id")
+    if not isinstance(binding_id, str) or not binding_id:
+        raise not_found("gate_evaluation_conversation", evaluation_id)
+    node_run = _node_run(db, attempt.node_run_id)
+    return agent_sessions.flow_node_conversations.read_gate_sidecar_events(
+        db,
+        flow_run_id=node_run.flow_run_id,
+        attempt_id=attempt.id,
+        binding_id=binding_id,
+        cursor=cursor,
+    )
+
+
 def reject_attempt(
     db: Session, attempt_id: str, payload: RejectWrite, idempotency_key: str
 ) -> dict[str, Any]:
@@ -5867,7 +5994,19 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
                 "evaluation_attempt": x.evaluation_attempt,
                 "state": x.state,
                 "decision": x.decision,
-                "result": x.result_json,
+                "result": {
+                    key: value
+                    for key, value in x.result_json.items()
+                    if key != "_gate_conversation_binding_id"
+                },
+                "conversation_available": bool(
+                    isinstance(x.result_json.get("_gate_conversation_binding_id"), str)
+                    and db.get(
+                        AgentConversationBinding,
+                        x.result_json.get("_gate_conversation_binding_id"),
+                    )
+                    is not None
+                ),
                 "error_code": x.error_code,
                 "created_at": x.created_at.isoformat(),
             }

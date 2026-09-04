@@ -235,6 +235,7 @@ export interface GateEvaluation {
   id: string; stage: 'START' | 'END'; policy_snapshot_key: string; policy_position: number;
   evaluation_attempt: number; state: string; decision: 'PASS' | 'FAIL' | 'ERROR';
   result: { summary?: string; reasons?: string[]; [key: string]: unknown };
+  conversation_available?: boolean;
   error_code?: string | null; created_at: string;
 }
 export type AttemptState =

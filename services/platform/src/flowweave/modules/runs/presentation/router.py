@@ -21,6 +21,7 @@ from flowweave.shared.schemas import (
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
     AutomaticRunStartWrite,
+    GateRiskAcceptanceWrite,
     HumanInputWrite,
     InputBindingsWrite,
     ManualAttemptOutputsWrite,
@@ -67,9 +68,7 @@ async def create_nested_automatic_run(
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: service.create_nested_automatic_run_draft(
-            session, parent_run_id, payload
-        ),
+        lambda session: service.create_nested_automatic_run_draft(session, parent_run_id, payload),
     )
 
 
@@ -88,7 +87,10 @@ async def update_nested_automatic_run(
 
 @router.post("/flow-runs/{parent_run_id}/automatic-runs/{run_id}/start")
 async def start_nested_automatic_run(
-    parent_run_id: str, run_id: str, payload: AutomaticRunStartWrite, db: Db,
+    parent_run_id: str,
+    run_id: str,
+    payload: AutomaticRunStartWrite,
+    db: Db,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     return await run_sync(
@@ -96,7 +98,9 @@ async def start_nested_automatic_run(
         lambda session: (
             service.nested_automatic_run(session, parent_run_id, run_id),
             service.start_automatic_run(
-                session, run_id, payload,
+                session,
+                run_id,
+                payload,
                 _key(idempotency_key, "start-nested-automatic-run", run_id),
             ),
         )[1],
@@ -105,11 +109,10 @@ async def start_nested_automatic_run(
 
 @router.delete(
     "/flow-runs/{parent_run_id}/automatic-runs/{run_id}",
-    status_code=204, response_class=Response,
+    status_code=204,
+    response_class=Response,
 )
-async def delete_nested_automatic_run(
-    parent_run_id: str, run_id: str, db: Db
-) -> Response:
+async def delete_nested_automatic_run(parent_run_id: str, run_id: str, db: Db) -> Response:
     await run_sync(
         db,
         lambda session: (
@@ -199,9 +202,7 @@ async def node_run(run_id: str, node_run_id: str, db: Db) -> dict[str, Any]:
     return result
 
 
-@router.delete(
-    "/flow-runs/{run_id}/nodes/{node_run_id}", status_code=204, response_class=Response
-)
+@router.delete("/flow-runs/{run_id}/nodes/{node_run_id}", status_code=204, response_class=Response)
 async def delete_node_run(run_id: str, node_run_id: str, db: Db) -> Response:
     await run_sync(db, lambda session: service.delete_node_run(session, run_id, node_run_id))
     return Response(status_code=204)
@@ -396,6 +397,37 @@ async def accept(
             payload,
             _key(idempotency_key, "accept", attempt_id),
         ),
+    )
+
+
+@router.post("/node-attempts/{attempt_id}/accept-gate-risk")
+async def accept_gate_risk(
+    attempt_id: str,
+    payload: GateRiskAcceptanceWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.accept_gate_risk(
+            session,
+            attempt_id,
+            payload,
+            _key(idempotency_key, "accept-gate-risk", attempt_id),
+        ),
+    )
+
+
+@router.get("/node-attempts/{attempt_id}/gate-evaluations/{evaluation_id}/conversation/events")
+async def gate_evaluation_conversation_events(
+    attempt_id: str,
+    evaluation_id: str,
+    db: Db,
+    cursor: str | None = Query(default=None, max_length=200),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.gate_evaluation_events(session, attempt_id, evaluation_id, cursor),
     )
 
 

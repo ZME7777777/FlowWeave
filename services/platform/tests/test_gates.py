@@ -67,9 +67,7 @@ def test_agent_sidecar_gate_uses_isolated_conversation_and_json_result():
         {"prompt": "check"},
         2,
         sidecar_request=request,
-        sidecar_question=(
-            "You are an isolated workflow gate Agent. Return only a JSON object."
-        ),
+        sidecar_question=("You are an isolated workflow gate Agent. Return only a JSON object."),
     )
     with runtime_context(runtime):
         result = execute_gate_plan(plan, {})
@@ -77,6 +75,42 @@ def test_agent_sidecar_gate_uses_isolated_conversation_and_json_result():
     assert result.decision == "PASS"
     assert runtime.created == ["gate-sidecar-conversation"]
     assert runtime.deleted == ["gate-sidecar-conversation"]
+
+
+def test_agent_sidecar_gate_can_retain_created_conversation_for_audit():
+    class TrackingRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted: list[str] = []
+
+        def delete_conversation(self, handle):
+            self.deleted.append(handle.conversation_id)
+            return super().delete_conversation(handle)
+
+    runtime = TrackingRuntime()
+    request = StartAttemptRequest(
+        attempt_id="gate-sidecar-binding",
+        execution_key="gate-sidecar:audit",
+        node={},
+        bindings=[],
+        workspace_ref="/runtime/workspace/project",
+        conversation_id="gate-sidecar-audit-conversation",
+        interaction_mode="COLLABORATION",
+    )
+    plan = GateExecutionPlan(
+        "PROMPT",
+        {"prompt": "check"},
+        2,
+        sidecar_request=request,
+        sidecar_question="Return one JSON gate result.",
+        retain_sidecar=True,
+    )
+
+    with runtime_context(runtime):
+        result = execute_gate_plan(plan, {})
+
+    assert result.sidecar_available is True
+    assert runtime.deleted == []
 
 
 def test_agent_sidecar_gate_accepts_fenced_json_response():
@@ -124,9 +158,7 @@ def test_agent_sidecar_gate_retries_once_for_malformed_json():
             del handle, timeout_seconds
             self.questions.append(question)
             if len(self.questions) == 1:
-                return RuntimeAskAgentResult(
-                    response='{"decision": "PASS", "summary": invalid}'
-                )
+                return RuntimeAskAgentResult(response='{"decision": "PASS", "summary": invalid}')
             return RuntimeAskAgentResult(
                 response=(
                     '{"decision":"PASS","summary":"checked",'

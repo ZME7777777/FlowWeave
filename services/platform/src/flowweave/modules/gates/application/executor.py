@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import httpx
@@ -28,6 +28,9 @@ class GateResult:
     details: dict[str, Any]
     log_excerpt: str = ""
     error_code: str | None = None
+    # Internal execution fact. It is deliberately excluded from ``as_dict`` so
+    # the public gate-result contract remains the Agent's decision only.
+    sidecar_available: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -111,7 +114,7 @@ def _decode_gate_response(answer: str) -> object:
             last_error = exc
             continue
         if isinstance(value, dict) and "decision" in value:
-            return value
+            return cast(dict[str, object], value)
     if last_error is not None:
         raise last_error
     raise ValueError("Gate sidecar response contains no JSON object")
@@ -153,6 +156,9 @@ class GateExecutionPlan:
     sidecar_request: StartAttemptRequest | None = None
     sidecar_question: str | None = None
     sidecar_binding_id: str | None = None
+    # Gate-review Conversations are durable audit evidence. Other sidecars
+    # (for example automatic transition selection) remain disposable.
+    retain_sidecar: bool = False
 
 
 def prepare_gate(
@@ -317,19 +323,27 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
     assert plan.sidecar_request is not None and plan.sidecar_question is not None
     runtime = get_runtime()
     handle = None
+    sidecar_available = False
+
+    def with_sidecar(result: GateResult) -> GateResult:
+        return replace(result, sidecar_available=sidecar_available)
+
     try:
         handle = runtime.create_conversation(plan.sidecar_request)
         if handle.conversation_id != plan.sidecar_request.conversation_id:
-            return _error(
-                "Gate sidecar Conversation identity drifted",
-                code="GATE_EXECUTOR_UNAVAILABLE",
+            return with_sidecar(
+                _error(
+                    "Gate sidecar Conversation identity drifted",
+                    code="GATE_EXECUTOR_UNAVAILABLE",
+                )
             )
+        sidecar_available = True
         runtime.reload_conversation(handle)
         answer = runtime.ask_agent(
             handle, plan.sidecar_question, timeout_seconds=float(plan.timeout)
         ).response
         try:
-            return _normalize(_decode_gate_response(answer))
+            return with_sidecar(_normalize(_decode_gate_response(answer)))
         except (ValueError, json.JSONDecodeError):
             # ``ask_agent`` returns rendered model text.  A malformed result
             # must never be repaired or treated as a decision, but the same
@@ -339,19 +353,25 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
             corrected = runtime.ask_agent(
                 handle, _GATE_JSON_RETRY_QUESTION, timeout_seconds=float(plan.timeout)
             ).response
-            return _normalize(_decode_gate_response(corrected))
+            return with_sidecar(_normalize(_decode_gate_response(corrected)))
     except (ValueError, json.JSONDecodeError) as exc:
-        return _error(
-            "Gate sidecar returned invalid JSON", log=str(exc), code="GATE_RESULT_INVALID"
+        return with_sidecar(
+            _error(
+                "Gate sidecar returned invalid JSON",
+                log=str(exc),
+                code="GATE_RESULT_INVALID",
+            )
         )
     except Exception as exc:
-        return _error(
-            "Gate sidecar execution failed",
-            log=str(exc),
-            code="GATE_EXECUTOR_UNAVAILABLE",
+        return with_sidecar(
+            _error(
+                "Gate sidecar execution failed",
+                log=str(exc),
+                code="GATE_EXECUTOR_UNAVAILABLE",
+            )
         )
     finally:
-        if handle is not None:
+        if handle is not None and (not plan.retain_sidecar or not sidecar_available):
             try:
                 runtime.delete_conversation(handle)
             except Exception:

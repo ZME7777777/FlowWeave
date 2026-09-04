@@ -157,7 +157,17 @@ def _runtime_working_directory(request: Any) -> str:
     return str(_RUNTIME_PROJECT)
 
 
-def _binding(db: Session, binding_id: str, *, lock: bool = False) -> AgentConversationBinding:
+def _is_gate_sidecar(item: AgentConversationBinding) -> bool:
+    return item.create_idempotency_key.startswith("gate-sidecar:")
+
+
+def _binding(
+    db: Session,
+    binding_id: str,
+    *,
+    lock: bool = False,
+    allow_gate_sidecar: bool = False,
+) -> AgentConversationBinding:
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.id == binding_id,
         AgentConversationBinding.host_kind == _FLOW_NODE,
@@ -167,13 +177,20 @@ def _binding(db: Session, binding_id: str, *, lock: bool = False) -> AgentConver
     item = db.scalar(query)
     if item is None:
         raise not_found("flow_run_conversation_binding", binding_id)
+    if _is_gate_sidecar(item) and not allow_gate_sidecar:
+        raise not_found("flow_run_conversation_binding", binding_id)
     return item
 
 
 def _binding_for_run(
-    db: Session, flow_run_id: str, binding_id: str, *, lock: bool = False
+    db: Session,
+    flow_run_id: str,
+    binding_id: str,
+    *,
+    lock: bool = False,
+    allow_gate_sidecar: bool = False,
 ) -> AgentConversationBinding:
-    item = _binding(db, binding_id, lock=lock)
+    item = _binding(db, binding_id, lock=lock, allow_gate_sidecar=allow_gate_sidecar)
     if item.flow_run_id != flow_run_id:
         raise not_found("flow_run_conversation_binding", binding_id)
     return item
@@ -186,13 +203,20 @@ def _binding_for_attempt(
     attempt_id: str,
     binding_id: str,
     lock: bool = False,
+    allow_gate_sidecar: bool = False,
 ) -> AgentConversationBinding:
     """Authorize the node entry, then load the FlowRun-owned session."""
 
     agent_sessions.resolve_flow_node_session_host(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
     )
-    item = _binding_for_run(db, flow_run_id, binding_id, lock=lock)
+    item = _binding_for_run(
+        db,
+        flow_run_id,
+        binding_id,
+        lock=lock,
+        allow_gate_sidecar=allow_gate_sidecar,
+    )
     if item.node_attempt_id != attempt_id:
         raise not_found("flow_run_conversation_binding", binding_id)
     return item
@@ -349,6 +373,7 @@ def list_node_session_views(
             AgentConversationBinding.flow_run_id == flow_run_id,
             AgentConversationBinding.node_attempt_id == attempt_id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -381,6 +406,7 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == run.id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -408,6 +434,7 @@ def list_node_conversations(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -457,6 +484,7 @@ def list_flow_run_conversations(db: Session, flow_run_id: str) -> list[dict[str,
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
             AgentConversationBinding.lifecycle == "ACTIVE",
+            ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
             AgentConversationBinding.updated_at.desc(),
@@ -1271,6 +1299,37 @@ def read_node_conversation_events(
 ) -> dict[str, Any]:
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return read_flow_run_conversation_events(db, flow_run_id, binding_id, cursor=cursor)
+
+
+def read_gate_sidecar_events(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """Read a Gate Agent transcript without exposing a writable locator."""
+
+    binding = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        allow_gate_sidecar=True,
+    )
+    if not _is_gate_sidecar(binding):
+        raise not_found("gate_evaluation_conversation", binding_id)
+    batch = get_runtime().read_events(
+        active_runtime_handle(
+            db,
+            flow_run_id=flow_run_id,
+            openhands_conversation_id=binding.openhands_conversation_id,
+            cursor=cursor,
+            route_kind="COLLABORATION",
+        )
+    )
+    return _event_batch_dict(db, binding, batch)
 
 
 def _event_batch_dict(
