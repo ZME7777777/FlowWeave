@@ -37,6 +37,81 @@ def test_gate_normalizes_surrounding_decision_whitespace():
     assert result.decision == "PASS"
 
 
+def test_platform_output_contract_only_checks_artifacts_types_and_port_mappings():
+    """The platform check must not make a semantic document-quality judgement."""
+
+    result = execute_gate_plan(
+        GateExecutionPlan("PLATFORM_OUTPUT_CONTRACT", {}, 1),
+        {
+            "node": {
+                "outputs": [
+                    {"field_key": "task_table", "data_type": "FILE"},
+                    {"field_key": "report", "data_type": "FILE"},
+                ]
+            },
+            # Deliberately non-tabular text: content quality belongs to an
+            # author-configured END gate, not this deterministic platform check.
+            "outputs": [
+                {
+                    "id": "artifact-table",
+                    "field_key": "task_table",
+                    "artifact_type": "FILE",
+                    "review_preview": {"kind": "TEXT", "content": "not a table"},
+                },
+                {
+                    "id": "artifact-report",
+                    "field_key": "report",
+                    "artifact_type": "FILE",
+                },
+            ],
+            "downstream_consumers": [
+                {
+                    "instance_key": "N2",
+                    "mappings": [
+                        {
+                            "source_output_key": "task_table",
+                            "target_input": {"field_key": "tasks", "data_type": "FILE"},
+                        },
+                        {
+                            "source_output_key": "report",
+                            "target_input": {"field_key": "report", "data_type": "FILE"},
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result.decision == "PASS"
+    assert result.details["selected_output_artifact_ids"] == ["artifact-table", "artifact-report"]
+
+
+def test_platform_output_contract_rejects_an_unbindable_mapping():
+    result = execute_gate_plan(
+        GateExecutionPlan("PLATFORM_OUTPUT_CONTRACT", {}, 1),
+        {
+            "node": {"outputs": [{"field_key": "report", "data_type": "FILE"}]},
+            "outputs": [
+                {"id": "artifact-report", "field_key": "report", "artifact_type": "FILE"}
+            ],
+            "downstream_consumers": [
+                {
+                    "instance_key": "N2",
+                    "mappings": [
+                        {
+                            "source_output_key": "report",
+                            "target_input": {"field_key": "report_url", "data_type": "URL"},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result.decision == "FAIL"
+    assert "类型不匹配" in result.reasons[0]
+
+
 def test_agent_sidecar_gate_uses_isolated_conversation_and_json_result():
     class TrackingRuntime(MockRuntime):
         def __init__(self) -> None:

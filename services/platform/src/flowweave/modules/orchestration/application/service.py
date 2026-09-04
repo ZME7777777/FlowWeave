@@ -1381,65 +1381,23 @@ def _gate_context(
 
 _PLATFORM_OUTPUT_REVIEW_POLICY_ID = "__platform_output_contract__"
 _PLATFORM_OUTPUT_REVIEW_POSITION = -10_000
-_PLATFORM_OUTPUT_REVIEW_PROMPT = """
-你是平台强制执行的输出合同审查 Agent。请判断候选输出是否真正满足节点声明的
-输出合同及其直接下游节点的冻结输入合同，而不只是检查字段是否存在。你只能使用
-提供的冻结节点定义、输入绑定、候选产物、downstream_consumers 和证据。不得根据
-执行 Agent 自称完成任务就推断其通过。
+def _platform_output_review_policy(_db: Session, _attempt: NodeAttempt) -> dict[str, Any]:
+    """Build the unskippable deterministic delivery-and-mapping check.
 
-当 downstream_consumers 非空时，必须逐条核对每一条映射：来源输出是否存在、类型
-是否能绑定到目标输入，以及其内容是否满足目标输入明确写出的用途、说明或格式要求。
-若下游输入合同没有定义特定列、Markdown 结构、文件名或其他质量标准，不得自行臆测
-这些标准并据此返回 FAIL；应仅按已定义且可验证的合同判断。若不存在下游消费者，
-则按当前节点的输出合同判断。
-
-只有当每一个声明输出都在实质上符合其预期用途时，才返回 PASS；需要修改或人工
-复核时返回 FAIL。原因必须指出缺失或不充分的字段；如产物可用，请在
-details.selected_output_artifact_ids 中列出选定的 Artifact ID。
-
-请保持判断简洁，并且必须使用中文撰写 summary、reasons 和 evidence 中的文字。
-不要复述候选产物正文：只能引用 Artifact ID 并给出简短中文观察。提供的预览只是
-代表性证据，不要求你抄录完整产物。
-"""
-
-
-def _platform_output_review_policy(db: Session, attempt: NodeAttempt) -> dict[str, Any]:
-    """Build the unskippable first END gate from the execution binding.
-
-    This is deliberately a normal isolated Gate Agent invocation: it gets a new
-    native Conversation, no primary-Agent history or capabilities, and its result
-    is persisted in ``GateEvaluation``.  The only special property is ownership:
-    the platform injects it from the output contract, so a flow author cannot
-    disable, reorder, or replace it with a weaker end gate.
+    It intentionally has no Agent, model, or content preview.  Custom END
+    gates own every semantic, content, completeness, and quality decision.
     """
 
-    binding = agent_sessions.flow_node_binding_for_attempt(db, attempt.id)
-    if binding.model_provider_id is None and get_settings().runtime_adapter != "mock":
-        raise DomainError(
-            "OUTPUT_REVIEWER_CONFIGURATION_MISSING",
-            "The execution conversation has no frozen model for output review",
-            409,
-            {"attempt_id": attempt.id},
-        )
     return {
         "id": _PLATFORM_OUTPUT_REVIEW_POLICY_ID,
         "stage": "END",
         "position": _PLATFORM_OUTPUT_REVIEW_POSITION,
-        "gate_type": "PROMPT",
+        "gate_type": "PLATFORM_OUTPUT_CONTRACT",
         "enabled": True,
-        "timeout_seconds": 300,
+        "timeout_seconds": 1,
         "config": {
-            "prompt": _PLATFORM_OUTPUT_REVIEW_PROMPT,
             "system_owned": True,
-            "review_kind": "OUTPUT_CONTRACT",
-        },
-        # The review is a separate Agent call, but its model identity comes
-        # from the node's already-frozen execution binding rather than a mutable
-        # workspace default or an author-supplied gate preset.
-        "agent_preset": {
-            "model_provider_id": binding.model_provider_id,
-            "model_name": binding.model_name,
-            "reasoning_effort": binding.reasoning_effort,
+            "review_kind": "DELIVERY_AND_MAPPING",
         },
     }
 
@@ -1642,6 +1600,8 @@ def _prepare_gate_plan(
 
     config = dict(policy.get("config") or {})
     timeout = int(policy.get("timeout_seconds", 30))
+    if str(policy["gate_type"]) == "PLATFORM_OUTPUT_CONTRACT":
+        return GateExecutionPlan("PLATFORM_OUTPUT_CONTRACT", config, timeout)
     preset = policy.get("agent_preset")
     if not isinstance(preset, dict):
         return GateExecutionPlan(
@@ -6005,6 +5965,7 @@ def delete_run(db: Session, run_id: str) -> None:
 
 def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
     attempt = _attempt(db, attempt_id)
+    node_run = _node_run(db, attempt.node_run_id)
     bindings = _bindings(db, attempt.id)
     artifacts = list(
         db.scalars(
@@ -6094,7 +6055,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
                 # unfenced workspace or to the reviewer's private handle.
                 "reviewed_downstream_consumers": (
                     _downstream_consumers(
-                        _snapshot(db, attempt.snapshot_id), item.flow_node_snapshot_key
+                        _snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key
                     )
                     if x.policy_snapshot_key == _PLATFORM_OUTPUT_REVIEW_POLICY_ID
                     else []

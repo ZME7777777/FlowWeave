@@ -305,11 +305,97 @@ def execute_gate_plan(plan: GateExecutionPlan, context: dict[str, Any]) -> GateR
         return plan.preparation_error
     if plan.sidecar_request is not None and plan.sidecar_question is not None:
         return _sidecar_agent(plan)
+    if plan.gate_type == "PLATFORM_OUTPUT_CONTRACT":
+        return _platform_output_contract(context)
     if plan.gate_type == "PYTHON":
         return _python(str(plan.config.get("code") or ""), context, plan.timeout)
     if plan.gate_type == "PROMPT":
         return _prompt(plan, context)
     return _error(f"Unsupported gate type: {plan.gate_type}", code="GATE_CONFIG_INVALID")
+
+
+def _platform_output_contract(context: dict[str, Any]) -> GateResult:
+    """Validate delivery shape and frozen port mappings without judging content.
+
+    This platform-owned check deliberately does not invoke a model, inspect an
+    Artifact preview, or impose document-quality requirements.  Those are
+    author-owned END gate concerns.
+    """
+
+    node = cast(dict[str, Any], context.get("node") or {})
+    declared_outputs = {
+        str(field.get("field_key") or ""): cast(dict[str, Any], field)
+        for field in cast(list[object], node.get("outputs") or [])
+        if isinstance(field, dict) and str(field.get("field_key") or "")
+    }
+    actual_outputs = {
+        str(item.get("field_key") or ""): cast(dict[str, Any], item)
+        for item in cast(list[object], context.get("outputs") or [])
+        if isinstance(item, dict) and str(item.get("field_key") or "")
+    }
+    reasons: list[str] = []
+    evidence: list[dict[str, Any]] = []
+    selected_ids: list[str] = []
+
+    for field_key, declared in declared_outputs.items():
+        artifact = actual_outputs.get(field_key)
+        expected_type = str(declared.get("data_type") or "")
+        if artifact is None:
+            reasons.append(f"缺少声明输出：{field_key}")
+            continue
+        actual_type = str(artifact.get("artifact_type") or "")
+        if actual_type != expected_type:
+            reasons.append(f"输出 {field_key} 类型不匹配：期望 {expected_type}，实际 {actual_type}")
+            continue
+        artifact_id = str(artifact.get("id") or "")
+        if artifact_id:
+            selected_ids.append(artifact_id)
+        evidence.append({
+            "field_key": field_key,
+            "artifact_id": artifact_id,
+            "artifact_type": actual_type,
+        })
+
+    for consumer in cast(list[object], context.get("downstream_consumers") or []):
+        if not isinstance(consumer, dict):
+            continue
+        consumer_key = str(consumer.get("instance_key") or "下游节点")
+        for mapping in cast(list[object], consumer.get("mappings") or []):
+            if not isinstance(mapping, dict):
+                continue
+            source_key = str(mapping.get("source_output_key") or "")
+            target_input = cast(dict[str, Any], mapping.get("target_input") or {})
+            target_key = str(target_input.get("field_key") or "")
+            artifact = actual_outputs.get(source_key)
+            if artifact is None:
+                reasons.append(f"映射到 {consumer_key}.{target_key} 的输出 {source_key} 不存在")
+                continue
+            if target_input.get("declared") is False:
+                reasons.append(f"下游输入不存在：{consumer_key}.{target_key}")
+                continue
+            actual_type = str(artifact.get("artifact_type") or "")
+            expected_type = str(target_input.get("data_type") or "")
+            if expected_type and actual_type != expected_type:
+                reasons.append(
+                    f"映射类型不匹配：{source_key}（{actual_type}）不能绑定到 "
+                    f"{consumer_key}.{target_key}（{expected_type}）"
+                )
+
+    if reasons:
+        return GateResult(
+            "FAIL",
+            "平台交付与端口映射校验未通过",
+            reasons,
+            evidence,
+            {"selected_output_artifact_ids": selected_ids},
+        )
+    return GateResult(
+        "PASS",
+        "已生成声明产物，且可按冻结端口映射交付下游节点；未评估文件内容或业务质量。",
+        [],
+        evidence,
+        {"selected_output_artifact_ids": selected_ids},
+    )
 
 
 def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
