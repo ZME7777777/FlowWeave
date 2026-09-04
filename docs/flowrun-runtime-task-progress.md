@@ -2216,6 +2216,19 @@ FlowRun 逻辑工作目录删除接口同步到可审查的 FlowWeave CLI 快捷
 接口，保留单路径调用方式。节点资产、Agent Workspace 与 FlowRun 工作台 Skill 已同步递归删除、引用保护、
 范围校验和单目录提升／批量递归语义差异。CLI 仅映射公开平台 API，未修改 Runtime 或 OpenHands 契约。
 
+### FR-151 npm 用户级全局安装路径 — DONE
+
+依赖：`FR-150`。
+
+目标：环境配置终端、FlowRun Runtime 和默认 Agent Workspace Runtime 均应把 npm 全局包安装到各自持久
+HOME 下的 `.local`，并让交互终端、Agent Server 及其子进程默认发现 `.local/bin`，无需用户重复执行
+`export`，同时不得覆盖自定义镜像原有 PATH。
+
+完成：Environment Setup 容器使用 `/root/.local`，全部 Agent Runtime 使用
+`/home/flowweave/.local` 作为 `NPM_CONFIG_PREFIX`；两者映射同一环境／工作区持久 HOME 语义。交互 Shell
+和 Agent Server 入口只在启动时把 `$NPM_CONFIG_PREFIX/bin` 前置到镜像原 PATH。FlowRun 与默认 Agent
+Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2231,6 +2244,7 @@ FlowRun 逻辑工作目录删除接口同步到可审查的 FlowWeave CLI 快捷
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-151 | 三类容器启动命令直接 smoke、受影响 Python `py_compile`、Ruff check、`git diff --check` | PASS：Setup、FlowRun 和默认 Agent Workspace 均使用持久 HOME 下的 npm prefix，终端与 Agent Server 保留并扩展镜像 PATH。定向 pytest 因本机 Docker daemon 未运行、全局 Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过。 |
 | 2026-09-04 | FR-150 | CLI `npm test`（6 passed）、Node 语法检查、npm pack 清单、三份 Skill `quick_validate.py`、`git diff --check` | PASS：四个新增删除接口均有快捷命令和 dry-run 请求映射；批量命令拒绝缺少精确目标，Skill 与服务端范围、递归和引用保护语义一致。 |
 | 2026-09-04 | FR-148 | CLI `npm test`（5 passed）、Node 语法检查、Skill 快速校验、`git diff --check` | PASS：维护快捷命令均以平台 API 和可审计 dry-run 映射实现，Skill 操作说明与服务端保护语义一致。 |
 | 2026-09-04 | FR-147 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint；Alembic heads；`git diff --check` | PASS：唯一迁移 head 为 `0090_env_version_desc`。目录提升、工作区范围校验、批量认证精确 ID 校验和版本说明持久化均已落入平台服务层；未运行容器/数据库行为测试。 |

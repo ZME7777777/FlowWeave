@@ -33,6 +33,8 @@ _SAFE_NAME = re.compile(r"[^a-z0-9_.-]+")
 _TERMINAL_PROMPT = r"flowweave@\h:\w\$ "
 _AGENT_PROJECT_ROOT = "/runtime/workspace/project"
 _TERMINAL_SHELL_SCRIPT = (
+    'export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-$HOME/.local}"; '
+    'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"; '
     "exec 3<<<'PS1=" + _TERMINAL_PROMPT + "'; exec bash --noprofile --rcfile /dev/fd/3 -i"
 )
 _TERMINAL_TMUX_SCRIPT = (

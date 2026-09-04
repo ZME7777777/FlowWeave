@@ -570,7 +570,19 @@ def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_pat
         "/runtime/ephemeral-state:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
     ]
     assert "HOME=/home/flowweave" in command
+    assert "NPM_CONFIG_PREFIX=/home/flowweave/.local" in command
     assert "OPENHANDS_SUPPRESS_BANNER=1" in command
+    image_index = command.index("sha256:" + "a" * 64)
+    assert command[image_index + 1 :] == [
+        "sh",
+        "-c",
+        'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"; exec agent-server "$@"',
+        "--",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+    ]
 
 
 def test_setup_and_runtime_share_the_same_complete_environment_home(settings, monkeypatch):
@@ -603,8 +615,55 @@ def test_setup_and_runtime_share_the_same_complete_environment_home(settings, mo
     assert f"type=volume,src={volume},dst=/root" in setup_mounts
     assert f"type=volume,src={volume},dst=/home/flowweave" in runtime_mounts
     assert "HOME=/root" in setup_command
+    assert "NPM_CONFIG_PREFIX=/root/.local" in setup_command
     assert "HOME=/home/flowweave" in runtime_command
+    assert "NPM_CONFIG_PREFIX=/home/flowweave/.local" in runtime_command
     assert runtime_command[runtime_command.index("--user") + 1] == "10001:10001"
+
+
+@pytest.mark.parametrize(
+    ("owner_type", "home_identity_key"),
+    [("FLOW_RUN", "environment_id"), ("AGENT_WORKSPACE", "agent_workspace_id")],
+)
+def test_persistent_agent_runtimes_expose_home_local_npm_tools(
+    settings, monkeypatch, owner_type, home_identity_key
+):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.owner_type = owner_type
+    resource.owner_id = f"{owner_type.lower()}-1"
+    resource.spec_json = {
+        **(resource.spec_json or {}),
+        "environment_id": None,
+        home_identity_key: "persistent-home-1",
+    }
+    monkeypatch.setattr(
+        provider,
+        "_ensure_environment_credential_volume",
+        lambda identity: "persistent-home-volume"
+        if identity == "persistent-home-1"
+        else "unexpected",
+    )
+    monkeypatch.setattr(
+        provider,
+        "_runtime_workspace_mount",
+        lambda _resource: ["--mount", "type=bind,src=/safe,dst=/workspaces/node"],
+    )
+
+    image = "sha256:" + "c" * 64
+    command = provider._create_command(
+        resource, verified_image_reference=image, runtime_secret_key="s" * 32
+    )
+
+    assert "HOME=/home/flowweave" in command
+    assert "NPM_CONFIG_PREFIX=/home/flowweave/.local" in command
+    image_index = command.index(image)
+    assert command[image_index + 1 : image_index + 5] == [
+        "sh",
+        "-c",
+        'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"; exec agent-server "$@"',
+        "--",
+    ]
 
 
 def test_environment_home_preparation_is_networkless_and_migrates_legacy_lark_layout(

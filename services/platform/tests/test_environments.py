@@ -1454,6 +1454,8 @@ def test_terminal_opens_bash(monkeypatch):
             "bash",
             "-c",
             (
+                'export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-$HOME/.local}"; '
+                'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"; '
                 r"exec 3<<<'PS1=flowweave@\h:\w\$ '; "
                 r"exec bash --noprofile --rcfile /dev/fd/3 -i"
             ),
@@ -1550,6 +1552,8 @@ def test_terminal_can_attach_to_persistent_tmux_session(monkeypatch):
             "--",
             "flowweave-conversation-123",
             (
+                'export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-$HOME/.local}"; '
+                'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"; '
                 r"exec 3<<<'PS1=flowweave@\h:\w\$ '; "
                 r"exec bash --noprofile --rcfile /dev/fd/3 -i"
             ),
