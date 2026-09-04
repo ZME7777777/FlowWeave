@@ -342,19 +342,44 @@ def _platform_output_contract(context: dict[str, Any]) -> GateResult:
         expected_type = str(declared.get("data_type") or "")
         if artifact is None:
             reasons.append(f"缺少声明输出：{field_key}")
+            evidence.append(
+                {
+                    "kind": "OUTPUT",
+                    "status": "FAIL",
+                    "field_key": field_key,
+                    "expected_type": expected_type,
+                    "reason": "未生成该声明输出",
+                }
+            )
             continue
         actual_type = str(artifact.get("artifact_type") or "")
         if actual_type != expected_type:
             reasons.append(f"输出 {field_key} 类型不匹配：期望 {expected_type}，实际 {actual_type}")
+            evidence.append(
+                {
+                    "kind": "OUTPUT",
+                    "status": "FAIL",
+                    "field_key": field_key,
+                    "expected_type": expected_type,
+                    "actual_type": actual_type,
+                    "reason": "产物类型与节点声明不一致",
+                }
+            )
             continue
         artifact_id = str(artifact.get("id") or "")
         if artifact_id:
             selected_ids.append(artifact_id)
-        evidence.append({
-            "field_key": field_key,
-            "artifact_id": artifact_id,
-            "artifact_type": actual_type,
-        })
+        evidence.append(
+            {
+                "kind": "OUTPUT",
+                "status": "PASS",
+                "field_key": field_key,
+                "artifact_id": artifact_id,
+                "expected_type": expected_type,
+                "actual_type": actual_type,
+                "reason": "已生成正式产物，类型与节点声明一致",
+            }
+        )
 
     for consumer in cast(list[object], context.get("downstream_consumers") or []):
         if not isinstance(consumer, dict):
@@ -369,9 +394,27 @@ def _platform_output_contract(context: dict[str, Any]) -> GateResult:
             artifact = actual_outputs.get(source_key)
             if artifact is None:
                 reasons.append(f"映射到 {consumer_key}.{target_key} 的输出 {source_key} 不存在")
+                evidence.append(
+                    {
+                        "kind": "MAPPING",
+                        "status": "FAIL",
+                        "source_output_key": source_key,
+                        "target": f"{consumer_key}.{target_key}",
+                        "reason": "来源输出不存在，无法绑定下游输入",
+                    }
+                )
                 continue
             if target_input.get("declared") is False:
                 reasons.append(f"下游输入不存在：{consumer_key}.{target_key}")
+                evidence.append(
+                    {
+                        "kind": "MAPPING",
+                        "status": "FAIL",
+                        "source_output_key": source_key,
+                        "target": f"{consumer_key}.{target_key}",
+                        "reason": "冻结快照中不存在该下游输入",
+                    }
+                )
                 continue
             actual_type = str(artifact.get("artifact_type") or "")
             expected_type = str(target_input.get("data_type") or "")
@@ -380,6 +423,29 @@ def _platform_output_contract(context: dict[str, Any]) -> GateResult:
                     f"映射类型不匹配：{source_key}（{actual_type}）不能绑定到 "
                     f"{consumer_key}.{target_key}（{expected_type}）"
                 )
+                evidence.append(
+                    {
+                        "kind": "MAPPING",
+                        "status": "FAIL",
+                        "source_output_key": source_key,
+                        "target": f"{consumer_key}.{target_key}",
+                        "expected_type": expected_type,
+                        "actual_type": actual_type,
+                        "reason": "来源产物类型不能绑定到下游输入",
+                    }
+                )
+                continue
+            evidence.append(
+                {
+                    "kind": "MAPPING",
+                    "status": "PASS",
+                    "source_output_key": source_key,
+                    "target": f"{consumer_key}.{target_key}",
+                    "expected_type": expected_type,
+                    "actual_type": actual_type,
+                    "reason": "来源产物可按冻结端口映射绑定到下游输入",
+                }
+            )
 
     if reasons:
         return GateResult(
