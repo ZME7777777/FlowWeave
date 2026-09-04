@@ -235,6 +235,13 @@ export interface GateEvaluation {
   id: string; stage: 'START' | 'END'; policy_snapshot_key: string; policy_position: number;
   evaluation_attempt: number; state: string; decision: 'PASS' | 'FAIL' | 'ERROR';
   result: { summary?: string; reasons?: string[]; [key: string]: unknown };
+  /** Platform-owned output-contract review, rather than an author gate. */
+  is_platform_output_review?: boolean;
+  reviewed_artifacts?: Array<{ id: string; field_key: string; filename: string; artifact_type: string; byte_size: number }>;
+  reviewed_downstream_consumers?: Array<{
+    instance_key: string; alias?: string | null; asset_name?: string | null;
+    mappings: Array<{ source_output_key: string; target_input: { field_key: string; display_name?: string; data_type?: string; description?: string; declared?: boolean } }>
+  }> ;
   conversation_available?: boolean;
   error_code?: string | null; created_at: string;
 }

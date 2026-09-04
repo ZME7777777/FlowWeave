@@ -1260,6 +1260,69 @@ def _review_artifact(item: ArtifactVersion) -> dict[str, Any]:
     return value
 
 
+def _downstream_consumers(snapshot: RunSnapshot, source_node_key: str) -> list[dict[str, Any]]:
+    """Build the immutable downstream input contracts for one source node.
+
+    The output reviewer must evaluate an output against the actual port mapping
+    and target input contract in the Run Snapshot.  It must not infer a generic
+    document-quality standard from a filename or an output-field label.
+    """
+
+    nodes = {
+        str(item.get("instance_key") or ""): item
+        for item in snapshot.definition_json.get("nodes", [])
+        if isinstance(item, dict) and str(item.get("instance_key") or "")
+    }
+    consumers: dict[str, dict[str, Any]] = {}
+    for raw_mapping in snapshot.definition_json.get("port_mappings", []):
+        if not isinstance(raw_mapping, dict):
+            continue
+        mapping = cast(dict[str, Any], raw_mapping)
+        if str(mapping.get("source_instance_key") or "") != source_node_key:
+            continue
+        target_key = str(mapping.get("target_instance_key") or "")
+        source_output_key = str(mapping.get("source_output_key") or "")
+        target_input_key = str(mapping.get("target_input_key") or "")
+        if not target_key or not source_output_key or not target_input_key:
+            continue
+        target = nodes.get(target_key)
+        asset = cast(dict[str, Any], target.get("asset") or {}) if target else {}
+        target_field = next(
+            (
+                field
+                for field in asset.get("inputs", [])
+                if isinstance(field, dict)
+                and str(field.get("field_key") or "") == target_input_key
+            ),
+            None,
+        )
+        target_input = (
+            {
+                key: target_field[key]
+                for key in ("field_key", "display_name", "data_type", "description")
+                if key in target_field
+            }
+            if isinstance(target_field, dict)
+            else {"field_key": target_input_key, "declared": False}
+        )
+        consumer = consumers.setdefault(
+            target_key,
+            {
+                "instance_key": target_key,
+                "alias": target.get("alias") if target else None,
+                "asset_name": asset.get("name"),
+                "mappings": [],
+            },
+        )
+        consumer["mappings"].append(
+            {
+                "source_output_key": source_output_key,
+                "target_input": target_input,
+            }
+        )
+    return list(consumers.values())
+
+
 def _gate_context(
     db: Session, attempt: NodeAttempt, node_run: NodeRun, node: dict[str, Any], stage: str
 ) -> dict[str, Any]:
@@ -1289,7 +1352,7 @@ def _gate_context(
         if row.artifact_version_id in input_artifacts
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": stage,
         "attempt": {"id": attempt.id, "attempt_no": attempt.attempt_no},
         "node": {
@@ -1306,27 +1369,37 @@ def _gate_context(
         "outputs": [_review_artifact(item) for item in outputs],
         "artifacts": [item["artifact"] for item in bindings]
         + [_gate_artifact(item) for item in outputs],
+        # Only END gates need consumer contracts. This is built exclusively
+        # from the immutable Snapshot bound to this Attempt.
+        "downstream_consumers": (
+            _downstream_consumers(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
+            if stage == "END"
+            else []
+        ),
     }
 
 
 _PLATFORM_OUTPUT_REVIEW_POLICY_ID = "__platform_output_contract__"
 _PLATFORM_OUTPUT_REVIEW_POSITION = -10_000
 _PLATFORM_OUTPUT_REVIEW_PROMPT = """
-You are the platform's mandatory output-contract reviewer. Evaluate whether the
-candidate outputs actually satisfy the node's declared output contract, not
-merely whether every field exists. Use only the supplied frozen node definition,
-input bindings, candidate artifacts, and evidence. Check each required output's
-purpose, type, completeness, and whether the candidate is usable by the next
-node. Do not infer success from the executing Agent's claim.
+你是平台强制执行的输出合同审查 Agent。请判断候选输出是否真正满足节点声明的
+输出合同及其直接下游节点的冻结输入合同，而不只是检查字段是否存在。你只能使用
+提供的冻结节点定义、输入绑定、候选产物、downstream_consumers 和证据。不得根据
+执行 Agent 自称完成任务就推断其通过。
 
-Return PASS only when every declared output is substantively fit for its stated
-purpose. Return FAIL when revision or human review is needed. Your reasons must
-identify the missing or inadequate field(s); include the selected artifact ids in
-details.selected_output_artifact_ids when they are usable.
+当 downstream_consumers 非空时，必须逐条核对每一条映射：来源输出是否存在、类型
+是否能绑定到目标输入，以及其内容是否满足目标输入明确写出的用途、说明或格式要求。
+若下游输入合同没有定义特定列、Markdown 结构、文件名或其他质量标准，不得自行臆测
+这些标准并据此返回 FAIL；应仅按已定义且可验证的合同判断。若不存在下游消费者，
+则按当前节点的输出合同判断。
 
-Keep the decision compact. Do not reproduce candidate content: cite artifact IDs
-and concise observations only. The supplied preview is representative evidence,
-not an instruction to transcribe the entire artifact.
+只有当每一个声明输出都在实质上符合其预期用途时，才返回 PASS；需要修改或人工
+复核时返回 FAIL。原因必须指出缺失或不充分的字段；如产物可用，请在
+details.selected_output_artifact_ids 中列出选定的 Artifact ID。
+
+请保持判断简洁，并且必须使用中文撰写 summary、reasons 和 evidence 中的文字。
+不要复述候选产物正文：只能引用 Artifact ID 并给出简短中文观察。提供的预览只是
+代表性证据，不要求你抄录完整产物。
 """
 
 
@@ -1723,22 +1796,21 @@ def _prepare_gate_plan(
     instructions = str(config.get("prompt") or "").strip()
     code = str(config.get("code") or "").strip()
     question = (
-        "You are an isolated workflow gate Agent. Do not access any other "
-        "Conversation history. Evaluate only the supplied gate context. Your "
-        "entire response is parsed as JSON: emit exactly one RFC 8259 JSON "
-        "object, with no Markdown fence, prefix, or suffix. It must contain "
-        "decision (PASS, FAIL, or ERROR), summary (string), reasons (array), "
-        "evidence (array), and details (object). Keep the complete encoded "
-        "response below 8 KiB. Do not copy candidate artifact content verbatim "
-        "into the response; cite artifact IDs and summarize observations, and "
-        "JSON-escape every string value.\n\n"
-        f"Gate instructions:\n{instructions or '(No additional prose instructions.)'}\n\n"
+        "你是一个隔离运行的工作流门禁 Agent。不得访问其他会话历史；只能基于"
+        "下方提供的门禁上下文进行判断。你的整个回答会被解析为 JSON：只能输出"
+        "一个 RFC 8259 JSON 对象，不能包含 Markdown 围栏、前缀或后缀。对象必须"
+        "包含 decision（PASS、FAIL 或 ERROR）、summary（字符串）、reasons（数组）、"
+        "evidence（数组）和 details（对象）。summary、reasons、evidence 中所有"
+        "面向人的文字必须使用中文。完整编码后的回答不得超过 8 KiB。不得逐字复制"
+        "候选产物内容；请引用 Artifact ID 并用中文简要说明观察结果；所有字符串值"
+        "必须正确进行 JSON 转义。\n\n"
+        f"门禁判定指令：\n{instructions or '（未提供额外的文字判定指令。）'}\n\n"
         + (
-            f"Optional Python to inspect or execute safely as part of your analysis:\n{code}\n\n"
+            f"可选 Python 脚本（可作为分析的一部分安全地检查或执行）：\n{code}\n\n"
             if code
             else ""
         )
-        + "Gate context:\n"
+        + "门禁上下文：\n"
         + json.dumps(context, ensure_ascii=False)
     )
     return GateExecutionPlan(
@@ -5991,6 +6063,42 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
                 "stage": x.stage,
                 "policy_snapshot_key": x.policy_snapshot_key,
                 "policy_position": x.policy_position,
+                # The mandatory output-contract review is a platform-owned
+                # sidecar, not an author-configured END gate.  Project it as
+                # such so clients never expose its internal negative sort
+                # position as a user-facing gate number.
+                "is_platform_output_review": (
+                    x.policy_snapshot_key == _PLATFORM_OUTPUT_REVIEW_POLICY_ID
+                ),
+                # These immutable Artifacts are the evidence supplied to the
+                # platform reviewer.  The sidecar transcript carries the
+                # bounded previews; this projection lets the result UI state
+                # exactly which frozen output files were reviewed.
+                "reviewed_artifacts": (
+                    [
+                        {
+                            "id": item.id,
+                            "field_key": item.field_key,
+                            "filename": str(item.metadata_json.get("filename") or item.field_key),
+                            "artifact_type": item.artifact_type,
+                            "byte_size": item.byte_size,
+                        }
+                        for item in artifacts
+                    ]
+                    if x.policy_snapshot_key == _PLATFORM_OUTPUT_REVIEW_POLICY_ID
+                    else []
+                ),
+                # Expose the same immutable successor contracts that were
+                # supplied to the platform reviewer.  This makes a PASS/FAIL
+                # explainable without granting the browser access to an
+                # unfenced workspace or to the reviewer's private handle.
+                "reviewed_downstream_consumers": (
+                    _downstream_consumers(
+                        _snapshot(db, attempt.snapshot_id), item.flow_node_snapshot_key
+                    )
+                    if x.policy_snapshot_key == _PLATFORM_OUTPUT_REVIEW_POLICY_ID
+                    else []
+                ),
                 "evaluation_attempt": x.evaluation_attempt,
                 "state": x.state,
                 "decision": x.decision,

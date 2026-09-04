@@ -326,12 +326,12 @@ class MockRuntime:
                     }
                 )
             )
-        if "isolated workflow gate Agent" in question:
+        if "isolated workflow gate Agent" in question or "隔离运行的工作流门禁 Agent" in question:
             return RuntimeAskAgentResult(
                 response=json.dumps(
                     {
                         "decision": "PASS",
-                        "summary": "Mock sidecar gate passed",
+                        "summary": "Mock 门禁审查通过",
                         "reasons": [],
                         "evidence": [],
                         "details": {},
