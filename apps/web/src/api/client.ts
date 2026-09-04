@@ -384,8 +384,8 @@ export const api = {
       ...body,
       node_plans: automaticNodePlansWrite(body.node_plans),
     }))),
-  copyAutomaticRecord: async (runId: string, recordId: string) =>
-    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/copy`, json('POST', {}))),
+  copyAutomaticRecord: async (runId: string, recordId: string, name: string) =>
+    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/copy`, json('POST', { name }))),
   startAutomaticRecord: async (runId: string, recordId: string, expected_row_version: number) =>
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/start`, json('POST', { expected_row_version }, true))),
   deleteAutomaticRecord: (runId: string, recordId: string) =>
@@ -394,8 +394,8 @@ export const api = {
   nodeRun: (runId: string, nodeRunId: string) => request<NodeRun>(`/flow-runs/${runId}/nodes/${nodeRunId}`),
   deleteNodeRun: (runId: string, nodeRunId: string) =>
     request<void>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}`, json('DELETE')),
-  copyNodeRun: (runId: string, nodeRunId: string) =>
-    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', {})),
+  copyNodeRun: (runId: string, nodeRunId: string, name: string) =>
+    request<NodeRun>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeRunId)}/copy`, json('POST', { name })),
   addArtifact: (runId: string, body: ArtifactInput) => request<ArtifactVersion>(`/flow-runs/${runId}/artifacts`, json('POST', body)),
   addNodeInputArtifact: (runId: string, nodeKey: string, body: ArtifactInput) =>
     request<ArtifactVersion>(`/flow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeKey)}/input-artifacts`, json('POST', body)),

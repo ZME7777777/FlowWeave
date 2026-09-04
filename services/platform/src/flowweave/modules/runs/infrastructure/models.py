@@ -82,6 +82,7 @@ class NodeRun(Base):
     flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
     flow_node_snapshot_key: Mapped[str] = mapped_column(String(100))
     sequence_no: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str | None] = mapped_column(String(220))
     state: Mapped[str] = mapped_column(String(20), default=NodeRunState.ACTIVE)
     accepted_attempt_id: Mapped[str | None] = mapped_column(String(36))
     created_from: Mapped[str] = mapped_column(String(30), default="HUMAN_START")

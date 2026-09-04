@@ -271,13 +271,15 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     assert updated["automation_plan"]["readiness"] == {"ready": True, "issues": []}
 
     copied_response = worker_client.post(
-        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{updated['id']}/copy", json={}
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{updated['id']}/copy",
+        json={"name": "命名自动副本"},
     )
     assert copied_response.status_code == 201, copied_response.text
     copied = copied_response.json()
     assert copied["id"] != updated["id"]
     assert copied["parent_flow_run_id"] == parent["id"]
     assert copied["state"] == "DRAFT"
+    assert copied["name"] == "命名自动副本"
     assert copied["node_runs"] == []
     assert copied["artifacts"] == []
     assert copied["automation_plan"]["status"] == "DRAFT"

@@ -284,6 +284,7 @@ export interface NodeAttempt {
 }
 export interface NodeRun {
   id: string; flow_run_id: string; flow_node_snapshot_key: string; sequence_no: number;
+  name?: string | null;
   state: 'ACTIVE' | 'ACCEPTED' | 'CANCELLED'; accepted_attempt_id?: string | null;
   created_from: string; activated_at: string; attempts: NodeAttempt[];
 }

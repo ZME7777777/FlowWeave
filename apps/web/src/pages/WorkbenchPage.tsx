@@ -49,7 +49,7 @@ const nodeForRun = (run: FlowRun, nodeRun: NodeRun) => {
 
 const nodeRunName = (run: FlowRun, nodeRun: NodeRun) => {
   const node = nodeForRun(run, nodeRun);
-  return node?.alias || node?.asset.name || nodeRun.flow_node_snapshot_key;
+  return nodeRun.name?.trim() || node?.alias || node?.asset.name || nodeRun.flow_node_snapshot_key;
 };
 
 const nodeVisitNumber = (run: FlowRun, nodeRun: NodeRun) => run.node_runs
@@ -97,6 +97,10 @@ function openNodeSession(
 }
 
 type WorkbenchMode = 'MANUAL' | 'AUTOMATIC';
+
+type CopyTarget =
+  | { mode: 'MANUAL'; record: NodeRun }
+  | { mode: 'AUTOMATIC'; record: FlowRunAutomaticRecord };
 
 function RunRail({ run, mode, automaticRecords, automaticError, selected, selectedNodeDeletable, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onDeleteNode, onCopyNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onStartAutomatic }: {
   run: FlowRun; mode: WorkbenchMode; automaticRecords: FlowRunAutomaticRecord[]; selected?: string;
@@ -797,6 +801,14 @@ function AutomaticRecordDialog({ run, onClose, onCreated }: { run: FlowRun; onCl
   return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增自动运行"><header><div><span className="eyebrow">AUTOMATIC RUN</span><h2>新增自动运行</h2><p>记录归属于当前流程运行，并使用当前冻结快照与运行环境。</p></div><button type="button" className="ghost" aria-label="关闭新增自动运行" onClick={onClose}><X size={17}/></button></header><label>名称<input aria-label="自动运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 自动运行`}/></label><label>起始节点<select aria-label="自动运行起始节点" value={startNodeKey} onChange={event => setStartNodeKey(event.target.value)}>{nodes.map(node => <option key={node.instance_key} value={node.instance_key}>{node.alias || node.asset.name}</option>)}</select></label>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
 }
 
+function CopyRecordDialog({ mode, sourceName, onClose, onCopy }: { mode: CopyTarget['mode']; sourceName: string; onClose: () => void; onCopy: (name: string) => Promise<void> }) {
+  const [name, setName] = useState(`${sourceName} · 副本`);
+  const recordLabel = mode === 'MANUAL' ? '单节点运行记录' : '自动运行记录';
+  const mutation = useMutation({ mutationFn: () => onCopy(name.trim()), onSuccess: onClose });
+  useEscapeClose(onClose);
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置，不包含会话、输出或执行结果。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
+}
+
 function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }: { parent: FlowRun; record: FlowRunAutomaticRecord; selectedKey?: string; onDraft: (record: FlowRunAutomaticRecord) => void; onSaved: (record: FlowRunAutomaticRecord) => void }) {
   const snapshot = parent.snapshots.find(item => item.id === parent.active_snapshot_id) ?? parent.snapshots.at(-1);
   const [name, setName] = useState(record.name);
@@ -861,6 +873,7 @@ export function WorkbenchPage() {
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [automaticDrafts, setAutomaticDrafts] = useState<Record<string, FlowRunAutomaticRecord>>({});
   const [automaticDialogOpen, setAutomaticDialogOpen] = useState(false);
+  const [copyTarget, setCopyTarget] = useState<CopyTarget>();
   const [automaticBusyId, setAutomaticBusyId] = useState<string>();
   const [manualBusyId, setManualBusyId] = useState<string>();
   const [sidePanelWidth, setSidePanelWidth] = useState(390);
@@ -1078,7 +1091,7 @@ export function WorkbenchPage() {
       && nodeRun.attempts.at(-1)?.state === 'WAITING_START_CONFIRMATION'
       && !nodeRun.attempts.at(-1)?.runtime_phase)
   ));
-  const rail = <RunRail run={run} mode={mode} automaticRecords={automaticRecords} selected={mode === 'MANUAL' ? nodeRun?.id : undefined} selectedNodeDeletable={selectedNodeCanDelete} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!nodeRun) return; void dialog.confirm({ title: '删除这条单节点运行？', message: '节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。', confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId(nodeRun.id); try { await api.deleteNodeRun(run.id, nodeRun.id); clearSelection(); await query.refetch(); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (!nodeRun) return; setManualBusyId(nodeRun.id); void api.copyNodeRun(run.id, nodeRun.id).then(copied => { qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, node_runs: [...current.node_runs, copied] } : current); setSelectedNodeKey(copied.flow_node_snapshot_key); selectExecution(copied.id, copied.attempts.at(-1)?.id); }).finally(() => setManualBusyId(undefined)); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomatic) return; void dialog.confirm({ title: '删除自动运行记录？', message: '该记录的计划、执行历史与产物将被永久删除。', confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId(selectedAutomatic.id); try { await api.deleteAutomaticRecord(run.id, selectedAutomatic.id); clearSelection(); await automatic.refetch(); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (!selectedAutomatic) return; setAutomaticBusyId(selectedAutomatic.id); void api.copyAutomaticRecord(run.id, selectedAutomatic.id).then(copied => { qc.setQueryData<FlowRunAutomaticRecord[]>(['flow-run-automatic-records', run.id], current => [copied, ...(current ?? [])]); setSelectedAutomaticId(copied.id); setSelectedNodeKey(copied.start_node_key); }).finally(() => setAutomaticBusyId(undefined)); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}/>;
+  const rail = <RunRail run={run} mode={mode} automaticRecords={automaticRecords} selected={mode === 'MANUAL' ? nodeRun?.id : undefined} selectedNodeDeletable={selectedNodeCanDelete} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!nodeRun) return; void dialog.confirm({ title: '删除这条单节点运行？', message: '节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。', confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId(nodeRun.id); try { await api.deleteNodeRun(run.id, nodeRun.id); clearSelection(); await query.refetch(); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (nodeRun) setCopyTarget({ mode: 'MANUAL', record: nodeRun }); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomatic) return; void dialog.confirm({ title: '删除自动运行记录？', message: '该记录的计划、执行历史与产物将被永久删除。', confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId(selectedAutomatic.id); try { await api.deleteAutomaticRecord(run.id, selectedAutomatic.id); clearSelection(); await automatic.refetch(); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}/>;
   return <>
     <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `250px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: '250px minmax(500px, 1fr)' }}>
       {rail}
@@ -1095,6 +1108,36 @@ export function WorkbenchPage() {
         {mode === 'AUTOMATIC' && selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={run} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomaticNodeRun && selectedAutomaticAttempt ? <AttemptPanel run={selectedAutomatic} nodeRun={selectedAutomaticNodeRun} attempt={selectedAutomaticAttempt} refresh={() => { void automatic.refetch(); }} navigate={() => { void automatic.refetch(); }} sessionReturnContext={{ runId: run.id, mode: 'AUTOMATIC', automaticRecordId: selectedAutomatic.id }}/> : <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。自动调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}
       </aside>}
     </section>
-    {automaticDialogOpen && <AutomaticRecordDialog run={run} onClose={() => setAutomaticDialogOpen(false)} onCreated={record => { setAutomaticDialogOpen(false); qc.setQueryData<FlowRunAutomaticRecord[]>(['flow-run-automatic-records', run.id], current => [record, ...(current ?? [])]); setSelectedAutomaticId(record.id); setSelectedNodeKey(record.start_node_key); }}/>}
+    {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'MANUAL' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onCopy={async name => {
+      if (copyTarget.mode === 'MANUAL') {
+        setManualBusyId(copyTarget.record.id);
+        try {
+          const copied = await api.copyNodeRun(run.id, copyTarget.record.id, name);
+          qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, node_runs: [...current.node_runs, copied] } : current);
+          setSelectedNodeKey(copied.flow_node_snapshot_key);
+          selectExecution(copied.id, copied.attempts.at(-1)?.id);
+        } finally { setManualBusyId(undefined); }
+        return;
+      }
+      setAutomaticBusyId(copyTarget.record.id);
+      try {
+        const copied = await api.copyAutomaticRecord(run.id, copyTarget.record.id, name);
+        qc.setQueryData<FlowRunAutomaticRecord[]>(['flow-run-automatic-records', run.id], current => [copied, ...(current ?? [])]);
+        setSelectedAutomaticId(copied.id);
+        setSelectedNodeKey(copied.start_node_key);
+      } finally { setAutomaticBusyId(undefined); }
+    }}/>}
+    {automaticDialogOpen && (
+      <AutomaticRecordDialog
+        run={run}
+        onClose={() => setAutomaticDialogOpen(false)}
+        onCreated={record => {
+          setAutomaticDialogOpen(false);
+          qc.setQueryData<FlowRunAutomaticRecord[]>(['flow-run-automatic-records', run.id], current => [record, ...(current ?? [])]);
+          setSelectedAutomaticId(record.id);
+          setSelectedNodeKey(record.start_node_key);
+        }}
+      />
+    )}
   </>;
 }

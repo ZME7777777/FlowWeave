@@ -2383,7 +2383,7 @@ def _create_node_run(
 
 
 def copy_node_run(
-    db: Session, flow_run_id: str, source_node_run_id: str, _payload: NodeRunCopyWrite
+    db: Session, flow_run_id: str, source_node_run_id: str, payload: NodeRunCopyWrite
 ) -> dict[str, Any]:
     """Copy only a manual record's launch configuration into a fresh record.
 
@@ -2445,6 +2445,7 @@ def copy_node_run(
         agent_preset=copy.deepcopy(initial.agent_preset_json),
         allow_existing=True,
     )
+    copied.name = (payload.name or "").strip() or None
     # Launch text or a selected Skill is configuration. Preserve it without
     # carrying over a conversation, runtime state, outputs, or outcomes.
     copied_attempt.startup_mode = initial.startup_mode
@@ -2457,6 +2458,7 @@ def copy_node_run(
         {
             "source_node_run_id": source.id,
             "source_attempt_id": initial.id,
+            "name": copied.name,
             "copied_input_count": len(artifact_ids),
         },
         copied.id,
@@ -6488,6 +6490,7 @@ def node_run_detail(db: Session, node_run_id: str) -> dict[str, Any]:
         "flow_run_id": item.flow_run_id,
         "flow_node_snapshot_key": item.flow_node_snapshot_key,
         "sequence_no": item.sequence_no,
+        "name": item.name,
         "state": item.state,
         "accepted_attempt_id": item.accepted_attempt_id,
         "created_from": item.created_from,

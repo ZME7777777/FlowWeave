@@ -107,6 +107,8 @@ test('run projection stays neutral until record selection and automatic save rep
   let saveRequests = 0;
   let nodeCopyRequests = 0;
   let automaticCopyRequests = 0;
+  let nodeCopyBody: Record<string, unknown> | undefined;
+  let automaticCopyBody: Record<string, unknown> | undefined;
   let submittedBody: Record<string, unknown> | undefined;
   const capabilityCatalog = Array.from({ length: 31 }, (_, index) => ({
     id: `automatic-skill-${index}`, capability_type: 'SKILL', capability_key: `automatic-skill-${index}`,
@@ -157,8 +159,9 @@ test('run projection stays neutral until record selection and automatic save rep
     }
     if (path === `/api/v1/flow-runs/${run.id}/nodes/${nodeRun.id}/copy` && request.method() === 'POST') {
       nodeCopyRequests += 1;
+      nodeCopyBody = request.postDataJSON() as Record<string, unknown>;
       return respond({
-        ...nodeRun, id: 'node-run-copy', sequence_no: 2, created_from: 'RECORD_COPY',
+        ...nodeRun, id: 'node-run-copy', name: nodeCopyBody.name, sequence_no: 2, created_from: 'RECORD_COPY',
         attempts: [{
           ...attempt, id: 'attempt-copy', node_run_id: 'node-run-copy', state: 'WAITING_START_CONFIRMATION',
           state_version: 1, runtime_phase: null, conversation_id: null, output_targets: {}, artifacts: [],
@@ -168,8 +171,9 @@ test('run projection stays neutral until record selection and automatic save rep
     }
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticBase.id}/copy` && request.method() === 'POST') {
       automaticCopyRequests += 1;
+      automaticCopyBody = request.postDataJSON() as Record<string, unknown>;
       return respond({
-        ...frozenAutomaticBase, id: 'automatic-copy', run_no: 3, name: '自动记录 1 · 副本 #3',
+        ...frozenAutomaticBase, id: 'automatic-copy', run_no: 3, name: automaticCopyBody.name,
         state: 'DRAFT', parent_flow_run_id: run.id, node_runs: [], artifacts: [],
         automation_plan: { ...frozenAutomaticBase.automation_plan, status: 'DRAFT' },
       }, 201);
@@ -225,8 +229,14 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await manualRecord.click();
   await page.getByRole('button', { name: '拷贝', exact: true }).click();
+  const manualCopyDialog = page.getByRole('dialog', { name: '拷贝单节点运行记录' });
+  await expect(manualCopyDialog.getByRole('textbox', { name: '副本名称' })).toHaveValue('测试节点 · 副本');
+  await manualCopyDialog.getByRole('textbox', { name: '副本名称' }).fill('测试节点 · 命名副本');
+  await manualCopyDialog.getByRole('button', { name: '确认拷贝' }).click();
   await expect.poll(() => nodeCopyRequests).toBe(1);
+  expect(nodeCopyBody).toEqual({ name: '测试节点 · 命名副本' });
   await expect(page.locator('.timeline button')).toHaveCount(2);
+  await expect(page.locator('.timeline button').filter({ hasText: '测试节点 · 命名副本' })).toBeVisible();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
 
   await page.getByRole('tab', { name: '自动运行' }).click();
@@ -336,9 +346,14 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(page.getByRole('alert')).toContainText('保存失败：当前自动运行记录已启动，不能继续修改。');
 
   await page.getByRole('button', { name: '拷贝', exact: true }).click();
+  const automaticCopyDialog = page.getByRole('dialog', { name: '拷贝自动运行记录' });
+  await expect(automaticCopyDialog.getByRole('textbox', { name: '副本名称' })).toHaveValue('自动记录 1 · 副本');
+  await automaticCopyDialog.getByRole('textbox', { name: '副本名称' }).fill('自动记录 · 命名副本');
+  await automaticCopyDialog.getByRole('button', { name: '确认拷贝' }).click();
   await expect.poll(() => automaticCopyRequests).toBe(1);
+  expect(automaticCopyBody).toEqual({ name: '自动记录 · 命名副本' });
   await expect(page.locator('.automatic-record-list > article')).toHaveCount(2);
-  await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1 · 副本 #3');
+  await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 · 命名副本');
 });
 
 test('FR-130 running automatic records show execution facts and chat attempts submit explicit outputs', async ({ page }) => {

@@ -238,13 +238,14 @@ def test_copy_node_run_preserves_launch_configuration_without_execution_results(
     assert completed.json()["artifacts"]
 
     copied_response = client.post(
-        f"/api/v1/flow-runs/{run['id']}/nodes/{source['id']}/copy", json={}
+        f"/api/v1/flow-runs/{run['id']}/nodes/{source['id']}/copy", json={"name": "命名副本"}
     )
     assert copied_response.status_code == 201, copied_response.text
     copied = copied_response.json()
     copied_attempt = copied["attempts"][-1]
     assert copied["id"] != source["id"]
     assert copied["flow_node_snapshot_key"] == source["flow_node_snapshot_key"]
+    assert copied["name"] == "命名副本"
     assert copied["created_from"] == "RECORD_COPY"
     assert copied_attempt["agent_preset"] == source_attempt["agent_preset"]
     assert copied_attempt["gate_policies"] == source_attempt["gate_policies"]

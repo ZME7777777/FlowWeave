@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-153 后续范围待拆分）
+> 下一可执行切片：`无`（FR-154 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2250,6 +2250,18 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 仍显示在当前 FlowRun 的自动记录列表；单节点副本创建新的记录、Attempt 和人工输入 Artifact，并回到既有
 启动前状态机。浏览器会选中刚创建的副本，页面明确说明拷贝不包含会话、输出或结果。
 
+### FR-154 执行记录拷贝命名确认 — DONE
+
+依赖：`FR-153`。
+
+目标：单节点运行和自动运行记录点击“拷贝”后，先展示可编辑的副本名称与明确确认动作；取消不得创建记录。
+单节点副本必须持久化并展示该名称，自动副本继续使用同一名称作为新草稿的 `FlowRun.name`。两类副本仍只复制
+初始配置和独立输入，不带入会话、输出、产物、门禁结果或执行历史。
+
+完成：两类“拷贝”入口均先打开命名确认对话框，副本名称默认附加“副本”、可编辑且必须确认才创建；取消不会写入。
+单节点记录新增可选持久名称并在列表中优先展示，自动副本继续使用确认名称作为新草稿名。前端请求、服务端验证、
+复制审计和浏览器回归均覆盖两种记录类型。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2265,6 +2277,7 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-154 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（5 passed）；受影响 Python `py_compile`、Ruff、Alembic head、`git diff --check` | PASS（静态与浏览器）：两类记录点击“拷贝”后先展示可编辑副本名称，确认时请求体携带名称且列表显示命名副本；取消不提交请求。新增 `0092_node_run_names`，唯一 Alembic head。定向平台 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集阶段失败；未伪记为通过。Pyright 报告 service.py 中本切片外既有 15 项 Unknown/cast 基线错误，本次新增的拷贝代码未产生诊断。 |
 | 2026-09-04 | FR-153 | Web ESLint、TypeScript typecheck/production build；定向 FlowRun Workbench Playwright（5 passed）；受影响 Python `py_compile`、Ruff、`git diff --check`；定向平台 pytest | PASS（静态与浏览器）：两种记录都可从左侧操作区发起拷贝，副本立即插入并选中；单节点副本只保留启动配置和独立输入副本，自动副本仍归属原父 FlowRun 且没有执行历史。定向 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集阶段失败，未伪记为通过。仓库配置的 Pyright 能解析依赖，但受影响 `service.py` 报告 15 个该切片外既有 Unknown/cast 基线错误；本次新增复制代码未产生诊断。 |
 | 2026-09-04 | FR-152 | 受影响 Python `py_compile`、Ruff format/check、生产文件定向 Pyright（0 errors）、`git diff --check`；定向 `test_conversations.py` pytest | PASS：静态检查通过，收敛路径受精确原生 `paused` 与 Attempt CAS 双重限制。pytest 未能执行断言：本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集时失败；未伪记为通过。测试模块的定向 Pyright 另有既有跨模块兼容导入基线错误，生产文件为 0 errors。 |
 | 2026-09-04 | FR-151 | 三类容器启动命令直接 smoke、受影响 Python `py_compile`、Ruff check、`git diff --check` | PASS：Setup、FlowRun 和默认 Agent Workspace 均使用持久 HOME 下的 npm prefix，终端与 Agent Server 保留并扩展镜像 PATH。定向 pytest 因本机 Docker daemon 未运行、全局 Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过。 |

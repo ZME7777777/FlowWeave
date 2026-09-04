@@ -447,7 +447,7 @@ class AutomaticRunCopyWrite(ApiModel):
 class NodeRunCopyWrite(ApiModel):
     """Create a fresh manual record from a prior record's launch configuration."""
 
-    pass
+    name: str | None = Field(default=None, max_length=220)
 
 
 class NodeRunStart(ApiModel):
