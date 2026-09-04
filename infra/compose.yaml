@@ -166,6 +166,44 @@ services:
       - default
       - docker-control
 
+  # Long-lived browser WebSockets must not share the REST API process. A slow
+  # Agent Runtime stream can therefore never prevent workspace, flow, or
+  # capability HTTP reads from receiving a response. The web proxy sends only
+  # Upgrade requests for the explicit stream and terminal routes here.
+  stream-api:
+    build: { context: .., dockerfile: services/platform/Dockerfile }
+    user: "10001:10001"
+    command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
+    environment:
+      <<: [*platform-env, *docker-client-env]
+      # A stream worker only reads a Runtime handle before it begins the
+      # WebSocket relay. Keep its per-process pool bounded even when many
+      # browser sessions are connected. REST owns its separate API pool.
+      POOL_SIZE: 4
+      DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
+    labels:
+      flowweave.runtime-client: "true"
+      flowweave.runtime-client-role: "api"
+      flowweave.manager-scope: "${SANDBOX_MANAGER_SCOPE:-flowweave-local}"
+    volumes:
+      - artifacts:/data/artifacts
+      - type: bind
+        source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
+        target: /data/workspaces
+    depends_on:
+      migration: { condition: service_completed_successfully }
+      runtime-provider: { condition: service_healthy }
+      workspace-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - default
+      - docker-control
+
   worker:
     build: { context: .., dockerfile: services/platform/Dockerfile }
     user: "10001:10001"
