@@ -366,6 +366,20 @@ export interface OpenHandsConversationEvent {
     timestamp?: string;
     event_name?: string;
     details?: Record<string, unknown>;
+    /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */
+    runtime_task?: {
+      phase: 'REQUESTED' | 'COMPLETED' | 'ERROR';
+      action_event_id: string;
+      observation_event_id?: string;
+      tool_call_id?: string;
+      llm_response_id?: string;
+      task_id?: string;
+      subagent_type: string;
+      description?: string | null;
+      resume_task_id?: string | null;
+      status?: string;
+      outcome?: { is_error?: boolean; content?: unknown };
+    };
     display_content?: string;
     attachments?: AgentAttachment[];
     [key: string]: unknown;

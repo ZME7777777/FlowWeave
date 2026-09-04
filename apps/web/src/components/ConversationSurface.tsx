@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { Bot, Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -413,7 +413,19 @@ function activityPresentation(entry: ActivityEntry, active: boolean): ActivityPr
   if (eventName === 'InvokeSkillObservation') return { title: '技能调用已完成', status: completed ? '已完成' : '处理中' };
   if (eventName.includes('Browser')) return { title: completed ? `${actionTitle('浏览器操作')} · 已完成` : actionTitle('正在操作浏览器'), status: completed ? '浏览器 · 已完成' : '浏览器', thought, output, actionDetails: details, resultDetails };
   if (eventName.includes('MCP')) return { title: completed ? `${actionTitle('MCP 工具调用')} · 已完成` : actionTitle('正在调用 MCP 工具'), status: completed ? 'MCP · 已完成' : 'MCP', thought, output, actionDetails: details, resultDetails };
-  if (eventName === 'TaskAction') return { title: completed ? `${actionTitle('子任务')} · 已完成` : actionTitle('正在处理子任务'), status: completed ? '子任务 · 已完成' : '子任务', thought, output, actionDetails: details, resultDetails };
+  if (eventName === 'TaskAction') {
+    const runtimeTask = item.event.payload.runtime_task;
+    const agentType = typeof runtimeTask?.subagent_type === 'string' && runtimeTask.subagent_type.trim()
+      ? runtimeTask.subagent_type.trim()
+      : 'general-purpose';
+    const description = typeof runtimeTask?.description === 'string' ? runtimeTask.description.trim() : '';
+    const label = description || actionTitle(`子智能体 ${agentType}`);
+    return {
+      title: completed ? `子智能体 ${agentType} · ${label} · 已完成` : `子智能体 ${agentType} · ${label}`,
+      status: completed ? '子智能体 · 已完成' : '子智能体 · 运行中',
+      thought, output, actionDetails: details, resultDetails,
+    };
+  }
   if (eventName === 'TaskObservation') return { title: '子任务已完成', status: completed ? '已完成' : '处理中' };
   const toolName = eventName.replace(/(?:Action|Observation)$/, '') || '工具';
   return {
@@ -683,7 +695,7 @@ function activeToolLabel(eventName: string): string {
   if (eventName.includes('Browser')) return '正在执行浏览器操作';
   if (eventName.includes('MCP')) return '正在调用 MCP 工具';
   if (eventName.includes('Skill')) return '正在使用技能';
-  if (eventName.includes('Task')) return '正在处理任务';
+  if (eventName.includes('Task')) return '子智能体正在执行';
   return '正在执行工具';
 }
 
@@ -735,7 +747,9 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt }: {
         const item = entry.action ?? entry.item;
         const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
         const eventName = String(item.event.payload.event_name ?? '');
-        const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
+        const ToolIcon = eventName === 'TaskAction' || eventName === 'TaskObservation'
+          ? Bot
+          : eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
         const presentation = activityPresentation(entry, active);
         const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName}/> : null;
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>

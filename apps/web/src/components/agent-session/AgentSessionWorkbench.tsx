@@ -57,6 +57,114 @@ interface ConversationSource {
   pending?: boolean;
 }
 
+type RuntimeTaskStatus = 'RUNNING' | 'COMPLETED' | 'ERROR';
+interface RuntimeTaskProjection {
+  id: string;
+  actionEventId: string;
+  toolCallId?: string;
+  taskId?: string;
+  subagentType: string;
+  description?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  status: RuntimeTaskStatus;
+  outcome?: unknown;
+}
+
+/**
+ * Build a UI-only projection from the formal OpenHands Task lifecycle.
+ * The action/observation relationship is always the formal action_id or
+ * tool_call_id; event order and text are deliberately never used as a join.
+ */
+function runtimeTasksFromEvents(events: OpenHandsConversationEvent[]): RuntimeTaskProjection[] {
+  const tasks = new Map<string, RuntimeTaskProjection>();
+  const byToolCall = new Map<string, RuntimeTaskProjection>();
+  for (const event of events) {
+    const task = event.payload.runtime_task;
+    if (!task || task.phase !== 'REQUESTED') continue;
+    const actionEventId = task.action_event_id || event.id;
+    if (!actionEventId || tasks.has(actionEventId)) continue;
+    const item: RuntimeTaskProjection = {
+      id: actionEventId, actionEventId, toolCallId: task.tool_call_id || undefined,
+      subagentType: task.subagent_type || 'general-purpose',
+      description: typeof task.description === 'string' ? task.description : undefined,
+      startedAt: typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined,
+      status: 'RUNNING',
+    };
+    tasks.set(actionEventId, item);
+    if (item.toolCallId) byToolCall.set(item.toolCallId, item);
+  }
+  for (const event of events) {
+    const task = event.payload.runtime_task;
+    if (!task || (task.phase !== 'COMPLETED' && task.phase !== 'ERROR')) continue;
+    const item = tasks.get(task.action_event_id)
+      ?? (task.tool_call_id ? byToolCall.get(task.tool_call_id) : undefined);
+    if (!item) continue;
+    item.status = task.phase === 'COMPLETED' ? 'COMPLETED' : 'ERROR';
+    item.taskId = task.task_id || item.taskId;
+    item.subagentType = task.subagent_type || item.subagentType;
+    item.finishedAt = typeof event.payload.timestamp === 'string' ? event.payload.timestamp : item.finishedAt;
+    item.outcome = task.outcome;
+  }
+  return [...tasks.values()].sort((left, right) => (right.startedAt || '').localeCompare(left.startedAt || ''));
+}
+
+function runtimeTaskStatus(task: RuntimeTaskProjection): string {
+  return task.status === 'RUNNING' ? '运行中' : task.status === 'COMPLETED' ? '已完成' : '失败';
+}
+
+function definitionStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+}
+
+function taskOutcomeText(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const outcome = value as { content?: unknown };
+  const content = outcome.content;
+  if (typeof content === 'string') return content.trim().slice(0, 1_000) || undefined;
+  if (!Array.isArray(content)) return undefined;
+  return content.map(item => {
+    if (!item || typeof item !== 'object') return '';
+    const record = item as { text?: unknown };
+    return typeof record.text === 'string' ? record.text : '';
+  }).filter(Boolean).join('\n').slice(0, 1_000) || undefined;
+}
+
+function RuntimeTaskDetails({ task, definitions, onClose }: {
+  task: RuntimeTaskProjection; definitions: CapabilityAsset[]; onClose: () => void;
+}) {
+  const definition = definitions.find(item => item.capability_type === 'AGENT_DEFINITION' && item.capability_key === task.subagentType);
+  const document = definition?.document && typeof definition.document === 'object' ? definition.document : {};
+  const record = document as Record<string, unknown>;
+  const tools = definitionStrings(record.tools);
+  const skills = definitionStrings(record.skills);
+  const outcome = taskOutcomeText(task.outcome);
+  const nativeDefinition = !definition;
+  return <div className="agent-subagent-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="agent-subagent-details" role="dialog" aria-modal="true" aria-labelledby="agent-subagent-details-title">
+      <header><div><span className="eyebrow">SUBAGENT</span><h2 id="agent-subagent-details-title">{task.subagentType}</h2><p>{runtimeTaskStatus(task)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div><button type="button" aria-label="关闭子智能体详情" onClick={onClose}><X size={18}/></button></header>
+      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${task.status.toLowerCase()}`}>{runtimeTaskStatus(task)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}</dl></section>
+      <section><h3>子智能体定义</h3>{nativeDefinition ? <p className="agent-subagent-note">这是 OpenHands 原生 <code>{task.subagentType}</code> 类型。当前正式事件未携带可版本化的 FlowWeave Agent Definition，因此不会把它伪装成自定义定义。</p> : <><p>{definition.description || '已发布的 FlowWeave Agent Definition。'}</p><dl><dt>已发布版本</dt><dd>{definition.version}</dd><dt>内容摘要</dt><dd><code>{definition.content_hash.slice(0, 16)}</code></dd>{tools.length > 0 && <><dt>允许工具</dt><dd>{tools.join('、')}</dd></>}{skills.length > 0 && <><dt>技能</dt><dd>{skills.join('、')}</dd></>}</dl><p className="agent-subagent-note">此处展示当前可读取的已发布定义。会话运行时使用的定义版本由 OpenHands 创建请求冻结，事件未提供版本 ID 时不据此声称两者相同。</p></>}</section>
+      {outcome && <section><h3>执行结果</h3><pre>{outcome}</pre></section>}
+    </section>
+  </div>;
+}
+
+function RuntimeTaskPanel({ tasks, definitions }: { tasks: RuntimeTaskProjection[]; definitions: CapabilityAsset[] }) {
+  const [selectedTask, setSelectedTask] = useState<RuntimeTaskProjection>();
+  useEscapeClose(() => setSelectedTask(undefined), Boolean(selectedTask));
+  const running = tasks.filter(task => task.status === 'RUNNING').length;
+  if (!tasks.length) return null;
+  return <section className="agent-subagent-panel" aria-label="子智能体">
+    <header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : '本轮已完成'}</span></header>
+    <div>{tasks.slice(0, 8).map(task => <button type="button" key={task.id} onClick={() => setSelectedTask(task)}><i className={task.status.toLowerCase()}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task)}</small></span><ChevronRight size={14}/></button>)}</div>
+    {tasks.length > 8 && <p>另有 {tasks.length - 8} 个子智能体任务。</p>}
+    {selectedTask && <RuntimeTaskDetails task={selectedTask} definitions={definitions} onClose={() => setSelectedTask(undefined)}/>}
+  </section>;
+}
+
 interface WorkspaceConversationGroupProps {
   groupId: string;
   label: string;
@@ -995,9 +1103,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, sources, attachmentRequest, candidatePreviewRequest, runtimeAvailable,
+  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, sources, attachmentRequest, candidatePreviewRequest, runtimeAvailable, runtimeTasks, agentDefinitions,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; runtimeAvailable: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[];
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -1248,6 +1356,7 @@ function WorkspaceDrawer({
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
+      <RuntimeTaskPanel tasks={runtimeTasks} definitions={agentDefinitions}/>
       <div className="agent-workspace-quick-actions"><button type="button" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button></div>
       {loadingOrError || summary}
     </section>
@@ -1396,6 +1505,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
       return item ? [{ id: item.id, capability_type: item.capability_type as AgentSessionCapability['capability_type'], capability_key: item.capability_key, digest: item.content_hash }] : [];
     });
   }, [capabilityCatalogQuery.data, conversationDraft, selected?.capabilities]);
+  const agentDefinitionAssets = useMemo(() => {
+    // The public session-capability DTO intentionally exposes only the
+    // capabilities selectable in the composer, and does not contain
+    // AGENT_DEFINITION. A Task event also carries a type but no frozen
+    // definition version. Keep the detail view honest: show a same-name
+    // published definition when it is readable, and label it as such rather
+    // than claiming it is the definition frozen into this Conversation.
+    return (capabilityCatalogQuery.data ?? []).filter(
+      item => item.capability_type === 'AGENT_DEFINITION',
+    );
+  }, [capabilityCatalogQuery.data]);
   const composerSuggestions = useMemo(() => {
     const catalog = new Map((capabilityCatalogQuery.data ?? []).map(item => [item.id, item]));
     const seen = new Set<string>();
@@ -1475,6 +1595,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
     )
       .filter(event => !hiddenEventIds.has(event.id));
   }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, liveEvents, optimisticBootstrapTurn, selected?.id]);
+  const runtimeTasks = useMemo(() => runtimeTasksFromEvents(displayedEvents), [displayedEvents]);
   const sessionAttachments = useMemo(() => {
     const byPath = new Map<string, AgentAttachment>();
     for (const event of displayedEvents) {
@@ -2221,7 +2342,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, autoOpenDr
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} runtimeAvailable={Boolean(runtime?.write_available && (!features.terminalRequiresConversation || selected))}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} runtimeAvailable={Boolean(runtime?.write_available && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets}/>
     {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
