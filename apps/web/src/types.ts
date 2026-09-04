@@ -165,6 +165,10 @@ export interface ModelProviderWrite {
 export interface ModelProviderDiscoveryWrite {
   base_url: string; api_key?: string | null; provider_id?: string | null;
 }
+export interface ModelProviderUsage {
+  status: 'AVAILABLE' | 'UNLIMITED' | 'UNAVAILABLE';
+  spend?: number; max_budget?: number; remaining?: number; reason?: string;
+}
 export interface CodexDeviceAuthorization {
   verification_url: string; user_code: string; expires_at: string; interval: number;
 }

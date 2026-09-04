@@ -4,7 +4,10 @@ from fastapi import APIRouter, Depends, Response
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.model_providers.application import service
-from flowweave.modules.model_providers.infrastructure.client import discover_provider_models
+from flowweave.modules.model_providers.infrastructure.client import (
+    discover_provider_models,
+    read_provider_budget,
+)
 from flowweave.modules.model_providers.infrastructure.codex_oauth import (
     CodexModelProfile,
     discover_codex_model_profiles,
@@ -63,6 +66,13 @@ async def _discover(provider_id: str, db: Db, container: Container) -> list[str]
         db, lambda session: service.provider_connection_snapshot(session, provider_id)
     )
     return await discover_provider_models(container.http, snapshot)
+
+
+async def _budget(provider_id: str, db: Db, container: Container) -> dict[str, object]:
+    snapshot = await run_sync(
+        db, lambda session: service.provider_connection_snapshot(session, provider_id)
+    )
+    return await read_provider_budget(container.http, snapshot)
 
 
 @router.post("/model-providers/discover-models")
@@ -178,6 +188,25 @@ async def test_provider(provider_id: str, db: Db, container: ContainerDep) -> di
         lambda session: service.mark_provider_connection_state(session, provider_id, "CONNECTED"),
     )
     return {"connection_state": "CONNECTED", "model_count": len(models)}
+
+
+@router.get("/model-providers/{provider_id}/usage")
+async def provider_usage(provider_id: str, db: Db, container: ContainerDep) -> dict[str, object]:
+    provider = await run_sync(
+        db,
+        lambda session: service.provider_dict(session, service.get_provider(session, provider_id)),
+    )
+    if provider["auth_type"] != "API_KEY":
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "该认证方式未提供可读取的 API Key 预算",
+        }
+    if not provider["has_api_key"]:
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "尚未配置 API Key",
+        }
+    return await _budget(provider_id, db, container)
 
 
 @router.post("/model-providers/{provider_id}/discover-models")

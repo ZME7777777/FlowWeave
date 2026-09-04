@@ -841,9 +841,7 @@ def test_saved_step_record_starts_with_frozen_prompt_and_auto_advances_after_gat
     detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
     assert detail["node_runs"][0]["state"] == "ACCEPTED"
     downstream = next(
-        record
-        for record in detail["node_runs"]
-        if record["flow_node_snapshot_key"] == "design_b"
+        record for record in detail["node_runs"] if record["flow_node_snapshot_key"] == "design_b"
     )
     assert downstream["attempts"][0]["state"] == "WAITING_INPUT"
 
@@ -1885,6 +1883,62 @@ def test_model_provider_connection_test_reports_result_and_persists_failure(monk
     assert failed.status_code == 503, failed.text
     assert failed.json()["error"]["code"] == "EXECUTOR_UNAVAILABLE"
     assert client.get("/api/v1/model-providers").json()[0]["connection_state"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_model_provider_budget_probe_supports_litellm_root_after_v1():
+    import httpx
+
+    from flowweave.modules.model_providers.application.service import ProviderConnectionSnapshot
+    from flowweave.modules.model_providers.infrastructure.client import read_provider_budget
+
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if request.url.path == "/v1/key/info":
+            return httpx.Response(404)
+        assert request.headers["Authorization"] == "Bearer configured-secret"
+        return httpx.Response(200, json={"info": {"spend": 300, "max_budget": 500}})
+
+    snapshot = ProviderConnectionSnapshot(
+        provider_id="provider-1",
+        base_url="https://models.example.test/v1",
+        headers={"Authorization": "Bearer configured-secret"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        result = await read_provider_budget(upstream, snapshot)
+
+    assert requests == [
+        "https://models.example.test/v1/key/info",
+        "https://models.example.test/key/info",
+    ]
+    assert result == {
+        "status": "AVAILABLE",
+        "spend": 300.0,
+        "max_budget": 500.0,
+        "remaining": 200.0,
+    }
+
+
+def test_model_provider_budget_endpoint_is_read_only_and_safe(monkeypatch, client):
+    from flowweave.modules.model_providers.presentation import router as provider_router
+
+    provider = _create_model_provider(client, "预算模型服务")
+
+    async def budget_probe(*_args):
+        return {"status": "AVAILABLE", "spend": 300.0, "max_budget": 500.0, "remaining": 200.0}
+
+    monkeypatch.setattr(provider_router, "_budget", budget_probe)
+    response = client.get(f"/api/v1/model-providers/{provider['id']}/usage")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "status": "AVAILABLE",
+        "spend": 300.0,
+        "max_budget": 500.0,
+        "remaining": 200.0,
+    }
 
 
 def test_model_provider_preview_discovery_uses_unsaved_connection_without_persisting(
