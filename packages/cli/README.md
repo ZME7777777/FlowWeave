@@ -14,7 +14,9 @@ flowweave health --ready
 
 常用命令示例：
 
-`flowweave node-directory delete <directory-id> --dry-run`、`flowweave credential delete-many --id <credential-id> --id <credential-id>`、`flowweave environment publish <setup-session-id> --description '升级 Python 依赖'`、`flowweave agent file-delete <workspace-id> --path /runtime/workspace/project/report.md`。
+`flowweave node-directory delete-many --id <directory-id> --id <directory-id> --dry-run`、`flowweave credential delete-many --id <credential-id> --id <credential-id>`、`flowweave environment publish <setup-session-id> --description '升级 Python 依赖'`、`flowweave agent file-delete <workspace-id> --path /runtime/workspace/project/report.md --path /runtime/workspace/project/output`、`flowweave run workspace-delete <run-id> --attempt <attempt-id> --path /runtime/workspace/project/result.txt`。
+
+节点目录批量删除、Agent Workspace 文件树删除和 FlowRun 节点工作区删除都使用 JSON 数组请求体。重复传入 `--id` 或 `--path` 即可批量选择；先读取真实资源与路径，并用 `--dry-run` 核对 DELETE URL、范围 query 和请求体。FlowRun 工作目录删除使用 `flowweave run work-directory-delete <run-id> --attempt <attempt-id> --work-directory <directory-id>`。
 
 `api`、`upload`、`ws` 是完整契约入口：任意当前或未来的 REST、multipart、WebSocket 原子接口均可直接调用，不需要等待 CLI 发布。`ws` 使用 Node 原生 WebSocket；当前公开 FlowWeave WebSocket 接口无需自定义请求头。写操作支持 `--dry-run`，并可使用 `-H 'Idempotency-Key: …'` 传入一次性幂等键。对于没有快捷命令的新接口，先运行 `flowweave openapi --paths`，再通过通用命令调用。
 

@@ -52,3 +52,16 @@ flowweave upload post /flow-runs/<run-id>/artifacts/upload \
 接受/拒绝、retry gate、Runtime confirmation batch decision、人工输出、自动运行草稿/启动、节点会话等均是平台控制的状态机动作。每一步都先读当前 Attempt/批次/Run，并以 OpenAPI 取得真实 body；需要幂等保障时使用 `Idempotency-Key`。顶层聊天任务不要混用节点会话，转 `flowweave-agent-workspace`。
 
 如果状态卡住，先读取 Run、NodeRun、Runtime 和 events，保留失败上下文；不可进入 Docker 或 OpenHands 私有端点“手工完成”节点。取消或拒绝前必须有用户的明确授权。
+
+## 节点会话工作区维护
+
+删除节点会话工作区文件或目录前，从 Run 详情取得真实 `attempt_id`，再读取该 Attempt 的工作区范围。使用重复 `--path` 批量选择，并先 dry-run：
+
+```bash
+flowweave run workspace-delete <run-id> --attempt <attempt-id> \
+  --path /runtime/workspace/project/result.txt \
+  --path /runtime/workspace/project/cache \
+  [--binding <binding-id>] [--work-directory <directory-id>] --dry-run
+```
+
+平台拒绝工作区根、范围外路径、隐藏路径、符号链接和特殊文件；目录会递归删除。删除 FlowRun 逻辑工作目录使用 `flowweave run work-directory-delete <run-id> --attempt <attempt-id> --work-directory <directory-id> --dry-run`。先读取目录 ID；仍被会话冻结版本引用时平台会拒绝删除。两类操作均只操作 FlowWeave 公开 API，不进入 Runtime 或宿主机直接删除。

@@ -45,4 +45,4 @@ flowweave agent conversations <workspace-id>
 
 删除逻辑工作目录前，先用 `flowweave agent work-directories <workspace-id>` 读取真实 ID，再执行 `flowweave agent work-directory-delete <workspace-id> <work-directory-id> --dry-run`。被 Conversation 冻结引用的工作目录会被平台拒绝删除。
 
-删除文件使用 `flowweave agent file-delete <workspace-id> --path <runtime-path> [--binding <binding-id>] [--work-directory <directory-id>]`。路径必须来自当前 Workspace 详情；只允许授权范围内的普通文件或空目录。不得尝试删除 `/runtime/workspace/project`、隐藏路径、符号链接或会话私有附件。
+删除文件或目录树使用 `flowweave agent file-delete <workspace-id> --path <runtime-path> [--path <runtime-path> ...] [--binding <binding-id>] [--work-directory <directory-id>] --dry-run`。路径必须来自当前 Workspace 详情；平台只允许当前范围内的普通文件或目录，并会递归删除目录。不得尝试删除工作区根、隐藏路径、符号链接或会话私有附件。确认 dry-run 中的 `paths` 数组和范围 query 后再执行；同时选择父目录与其后代时，平台只返回实际删除的最高层路径。

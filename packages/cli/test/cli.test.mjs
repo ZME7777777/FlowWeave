@@ -83,13 +83,52 @@ test('维护快捷命令保留删除目标和环境版本说明', async () => {
   const directory = invoke(config, 'node-directory', 'delete', 'directory-1', '--dry-run');
   assert.equal(directory.status, 0, directory.stderr);
   assert.equal(JSON.parse(directory.stdout).url, 'https://example.test/flowweave/api/v1/node-directories/directory-1');
+  const directories = invoke(config, 'node-directory', 'delete-many', '--id', 'directory-1', '--id', 'directory-2', '--dry-run');
+  assert.equal(directories.status, 0, directories.stderr);
+  assert.deepEqual(JSON.parse(directories.stdout), {
+    method: 'DELETE',
+    payload: { ids: ['directory-1', 'directory-2'] },
+    url: 'https://example.test/flowweave/api/v1/node-directories',
+  });
   const credentials = invoke(config, 'credential', 'delete-many', '--id', 'credential-1', '--id', 'credential-2', '--dry-run');
   assert.equal(credentials.status, 0, credentials.stderr);
   assert.deepEqual(JSON.parse(credentials.stdout).payload, { ids: ['credential-1', 'credential-2'] });
   const publish = invoke(config, 'environment', 'publish', 'setup-1', '--description', '更新 Python 依赖', '--dry-run');
   assert.equal(publish.status, 0, publish.stderr);
   assert.deepEqual(JSON.parse(publish.stdout).payload, { description: '更新 Python 依赖' });
-  const file = invoke(config, 'agent', 'file-delete', 'workspace-1', '--path', '/runtime/workspace/project/report.md', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
+  const file = invoke(config, 'agent', 'file-delete', 'workspace-1', '--path', '/runtime/workspace/project/report.md', '--path', '/runtime/workspace/project/output', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
   assert.equal(file.status, 0, file.stderr);
-  assert.equal(JSON.parse(file.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2Freport.md&binding_id=binding-1&work_directory_id=directory-1');
+  assert.deepEqual(JSON.parse(file.stdout), {
+    method: 'DELETE',
+    payload: { paths: ['/runtime/workspace/project/report.md', '/runtime/workspace/project/output'] },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace/entries?binding_id=binding-1&work_directory_id=directory-1',
+  });
+  const runFiles = invoke(config, 'run', 'workspace-delete', 'run-1', '--attempt', 'attempt-1', '--path', '/runtime/workspace/project/result.txt', '--path', '/runtime/workspace/project/cache', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
+  assert.equal(runFiles.status, 0, runFiles.stderr);
+  assert.deepEqual(JSON.parse(runFiles.stdout), {
+    method: 'DELETE',
+    payload: { paths: ['/runtime/workspace/project/result.txt', '/runtime/workspace/project/cache'] },
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/workspace/entries?binding_id=binding-1&work_directory_id=directory-1',
+  });
+  const runDirectory = invoke(config, 'run', 'work-directory-delete', 'run-1', '--attempt', 'attempt-1', '--work-directory', 'directory-1', '--dry-run');
+  assert.equal(runDirectory.status, 0, runDirectory.stderr);
+  assert.deepEqual(JSON.parse(runDirectory.stdout), {
+    method: 'DELETE',
+    payload: null,
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/work-directories/directory-1',
+  });
+});
+
+test('批量维护命令拒绝缺少精确删除目标', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  for (const args of [
+    ['node-directory', 'delete-many', '--dry-run'],
+    ['agent', 'file-delete', 'workspace-1', '--dry-run'],
+    ['run', 'workspace-delete', 'run-1', '--attempt', 'attempt-1', '--dry-run'],
+    ['run', 'work-directory-delete', 'run-1', '--attempt', 'attempt-1', '--dry-run'],
+  ]) {
+    const result = invoke(config, ...args);
+    assert.equal(result.status, 2);
+  }
 });

@@ -41,4 +41,6 @@ description: 创建、修改、查询或删除 FlowWeave 节点资产和节点�
 
 删除节点目录使用 `flowweave node-directory delete <directory-id> --dry-run` 先检查目标，再去掉 `--dry-run` 执行。平台会将目录内的直接节点和直接子目录提升到父目录；若提升会产生同名目录则拒绝，不会合并或丢弃任何节点资产。
 
+需要连同子目录树批量删除时，先读取目录树并确认每个 ID，再执行 `flowweave node-directory delete-many --id <directory-id> --id <directory-id> --dry-run`。该操作递归删除所选目录及后代目录，但不删除节点资产：受影响资产会移到未分类。单目录 `delete` 的提升语义与 `delete-many` 的递归语义不同，不得互换或按名称猜 ID。
+
 若用户要“运行节点”或“上传节点输入”，不要在此处猜 Run/Attempt：先读取 FlowRun 详情，再转 FlowRun 工作台 Skill。

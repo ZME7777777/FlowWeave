@@ -2202,6 +2202,20 @@ Skill，使执行者先读取真实 ID、用 `--dry-run` 审核请求，并遵�
 
 完成：运行工作台已移除与左侧栏重复的主标题、摘要和状态区；返回列表、手动快照同步及终态运行的永久删除仍保留在紧凑工具栏中。选中的流程节点以深色边框、外圈、阴影和“已选中”徽标反馈，右侧栏不再是唯一判断依据。
 
+### FR-150 工作区批量维护 CLI 与 Skill 同步 — DONE
+
+依赖：`FR-149`。
+
+目标：将节点目录批量删除、Agent Workspace 文件／目录树批量删除、FlowRun 节点会话工作区批量删除和
+FlowRun 逻辑工作目录删除接口同步到可审查的 FlowWeave CLI 快捷命令，并更新对应页面 Skill。所有删除命令
+必须使用精确 ID 或路径、支持 `--dry-run` 审核最终 DELETE URL、范围 query 与 JSON 数组请求体；不得绕过平台
+直接操作 Runtime、宿主机或数据库。
+
+完成：`@flowweave-ai/cli` 升级至 `0.1.3`，新增 `node-directory delete-many`、
+`run workspace-delete` 和 `run work-directory-delete`，并将 `agent file-delete` 切换到可重复 `--path` 的批量
+接口，保留单路径调用方式。节点资产、Agent Workspace 与 FlowRun 工作台 Skill 已同步递归删除、引用保护、
+范围校验和单目录提升／批量递归语义差异。CLI 仅映射公开平台 API，未修改 Runtime 或 OpenHands 契约。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2217,6 +2231,7 @@ Skill，使执行者先读取真实 ID、用 `--dry-run` 审核请求，并遵�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-150 | CLI `npm test`（6 passed）、Node 语法检查、npm pack 清单、三份 Skill `quick_validate.py`、`git diff --check` | PASS：四个新增删除接口均有快捷命令和 dry-run 请求映射；批量命令拒绝缺少精确目标，Skill 与服务端范围、递归和引用保护语义一致。 |
 | 2026-09-04 | FR-148 | CLI `npm test`（5 passed）、Node 语法检查、Skill 快速校验、`git diff --check` | PASS：维护快捷命令均以平台 API 和可审计 dry-run 映射实现，Skill 操作说明与服务端保护语义一致。 |
 | 2026-09-04 | FR-147 | 受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint；Alembic heads；`git diff --check` | PASS：唯一迁移 head 为 `0090_env_version_desc`。目录提升、工作区范围校验、批量认证精确 ID 校验和版本说明持久化均已落入平台服务层；未运行容器/数据库行为测试。 |
 | 2026-09-04 | FR-149 | Web ESLint、TypeScript typecheck、production build；FlowRun Workbench 定向 Playwright（5 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：运行主区不再渲染重复标题；保留返回入口、快照同步和终态删除。选中节点在画布内显示高对比边框、外圈和“已选中”徽标。唯一 Alembic head 为 `0089_website_credentials`，无 `CURRENT` 或下一切片。 |

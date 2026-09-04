@@ -1,6 +1,6 @@
 {
   "name": "@flowweave-ai/cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "FlowWeave 平台命令行客户端",
   "type": "module",
   "bin": {

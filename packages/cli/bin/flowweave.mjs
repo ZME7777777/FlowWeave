@@ -26,12 +26,12 @@ function usage() {
 
 页面域原子操作：
   node <list|get|create|update|delete> [ID] [--data JSON|--data-file FILE]
-  node-directory <list|create|delete> [ID] [--data JSON|--data-file FILE]
+  node-directory <list|create|delete|delete-many> [ID] [--id ID ...]
   capability <list|validate|commit|import> ...
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
-  run <list|get|start|delete|runtime|replace|cancel|complete|events> ...
+  run <list|get|start|delete|runtime|replace|cancel|complete|events|workspace-delete|work-directory-delete> ...
   model <list|create|update|delete|discover|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
   agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete> ...
 
@@ -198,7 +198,12 @@ async function nodeDirectory(args) {
     if (!id) throw new CliError('node-directory delete 必须提供目录 ID');
     return request('DELETE', `/node-directories/${id}`, args);
   }
-  throw new CliError('node-directory 支持 list|create|delete');
+  if (action === 'delete-many') {
+    const ids = optionValues(args, '--id');
+    if (!ids.length) throw new CliError('node-directory delete-many 至少需要一个 --id');
+    return request('DELETE', '/node-directories', args, { body: { ids } });
+  }
+  throw new CliError('node-directory 支持 list|create|delete|delete-many');
 }
 
 async function capability(args) {
@@ -278,6 +283,30 @@ async function run(args) {
     return request('POST', `/flows/${flowId}/runs`, args, { body });
   }
   if (!id) throw new CliError(`run ${action || ''} 需要 FlowRun ID`);
+  if (action === 'workspace-delete') {
+    const attemptId = option(args, '--attempt');
+    const paths = optionValues(args, '--path');
+    if (!attemptId || !paths.length) {
+      throw new CliError('run workspace-delete 需要 FlowRun ID、--attempt 和至少一个 --path');
+    }
+    const bindingId = option(args, '--binding');
+    const workDirectoryId = option(args, '--work-directory');
+    return request('DELETE', `/flow-runs/${id}/node-attempts/${attemptId}/agent-sessions/workspace/entries`, args, {
+      body: { paths },
+      query: [
+        ...(bindingId ? [['binding_id', bindingId]] : []),
+        ...(workDirectoryId ? [['work_directory_id', workDirectoryId]] : []),
+      ],
+    });
+  }
+  if (action === 'work-directory-delete') {
+    const attemptId = option(args, '--attempt');
+    const workDirectoryId = option(args, '--work-directory');
+    if (!attemptId || !workDirectoryId) {
+      throw new CliError('run work-directory-delete 需要 FlowRun ID、--attempt 和 --work-directory');
+    }
+    return request('DELETE', `/flow-runs/${id}/node-attempts/${attemptId}/agent-sessions/work-directories/${workDirectoryId}`, args);
+  }
   if (action === 'get') return request('GET', `/flow-runs/${id}`, args);
   if (action === 'delete') return request('DELETE', `/flow-runs/${id}`, args);
   if (action === 'runtime') return request('GET', `/flow-runs/${id}/runtime`, args);
@@ -285,7 +314,7 @@ async function run(args) {
   if (action === 'cancel') return request('POST', `/flow-runs/${id}/cancel`, args, { body: {} });
   if (action === 'complete') return request('POST', `/flow-runs/${id}/complete`, args, { body: {} });
   if (action === 'events') return request('GET', `/flow-runs/${id}/events`, args);
-  throw new CliError('run 支持 list|get|start|delete|runtime|replace|cancel|complete|events');
+  throw new CliError('run 支持 list|get|start|delete|runtime|replace|cancel|complete|events|workspace-delete|work-directory-delete');
 }
 
 async function model(args) {
@@ -325,13 +354,13 @@ async function agent(args) {
     return request('DELETE', `${base}/work-directories/${binding}`, args);
   }
   if (action === 'file-delete') {
-    const path = option(args, '--path');
-    if (!path) throw new CliError('agent file-delete 需要 --path <runtime-path>');
+    const paths = optionValues(args, '--path');
+    if (!paths.length) throw new CliError('agent file-delete 至少需要一个 --path <runtime-path>');
     const bindingId = option(args, '--binding');
     const workDirectoryId = option(args, '--work-directory');
-    return request('DELETE', `${base}/workspace/file`, args, {
+    return request('DELETE', `${base}/workspace/entries`, args, {
+      body: { paths },
       query: [
-        ['path', path],
         ...(bindingId ? [['binding_id', bindingId]] : []),
         ...(workDirectoryId ? [['work_directory_id', workDirectoryId]] : []),
       ],
