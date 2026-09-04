@@ -40,6 +40,10 @@ class FlowRun(Base):
     # execution as a FlowRun lets the mature automatic scheduler remain
     # unchanged while this self reference supplies the product-level owner.
     parent_flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    # A FlowRun remains one concrete execution.  These optional locators only
+    # record that it was created by the independent schedule directory.
+    schedule_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    schedule_occurrence_id: Mapped[str | None] = mapped_column(String(36), index=True)
     state: Mapped[str] = mapped_column(String(30), default=FlowRunState.ACTIVE)
     active_snapshot_id: Mapped[str | None] = mapped_column(String(36))
     # The database foreign key is added by migration 0015. Keeping the ORM
@@ -53,6 +57,47 @@ class FlowRun(Base):
     lark_folder_url: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class FlowRunSchedule(Base):
+    """A user-managed schedule directory; never an execution itself."""
+
+    __tablename__ = "flow_run_schedules"
+    __table_args__ = (
+        CheckConstraint("run_mode IN ('MANUAL', 'AUTOMATIC')", name="ck_schedule_run_mode"),
+        CheckConstraint("interval_minutes >= 1", name="ck_schedule_interval_positive"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    flow_definition_id: Mapped[str] = mapped_column(String(36), index=True)
+    environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    name: Mapped[str] = mapped_column(String(220))
+    run_mode: Mapped[str] = mapped_column(String(20), index=True)
+    start_node_key: Mapped[str] = mapped_column(String(100))
+    plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    interval_minutes: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class FlowRunScheduleOccurrence(Base):
+    __tablename__ = "flow_run_schedule_occurrences"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "scheduled_for", name="uq_schedule_occurrence_slot"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    schedule_id: Mapped[str] = mapped_column(String(36), index=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trigger_kind: Mapped[str] = mapped_column(String(20), default="SCHEDULED")
+    state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class RunSnapshot(Base):

@@ -1,7 +1,7 @@
 import type {
   AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleWrite,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
@@ -375,6 +375,12 @@ export const api = {
   runFlow: (flowId: string, body: { name?: string; environment_version_id: string }) =>
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
+  flowRunSchedules: () => request<FlowRunSchedule[]>('/flow-run-schedules'),
+  createFlowRunSchedule: (body: FlowRunScheduleWrite) => request<FlowRunSchedule>('/flow-run-schedules', json('POST', body)),
+  setFlowRunScheduleState: (id: string, expected_row_version: number, status: 'ACTIVE' | 'PAUSED') =>
+    request<FlowRunSchedule>(`/flow-run-schedules/${encodeURIComponent(id)}/state`, json('PUT', { expected_row_version, status })),
+  triggerFlowRunSchedule: (id: string) => request<FlowRunSchedule>(`/flow-run-schedules/${encodeURIComponent(id)}/trigger`, json('POST')),
+  deleteFlowRunSchedule: (id: string) => request<void>(`/flow-run-schedules/${encodeURIComponent(id)}`, json('DELETE')),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
   automaticRecords: async (runId: string) =>
     (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`)).map(automaticRecord),

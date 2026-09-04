@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'flows' | 'runs' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -342,6 +342,21 @@ export interface FlowRun extends FlowRunSummary {
   lark_folder_token: string | null; lark_folder_url: string | null;
   progress: { accepted: number; terminal: number; active: number };
   snapshots: RunSnapshot[]; node_runs: NodeRun[]; artifacts: ArtifactVersion[];
+}
+export interface FlowRunScheduleOccurrence {
+  id: string; scheduled_for?: string | null; trigger_kind: 'SCHEDULED' | 'MANUAL';
+  state: 'PENDING' | 'STARTED' | 'FAILED'; error_detail?: string | null; flow_run?: FlowRun | null;
+}
+export interface FlowRunSchedule {
+  id: string; flow_definition_id: string; environment_version_id: string; name: string;
+  run_mode: 'MANUAL' | 'AUTOMATIC'; start_node_key: string; interval_minutes: number;
+  status: 'ACTIVE' | 'PAUSED'; next_run_at?: string | null; row_version: number;
+  created_at: string; updated_at: string; occurrences: FlowRunScheduleOccurrence[];
+}
+export interface FlowRunScheduleWrite {
+  name: string; flow_definition_id: string; environment_version_id: string;
+  run_mode: 'MANUAL' | 'AUTOMATIC'; start_node_key: string; interval_minutes: number;
+  startup_prompt: string; agent_preset: AgentPreset; input_urls: Record<string, string>;
 }
 export interface RunEvent {
   cursor: number; flow_run_id: string; node_run_id?: string | null; attempt_id?: string | null;

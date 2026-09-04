@@ -4,7 +4,7 @@ import type { ViewName } from '../types';
 
 const STORAGE_KEY = 'flowweave-workbench';
 const STORAGE_VERSION = 4;
-const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'credentials', 'models', 'flows', 'runs', 'workbench', 'agent-workbench']);
+const VIEWS = new Set<ViewName>(['nodes', 'capabilities', 'environments', 'credentials', 'models', 'flows', 'runs', 'schedules', 'workbench', 'agent-workbench']);
 
 interface WorkbenchState {
   view: ViewName;
