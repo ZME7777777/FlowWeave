@@ -1934,6 +1934,7 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
         records.append(
             {
                 "id": occurrence.id,
+                "config_version": occurrence.config_version,
                 "scheduled_for": occurrence.scheduled_for.isoformat() if occurrence.scheduled_for else None,
                 "trigger_kind": occurrence.trigger_kind,
                 "state": occurrence.state,
@@ -1951,6 +1952,9 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
         "interval_minutes": schedule.interval_minutes,
         "status": schedule.status,
         "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+        "config_version": schedule.config_version,
+        "last_run_at": schedule.last_run_at.isoformat() if schedule.last_run_at else None,
+        "has_execution": schedule.has_execution,
         "row_version": schedule.row_version,
         "created_at": schedule.created_at.isoformat(),
         "updated_at": schedule.updated_at.isoformat(),
@@ -2073,6 +2077,7 @@ def trigger_flow_run_schedule(db: Session, schedule_id: str) -> dict[str, Any]:
         raise not_found("flow_run_schedule", schedule_id)
     occurrence = FlowRunScheduleOccurrence(
         schedule_id=schedule.id,
+        config_version=schedule.config_version,
         scheduled_for=None,
         trigger_kind="MANUAL",
         state="PENDING",
@@ -2143,6 +2148,7 @@ def scan_due_flow_run_schedules(db: Session) -> int:
         due_at = schedule.next_run_at
         occurrence = FlowRunScheduleOccurrence(
             schedule_id=schedule.id,
+            config_version=schedule.config_version,
             scheduled_for=due_at,
             trigger_kind="SCHEDULED",
             state="PENDING",
@@ -2237,6 +2243,8 @@ def process_flow_run_schedule_occurrence(
             )
         occurrence.flow_run_id = run.id
         occurrence.state = "STARTED"
+        schedule.last_run_at = datetime.now(UTC)
+        schedule.has_execution = True
     except DomainError as exc:
         occurrence.state = "FAILED"
         occurrence.error_detail = f"{exc.code}: {exc.message}"

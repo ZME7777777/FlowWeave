@@ -78,6 +78,11 @@ class FlowRunSchedule(Base):
     interval_minutes: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # A future configuration-update command increments this generation. Each
+    # occurrence records the generation that supplied its frozen plan.
+    config_version: Mapped[int] = mapped_column(Integer, default=1)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    has_execution: Mapped[bool] = mapped_column(default=False)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -91,6 +96,7 @@ class FlowRunScheduleOccurrence(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     schedule_id: Mapped[str] = mapped_column(String(36), index=True)
+    config_version: Mapped[int] = mapped_column(Integer, default=1)
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trigger_kind: Mapped[str] = mapped_column(String(20), default="SCHEDULED")
     state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
