@@ -103,6 +103,100 @@ const runningAutomatic = {
   },
 };
 
+test('step configuration is saved before start and direct launch has its own tab', async ({ page }) => {
+  const noInputAsset = { ...asset, inputs: [] };
+  const stepDefinition = {
+    ...definition,
+    nodes: [{ ...definition.nodes[0], asset: noInputAsset }],
+    edges: [],
+    port_mappings: [],
+  };
+  const stepSnapshot = { ...snapshot, definition: stepDefinition };
+  let currentRun = {
+    ...run,
+    snapshots: [stepSnapshot],
+    active_snapshot_id: stepSnapshot.id,
+    node_runs: [],
+    progress: { accepted: 0, terminal: 0, active: 0 },
+  };
+  let savedBody: Record<string, unknown> | undefined;
+  let startBody: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([stepDefinition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(stepDefinition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/nodes/first/runs` && request.method() === 'POST') {
+      savedBody = request.postDataJSON() as Record<string, unknown>;
+      const savedAttempt = {
+        ...attempt,
+        id: 'saved-attempt',
+        node_run_id: 'saved-node-run',
+        state: 'WAITING_START_CONFIRMATION',
+        runtime_phase: null,
+        startup_prompt: savedBody.startup_prompt,
+      };
+      const savedRecord = {
+        ...nodeRun,
+        id: 'saved-node-run',
+        created_from: 'HUMAN_START',
+        attempts: [savedAttempt],
+      };
+      currentRun = { ...currentRun, node_runs: [savedRecord], progress: { accepted: 0, terminal: 0, active: 1 } };
+      return respond(savedRecord, 201);
+    }
+    if (path === '/api/v1/node-attempts/saved-attempt/confirm-start' && request.method() === 'POST') {
+      startBody = request.postDataJSON() as Record<string, unknown>;
+      const started = { ...currentRun.node_runs[0].attempts[0], state: 'EXECUTING', state_version: 2, runtime_phase: 'STARTING' };
+      currentRun = { ...currentRun, node_runs: [{ ...currentRun.node_runs[0], attempts: [started] }] };
+      return respond(started);
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await expect(page.getByRole('tab', { name: '逐步运行' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: '连续运行' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '直接启动' })).toBeVisible();
+
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).click();
+  const consolePanel = page.locator('.node-console');
+  await expect(consolePanel.locator('.node-console-mode-summary')).toContainText('逐步运行');
+  await consolePanel.getByRole('button', { name: '保存配置' }).click();
+  await expect.poll(() => savedBody).toBeTruthy();
+  expect(savedBody).toEqual(expect.objectContaining({
+    startup_mode: 'PROMPT',
+    startup_prompt: '读取流程输入并完成节点工作。',
+  }));
+  expect(startBody).toBeUndefined();
+
+  const savedRecord = page.locator('.node-record-list > article').filter({ hasText: '测试节点' });
+  await expect(savedRecord).toBeVisible();
+  await savedRecord.getByRole('button', { name: '启动逐步运行 测试节点' }).click();
+  await expect.poll(() => startBody).toEqual(expect.objectContaining({
+    startup_mode: 'PROMPT',
+    prompt: '读取流程输入并完成节点工作。',
+  }));
+
+  await page.getByRole('tab', { name: '直接启动' }).click();
+  await expect(page.locator('.node-record-list > article')).toHaveCount(0);
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).click();
+  await expect(page.locator('.node-console-mode-summary')).toContainText('直接启动');
+  await expect(page.getByRole('button', { name: '启动节点会话' })).toBeVisible();
+});
+
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
   let saveRequests = 0;
   let nodeCopyRequests = 0;
@@ -189,12 +283,12 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(page.locator('.run-main .run-title')).toHaveCount(0);
   await expect(page.locator('.run-main h1')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '返回运行列表' })).toBeVisible();
-  await expect(graph).toContainText('未选择运行记录，当前显示中性流程定义');
+  await expect(graph).toContainText('未选择逐步运行记录，当前显示中性流程定义');
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
   await expect(graph.getByText('运行 1 次', { exact: true })).toHaveCount(0);
-  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
 
-  const manualRecord = page.locator('.timeline button').filter({ hasText: '测试节点' });
+  const manualRecord = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' });
   await manualRecord.click();
   await expect(graph.locator('.run-graph-node.current')).toContainText('当前激活 · 运行 1 次');
   const selectedGraphNode = graph.locator('.run-graph-node.snapshot-selected');
@@ -211,51 +305,45 @@ test('run projection stays neutral until record selection and automatic save rep
   await page.mouse.move(beforeDrag!.x + 190, beforeDrag!.y + 95, { steps: 8 });
   await page.mouse.up();
   await expect.poll(async () => (await draggableNode.boundingBox())?.x ?? 0).toBeGreaterThan(beforeDrag!.x + 50);
-  await expect(page.locator('.timeline button.active')).toHaveCount(1);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(1);
   await manualRecord.click();
-  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 
   await manualRecord.click();
   await page.locator('.run-rail > h2').click();
-  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 
   await manualRecord.click();
   await page.locator('.react-flow__pane').click({ position: { x: 20, y: 20 } });
-  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 
   await manualRecord.click();
   await page.getByRole('button', { name: '拷贝', exact: true }).click();
-  const manualCopyDialog = page.getByRole('dialog', { name: '拷贝单节点运行记录' });
+  const manualCopyDialog = page.getByRole('dialog', { name: '拷贝逐步运行记录' });
   await expect(manualCopyDialog.getByRole('textbox', { name: '副本名称' })).toHaveValue('测试节点 · 副本');
   await manualCopyDialog.getByRole('textbox', { name: '副本名称' }).fill('测试节点 · 命名副本');
   await manualCopyDialog.getByRole('button', { name: '确认拷贝' }).click();
   await expect.poll(() => nodeCopyRequests).toBe(1);
   expect(nodeCopyBody).toEqual({ name: '测试节点 · 命名副本' });
-  await expect(page.locator('.timeline button')).toHaveCount(2);
-  await expect(page.locator('.timeline button').filter({ hasText: '测试节点 · 命名副本' })).toBeVisible();
+  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(2);
+  await expect(page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点 · 命名副本' })).toBeVisible();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
 
-  await page.getByRole('tab', { name: '自动运行' }).click();
-  await expect(graph).toContainText('未选择自动运行记录，当前显示中性流程定义；点击节点可新建单节点运行。');
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await expect(graph).toContainText('未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。');
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).first().click();
-  const neutralNodeConsole = page.locator('.run-side-panel .node-console');
-  await expect(neutralNodeConsole).toBeVisible();
-  await expect(neutralNodeConsole).toHaveAttribute('data-testid', 'node-configuration-panel');
-  await expect(neutralNodeConsole.getByRole('button', { name: /提示词执行/ })).toBeVisible();
-  await expect(neutralNodeConsole.getByRole('button', { name: /会话启动/ })).toBeEnabled();
-  await expect(neutralNodeConsole.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
 
   const automaticRecord = page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' });
   await automaticRecord.click();
   const automaticEditor = page.locator('.automatic-record-editor');
   await expect(automaticEditor).toBeVisible();
   await expect(automaticEditor).toHaveAttribute('data-testid', 'node-configuration-panel');
-  await expect(automaticEditor.getByRole('button', { name: /提示词执行/ })).toHaveClass(/active/);
-  await expect(automaticEditor.getByRole('button', { name: /会话启动/ })).toBeDisabled();
+  await expect(automaticEditor.locator('.node-console-mode-summary')).toContainText('连续运行');
   await expect(automaticEditor.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
   await expect(automaticEditor.getByRole('heading', { name: '输入' })).toBeVisible();
   await expect(automaticEditor.getByRole('link', { name: 'https://example.com/default-input' })).toBeVisible();
@@ -346,7 +434,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(page.getByRole('alert')).toContainText('保存失败：当前自动运行记录已启动，不能继续修改。');
 
   await page.getByRole('button', { name: '拷贝', exact: true }).click();
-  const automaticCopyDialog = page.getByRole('dialog', { name: '拷贝自动运行记录' });
+  const automaticCopyDialog = page.getByRole('dialog', { name: '拷贝连续运行记录' });
   await expect(automaticCopyDialog.getByRole('textbox', { name: '副本名称' })).toHaveValue('自动记录 1 · 副本');
   await automaticCopyDialog.getByRole('textbox', { name: '副本名称' }).fill('自动记录 · 命名副本');
   await automaticCopyDialog.getByRole('button', { name: '确认拷贝' }).click();
@@ -391,7 +479,8 @@ test('FR-130 running automatic records show execution facts and chat attempts su
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
 
-  await page.locator('.timeline button').filter({ hasText: '测试节点' }).click();
+  await page.getByRole('tab', { name: '直接启动' }).click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
   const manualPanel = page.locator('.attempt-control');
   await expect(manualPanel.getByRole('heading', { name: '提交会话产出' })).toBeVisible();
   await expect(manualPanel).toContainText('会话回复不会自动成为节点输出');
@@ -403,11 +492,11 @@ test('FR-130 running automatic records show execution facts and chat attempts su
     outputs: { output_1: { artifact_type: 'URL', uri: 'https://example.com/result' } },
   });
 
-  await page.getByRole('tab', { name: '自动运行' }).click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   await expect(page.locator('.automatic-record-editor')).toHaveCount(0);
   await expect(page.getByTestId('attempt-state')).toHaveText('END_BLOCKED');
-  await expect(page.locator('.attempt-control')).toContainText('自动运行需要人工处理');
+  await expect(page.locator('.attempt-control')).toContainText('连续运行需要人工处理');
   await expect(page.locator('.attempt-control')).toContainText('流转 Agent 选择了未授权节点');
   await expect(page.locator('.run-graph-node.failed')).toContainText('完成条件未通过');
   await expect(page.locator('.run-graph-node.automatic-locked')).toContainText('测试节点2');
@@ -461,7 +550,7 @@ test('returning from an automatic node session preserves the selected automatic 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
-  await page.getByRole('tab', { name: '自动运行' }).click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
   await page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' }).click();
   const attemptPanel = page.locator('.attempt-control');
   await expect(attemptPanel).toContainText('END_BLOCKED');
@@ -474,7 +563,7 @@ test('returning from an automatic node session preserves the selected automatic 
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${conversation.id}$`));
   await page.getByRole('button', { name: '返回节点执行' }).click();
 
-  await expect(page.getByRole('tab', { name: '自动运行' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: '连续运行' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1');
   await expect(page.locator('.attempt-control')).toContainText('END_BLOCKED');
 });
@@ -521,7 +610,7 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
   await expect(deleteButton).toBeDisabled();
   await expect(page.getByRole('button', { name: '取消整个流程' })).toHaveCount(0);
 
-  await page.locator('.timeline button').filter({ hasText: '测试节点' }).click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
   await expect(deleteButton).toBeDisabled();
   await page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' }).click();
   const cancelDialog = page.getByRole('alertdialog');
@@ -529,18 +618,18 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
   await cancelDialog.getByRole('button', { name: '取消本轮执行' }).click();
 
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
-  await expect(page.locator('.timeline button.active')).toHaveCount(0);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
   await expect(page.getByTestId('flow-run-state')).toHaveText('运行中');
-  await expect(page.locator('.run-graph')).toContainText('未选择运行记录，当前显示中性流程定义');
+  await expect(page.locator('.run-graph')).toContainText('未选择逐步运行记录，当前显示中性流程定义');
 
-  await page.locator('.timeline button').filter({ hasText: '测试节点' }).click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
   await expect(deleteButton).toBeEnabled();
   await deleteButton.click();
   const deleteDialog = page.getByRole('alertdialog');
   await expect(deleteDialog).toContainText('FlowRun、共享 Runtime 和 OpenHands 状态继续保留');
   await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
 
-  await expect(page.locator('.timeline button')).toHaveCount(0);
+  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
   await expect(page.locator('.run-side-panel .node-console')).toBeVisible();
@@ -571,7 +660,8 @@ test('unstarted chat records can be deleted without a cancellation round trip', 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
-  await page.locator('.timeline button').filter({ hasText: '测试节点' }).click();
+  await page.getByRole('tab', { name: '直接启动' }).click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
 
   const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
   await expect(deleteButton).toBeEnabled();
@@ -580,21 +670,21 @@ test('unstarted chat records can be deleted without a cancellation round trip', 
   await expect(deleteDialog).toContainText('FlowRun、共享 Runtime 和 OpenHands 状态继续保留');
   await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
 
-  await expect(page.locator('.timeline button')).toHaveCount(0);
+  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 });
 
 test('manual and automatic records support modifier selection for deletion while copy uses the last click', async ({ page }) => {
   const manualRecords = [
     {
-      ...chatNodeRun, id: 'manual-record-1', name: '手动记录 1', sequence_no: 1,
-      attempts: [{ ...chatAttempt, id: 'manual-attempt-1', node_run_id: 'manual-record-1' }],
+      ...nodeRun, id: 'manual-record-1', name: '手动记录 1', sequence_no: 1,
+      attempts: [{ ...attempt, id: 'manual-attempt-1', node_run_id: 'manual-record-1', state: 'WAITING_START_CONFIRMATION', runtime_phase: null }],
     },
     {
-      ...chatNodeRun, id: 'manual-record-2', name: '手动记录 2', sequence_no: 2,
-      attempts: [{ ...chatAttempt, id: 'manual-attempt-2', node_run_id: 'manual-record-2' }],
+      ...nodeRun, id: 'manual-record-2', name: '手动记录 2', sequence_no: 2,
+      attempts: [{ ...attempt, id: 'manual-attempt-2', node_run_id: 'manual-record-2', state: 'WAITING_START_CONFIRMATION', runtime_phase: null }],
     },
   ];
-  let currentRun = { ...chatRun, node_runs: manualRecords };
+  let currentRun = { ...run, node_runs: manualRecords };
   let automaticRecords = [
     { ...frozenAutomaticBase, id: 'automatic-record-1', name: '自动记录 1' },
     { ...frozenAutomaticBase, id: 'automatic-record-2', name: '自动记录 2', run_no: 3 },
@@ -633,11 +723,11 @@ test('manual and automatic records support modifier selection for deletion while
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
 
-  const manualFirst = page.locator('.timeline button').filter({ hasText: '手动记录 1' });
-  const manualSecond = page.locator('.timeline button').filter({ hasText: '手动记录 2' });
+  const manualFirst = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '手动记录 1' });
+  const manualSecond = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '手动记录 2' });
   await manualFirst.click();
   await manualSecond.click({ modifiers: ['Meta'] });
-  await expect(page.locator('.timeline button.active')).toHaveCount(2);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(2);
   const manualDelete = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除 (2)' });
   await expect(manualDelete).toBeEnabled();
   await manualDelete.click();
@@ -645,16 +735,16 @@ test('manual and automatic records support modifier selection for deletion while
   await expect(manualDialog).toContainText('2 条节点执行记录与产物将被永久删除');
   await manualDialog.getByRole('button', { name: '删除', exact: true }).click();
   await expect.poll(() => deletedManualIds).toEqual(['manual-record-1', 'manual-record-2']);
-  await expect(page.locator('.timeline button')).toHaveCount(0);
+  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 
-  await page.getByRole('tab', { name: '自动运行' }).click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
   const automaticFirst = page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' });
   const automaticSecond = page.locator('.automatic-record-select').filter({ hasText: '自动记录 2' });
   await automaticFirst.click();
   await automaticSecond.click({ modifiers: ['Shift'] });
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(2);
   await page.getByRole('button', { name: '拷贝', exact: true }).click();
-  const copyDialog = page.getByRole('dialog', { name: '拷贝自动运行记录' });
+  const copyDialog = page.getByRole('dialog', { name: '拷贝连续运行记录' });
   await expect(copyDialog.getByRole('textbox', { name: '副本名称' })).toHaveValue('自动记录 2 · 副本');
   await copyDialog.getByRole('button', { name: '取消' }).click();
   const automaticDelete = page.locator('.automatic-record-toolbar').getByRole('button', { name: '删除 (2)' });

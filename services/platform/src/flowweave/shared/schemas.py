@@ -452,6 +452,7 @@ class NodeRunCopyWrite(ApiModel):
 
 class NodeRunStart(ApiModel):
     startup_mode: Literal["PROMPT", "CHAT"] = "PROMPT"
+    startup_prompt: str | None = Field(default=None, max_length=200_000)
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)
     input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
     gates: list[GateWrite] = Field(default_factory=_empty_gates)

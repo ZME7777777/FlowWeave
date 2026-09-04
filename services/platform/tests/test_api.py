@@ -773,6 +773,81 @@ def test_human_cannot_create_a_second_node_run_in_one_manual_group(client, skill
     assert matching[0]["attempts"][0]["attempt_no"] == 1
 
 
+def test_saved_step_record_starts_with_frozen_prompt_and_auto_advances_after_gates(
+    client, skill_capability
+):
+    asset = create_asset(client, skill_capability, name="逐步运行节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "逐步运行配置后启动",
+            "environment_version_id": client.environment_version_id,
+        },
+    ).json()
+    artifact = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.test/step-run-input",
+        },
+    ).json()
+    configured = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(
+            artifact_ids={"prd": artifact["id"]},
+            startup_prompt="使用已保存的逐步运行配置",
+        ),
+    )
+    assert configured.status_code == 201, configured.text
+    configured_record = configured.json()
+    configured_attempt = configured_record["attempts"][0]
+    assert configured_attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert configured_attempt["startup_prompt"] == "使用已保存的逐步运行配置"
+
+    direct = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"startup_mode": "CHAT"},
+    )
+    assert direct.status_code == 201, direct.text
+    assert direct.json()["id"] != configured_record["id"]
+    assert direct.json()["attempts"][0]["startup_mode"] == "CHAT"
+
+    changed = client.post(
+        f"/api/v1/node-attempts/{configured_attempt['id']}/confirm-start",
+        json={
+            "expected_state_version": configured_attempt["state_version"],
+            "startup_mode": "PROMPT",
+            "prompt": "试图覆盖保存配置",
+        },
+        headers={"Idempotency-Key": "start-saved-step-with-changed-prompt"},
+    )
+    assert changed.status_code == 409, changed.text
+    assert changed.json()["error"]["code"] == "START_CONFIGURATION_IMMUTABLE"
+
+    started = client.post(
+        f"/api/v1/node-attempts/{configured_attempt['id']}/confirm-start",
+        json={
+            "expected_state_version": configured_attempt["state_version"],
+            "startup_mode": "PROMPT",
+            "prompt": "使用已保存的逐步运行配置",
+        },
+        headers={"Idempotency-Key": "start-saved-step"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "ACCEPTED"
+
+    detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
+    assert detail["node_runs"][0]["state"] == "ACCEPTED"
+    downstream = next(
+        record
+        for record in detail["node_runs"]
+        if record["flow_node_snapshot_key"] == "design_b"
+    )
+    assert downstream["attempts"][0]["state"] == "WAITING_INPUT"
+
+
 def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_execution(
     client, db_session_factory, skill_capability
 ):

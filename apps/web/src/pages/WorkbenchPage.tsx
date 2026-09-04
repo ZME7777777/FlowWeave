@@ -20,7 +20,7 @@ const ATTEMPT_STATE_LABELS: Record<AttemptState, string> = {
   WAITING_INPUT: '等待补充输入',
   START_GATES: '正在检查启动条件',
   START_BLOCKED: '启动条件未通过',
-  WAITING_START_CONFIRMATION: '等待确认开始',
+  WAITING_START_CONFIRMATION: '待启动',
   EXECUTING: '正在执行',
   WAITING_HUMAN: '等待人工回复',
   WAITING_CONFIRMATION: '等待工具批次确认',
@@ -96,7 +96,7 @@ function openNodeSession(
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
-type WorkbenchMode = 'MANUAL' | 'AUTOMATIC';
+type WorkbenchMode = 'MANUAL' | 'AUTOMATIC' | 'DIRECT';
 
 type CopyTarget =
   | { mode: 'MANUAL'; record: NodeRun }
@@ -111,20 +111,33 @@ function rangeIds<T extends { id: string }>(items: T[], fromId: string, toId: st
   return items.slice(Math.min(from, to), Math.max(from, to) + 1).map(item => item.id);
 }
 
-function RunRail({ run, mode, automaticRecords, automaticError, selected, manualSelectedIds, automaticSelectedIds, manualSelectionDeletable, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onDeleteNode, onCopyNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onStartAutomatic }: {
-  run: FlowRun; mode: WorkbenchMode; automaticRecords: FlowRunAutomaticRecord[]; selected?: string;
+const isDirectNodeRun = (record: NodeRun) => {
+  const attempt = record.attempts.at(-1);
+  return record.created_from === 'HUMAN_CHAT' || attempt?.startup_mode === 'CHAT';
+};
+
+const isUnconfiguredStepRecord = (record: NodeRun) => {
+  const attempt = record.attempts.at(-1);
+  return record.created_from === 'FLOW_TRANSITION'
+    && attempt?.state === 'WAITING_INPUT'
+    && attempt.startup_prompt == null;
+};
+
+function RunRail({ run, mode, nodeRecords, automaticRecords, automaticError, selected, manualSelectedIds, automaticSelectedIds, manualSelectionDeletable, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onDeleteNode, onCopyNode, onStartNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onStartAutomatic }: {
+  run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; automaticRecords: FlowRunAutomaticRecord[]; selected?: string;
   automaticError?: string; manualSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualSelectionDeletable: boolean; manualBusyId?: string;
   selectedAutomaticId?: string; automaticBusyId?: string; onModeChange: (mode: WorkbenchMode) => void;
-  onSelect: (id: string, modifiers: SelectionModifiers) => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
+  onSelect: (id: string, modifiers: SelectionModifiers) => void; onDeleteNode: () => void; onStartNode: (record: NodeRun) => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyNode: () => void; onCopyAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecord) => void;
 }) {
   const active = run.node_runs.filter(item => item.state === 'ACTIVE').length;
   const manualCount = manualSelectedIds.size;
   const automaticCount = automaticSelectedIds.size;
   const modifiers = (event: ReactMouseEvent): SelectionModifiers => ({ extend: event.metaKey || event.ctrlKey, range: event.shiftKey });
-  const manualToolbar = <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="secondary" disabled={!selected || Boolean(manualBusyId)} onClick={onCopyNode}><Copy size={13}/>{manualBusyId ? '拷贝中…' : '拷贝'}</button><button type="button" className="danger" title={manualCount && !manualSelectionDeletable ? '运行中的记录请先在右侧取消本轮节点执行，待运行时停止后再删除' : undefined} disabled={!manualSelectionDeletable || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div>;
-  return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}><span className="eyebrow">流程运行</span><h2>{run.name}</h2><span data-testid="flow-run-state" className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><div className="run-progress"><span>{run.progress.accepted} 已验收</span><span>{run.progress.terminal} 已结束</span><span>{active} 进行中</span></div><nav className="inner-run-mode-tabs" role="tablist" aria-label="当前流程运行方式"><button type="button" role="tab" aria-selected={mode === 'MANUAL'} className={mode === 'MANUAL' ? 'active' : ''} onClick={() => onModeChange('MANUAL')}>单节点运行</button><button type="button" role="tab" aria-selected={mode === 'AUTOMATIC'} className={mode === 'AUTOMATIC' ? 'active' : ''} onClick={() => onModeChange('AUTOMATIC')}>自动运行</button></nav>{mode === 'MANUAL' ? <>{manualToolbar}<div className="run-history-title"><b>节点执行记录</b><small>Command／Shift 可多选后删除；拷贝只作用于最后点击的记录。</small></div><div className="timeline">{run.node_runs.map(item => <button type="button" key={item.id} className={manualSelectedIds.has(item.id) ? 'active' : ''} aria-pressed={manualSelectedIds.has(item.id)} onClick={event => onSelect(item.id, modifiers(event))}><i className={String(attemptState(item)).toLowerCase()}/><span><b>{nodeRunName(run, item)}</b><small>第 {nodeVisitNumber(run, item)} 次执行 · {attemptStateLabel(item)}</small></span></button>)}</div></> : <><div className="automatic-record-toolbar"><button type="button" className="secondary" disabled={!selectedAutomaticId || Boolean(automaticBusyId)} onClick={onCopyAutomatic}><Copy size={13}/>{automaticBusyId ? '拷贝中…' : '拷贝'}</button><button type="button" className="danger" disabled={!automaticCount || Boolean(automaticBusyId)} onClick={onDeleteAutomatic}><Trash2 size={13}/>{automaticCount > 1 ? `删除 (${automaticCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(automaticBusyId)} onClick={onCreateAutomatic}><Plus size={13}/>新增</button></div><div className="run-history-title"><b>自动运行记录</b><small>Command／Shift 可多选后删除；拷贝只作用于最后点击的记录。</small></div><div className="automatic-record-list">{automaticRecords.map(record => <article key={record.id} className={automaticSelectedIds.has(record.id) ? 'active' : ''}><button type="button" className="automatic-record-select" aria-pressed={automaticSelectedIds.has(record.id)} onClick={event => onSelectAutomatic(record.id, modifiers(event))}><span><b>{record.name}</b><small>{record.state === 'DRAFT' ? record.readiness.ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state}</small></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动自动运行 ${record.name}`} disabled={!record.readiness.ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>)}{automaticError ? <p className="error">自动运行记录加载失败：{automaticError}</p> : !automaticRecords.length && <p>暂无自动运行记录。</p>}</div></>}</aside>;
+  const manualToolbar = <div className="automatic-record-toolbar manual-record-toolbar">{mode === 'MANUAL' && <button type="button" className="secondary" disabled={!selected || Boolean(manualBusyId)} onClick={onCopyNode}><Copy size={13}/>{manualBusyId ? '处理中…' : '拷贝'}</button>}<button type="button" className="danger" title={manualCount && !manualSelectionDeletable ? '运行中的记录请先在右侧取消本轮节点执行，待运行时停止后再删除' : undefined} disabled={!manualSelectionDeletable || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div>;
+  const nodeRecordLabel = mode === 'DIRECT' ? '直接启动记录' : '逐步运行记录';
+  return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}><span className="eyebrow">流程运行</span><h2>{run.name}</h2><span data-testid="flow-run-state" className={`run-state ${run.state.toLowerCase()}`}>{FLOW_STATE_LABELS[run.state] ?? run.state}</span><div className="run-progress"><span>{run.progress.accepted} 已验收</span><span>{run.progress.terminal} 已结束</span><span>{active} 进行中</span></div><nav className="inner-run-mode-tabs" role="tablist" aria-label="当前流程运行方式"><button type="button" role="tab" aria-selected={mode === 'MANUAL'} className={mode === 'MANUAL' ? 'active' : ''} onClick={() => onModeChange('MANUAL')}>逐步运行</button><button type="button" role="tab" aria-selected={mode === 'AUTOMATIC'} className={mode === 'AUTOMATIC' ? 'active' : ''} onClick={() => onModeChange('AUTOMATIC')}>连续运行</button><button type="button" role="tab" aria-selected={mode === 'DIRECT'} className={mode === 'DIRECT' ? 'active' : ''} onClick={() => onModeChange('DIRECT')}>直接启动</button></nav>{mode !== 'AUTOMATIC' ? <>{manualToolbar}<div className="run-history-title"><b>{nodeRecordLabel}</b><small>Command／Shift 可多选后删除；{mode === 'MANUAL' ? '拷贝只作用于最后点击的记录。' : '会话方式从右侧直接启动。'}</small></div><div className="automatic-record-list node-record-list">{nodeRecords.map(item => { const latest = item.attempts.at(-1); return <article key={item.id} className={manualSelectedIds.has(item.id) ? 'active' : ''}><button type="button" className="automatic-record-select" aria-pressed={manualSelectedIds.has(item.id)} onClick={event => onSelect(item.id, modifiers(event))}><i className={String(attemptState(item)).toLowerCase()}/><span><b>{nodeRunName(run, item)}</b><small>第 {nodeVisitNumber({ ...run, node_runs: nodeRecords }, item)} 次执行 · {attemptStateLabel(item)}</small></span></button>{mode === 'MANUAL' && latest?.state === 'WAITING_START_CONFIRMATION' && <button type="button" className="automatic-record-start" aria-label={`启动逐步运行 ${nodeRunName(run, item)}`} disabled={Boolean(manualBusyId)} onClick={() => onStartNode(item)}><Play size={12}/>{manualBusyId === item.id ? '启动中…' : '启动'}</button>}</article>; })}{!nodeRecords.length && <p>暂无{nodeRecordLabel}。</p>}</div></> : <><div className="automatic-record-toolbar"><button type="button" className="secondary" disabled={!selectedAutomaticId || Boolean(automaticBusyId)} onClick={onCopyAutomatic}><Copy size={13}/>{automaticBusyId ? '处理中…' : '拷贝'}</button><button type="button" className="danger" disabled={!automaticCount || Boolean(automaticBusyId)} onClick={onDeleteAutomatic}><Trash2 size={13}/>{automaticCount > 1 ? `删除 (${automaticCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(automaticBusyId)} onClick={onCreateAutomatic}><Plus size={13}/>新增</button></div><div className="run-history-title"><b>连续运行记录</b><small>Command／Shift 可多选后删除；拷贝只作用于最后点击的记录。</small></div><div className="automatic-record-list">{automaticRecords.map(record => <article key={record.id} className={automaticSelectedIds.has(record.id) ? 'active' : ''}><button type="button" className="automatic-record-select" aria-pressed={automaticSelectedIds.has(record.id)} onClick={event => onSelectAutomatic(record.id, modifiers(event))}><span><b>{record.name}</b><small>{record.state === 'DRAFT' ? record.readiness.ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state}</small></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动连续运行 ${record.name}`} disabled={!record.readiness.ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>)}{automaticError ? <p className="error">连续运行记录加载失败：{automaticError}</p> : !automaticRecords.length && <p>暂无连续运行记录。</p>}</div></>}</aside>;
 }
 
 function isInteractiveClick(target: EventTarget | null): boolean {
@@ -264,7 +277,7 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
     })));
   }, [graphNodes, setNodes]);
   const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}`;
-  const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成自动运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
+  const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成连续运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
   return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
 function GateList({ evaluations, policies = [], onViewDetails }: { evaluations: GateEvaluation[]; policies?: GatePolicy[]; onViewDetails?: (evaluation: GateEvaluation) => void }) {
@@ -337,17 +350,6 @@ function artifactLabel(item: ArtifactVersion) {
 
 function artifactHref(item: ArtifactVersion, download = false) {
   return item.uri || artifactContentUrl(item.id, download);
-}
-
-async function waitForStartGate(runId: string, initial: NodeRun): Promise<NodeRun> {
-  let current = initial;
-  for (let poll = 0; poll < 60; poll += 1) {
-    const attempt = current.attempts.at(-1);
-    if (!attempt || !['WAITING_INPUT', 'START_GATES'].includes(attempt.state)) return current;
-    await new Promise(resolve => window.setTimeout(resolve, 250));
-    current = await api.nodeRun(runId, current.id);
-  }
-  return current;
 }
 
 type InputContract = SnapshotFlowNode['asset']['inputs'][number];
@@ -623,6 +625,7 @@ type NodeConfigurationPanelProps = {
   feedback?: ReactNode;
   belowContent?: ReactNode;
   chatEnabled?: boolean;
+  fixedModeLabel?: string;
   className?: string;
 };
 
@@ -647,16 +650,16 @@ function NodeConfigurationPanel({
   feedback,
   belowContent,
   chatEnabled = true,
+  fixedModeLabel,
   className,
 }: NodeConfigurationPanelProps) {
   const panelClassName = ['action-panel', 'node-console', className].filter(Boolean).join(' ');
-  const chatDisabledTitle = chatEnabled ? undefined : '自动运行记录只支持提示词执行';
-  return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{feedback}<div className="node-console-mode-bar"><nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
+  const chatDisabledTitle = chatEnabled ? undefined : '连续运行记录只支持提示词执行';
+  return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{feedback}<div className="node-console-mode-bar">{fixedModeLabel ? <div className="node-console-mode-summary"><b>{fixedModeLabel}</b><small>{mode === 'CHAT' ? '人工直接进入节点会话' : '保存配置后从左侧记录启动'}</small></div> : <nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>}{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
 }
 
-function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
+function NodeConsole({ run, node, startupMode, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; startupMode: 'PROMPT' | 'CHAT'; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
-  const [topTab, setTopTab] = useState<'PROMPT' | 'CHAT'>('PROMPT');
   const [promptTab, setPromptTab] = useState<PromptConfigurationTab>('inputs');
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
@@ -664,40 +667,36 @@ function NodeConsole({ run, node, refresh, onActivated, onSelectExecution }: { r
   const [inputArtifacts, setInputArtifacts] = useState<ArtifactVersion[]>(run.artifacts);
   const [gates, setGates] = useState<GatePolicy[]>([]);
   const [agentPreset, setAgentPreset] = useState<AgentPreset>({ capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' });
-  const [mode, setMode] = useState<'PROMPT' | 'CHAT'>('PROMPT');
   const [prompt, setPrompt] = useState(node.asset.executor?.startup_prompt ?? '');
-  useEffect(() => { setTopTab('PROMPT'); setPromptTab('inputs'); setInputDialogOpen(false); setPromptDialogOpen(false); setBindings({}); setGates([]); setAgentPreset({ capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' }); setMode('PROMPT'); setPrompt(node.asset.executor?.startup_prompt ?? ''); }, [node.instance_key, node.asset.executor?.startup_prompt, node.asset.executor?.context_prompt]);
+  useEffect(() => { setPromptTab('inputs'); setInputDialogOpen(false); setPromptDialogOpen(false); setBindings({}); setGates([]); setAgentPreset({ capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' }); setPrompt(node.asset.executor?.startup_prompt ?? ''); }, [node.instance_key, node.asset.executor?.startup_prompt, node.asset.executor?.context_prompt, startupMode]);
   useEffect(() => setInputArtifacts(current => mergeArtifacts(current, run.artifacts)), [run.artifacts]);
   const mutation = useMutation({
     mutationFn: async (nextBindings: Record<string, string>) => {
-      const sessionOnly = mode === 'CHAT';
+      const sessionOnly = startupMode === 'CHAT';
       const activated = await api.activateNode(
         run.id,
         node.instance_key,
         sessionOnly ? {} : nextBindings,
         sessionOnly ? [] : gates,
         {},
-        mode,
+        startupMode,
         sessionOnly ? undefined : agentPreset,
+        sessionOnly ? undefined : prompt,
       );
       if (sessionOnly) return { created: activated, openDraft: true };
-      const created = await waitForStartGate(run.id, activated);
-      const attempt = created.attempts.at(-1);
-      if (!attempt || attempt.state !== 'WAITING_START_CONFIRMATION') return { created };
-      const started = await api.confirmStart(attempt.id, attempt.state_version, { startup_mode: 'PROMPT', prompt });
-      return { created: { ...created, attempts: created.attempts.map(item => item.id === started.id ? started : item) } };
+      return { created: activated };
     },
     onSuccess: result => { onActivated(result.created); refresh(); if (result.openDraft) { const attempt = result.created.attempts.at(-1); if (attempt) openNodeSession(run.id, result.created.id, attempt.id); } },
   });
-  const invalidMode = mode === 'PROMPT' && !prompt.trim();
-  const invalidGates = mode === 'PROMPT' && gates.some(gate => !String(gate.config.prompt || '').trim());
+  const invalidMode = startupMode === 'PROMPT' && !prompt.trim();
+  const invalidGates = startupMode === 'PROMPT' && gates.some(gate => !String(gate.config.prompt || '').trim());
   const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
-  const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key);
+  const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key && isDirectNodeRun(item) === (startupMode === 'CHAT'));
   const visits = nodeRuns.length;
-  const selectTopTab = (next: 'PROMPT' | 'CHAT') => { setTopTab(next); setMode(next); };
-  const runAction = <button className="primary node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => mode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : mode === 'PROMPT' && missingInputs ? '请先填写节点输入' : mode === 'CHAT' ? '启动节点会话' : '开始节点执行'}</button>;
-  const history = <NodeExecutionHistory run={run} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={topTab} onModeChange={selectTopTab} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<><InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="本次执行创建后会冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  const runAction = <button className="primary node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
+  const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
+  const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
+  return <><NodeConfigurationPanel title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<><InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="保存配置后会随记录冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string } }) {
@@ -763,14 +762,14 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   ].includes(attempt.error_code);
   return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={inputArtifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
-    <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>
+    {attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? <section className="terminal-run-panel"><h4>配置已保存</h4><p>请在左侧逐步运行记录中点击“启动”。启动后才会创建并执行节点 Agent 会话。</p></section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>}
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
     {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>运行已进入只读终态，历史记录继续保留。流程级操作位于上方“流程运行态管理”。</p></section> : <>
       {attempt.startup_mode === 'CHAT' && attempt.state === 'WAITING_START_CONFIRMATION' && <section className="manual-session-outputs"><h4>提交会话产出</h4><p>会话回复不会自动成为节点输出。请按冻结输出合同填写 URL 或共享工作区文件路径，平台校验并复制为候选产物后再运行完成门禁。</p>{manualOutputFields.map(field => <label key={field.field_key}>{field.display_name || field.field_key} · {field.data_type}<input aria-label={`提交输出 ${field.display_name || field.field_key}`} value={manualOutputs[field.field_key] ?? ''} onChange={event => setManualOutputs(current => ({ ...current, [field.field_key]: event.target.value }))} placeholder={field.data_type === 'FILE' ? '/runtime/workspace/project/...' : 'https://...'}/></label>)}<button className="primary full" disabled={!manualOutputsReady || mutation.isPending} onClick={() => act('manual-outputs', Object.fromEntries(manualOutputFields.map(field => [field.field_key, field.data_type === 'FILE' ? { artifact_type: 'FILE' as const, path: manualOutputs[field.field_key].trim() } : { artifact_type: 'URL' as const, uri: manualOutputs[field.field_key].trim() }]))) }>{mutation.isPending ? '提交中…' : '提交候选输出并运行完成门禁'}</button></section>}
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && (automaticAttempt ? <section className="terminal-run-panel"><h4>等待平台自动流转</h4><p>完成门禁已通过。平台正在按冻结拓扑和端口映射验收产物并选择后继节点，无需进入会话推动。</p></section> : <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>完成节点并流转</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>)}
-      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{runtimeFailed ? '节点执行失败' : automaticAttempt ? '自动运行需要人工处理' : '门禁未通过'}</h4><p>{attempt.error_detail || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。请检查模型配置和运行日志后重新执行节点。' : '请查看门禁结果，选择人工接受风险，或让平台 Fork 主会话后自动返工。')}</p>{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && <button className="secondary full" onClick={() => act('retry')}>重试当前阶段</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: 'Fork 会话并自动返工？', message: '平台会从主执行会话的完成边界创建新的原生 Fork，并把所有未通过门禁的结论发送给返工 Agent。旧轮次、产物和失败记录会保留；新轮次完成后会重新冻结输出并执行完成门禁。', confirmLabel: 'Fork 并开始返工' }).then(ok => ok && act('remediate-gate-failure'))}>Fork 会话并自动返工</button><label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL/ERROR 将原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
+      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{runtimeFailed ? '节点执行失败' : automaticAttempt ? '连续运行需要人工处理' : '门禁未通过'}</h4><p>{attempt.error_detail || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。请检查模型配置和运行日志后重新执行节点。' : '请查看门禁结果，选择人工接受风险，或让平台 Fork 主会话后自动返工。')}</p>{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && <button className="secondary full" onClick={() => act('retry')}>重试当前阶段</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: 'Fork 会话并自动返工？', message: '平台会从主执行会话的完成边界创建新的原生 Fork，并把所有未通过门禁的结论发送给返工 Agent。旧轮次、产物和失败记录会保留；新轮次完成后会重新冻结输出并执行完成门禁。', confirmLabel: 'Fork 并开始返工' }).then(ok => ok && act('remediate-gate-failure'))}>Fork 会话并自动返工</button><label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL/ERROR 将原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
       {!automaticAttempt && !attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
     </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies} onViewDetails={setGateConversation}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setInputDialogOpen(false); setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); act('bind', nextBindings); }}/>} {gateConversation && <GateDetailDialog attemptId={attempt.id} evaluation={gateConversation} onClose={() => setGateConversation(undefined)}/>}</aside>;
 }
@@ -810,12 +809,12 @@ function AutomaticRecordDialog({ run, onClose, onCreated }: { run: FlowRun; onCl
     onSuccess: onCreated,
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增自动运行"><header><div><span className="eyebrow">AUTOMATIC RUN</span><h2>新增自动运行</h2><p>记录归属于当前流程运行，并使用当前冻结快照与运行环境。</p></div><button type="button" className="ghost" aria-label="关闭新增自动运行" onClick={onClose}><X size={17}/></button></header><label>名称<input aria-label="自动运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 自动运行`}/></label><label>起始节点<select aria-label="自动运行起始节点" value={startNodeKey} onChange={event => setStartNodeKey(event.target.value)}>{nodes.map(node => <option key={node.instance_key} value={node.instance_key}>{node.alias || node.asset.name}</option>)}</select></label>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增连续运行"><header><div><span className="eyebrow">AUTOMATIC RUN</span><h2>新增连续运行</h2><p>记录归属于当前流程运行，并使用当前冻结快照与运行环境。</p></div><button type="button" className="ghost" aria-label="关闭新增连续运行" onClick={onClose}><X size={17}/></button></header><label>名称<input aria-label="连续运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 连续运行`}/></label><label>起始节点<select aria-label="连续运行起始节点" value={startNodeKey} onChange={event => setStartNodeKey(event.target.value)}>{nodes.map(node => <option key={node.instance_key} value={node.instance_key}>{node.alias || node.asset.name}</option>)}</select></label>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
 }
 
 function CopyRecordDialog({ mode, sourceName, onClose, onCopy }: { mode: CopyTarget['mode']; sourceName: string; onClose: () => void; onCopy: (name: string) => Promise<void> }) {
   const [name, setName] = useState(`${sourceName} · 副本`);
-  const recordLabel = mode === 'MANUAL' ? '单节点运行记录' : '自动运行记录';
+  const recordLabel = mode === 'MANUAL' ? '逐步运行记录' : '连续运行记录';
   const mutation = useMutation({ mutationFn: () => onCopy(name.trim()), onSuccess: onClose });
   useEscapeClose(onClose);
   return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置，不包含会话、输出或执行结果。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
@@ -858,14 +857,14 @@ function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }
       onSaved(saved);
       setPlans(saved.node_plans);
       setSaveFeedback(saved.readiness.ready
-        ? '配置已保存，自动运行已就绪。'
+        ? '配置已保存，连续运行已就绪。'
         : `配置已保存，仍有 ${saved.readiness.issues.length} 项待补齐：${saved.readiness.issues.map(issue => issue.message).join('；')}`);
     },
   });
   if (!node || !plan) return <aside className="action-panel automatic-record-editor"><div className="action-content automatic-empty">请在流程图中选择一个可配置节点。</div></aside>;
   const feedback = save.error ? `保存失败：${save.error.message}` : saveFeedback;
   const history = <NodeExecutionHistory run={record} node={node}/>;
-  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '自动运行草稿配置' : '自动运行配置（只读）'}`} mode="PROMPT" onModeChange={() => undefined} chatEnabled={false} promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} action={editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts} inputUrls={plan.input_urls}/>{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="自动运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '工作区默认模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} initialUrls={plan.input_urls} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
+  return <><NodeConfigurationPanel className="automatic-record-editor" title={node.alias || node.asset.name} subtitle={`${record.name} · ${editable ? '连续运行草稿配置' : '连续运行配置（只读）'}`} mode="PROMPT" fixedModeLabel="连续运行" onModeChange={() => undefined} chatEnabled={false} promptTab={promptTab} onPromptTabChange={setPromptTab} feedback={feedback && <div className={`automatic-save-feedback-banner ${save.error ? 'error' : 'success'}`} role={save.error ? 'alert' : 'status'}><b>{save.error ? '保存失败' : '已保存'}</b><span>{feedback}</span></div>} action={editable && <button className="primary node-run-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? '保存中…' : '保存配置'}</button>} promptContent={<><InputSummary fields={node.asset.inputs} bindings={plan.artifact_ids} artifacts={inputArtifacts} inputUrls={plan.input_urls}/>{editable && node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={plan.startup_prompt} freezeHint="连续运行启动时会随记录冻结。" editable={editable} onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={editable ? <AgentPresetEditor preset={plan.agent_preset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={agent_preset => patch({ agent_preset })}/> : <section className="attempt-side-section"><h4>首会话 Agent 配置</h4><p>{plan.agent_preset.model_name || '工作区默认模型'} · {plan.agent_preset.capability_version_ids.length} 项能力</p></section>} gateContent={editable ? <GateDraftEditor gates={plan.gates} onChange={gates => patch({ gates })}/> : <GateList evaluations={[]} policies={plan.gates}/>} historyContent={history} chatContent={history}/>{inputDialogOpen && <NodeInputDialog run={{ ...record, artifacts: inputArtifacts }} node={node} initialBindings={plan.artifact_ids} initialUrls={plan.input_urls} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: artifact_ids, artifacts }) => {
     const nextArtifacts = mergeArtifacts(inputArtifacts, artifacts);
     const input_urls = Object.fromEntries(Object.entries(plan.input_urls).filter(([fieldKey]) => !artifact_ids[fieldKey]));
     const nextPlans = { ...plans, [node.instance_key]: { ...plan, artifact_ids, input_urls } };
@@ -915,6 +914,9 @@ export function WorkbenchPage() {
       return;
     }
     if (selectedNode) {
+      const restoredMode: WorkbenchMode = isDirectNodeRun(selectedNode) ? 'DIRECT' : 'MANUAL';
+      if (mode !== restoredMode) setMode(restoredMode);
+      setSelectedNodeKey(selectedNode.flow_node_snapshot_key);
       setManualSelectedIds(current => current.size ? current : new Set([selectedNode.id]));
     }
     if (selectedNode && !selectedAttemptId) {
@@ -948,6 +950,10 @@ export function WorkbenchPage() {
   if (query.isError) return <div className="empty workbench-fallback"><b>运行详情加载失败</b><span>{query.error.message}</span><button className="secondary" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button></div>;
   if (!run) return <div className="empty workbench-fallback"><span>加载运行状态…</span><button className="secondary" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button></div>;
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
+  const stepRecords = run.node_runs.filter(item => !isDirectNodeRun(item));
+  const directRecords = run.node_runs.filter(isDirectNodeRun);
+  const nodeRecords = mode === 'DIRECT' ? directRecords : stepRecords;
+  const categorizedRun = { ...run, node_runs: nodeRecords };
   const selectedNode = snapshot?.definition.nodes.find(item => item.instance_key === selectedNodeKey);
   const nodeRun = run.node_runs.find(item => item.id === selectedNodeRunId);
   const attempt = nodeRun?.attempts.find(item => item.id === selectedAttemptId) ?? nodeRun?.attempts.at(-1);
@@ -1036,26 +1042,30 @@ export function WorkbenchPage() {
       : reachableNodeKeys(run);
   // A new manual run still begins from the graph. Once an execution is selected,
   // however, clicking a never-run node must not discard that selection.
-  const graphSelectableKeys = mode === 'AUTOMATIC' && selectedAutomatic
-    ? selectedAutomatic.state === 'DRAFT'
-      ? unlockedAutomaticNodeKeys(run, selectedAutomatic)
-      : new Set(selectedAutomatic.node_runs.map(item => item.flow_node_snapshot_key))
+  const graphSelectableKeys = mode === 'AUTOMATIC'
+    ? selectedAutomatic
+      ? selectedAutomatic.state === 'DRAFT'
+        ? unlockedAutomaticNodeKeys(run, selectedAutomatic)
+        : new Set(selectedAutomatic.node_runs.map(item => item.flow_node_snapshot_key))
+      : new Set<string>()
     : graphReachableKeys;
   const configuredAutomaticPlanKeys = mode === 'AUTOMATIC' && selectedAutomatic?.state === 'DRAFT'
     ? readyAutomaticPlanKeys(selectedAutomatic) : new Set<string>();
   const missingAutomaticPlanKeys = mode === 'AUTOMATIC' && selectedAutomatic?.state === 'DRAFT'
     ? selectedAutomatic.readiness.issues.map(issue => issue.node_key) : [];
-  const graphSelectedKey = selectedNodeKey ?? (mode === 'MANUAL' ? nodeRun?.flow_node_snapshot_key : undefined);
-  const showExecutionState = mode === 'MANUAL'
+  const graphSelectedKey = selectedNodeKey ?? (mode !== 'AUTOMATIC' ? nodeRun?.flow_node_snapshot_key : undefined);
+  const showExecutionState = mode !== 'AUTOMATIC'
     ? Boolean(nodeRun)
     : Boolean(selectedAutomatic && selectedAutomatic.state !== 'DRAFT');
   const neutralGraphHelp = mode === 'MANUAL'
-    ? '未选择运行记录，当前显示中性流程定义；点击节点可新建单节点运行。'
+    ? '未选择逐步运行记录，当前显示中性流程定义；点击节点可保存一条新配置。'
+    : mode === 'DIRECT'
+      ? '未选择直接启动记录，当前显示中性流程定义；点击节点可直接启动会话。'
     : selectedAutomatic?.state === 'DRAFT'
-      ? '当前显示自动运行草稿配置；启动后将按持久节点执行事实更新状态。'
+      ? '当前显示连续运行草稿配置；启动后将按持久节点执行事实更新状态。'
       : selectedAutomatic
-        ? '当前显示该自动运行记录的持久执行状态；灰色节点尚未激活。'
-      : '未选择自动运行记录，当前显示中性流程定义；点击节点可新建单节点运行。';
+        ? '当前显示该连续运行记录的持久执行状态；灰色节点尚未激活。'
+      : '未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。';
   const hasPanel = Boolean(selectedAutomatic || (nodeRun && attempt) || selectedNode);
   const selectGraphNode = (key: string) => {
     if (mode === 'AUTOMATIC' && selectedAutomatic) {
@@ -1063,11 +1073,15 @@ export function WorkbenchPage() {
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
       return;
     }
-    if (mode === 'MANUAL') {
-      const latest = [...run.node_runs].reverse().find(item => item.flow_node_snapshot_key === key && item.state !== 'CANCELLED');
+    if (mode !== 'AUTOMATIC') {
+      const latest = [...nodeRecords].reverse().find(item => item.flow_node_snapshot_key === key && item.state !== 'CANCELLED');
       if (latest) {
         setSelectedNodeKey(key);
-        selectExecution(latest.id, latest.attempts.at(-1)?.id);
+        if (mode === 'MANUAL' && isUnconfiguredStepRecord(latest)) {
+          useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+        } else {
+          selectExecution(latest.id, latest.attempts.at(-1)?.id);
+        }
       }
       // Preserve an existing execution selection when an unrelated, never-run
       // node is clicked. With no selection, retain the initial graph-to-console
@@ -1087,7 +1101,7 @@ export function WorkbenchPage() {
     const item = run.node_runs.find(candidate => candidate.id === id);
     if (!item) return;
     if (modifiers.range && selectedId) {
-      setManualSelectedIds(new Set(rangeIds(run.node_runs, selectedId, id)));
+      setManualSelectedIds(new Set(rangeIds(nodeRecords, selectedId, id)));
     } else if (modifiers.extend) {
       setManualSelectedIds(current => {
         const next = new Set(current);
@@ -1099,7 +1113,11 @@ export function WorkbenchPage() {
       setManualSelectedIds(new Set([id]));
     }
     setSelectedNodeKey(item?.flow_node_snapshot_key);
-    selectExecution(id, item?.attempts.at(-1)?.id);
+    if (mode === 'MANUAL' && isUnconfiguredStepRecord(item)) {
+      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    } else {
+      selectExecution(id, item?.attempts.at(-1)?.id);
+    }
   };
   const selectAutomaticHistory = (id: string, modifiers: SelectionModifiers) => {
     const isOnlySelected = automaticSelectedIds.size === 1 && automaticSelectedIds.has(id);
@@ -1147,10 +1165,10 @@ export function WorkbenchPage() {
       && record.attempts.at(-1)?.state === 'WAITING_START_CONFIRMATION'
       && !record.attempts.at(-1)?.runtime_phase)
   );
-  const selectedManualRuns = run.node_runs.filter(item => manualSelectedIds.has(item.id));
+  const selectedManualRuns = nodeRecords.filter(item => manualSelectedIds.has(item.id));
   const manualSelectionDeletable = selectedManualRuns.length > 0 && selectedManualRuns.every(nodeRunCanDelete);
   const selectedAutomaticRecords = automaticRecords.filter(item => automaticSelectedIds.has(item.id));
-  const rail = <RunRail run={run} mode={mode} automaticRecords={automaticRecords} selected={mode === 'MANUAL' ? nodeRun?.id : undefined} manualSelectedIds={manualSelectedIds} automaticSelectedIds={automaticSelectedIds} manualSelectionDeletable={manualSelectionDeletable} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!selectedManualRuns.length || !manualSelectionDeletable) return; const count = selectedManualRuns.length; void dialog.confirm({ title: count === 1 ? '删除这条单节点运行？' : `删除 ${count} 条单节点运行？`, message: count === 1 ? '节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。' : `${count} 条节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId('bulk-delete'); try { for (const record of selectedManualRuns) await api.deleteNodeRun(run.id, record.id); clearSelection(); await query.refetch(); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (nodeRun) setCopyTarget({ mode: 'MANUAL', record: nodeRun }); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomaticRecords.length) return; const count = selectedAutomaticRecords.length; void dialog.confirm({ title: count === 1 ? '删除自动运行记录？' : `删除 ${count} 条自动运行记录？`, message: count === 1 ? '该记录的计划、执行历史与产物将被永久删除。' : `${count} 条记录的计划、执行历史与产物将被永久删除。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId('bulk-delete'); try { for (const record of selectedAutomaticRecords) await api.deleteAutomaticRecord(run.id, record.id); clearSelection(); await automatic.refetch(); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}/>;
+  const rail = <RunRail run={run} mode={mode} nodeRecords={nodeRecords} automaticRecords={automaticRecords} selected={mode !== 'AUTOMATIC' ? nodeRun?.id : undefined} manualSelectedIds={manualSelectedIds} automaticSelectedIds={automaticSelectedIds} manualSelectionDeletable={manualSelectionDeletable} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!selectedManualRuns.length || !manualSelectionDeletable) return; const count = selectedManualRuns.length; void dialog.confirm({ title: count === 1 ? '删除这条运行记录？' : `删除 ${count} 条运行记录？`, message: count === 1 ? '节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。' : `${count} 条节点执行记录与产物将被永久删除；FlowRun、共享 Runtime 和 OpenHands 状态继续保留。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId('bulk-delete'); try { for (const record of selectedManualRuns) await api.deleteNodeRun(run.id, record.id); clearSelection(); await query.refetch(); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (mode === 'MANUAL' && nodeRun) setCopyTarget({ mode: 'MANUAL', record: nodeRun }); }} onStartNode={record => { const latest = record.attempts.at(-1); if (!latest || latest.state !== 'WAITING_START_CONFIRMATION') return; setManualBusyId(record.id); void api.confirmStart(latest.id, latest.state_version, { startup_mode: 'PROMPT', prompt: latest.startup_prompt ?? undefined }).then(started => { qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, state: 'ACTIVE', node_runs: current.node_runs.map(item => item.id === record.id ? { ...item, attempts: item.attempts.map(candidate => candidate.id === started.id ? started : candidate) } : item) } : current); }).finally(() => { setManualBusyId(undefined); refresh(); }); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomaticRecords.length) return; const count = selectedAutomaticRecords.length; void dialog.confirm({ title: count === 1 ? '删除连续运行记录？' : `删除 ${count} 条连续运行记录？`, message: count === 1 ? '该记录的计划、执行历史与产物将被永久删除。' : `${count} 条记录的计划、执行历史与产物将被永久删除。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId('bulk-delete'); try { for (const record of selectedAutomaticRecords) await api.deleteAutomaticRecord(run.id, record.id); clearSelection(); await automatic.refetch(); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}/>;
   return <>
     <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `250px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: '250px minmax(500px, 1fr)' }}>
       {rail}
@@ -1159,12 +1177,12 @@ export function WorkbenchPage() {
           <button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button>
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
-        {mode === 'MANUAL' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
-        <SnapshotGraph run={run} selectedKey={graphSelectedKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={mode === 'AUTOMATIC' ? selectedAutomatic : run} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
+        {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
+        <SnapshotGraph run={run} selectedKey={graphSelectedKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={mode === 'AUTOMATIC' ? selectedAutomatic : categorizedRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
-        {mode === 'AUTOMATIC' && selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={run} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomaticNodeRun && selectedAutomaticAttempt ? <AttemptPanel run={selectedAutomatic} nodeRun={selectedAutomaticNodeRun} attempt={selectedAutomaticAttempt} refresh={() => { void automatic.refetch(); }} navigate={() => { void automatic.refetch(); }} sessionReturnContext={{ runId: run.id, mode: 'AUTOMATIC', automaticRecordId: selectedAutomatic.id }}/> : <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。自动调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : nodeRun && attempt ? <AttemptPanel run={run} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate}/> : selectedNode ? <NodeConsole run={run} node={selectedNode} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}
+        {mode === 'AUTOMATIC' && selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={run} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomaticNodeRun && selectedAutomaticAttempt ? <AttemptPanel run={selectedAutomatic} nodeRun={selectedAutomaticNodeRun} attempt={selectedAutomaticAttempt} refresh={() => { void automatic.refetch(); }} navigate={() => { void automatic.refetch(); }} sessionReturnContext={{ runId: run.id, mode: 'AUTOMATIC', automaticRecordId: selectedAutomatic.id }}/> : <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} sessionReturnContext={{ runId: run.id, mode }}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}
       </aside>}
     </section>
     {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'MANUAL' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onCopy={async name => {

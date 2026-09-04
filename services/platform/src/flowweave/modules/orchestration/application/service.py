@@ -1529,6 +1529,32 @@ def _record_gate_results(
             attempt.id,
         )
         return
+    saved_step_configuration = db.scalar(
+        select(RunEvent)
+        .where(
+            RunEvent.flow_run_id == run.id,
+            RunEvent.node_run_id == node_run.id,
+            RunEvent.attempt_id == attempt.id,
+            RunEvent.event_type == "STEP_RUN_CONFIGURATION_SAVED",
+        )
+        .limit(1)
+    )
+    if (
+        next_state == AttemptState.WAITING_ACCEPTANCE
+        and attempt.startup_mode != "CHAT"
+        and saved_step_configuration is not None
+    ):
+        # Step-by-step runs share the same completion gates and isolated review
+        # Agents as continuous runs. A passing gate result is the acceptance
+        # boundary: expose the frozen successors, but leave them stopped until
+        # the user explicitly starts their saved record.
+        attempt.state = AttemptState.ACCEPTED
+        node_run.state = NodeRunState.ACCEPTED
+        node_run.accepted_attempt_id = attempt.id
+        _event(db, run.id, "NODE_RUN_COMPLETED", {}, node_run.id, attempt.id)
+        _create_configurable_targets(db, run, node_run)
+        _recompute_run(db, run)
+        return
     if next_state in {
         AttemptState.WAITING_START_CONFIRMATION,
         AttemptState.WAITING_ACCEPTANCE,
@@ -1977,6 +2003,7 @@ def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True
         cast(list[dict[str, Any]], first_plan.get("gates") or []),
         context_ids=[],
         agent_preset=cast(dict[str, Any], first_plan.get("agent_preset") or {}),
+        startup_prompt=str(first_plan.get("startup_prompt") or ""),
     )
     _event(
         db,
@@ -2220,6 +2247,7 @@ def _create_node_run(
     session_only: bool = False,
     context_ids: list[str] | None = None,
     agent_preset: dict[str, Any] | None = None,
+    startup_prompt: str | None = None,
     allow_existing: bool = False,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
@@ -2229,14 +2257,15 @@ def _create_node_run(
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
     _validate_input_bindings(db, run, node, artifact_ids)
-    # A manual FlowRun owns at most one non-cancelled NodeRun for each frozen
-    # graph node. Cancelled records remain independent history and do not block
-    # a fresh run from the neutral Workbench. Downstream transitions create a
-    # WAITING_INPUT work item; revisions after rejection remain Attempts.
+    # A step-by-step run group owns at most one non-cancelled NodeRun for each
+    # frozen graph node. Direct session launches are independent records and
+    # never occupy that graph-transition slot. Cancelled records remain
+    # history; downstream transitions create a WAITING_INPUT work item.
     existing = db.scalar(
         select(NodeRun).where(
             NodeRun.flow_run_id == run.id,
             NodeRun.flow_node_snapshot_key == instance_key,
+            NodeRun.created_from != "HUMAN_CHAT",
             NodeRun.state != NodeRunState.CANCELLED,
         )
     )
@@ -2295,6 +2324,7 @@ def _create_node_run(
         latest.context_ids_json = context_ids
         latest.agent_preset_json = agent_preset
         latest.gate_policies_json = gate_policies or []
+        latest.startup_prompt = startup_prompt
         latest.state_version += 1
         latest.error_code = None
         latest.error_detail = None
@@ -2329,6 +2359,7 @@ def _create_node_run(
             AttemptState.WAITING_START_CONFIRMATION if session_only else AttemptState.WAITING_INPUT
         ),
         startup_mode="CHAT" if session_only else "PROMPT",
+        startup_prompt=startup_prompt,
         context_ids_json=context_ids,
         agent_preset_json=agent_preset,
         gate_policies_json=gate_policies or [],
@@ -2451,6 +2482,15 @@ def copy_node_run(
     copied_attempt.startup_mode = initial.startup_mode
     copied_attempt.startup_prompt = initial.startup_prompt
     copied_attempt.startup_capability_key = initial.startup_capability_key
+    if copied_attempt.startup_mode == "PROMPT" and copied_attempt.startup_prompt is not None:
+        _event(
+            db,
+            run.id,
+            "STEP_RUN_CONFIGURATION_SAVED",
+            {"flow_node_key": copied.flow_node_snapshot_key, "copied": True},
+            copied.id,
+            copied_attempt.id,
+        )
     _event(
         db,
         run.id,
@@ -2595,7 +2635,7 @@ def create_automatic_run_draft(
     run = FlowRun(
         flow_definition_id=flow_id,
         run_no=run_no,
-        name=(payload.name or "").strip() or f"{flow.name} · 自动运行 #{run_no}",
+        name=(payload.name or "").strip() or f"{flow.name} · 连续运行 #{run_no}",
         run_mode="AUTOMATIC",
         state=FlowRunState.DRAFT,
         environment_version_id=environment.id,
@@ -3017,6 +3057,7 @@ def start_node_run(
         select(NodeRun).where(
             NodeRun.flow_run_id == run.id,
             NodeRun.flow_node_snapshot_key == instance_key,
+            NodeRun.created_from != "HUMAN_CHAT",
             NodeRun.state != NodeRunState.CANCELLED,
         )
     )
@@ -3025,13 +3066,14 @@ def start_node_run(
             select(NodeRun.id)
             .where(
                 NodeRun.flow_run_id == run.id,
+                NodeRun.created_from != "HUMAN_CHAT",
                 NodeRun.state != NodeRunState.CANCELLED,
             )
             .limit(1)
         )
         is not None
     )
-    if has_group_work and existing_node is None:
+    if payload.startup_mode != "CHAT" and has_group_work and existing_node is None:
         raise DomainError(
             "NODE_NOT_REACHED",
             "node is not available in this manual run group",
@@ -3073,6 +3115,7 @@ def start_node_run(
             session_only=True,
             context_ids=[],
             agent_preset=(payload.agent_preset.model_dump() if payload.agent_preset else None),
+            allow_existing=True,
         )
         finish(db)
         return node_run_detail(db, node_run.id)
@@ -3140,7 +3183,7 @@ def start_node_run(
         }
         for gate in payload.gates
     ]
-    node_run, _ = _create_node_run(
+    node_run, attempt = _create_node_run(
         db,
         run,
         instance_key,
@@ -3149,7 +3192,17 @@ def start_node_run(
         gates,
         context_ids=context_ids,
         agent_preset=preset,
+        startup_prompt=payload.startup_prompt,
     )
+    if payload.startup_prompt is not None:
+        _event(
+            db,
+            run.id,
+            "STEP_RUN_CONFIGURATION_SAVED",
+            {"flow_node_key": instance_key},
+            node_run.id,
+            attempt.id,
+        )
     finish(db)
     return node_run_detail(db, node_run.id)
 
@@ -3241,6 +3294,14 @@ def confirm_start(
     idempotency_key: str,
 ) -> dict[str, Any]:
     current = _attempt(db, attempt_id)
+    frozen_prompt = current.startup_prompt
+    if frozen_prompt is not None and payload.prompt is not None and payload.prompt != frozen_prompt:
+        raise DomainError(
+            "START_CONFIGURATION_IMMUTABLE",
+            "the saved startup prompt cannot be changed while starting the record",
+            409,
+        )
+    effective_prompt = frozen_prompt if frozen_prompt is not None else payload.prompt
     current_node_run = _node_run(db, current.node_run_id)
     node = _node(_snapshot(db, current.snapshot_id), current_node_run.flow_node_snapshot_key)
     host = agent_sessions.resolve_flow_node_session_host(
@@ -3285,7 +3346,7 @@ def confirm_start(
     )
     attempt.startup_mode = payload.startup_mode
     attempt.startup_capability_key = payload.capability_key
-    attempt.startup_prompt = payload.prompt
+    attempt.startup_prompt = effective_prompt
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
     agent_sessions.reserve_flow_node_binding(
@@ -5157,7 +5218,7 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
     ):
         raise DomainError(
             "NODE_RUN_DELETE_HAS_DOWNSTREAM_REFERENCES",
-            "该单节点运行的产物仍被其他执行引用，不能删除",
+            "该逐步运行记录的产物仍被其他执行引用，不能删除",
             409,
         )
 
@@ -5225,6 +5286,7 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
             select(NodeRun).where(
                 NodeRun.flow_run_id == run.id,
                 NodeRun.flow_node_snapshot_key == target_key,
+                NodeRun.created_from != "HUMAN_CHAT",
                 NodeRun.state != NodeRunState.CANCELLED,
             )
         )
@@ -5380,6 +5442,7 @@ def _advance_automatic_targets(
                 cast(list[dict[str, Any]], target_plan.get("gates") or []),
                 context_ids=[],
                 agent_preset=cast(dict[str, Any], target_plan.get("agent_preset") or {}),
+                startup_prompt=str(target_plan.get("startup_prompt") or ""),
             )
             # Keep the mapped fields auditable as platform-owned port flow;
             # explicit plan inputs retain their original creation provenance.
@@ -5812,6 +5875,24 @@ def remediate_gate_failure(
         node_run.id,
         revision.id,
     )
+    if db.scalar(
+        select(RunEvent)
+        .where(
+            RunEvent.flow_run_id == run.id,
+            RunEvent.node_run_id == node_run.id,
+            RunEvent.attempt_id == current.id,
+            RunEvent.event_type == "STEP_RUN_CONFIGURATION_SAVED",
+        )
+        .limit(1)
+    ):
+        _event(
+            db,
+            run.id,
+            "STEP_RUN_CONFIGURATION_SAVED",
+            {"flow_node_key": node_run.flow_node_snapshot_key, "remediation": True},
+            node_run.id,
+            revision.id,
+        )
     target_handle = _active_attempt_runtime_handle(db, revision)
     result = runtime.send_message(target_handle, instruction)
     if result.status not in {"RUNNING", "IDLE"}:
@@ -6712,7 +6793,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                     run.state != FlowRunState.DRAFT and runtime and runtime.get("write_available")
                 ),
                 "runtime_message": (
-                    "自动运行尚未启动，可继续编辑编排"
+                    "连续运行尚未启动，可继续编辑编排"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
                     else runtime.get("message")
                     if runtime

@@ -174,12 +174,13 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .flow-run-inner-workbench>.run-rail{display:block;grid-column:1;grid-row:1}
 .flow-run-inner-workbench>.run-main{grid-column:2;grid-row:1}
 .flow-run-inner-workbench>.run-side-panel{grid-column:3;grid-row:1;min-height:0}
-.inner-run-mode-tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:18px 0 10px;padding:3px;border:1px solid var(--line);border-radius:7px;background:#eaf0eb}
+.inner-run-mode-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin:18px 0 10px;padding:3px;border:1px solid var(--line);border-radius:7px;background:#eaf0eb}
 .inner-run-mode-tabs button{border:0;border-radius:5px;background:transparent;padding:8px 4px;color:var(--muted);font-size:10px;font-weight:600}
 .inner-run-mode-tabs button.active{background:#fff;color:var(--green);box-shadow:0 1px 4px #17342618}
 .automatic-record-toolbar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:10px 0}
 .automatic-record-toolbar button{padding:7px 8px}
 .manual-record-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))}
+.manual-record-toolbar:has(>button:only-child){grid-template-columns:1fr}
 .automatic-record-list{display:grid;gap:7px;margin-top:10px}
 .automatic-record-list>p{padding:14px 4px;color:var(--muted);font-size:10px;text-align:center}
 .automatic-record-list>article{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:stretch;overflow:hidden;border:1px solid transparent;border-radius:7px}
@@ -189,6 +190,7 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .automatic-record-select b{font-size:11px}.automatic-record-select small{margin-top:4px;color:var(--muted);font:8px 'DM Mono'}
 .automatic-record-start{display:flex;align-items:center;gap:4px;border:0;border-left:1px solid #d5dfd8;background:#f7faf7;padding:7px;color:var(--green);font-size:9px}
 .automatic-record-start:disabled{cursor:not-allowed;opacity:.45}
+.node-record-list .automatic-record-select{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:start;gap:8px}.node-record-list i{width:9px;height:9px;margin-top:3px;border-radius:50%;background:#aeb8b2}.node-record-list i.accepted{background:var(--green)}.node-record-list i.waiting_input,.node-record-list i.waiting_start_confirmation,.node-record-list i.waiting_acceptance,.node-record-list i.waiting_human{background:#d49b31}.node-record-list i.executing,.node-record-list i.start_gates,.node-record-list i.end_gates{background:#4f7ea7}.node-record-list i.rejected,.node-record-list i.cancelled,.node-record-list i.start_blocked,.node-record-list i.end_blocked{background:var(--red)}
 .automatic-record-dialog{width:min(620px,92vw)}
 .automatic-record-editor{display:flex;min-height:0;flex:1;flex-direction:column;overflow:auto}
 .automatic-record-editor>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;border-bottom:1px solid var(--line);padding-bottom:16px}
@@ -220,7 +222,7 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 
 /* Node creation starts with an execution mode, then exposes only the
    configuration sections relevant to that mode. */
-.node-console-mode-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch;border-bottom:1px solid var(--line);background:#f5f8f5;padding:7px 9px}.node-console-mode-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;border:1px solid #d3ded7;border-radius:7px;background:#e4ebe6;padding:2px}.node-console-mode-tabs button{display:grid;min-height:50px;align-content:center;gap:2px;border:0;border-radius:5px;background:transparent;padding:7px 8px;color:var(--muted);text-align:left}.node-console-mode-tabs button:hover{background:#fff}.node-console-mode-tabs button.active{background:#fff;color:var(--green);box-shadow:0 1px 3px #1737261a}.node-console-mode-tabs span{font-size:10px;font-weight:700}.node-console-mode-tabs small{overflow:hidden;color:inherit;font-size:8px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}.node-console-mode-bar .node-run-button{align-self:stretch;margin:0;padding:8px 10px;font-size:10px;white-space:nowrap}.node-console-subtabs{flex:0 0 auto;margin:0;border-bottom:1px solid var(--line);background:#fff}.node-console-subtabs button{padding:9px 5px;font-size:10px}
+.node-console-mode-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch;border-bottom:1px solid var(--line);background:#f5f8f5;padding:7px 9px}.node-console-mode-summary{display:grid;align-content:center;gap:2px;min-height:50px;padding:7px 8px}.node-console-mode-summary b{font-size:11px}.node-console-mode-summary small{color:var(--muted);font-size:9px}.node-console-mode-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;border:1px solid #d3ded7;border-radius:7px;background:#e4ebe6;padding:2px}.node-console-mode-tabs button{display:grid;min-height:50px;align-content:center;gap:2px;border:0;border-radius:5px;background:transparent;padding:7px 8px;color:var(--muted);text-align:left}.node-console-mode-tabs button:hover{background:#fff}.node-console-mode-tabs button.active{background:#fff;color:var(--green);box-shadow:0 1px 3px #1737261a}.node-console-mode-tabs span{font-size:10px;font-weight:700}.node-console-mode-tabs small{overflow:hidden;color:inherit;font-size:8px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}.node-console-mode-bar .node-run-button{align-self:stretch;margin:0;padding:8px 10px;font-size:10px;white-space:nowrap}.node-console-subtabs{flex:0 0 auto;margin:0;border-bottom:1px solid var(--line);background:#fff}.node-console-subtabs button{padding:9px 5px;font-size:10px}
 
 /* Keep node-creation controls in view; only the selected configuration pane
    scrolls when its inputs, gate drafts, or execution history are long. */
