@@ -425,6 +425,33 @@ class AutomaticRunDraftWrite(ApiModel):
     node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
 
 
+class FlowRunScheduleWrite(ApiModel):
+    """Frozen configuration for an independent FlowRun schedule directory."""
+
+    name: str = Field(min_length=1, max_length=220)
+    flow_definition_id: str = Field(min_length=1, max_length=36)
+    environment_version_id: str = Field(min_length=1, max_length=36)
+    run_mode: Literal["MANUAL", "AUTOMATIC"]
+    start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
+    interval_minutes: int = Field(ge=1, le=43_200)
+    startup_prompt: str = Field(default="", max_length=200_000)
+    agent_preset: AgentPresetWrite = Field(default_factory=AgentPresetWrite)
+    node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_schedule_mode(self) -> FlowRunScheduleWrite:
+        if self.run_mode == "MANUAL" and not self.startup_prompt.strip():
+            raise ValueError("startup_prompt is required for step-by-step schedules")
+        if self.run_mode == "AUTOMATIC" and not self.node_plans:
+            raise ValueError("node_plans are required for continuous schedules")
+        return self
+
+
+class FlowRunScheduleStateWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    status: Literal["ACTIVE", "PAUSED"]
+
+
 class AutomaticRunDraftUpdateWrite(ApiModel):
     expected_row_version: int = Field(ge=1)
     name: str | None = Field(default=None, max_length=220)

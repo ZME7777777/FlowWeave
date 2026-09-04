@@ -2610,6 +2610,150 @@ def start_flow(
     return run_detail(db, run.id)
 
 
+def _schedule_plan(definition: dict[str, Any], start_node_key: str, payload: FlowRunScheduleWrite) -> dict[str, Any]:
+    nodes = {str(item.get("instance_key")): item for item in cast(list[dict[str, Any]], definition.get("nodes") or [])}
+    if start_node_key not in nodes:
+        raise DomainError("SCHEDULE_START_NODE_INVALID", "schedule start node is not in the flow", 422)
+    if payload.run_mode == "MANUAL":
+        return {
+            "startup_prompt": payload.startup_prompt,
+            "agent_preset": payload.agent_preset.model_dump(),
+        }
+    reachable: set[str] = set()
+    pending = [start_node_key]
+    edges = cast(list[dict[str, Any]], definition.get("edges") or [])
+    while pending:
+        key = pending.pop()
+        if key in reachable:
+            continue
+        reachable.add(key)
+        pending.extend(str(edge.get("target_instance_key")) for edge in edges if edge.get("source_instance_key") == key)
+    plans: dict[str, Any] = {}
+    for key in reachable:
+        node = nodes[key]
+        asset = cast(dict[str, Any], node.get("asset") or {})
+        executor = cast(dict[str, Any], asset.get("executor") or {})
+        plans[key] = {
+            "startup_prompt": payload.startup_prompt or str(executor.get("startup_prompt") or ""),
+            "agent_preset": payload.agent_preset.model_dump(),
+            "gates": [], "artifact_ids": {}, "input_urls": {},
+        }
+    return {"node_plans": plans}
+
+
+def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
+    flow = load_flow(db, schedule.flow_definition_id)
+    occurrences = list(db.scalars(select(FlowRunScheduleOccurrence).where(FlowRunScheduleOccurrence.schedule_id == schedule.id).order_by(FlowRunScheduleOccurrence.created_at.desc())))
+    runs = {run.id: run_detail(db, run.id) for run in db.scalars(select(FlowRun).where(FlowRun.schedule_id == schedule.id).order_by(FlowRun.started_at.desc()))}
+    return {
+        "id": schedule.id, "name": schedule.name, "flow_definition_id": schedule.flow_definition_id,
+        "flow_name": flow.name, "environment_version_id": schedule.environment_version_id,
+        "run_mode": schedule.run_mode, "start_node_key": schedule.start_node_key,
+        "interval_minutes": schedule.interval_minutes, "status": schedule.status,
+        "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+        "row_version": schedule.row_version, "created_at": schedule.created_at.isoformat(),
+        "occurrences": [{
+            "id": item.id, "scheduled_for": item.scheduled_for.isoformat() if item.scheduled_for else None,
+            "trigger_kind": item.trigger_kind, "state": item.state, "error_detail": item.error_detail,
+            "flow_run_id": item.flow_run_id, "flow_run": runs.get(item.flow_run_id),
+        } for item in occurrences],
+    }
+
+
+def list_schedules(db: Session) -> list[dict[str, Any]]:
+    schedules = list(db.scalars(select(FlowRunSchedule).order_by(FlowRunSchedule.created_at.desc())))
+    return [_schedule_dict(db, item) for item in schedules]
+
+
+def create_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict[str, Any]:
+    environment = lock_referenceable_version(db, payload.environment_version_id)
+    if environment is None:
+        raise DomainError("RUN_ENVIRONMENT_VERSION_INVALID", "schedule Environment Version is not READY", 422)
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    definition = _snapshot_definition(db, payload.flow_definition_id, environment_version_id=environment.id)
+    schedule = FlowRunSchedule(
+        flow_definition_id=payload.flow_definition_id, environment_version_id=environment.id,
+        name=payload.name.strip(), run_mode=payload.run_mode, start_node_key=payload.start_node_key,
+        plan_json=_schedule_plan(definition, payload.start_node_key, payload),
+        interval_minutes=payload.interval_minutes, status="ACTIVE", next_run_at=datetime.now(UTC),
+    )
+    db.add(schedule)
+    db.flush()
+    finish(db)
+    return _schedule_dict(db, schedule)
+
+
+def update_schedule_state(db: Session, schedule_id: str, payload: FlowRunScheduleStateWrite) -> dict[str, Any]:
+    schedule = db.scalar(select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update())
+    if schedule is None:
+        raise not_found("schedule", schedule_id)
+    if schedule.row_version != payload.expected_row_version:
+        raise conflict("schedule was modified", expected=payload.expected_row_version, actual=schedule.row_version)
+    schedule.status = payload.status
+    schedule.next_run_at = datetime.now(UTC) if payload.status == "ACTIVE" else None
+    schedule.row_version += 1
+    finish(db)
+    return _schedule_dict(db, schedule)
+
+
+def trigger_schedule(db: Session, schedule_id: str) -> dict[str, Any]:
+    schedule = db.scalar(select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update())
+    if schedule is None:
+        raise not_found("schedule", schedule_id)
+    occurrence = FlowRunScheduleOccurrence(schedule_id=schedule.id, trigger_kind="MANUAL", state="PENDING")
+    db.add(occurrence)
+    db.flush()
+    enqueue(db, task_type="START_FLOW_RUN_SCHEDULE", aggregate_type="SCHEDULE_OCCURRENCE", aggregate_id=occurrence.id, idempotency_key=f"start-flow-run-schedule:{occurrence.id}")
+    finish(db)
+    return _schedule_dict(db, schedule)
+
+
+def recover_due_schedules(db: Session, *, commit: bool = True) -> int:
+    now_at = datetime.now(UTC)
+    due = list(db.scalars(select(FlowRunSchedule).where(FlowRunSchedule.status == "ACTIVE", FlowRunSchedule.next_run_at <= now_at).with_for_update(skip_locked=True)))
+    for schedule in due:
+        slot = schedule.next_run_at
+        occurrence = FlowRunScheduleOccurrence(schedule_id=schedule.id, scheduled_for=slot, trigger_kind="SCHEDULED", state="PENDING")
+        db.add(occurrence)
+        db.flush()
+        schedule.next_run_at = now_at + timedelta(minutes=schedule.interval_minutes)
+        enqueue(db, task_type="START_FLOW_RUN_SCHEDULE", aggregate_type="SCHEDULE_OCCURRENCE", aggregate_id=occurrence.id, idempotency_key=f"start-flow-run-schedule:{occurrence.id}")
+    _finish_transaction(db, commit)
+    return len(due)
+
+
+def process_schedule_occurrence(db: Session, occurrence_id: str, *, commit: bool = True) -> None:
+    occurrence = db.scalar(select(FlowRunScheduleOccurrence).where(FlowRunScheduleOccurrence.id == occurrence_id).with_for_update())
+    if occurrence is None or occurrence.state != "PENDING":
+        _finish_transaction(db, commit)
+        return
+    schedule = db.scalar(select(FlowRunSchedule).where(FlowRunSchedule.id == occurrence.schedule_id).with_for_update())
+    if schedule is None:
+        occurrence.state = "CANCELLED"
+        _finish_transaction(db, commit)
+        return
+    try:
+        if schedule.run_mode == "MANUAL":
+            created = start_flow(db, schedule.flow_definition_id, RunStart(name=f"{schedule.name} · {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}", environment_version_id=schedule.environment_version_id))
+            run = _run(db, str(created["id"]))
+            run.schedule_id, run.schedule_occurrence_id = schedule.id, occurrence.id
+            plan = cast(dict[str, Any], schedule.plan_json or {})
+            node = start_node_run(db, run.id, schedule.start_node_key, NodeRunStart(startup_mode="PROMPT", startup_prompt=str(plan.get("startup_prompt") or ""), agent_preset=AgentPresetWrite.model_validate(plan.get("agent_preset") or {})))
+            occurrence.flow_run_id = run.id
+        else:
+            parent = start_flow(db, schedule.flow_definition_id, RunStart(name=f"{schedule.name} · {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}", environment_version_id=schedule.environment_version_id))
+            parent_run = _run(db, str(parent["id"]))
+            parent_run.schedule_id, parent_run.schedule_occurrence_id = schedule.id, occurrence.id
+            plan = cast(dict[str, Any], schedule.plan_json or {})
+            draft = create_nested_automatic_run_draft(db, parent_run.id, AutomaticRunDraftWrite(name=f"{schedule.name} · 连续运行", environment_version_id=schedule.environment_version_id, start_node_key=schedule.start_node_key, node_plans=cast(dict[str, Any], plan.get("node_plans") or {})))
+            start_automatic_run(db, str(draft["id"]), AutomaticRunStartWrite(expected_row_version=int(draft["row_version"])), f"schedule-automatic:{occurrence.id}")
+            occurrence.flow_run_id = parent_run.id
+        occurrence.state = "STARTED"
+    except DomainError as exc:
+        occurrence.state, occurrence.error_detail = "FAILED", f"{exc.code}: {exc.message}"
+    _finish_transaction(db, commit)
+
+
 def create_automatic_run_draft(
     db: Session,
     flow_id: str,
@@ -2677,6 +2821,253 @@ def create_automatic_run_draft(
     )
     finish(db)
     return run_detail(db, run.id)
+
+
+def _schedule_plan(db: Session, payload: FlowRunScheduleWrite) -> dict[str, Any]:
+    """Freeze user-selected launch fields without creating an execution."""
+
+    definition = _snapshot_definition(
+        db, payload.flow_definition_id, environment_version_id=payload.environment_version_id
+    )
+    if payload.start_node_key not in _reachable_node_keys(definition, payload.start_node_key):
+        raise not_found("flow_node_snapshot", payload.start_node_key)
+    if payload.run_mode == "MANUAL":
+        return {
+            "startup_prompt": payload.startup_prompt,
+            "agent_preset": payload.agent_preset.model_dump(mode="json"),
+        }
+    return {
+        "node_plans": {
+            key: value.model_dump(mode="json") for key, value in payload.node_plans.items()
+        }
+    }
+
+
+def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
+    occurrences = list(
+        db.scalars(
+            select(FlowRunScheduleOccurrence)
+            .where(FlowRunScheduleOccurrence.schedule_id == schedule.id)
+            .order_by(FlowRunScheduleOccurrence.created_at.desc())
+        )
+    )
+    runs = {
+        item.id: item
+        for item in db.scalars(
+            select(FlowRun).where(
+                FlowRun.id.in_([item.flow_run_id for item in occurrences if item.flow_run_id])
+            )
+        )
+    } if any(item.flow_run_id for item in occurrences) else {}
+    flow = db.get(FlowDefinition, schedule.flow_definition_id)
+    return {
+        "id": schedule.id,
+        "name": schedule.name,
+        "flow_definition_id": schedule.flow_definition_id,
+        "flow_name": flow.name if flow else "已删除的流程",
+        "environment_version_id": schedule.environment_version_id,
+        "run_mode": schedule.run_mode,
+        "start_node_key": schedule.start_node_key,
+        "interval_minutes": schedule.interval_minutes,
+        "status": schedule.status,
+        "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+        "row_version": schedule.row_version,
+        "created_at": schedule.created_at.isoformat(),
+        "updated_at": schedule.updated_at.isoformat(),
+        "occurrences": [
+            {
+                "id": item.id,
+                "scheduled_for": item.scheduled_for.isoformat() if item.scheduled_for else None,
+                "trigger_kind": item.trigger_kind,
+                "state": item.state,
+                "error_detail": item.error_detail,
+                "flow_run_id": item.flow_run_id,
+                "flow_run": _schedule_run_summary(runs[item.flow_run_id])
+                if item.flow_run_id in runs else None,
+            }
+            for item in occurrences
+        ],
+    }
+
+
+def _schedule_run_summary(run: FlowRun) -> dict[str, Any]:
+    nodes = list(db for db in ())
+    del nodes
+    return {
+        "id": run.id, "name": run.name, "run_no": run.run_no,
+        "state": run.state, "run_mode": run.run_mode,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
+
+
+def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict[str, Any]:
+    environment = lock_referenceable_version(db, payload.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The selected schedule Environment Version is not READY",
+            422,
+            {"environment_version_id": payload.environment_version_id},
+        )
+    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    load_flow(db, payload.flow_definition_id)
+    schedule = FlowRunSchedule(
+        flow_definition_id=payload.flow_definition_id,
+        environment_version_id=environment.id,
+        name=payload.name.strip(),
+        run_mode=payload.run_mode,
+        start_node_key=payload.start_node_key,
+        plan_json=_schedule_plan(db, payload),
+        interval_minutes=payload.interval_minutes,
+        status="ACTIVE",
+        next_run_at=datetime.now(UTC),
+    )
+    db.add(schedule)
+    db.flush()
+    _schedule_due_occurrences(db)
+    finish(db)
+    return _schedule_dict(db, schedule)
+
+
+def list_flow_run_schedules(db: Session) -> list[dict[str, Any]]:
+    schedules = list(
+        db.scalars(select(FlowRunSchedule).order_by(FlowRunSchedule.created_at.desc()))
+    )
+    return [_schedule_dict(db, item) for item in schedules]
+
+
+def set_flow_run_schedule_state(
+    db: Session, schedule_id: str, payload: FlowRunScheduleStateWrite
+) -> dict[str, Any]:
+    schedule = db.scalar(
+        select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
+    )
+    if schedule is None:
+        raise not_found("flow_run_schedule", schedule_id)
+    if schedule.row_version != payload.expected_row_version:
+        raise conflict(
+            "schedule was modified", expected=payload.expected_row_version, actual=schedule.row_version
+        )
+    schedule.status = payload.status
+    schedule.row_version += 1
+    if payload.status == "ACTIVE" and schedule.next_run_at is None:
+        schedule.next_run_at = datetime.now(UTC) + timedelta(minutes=schedule.interval_minutes)
+    finish(db)
+    return _schedule_dict(db, schedule)
+
+
+def trigger_flow_run_schedule(db: Session, schedule_id: str) -> dict[str, Any]:
+    schedule = db.scalar(
+        select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
+    )
+    if schedule is None:
+        raise not_found("flow_run_schedule", schedule_id)
+    occurrence = FlowRunScheduleOccurrence(
+        schedule_id=schedule.id, trigger_kind="MANUAL", state="PENDING"
+    )
+    db.add(occurrence)
+    db.flush()
+    enqueue(
+        db, task_type="START_FLOW_RUN_SCHEDULE_OCCURRENCE", aggregate_type="SCHEDULE_OCCURRENCE",
+        aggregate_id=occurrence.id, idempotency_key=f"start-flow-run-schedule-occurrence:{occurrence.id}"
+    )
+    finish(db)
+    return _schedule_dict(db, schedule)
+
+
+def _schedule_due_occurrences(db: Session) -> int:
+    current = datetime.now(UTC)
+    due = list(
+        db.scalars(
+            select(FlowRunSchedule)
+            .where(FlowRunSchedule.status == "ACTIVE", FlowRunSchedule.next_run_at <= current)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    for schedule in due:
+        scheduled_for = schedule.next_run_at
+        if scheduled_for is None:
+            continue
+        occurrence = FlowRunScheduleOccurrence(
+            schedule_id=schedule.id, scheduled_for=scheduled_for, trigger_kind="SCHEDULED", state="PENDING"
+        )
+        db.add(occurrence)
+        db.flush()
+        enqueue(
+            db, task_type="START_FLOW_RUN_SCHEDULE_OCCURRENCE", aggregate_type="SCHEDULE_OCCURRENCE",
+            aggregate_id=occurrence.id, idempotency_key=f"start-flow-run-schedule-occurrence:{occurrence.id}"
+        )
+        schedule.next_run_at = current + timedelta(minutes=schedule.interval_minutes)
+    return len(due)
+
+
+def recover_flow_run_schedules(db: Session, *, commit: bool = True) -> int:
+    count = _schedule_due_occurrences(db)
+    _finish_transaction(db, commit)
+    return count
+
+
+def process_flow_run_schedule_occurrence(
+    db: Session, occurrence_id: str, lease: Lease, *, commit: bool = True
+) -> None:
+    occurrence = db.scalar(
+        select(FlowRunScheduleOccurrence)
+        .where(FlowRunScheduleOccurrence.id == occurrence_id).with_for_update()
+    )
+    if occurrence is None or occurrence.state != "PENDING":
+        return
+    schedule = db.scalar(
+        select(FlowRunSchedule).where(FlowRunSchedule.id == occurrence.schedule_id).with_for_update()
+    )
+    if schedule is None:
+        occurrence.state = "FAILED"
+        occurrence.error_detail = "定时任务已删除"
+        _finish_transaction(db, commit)
+        return
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost before schedule execution")
+    try:
+        parent = start_flow(
+            db, schedule.flow_definition_id,
+            RunStart(
+                name=f"{schedule.name} · {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}",
+                environment_version_id=schedule.environment_version_id,
+            ),
+        )
+        run = _run(db, str(parent["id"]))
+        run.schedule_id = schedule.id
+        run.schedule_occurrence_id = occurrence.id
+        occurrence.flow_run_id = run.id
+        if schedule.run_mode == "MANUAL":
+            plan = dict(schedule.plan_json or {})
+            start_node_run(
+                db, run.id, schedule.start_node_key,
+                NodeRunStart(
+                    startup_mode="PROMPT", startup_prompt=str(plan.get("startup_prompt") or ""),
+                    agent_preset=plan.get("agent_preset") or {},
+                ),
+            )
+        else:
+            plan = dict(schedule.plan_json or {})
+            child = create_nested_automatic_run_draft(
+                db, run.id,
+                AutomaticRunDraftWrite(
+                    name=f"{schedule.name} · 连续运行", environment_version_id=schedule.environment_version_id,
+                    start_node_key=schedule.start_node_key, node_plans=plan.get("node_plans") or {},
+                ),
+            )
+            child_run = _run(db, str(child["id"]))
+            start_automatic_run(
+                db, child_run.id, AutomaticRunStartWrite(expected_row_version=child_run.row_version),
+                f"schedule-automatic-start:{occurrence.id}",
+            )
+        occurrence.state = "CREATED"
+    except DomainError as exc:
+        occurrence.state = "FAILED"
+        occurrence.error_detail = f"{exc.code}: {exc.message}"
+        raise
+    _finish_transaction(db, commit)
 
 
 def create_nested_automatic_run_draft(
