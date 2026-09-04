@@ -132,3 +132,52 @@ test('批量维护命令拒绝缺少精确删除目标', async () => {
     assert.equal(result.status, 2);
   }
 });
+
+test('新增 FlowRun 与模型快捷命令保持公开 API 形状', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const node = invoke(config, 'run', 'node', 'run-1', '--node', 'node-run-1', '--dry-run');
+  assert.equal(node.status, 0, node.stderr);
+  assert.deepEqual(JSON.parse(node.stdout), {
+    method: 'GET', payload: null,
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/nodes/node-run-1',
+  });
+  const copied = invoke(config, 'run', 'node-copy', 'run-1', '--node', 'node-run-1', '--data', '{"name":"再试一次"}', '--dry-run');
+  assert.equal(copied.status, 0, copied.stderr);
+  assert.deepEqual(JSON.parse(copied.stdout), {
+    method: 'POST', payload: { name: '再试一次' },
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/nodes/node-run-1/copy',
+  });
+  const deleted = invoke(config, 'run', 'node-delete', 'run-1', '--node', 'node-run-1', '--dry-run');
+  assert.equal(deleted.status, 0, deleted.stderr);
+  assert.equal(JSON.parse(deleted.stdout).method, 'DELETE');
+  const paused = invoke(config, 'run', 'pause', 'run-1', '--data', '{"expected_generation":2,"expected_session_row_version":9}', '--dry-run');
+  assert.equal(paused.status, 0, paused.stderr);
+  assert.deepEqual(JSON.parse(paused.stdout), {
+    method: 'POST', payload: { expected_generation: 2, expected_session_row_version: 9 },
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/runtime/pause',
+  });
+  const resumed = invoke(config, 'run', 'resume', 'run-1', '--data', '{"expected_generation":2,"expected_session_row_version":10}', '--dry-run');
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.equal(JSON.parse(resumed.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/runtime/resume');
+  const usage = invoke(config, 'model', 'usage', 'provider-1', '--dry-run');
+  assert.equal(usage.status, 0, usage.stderr);
+  assert.deepEqual(JSON.parse(usage.stdout), {
+    method: 'GET', payload: null,
+    url: 'https://example.test/flowweave/api/v1/model-providers/provider-1/usage',
+  });
+});
+
+test('运行时生命周期命令拒绝缺失或无效 fencing 字段', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  for (const args of [
+    ['run', 'pause', 'run-1', '--dry-run'],
+    ['run', 'resume', 'run-1', '--data', '{"expected_generation":1}', '--dry-run'],
+    ['run', 'pause', 'run-1', '--data', '{"expected_generation":"1","expected_session_row_version":2}', '--dry-run'],
+    ['run', 'node', 'run-1', '--dry-run'],
+  ]) {
+    const result = invoke(config, ...args);
+    assert.equal(result.status, 2);
+  }
+});

@@ -51,6 +51,10 @@ flowweave upload post /flow-runs/<run-id>/artifacts/upload \
 
 接受/拒绝、retry gate、Runtime confirmation batch decision、人工输出、自动运行草稿/启动、节点会话等均是平台控制的状态机动作。每一步都先读当前 Attempt/批次/Run，并以 OpenAPI 取得真实 body；需要幂等保障时使用 `Idempotency-Key`。顶层聊天任务不要混用节点会话，转 `flowweave-agent-workspace`。
 
+END gate 失败后，风险接受和补救 fork 都需要用户明确授权、当前 Attempt 的 `expected_state_version`，并应使用公开原子接口：`POST /node-attempts/<attempt-id>/accept-gate-risk`（还必须提供具体 `reason`）或 `POST /node-attempts/<attempt-id>/remediate-gate-failure`。先读取 gate evaluation；审查会话证据只能通过 `GET /node-attempts/<attempt-id>/gate-evaluations/<evaluation-id>/conversation/events` 读取，不得猜测评估、事件或版本 ID。
+
+节点会话可在首条消息或后续消息的 `references` 数组中引用已验证的 conversation event；每项只包含来源 `event_id` 和给用户显示/发送的 `content`。引用前读取来源会话事件，最多传入服务端 schema 允许的数量；不得伪造、改写或把引用当作跨 Run/Workspace 的绕过授权方式。
+
 如果状态卡住，先读取 Run、NodeRun、Runtime 和 events，保留失败上下文；不可进入 Docker 或 OpenHands 私有端点“手工完成”节点。取消或拒绝前必须有用户的明确授权。
 
 ## 节点会话工作区维护

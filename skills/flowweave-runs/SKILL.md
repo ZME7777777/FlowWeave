@@ -37,4 +37,13 @@ flowweave run replace <run-id> --data-file ./replacement.json --dry-run
 flowweave run replace <run-id> --data-file ./replacement.json
 ```
 
+暂停与恢复使用相同的 fencing 值；先读取 `run runtime`，再把当前 `generation` 和 session `row_version` 放入请求，且只在用户明确授权后执行：
+
+```bash
+flowweave run pause <run-id> --data '{"expected_generation": 3, "expected_session_row_version": 12}' --dry-run
+flowweave run resume <run-id> --data '{"expected_generation": 3, "expected_session_row_version": 13}' --dry-run
+```
+
+复制或删除执行记录前，用 `flowweave run node <run-id> --node <node-run-id>` 确认归属和状态。`node-copy` 只创建独立的新手动记录；`node-delete` 是不可逆的状态变更，均须有用户对精确记录 ID 的明确授权。
+
 取消、完成和删除都改变业务状态。先读取 Run，确认它就是目标且用户意图明确，再使用 `run cancel`、`run complete` 或 `run delete`；操作后重新读取或查看事件验证结果。不能用 Docker 重启或数据库写入来替代平台的取消/恢复语义。

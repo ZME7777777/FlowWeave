@@ -29,6 +29,8 @@ flowweave model test <provider-id>
 
 写入后读取列表/详情，确认返回 ID 和状态；发现模型后再测试实际连接。连接失败时保留服务端错误码与 provider ID，先检查该供应商配置和网络许可，不在 CLI 配置中伪造认证信息。
 
+对于支持的 API-key 供应商，可用 `flowweave model usage <provider-id>` 读取上游用量或余额。它只读取平台托管凭据的结果；不要把 API Key 作为命令参数、查询参数或请求体传入，也不要把返回中可能敏感的账户数据复制到日志。
+
 ## Codex OAuth
 
 仅对平台支持的供应商使用设备授权：先调用 `flowweave model oauth-start <provider-id>`，让用户在返回的验证地址完成授权，再用 `oauth-poll` 查看结果。用 `oauth-status` 查询，明确授权撤销后才 `oauth-revoke`。OAuth 设备码与令牌是敏感数据，不复制到日志或文件。
