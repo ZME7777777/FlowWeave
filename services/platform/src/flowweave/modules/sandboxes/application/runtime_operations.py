@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
@@ -18,7 +18,13 @@ from flowweave.modules.tasks.public import enqueue
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, not_found
-from flowweave.shared.models import FlowRun
+from flowweave.shared.models import (
+    AttemptState,
+    FlowRun,
+    NodeAttempt,
+    NodeRun,
+    RunEvent,
+)
 
 
 def _retention_policy() -> dict[str, Any]:
@@ -250,6 +256,7 @@ def request_runtime_pause(
             409,
             {"runtime_session_id": session.id},
         )
+    _pause_active_attempts(db, runtime_owner_id=owner_id)
     session.status = "STOPPED"
     session.stopped_at = now()
     session.row_version += 1
@@ -266,6 +273,61 @@ def request_runtime_pause(
     )
     finish(db)
     return runtime_overview(db, flow_run_id)
+
+
+def _pause_active_attempts(db: Session, *, runtime_owner_id: str) -> None:
+    """Persist the business pause before the shared Runtime is drained.
+
+    Nested automatic FlowRuns deliberately share their parent's Runtime, so a
+    Runtime pause must cover the owner's unfinished Attempts and every nested
+    record that executes inside it. Terminal audit facts remain immutable. The
+    Runtime fence established by the caller prevents any later command from
+    continuing these Attempts on the old generation.
+    """
+
+    attempts = list(
+        db.scalars(
+            select(NodeAttempt)
+            .join(NodeRun, NodeRun.id == NodeAttempt.node_run_id)
+            .join(FlowRun, FlowRun.id == NodeRun.flow_run_id)
+            .where(
+                NodeAttempt.state.not_in(
+                    (
+                        AttemptState.ACCEPTED,
+                        AttemptState.REJECTED,
+                        AttemptState.CANCELLED,
+                        AttemptState.PAUSED,
+                    )
+                ),
+                or_(
+                    FlowRun.id == runtime_owner_id,
+                    FlowRun.parent_flow_run_id == runtime_owner_id,
+                ),
+            )
+            .with_for_update()
+        )
+    )
+    for attempt in attempts:
+        node_run = db.get(NodeRun, attempt.node_run_id)
+        if node_run is None:
+            raise DomainError(
+                "RUNTIME_ATTEMPT_OWNER_INVALID",
+                "An active Attempt has no owning NodeRun",
+                409,
+                {"attempt_id": attempt.id},
+            )
+        attempt.state = AttemptState.PAUSED
+        attempt.runtime_phase = "PAUSED"
+        attempt.state_version += 1
+        db.add(
+            RunEvent(
+                flow_run_id=node_run.flow_run_id,
+                node_run_id=node_run.id,
+                attempt_id=attempt.id,
+                event_type="ATTEMPT_PAUSED",
+                payload_json={"reason": "FLOW_RUN_RUNTIME_PAUSED"},
+            )
+        )
 
 
 def request_runtime_resume(
