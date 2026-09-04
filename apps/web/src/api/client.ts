@@ -430,6 +430,7 @@ export const api = {
     request<RuntimeConfirmationBatch>(`/runtime-confirmation-batches/${batchId}/decision`, json('POST', { accept, reason }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   acceptGateRisk: (attemptId: string, version: number, reason: string) => request<FlowRun>(`/node-attempts/${attemptId}/accept-gate-risk`, json('POST', { expected_state_version: version, reason }, true)),
+  remediateGateFailure: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/remediate-gate-failure`, json('POST', { expected_state_version: version }, true)),
   gateEvaluationEvents: (attemptId: string, evaluationId: string, cursor?: string) => request<OpenHandsConversationEventBatch>(`/node-attempts/${attemptId}/gate-evaluations/${evaluationId}/conversation/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
   rejectAttempt: (attemptId: string, reason: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reject`, json('POST', { reason, copy_input_bindings: true, expected_state_version: version }, true)),
   retryGates: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-gates`, json('POST', { expected_state_version: version })),

@@ -21,6 +21,7 @@ from flowweave.shared.schemas import (
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
     AutomaticRunStartWrite,
+    GateRemediationWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
     InputBindingsWrite,
@@ -414,6 +415,24 @@ async def accept_gate_risk(
             attempt_id,
             payload,
             _key(idempotency_key, "accept-gate-risk", attempt_id),
+        ),
+    )
+
+
+@router.post("/node-attempts/{attempt_id}/remediate-gate-failure", status_code=201)
+async def remediate_gate_failure(
+    attempt_id: str,
+    payload: GateRemediationWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.remediate_gate_failure(
+            session,
+            attempt_id,
+            payload,
+            _key(idempotency_key, "remediate-gate-failure", attempt_id),
         ),
     )
 

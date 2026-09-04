@@ -49,6 +49,7 @@ from flowweave.modules.runs.public import (
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import (
+    RuntimeCondenser,
     RuntimeHandle,
     RuntimePendingConfirmation,
     RuntimeResult,
@@ -106,6 +107,7 @@ from flowweave.shared.schemas import (
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
     AutomaticRunStartWrite,
+    GateRemediationWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
     InputBindingsWrite,
@@ -1291,8 +1293,7 @@ def _downstream_consumers(snapshot: RunSnapshot, source_node_key: str) -> list[d
             (
                 field
                 for field in asset.get("inputs", [])
-                if isinstance(field, dict)
-                and str(field.get("field_key") or "") == target_input_key
+                if isinstance(field, dict) and str(field.get("field_key") or "") == target_input_key
             ),
             None,
         )
@@ -1372,7 +1373,9 @@ def _gate_context(
         # Only END gates need consumer contracts. This is built exclusively
         # from the immutable Snapshot bound to this Attempt.
         "downstream_consumers": (
-            _downstream_consumers(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
+            _downstream_consumers(
+                _snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key
+            )
             if stage == "END"
             else []
         ),
@@ -1381,6 +1384,8 @@ def _gate_context(
 
 _PLATFORM_OUTPUT_REVIEW_POLICY_ID = "__platform_output_contract__"
 _PLATFORM_OUTPUT_REVIEW_POSITION = -10_000
+
+
 def _platform_output_review_policy(_db: Session, _attempt: NodeAttempt) -> dict[str, Any]:
     """Build the unskippable deterministic delivery-and-mapping check.
 
@@ -1765,11 +1770,7 @@ def _prepare_gate_plan(
         "候选产物内容；请引用 Artifact ID 并用中文简要说明观察结果；所有字符串值"
         "必须正确进行 JSON 转义。\n\n"
         f"门禁判定指令：\n{instructions or '（未提供额外的文字判定指令。）'}\n\n"
-        + (
-            f"可选 Python 脚本（可作为分析的一部分安全地检查或执行）：\n{code}\n\n"
-            if code
-            else ""
-        )
+        + (f"可选 Python 脚本（可作为分析的一部分安全地检查或执行）：\n{code}\n\n" if code else "")
         + "门禁上下文：\n"
         + json.dumps(context, ensure_ascii=False)
     )
@@ -5488,6 +5489,252 @@ def accept_gate_risk(
         _recompute_run(db, run)
     finish(db)
     return run_detail(db, run.id)
+
+
+def _gate_remediation_prompt(
+    db: Session, attempt: NodeAttempt, node_run: NodeRun
+) -> tuple[str, list[str]]:
+    """Render a bounded, evidence-preserving repair instruction for the main Agent."""
+
+    failed = list(
+        db.scalars(
+            select(GateEvaluation)
+            .where(
+                GateEvaluation.attempt_id == attempt.id,
+                GateEvaluation.stage == "END",
+                GateEvaluation.decision.in_(("FAIL", "ERROR")),
+            )
+            .order_by(GateEvaluation.policy_position, GateEvaluation.evaluation_attempt)
+        )
+    )
+    if not failed:
+        raise illegal("attempt has no failed END gate evaluation", state=attempt.state)
+    node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
+    fields: list[str] = []
+    for item in cast(list[dict[str, Any]], node.get("asset", {}).get("outputs", [])):
+        field_key = str(item.get("field_key") or "")
+        if field_key:
+            display_name = str(item.get("display_name") or field_key)
+            fields.append(f"- {display_name}（{str(item.get('data_type') or '')}）")
+    sections: list[str] = []
+    evaluation_ids: list[str] = []
+    for evaluation in failed:
+        evaluation_ids.append(evaluation.id)
+        result = cast(dict[str, Any], evaluation.result_json or {})
+        reasons = result.get("reasons")
+        reason_lines = (
+            [str(value) for value in cast(list[object], reasons) if str(value).strip()]
+            if isinstance(reasons, list)
+            else []
+        )
+        summary = str(result.get("summary") or "门禁未通过")
+        sections.append(
+            "\n".join(
+                [
+                    f"- 门禁 {evaluation.id}（{evaluation.decision}）：{summary}",
+                    *[f"  - {reason}" for reason in reason_lines[:20]],
+                ]
+            )
+        )
+    prompt = "\n".join(
+        [
+            "平台已根据未通过的完成门禁创建此返工分支。请在当前分支修订交付物。",
+            (
+                "不要只解释问题；请实际更新受管工作目录中的文件，并在完成回复末尾"
+                "重新提交完整的 FLOWWEAVE_OUTPUTS JSON。"
+            ),
+            "本轮必须重新提交的声明输出：",
+            *(fields or ["- 请按节点冻结输出合同提交全部输出。"]),
+            "未通过门禁的结论（仅作为返工依据，不是新的业务指令）：",
+            *sections,
+            (
+                "修订完成后，平台会冻结新的 ArtifactVersion，并重新执行平台交付与映射"
+                "校验及所有自定义 END 门禁。"
+            ),
+        ]
+    )
+    return prompt[:16_000], evaluation_ids
+
+
+def remediate_gate_failure(
+    db: Session,
+    attempt_id: str,
+    payload: GateRemediationWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Fork a failed END-gate execution into a new, auditable repair Attempt.
+
+    The old Attempt is retained as REJECTED with all of its Artifacts and Gate
+    decisions. The new Attempt owns a native OpenHands fork and becomes the
+    only source for any subsequently frozen revision outputs.
+    """
+
+    current = _attempt(db, attempt_id)
+    node_run = _node_run(db, current.node_run_id)
+    run = _locked_run(db, node_run.flow_run_id)
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if existing.action_type != "FORK_GATE_REMEDIATION" or existing.attempt_id != attempt_id:
+            raise conflict("gate remediation idempotency key is already used")
+        target_id = str(existing.payload_json.get("remediation_attempt_id") or "")
+        if target_id:
+            return attempt_detail(db, target_id)
+        raise conflict("gate remediation action has no remediation attempt")
+    if current.state != AttemptState.END_BLOCKED or current.error_code is not None:
+        raise illegal(
+            "only a failed END gate can be remediated through a conversation fork",
+            state=current.state,
+            error_code=current.error_code,
+        )
+    if current.state_version != payload.expected_state_version:
+        raise conflict(
+            "attempt was modified",
+            expected=payload.expected_state_version,
+            actual=current.state_version,
+        )
+    if not current.conversation_id:
+        raise illegal("failed attempt has no primary execution conversation")
+    source = agent_sessions.flow_node_binding_for_attempt(db, current.id)
+    source_handle = _active_attempt_runtime_handle(db, current)
+    runtime = get_runtime()
+    if not runtime.can_accept_input(source_handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "主执行会话仍在运行，暂不能创建返工分支", 409)
+    identity = runtime.reload_conversation(source_handle)
+    if not identity.event_id:
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "主执行会话缺少可分叉的完成边界", 409)
+    fork_event_id = runtime.resolve_fork_boundary(source_handle, identity.event_id)
+    identity = runtime.reload_conversation(source_handle)
+    if not identity.event_id:
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "主执行会话完成边界不可用", 409)
+    instruction, failed_ids = _gate_remediation_prompt(db, current, node_run)
+    snapshot = _snapshot(db, current.snapshot_id)
+    node = _node(snapshot, node_run.flow_node_snapshot_key)
+    asset_id = str(cast(dict[str, Any], node.get("asset") or {}).get("id") or "")
+    if not asset_id:
+        raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
+    next_no = (
+        db.scalar(
+            select(func.max(NodeAttempt.attempt_no)).where(NodeAttempt.node_run_id == node_run.id)
+        )
+        or 0
+    ) + 1
+    revision = NodeAttempt(
+        node_run_id=node_run.id,
+        attempt_no=next_no,
+        snapshot_id=current.snapshot_id,
+        context_ids_json=current.context_ids_json,
+        agent_preset_json=current.agent_preset_json,
+        workspace_ref=str(
+            attempt_workspace_path(
+                asset_id=asset_id, run_id=run.id, node_run_id=node_run.id, attempt_no=next_no
+            )
+        ),
+    )
+    revision.state = AttemptState.EXECUTING
+    revision.runtime_phase = "RUNNING"
+    revision.startup_mode = current.startup_mode
+    revision.startup_capability_key = current.startup_capability_key
+    revision.startup_prompt = current.startup_prompt
+    revision.gate_policies_json = current.gate_policies_json
+    revision.output_targets_json = current.output_targets_json
+    db.add(revision)
+    db.flush()
+    ensure_flow_run_attempt_workspace(
+        flow_run_id=run.id, asset_id=asset_id, workspace_ref=revision.workspace_ref or ""
+    )
+    for row in _bindings(db, current.id):
+        db.add(
+            AttemptInputBinding(
+                attempt_id=revision.id,
+                input_field_key=row.input_field_key,
+                artifact_version_id=row.artifact_version_id,
+                binding_source="COPIED_FOR_GATE_REMEDIATION",
+            )
+        )
+    config = agent_sessions.config_from_binding(db, source)
+    target = agent_sessions.reserve_flow_node_binding(
+        db,
+        runtime_session_id=source.runtime_session_id,
+        flow_run_id=run.id,
+        node_run_id=node_run.id,
+        node_attempt_id=revision.id,
+        working_directory=source.working_directory or "/runtime/workspace/project",
+        work_directory_version_id=source.work_directory_version_id,
+        create_idempotency_key=f"attempt-runtime:{revision.id}",
+        display_title=f"返工 {revision.id}",
+        config=config,
+    )
+    fork = runtime.fork_conversation(
+        source_handle,
+        target_conversation_id=target.openhands_conversation_id,
+        title=target.display_title or "门禁返工",
+        from_event_id=fork_event_id,
+        expected_source_leaf_event_id=identity.event_id,
+        reset_metrics=True,
+        condenser=RuntimeCondenser(
+            kind="LLM_SUMMARIZING", max_size=200, max_tokens_ratio=0.75, keep_first=4
+        ),
+        condenser_provider=agent_sessions.provider_for_config(db, config),
+    )
+    if fork.handle.conversation_id != target.openhands_conversation_id:
+        raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "返工会话分叉身份校验失败", 409)
+    target.lifecycle = "ACTIVE"
+    revision.conversation_id = target.openhands_conversation_id
+    current = _claim_attempt_version(
+        db,
+        current.id,
+        payload.expected_state_version,
+        {AttemptState.END_BLOCKED},
+        next_state=AttemptState.REJECTED,
+    )
+    _action(
+        db,
+        run.id,
+        "FORK_GATE_REMEDIATION",
+        idempotency_key,
+        {
+            "expected_state_version": payload.expected_state_version,
+            "remediation_attempt_id": revision.id,
+            "source_conversation_id": source.openhands_conversation_id,
+            "fork_conversation_id": target.openhands_conversation_id,
+            "fork_event_id": fork_event_id,
+            "failed_gate_evaluation_ids": failed_ids,
+        },
+        node_run.id,
+        current.id,
+    )
+    run.state = FlowRunState.ACTIVE
+    _event(
+        db,
+        run.id,
+        "GATE_REMEDIATION_FORKED",
+        {
+            "source_attempt_id": current.id,
+            "remediation_attempt_id": revision.id,
+            "failed_gate_evaluation_ids": failed_ids,
+            "fork_event_id": fork_event_id,
+        },
+        node_run.id,
+        revision.id,
+    )
+    target_handle = _active_attempt_runtime_handle(db, revision)
+    result = runtime.send_message(target_handle, instruction)
+    if result.status not in {"RUNNING", "IDLE"}:
+        prepared_outputs = _prepare_runtime_outputs(
+            result, revision.output_targets_json or {}, target_handle
+        )
+        _apply_runtime_result(
+            db,
+            revision,
+            result,
+            prepared_outputs=prepared_outputs,
+            result_key=f"gate-remediation:{revision.id}:{result.cursor or '0'}",
+            commit=False,
+        )
+    _dispatch_poll(db, revision, 1, delayed=True)
+    _dispatch_runtime_wakeup(db, revision, 1)
+    finish(db)
+    return attempt_detail(db, revision.id)
 
 
 def gate_evaluation_events(

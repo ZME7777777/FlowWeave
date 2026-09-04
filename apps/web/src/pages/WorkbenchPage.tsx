@@ -662,6 +662,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const mutation = useMutation({ mutationFn: async ({ kind, body }: { kind: string; body?: unknown }) => {
     if (kind === 'accept') return api.acceptAttempt(attempt.id, attempt.state_version);
     if (kind === 'accept-gate-risk') return api.acceptGateRisk(attempt.id, attempt.state_version, String((body as { reason: string }).reason));
+    if (kind === 'remediate-gate-failure') return api.remediateGateFailure(attempt.id, attempt.state_version);
     if (kind === 'reject') return api.rejectAttempt(attempt.id, String((body as { reason: string }).reason), attempt.state_version);
     if (kind === 'human') return api.humanInput(attempt.id, String((body as { content: string }).content), attempt.state_version);
     if (kind === 'manual-outputs') return api.submitManualOutputs(
@@ -709,7 +710,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && (automaticAttempt ? <section className="terminal-run-panel"><h4>等待平台自动流转</h4><p>完成门禁已通过。平台正在按冻结拓扑和端口映射验收产物并选择后继节点，无需进入会话推动。</p></section> : <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>完成节点并流转</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>)}
-      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{runtimeFailed ? '节点执行失败' : automaticAttempt ? '自动运行需要人工处理' : '门禁未通过'}</h4><p>{attempt.error_detail || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。请检查模型配置和运行日志后重新执行节点。' : '请查看门禁结果，修正问题后重试。')}</p>{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && <button className="secondary full" onClick={() => act('retry')}>重试当前阶段</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL/ERROR 将原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
+      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{runtimeFailed ? '节点执行失败' : automaticAttempt ? '自动运行需要人工处理' : '门禁未通过'}</h4><p>{attempt.error_detail || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。请检查模型配置和运行日志后重新执行节点。' : '请查看门禁结果，选择人工接受风险，或让平台 Fork 主会话后自动返工。')}</p>{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && <button className="secondary full" onClick={() => act('retry')}>重试当前阶段</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: 'Fork 会话并自动返工？', message: '平台会从主执行会话的完成边界创建新的原生 Fork，并把所有未通过门禁的结论发送给返工 Agent。旧轮次、产物和失败记录会保留；新轮次完成后会重新冻结输出并执行完成门禁。', confirmLabel: 'Fork 并开始返工' }).then(ok => ok && act('remediate-gate-failure'))}>Fork 会话并自动返工</button><label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL/ERROR 将原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
       {!automaticAttempt && !attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
     </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies} onViewConversation={setGateConversation}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts"><ArtifactList artifacts={attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/></section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{inputDialogOpen && attemptNode && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={attemptNode} initialBindings={nodeInputBindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setInputDialogOpen(false); setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); act('bind', nextBindings); }}/>} {gateConversation && <GateConversationDialog attemptId={attempt.id} evaluation={gateConversation} onClose={() => setGateConversation(undefined)}/>}</aside>;
 }
@@ -893,6 +894,18 @@ export function WorkbenchPage() {
       const nextAttempt = result as NodeAttempt;
       qc.setQueryData<FlowRun>(['flow-run', selectedRunId], current => current ? { ...current, node_runs: current.node_runs.map(item => item.id === nodeRun.id ? { ...item, attempts: [...item.attempts.map(existing => existing.id === attempt?.id ? { ...existing, state: 'REJECTED' as const } : existing), nextAttempt] } : item) } : current);
       selectExecution(nodeRun.id, nextAttempt.id);
+    }
+    if (kind === 'remediate-gate-failure' && result && typeof result === 'object' && 'id' in result && nodeRun) {
+      const revision = result as NodeAttempt;
+      qc.setQueryData<FlowRun>(['flow-run', selectedRunId], current => current ? {
+        ...current,
+        state: 'ACTIVE',
+        node_runs: current.node_runs.map(item => item.id === nodeRun.id ? {
+          ...item,
+          attempts: [...item.attempts.map(existing => existing.id === attempt?.id ? { ...existing, state: 'REJECTED' as const } : existing), revision],
+        } : item),
+      } : current);
+      selectExecution(nodeRun.id, revision.id);
     }
     if (kind === 'cancel' && result && typeof result === 'object' && 'node_run_id' in result) {
       const cancelled = result as NodeAttempt;
