@@ -20,6 +20,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     initial_user_event_id,
     message_payload,
     normalized_first_sentence,
+    project_conversation_references,
     record_message_attachments,
     validate_attachment_owners,
 )
@@ -994,6 +995,7 @@ def bootstrap_node_conversation(
     attempt_id: str,
     content: str,
     attachments: tuple[dict[str, str | int], ...],
+    references: tuple[dict[str, str], ...] = (),
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -1003,7 +1005,7 @@ def bootstrap_node_conversation(
     """Lazily create a node Conversation and durably reconcile its first event."""
 
     text = content.strip()
-    if not text and not attachments and not legacy_image_urls:
+    if not text and not attachments and not references and not legacy_image_urls:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     try:
         binding_id = str(UUID(conversation_id)) if conversation_id else str(uuid4())
@@ -1015,7 +1017,7 @@ def bootstrap_node_conversation(
             if not value.startswith("data:image/"):
                 raise DomainError("AGENT_ATTACHMENT_INVALID", "图片附件无效", 422)
             base64.b64decode(value.partition(",")[2], validate=True)
-    prompt, image_urls = message_payload(text, attachments)
+    prompt, image_urls = message_payload(text, attachments, references)
     if legacy_image_urls:
         image_urls = legacy_image_urls
     agent_sessions.resolve_flow_node_session_host(
@@ -1362,6 +1364,11 @@ def _event_batch_dict(
 
     def project(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
+        display_content, references = project_conversation_references(
+            str(payload.get("content") or "")
+        )
+        if references:
+            payload["conversation_references"] = list(references)
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             # Automatic starts record an empty display override: retain the
@@ -1378,6 +1385,8 @@ def _event_batch_dict(
                 }
                 for item in attachments
             ]
+        elif references:
+            payload["display_content"] = display_content
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
     return {
@@ -1497,16 +1506,17 @@ def send_node_message(
     binding_id: str,
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
+    references: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
     """Send the same attachment-aware native message as the outer workbench."""
 
-    if not content.strip() and not attachments:
+    if not content.strip() and not attachments and not references:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
     validate_attachment_owners(binding.id, attachments)
-    prompt, image_urls = message_payload(content, attachments)
+    prompt, image_urls = message_payload(content, attachments, references)
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):

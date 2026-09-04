@@ -58,6 +58,11 @@ class NodeAttachmentReference(_Write):
     byte_size: int | None = Field(default=None, ge=0, le=25 * 1024 * 1024)
 
 
+class NodeConversationReference(_Write):
+    event_id: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=10_000)
+
+
 class NodeSessionBootstrapFullWrite(_Write):
     conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
     client_question_id: str | None = Field(default=None, min_length=1, max_length=100)
@@ -69,12 +74,18 @@ class NodeSessionBootstrapFullWrite(_Write):
     attachments: list[NodeAttachmentReference] = cast(
         list[NodeAttachmentReference], Field(default_factory=list, max_length=10)
     )
+    references: list[NodeConversationReference] = cast(
+        list[NodeConversationReference], Field(default_factory=list, max_length=10)
+    )
 
 
 class NodeSessionMessageWrite(_Write):
     content: str = Field(max_length=200_000)
     attachments: list[NodeAttachmentReference] = cast(
         list[NodeAttachmentReference], Field(default_factory=list, max_length=10)
+    )
+    references: list[NodeConversationReference] = cast(
+        list[NodeConversationReference], Field(default_factory=list, max_length=10)
     )
 
 
@@ -292,6 +303,7 @@ async def bootstrap_node_session(
                 cast(dict[str, str | int], item.model_dump(exclude_none=True))
                 for item in payload.attachments
             ),
+            references=tuple(item.model_dump() for item in payload.references),
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,
@@ -649,6 +661,7 @@ async def node_session_message(
                 cast(dict[str, str | int], item.model_dump(exclude_none=True))
                 for item in payload.attachments
             ),
+            references=tuple(item.model_dump() for item in payload.references),
         ),
     )
 

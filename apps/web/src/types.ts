@@ -393,6 +393,7 @@ export interface OpenHandsConversationEvent {
     };
     display_content?: string;
     attachments?: AgentAttachment[];
+    conversation_references?: AgentConversationReference[];
     [key: string]: unknown;
   };
 }
@@ -452,6 +453,10 @@ export interface AgentPendingConfirmation {
 }
 export interface AgentAttachment {
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
+}
+export interface AgentConversationReference {
+  event_id: string;
+  content: string;
 }
 export interface AgentConversationContext {
   used_tokens?: number | null; window_tokens?: number | null; cumulative_tokens?: number | null;

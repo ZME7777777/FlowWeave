@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import shutil
 import time
@@ -61,6 +62,7 @@ _MECHANICAL_TITLE = re.compile(
     r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
     re.IGNORECASE,
 )
+_CONVERSATION_REFERENCE_MARKER = "\n\n---FLOWWEAVE_CONVERSATION_REFERENCES---\n"
 _PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
     (
         "当前会话的项目根目录是 /runtime/workspace/project。",
@@ -936,6 +938,7 @@ def bootstrap_conversation(
     reasoning_effort: str | None = None,
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
+    references: tuple[dict[str, str], ...] = (),
     capability_version_ids: tuple[str, ...] = (),
     idempotency_key: str,
 ) -> dict[str, Any]:
@@ -948,9 +951,9 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if not message_text and not attachments:
+    if not message_text and not attachments and not references:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
-    prompt, image_urls = _message_payload(message_text, attachments)
+    prompt, image_urls = _message_payload(message_text, attachments, references)
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
     if binding is not None and command is not None:
@@ -1329,6 +1332,11 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
             payload["content"] = _project_sandbox_images(
                 content, workspace_id=workspace.id, binding_id=binding.id
             )
+        display_content, references = _project_conversation_references(
+            str(payload.get("content") or "")
+        )
+        if references:
+            payload["conversation_references"] = list(references)
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             payload["display_content"] = attachments[0].content
@@ -1341,6 +1349,8 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
                 }
                 for attachment in attachments
             ]
+        elif references:
+            payload["display_content"] = display_content
         elif event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
             "user",
             "human",
@@ -1637,13 +1647,14 @@ def message(
     binding_id: str,
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
+    references: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
-    if not content.strip() and not attachments:
+    if not content.strip() and not attachments and not references:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
     _validate_attachment_owners(binding.id, attachments)
-    prompt, image_urls = _message_payload(content, attachments)
+    prompt, image_urls = _message_payload(content, attachments, references)
     if not binding.streaming_callback_ready:
         raise DomainError(
             "AGENT_STREAMING_MIGRATION_REQUIRED",
@@ -1800,7 +1811,9 @@ def _legacy_message_attachments(content: str) -> tuple[str, tuple[str, ...]]:
 
 
 def _message_payload(
-    content: str, attachments: tuple[dict[str, str | int], ...]
+    content: str,
+    attachments: tuple[dict[str, str | int], ...],
+    references: tuple[dict[str, str], ...] = (),
 ) -> tuple[str, tuple[str, ...]]:
     if len(attachments) > 10:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
@@ -1829,7 +1842,55 @@ def _message_payload(
         prompt += (
             "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
         ) + "\n".join(f"- {path}" for path in paths)
+    # This payload is intentionally the final suffix. Event projection removes
+    # it from the browser-visible message, while OpenHands still receives the
+    # selected source text as part of the native user event. Keeping it after
+    # attachment context also makes references and ordinary attachments compose.
+    normalized_references = _validated_conversation_references(references)
+    if normalized_references:
+        prompt += _CONVERSATION_REFERENCE_MARKER + json.dumps(
+            {"references": normalized_references}, ensure_ascii=False, separators=(",", ":")
+        )
     return prompt, tuple(image_urls)
+
+
+def _validated_conversation_references(
+    references: tuple[dict[str, str], ...],
+) -> tuple[dict[str, str], ...]:
+    if len(references) > 10:
+        raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422)
+    normalized: list[dict[str, str]] = []
+    for item in references:
+        event_id = item.get("event_id")
+        content = item.get("content")
+        if not isinstance(event_id, str) or not event_id.strip() or not isinstance(content, str):
+            raise DomainError(
+                "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
+            )
+        text = content.strip()
+        if not text or len(text) > 10_000:
+            raise DomainError(
+                "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
+            )
+        normalized.append({"event_id": event_id.strip(), "content": text})
+    return tuple(normalized)
+
+
+def _project_conversation_references(content: str) -> tuple[str, tuple[dict[str, str], ...]]:
+    """Render native reference context as compact UI metadata after reload."""
+
+    visible, marker, encoded = content.rpartition(_CONVERSATION_REFERENCE_MARKER)
+    if not marker:
+        return content, ()
+    try:
+        parsed = json.loads(encoded)
+        raw_references = parsed.get("references") if isinstance(parsed, dict) else None
+        if not isinstance(raw_references, list):
+            return content, ()
+        references = _validated_conversation_references(tuple(raw_references))
+    except (DomainError, TypeError, ValueError, json.JSONDecodeError):
+        return content, ()
+    return visible.strip(), references
 
 
 def _validate_attachment_owners(
@@ -2386,5 +2447,6 @@ enqueue_title_task = _enqueue_title_task
 frozen_runtime_capability = _frozen_runtime_capability
 initial_user_event_id = _initial_user_event_id
 message_payload = _message_payload
+project_conversation_references = _project_conversation_references
 record_message_attachments = _record_message_attachments
 validate_attachment_owners = _validate_attachment_owners

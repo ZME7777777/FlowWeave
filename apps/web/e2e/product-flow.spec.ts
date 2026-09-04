@@ -1197,6 +1197,65 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
 });
 
+test('selected conversation text is sent and rendered as a compact reference card', async ({ page }) => {
+  const now = new Date().toISOString();
+  const selectedText = '这段内容只能作为会话引用卡片显示';
+  let sentPayload: Record<string, unknown> | undefined;
+  const events = () => [
+    { id: 'reference-source-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请给出可引用的建议', timestamp: now } },
+    { id: 'reference-source-assistant', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'reference-source-user', content: selectedText, timestamp: now } },
+    ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', conversation_references: sentPayload.references, timestamp: now } }] : []),
+  ];
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
+    if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, updated_at: now }) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }]) });
+    if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: events(), next_cursor: null }) });
+    if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
+    if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+    if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
+    if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
+    if (path.endsWith('/pending-confirmation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      sentPayload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'reference-target-user' }) });
+    }
+    if (path.endsWith('/capabilities')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+
+  await page.goto('/agent/conversations/reference-conversation');
+  const source = page.locator('[data-conversation-event-id="reference-source-assistant"]');
+  await expect(source).toContainText(selectedText);
+  await source.evaluate(element => {
+    const content = element.querySelector('p');
+    if (!content) throw new Error('Expected assistant message content');
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    content.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+  });
+  await page.getByRole('button', { name: '添加到会话' }).click();
+  await expect(page.getByLabel('已添加的会话引用')).toContainText('会话引用 1');
+  await page.getByLabel('发送 Agent 消息').fill('请据此继续');
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect.poll(() => sentPayload).toMatchObject({
+    content: '请据此继续',
+    references: [{ event_id: 'reference-source-assistant', content: selectedText }],
+  });
+  const sentMessage = page.locator('[data-user-event-id="reference-target-user"]');
+  await expect(sentMessage).toContainText('请据此继续');
+  await expect(sentMessage).toContainText('会话引用 1');
+  await expect(sentMessage).not.toContainText(selectedText);
+});
+
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
   const now = new Date().toISOString();
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
