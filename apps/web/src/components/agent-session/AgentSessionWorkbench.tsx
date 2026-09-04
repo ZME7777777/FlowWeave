@@ -13,6 +13,8 @@ import { ConversationSurface } from '../ConversationSurface';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
+import { SubagentAvatar } from '../SubagentAvatar';
+import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
@@ -68,6 +70,7 @@ interface RuntimeTaskProjection {
   startedAt?: string;
   finishedAt?: string;
   status: RuntimeTaskStatus;
+  avatarSlot: SubagentAvatarSlot;
   outcome?: unknown;
 }
 
@@ -77,6 +80,7 @@ interface RuntimeTaskProjection {
  * tool_call_id; event order and text are deliberately never used as a join.
  */
 function runtimeTasksFromEvents(events: OpenHandsConversationEvent[]): RuntimeTaskProjection[] {
+  const avatarSlots = subagentAvatarSlots(events);
   const tasks = new Map<string, RuntimeTaskProjection>();
   const byToolCall = new Map<string, RuntimeTaskProjection>();
   for (const event of events) {
@@ -90,6 +94,7 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[]): RuntimeTa
       description: typeof task.description === 'string' ? task.description : undefined,
       startedAt: typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined,
       status: 'RUNNING',
+      avatarSlot: avatarSlots.get(actionEventId) ?? 'orbit',
     };
     tasks.set(actionEventId, item);
     if (item.toolCallId) byToolCall.set(item.toolCallId, item);
@@ -113,25 +118,8 @@ function runtimeTaskStatus(task: RuntimeTaskProjection): string {
   return task.status === 'RUNNING' ? '运行中' : task.status === 'COMPLETED' ? '已完成' : '失败';
 }
 
-type RuntimeTaskVisual = 'runner' | 'explorer' | 'reviewer' | 'general' | 'custom';
-
-function runtimeTaskVisual(task: RuntimeTaskProjection): RuntimeTaskVisual {
-  const type = task.subagentType.toLowerCase();
-  if (type.includes('bash') || type.includes('runner')) return 'runner';
-  if (type.includes('explor') || type.includes('search')) return 'explorer';
-  if (type.includes('review') || type.includes('audit') || type.includes('security')) return 'reviewer';
-  if (type.includes('general') || type.includes('default')) return 'general';
-  return 'custom';
-}
-
 function RuntimeTaskGlyph({ task, size = 15 }: { task: RuntimeTaskProjection; size?: number }) {
-  const visual = runtimeTaskVisual(task);
-  const Icon = visual === 'runner' ? Square
-    : visual === 'explorer' ? Search
-      : visual === 'reviewer' ? ShieldAlert
-        : visual === 'general' ? Bot
-          : Boxes;
-  return <span className={`agent-subagent-glyph ${visual} ${task.status.toLowerCase()}`} aria-hidden="true"><Icon size={size}/></span>;
+  return <SubagentAvatar slot={task.avatarSlot} status={task.status.toLowerCase() as 'running' | 'completed' | 'error'} size={size}/>;
 }
 
 function definitionStrings(value: unknown): string[] {
@@ -178,7 +166,7 @@ function RuntimeTaskTab({ tasks, definitions, selectedTaskId, onSelect }: {
   const selectedTask = tasks.find(task => task.id === selectedTaskId) ?? tasks[0];
   if (!selectedTask) return <div className="agent-drawer-empty"><b>暂无子智能体记录</b><span>本会话出现 OpenHands TaskAction 后，记录会显示在这里。</span></div>;
   return <section className="agent-subagent-tab" aria-label="子智能体记录">
-    <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><i className={task.status.toLowerCase()}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
+    <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><RuntimeTaskGlyph task={task} size={13}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
     <RuntimeTaskRecord task={selectedTask} definitions={definitions}/>
   </section>;
 }
@@ -1376,7 +1364,7 @@ function WorkspaceDrawer({
   const summary = details && <section className="agent-workspace-overview">
     <article><FolderOpen size={16}/><div><small>当前工作区</small><b>{details.scope.display_name}</b><code>{details.working_directory}</code></div></article>
     <article><MonitorCog size={16}/><div><small>运行环境</small><b>{details.runtime.container_id || (details.runtime.write_available ? '运行中' : '恢复中')}</b><p>所有会话共用此 Workspace Runtime；每个终端保留独立会话。</p></div></article>
-    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(task => task.status === 'RUNNING').length ? `${runtimeTasks.filter(task => task.status === 'RUNNING').length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 8).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task}/></button>)}</div>{runtimeTasks.length > 8 && <p>另有 {runtimeTasks.length - 8} 个记录</p>}</div></article>}
+    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(task => task.status === 'RUNNING').length ? `${runtimeTasks.filter(task => task.status === 'RUNNING').length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 5).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task}/></button>)}{runtimeTasks.length > 5 && <button type="button" className="agent-subagent-overflow" aria-label={`查看其余 ${runtimeTasks.length - 5} 个子智能体任务`} onClick={() => openRuntimeTasks()}>+{runtimeTasks.length - 5}</button>}</div></div></article>}
     <article><GitBranch size={16}/><div><small>Git 仓库</small>{details.repositories.length ? details.repositories.map(repository => <p key={repository.path}><b>{relativeWorkspacePath(repository.path, details.root)}</b>{repository.branch && <span>{repository.branch}</span>}{repository.head && <em>{repository.head.slice(0, 12)}</em>}{repository.remote && <code>{repository.remote}</code>}</p>) : <p>当前目录未检测到 Git 仓库。</p>}</div></article>
     <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <button type="button" className="agent-ssh-access-trigger" onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <div className="agent-workspace-source-list">{sources.map(source => source.kind === 'url' ? <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer" title={`打开链接：${source.label}`}><Link2 size={12}/><span><b>{source.label}</b><em>链接</em></span></a> : <button type="button" key={source.id} title={`在工作区预览：${source.label}`} onClick={() => source.attachment && selectFile(source.attachment.path)}>{source.kind === 'image' ? <ImageIcon size={12}/> : <FileText size={12}/>}<span><b>{source.label}</b><em>{source.pending ? '待发送' : source.kind === 'image' ? '图片' : '文件'}</em></span></button>)}</div> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
