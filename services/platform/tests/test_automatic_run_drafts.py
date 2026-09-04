@@ -270,6 +270,24 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     updated = updated_response.json()
     assert updated["automation_plan"]["readiness"] == {"ready": True, "issues": []}
 
+    copied_response = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{updated['id']}/copy", json={}
+    )
+    assert copied_response.status_code == 201, copied_response.text
+    copied = copied_response.json()
+    assert copied["id"] != updated["id"]
+    assert copied["parent_flow_run_id"] == parent["id"]
+    assert copied["state"] == "DRAFT"
+    assert copied["node_runs"] == []
+    assert copied["artifacts"] == []
+    assert copied["automation_plan"]["status"] == "DRAFT"
+    assert copied["automation_plan"]["node_plans"] == updated["automation_plan"]["node_plans"]
+    nested_after_copy = worker_client.get(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs"
+    )
+    assert nested_after_copy.status_code == 200, nested_after_copy.text
+    assert {item["id"] for item in nested_after_copy.json()} == {updated["id"], copied["id"]}
+
     wrong_parent = worker_client.get(
         f"/api/v1/flow-runs/{draft['id']}/automatic-runs"
     )

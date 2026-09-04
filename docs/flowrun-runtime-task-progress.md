@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-149 后续范围待拆分）
+> 下一可执行切片：`无`（FR-153 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2237,6 +2237,19 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 
 完成：节点会话恢复前仅在同一受权 Conversation 的原生 `input_readiness.execution_status` 精确为 `paused`、且 Attempt 仍为 `EXECUTING/RUNNING` 时，使用既有 state-version CAS 先补写 `PAUSED/PAUSED`、`ATTEMPT_PAUSED` 审计事件和 FlowRun 等待状态，再走既有恢复链路。CAS 未命中、任何非 `paused` 原生状态和原有暂停以外状态继续 fail closed。定向回归覆盖受控收敛后的恢复、审计／唤醒任务，以及原生 `running` 状态继续拒绝。
 
+### FR-153 FlowRun 执行记录拷贝 — DONE
+
+依赖：`FR-152`。
+
+目标：在 FlowRun 工作台的单节点运行和自动运行记录列表提供受控“拷贝”。单节点副本仅从首个 Attempt
+重建启动配置、直接人工输入副本、Agent、上下文、门禁及已选择的提示词／Skill 启动配置；自动记录副本
+继续归属同一父 FlowRun，并以独立可编辑草稿冻结原计划和输入副本。两类副本都不得复用输入 Artifact
+标识，也不得携带 OpenHands Conversation、Runtime phase、输出合同、产物、门禁结果、错误、验收或执行历史。
+
+完成：新增嵌套自动记录和单节点记录的复制命令与工作台入口。自动副本保留 `parent_flow_run_id`，刷新后
+仍显示在当前 FlowRun 的自动记录列表；单节点副本创建新的记录、Attempt 和人工输入 Artifact，并回到既有
+启动前状态机。浏览器会选中刚创建的副本，页面明确说明拷贝不包含会话、输出或结果。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2252,6 +2265,7 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-04 | FR-153 | Web ESLint、TypeScript typecheck/production build；定向 FlowRun Workbench Playwright（5 passed）；受影响 Python `py_compile`、Ruff、`git diff --check`；定向平台 pytest | PASS（静态与浏览器）：两种记录都可从左侧操作区发起拷贝，副本立即插入并选中；单节点副本只保留启动配置和独立输入副本，自动副本仍归属原父 FlowRun 且没有执行历史。定向 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集阶段失败，未伪记为通过。仓库配置的 Pyright 能解析依赖，但受影响 `service.py` 报告 15 个该切片外既有 Unknown/cast 基线错误；本次新增复制代码未产生诊断。 |
 | 2026-09-04 | FR-152 | 受影响 Python `py_compile`、Ruff format/check、生产文件定向 Pyright（0 errors）、`git diff --check`；定向 `test_conversations.py` pytest | PASS：静态检查通过，收敛路径受精确原生 `paused` 与 Attempt CAS 双重限制。pytest 未能执行断言：本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在收集时失败；未伪记为通过。测试模块的定向 Pyright 另有既有跨模块兼容导入基线错误，生产文件为 0 errors。 |
 | 2026-09-04 | FR-151 | 三类容器启动命令直接 smoke、受影响 Python `py_compile`、Ruff check、`git diff --check` | PASS：Setup、FlowRun 和默认 Agent Workspace 均使用持久 HOME 下的 npm prefix，终端与 Agent Server 保留并扩展镜像 PATH。定向 pytest 因本机 Docker daemon 未运行、全局 Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过。 |
 | 2026-09-04 | FR-150 | CLI `npm test`（6 passed）、Node 语法检查、npm pack 清单、三份 Skill `quick_validate.py`、`git diff --check` | PASS：四个新增删除接口均有快捷命令和 dry-run 请求映射；批量命令拒绝缺少精确目标，Skill 与服务端范围、递归和引用保护语义一致。 |

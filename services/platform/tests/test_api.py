@@ -199,6 +199,71 @@ def test_file_input_form_upload_and_file_output_round_trip(client):
     assert downloaded.content == b"mock workspace file\n"
 
 
+def test_copy_node_run_preserves_launch_configuration_without_execution_results(
+    client, skill_capability
+):
+    asset = create_asset(client, skill_capability, "可拷贝节点记录")
+    flow = create_flow(client, asset["id"])
+    run_response = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    assert run_response.status_code == 201, run_response.text
+    run = run_response.json()
+    source_input = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.test/copied-input",
+        },
+    )
+    assert source_input.status_code == 201, source_input.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(artifact_ids={"prd": source_input.json()["id"]}),
+    )
+    assert activated.status_code == 201, activated.text
+    source = activated.json()
+    source_attempt = source["attempts"][-1]
+    completed = client.post(
+        f"/api/v1/node-attempts/{source_attempt['id']}/confirm-start",
+        json={
+            "expected_state_version": source_attempt["state_version"],
+            "prompt": "用已配置输入执行",
+        },
+        headers={"Idempotency-Key": "copy-node-run-source"},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["artifacts"]
+
+    copied_response = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/{source['id']}/copy", json={}
+    )
+    assert copied_response.status_code == 201, copied_response.text
+    copied = copied_response.json()
+    copied_attempt = copied["attempts"][-1]
+    assert copied["id"] != source["id"]
+    assert copied["flow_node_snapshot_key"] == source["flow_node_snapshot_key"]
+    assert copied["created_from"] == "RECORD_COPY"
+    assert copied_attempt["agent_preset"] == source_attempt["agent_preset"]
+    assert copied_attempt["gate_policies"] == source_attempt["gate_policies"]
+    assert copied_attempt["startup_prompt"] == "用已配置输入执行"
+    assert copied_attempt["conversation_id"] is None
+    assert copied_attempt["runtime_phase"] is None
+    assert copied_attempt["output_targets"] == {}
+    assert copied_attempt["artifacts"] == []
+    assert copied_attempt["gate_evaluations"] == []
+    assert copied_attempt["error_code"] is None
+    assert copied_attempt["error_detail"] is None
+    assert len(copied_attempt["input_bindings"]) == 1
+    assert copied_attempt["input_bindings"][0]["binding_source"] == "RECORD_COPY"
+    assert (
+        copied_attempt["input_bindings"][0]["artifact_version_id"]
+        != source_attempt["input_bindings"][0]["artifact_version_id"]
+    )
+
+
 def gate_payloads():
     return [
         {

@@ -113,6 +113,7 @@ from flowweave.shared.schemas import (
     HumanInputWrite,
     InputBindingsWrite,
     ManualAttemptOutputsWrite,
+    NodeRunCopyWrite,
     NodeRunStart,
     RejectWrite,
     RunStart,
@@ -2219,6 +2220,7 @@ def _create_node_run(
     session_only: bool = False,
     context_ids: list[str] | None = None,
     agent_preset: dict[str, Any] | None = None,
+    allow_existing: bool = False,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
@@ -2238,7 +2240,7 @@ def _create_node_run(
             NodeRun.state != NodeRunState.CANCELLED,
         )
     )
-    if existing:
+    if existing and not allow_existing:
         latest = db.scalar(
             select(NodeAttempt)
             .where(NodeAttempt.node_run_id == existing.id)
@@ -2378,6 +2380,89 @@ def _create_node_run(
     else:
         _dispatch_readiness(db, attempt)
     return node_run, attempt
+
+
+def copy_node_run(
+    db: Session, flow_run_id: str, source_node_run_id: str, _payload: NodeRunCopyWrite
+) -> dict[str, Any]:
+    """Copy only a manual record's launch configuration into a fresh record.
+
+    The source's first Attempt is the sole configuration authority.  Runtime
+    state, conversations, output targets, generated Artifacts, gate results,
+    errors, and acceptance are intentionally not projected into the copy.
+    Only direct human launch inputs are duplicated; mapped upstream outputs are
+    execution results and therefore excluded.
+    """
+
+    run = _locked_run(db, flow_run_id)
+    if run.run_mode != "MANUAL":
+        raise illegal("only manual node records can be copied", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal run cannot copy node record", state=run.state)
+    source = _node_run(db, source_node_run_id)
+    if source.flow_run_id != run.id:
+        raise not_found("node_run", source_node_run_id)
+    initial = db.scalar(
+        select(NodeAttempt)
+        .where(NodeAttempt.node_run_id == source.id)
+        .order_by(NodeAttempt.attempt_no)
+        .limit(1)
+    )
+    if initial is None:
+        raise DomainError("RUN_STATE_INVALID", "node record has no initial attempt", 409)
+
+    # A copied record gets its own human-input Artifacts.  It never aliases a
+    # source input that may later be deleted, and never imports a port-mapped
+    # upstream result.
+    artifact_ids: dict[str, str] = {}
+    if initial.startup_mode == "PROMPT":
+        for binding in _bindings(db, initial.id):
+            artifact = db.get(ArtifactVersion, binding.artifact_version_id)
+            if (
+                binding.binding_source == "PORT_MAPPING"
+                or artifact is None
+                or artifact.producer_attempt_id is not None
+            ):
+                continue
+            artifact_ids[binding.input_field_key] = _copy_automatic_plan_artifact(
+                db,
+                run,
+                run,
+                source.flow_node_snapshot_key,
+                artifact.id,
+                source="RECORD_COPY",
+            )
+
+    copied, copied_attempt = _create_node_run(
+        db,
+        run,
+        source.flow_node_snapshot_key,
+        artifact_ids,
+        "RECORD_COPY",
+        copy.deepcopy(initial.gate_policies_json or []),
+        session_only=initial.startup_mode == "CHAT",
+        context_ids=copy.deepcopy(initial.context_ids_json or []),
+        agent_preset=copy.deepcopy(initial.agent_preset_json),
+        allow_existing=True,
+    )
+    # Launch text or a selected Skill is configuration. Preserve it without
+    # carrying over a conversation, runtime state, outputs, or outcomes.
+    copied_attempt.startup_mode = initial.startup_mode
+    copied_attempt.startup_prompt = initial.startup_prompt
+    copied_attempt.startup_capability_key = initial.startup_capability_key
+    _event(
+        db,
+        run.id,
+        "NODE_RUN_COPIED",
+        {
+            "source_node_run_id": source.id,
+            "source_attempt_id": initial.id,
+            "copied_input_count": len(artifact_ids),
+        },
+        copied.id,
+    )
+    finish(db)
+    return node_run_detail(db, copied.id)
 
 
 def start_flow(
@@ -2661,6 +2746,7 @@ def copy_automatic_run_draft(
         run_mode="AUTOMATIC",
         state=FlowRunState.DRAFT,
         environment_version_id=source.environment_version_id,
+        parent_flow_run_id=source.parent_flow_run_id,
     )
     db.add(copied)
     db.flush()
@@ -2705,7 +2791,13 @@ def copy_automatic_run_draft(
 
 
 def _copy_automatic_plan_artifact(
-    db: Session, source_run: FlowRun, copied_run: FlowRun, node_key: str, artifact_id: str
+    db: Session,
+    source_run: FlowRun,
+    copied_run: FlowRun,
+    node_key: str,
+    artifact_id: str,
+    *,
+    source: str = "AUTOMATIC_PLAN_COPY",
 ) -> str:
     artifact = db.get(ArtifactVersion, artifact_id)
     if artifact is None or artifact.flow_run_id != source_run.id:
@@ -2748,7 +2840,7 @@ def _copy_automatic_plan_artifact(
         db,
         copied_run.id,
         prepared,
-        source="AUTOMATIC_PLAN_COPY",
+        source=source,
         consumer_node_key=node_key,
     )
     return copied_artifact.id

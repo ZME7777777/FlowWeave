@@ -444,6 +444,12 @@ class AutomaticRunCopyWrite(ApiModel):
     name: str | None = Field(default=None, max_length=220)
 
 
+class NodeRunCopyWrite(ApiModel):
+    """Create a fresh manual record from a prior record's launch configuration."""
+
+    pass
+
+
 class NodeRunStart(ApiModel):
     startup_mode: Literal["PROMPT", "CHAT"] = "PROMPT"
     artifact_ids: dict[str, str] = Field(default_factory=_empty_str_dict)

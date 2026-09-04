@@ -105,6 +105,8 @@ const runningAutomatic = {
 
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
   let saveRequests = 0;
+  let nodeCopyRequests = 0;
+  let automaticCopyRequests = 0;
   let submittedBody: Record<string, unknown> | undefined;
   const capabilityCatalog = Array.from({ length: 31 }, (_, index) => ({
     id: `automatic-skill-${index}`, capability_type: 'SKILL', capability_key: `automatic-skill-${index}`,
@@ -152,6 +154,25 @@ test('run projection stays neutral until record selection and automatic save rep
           ] },
         },
       });
+    }
+    if (path === `/api/v1/flow-runs/${run.id}/nodes/${nodeRun.id}/copy` && request.method() === 'POST') {
+      nodeCopyRequests += 1;
+      return respond({
+        ...nodeRun, id: 'node-run-copy', sequence_no: 2, created_from: 'RECORD_COPY',
+        attempts: [{
+          ...attempt, id: 'attempt-copy', node_run_id: 'node-run-copy', state: 'WAITING_START_CONFIRMATION',
+          state_version: 1, runtime_phase: null, conversation_id: null, output_targets: {}, artifacts: [],
+          gate_evaluations: [], error_code: null, error_detail: null,
+        }],
+      }, 201);
+    }
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticBase.id}/copy` && request.method() === 'POST') {
+      automaticCopyRequests += 1;
+      return respond({
+        ...frozenAutomaticBase, id: 'automatic-copy', run_no: 3, name: '自动记录 1 · 副本 #3',
+        state: 'DRAFT', parent_flow_run_id: run.id, node_runs: [], artifacts: [],
+        automation_plan: { ...frozenAutomaticBase.automation_plan, status: 'DRAFT' },
+      }, 201);
     }
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
   });
@@ -201,6 +222,12 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(page.locator('.timeline button.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
+
+  await manualRecord.click();
+  await page.getByRole('button', { name: '拷贝', exact: true }).click();
+  await expect.poll(() => nodeCopyRequests).toBe(1);
+  await expect(page.locator('.timeline button')).toHaveCount(2);
+  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
 
   await page.getByRole('tab', { name: '自动运行' }).click();
   await expect(graph).toContainText('未选择自动运行记录，当前显示中性流程定义；点击节点可新建单节点运行。');
@@ -307,6 +334,11 @@ test('run projection stays neutral until record selection and automatic save rep
 
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.getByRole('alert')).toContainText('保存失败：当前自动运行记录已启动，不能继续修改。');
+
+  await page.getByRole('button', { name: '拷贝', exact: true }).click();
+  await expect.poll(() => automaticCopyRequests).toBe(1);
+  await expect(page.locator('.automatic-record-list > article')).toHaveCount(2);
+  await expect(page.locator('.automatic-record-list > article.active')).toContainText('自动记录 1 · 副本 #3');
 });
 
 test('FR-130 running automatic records show execution facts and chat attempts submit explicit outputs', async ({ page }) => {

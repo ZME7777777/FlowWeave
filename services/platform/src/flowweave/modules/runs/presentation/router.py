@@ -26,6 +26,7 @@ from flowweave.shared.schemas import (
     HumanInputWrite,
     InputBindingsWrite,
     ManualAttemptOutputsWrite,
+    NodeRunCopyWrite,
     NodeRunStart,
     RejectWrite,
     RunStart,
@@ -122,6 +123,19 @@ async def delete_nested_automatic_run(parent_run_id: str, run_id: str, db: Db) -
         )[1],
     )
     return Response(status_code=204)
+
+
+@router.post("/flow-runs/{parent_run_id}/automatic-runs/{run_id}/copy", status_code=201)
+async def copy_nested_automatic_run(
+    parent_run_id: str, run_id: str, payload: AutomaticRunCopyWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: (
+            service.nested_automatic_run(session, parent_run_id, run_id),
+            service.copy_automatic_run_draft(session, run_id, payload),
+        )[1],
+    )
 
 
 @router.put("/automatic-runs/{run_id}")
@@ -331,6 +345,15 @@ async def activate_node(
 ) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.start_node_run(session, run_id, flow_node_key, payload)
+    )
+
+
+@router.post("/flow-runs/{run_id}/nodes/{node_run_id}/copy", status_code=201)
+async def copy_node_run(
+    run_id: str, node_run_id: str, payload: NodeRunCopyWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.copy_node_run(session, run_id, node_run_id, payload)
     )
 
 
