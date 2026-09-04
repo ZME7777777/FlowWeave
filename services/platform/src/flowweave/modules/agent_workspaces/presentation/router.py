@@ -59,6 +59,10 @@ class AgentWorkDirectoryPatchWrite(_Write):
     )
 
 
+class AgentWorkspaceEntriesDeleteWrite(_Write):
+    paths: list[str] = Field(min_length=1, max_length=100)
+
+
 class AgentConversationPatchWrite(_Write):
     title: str = Field(min_length=1, max_length=200)
 
@@ -292,22 +296,21 @@ async def download_agent_workspace_file(
     )
 
 
-@router.delete("/agent-workspaces/{workspace_id}/workspace/file", status_code=204)
-async def delete_agent_workspace_file(
+@router.delete("/agent-workspaces/{workspace_id}/workspace/entries")
+async def delete_agent_workspace_entries(
     workspace_id: str,
+    payload: AgentWorkspaceEntriesDeleteWrite,
     db: Db,
-    path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
-    recursive: bool = Query(default=False),
-) -> Response:
-    await run_sync(
+) -> dict[str, list[str]]:
+    deleted = await run_sync(
         db,
-        lambda session: workspace.delete_entry(
-            session, workspace_id, path, binding_id, work_directory_id, recursive=recursive
+        lambda session: workspace.delete_entries(
+            session, workspace_id, tuple(payload.paths), binding_id, work_directory_id
         ),
     )
-    return Response(status_code=204)
+    return {"deleted_paths": deleted}
 
 
 @router.post("/agent-workspaces/{workspace_id}/workspace/entries", status_code=201)

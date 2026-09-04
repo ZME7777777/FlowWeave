@@ -3,6 +3,7 @@ from __future__ import annotations
 import mimetypes
 import os
 import re
+import shutil
 import stat
 import subprocess
 from hashlib import sha256
@@ -619,6 +620,57 @@ def download(
         content_type=content_type,
         content=content,
     )
+
+
+def delete_entries(
+    db: Session,
+    workspace_id: str,
+    paths: tuple[str, ...],
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> list[str]:
+    """Remove selected file/directory trees from the authorized scope."""
+    if not paths:
+        raise DomainError("AGENT_WORKSPACE_DELETE_EMPTY", "请选择要删除的文件或目录", 422)
+    if len(set(paths)) > 100:
+        raise DomainError("AGENT_WORKSPACE_DELETE_TOO_MANY", "一次最多删除 100 项", 422)
+    _workspace(db, workspace_id)
+    _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
+    roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
+    project_root = _project_root(db, workspace_id)
+    candidates: list[tuple[str, Path]] = []
+    for path in sorted(set(paths), key=lambda value: (value.count("/"), value)):
+        parsed = PurePosixPath(path)
+        if (
+            not path.startswith(_PROJECT_ROOT + "/")
+            or parsed.as_posix() != path
+            or ".." in parsed.parts
+            or any(part in {".git", ".openhands"} or part.startswith(".") for part in parsed.parts)
+            or path in roots
+            or not any(path.startswith(root.rstrip("/") + "/") for root in roots)
+            or _is_bound_attachment(db, binding_id, path)
+        ):
+            raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
+        candidate = _host_path(project_root, path, require_file=False)
+        metadata = candidate.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not (
+            stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
+        ):
+            raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "只能删除普通文件或目录", 422)
+        candidates.append((path, candidate))
+    selected = [
+        item for item in candidates
+        if not any(item[0].startswith(parent[0] + "/") for parent in candidates if parent != item)
+    ]
+    for _, candidate in selected:
+        try:
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+        except OSError as exc:
+            raise DomainError("AGENT_WORKSPACE_DELETE_FAILED", "删除工作区文件失败", 503) from exc
+    return [path for path, _ in selected]
 
 
 def delete_entry(

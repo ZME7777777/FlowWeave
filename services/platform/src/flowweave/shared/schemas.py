@@ -126,6 +126,10 @@ class NodeAssetBulkDeleteWrite(ApiModel):
     ids: list[str] = Field(min_length=1, max_length=100)
 
 
+class NodeDirectoryBulkDeleteWrite(ApiModel):
+    ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class CapabilityBulkDeleteWrite(ApiModel):
     ids: list[str] = Field(min_length=1, max_length=100)
 

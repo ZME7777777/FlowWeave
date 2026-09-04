@@ -86,6 +86,18 @@ def get_flow_run_work_directory(
     )
 
 
+def delete_flow_run_work_directory(
+    db: Session, flow_run_id: str, node_attempt_id: str, work_directory_id: str
+) -> None:
+    """Delete one unreferenced logical directory owned by a node Attempt."""
+
+    from flowweave.modules.agent_workspaces.application import work_directories
+
+    work_directories.delete_flow_run_work_directory(
+        db, flow_run_id, node_attempt_id, work_directory_id
+    )
+
+
 def flow_run_conversation_work_directory_context(
     db: Session,
     flow_run_id: str,
@@ -119,6 +131,7 @@ __all__ = (
     "AgentWorkspaceRuntime",
     "conversation_work_directory_context",
     "create_flow_run_work_directory",
+    "delete_flow_run_work_directory",
     "delete_session_attachment_files",
     "ensure_default_agent_workspace",
     "frozen_conversation_work_directory_context",

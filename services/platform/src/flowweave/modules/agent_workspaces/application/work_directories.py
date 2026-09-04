@@ -459,6 +459,35 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
     db.flush()
 
 
+def delete_flow_run_work_directory(
+    db: Session, flow_run_id: str, node_attempt_id: str, work_directory_id: str
+) -> None:
+    _flow_run_attempt(db, flow_run_id, node_attempt_id)
+    item = _flow_run_directory(db, flow_run_id, node_attempt_id, work_directory_id, lock=True)
+    version_ids = list(
+        db.scalars(
+            select(AgentWorkDirectoryVersion.id).where(
+                AgentWorkDirectoryVersion.work_directory_id == item.id
+            )
+        )
+    )
+    if version_ids and db.scalar(
+        select(AgentConversationBinding.id)
+        .where(AgentConversationBinding.work_directory_version_id.in_(version_ids))
+        .limit(1)
+    ):
+        raise DomainError(
+            "AGENT_WORK_DIRECTORY_IN_USE",
+            "工作目录仍被会话引用，请先删除相关会话",
+            409,
+        )
+    if version_ids:
+        db.execute(delete(AgentWorkDirectoryPath).where(AgentWorkDirectoryPath.version_id.in_(version_ids)))
+        db.execute(delete(AgentWorkDirectoryVersion).where(AgentWorkDirectoryVersion.id.in_(version_ids)))
+    db.delete(item)
+    db.flush()
+
+
 def list_flow_run_work_directories(
     db: Session, flow_run_id: str, node_attempt_id: str
 ) -> dict[str, Any]:
@@ -540,6 +569,7 @@ def frozen_flow_run_conversation_context(
 
 
 __all__ = (
+    "delete_flow_run_work_directory",
     "delete_work_directory",
     "conversation_context",
     "create_work_directory",

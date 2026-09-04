@@ -46,6 +46,7 @@ from flowweave.shared.schemas import (
     MemorySourceScanWrite,
     NodeAssetBulkDeleteWrite,
     NodeAssetWrite,
+    NodeDirectoryBulkDeleteWrite,
     PluginProbeWrite,
     PluginSourcePublishWrite,
     PluginSourceResolveWrite,
@@ -222,6 +223,11 @@ async def directories(db: Db) -> list[dict[str, Any]]:
 @router.post("/node-directories", status_code=201)
 async def create_directory(payload: DirectoryWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_directory(session, payload))
+
+
+@router.delete("/node-directories")
+async def delete_directories(payload: NodeDirectoryBulkDeleteWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.delete_directories(session, payload.ids))
 
 
 @router.delete("/node-directories/{directory_id}", status_code=204)

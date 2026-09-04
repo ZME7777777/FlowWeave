@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import shutil
 import stat
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -357,6 +358,77 @@ def read_file(
     )
     filename = attachment.filename if attachment else candidate.name
     return content, content_type, filename
+
+
+def delete_entries(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None,
+    work_directory_id: str | None,
+    paths: tuple[str, ...],
+) -> list[str]:
+    if not paths:
+        raise DomainError("FLOW_RUN_WORKSPACE_DELETE_EMPTY", "请选择要删除的文件或目录", 422)
+    if len(set(paths)) > 100:
+        raise DomainError("FLOW_RUN_WORKSPACE_DELETE_TOO_MANY", "一次最多删除 100 项", 422)
+    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _, _, roots = _scope(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+        work_directory_id=work_directory_id,
+    )
+    _validate_scope_roots(project_root, roots)
+    candidates: list[tuple[str, Path]] = []
+    for path in sorted(set(paths)):
+        parsed = PurePosixPath(path)
+        if (
+            path in roots
+            or not parsed.is_absolute()
+            or not parsed.is_relative_to(_RUNTIME_PROJECT)
+            or parsed.as_posix() != path
+            or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+            or not any(path.startswith(root.rstrip("/") + "/") for root in roots)
+        ):
+            raise DomainError(
+                "FLOW_RUN_WORKSPACE_PATH_INVALID",
+                "不能删除当前工作区根目录或范围外路径",
+                422,
+            )
+        candidate = project_root.joinpath(*parsed.relative_to(_RUNTIME_PROJECT).parts)
+        try:
+            metadata = candidate.lstat()
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise DomainError(
+                "FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404
+            ) from exc
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode))
+            or not resolved.is_relative_to(project_root)
+        ):
+            raise DomainError(
+                "FLOW_RUN_WORKSPACE_PATH_INVALID",
+                "只能删除当前工作区中的普通文件或目录",
+                422,
+            )
+        candidates.append((path, resolved))
+    selected = [
+        item for item in candidates
+        if not any(item[0].startswith(parent[0] + "/") for parent in candidates if parent != item)
+    ]
+    for _, candidate in selected:
+        try:
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+        except OSError as exc:
+            raise DomainError(
+                "FLOW_RUN_WORKSPACE_DELETE_FAILED", "删除工作区文件失败", 503
+            ) from exc
+    return [path for path, _ in selected]
 
 
 def read_candidate_output_file(

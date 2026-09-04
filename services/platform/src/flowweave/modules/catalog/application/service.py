@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, TypedDict
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.runtime.workspace import (
@@ -140,6 +140,43 @@ def create_directory(db: Session, payload: DirectoryWrite) -> dict[str, Any]:
     db.add(item)
     finish(db)
     return directory_dict(item)
+
+
+def delete_directories(db: Session, directory_ids: list[str]) -> dict[str, Any]:
+    """Delete selected directory trees while retaining their node assets.
+
+    Assets are deliberately moved to the unclassified collection rather than
+    deleted as a side effect of organizing the catalog.
+    """
+    requested = set(directory_ids)
+    items = db.scalars(
+        select(NodeDirectory).where(NodeDirectory.id.in_(requested)).with_for_update()
+    ).all()
+    found = {item.id for item in items}
+    missing = next((item_id for item_id in requested if item_id not in found), None)
+    if missing is not None:
+        raise not_found("node_directory", missing)
+
+    all_directories = db.scalars(select(NodeDirectory).with_for_update()).all()
+    by_parent: dict[str | None, list[str]] = {}
+    for item in all_directories:
+        by_parent.setdefault(item.parent_id, []).append(item.id)
+
+    removed: set[str] = set()
+
+    def collect(directory_id: str) -> None:
+        if directory_id in removed:
+            return
+        removed.add(directory_id)
+        for child_id in by_parent.get(directory_id, []):
+            collect(child_id)
+
+    for item_id in requested:
+        collect(item_id)
+    db.execute(update(NodeAsset).where(NodeAsset.directory_id.in_(removed)).values(directory_id=None))
+    db.execute(delete(NodeDirectory).where(NodeDirectory.id.in_(removed)))
+    finish(db)
+    return {"deleted_ids": sorted(removed)}
 
 
 def delete_directory(db: Session, directory_id: str) -> None:

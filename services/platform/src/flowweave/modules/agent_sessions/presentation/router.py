@@ -104,6 +104,10 @@ class FlowRunWorkDirectoryCreateWrite(_Write):
     selected_paths: list[str] = Field(min_length=1, max_length=20)
 
 
+class WorkspaceEntriesDeleteWrite(_Write):
+    paths: list[str] = Field(min_length=1, max_length=100)
+
+
 def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
@@ -351,6 +355,25 @@ async def node_session_workspace_file(
     )
 
 
+@router.delete(f"{_BASE}/workspace/entries")
+async def delete_node_session_workspace_entries(
+    flow_run_id: str,
+    attempt_id: str,
+    payload: WorkspaceEntriesDeleteWrite,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, list[str]]:
+    deleted = await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.delete_entries(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+            work_directory_id=work_directory_id, paths=tuple(payload.paths),
+        ),
+    )
+    return {"deleted_paths": deleted}
+
+
 @router.get(f"{_BASE}/candidate-output/file")
 async def node_session_candidate_output_file(
     flow_run_id: str,
@@ -424,6 +447,27 @@ async def create_flow_run_work_directory(
         )
 
     return await run_sync(db, create)
+
+
+@router.delete(f"{_BASE}/work-directories/{{work_directory_id}}", status_code=204)
+async def delete_flow_run_work_directory(
+    flow_run_id: str, attempt_id: str, work_directory_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: (
+            agent_sessions.resolve_flow_node_session_host(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                require_start_permission=False,
+            ),
+            agent_workspace_host.delete_flow_run_work_directory(
+                session, flow_run_id, attempt_id, work_directory_id
+            ),
+        ),
+    )
+    return Response(status_code=204)
 
 
 @router.get(f"{_BASE}/{{binding_id}}")

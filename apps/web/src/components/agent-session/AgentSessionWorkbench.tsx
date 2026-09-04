@@ -837,7 +837,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, onSelec
   }, [nodes]);
   const renderNodes = (items: WorkspaceTreeNode[], depth = 0): ReactNode => items.map(node => {
     const open = expanded.has(node.path);
-    return <div key={node.path} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined}>
+    return <div key={node.path} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} style={{ '--tree-depth': depth } as CSSProperties}>
       <label className="resource-check" style={{ '--tree-depth': depth } as CSSProperties}><input type="checkbox" aria-label={`选择 ${node.name}`} checked={selectedPaths.has(node.path)} onChange={() => onToggle(node.path)}/></label>
       <button type="button" draggable={node.kind === 'file'} className={`${node.kind}${selectedFile === node.path ? ' active' : ''}`} style={{ '--tree-depth': depth } as CSSProperties} onDragStart={event => {
         if (node.kind !== 'file') return;
