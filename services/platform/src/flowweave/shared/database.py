@@ -17,6 +17,25 @@ from sqlalchemy.orm import (
 
 from flowweave.bootstrap.settings import Settings
 
+_USER_ISOLATED_TABLES = frozenset(
+    {
+        "agent_conversation_bindings",
+        "agent_conversation_capabilities",
+        "agent_conversation_commands",
+        "agent_conversation_message_attachments",
+        "agent_work_directories",
+        "agent_work_directory_paths",
+        "agent_work_directory_versions",
+        "agent_workspace_capabilities",
+        "agent_workspace_preferences",
+    }
+)
+
+
+def _is_user_isolated_model(model: type[Any]) -> bool:
+    table = getattr(model, "__table__", None)
+    return table is not None and table.name in _USER_ISOLATED_TABLES
+
 
 class Base(DeclarativeBase):
     """Shared declarative registry; mappings are owned by module infrastructure packages."""
@@ -81,7 +100,7 @@ def _enforce_tenant_writes(session: Session, _flush_context: object, _instances:
         return
     user_id = current_user_id(default=FLOWWEAVE_USER_ID)
     for item in session.new:
-        if getattr(type(item), "__tenant_scoped__", False):
+        if _is_user_isolated_model(type(item)):
             tenant_item = item  # keep the dynamic ownership mixin local to persistence
             owner = tenant_item.owner_user_id  # type: ignore[attr-defined]
             if owner in {None, ""}:
@@ -90,7 +109,7 @@ def _enforce_tenant_writes(session: Session, _flush_context: object, _instances:
                 raise RuntimeError("Cross-user record creation is forbidden")
     for item in session.dirty.union(session.deleted):
         if (
-            getattr(type(item), "__tenant_scoped__", False)
+            _is_user_isolated_model(type(item))
             and item.owner_user_id != user_id  # type: ignore[attr-defined]
         ):
             raise RuntimeError("Cross-user record mutation is forbidden")
@@ -113,7 +132,7 @@ def _enforce_tenant_reads(execute_state: Any) -> None:
         statement = execute_state.statement
         for mapper in Base.registry.mappers:
             model = mapper.class_
-            if not getattr(model, "__tenant_scoped__", False):
+            if not _is_user_isolated_model(model):
                 continue
             statement = statement.options(
                 with_loader_criteria(
@@ -128,7 +147,7 @@ def _enforce_tenant_reads(execute_state: Any) -> None:
         execute_state, "is_delete", False
     ):
         mapper = execute_state.bind_arguments.get("mapper")
-        if mapper is not None and "owner_user_id" in mapper.columns:
+        if mapper is not None and _is_user_isolated_model(mapper.class_):
             execute_state.statement = execute_state.statement.where(
                 mapper.class_.owner_user_id == user_id
             )

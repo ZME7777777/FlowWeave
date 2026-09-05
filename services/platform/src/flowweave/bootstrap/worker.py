@@ -133,6 +133,12 @@ class TaskWorker:
             sandbox_context(self.container.sandbox),
         )
 
+    @staticmethod
+    def _task_tenant_context(task: Any):
+        if task.task_type == "GENERATE_AGENT_CONVERSATION_TITLE":
+            return tenant_user(task.owner_user_id)
+        return tenant_bypass()
+
     async def recover_startup(self) -> None:
         settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (
             self._contexts()
@@ -198,7 +204,7 @@ class TaskWorker:
                 lease_seconds=self.container.settings.task_lease_seconds,
             )
             renewer.start()
-            with tenant_user(task.owner_user_id):
+            with self._task_tenant_context(task):
                 async with self.container.database.session() as session:
                     try:
                         await session.run_sync(

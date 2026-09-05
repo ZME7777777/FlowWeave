@@ -11,9 +11,12 @@ from starlette.requests import HTTPConnection
 from flowweave.bootstrap.container import Container
 from flowweave.modules.users.application import service as users
 from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
     bind_principal,
     current_principal,
     reset_principal,
+    tenant_bypass,
+    tenant_user,
 )
 from flowweave.shared.application.transactions import (
     mark_uow_owned,
@@ -54,6 +57,19 @@ async def require_authenticated_connection(
         yield
     finally:
         reset_principal(principal_token)
+
+
+async def shared_business_scope() -> AsyncIterator[None]:
+    """Run shared-product routes as the stable platform data owner.
+
+    The authenticated principal remains bound for audit attribution. Only the
+    persistence tenant is changed, so shared writes keep one global identity
+    while the independent Agent router continues to use the login user's ID.
+    """
+
+    with tenant_user(FLOWWEAVE_USER_ID):
+        with tenant_bypass():
+            yield
 
 
 async def get_db(
