@@ -1270,6 +1270,22 @@ chmod 0700 "$target"
                     or metadata.st_gid != root_metadata.st_gid
                 ):
                     raise ValueError(f"invalid allocation path: {path}")
+            if is_agent_workspace:
+                user_workspace = str(spec.get("agent_user_id") or "")
+                user_workspace_path = (
+                    validation_allocation_root
+                    / "workspace/project/users"
+                    / user_workspace
+                )
+                user_workspace_metadata = user_workspace_path.lstat()
+                if (
+                    stat.S_ISLNK(user_workspace_metadata.st_mode)
+                    or not stat.S_ISDIR(user_workspace_metadata.st_mode)
+                    or stat.S_IMODE(user_workspace_metadata.st_mode) != 0o700
+                    or user_workspace_metadata.st_uid != root_metadata.st_uid
+                    or user_workspace_metadata.st_gid != root_metadata.st_gid
+                ):
+                    raise ValueError("invalid Agent Workspace user directory")
             if shared_project_valid:
                 project_allocation_metadata = validation_project_root.lstat()
                 project_marker = validation_project_root / ".flowweave-allocation"
@@ -1314,8 +1330,8 @@ chmod 0700 "$target"
                 409,
             ) from exc
         record_mount = (
-            f"type=bind,src={allocation_root / 'workspace/project'},"
-            "dst=/runtime/workspace/project"
+            f"type=bind,src={allocation_root / 'workspace/project/users' / agent_user_id},"
+            f"dst=/runtime/workspace/project/users/{agent_user_id}"
             if is_agent_workspace
             else (
                 f"type=bind,src={project_root / 'workspace/project' / project_record_id},"
