@@ -527,7 +527,7 @@ def test_dead_workspace_runtime_task_retries_when_resource_is_not_healthy(
             )
         )
         assert healthy_resource is not None
-        healthy_resource.observed_state = "READY"
+        healthy_resource.observed_state = "RUNNING"
         healthy_resource.backend_resource_id = "healthy-runtime"
         assert recover_default_agent_workspace_runtime_task(db) is False
         assert task.state == TaskState.SUCCEEDED
@@ -557,7 +557,7 @@ def test_workspace_runtime_replaces_deleted_physical_generation(
             resource_id=resource.id,
             resource_name=resource.backend_resource_name,
             resource_identifier=f"container-{resource.generation}",
-            state="READY",
+            state="RUNNING",
             labels={},
         )
 
@@ -628,7 +628,7 @@ def test_workspace_runtime_recovery_refreshes_removed_image_digest(
             resource_id=resource.id,
             resource_name=resource.backend_resource_name,
             resource_identifier="replacement-container",
-            state="READY",
+            state="RUNNING",
             labels={},
         )
 
@@ -657,6 +657,91 @@ def test_workspace_runtime_recovery_refreshes_removed_image_digest(
         assert runtime.active_generation == 1
 
 
+def test_workspace_runtime_image_drift_replaces_the_old_generation(
+    settings, db_session_factory, monkeypatch
+):
+    old_digest = "sha256:" + "8" * 64
+    current_digest = "sha256:" + "9" * 64
+    configured = settings.model_copy(
+        update={
+            "runtime_adapter": "openhands",
+            "terminal_environment_backend": "docker",
+        }
+    )
+    resolved_digest = old_digest
+    deleted: list[str] = []
+
+    def resolve_image(_reference):
+        return "image", resolved_digest
+
+    def ensure_running(_self, resource, *, runtime_secret_key):
+        assert runtime_secret_key is not None
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier=f"container-{resource.generation}",
+            state="RUNNING",
+            labels={},
+        )
+
+    monkeypatch.setattr(
+        "flowweave.modules.agent_workspaces.application.service.resolve_setup_image",
+        resolve_image,
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "delete",
+        lambda _self, resource: deleted.append(resource.id),
+    )
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        process_agent_workspace_runtime(db, workspace.id)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        first = db.scalar(
+            select(ManagedSandbox).where(
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace.id,
+            )
+        )
+        assert runtime is not None and first is not None
+        first_id = first.id
+        assert first.generation == 1
+        first.observed_state = "ERROR"
+
+        resolved_digest = current_digest
+        ensure_default_agent_workspace(db)
+        assert runtime.runtime_image_digest == current_digest
+
+        process_agent_workspace_runtime(db, workspace.id)
+
+        current = db.scalar(
+            select(ManagedSandbox).where(
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace.id,
+            )
+        )
+        generations = list(
+            db.scalars(
+                select(AgentWorkspaceRuntimeGeneration).order_by(
+                    AgentWorkspaceRuntimeGeneration.generation
+                )
+            )
+        )
+        assert current is not None
+        assert deleted == [first_id]
+        assert current.id != first_id
+        assert current.generation == 2
+        assert current.image_reference == current_digest
+        assert runtime.active_generation == 2
+        assert [(item.generation, item.state) for item in generations] == [
+            (1, "DELETED"),
+            (2, "READY"),
+        ]
+
+
 def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
     settings, db_session_factory, monkeypatch
 ):
@@ -670,7 +755,7 @@ def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
             resource_id=resource.id,
             resource_name=resource.backend_resource_name,
             resource_identifier="agent-workspace-container",
-            state="READY",
+            state="RUNNING",
             labels={},
         )
 
@@ -731,7 +816,7 @@ def _ready_workspace_for_conversation(db):
             image_reference=runtime.runtime_image_digest,
             agent_workspace_allocation_id=runtime.workspace_allocation_id,
             hard_expires_at=datetime.max.replace(tzinfo=UTC),
-            observed_state="READY",
+            observed_state="RUNNING",
         )
     )
     db.flush()

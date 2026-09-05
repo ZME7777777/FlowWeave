@@ -242,7 +242,7 @@ def _has_healthy_active_resource(db: Session, workspace_id: str, generation: int
                 ManagedSandbox.owner_id == workspace_id,
                 ManagedSandbox.generation == generation,
                 ManagedSandbox.desired_state == "RUNNING",
-                ManagedSandbox.observed_state == "READY",
+                ManagedSandbox.observed_state == "RUNNING",
                 ManagedSandbox.backend_resource_id != "",
             )
         )
@@ -456,8 +456,23 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
             "The Agent Workspace has multiple writable Runtime generations",
             409,
         )
-    if resources and resources[0].desired_state == "DELETED":
-        deleted_resource = resources[0]
+    deleted_resource = (
+        resources[0] if resources and resources[0].desired_state == "DELETED" else None
+    )
+    if (
+        deleted_resource is None
+        and running
+        and running[0].image_reference != runtime.runtime_image_digest
+    ):
+        # A deployment may have advanced the logical image after the provider
+        # stopped confirming the old writer. Never reconcile that old physical
+        # generation against the new logical digest: fence and remove it, then
+        # create N+1 from the unchanged external Workspace and Conversation
+        # state below.
+        deleted_resource = running[0]
+        deleted_resource.desired_state = "DELETED"
+        deleted_resource.next_reconcile_at = datetime.now(UTC)
+    if deleted_resource is not None:
         historical_generation = db.scalar(
             select(AgentWorkspaceRuntimeGeneration)
             .where(
@@ -474,8 +489,8 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
         DockerSandboxProvider(get_settings()).delete(deleted_resource)
         db.delete(deleted_resource)
         db.flush()
-        resources = []
-        running = []
+        resources = [item for item in resources if item.id != deleted_resource.id]
+        running = [item for item in running if item.id != deleted_resource.id]
     resource = running[0] if running else None
     if resource is None:
         # A deployment may replace the configured local image and remove the

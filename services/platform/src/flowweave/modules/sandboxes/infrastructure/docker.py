@@ -6,6 +6,7 @@ import re
 import stat
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -33,6 +34,23 @@ from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerError,
     controller_is_remote,
 )
+
+_RUNTIME_SPEC_FIELDS = frozenset(
+    {
+        "workspace_relative",
+        "port",
+        "environment_id",
+        "environment_version_id",
+        "environment_version_no",
+        "flow_run_id",
+        "node_attempt_id",
+        "agent_workspace_id",
+        "runtime_allocation_id",
+        "runtime_allocation_relative",
+        "runtime_secret_reference_id",
+    }
+)
+_PRE_NODE_ATTEMPT_RUNTIME_SPEC_FIELDS = _RUNTIME_SPEC_FIELDS - {"node_attempt_id"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,15 +114,51 @@ class DockerSandboxProvider:
         return exc.code == "SANDBOX_DOCKER_FAILED" and docker_resource_is_absent(detail, resource)
 
     @staticmethod
-    def _spec_hash(resource: ManagedSandbox) -> str:
-        # The bound flag is a mutable lease marker. All remaining fields are
-        # part of the immutable Docker contract.
-        immutable = dict(resource.spec_json or {})
-        immutable.pop("bound", None)
+    def _hash_spec(spec: Mapping[str, object]) -> str:
         encoded = json.dumps(
-            immutable, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+            spec, ensure_ascii=True, separators=(",", ":"), sort_keys=True
         ).encode()
         return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def _spec_hash(cls, resource: ManagedSandbox) -> str:
+        # The bound flag is a mutable lease marker. All remaining fields are
+        # part of the immutable Docker contract. Runtime Provider request
+        # models may grow nullable optional fields over time; absence and None
+        # have the same validated meaning, so neither may rotate a physical
+        # container's identity hash.
+        immutable = dict(resource.spec_json or {})
+        immutable.pop("bound", None)
+        if resource.kind == "AGENT_RUNTIME":
+            immutable = {key: value for key, value in immutable.items() if value is not None}
+        return cls._hash_spec(immutable)
+
+    @classmethod
+    def _compatible_spec_hashes(cls, resource: ManagedSandbox) -> frozenset[str]:
+        """Return exact hashes emitted by recognized historical Runtime schemas."""
+
+        accepted = {cls._spec_hash(resource)}
+        if resource.kind != "AGENT_RUNTIME":
+            return frozenset(accepted)
+        spec = dict(resource.spec_json or {})
+        spec.pop("bound", None)
+        if not set(spec).issubset(_RUNTIME_SPEC_FIELDS):
+            return frozenset(accepted)
+
+        # RuntimeProviderSpec historically serialized every optional field,
+        # including None. Keep accepting the schema shipped with
+        # node_attempt_id so containers created by that release remain valid.
+        expanded = {key: spec.get(key) for key in _RUNTIME_SPEC_FIELDS}
+        accepted.add(cls._hash_spec(expanded))
+
+        # Containers created before node_attempt_id existed carry the same
+        # expanded model dump without that one field. This compatibility is
+        # valid only when the current contract has no Attempt identity; an
+        # actual Attempt owner can never be erased from the immutable hash.
+        if spec.get("node_attempt_id") is None:
+            legacy = {key: spec.get(key) for key in _PRE_NODE_ATTEMPT_RUNTIME_SPEC_FIELDS}
+            accepted.add(cls._hash_spec(legacy))
+        return frozenset(accepted)
 
     @staticmethod
     def environment_credential_volume_name(environment_id: str) -> str:
@@ -307,13 +361,19 @@ chmod 0700 "$target"
             "flowweave.owner-type": resource.owner_type,
             "flowweave.owner-id": resource.owner_id,
             "flowweave.image-reference": resource.image_reference,
-            "flowweave.spec-hash": self._spec_hash(resource),
         }
         mismatches = {
             key: {"expected": value, "actual": observation.labels.get(key, "")}
             for key, value in expected.items()
             if observation.labels.get(key) != value
         }
+        actual_spec_hash = observation.labels.get("flowweave.spec-hash", "")
+        canonical_spec_hash = self._spec_hash(resource)
+        if actual_spec_hash not in self._compatible_spec_hashes(resource):
+            mismatches["flowweave.spec-hash"] = {
+                "expected": canonical_spec_hash,
+                "actual": actual_spec_hash,
+            }
         if mismatches:
             raise DomainError(
                 "SANDBOX_RESOURCE_CONFLICT",

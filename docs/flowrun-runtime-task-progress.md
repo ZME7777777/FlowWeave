@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-158 后续范围待拆分）
+> 下一可执行切片：`无`（FR-159 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2314,6 +2314,21 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 完成：引用卡片改为可访问按钮；点击后在只读预览中展示保留的所选文本，支持 Esc、遮罩或按钮关闭。预览提供
 “定位原消息”，仅依据已投影事件的正式 ID 平滑滚回源消息。引用卡片继续保持附件式紧凑展示。
 
+### FR-159 Runtime Provider 规格哈希兼容与 Agent Runtime 恢复 — DONE
+
+依赖：`FR-158`。
+
+目标：修复 Runtime Provider 请求模型新增可选空字段后，既有 FlowRun／Attempt 与 Agent Workspace 容器因
+不可变规格哈希发生非语义漂移而被错误拒绝的问题。新容器使用不受可选空字段影响的稳定哈希，同时只兼容
+新增 `node_attempt_id` 前后的明确历史 Runtime schema，真实 owner、镜像或规格变化继续 fail closed。统一
+Agent Runtime 的物理健康态为 Docker `RUNNING`，并在逻辑镜像已更新而旧 generation 仍残留时完成旧资源
+删除和 N+1 创建，不改写历史 OpenHands Conversation 或其工作目录。
+
+完成：Agent Runtime 新规格哈希忽略顶层可选空字段，Runtime Provider 仅额外接受新增
+`node_attempt_id` 前后的两个已知完整 schema 哈希；未知字段和真实规格漂移仍拒绝。Agent Workspace 健康
+查询改用物理 `RUNNING`，镜像漂移恢复会先删除旧 generation 并从外置状态创建单调递增的 N+1。历史绑定
+继续使用其冻结工作目录，不猜测迁移 OpenHands Conversation。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2329,6 +2344,7 @@ Workspace 继续共用受管 Runtime 启动边界，均继承该配置。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-159 | 受影响 Python `py_compile`、Ruff format/check、生产源码定向 Pyright（0 errors）；纯逻辑旧 schema 哈希兼容／空字段稳定／真实漂移拒绝探针；Alembic head、任务状态唯一性与 `git diff --check`；定向平台 pytest | PASS（静态与纯逻辑）：旧 FlowRun、Agent Workspace 及新增 Attempt schema 的既有容器哈希可精确兼容，新哈希不受可选空字段影响，真实 allocation 漂移继续返回 `SANDBOX_RESOURCE_CONFLICT`；Agent Runtime 健康态和镜像 N+1 恢复代码通过静态检查。唯一 Alembic head 为 `0096_shared_business_resources`。9 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
 | 2026-09-05 | FR-158 | Web ESLint、TypeScript typecheck/production build；定向 Playwright（1 passed）；`git diff --check` 与任务状态唯一性 | PASS：发送后的会话引用卡片可点击，弹窗显示完整所选文本，“定位原消息”关闭预览并滚回 source event；正文仍不展开引用内容。 |
 | 2026-09-05 | FR-156 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（7 passed，新增逐步配置保存后启动与直接启动独立分类覆盖）；受影响 Python `py_compile`、Ruff；Alembic head、`git diff --check` 与任务状态唯一性；定向平台 pytest；全量 Pyright 基线复核 | PASS（静态与浏览器）：三类记录与统一右侧面板生效，逐步保存不立即执行，记录行启动使用冻结提示词，直接启动独立建档；唯一 Alembic head 为 `0092_node_run_names`。定向平台 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在 setup 阶段失败，4 个目标测试未执行断言，未伪记为通过。Pyright 仍报告仓库既有 40 项 Unknown／类型基线错误，本切片新增行无新增诊断。 |
 | 2026-09-04 | FR-155 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（6 passed，新增 Command/Shift 多选删除与最后点击拷贝目标覆盖）；`git diff --check`、任务状态唯一性 | PASS：单节点与自动运行记录均支持 Command/Control 追加和 Shift 连续选择，删除仅发送选中记录的精确 DELETE；单节点运行中记录继续阻止批量删除，拷贝对话框始终使用最后点击的自动记录名称。 |

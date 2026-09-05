@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -402,6 +403,136 @@ def test_existing_container_spec_drift_is_rejected_before_network_creation(setti
     assert caught.value.code == "SANDBOX_RESOURCE_CONFLICT"
     assert "flowweave.spec-hash" in caught.value.details["mismatches"]
     assert network_touched == []
+
+
+_LEGACY_RUNTIME_SPEC_FIELDS = {
+    "workspace_relative",
+    "port",
+    "environment_id",
+    "environment_version_id",
+    "environment_version_no",
+    "flow_run_id",
+    "agent_workspace_id",
+    "runtime_allocation_id",
+    "runtime_allocation_relative",
+    "runtime_secret_reference_id",
+}
+_EXPANDED_RUNTIME_SPEC_FIELDS = _LEGACY_RUNTIME_SPEC_FIELDS | {"node_attempt_id"}
+
+
+def _historical_spec_hash(spec: dict[str, object], fields: set[str]) -> str:
+    expanded = {key: spec.get(key) for key in fields}
+    encoded = json.dumps(
+        expanded, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("owner_type", "owner_id", "spec"),
+    (
+        (
+            "FLOW_RUN",
+            "flow-run-1",
+            {
+                "port": 8000,
+                "environment_id": "environment-1",
+                "environment_version_id": "environment-version-1",
+                "environment_version_no": 1,
+                "flow_run_id": "flow-run-1",
+                "runtime_allocation_id": "allocation-1",
+                "runtime_allocation_relative": ".flow-run-runtimes/legacy/flow-run-1",
+                "runtime_secret_reference_id": "secret-1",
+                "node_attempt_id": None,
+            },
+        ),
+        (
+            "AGENT_WORKSPACE",
+            "agent-workspace-1",
+            {
+                "port": 8000,
+                "agent_workspace_id": "agent-workspace-1",
+                "runtime_allocation_id": "allocation-1",
+                "runtime_allocation_relative": ".agent-workspaces/platform-default",
+                "runtime_secret_reference_id": "secret-1",
+                "node_attempt_id": None,
+            },
+        ),
+    ),
+)
+def test_existing_runtime_accepts_pre_node_attempt_schema_hash(
+    settings, owner_type, owner_id, spec
+):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.owner_type = owner_type
+    resource.owner_id = owner_id
+    resource.spec_json = spec
+    observation = _observation(resource)
+    observation.labels["flowweave.spec-hash"] = _historical_spec_hash(
+        spec, _LEGACY_RUNTIME_SPEC_FIELDS
+    )
+
+    provider._verify_resource_contract(observation, resource)
+
+
+def test_existing_attempt_runtime_accepts_expanded_node_attempt_schema_hash(settings):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.owner_type = "FLOW_NODE_ATTEMPT"
+    resource.owner_id = "node-attempt-1"
+    resource.spec_json = {
+        "port": 8000,
+        "environment_id": "environment-1",
+        "environment_version_id": "environment-version-1",
+        "environment_version_no": 1,
+        "flow_run_id": "flow-run-1",
+        "node_attempt_id": "node-attempt-1",
+        "runtime_allocation_id": "allocation-1",
+        "runtime_allocation_relative": ".flow-run-runtimes/current/node-attempt-1",
+        "runtime_secret_reference_id": "secret-1",
+    }
+    observation = _observation(resource)
+    observation.labels["flowweave.spec-hash"] = _historical_spec_hash(
+        resource.spec_json, _EXPANDED_RUNTIME_SPEC_FIELDS
+    )
+
+    provider._verify_resource_contract(observation, resource)
+
+
+def test_existing_runtime_rejects_real_spec_change_after_legacy_hash_compatibility(settings):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.owner_type = "AGENT_WORKSPACE"
+    resource.owner_id = "agent-workspace-1"
+    resource.spec_json = {
+        "port": 8000,
+        "agent_workspace_id": "agent-workspace-1",
+        "runtime_allocation_id": "allocation-1",
+        "runtime_allocation_relative": ".agent-workspaces/platform-default",
+        "runtime_secret_reference_id": "secret-1",
+        "node_attempt_id": None,
+    }
+    observation = _observation(resource)
+    observation.labels["flowweave.spec-hash"] = _historical_spec_hash(
+        resource.spec_json, _LEGACY_RUNTIME_SPEC_FIELDS
+    )
+    resource.spec_json["runtime_allocation_id"] = "allocation-2"
+
+    with pytest.raises(DomainError) as caught:
+        provider._verify_resource_contract(observation, resource)
+
+    assert caught.value.code == "SANDBOX_RESOURCE_CONFLICT"
+    assert "flowweave.spec-hash" in caught.value.details["mismatches"]
+
+
+def test_runtime_spec_hash_ignores_new_optional_none_fields() -> None:
+    resource = _runtime_resource()
+    before = DockerSandboxProvider._spec_hash(resource)
+
+    resource.spec_json["node_attempt_id"] = None
+
+    assert DockerSandboxProvider._spec_hash(resource) == before
 
 
 def test_existing_owned_runtime_does_not_require_pruned_historical_image(settings, monkeypatch):
@@ -1079,7 +1210,7 @@ def test_reconciler_keeps_agent_runtime_when_docker_control_is_temporarily_unava
             owner_id=workspace.id,
             backend="docker",
             backend_resource_name="fw-sbx-agent-runtime",
-            observed_state="READY",
+            observed_state="RUNNING",
             image_reference=runtime.runtime_image_digest,
             agent_workspace_allocation_id=runtime.workspace_allocation_id,
             hard_expires_at=now + timedelta(hours=1),
