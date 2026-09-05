@@ -1054,7 +1054,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
       <header><div><span className="eyebrow">AGENT WORKSPACE</span><h2 id="agent-work-directory-title">新增工作区</h2></div><button type="button" aria-label="关闭新增工作区" disabled={create.isPending} onClick={onClose}><X size={16}/></button></header>
       <label className="agent-work-directory-name"><span>工作区名称</span><input autoFocus value={displayName} maxLength={160} placeholder="例如：后端服务" onChange={event => setDisplayName(event.target.value)}/></label>
       <section className="agent-work-directory-picker" aria-label="选择工作区目录">
-        <header><div><b>选择目录</b><span>从 /runtime/workspace/project 中选择一个或多个子目录</span></div><em>{selectedPaths.length}/20</em></header>
+        <header><div><b>选择目录</b><span>从 {details?.root ?? '当前用户工作区'} 中选择一个或多个子目录</span></div><em>{selectedPaths.length}/20</em></header>
         <div>
           {detailsQuery.isLoading && <p>正在读取项目目录…</p>}
           {detailsQuery.isError && <p className="error">{detailsQuery.error instanceof Error ? detailsQuery.error.message : '项目目录读取失败，请稍后重试。'}</p>}

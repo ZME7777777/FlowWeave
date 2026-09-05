@@ -845,6 +845,7 @@ def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, m
         "resource_name": "fw-sbx-agent-12345678123442349234123456789abc",
         "resource_id": _RESOURCE_ID,
         "session_name": "agent-workspace",
+        "working_dir": "/runtime/workspace/project/users/6311561c-06e4-41ad-8afe-aac35cfa83ec",
         "rows": 30,
         "columns": 120,
     }
@@ -854,7 +855,9 @@ def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, m
 
     assert response.status_code == 200, response.text
     assert response.json()["terminal_id"].startswith("terminal:immutable-agent-runtime-container")
-    assert response.json()["terminal_id"].endswith(":/runtime/workspace/project")
+    assert response.json()["terminal_id"].endswith(
+        ":/runtime/workspace/project/users/6311561c-06e4-41ad-8afe-aac35cfa83ec"
+    )
     assert verification == {
         "resource_name": payload["resource_name"],
         "resource_id": _RESOURCE_ID,

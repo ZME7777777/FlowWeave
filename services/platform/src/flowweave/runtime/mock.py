@@ -150,7 +150,7 @@ class MockRuntime:
     ) -> RuntimeConversationIdentity:
         identity = RuntimeConversationIdentity(
             conversation_id=handle.conversation_id,
-            workspace_working_dir="/runtime/workspace/project",
+            workspace_working_dir=handle.workspace_root,
             persistence_dir=(
                 f"/runtime/state/conversations/{handle.conversation_id.replace('-', '')}"
                 if handle.conversation_id.count("-") == 4

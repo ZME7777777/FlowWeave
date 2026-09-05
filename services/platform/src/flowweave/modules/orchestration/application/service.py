@@ -471,13 +471,21 @@ def _active_attempt_runtime_handle(
         flow_run_id=flow_run_id,
         openhands_conversation_id=openhands_conversation_id,
     )
-    output_root = binding.working_directory or "/runtime/workspace/project"
-    workspace_root = output_root
     if binding.node_attempt_id:
         workspace_root = str(
             sandboxes.node_attempt_workspace_context(
                 db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
             ).runtime_mount_root
+        )
+    else:
+        workspace_root = binding.working_directory or ""
+    output_root = binding.working_directory or workspace_root
+    if not output_root:
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The Attempt Conversation has no managed workspace",
+            409,
+            {"attempt_id": attempt.id},
         )
     output_contract = {
         field_key: {
@@ -1774,7 +1782,11 @@ def _prepare_gate_plan(
             session_config,
             provider=provider,
             binding_id=binding.id,
-            working_directory=binding.working_directory or "/runtime/workspace/project",
+            working_directory=binding.working_directory or str(
+                sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=run.id, node_attempt_id=attempt.id
+                ).runtime_mount_root
+            ),
             host_root=host_root,
             runtime_root=runtime_root,
         )
@@ -1786,7 +1798,11 @@ def _prepare_gate_plan(
             execution_key=f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}",
             node={},
             bindings=[],
-            workspace_ref=binding.working_directory or "/runtime/workspace/project",
+            workspace_ref=binding.working_directory or str(
+                sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=run.id, node_attempt_id=attempt.id
+                ).runtime_mount_root
+            ),
             interaction_mode="COLLABORATION",
             environment_image=environment.image_digest,
             environment_id=environment.environment_id,
@@ -1797,7 +1813,11 @@ def _prepare_gate_plan(
         )
         request = replace(
             request,
-            workspace_root=binding.working_directory or "/runtime/workspace/project",
+            workspace_root=binding.working_directory or str(
+                sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=run.id, node_attempt_id=attempt.id
+                ).runtime_mount_root
+            ),
             runtime_sandbox_id=connection.managed_runtime_id,
             runtime_resource_name=connection.resource_name,
             runtime_base_url=f"http://{connection.resource_name}:8000",
@@ -4192,7 +4212,9 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         session_config,
         provider=provider,
         binding_id=session_binding.id,
-        working_directory=session_binding.working_directory or "/runtime/workspace/project",
+        working_directory=(
+            session_binding.working_directory or str(workspace.runtime_working_directory)
+        ),
         host_root=host_root,
         runtime_root=runtime_root,
     )
@@ -4635,7 +4657,14 @@ def _prepare_runtime_outputs(
                 raise DomainError("RUNTIME_OUTPUT_INVALID", "Unsupported runtime output type", 422)
             path = content.strip()
             workspace_path = PurePosixPath(path)
-            project_root = PurePosixPath(handle.workspace_root or "/runtime/workspace/project")
+            if not handle.workspace_root:
+                raise DomainError(
+                    "RUNTIME_WORKSPACE_INVALID",
+                    "The Agent Conversation has no managed workspace",
+                    409,
+                    {"conversation_id": handle.conversation_id},
+                )
+            project_root = PurePosixPath(handle.workspace_root)
             if (
                 not workspace_path.is_absolute()
                 or ".." in workspace_path.parts

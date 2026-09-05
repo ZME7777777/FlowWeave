@@ -887,24 +887,30 @@ class OpenHandsRuntime:
                 422,
             )
         relative = root.relative_to(prefix)
-        if relative.parts[:2] != ("project", "users") or len(relative.parts) != 3:
+        if len(relative.parts) == 1:
+            identity = relative.parts[0]
+            identity_kind = "record"
+        elif relative.parts[:2] == ("project", "users") and len(relative.parts) == 3:
+            identity = relative.parts[2]
+            identity_kind = "user"
+        else:
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",
-                "The Runtime user workspace root is invalid",
+                "The Runtime workspace root is invalid",
                 422,
             )
         try:
-            record_id = str(UUID(relative.parts[2]))
+            parsed_identity = str(UUID(identity))
         except ValueError as exc:
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",
-                "The Runtime record workspace identity is invalid",
+                f"The Runtime {identity_kind} workspace identity is invalid",
                 422,
             ) from exc
-        if record_id != relative.parts[2]:
+        if parsed_identity != identity:
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",
-                "The Runtime record workspace identity is not canonical",
+                f"The Runtime {identity_kind} workspace identity is not canonical",
                 422,
             )
         return root

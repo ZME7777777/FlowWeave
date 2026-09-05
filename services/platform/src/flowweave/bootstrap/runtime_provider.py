@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
@@ -334,22 +335,38 @@ class MarketplaceCatalogWrite(PluginResolveWrite):
 class TerminalStartWrite(SandboxDeleteWrite):
     environment_id: UUID | None = None
     session_name: str | None = Field(default=None, max_length=64)
-    working_dir: str | None = Field(
-        default=None,
-        max_length=500,
-        pattern=r"^/runtime/workspace/project(?:/[^/]+)*$",
-    )
+    working_dir: str | None = Field(default=None, max_length=500)
     rows: int = Field(default=24, ge=2, le=200)
     columns: int = Field(default=80, ge=20, le=400)
 
     @model_validator(mode="after")
     def validate_working_dir(self) -> TerminalStartWrite:
-        if self.working_dir is not None and (
-            ".." in self.working_dir.split("/") or "\x00" in self.working_dir
-        ):
-            raise ValueError("working_dir must remain under the project root")
+        if self.working_dir is not None:
+            path = PurePosixPath(self.working_dir)
+            if (
+                not path.is_absolute()
+                or path.as_posix() != self.working_dir
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or not path.is_relative_to(PurePosixPath("/runtime/workspace"))
+            ):
+                raise ValueError("working_dir must remain under a managed Runtime workspace")
+            relative = path.relative_to(PurePosixPath("/runtime/workspace"))
+            if len(relative.parts) == 1:
+                identity = relative.parts[0]
+            elif relative.parts[:2] == ("project", "users") and len(relative.parts) == 3:
+                identity = relative.parts[2]
+            else:
+                raise ValueError("working_dir must use a managed record or user workspace root")
+            try:
+                canonical = str(UUID(identity))
+            except ValueError as exc:
+                raise ValueError("working_dir workspace identity is invalid") from exc
+            if canonical != identity:
+                raise ValueError("working_dir workspace identity is not canonical")
         if self.environment_id is not None and self.working_dir is not None:
             raise ValueError("setup terminals cannot set working_dir")
+        if self.environment_id is None and self.working_dir is None:
+            raise ValueError("Agent terminals require a managed workspace working_dir")
         return self
 
 
@@ -1137,7 +1154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 working_dir=(
                     None
                     if payload.environment_id is not None
-                    else payload.working_dir or "/runtime/workspace/project"
+                    else payload.working_dir
                 ),
             )
 

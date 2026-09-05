@@ -169,6 +169,7 @@ def _request() -> StartAttemptRequest:
             budgets=RuntimeBudgets(max_iterations=20),
         ),
         node_workspace_ref="/workspaces/nodes/node-1",
+        workspace_root="/runtime/workspace/10000000-0000-4000-8000-000000000001",
         environment_image="sha256:" + "2" * 64,
         environment_id="environment-1",
         environment_version_id="environment-version-1",
@@ -227,6 +228,7 @@ def _handle(
         "runtime-1",
         "fw-sbx-flow-run-1",
         output_contract or {},
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001",
     )
 
 
@@ -254,19 +256,25 @@ def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_set
     runtime = OpenHandsRuntime(openhands_settings)
     request = replace(
         _request(),
-        workspace_ref="/runtime/workspace/project/backend",
+        workspace_ref=(
+            "/runtime/workspace/project/users/"
+            "6311561c-06e4-41ad-8afe-aac35cfa83ec/backend"
+        ),
+        workspace_root=(
+            "/runtime/workspace/project/users/"
+            "6311561c-06e4-41ad-8afe-aac35cfa83ec"
+        ),
         runtime_sandbox_id="agent-runtime-1",
         runtime_resource_name="agent-workspace-runtime",
     )
 
-    assert runtime._request_workspace_path(request) == "/runtime/workspace/project/backend"
+    assert runtime._request_workspace_path(request) == request.workspace_ref
 
 
 @pytest.mark.parametrize(
     "working_directory",
     [
-        "/runtime/workspace/project/nodes/asset/sessions/node-run/1",
-        "/runtime/workspace/nodes/asset/sessions/node-run/1",
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001/nodes/asset/sessions/node-run/1",
     ],
 )
 def test_openhands_preserves_attempt_runtime_working_directory(
@@ -288,7 +296,7 @@ def _state(**values: object) -> dict[str, object]:
         "id": "10000000-0000-4000-8000-000000000002",
         "workspace": {
             "kind": "LocalWorkspace",
-            "working_dir": "/runtime/workspace/project",
+            "working_dir": "/runtime/workspace/10000000-0000-4000-8000-000000000001",
         },
         "persistence_dir": "/runtime/state/conversations/10000000000040008000000000000002",
         **values,
@@ -298,9 +306,8 @@ def _state(**values: object) -> dict[str, object]:
 @pytest.mark.parametrize(
     "working_dir",
     [
-        "/runtime/workspace/project",
-        "/runtime/workspace/project/backend",
-        "/runtime/workspace/nodes/asset/sessions/node-run/1",
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001",
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001/backend",
     ],
 )
 def test_openhands_reload_accepts_formal_flow_run_workspace_roots(
@@ -324,6 +331,30 @@ def test_openhands_reload_rejects_workspace_outside_flow_run_roots(openhands_set
         runtime._conversation_state(_handle())
 
     assert raised.value.code == "RUNTIME_WORKSPACE_IDENTITY_DRIFT"
+
+
+@pytest.mark.parametrize(
+    ("workspace_root", "accepted"),
+    [
+        ("/runtime/workspace/10000000-0000-4000-8000-000000000001", True),
+        (
+            "/runtime/workspace/project/users/6311561c-06e4-41ad-8afe-aac35cfa83ec",
+            True,
+        ),
+        ("/runtime/workspace/project", False),
+        ("/runtime/workspace/nodes", False),
+    ],
+)
+def test_openhands_validates_only_canonical_record_or_user_workspace_roots(
+    workspace_root: str, accepted: bool
+):
+    if accepted:
+        validated = OpenHandsRuntime._validated_workspace_root(workspace_root)
+        assert validated.as_posix() == workspace_root
+    else:
+        with pytest.raises(DomainError) as raised:
+            OpenHandsRuntime._validated_workspace_root(workspace_root)
+        assert raised.value.code == "RUNTIME_WORKSPACE_INVALID"
 
 
 @pytest.mark.parametrize(
@@ -402,9 +433,10 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
                 "title": "技术方案",
                 "display_name": "design",
                 "description": "",
-                "workspace_root": "/runtime/workspace/project",
+                "workspace_root": "/runtime/workspace/10000000-0000-4000-8000-000000000001",
             }
         },
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001",
     )
     payload = captured["json"]
     assert isinstance(payload, dict)
@@ -1043,7 +1075,7 @@ def test_openhands_routes_control_plane_runtime_without_owning_cleanup(
                 "leaf_event_id": "event-2",
                 "workspace": {
                     "kind": "LocalWorkspace",
-                    "working_dir": "/runtime/workspace/project",
+                    "working_dir": "/runtime/workspace/10000000-0000-4000-8000-000000000001",
                 },
                 "persistence_dir": "/runtime/state/conversations/10000000000040008000000000000006",
             }
@@ -1267,7 +1299,8 @@ def test_openhands_hides_managed_workspace_root_from_execution_output_prompt(
         bindings=[],
         workspace_ref="/tmp/workspace",
         node_workspace_ref="/runtime/workspace/nodes/asset/attempt",
-        output_workspace_root="/runtime/workspace/project",
+        workspace_root="/runtime/workspace/10000000-0000-4000-8000-000000000001",
+        output_workspace_root="/runtime/workspace/10000000-0000-4000-8000-000000000001",
         output_targets={
             "report": {
                 "artifact_type": "FILE",
@@ -1283,7 +1316,7 @@ def test_openhands_hides_managed_workspace_root_from_execution_output_prompt(
     assert "节点持久工作目录" not in context
     assert '"path":"report.pdf"' in context
     assert '"workspace_root"' not in context
-    assert runtime._output_contract(request)[0]["workspace_root"] == "/runtime/workspace/project"
+    assert runtime._output_contract(request)[0]["workspace_root"] == request.workspace_root
 
 
 def test_openhands_normalizes_incremental_events_and_terminal_result(

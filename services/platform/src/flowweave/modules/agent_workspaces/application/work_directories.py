@@ -402,7 +402,10 @@ def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
         .where(AgentWorkDirectory.workspace_id == workspace_id)
         .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
     )
-    return {"root": root_context(), "items": [_dict(db, item) for item in items]}
+    return {
+        "root": root_context(workspace_id=workspace_id),
+        "items": [_dict(db, item) for item in items],
+    }
 
 
 def get_work_directory(db: Session, workspace_id: str, work_directory_id: str) -> dict[str, Any]:

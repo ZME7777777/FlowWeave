@@ -31,7 +31,6 @@ _IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _DIGEST_LOCKED_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,430}@sha256:[0-9a-f]{64}$")
 _SAFE_NAME = re.compile(r"[^a-z0-9_.-]+")
 _TERMINAL_PROMPT = r"flowweave@\h:\w\$ "
-_AGENT_PROJECT_ROOT = "/runtime/workspace/project"
 _TERMINAL_SHELL_SCRIPT = (
     'export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-$HOME/.local}"; '
     'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"; '
@@ -719,7 +718,7 @@ def open_managed_terminal(
     master, process = open_terminal(
         immutable_id,
         session_name=session_name,
-        working_dir=(None if environment_id is not None else working_dir or _AGENT_PROJECT_ROOT),
+        working_dir=(None if environment_id is not None else working_dir),
         rows=rows,
         columns=columns,
     )

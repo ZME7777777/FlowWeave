@@ -76,11 +76,14 @@ def _project_root(db: Session, workspace_id: str) -> Path:
             "工作区持久化目录无效",
             409,
         )
-    user_root = resolved / "users" / current_user_id()
+    users_root = resolved / "users"
+    user_root = users_root / current_user_id()
     try:
-        (resolved / "users").mkdir(mode=0o700, exist_ok=True)
+        users_root.mkdir(mode=0o700, exist_ok=True)
         user_root.mkdir(mode=0o700, exist_ok=True)
-        users_metadata = (resolved / "users").lstat()
+        users_root.chmod(0o700)
+        user_root.chmod(0o700)
+        users_metadata = users_root.lstat()
         user_metadata = user_root.lstat()
         resolved_user_root = user_root.resolve(strict=True)
     except OSError as exc:
@@ -94,6 +97,8 @@ def _project_root(db: Session, workspace_id: str) -> Path:
         or stat.S_ISLNK(user_metadata.st_mode)
         or not stat.S_ISDIR(users_metadata.st_mode)
         or not stat.S_ISDIR(user_metadata.st_mode)
+        or stat.S_IMODE(users_metadata.st_mode) != 0o700
+        or stat.S_IMODE(user_metadata.st_mode) != 0o700
         or not resolved_user_root.is_relative_to(resolved)
     ):
         raise DomainError(
@@ -101,7 +106,7 @@ def _project_root(db: Session, workspace_id: str) -> Path:
             "用户工作区持久化目录无效",
             409,
         )
-    return resolved
+    return resolved_user_root
 
 
 def _runtime_root(workspace_id: str) -> str:
@@ -597,7 +602,11 @@ def details(
         "runtime": {"container_id": container_short_id},
         "ide": {
             "workspace_path": working_directory,
-            "gateway": agent_sessions.ssh_remote_descriptor(project_root, working_directory),
+            "gateway": agent_sessions.ssh_remote_descriptor(
+                project_root,
+                working_directory,
+                runtime_mount_root=PurePosixPath(runtime_root),
+            ),
         },
     }
 

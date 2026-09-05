@@ -1335,6 +1335,27 @@ def flow_run_terminal_resource_details(
     return terminal_resource_details(db, binding_id)
 
 
+def flow_run_terminal_details(
+    db: Session, flow_run_id: str, binding_id: str
+) -> tuple[str, str, str]:
+    """Return the owned terminal and its Attempt-scoped working directory."""
+
+    binding = _binding_for_run(db, flow_run_id, binding_id)
+    resource_name, resource_id = terminal_resource_details(db, binding_id)
+    if not binding.node_attempt_id:
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The FlowRun Conversation has no Node Attempt workspace",
+            409,
+        )
+    working_directory = str(
+        sandboxes.node_attempt_workspace_context(
+            db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
+        ).runtime_working_directory
+    )
+    return resource_name, resource_id, working_directory
+
+
 def read_conversation_events(
     db: Session, binding_id: str, *, cursor: str | None = None
 ) -> dict[str, Any]:
@@ -2347,6 +2368,7 @@ __all__ = (
     "bootstrap_node_conversation",
     "flow_run_runtime_stream_details",
     "flow_run_terminal_resource_details",
+    "flow_run_terminal_details",
     "get_conversation",
     "get_flow_run_conversation",
     "get_node_conversation",
