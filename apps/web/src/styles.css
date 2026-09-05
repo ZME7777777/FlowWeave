@@ -691,15 +691,18 @@ body:has(.login-page){min-width:0}
   letter-spacing:1.8px;
 }
 .login-page .login-hero-copy h1{
+  display:grid;
+  gap:9px;
   margin:0;
-  color:#f6f9f7;
+  color:var(--lime);
   font-size:clamp(38px,3.75vw,60px);
-  font-weight:560;
-  line-height:1.14;
-  letter-spacing:-2.5px;
+  font-weight:580;
+  line-height:1.06;
+  letter-spacing:-2.2px;
 }
-.login-page .login-hero-copy h1>span,.login-page .login-hero-copy h1 em{display:inline-block;white-space:nowrap}
-.login-page .login-hero-copy h1 em{margin-left:.55em;color:var(--lime);font-style:normal}
+.login-page .login-hero-copy h1>span,.login-page .login-hero-copy h1 em{display:block;white-space:nowrap}
+.login-page .login-hero-copy h1>span{color:#d9e3dd;font-size:.7em;font-weight:470;letter-spacing:-1.2px}
+.login-page .login-hero-copy h1 em{font-style:normal}
 .login-page .login-hero-copy>p:not(.eyebrow){
   max-width:560px;
   margin:25px 0 0;
@@ -707,6 +710,7 @@ body:has(.login-page){min-width:0}
   font-size:13px;
   line-height:1.85;
 }
+.login-page .login-hero-copy>p:not(.eyebrow) strong{color:#d8e4dd;font-weight:650}
 .login-page .login-proof{display:flex;flex-wrap:wrap;gap:21px;margin-top:32px}
 .login-page .login-proof span{display:flex;align-items:center;gap:8px;color:#d0dbd5;font-size:10px}
 .login-page .login-proof i{width:4px;height:4px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 3px #d8f25614}
@@ -817,7 +821,6 @@ body:has(.login-page){min-width:0}
   .login-page .login-hero-copy{width:min(540px,100%);margin:48px 0 35px}
   .login-page .login-hero-copy>.eyebrow{margin-bottom:13px;font-size:8px}
   .login-page .login-hero-copy h1{font-size:clamp(32px,8.5vw,43px);letter-spacing:-1.7px}
-  .login-page .login-hero-copy h1 em{margin-left:.35em}
   .login-page .login-hero-copy>p:not(.eyebrow){margin-top:17px;font-size:11px;line-height:1.7}
   .login-page .login-proof{gap:14px;margin-top:21px}
   .login-page .login-hero-foot{display:none}
