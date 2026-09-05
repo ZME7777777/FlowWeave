@@ -2389,8 +2389,9 @@ stale active generation 清除旧指针，仍运行的 generation 继续触发 f
 
 完成：为两类启动调用补充失败处理，在启动请求异常时显示原始 API 错误信息，同时保留现有刷新和忙碌状态收尾。
 
-验收：受影响 Web TypeScript/ESLint/production build、`git diff --check` 与任务状态唯一性通过；真实浏览器
-启动请求待用户确认后复验。
+验收：受影响 Web TypeScript/ESLint/production build、`git diff --check` 与任务状态唯一性通过；远端仅更新
+Web 后，真实逐步运行 `confirm-start` 返回 200，Attempt 进入 `EXECUTING`，记录级 Conversation binding
+以 `/runtime/workspace/<record-id>` 激活且深层会话页可进入；API、Runtime Provider 继续健康。
 
 ## 7. 恢复工作检查表
 
@@ -2407,6 +2408,7 @@ stale active generation 清除旧指针，仍运行的 generation 继续触发 f
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-163 | Web ESLint、TypeScript typecheck/production build；linux/amd64 Web 定向发布；真实逐步运行启动、Conversation binding 与深层会话页面 | PASS：启动请求返回 200，Attempt 进入 EXECUTING，binding 使用记录级 UUID 根目录且新会话正常执行；失败请求已具备可见反馈。 |
 | 2026-09-05 | FR-162 | 受影响 Python `py_compile`；`git diff --check`；远端 PostgreSQL 约束与真实 FlowRun Attempt 启动请求 | PASS：新增迁移已应用后，记录级 `/runtime/workspace/<UUID>` binding 可写入；历史路径保持兼容，真实启动请求不再因 `ck_agent_conversation_working_directory` 返回 409。 |
 | 2026-09-05 | FR-161 | 受影响 Python `py_compile`、Ruff；Runtime Provider 规格单测；`git diff --check`；Docker Provider 定向 pytest | PASS（静态与纯模型）：历史持久规格可被 Runtime Provider 解析，部分 shared-project 规格仍拒绝；挂载与历史恢复代码通过语法和 whitespace 检查。容器/数据库相关 3 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
 | 2026-09-05 | FR-159 | 受影响 Python `py_compile`、Ruff format/check、生产源码定向 Pyright（0 errors）；纯逻辑旧 schema 哈希兼容／空字段稳定／真实漂移拒绝探针；Alembic head、任务状态唯一性与 `git diff --check`；定向平台 pytest | PASS（静态与纯逻辑）：旧 FlowRun、Agent Workspace 及新增 Attempt schema 的既有容器哈希可精确兼容，新哈希不受可选空字段影响，真实 allocation 漂移继续返回 `SANDBOX_RESOURCE_CONFLICT`；Agent Runtime 健康态和镜像 N+1 恢复代码通过静态检查。唯一 Alembic head 为 `0096_shared_business_resources`。9 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
