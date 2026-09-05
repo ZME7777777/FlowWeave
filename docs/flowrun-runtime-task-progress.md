@@ -2380,6 +2380,18 @@ stale active generation 清除旧指针，仍运行的 generation 继续触发 f
 验收：受影响 Python `py_compile`、`git diff --check` 通过；本机缺少 SQLAlchemy 且 Docker daemon 不可用，
 未运行数据库行为测试，部署后使用远端 PostgreSQL 迁移和真实启动请求复验。
 
+### FR-163 FlowRun 启动失败反馈 — DONE
+
+依赖：`FR-162`。
+
+目标：逐步运行和连续运行的启动请求失败时必须保留并展示服务端错误，不能因未处理的 Promise rejection
+让按钮恢复后表现为无响应。
+
+完成：为两类启动调用补充失败处理，在启动请求异常时显示原始 API 错误信息，同时保留现有刷新和忙碌状态收尾。
+
+验收：受影响 Web TypeScript/ESLint/production build、`git diff --check` 与任务状态唯一性通过；真实浏览器
+启动请求待用户确认后复验。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
