@@ -1,6 +1,6 @@
 {
   "name": "@flowweave-ai/cli",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "FlowWeave 平台命令行客户端",
   "type": "module",
   "bin": {
@@ -12,6 +12,9 @@
   ],
   "engines": {
     "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",

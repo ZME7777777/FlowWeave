@@ -1,6 +1,6 @@
 ---
 name: flowweave
-description: FlowWeave 平台基准技能。用于在不了解平台背景时先建立统一的资源模型、CLI 配置与安全操作方式，再创建节点、能力、环境、流程、FlowRun 或 Agent 工作区。
+description: FlowWeave 平台基准技能。用于建立统一的用户登录、资源模型、CLI 配置与安全操作方式，再创建节点、能力、环境、流程、周期调度、FlowRun 或 Agent 工作区。
 ---
 
 # FlowWeave 平台基准
@@ -34,21 +34,22 @@ Agent Workspace 是另一条“交互式 Agent 工作台”路径：它有自己
 
 ## 从新环境开始
 
-先安装 CLI 和 Skills，再写入平台地址。当前平台没有 CLI 登录步骤；模型供应商 OAuth 仅用于模型授权，和 CLI 配置无关。
+先安装 CLI 和 Skills、写入平台地址，再登录平台用户。模型供应商 OAuth 仅用于模型授权，不等于 CLI 用户登录。
 
 ```bash
 npm install -g @flowweave-ai/cli
 npx skills add ZME7777777/FlowWeave -g -y
 flowweave config init --base-url https://host.example/flowweave
+flowweave auth login
 flowweave health --ready
 flowweave config show
 ```
 
-`--base-url` 必须包含实际部署前缀，例如 `/flowweave`。配置只保存基础 URL，不保存 API Key、Cookie 或任意请求头。若 CLI 尚未可从 npm 获取，先确认包的发布可见性；不要改用未审计的本地脚本替代发行包。
+`--base-url` 必须包含实际部署前缀，例如 `/flowweave`。基础配置只保存 URL；登录会话单独保存在权限为 `0600`、且与该 URL 精确绑定的本地认证文件中。默认交互式登录会隐藏密码；非交互环境只用 `--password-stdin`，不得把密码、会话 Cookie 或 token 写进命令参数、Skill、请求文件或日志。用 `flowweave auth status` 核对当前身份，用 `flowweave auth logout` 撤销会话。若 CLI 尚未可从 npm 获取，先确认包的发布可见性；不要改用未审计的本地脚本替代发行包。
 
 ## 统一调用方式
 
-页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`environment`、`credential`、`flow`、`run`、`model`、`agent`。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
+页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`environment`、`credential`、`flow`、`run`、`schedule`、`model`、`agent`。`credential` 是网站凭据资源，不是 `auth` 用户登录。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
 
 ```bash
 # 先查看当前服务真正暴露的路径和 schema
@@ -83,13 +84,15 @@ Agent Workspace 的工作目录删除由已绑定会话保护；文件删除只�
 
 当用户从空白开始创建可运行流程，按依赖顺序协作：
 
-1. 配置 CLI 并检查平台健康；需要模型时先配置、发现并测试模型供应商。
+1. 配置 CLI、登录并核对身份，再检查平台健康；需要模型时先配置、发现并测试模型供应商。
 2. 创建或检查节点目录和节点资产，确定稳定输入/输出 `field_key`。
 3. 导入并验证能力，保留平台返回的能力版本与 digest。
 4. 创建终端环境，进入 Setup Session 配置，再发布为 READY Environment Version。
 5. 使用节点资产创建 Flow，校验控制边与端口映射。
 6. 使用该 Flow 和显式选择的 READY Environment Version 创建 FlowRun。
 7. 在 FlowRun 工作台依据 Run 详情处理节点、输入产物、门禁、人工输出和运行诊断。
+
+需要重复执行时，在 Flow、READY 环境版本、起点、启动配置与输入都已明确后创建周期调度；调度是独立配置，不替代手动创建 FlowRun，也不允许绕过运行前置条件。
 
 用户只要求其中一项时，不强行创建全部依赖；应先说明缺失的必要条件并读取现有资源。
 
@@ -100,14 +103,16 @@ Agent Workspace 的工作目录删除由已绑定会话保护；文件删除只�
 - 终端环境、Setup Session、不可变版本：`flowweave-environments`
 - Flow 节点、控制边、端口映射与校验：`flowweave-flows`
 - FlowRun 创建、状态、取消、完成、Runtime：`flowweave-runs`
+- 周期 FlowRun 调度、暂停/恢复、手动触发和 occurrence：`flowweave-schedules`
 - 节点执行、Attempt、Artifact、人工门禁与节点会话：`flowweave-flowrun-workbench`
 - 大模型供应商、测试和 Codex OAuth：`flowweave-model-providers`
 - 顶层 Agent Workspace、会话、消息、工作目录与附件：`flowweave-agent-workspace`
+- CLI 用户登录、身份检查或退出：`flowweave-auth`
 - 认证条目与批量删除：使用本 Skill 的 `credential` 快捷命令；不把 Secret 写入 Skill、命令历史或请求快照。
 
 ## 不可跨越的边界
 
 - 不得通过 Docker、Runtime Provider、数据库或 OpenHands 私有端点绕过 FlowWeave。
-- 不把 API Key、OAuth 令牌、恢复码或其他明文 Secret 写入 Skill、仓库、配置、示例、日志或 shell 历史。
+- 不把密码、会话 Cookie、API Key、OAuth 令牌、恢复码或其他明文 Secret 写入 Skill、仓库、示例、日志或 shell 历史；CLI 认证文件只由 CLI 管理且必须保持 `0600`。
 - 不以节点名、显示顺序、事件顺序推测 `run_id`、`node_run_id`、`attempt_id`、版本、cursor 或 `row_version`。
 - 删除、取消、完成、拒绝、撤销、替换 Runtime 与覆盖更新均会改变平台状态；先读取目标，确认精确 ID 与用户意图。

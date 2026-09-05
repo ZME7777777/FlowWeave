@@ -9,7 +9,7 @@ description: 管理 FlowWeave Agent Workspace、会话、消息、运行状态�
 
 ## 对象关系
 
-默认 Agent Workspace 是平台分配的受控工作区。其下有 Conversation binding、消息/事件、附件、工作目录、能力绑定与 Runtime 概览。所有身份都必须由平台读取结果给出，不从聊天标题或前端 URL 推断。
+默认 Agent Workspace 是当前登录用户的平台受控工作区。其下有 Conversation binding、消息/事件、附件、工作目录、能力绑定与 Runtime 概览；不同用户的 Agent 项目与会话相互隔离。所有身份和路径都必须由平台读取结果给出，不从聊天标题、前端 URL 或旧固定工作区根推断。
 
 ```bash
 flowweave agent default
@@ -47,4 +47,4 @@ flowweave agent conversations <workspace-id>
 
 删除逻辑工作目录前，先用 `flowweave agent work-directories <workspace-id>` 读取真实 ID，再执行 `flowweave agent work-directory-delete <workspace-id> <work-directory-id> --dry-run`。被 Conversation 冻结引用的工作目录会被平台拒绝删除。
 
-删除文件或目录树使用 `flowweave agent file-delete <workspace-id> --path <runtime-path> [--path <runtime-path> ...] [--binding <binding-id>] [--work-directory <directory-id>] --dry-run`。路径必须来自当前 Workspace 详情；平台只允许当前范围内的普通文件或目录，并会递归删除目录。不得尝试删除工作区根、隐藏路径、符号链接或会话私有附件。确认 dry-run 中的 `paths` 数组和范围 query 后再执行；同时选择父目录与其后代时，平台只返回实际删除的最高层路径。
+删除文件或目录树使用 `flowweave agent file-delete <workspace-id> --path <runtime-path> [--path <runtime-path> ...] [--binding <binding-id>] [--work-directory <directory-id>] --dry-run`。路径必须来自当前登录用户的 Workspace 详情；不要硬编码 `/runtime/workspace/project` 或从其他用户、历史 binding 猜路径。平台只允许当前范围内的普通文件或目录，并会递归删除目录。不得尝试删除工作区根、隐藏路径、符号链接或会话私有附件。确认 dry-run 中的 `paths` 数组和范围 query 后再执行；同时选择父目录与其后代时，平台只返回实际删除的最高层路径。

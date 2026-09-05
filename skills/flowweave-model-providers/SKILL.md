@@ -1,11 +1,11 @@
 ---
 name: flowweave-model-providers
-description: 创建、测试、配置、登录或移除 FlowWeave 大模型服务，包括 API Key 与 Codex OAuth；不处理 FlowWeave CLI 登录。
+description: 创建、测试、配置、授权或移除 FlowWeave 大模型服务，包括 API Key 与 Codex OAuth；平台用户登录转 flowweave-auth。
 ---
 
 # FlowWeave 大模型服务
 
-**开始前先完整阅读 `../flowweave/SKILL.md`。** 模型供应商是平台受控配置；它与 CLI 基础 URL 配置相互独立，Codex OAuth 也不等于 `flowweave auth login`（该登录命令当前不存在）。
+**开始前先完整阅读 `../flowweave/SKILL.md`。** 模型供应商是平台受控配置；它与 CLI 用户会话相互独立，Codex OAuth 不等于 `flowweave auth login`。未登录平台时先转 `flowweave-auth`。
 
 ## 安全规则
 

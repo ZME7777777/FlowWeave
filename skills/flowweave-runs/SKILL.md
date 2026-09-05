@@ -28,6 +28,8 @@ flowweave run events <run-id>
 
 创建后立即读取 Run，确认 Flow ID、冻结的 Environment Version、Snapshot 与状态均符合预期。异步状态以 `run get`、`run runtime` 和 `run events` 为准；不要因 UI 暂未刷新而重复创建。Run 内节点、Attempt、产物、人工输入/输出、门禁、自动运行草稿和节点会话由 `flowweave-flowrun-workbench` 处理。
 
+如果用户要按固定间隔重复创建运行，转 `flowweave-schedules`。调度会冻结自己的 Flow、READY 环境版本、运行方式、起点和启动配置；不要用外部 cron 重复调用 `run start` 来绕过平台 occurrence、状态和审计。
+
 ## 诊断和受限变更
 
 诊断时先读 Run 详情、Runtime 与事件，记录真实 `run_id`、generation、session `row_version` 和失败原因。Runtime replacement 是受 fence 保护的动作，只有用户明确要求替换且请求体含从当前状态读取的 `expected_generation` 与 `expected_session_row_version` 时，才执行：

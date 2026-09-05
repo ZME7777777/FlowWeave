@@ -2482,6 +2482,30 @@ PostgreSQL/Runtime replacement 验证留待 FR-12 最终门禁，不以静态检
 节点目录操作一致；悬停使用浅绿反馈，键盘聚焦保留清晰外圈。删除入口的危险语义继续由无障碍名称和应用内
 确认对话框表达，未改变创建、删除或折叠行为。
 
+### FR-169 用户登录、周期调度 CLI 与 Skill 同步 — DONE
+
+依赖：`FR-168`。
+
+目标：审计 `fdede57e` 之后全部提交及中途 CLI 同步边界，将其后新增的用户会话认证、周期 FlowRun 调度和
+记录级／用户级工作区语义同步到 `@flowweave-ai/cli` 与仓库页面 Skill。CLI 新增类似
+`lark-cli auth login` 的 `flowweave auth login`，通过交互式隐藏输入或 `--password-stdin` 获取密码，保存与
+平台 URL 绑定且权限为 `0600` 的独立会话文件；后续 HTTP、上传和 WebSocket 请求自动携带会话，输出、dry-run
+和配置展示均不得泄露 token。补充 `auth status/logout`、调度 list/create/pause/resume/trigger/delete
+快捷命令，并以当前 `row_version` 保护状态切换。Skill 必须移除“无需登录”和旧固定工作区根假设，新增认证与
+周期调度路由，保留平台 OpenAPI、权限、幂等、删除和 Runtime 边界。
+
+验收：CLI 单元测试覆盖登录、会话持久化、HTTP/WebSocket 鉴权、退出与调度请求映射；Node 语法检查、npm
+pack 清单、全部 FlowWeave Skill `quick_validate.py`、Alembic head、任务状态唯一性及 `git diff --check`
+通过。本切片只修改 CLI、Skill 与对应文档，不修改平台认证、调度、Runtime 或 OpenHands 契约；完成后使用
+独立 Git commit 并停止。
+
+完成：审计 `fdede57e..5a0997a` 共 103 个提交，确认中途 `c81d904` 已同步运行记录、Runtime 暂停／恢复、
+门禁补救与模型用量，其后的新增公开路由为用户认证和周期调度。`@flowweave-ai/cli` 升级至 `0.2.0`，新增
+`auth login/status/logout` 与 `schedule list/create/pause/resume/trigger/delete`；HTTP、multipart 和
+WebSocket 统一使用 URL 绑定的 `0600` 会话文件，登录密码不会进入参数、dry-run 或输出。新增认证／调度
+Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 API 返回路径，不再硬编码旧项目根。未修改
+平台认证、调度、Runtime 或 OpenHands 实现。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2497,6 +2521,7 @@ PostgreSQL/Runtime replacement 验证留待 FR-12 最终门禁，不以静态检
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-169 | CLI Node 测试（10 passed）、语法检查与 typecheck；npm pack 与隔离安装 smoke；全部 FlowWeave Skill `quick_validate.py`（11 passed）；Alembic head、任务状态唯一性、敏感值扫描与 `git diff --check` | PASS：真实本地测试服务验证登录 Cookie 获取、`0600` 会话文件、HTTP／WebSocket 自动鉴权、跨 base URL 拒绝和退出清理；调度创建、CAS 暂停／恢复、手动触发与删除映射通过。npm 包清单仅含 README、CLI 入口和 package metadata，隔离安装后的 `flowweave --help` 包含 auth／schedule；唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT` 或下一切片。 |
 | 2026-09-05 | FR-168 | Web ESLint、TypeScript typecheck、production build；Agent 工作台定向 Playwright；本地真实页面 DOM／视觉核对；Alembic head、任务状态唯一性与 `git diff --check` | PASS：工作区分组的新建会话和删除按钮均为 26×26、0px 边框、透明背景和统一绿色；删除按钮不再常驻红色背景，悬停与键盘聚焦反馈保留。定向 Playwright 1 passed，Web 三项检查通过；未改变会话或工作区行为。 |
 | 2026-09-05 | FR-166 | 受影响 Python `py_compile`；`git diff --check`；Ruff | PASS（静态）：独立 Agent 根目录改为用户 UUID，Runtime 挂载与 OpenHands Handle 对齐；节点物理 Runtime 丢失进入幂等重建路径并保留原 Session/Conversation。Ruff 因本机未安装未执行；真实 Docker／PostgreSQL／Runtime replacement 验证留待 FR-12。 |
 | 2026-09-05 | FR-165 | Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check`；流程编排定向 Playwright | PASS（静态与构建）：目录折叠和顶部导航间距通过 Web 检查，唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT`。Playwright 因本地 Web／API 服务未运行未执行目标断言，未伪记为通过。 |

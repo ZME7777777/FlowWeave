@@ -7,10 +7,11 @@
 ```bash
 npm install -g @flowweave-ai/cli
 flowweave config init --base-url https://host.example/flowweave
+flowweave auth login
 flowweave health --ready
 ```
 
-配置只保存基础 URL 到 `~/.config/flowweave/config.json`；可以用 `FLOWWEAVE_CONFIG_PATH` 覆盖。当前平台不提供 CLI 登录，不能也不应添加 `auth login`。
+配置只保存基础 URL 到 `~/.config/flowweave/config.json`；可以用 `FLOWWEAVE_CONFIG_PATH` 覆盖。用户登录会话保存到同目录、权限为 `0600` 的独立 `auth.json`，可用 `FLOWWEAVE_AUTH_PATH` 覆盖。CLI 不回显会话 token；密码默认交互式隐藏输入，自动化只从 `--password-stdin` 读取。
 
 > 包发布需要拥有 npm `@flowweave-ai` scope 的权限。本仓库只提供可发布包与本地安装验证，不会自动执行 `npm publish`。
 
@@ -18,9 +19,9 @@ flowweave health --ready
 
 CLI 分为两层：第一层以页面/业务域提供中文快捷命令，覆盖用户最常用的原子操作；第二层以 `api`、`upload`、`ws` 直接映射在线 OpenAPI 的 REST、multipart 与 WebSocket 契约。这样后端新增原子接口时，用户无需等待 CLI 再次发布。
 
-配置只有 `base_url`，默认保存到 `~/.config/flowweave/config.json`。客户端会保留部署前缀，并自动补全 `/api/v1`。平台当前不要求 CLI 登录，因此不实现 `auth login`；模型供应商的 Codex OAuth 只属于 `model oauth-*` 业务操作。
+基础配置只有 `base_url`，客户端会保留部署前缀并自动补全 `/api/v1`。`auth login/status/logout` 映射平台用户会话；HTTP、multipart 和 WebSocket 都使用与当前 base URL 精确绑定的会话。模型供应商的 Codex OAuth 仍只属于 `model oauth-*` 业务操作，不等于平台用户登录。
 
-Skill 以产品页面拆分，分别指导节点资产、能力、环境、流程、FlowRun、模型服务和 Agent 工作台。所有页面 Skill 都以 `flowweave` 平台基准 Skill 为前置知识：新会话会先获得平台资源关系、安装配置、端到端生命周期、OpenAPI 发现方式和安全边界，再执行页面操作。所有写请求先通过 FlowWeave 控制面；CLI 与 Skill 均不直接连接 Docker、Runtime Provider、数据库或 OpenHands 私有接口。
+Skill 以产品页面拆分，分别指导用户登录、节点资产、能力、环境、流程、FlowRun、周期调度、模型服务和 Agent 工作台。所有页面 Skill 都以 `flowweave` 平台基准 Skill 为前置知识：新会话会先获得平台资源关系、安装配置、端到端生命周期、OpenAPI 发现方式和安全边界，再执行页面操作。所有写请求先通过 FlowWeave 控制面；CLI 与 Skill 均不直接连接 Docker、Runtime Provider、数据库或 OpenHands 私有接口。
 
 ## 页面原子命令
 
@@ -32,6 +33,7 @@ Skill 以产品页面拆分，分别指导节点资产、能力、环境、流�
 | 认证管理 | `credential` | list/create/update/delete、`delete-many --id <id>` 批量删除 |
 | 流程编排 | `flow` | list/get/create/update/validate/delete |
 | FlowRun | `run`、`api`、`upload` | start/list/get/runtime/events/replace/cancel/complete/delete；节点执行、门禁与产物 |
+| 周期调度 | `schedule` | list/create、pause/resume、trigger、delete |
 | 大模型配置 | `model` | list/create/update/delete、发现模型、连接测试、Codex OAuth 设备授权 |
 | Agent 工作台 | `agent` | 默认工作区、会话创建/查询、消息发送、中断/恢复、工作目录和文件删除 |
 
@@ -39,6 +41,7 @@ Skill 以产品页面拆分，分别指导节点资产、能力、环境、流�
 
 ```bash
 flowweave openapi --paths
+flowweave auth status
 flowweave node create --data-file ./node.json --dry-run
 flowweave capability import --type SKILL --file ./my-skill.zip
 flowweave environment setup <environment-id>
@@ -58,8 +61,10 @@ flowweave run start --flow <flow-id> --environment-version <ready-version-id>
 - `flowweave-environments`：终端环境和不可变版本；
 - `flowweave-flows`：流程定义、控制边和端口映射；
 - `flowweave-runs`：手动/自动 FlowRun 与 Runtime；
-- `flowweave-agent-workspace`：Agent Workspace、会话和工作区。
-- `flowweave-model-providers`：大模型服务、连接测试与 Codex OAuth。
+- `flowweave-schedules`：周期 FlowRun 调度、状态切换与 occurrence；
+- `flowweave-auth`：CLI 用户登录、身份检查与退出；
+- `flowweave-agent-workspace`：Agent Workspace、会话和工作区；
+- `flowweave-model-providers`：大模型服务、连接测试与 Codex OAuth；
 - `flowweave-flowrun-workbench`：节点执行、产物、门禁与自动运行。
 
 从公开仓库安装全部页面 skill：

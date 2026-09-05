@@ -59,12 +59,12 @@ END gate 失败后，风险接受和补救 fork 都需要用户明确授权、�
 
 ## 节点会话工作区维护
 
-删除节点会话工作区文件或目录前，从 Run 详情取得真实 `attempt_id`，再读取该 Attempt 的工作区范围。使用重复 `--path` 批量选择，并先 dry-run：
+删除节点会话工作区文件或目录前，从 Run 详情取得真实 `attempt_id`，再读取该 Attempt 的记录级工作区范围。同一执行记录中的节点可共享记录项目根，不同记录相互隔离；不得套用旧的 `/runtime/workspace/project` 或其他记录路径。使用重复 `--path` 批量选择，并先 dry-run：
 
 ```bash
 flowweave run workspace-delete <run-id> --attempt <attempt-id> \
-  --path /runtime/workspace/project/result.txt \
-  --path /runtime/workspace/project/cache \
+  --path <path-returned-by-attempt-workspace-api> \
+  --path <another-path-returned-by-attempt-workspace-api> \
   [--binding <binding-id>] [--work-directory <directory-id>] --dry-run
 ```
 

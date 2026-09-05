@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 const entry = new URL('../bin/flowweave.mjs', import.meta.url);
@@ -12,11 +13,24 @@ async function configured() {
   return join(directory, 'config.json');
 }
 
-function invoke(config, ...args) {
+function invokeWith(config, args, options = {}) {
   return spawnSync(process.execPath, [entry.pathname, ...args], {
     encoding: 'utf8',
+    input: options.input,
     env: { ...process.env, FLOWWEAVE_CONFIG_PATH: config },
   });
+}
+
+function invoke(config, ...args) { return invokeWith(config, args); }
+
+async function authServer() {
+  const child = spawn(process.execPath, [new URL('./auth-server.mjs', import.meta.url).pathname], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const [chunk] = await once(child.stdout, 'data');
+  const port = Number(String(chunk).trim());
+  assert.ok(Number.isInteger(port) && port > 0);
+  return { child, baseUrl: `http://127.0.0.1:${port}/flowweave` };
 }
 
 test('配置基础 URL 并显示配置', async () => {
@@ -96,18 +110,18 @@ test('维护快捷命令保留删除目标和环境版本说明', async () => {
   const publish = invoke(config, 'environment', 'publish', 'setup-1', '--description', '更新 Python 依赖', '--dry-run');
   assert.equal(publish.status, 0, publish.stderr);
   assert.deepEqual(JSON.parse(publish.stdout).payload, { description: '更新 Python 依赖' });
-  const file = invoke(config, 'agent', 'file-delete', 'workspace-1', '--path', '/runtime/workspace/project/report.md', '--path', '/runtime/workspace/project/output', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
+  const file = invoke(config, 'agent', 'file-delete', 'workspace-1', '--path', '/runtime/workspace/user-1/report.md', '--path', '/runtime/workspace/user-1/output', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
   assert.equal(file.status, 0, file.stderr);
   assert.deepEqual(JSON.parse(file.stdout), {
     method: 'DELETE',
-    payload: { paths: ['/runtime/workspace/project/report.md', '/runtime/workspace/project/output'] },
+    payload: { paths: ['/runtime/workspace/user-1/report.md', '/runtime/workspace/user-1/output'] },
     url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace/entries?binding_id=binding-1&work_directory_id=directory-1',
   });
-  const runFiles = invoke(config, 'run', 'workspace-delete', 'run-1', '--attempt', 'attempt-1', '--path', '/runtime/workspace/project/result.txt', '--path', '/runtime/workspace/project/cache', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
+  const runFiles = invoke(config, 'run', 'workspace-delete', 'run-1', '--attempt', 'attempt-1', '--path', '/runtime/workspace/record-1/result.txt', '--path', '/runtime/workspace/record-1/cache', '--binding', 'binding-1', '--work-directory', 'directory-1', '--dry-run');
   assert.equal(runFiles.status, 0, runFiles.stderr);
   assert.deepEqual(JSON.parse(runFiles.stdout), {
     method: 'DELETE',
-    payload: { paths: ['/runtime/workspace/project/result.txt', '/runtime/workspace/project/cache'] },
+    payload: { paths: ['/runtime/workspace/record-1/result.txt', '/runtime/workspace/record-1/cache'] },
     url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/workspace/entries?binding_id=binding-1&work_directory_id=directory-1',
   });
   const runDirectory = invoke(config, 'run', 'work-directory-delete', 'run-1', '--attempt', 'attempt-1', '--work-directory', 'directory-1', '--dry-run');
@@ -180,4 +194,81 @@ test('运行时生命周期命令拒绝缺失或无效 fencing 字段', async ()
     const result = invoke(config, ...args);
     assert.equal(result.status, 2);
   }
+});
+
+test('用户登录会话用于 HTTP 与 WebSocket，退出后从本地清除', async () => {
+  const server = await authServer();
+  const config = await configured();
+  const authPath = join(dirname(config), 'auth.json');
+  try {
+    assert.equal(invoke(config, 'config', 'init', '--base-url', server.baseUrl).status, 0);
+    const rejectedDryRun = invokeWith(config, ['auth', 'login', '--username', 'flowweave', '--password-stdin', '--dry-run'], {
+      input: 'correct-password\n',
+    });
+    assert.equal(rejectedDryRun.status, 2);
+    assert.doesNotMatch(`${rejectedDryRun.stdout}${rejectedDryRun.stderr}`, /correct-password/);
+    const login = invokeWith(config, ['auth', 'login', '--username', 'flowweave', '--password-stdin'], {
+      input: 'correct-password\n',
+    });
+    assert.equal(login.status, 0, login.stderr);
+    assert.equal(JSON.parse(login.stdout).user.username, 'flowweave');
+    assert.doesNotMatch(login.stdout, /correct-password|session-secret/);
+    assert.deepEqual(JSON.parse(await readFile(authPath, 'utf8')), {
+      base_url: server.baseUrl,
+      session_token: 'session-secret',
+    });
+    assert.equal((await stat(authPath)).mode & 0o777, 0o600);
+
+    const status = invoke(config, 'auth', 'status');
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(JSON.parse(status.stdout).authenticated, true);
+    const api = invoke(config, 'api', 'get', '/flows');
+    assert.equal(api.status, 0, api.stderr);
+    assert.deepEqual(JSON.parse(api.stdout), [{ id: 'flow-1' }]);
+    const websocket = invoke(config, 'ws', '/authenticated-stream', '--max-messages', '1');
+    assert.equal(websocket.status, 0, websocket.stderr);
+    assert.match(websocket.stdout, /authenticated-websocket/);
+
+    assert.equal(invoke(config, 'config', 'init', '--base-url', `${server.baseUrl}/other`, '--force').status, 0);
+    const wrongPlatform = invoke(config, 'auth', 'status');
+    assert.equal(wrongPlatform.status, 2);
+    assert.match(wrongPlatform.stderr, /属于其他 FlowWeave 地址/);
+    assert.doesNotMatch(wrongPlatform.stderr, /session-secret/);
+    assert.equal(invoke(config, 'config', 'init', '--base-url', server.baseUrl, '--force').status, 0);
+
+    const logout = invoke(config, 'auth', 'logout');
+    assert.equal(logout.status, 0, logout.stderr);
+    assert.equal(JSON.parse(logout.stdout).authenticated, false);
+    await assert.rejects(readFile(authPath, 'utf8'), { code: 'ENOENT' });
+  } finally {
+    server.child.kill('SIGTERM');
+    await once(server.child, 'exit');
+  }
+});
+
+test('周期调度快捷命令保持创建、fencing、触发和删除契约', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const created = invoke(config, 'schedule', 'create', '--data', '{"name":"每小时复核"}', '--dry-run');
+  assert.equal(created.status, 0, created.stderr);
+  assert.deepEqual(JSON.parse(created.stdout), {
+    method: 'POST', payload: { name: '每小时复核' },
+    url: 'https://example.test/flowweave/api/v1/flow-run-schedules',
+  });
+  const paused = invoke(config, 'schedule', 'pause', 'schedule-1', '--expected-row-version', '3', '--dry-run');
+  assert.equal(paused.status, 0, paused.stderr);
+  assert.deepEqual(JSON.parse(paused.stdout), {
+    method: 'PUT', payload: { expected_row_version: 3, status: 'PAUSED' },
+    url: 'https://example.test/flowweave/api/v1/flow-run-schedules/schedule-1/state',
+  });
+  const resumed = invoke(config, 'schedule', 'resume', 'schedule-1', '--expected-row-version', '4', '--dry-run');
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.equal(JSON.parse(resumed.stdout).payload.status, 'ACTIVE');
+  const triggered = invoke(config, 'schedule', 'trigger', 'schedule-1', '--dry-run');
+  assert.equal(triggered.status, 0, triggered.stderr);
+  assert.equal(JSON.parse(triggered.stdout).url, 'https://example.test/flowweave/api/v1/flow-run-schedules/schedule-1/trigger');
+  const deleted = invoke(config, 'schedule', 'delete', 'schedule-1', '--dry-run');
+  assert.equal(deleted.status, 0, deleted.stderr);
+  assert.equal(JSON.parse(deleted.stdout).method, 'DELETE');
+  assert.equal(invoke(config, 'schedule', 'pause', 'schedule-1', '--dry-run').status, 2);
 });

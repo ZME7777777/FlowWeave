@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline/promises';
+import WebSocket from 'ws';
 
 const API_PREFIX = '/api/v1';
 const CONFIG_PATH = process.env.FLOWWEAVE_CONFIG_PATH
   || `${process.env.XDG_CONFIG_HOME || `${homedir()}/.config`}/flowweave/config.json`;
+const AUTH_PATH = process.env.FLOWWEAVE_AUTH_PATH || `${dirname(CONFIG_PATH)}/auth.json`;
+const SESSION_COOKIE = 'flowweave_session';
 
 class CliError extends Error {}
 
@@ -14,8 +18,9 @@ function usage() {
   return `用法：flowweave <命令> [选项]
 
 配置与发现：
-  config init --base-url <URL> [--force]    设置平台基础 URL（无需登录）
+  config init --base-url <URL> [--force]    设置平台基础 URL
   config show                               显示当前配置
+  auth <login|status|logout>                 登录、检查或退出平台用户会话
   health [--ready]                          健康检查
   openapi [--paths]                         查看在线 OpenAPI 契约
 
@@ -32,6 +37,7 @@ function usage() {
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
   run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-delete|work-directory-delete> ...
+  schedule <list|create|pause|resume|trigger|delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
   agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete> ...
 
@@ -62,7 +68,7 @@ function positional(args) {
   const values = [];
   for (let index = 0; index < args.length; index += 1) {
     if (args[index].startsWith('--') || args[index] === '-H' || args[index] === '-q') {
-      if (!['--dry-run', '--raw', '--ready', '--paths', '--force'].includes(args[index])) index += 1;
+      if (!['--dry-run', '--raw', '--ready', '--paths', '--force', '--password-stdin'].includes(args[index])) index += 1;
     } else {
       values.push(args[index]);
     }
@@ -95,6 +101,35 @@ async function saveConfig(baseUrl, force) {
   await mkdir(dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
   await writeFile(CONFIG_PATH, `${JSON.stringify({ base_url: value }, null, 2)}\n`, { mode: 0o600 });
   return value;
+}
+
+async function loadAuth(baseUrl) {
+  let data;
+  try {
+    data = JSON.parse(await readFile(AUTH_PATH, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new CliError(`尚未登录 FlowWeave。请执行：flowweave auth login（${AUTH_PATH}）`);
+    }
+    throw new CliError(`无法读取 FlowWeave 登录会话 ${AUTH_PATH}：${error.message}`);
+  }
+  if (typeof data?.base_url !== 'string' || typeof data?.session_token !== 'string' || !data.session_token) {
+    throw new CliError(`登录会话 ${AUTH_PATH} 格式无效；请重新执行 flowweave auth login`);
+  }
+  if (normalizeBaseUrl(data.base_url) !== baseUrl) {
+    throw new CliError(`登录会话属于其他 FlowWeave 地址；请对 ${baseUrl} 重新执行 flowweave auth login`);
+  }
+  return data.session_token;
+}
+
+async function saveAuth(baseUrl, sessionToken) {
+  await mkdir(dirname(AUTH_PATH), { recursive: true, mode: 0o700 });
+  await writeFile(AUTH_PATH, `${JSON.stringify({ base_url: baseUrl, session_token: sessionToken }, null, 2)}\n`, { mode: 0o600 });
+  await chmod(AUTH_PATH, 0o600);
+}
+
+async function clearAuth() {
+  await rm(AUTH_PATH, { force: true });
 }
 
 function parseJson(value, source) {
@@ -131,12 +166,30 @@ function pathUrl(baseUrl, path, { raw = false, query = [] } = {}) {
 function headers(args) { return Object.fromEntries(pairs(optionValues(args, '-H').concat(optionValues(args, '--header')), ':', '--header').map(([name, value]) => [name.trim(), value.trim()])); }
 function queries(args) { return pairs(optionValues(args, '-q').concat(optionValues(args, '--query')), '=', '--query'); }
 
-async function request(method, path, args, { raw = false, body, form, query = [] } = {}) {
+function sessionTokenFrom(response) {
+  const values = typeof response.headers.getSetCookie === 'function'
+    ? response.headers.getSetCookie()
+    : [response.headers.get('set-cookie')].filter(Boolean);
+  for (const value of values) {
+    const match = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`).exec(value);
+    if (match) return match[1];
+  }
+  throw new CliError('登录响应没有返回 FlowWeave 会话 Cookie');
+}
+
+async function request(method, path, args, {
+  raw = false, body, form, query = [], authenticated = true, captureSession = false,
+} = {}) {
   const { baseUrl } = await loadConfig();
   const url = pathUrl(baseUrl, path, { raw, query: [...queries(args), ...query] });
   const requestBody = body === undefined ? await payload(args) : body;
   if (flag(args, '--dry-run')) return { method, url: url.toString(), payload: requestBody ?? form ?? null };
-  const requestHeaders = { Accept: 'application/json', ...headers(args) };
+  const suppliedHeaders = headers(args);
+  if (Object.keys(suppliedHeaders).some((name) => name.toLowerCase() === 'cookie')) {
+    throw new CliError('不要用 --header 传入 Cookie；请执行 flowweave auth login');
+  }
+  const requestHeaders = { Accept: 'application/json', ...suppliedHeaders };
+  if (authenticated) requestHeaders.Cookie = `${SESSION_COOKIE}=${await loadAuth(baseUrl)}`;
   let encoded;
   if (form) { encoded = form; } else if (requestBody !== undefined) { encoded = JSON.stringify(requestBody); requestHeaders['Content-Type'] ||= 'application/json'; }
   let response;
@@ -145,7 +198,79 @@ async function request(method, path, args, { raw = false, body, form, query = []
   let value;
   try { value = text ? JSON.parse(text) : { status: response.status }; } catch { value = { status: response.status, body: text }; }
   if (!response.ok) throw new CliError(`HTTP ${response.status}: ${JSON.stringify(value)}`);
-  return value;
+  return captureSession ? { value, sessionToken: sessionTokenFrom(response), baseUrl } : value;
+}
+
+async function promptText(label) {
+  if (!process.stdin.isTTY) throw new CliError(`${label.replace(/[:：]\s*$/, '')} 缺少值`);
+  const reader = createInterface({ input: process.stdin, output: process.stderr });
+  try { return (await reader.question(label)).trim(); } finally { reader.close(); }
+}
+
+async function promptSecret(label) {
+  if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') {
+    throw new CliError('非交互环境请使用 --password-stdin 从标准输入传入密码');
+  }
+  process.stderr.write(label);
+  const wasRaw = process.stdin.isRaw;
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+  return new Promise((resolveSecret, reject) => {
+    let value = '';
+    const finish = (error) => {
+      process.stdin.off('data', onData);
+      process.stdin.setRawMode(Boolean(wasRaw));
+      process.stdin.pause();
+      process.stderr.write('\n');
+      if (error) reject(error); else resolveSecret(value);
+    };
+    const onData = (chunk) => {
+      for (const character of chunk) {
+        if (character === '\u0003') return finish(new CliError('已取消登录'));
+        if (character === '\r' || character === '\n') return finish();
+        if (character === '\u007f' || character === '\b') {
+          if (value) { value = value.slice(0, -1); process.stderr.write('\b \b'); }
+        } else {
+          value += character;
+          process.stderr.write('•');
+        }
+      }
+    };
+    process.stdin.on('data', onData);
+  });
+}
+
+async function passwordFrom(args) {
+  if (!flag(args, '--password-stdin')) return promptSecret('密码：');
+  let value = '';
+  for await (const chunk of process.stdin) value += String(chunk);
+  return value.replace(/\r?\n$/, '');
+}
+
+async function auth(args) {
+  const [action] = positional(args);
+  if (action === 'login') {
+    if (flag(args, '--dry-run')) throw new CliError('auth login 不支持 --dry-run，避免密码进入输出');
+    const username = (option(args, '--username') || await promptText('用户名：')).trim();
+    const password = await passwordFrom(args);
+    if (!username || !password) throw new CliError('用户名和密码不能为空');
+    const result = await request('POST', '/auth/login', args, {
+      body: { username, password }, authenticated: false, captureSession: true,
+    });
+    await saveAuth(result.baseUrl, result.sessionToken);
+    return { authenticated: true, auth_path: AUTH_PATH, user: result.value };
+  }
+  if (action === 'status') {
+    const user = await request('GET', '/auth/me', args);
+    return { authenticated: true, auth_path: AUTH_PATH, user };
+  }
+  if (action === 'logout') {
+    await request('POST', '/auth/logout', args, { body: {} });
+    await clearAuth();
+    return { authenticated: false, auth_path: AUTH_PATH };
+  }
+  throw new CliError('auth 支持 login|status|logout');
 }
 
 async function objectPayload(args, defaults = {}) {
@@ -332,6 +457,31 @@ async function run(args) {
   throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-delete|work-directory-delete');
 }
 
+async function schedule(args) {
+  const [action, id] = positional(args);
+  if (action === 'list') {
+    if (id) throw new CliError('schedule list 不接受 ID');
+    return request('GET', '/flow-run-schedules', args);
+  }
+  if (action === 'create') {
+    if (id) throw new CliError('schedule create 不接受 ID');
+    return request('POST', '/flow-run-schedules', args);
+  }
+  if (!id) throw new CliError(`schedule ${action || ''} 需要调度 ID`);
+  if (action === 'pause' || action === 'resume') {
+    const expected = Number(option(args, '--expected-row-version'));
+    if (!Number.isSafeInteger(expected) || expected < 1) {
+      throw new CliError(`schedule ${action} 需要正整数 --expected-row-version`);
+    }
+    return request('PUT', `/flow-run-schedules/${id}/state`, args, {
+      body: { expected_row_version: expected, status: action === 'pause' ? 'PAUSED' : 'ACTIVE' },
+    });
+  }
+  if (action === 'trigger') return request('POST', `/flow-run-schedules/${id}/trigger`, args, { body: {} });
+  if (action === 'delete') return request('DELETE', `/flow-run-schedules/${id}`, args);
+  throw new CliError('schedule 支持 list|create|pause|resume|trigger|delete');
+}
+
 async function model(args) {
   const [action, id] = positional(args);
   if (action === 'list') return request('GET', '/model-providers', args);
@@ -424,6 +574,7 @@ async function websocket(args) {
   if (message && messageJson) throw new CliError('--message 与 --message-json 只能使用其中一个');
   if (messageJson) message = JSON.stringify(parseJson(messageJson, '--message-json'));
   if (flag(args, '--dry-run')) return { url: url.toString(), message: message || null, max_messages: maxMessages };
+  const sessionToken = await loadAuth(baseUrl);
   await new Promise((resolve, reject) => {
     let received = 0;
     let settled = false;
@@ -432,7 +583,7 @@ async function websocket(args) {
       settled = true;
       if (error) reject(error); else resolve();
     };
-    const socket = new WebSocket(url);
+    const socket = new WebSocket(url, { headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` } });
     socket.addEventListener('open', () => { if (message) socket.send(message); });
     socket.addEventListener('message', (event) => {
       const text = String(event.data);
@@ -456,7 +607,8 @@ async function main(argv) {
     if (action === 'init') { const baseUrl = option(args, '--base-url'); if (!baseUrl) throw new CliError('config init 需要 --base-url'); result = { config_path: CONFIG_PATH, base_url: await saveConfig(baseUrl, flag(args, '--force')) }; }
     else if (action === 'show') { const { baseUrl } = await loadConfig(); result = { config_path: CONFIG_PATH, base_url: baseUrl }; }
     else throw new CliError('config 支持 init|show');
-  } else if (command === 'health') result = request('GET', flag(args, '--ready') ? '/health/ready' : '/health', args, { raw: true });
+  } else if (command === 'auth') result = auth(args);
+  else if (command === 'health') result = request('GET', flag(args, '--ready') ? '/health/ready' : '/health', args, { raw: true, authenticated: false });
   else if (command === 'openapi') { result = request('GET', '/openapi.json', args, { raw: true }); if (flag(args, '--paths')) result = openapiPaths(await result); }
   else if (command === 'api') { const [method, path] = positional(args); if (!method || !path) throw new CliError('api 用法：api <method> <PATH>'); result = request(method.toUpperCase(), path, args, { raw: flag(args, '--raw') }); }
   else if (command === 'upload') result = upload(args);
@@ -468,6 +620,7 @@ async function main(argv) {
   else if (command === 'credential') result = credential(args);
   else if (command === 'flow') result = flow(args);
   else if (command === 'run') result = run(args);
+  else if (command === 'schedule') result = schedule(args);
   else if (command === 'model') result = model(args);
   else if (command === 'agent') result = agent(args);
   else throw new CliError(`未知命令：${command}`);
