@@ -2409,6 +2409,16 @@ Web 后，真实逐步运行 `confirm-start` 返回 200，Attempt 进入 `EXECUT
 build、`git diff --check` 与任务状态唯一性通过；唯一 Alembic head 为 `0097_record_ws_path`。定向 Playwright 因
 本地 API 未启动，登录后的 `/api/v1/auth/me` 代理连接失败并在导航前超时，未执行暂停断言、未伪记为通过。
 
+远端发布：commit `2f2311003b4cfd058e89d317279ebb0a5c13c144` 以 commit 绑定源码包发布至
+`root@192.168.91.154:/opt/flowweave`；源码包 SHA-256 为
+`b749ae63182c543c85ccc6cdfcd041dd493f5c33f2b612483d635a7486e103ca`。Platform／Web 镜像分别为
+`sha256:61440f3f8bef14654309137548b0db2008df4dea5a1eea6158828182486bb66b` 和
+`sha256:1b4d3e7644b5eea27ed9a54a49e5b9c4b173072000754fe758d71086d94fb434`，均为 `linux/amd64`；Migration
+`Exited (0)`，API 与 Runtime Provider healthy，Worker 与 Web 为 Up。内外网 `/flowweave/`、公网 Agent
+深层路由、静态 JS 和 FastGPT `/login` 均返回 200，浏览器登录态 API 请求使用 `/flowweave/api/v1/...`。
+真实暂停浏览器验收未执行：既有 Agent Workspace Runtime 将 `/runtime/workspace` 挂载为只读，新会话创建
+工作目录时由 OpenHands 抛出 `Errno 30` 并返回 502；该环境阻塞与本切片暂停事件展示无关，未伪记为通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2424,6 +2434,7 @@ build、`git diff --check` 与任务状态唯一性通过；唯一 Alembic head 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-164 | commit 绑定 Platform／Web linux/amd64 远端构建与定向发布；Migration、Compose 健康态、内外网前缀路由、静态 JS、Agent 深层路由、FastGPT 根入口与登录态浏览器请求 | PASS（发布与基础可用性）：commit `2f23110` 已发布，Migration 为 `Exited (0)`，API／Runtime Provider healthy，Worker／Web 为 Up，页面和带前缀 API 请求正常。BLOCKED（真实暂停）：既有 Agent Workspace Runtime 的 `/runtime/workspace` 只读挂载导致 OpenHands 创建工作目录时报 `Errno 30`、新会话 API 返回 502，未进入暂停按钮阶段，未伪记为通过。 |
 | 2026-09-05 | FR-164 | OpenHands 错误投影定向 pytest（2 passed）；Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck/production build；Alembic head、任务状态唯一性与 `git diff --check`；定向 Agent Workspace Playwright | PASS（适配器与静态检查）：暂停产生的合成 `AgentErrorEvent` 保留正式诊断内容但不再渲染任何提示，真实错误展示不变。唯一 Alembic head 为 `0097_record_ws_path`。Playwright 因本地 API 未启动在 Agent 会话导航前超时，目标暂停断言未执行、未伪记为通过。 |
 | 2026-09-05 | FR-163 | Web ESLint、TypeScript typecheck/production build；linux/amd64 Web 定向发布；真实逐步运行启动、Conversation binding 与深层会话页面 | PASS：启动请求返回 200，Attempt 进入 EXECUTING，binding 使用记录级 UUID 根目录且新会话正常执行；失败请求已具备可见反馈。 |
 | 2026-09-05 | FR-162 | 受影响 Python `py_compile`；`git diff --check`；远端 PostgreSQL 约束与真实 FlowRun Attempt 启动请求 | PASS：新增迁移已应用后，记录级 `/runtime/workspace/<UUID>` binding 可写入；历史路径保持兼容，真实启动请求不再因 `ck_agent_conversation_working_directory` 返回 409。 |
