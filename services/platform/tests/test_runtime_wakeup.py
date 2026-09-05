@@ -23,6 +23,7 @@ def test_runtime_wakeup_timeout_enqueues_bounded_rest_reconciliation(monkeypatch
         state_version=7,
     )
     enqueued: list[dict[str, object]] = []
+    ensured: list[str] = []
 
     class QuietRuntime:
         def wait_for_wakeup(self, *_args, **_kwargs):
@@ -35,6 +36,11 @@ def test_runtime_wakeup_timeout_enqueues_bounded_rest_reconciliation(monkeypatch
     monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: attempt)
     monkeypatch.setattr(
         orchestration_service, "_active_attempt_runtime_handle", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_ensure_attempt_runtime_for_native_observation",
+        lambda _db, item: ensured.append(item.id),
     )
     monkeypatch.setattr(
         orchestration_service, "_release_worker_read_transaction", lambda *_args: None
@@ -53,6 +59,7 @@ def test_runtime_wakeup_timeout_enqueues_bounded_rest_reconciliation(monkeypatch
     poll = next(item for item in enqueued if item["task_type"] == "POLL_RUNTIME")
     assert poll["idempotency_key"] == "poll-runtime-reconcile:attempt-1:v7:3"
     assert poll["payload"] == {"poll_no": 3}
+    assert ensured == ["attempt-1"]
 
 
 def test_native_running_event_recovers_an_end_blocked_native_conversation(monkeypatch):
@@ -71,6 +78,7 @@ def test_native_running_event_recovers_an_end_blocked_native_conversation(monkey
     run = SimpleNamespace(id="run-1", state="WAITING_HUMAN")
     events: list[tuple[str, dict[str, object]]] = []
     wakeups: list[tuple[str, int]] = []
+    ensured: list[str] = []
 
     class NativeRunningRuntime:
         def read_events(self, _handle):
@@ -86,6 +94,11 @@ def test_native_running_event_recovers_an_end_blocked_native_conversation(monkey
         orchestration_service,
         "_active_attempt_runtime_handle",
         lambda *_args: SimpleNamespace(cursor=None),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_ensure_attempt_runtime_for_native_observation",
+        lambda _db, item: ensured.append(item.id),
     )
     monkeypatch.setattr(
         orchestration_service, "_release_worker_read_transaction", lambda *_args: None
@@ -122,3 +135,4 @@ def test_native_running_event_recovers_an_end_blocked_native_conversation(monkey
         ("ATTEMPT_RESUMED", {"reason": "NATIVE_CONVERSATION_EVENT_AFTER_BLOCKED_PROJECTION"})
     ]
     assert wakeups == [("attempt-1", 1)]
+    assert ensured == ["attempt-1"]

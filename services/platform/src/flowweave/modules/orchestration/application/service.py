@@ -1068,6 +1068,7 @@ def process_runtime_wakeup(
     if not _observes_native_conversation(attempt):
         return
     expected_version = attempt.state_version
+    _ensure_attempt_runtime_for_native_observation(db, attempt)
     handle = _active_attempt_runtime_handle(db, attempt)
     _release_worker_read_transaction(db, lease)
     try:
@@ -4307,6 +4308,47 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     )
 
 
+def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAttempt) -> None:
+    """Recreate a lost physical generation before reading a native Conversation.
+
+    A FlowWeave Attempt keeps only the OpenHands locator.  Its Runtime
+    generation is replaceable and may disappear while the Conversation state
+    remains in the external persistent workspace.  Native-event observation
+    must therefore ensure the immutable, Attempt-owned Runtime first; the
+    provider provisions generation N+1 and OpenHands reloads the original
+    Conversation ID through the normal handle path.
+    """
+
+    if get_settings().runtime_adapter == "mock":
+        return
+    request = _runtime_request(db, attempt)
+    if not request.environment_image:
+        return
+    flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
+    workspace = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt.id
+    )
+    if workspace.attempt_owned:
+        sandboxes.ensure_node_attempt_runtime(
+            db,
+            flow_run_id=flow_run_id,
+            node_attempt_id=attempt.id,
+            image=request.environment_image,
+            environment_id=request.environment_id,
+            environment_version_id=request.environment_version_id,
+            environment_version_no=request.environment_version_no,
+        )
+        return
+    sandboxes.ensure_flow_run_runtime(
+        db,
+        flow_run_id=flow_run_id,
+        image=request.environment_image,
+        environment_id=request.environment_id,
+        environment_version_id=request.environment_version_id,
+        environment_version_no=request.environment_version_no,
+    )
+
+
 def _upload_runtime_input_attachments(
     db: Session,
     request: StartAttemptRequest,
@@ -4742,6 +4784,7 @@ def process_poll_runtime(
         return
     expected_version = attempt.state_version
     current_attempt_id = attempt.id
+    _ensure_attempt_runtime_for_native_observation(db, attempt)
     handle = _active_attempt_runtime_handle(db, attempt)
     _release_worker_read_transaction(db, lease)
     runtime = get_runtime()
