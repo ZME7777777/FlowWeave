@@ -1612,6 +1612,11 @@ def send_node_message(
     if provider is not None:
         runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, prompt, image_urls)
+    _resume_failed_attempt_for_native_turn(
+        db,
+        attempt_id=attempt_id,
+        binding=binding,
+    )
     if result.cursor:
         record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
@@ -1619,6 +1624,80 @@ def send_node_message(
     binding.updated_at = activity_at
     finish(db)
     return {"accepted": True, "cursor": result.cursor, "compacted": False}
+
+
+def _resume_failed_attempt_for_native_turn(
+    db: Session,
+    *,
+    attempt_id: str,
+    binding: AgentConversationBinding,
+) -> None:
+    """Reconnect a failed Attempt when OpenHands accepts a new native turn.
+
+    ``END_BLOCKED/RUNTIME_FAILED`` is FlowWeave's projection of a previous
+    terminal OpenHands event, not ownership of the Conversation lifecycle.
+    OpenHands can accept a new user event after errors such as an interrupted
+    tool during a Runtime restart.  Once it has accepted that event, resume
+    the Attempt projection and its wake-up driver so later formal events
+    (FinishAction, confirmation, or another error) determine the next node
+    state.
+    """
+
+    current = _attempt(db, attempt_id)
+    if not (
+        current.state == AttemptState.END_BLOCKED
+        and current.runtime_phase == "FAILED"
+        and current.error_code == "RUNTIME_FAILED"
+        and current.conversation_id == binding.openhands_conversation_id
+    ):
+        return
+    claimed_id = db.scalar(
+        update(NodeAttempt)
+        .where(
+            NodeAttempt.id == attempt_id,
+            NodeAttempt.state == AttemptState.END_BLOCKED,
+            NodeAttempt.runtime_phase == "FAILED",
+            NodeAttempt.error_code == "RUNTIME_FAILED",
+            NodeAttempt.state_version == current.state_version,
+        )
+        .values(
+            state=AttemptState.EXECUTING,
+            runtime_phase="RUNNING",
+            error_code=None,
+            error_detail=None,
+            state_version=NodeAttempt.state_version + 1,
+        )
+        .returning(NodeAttempt.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_id is None:
+        db.expire_all()
+        return
+    db.expire_all()
+    resumed = _attempt(db, attempt_id)
+    node_run, run, _ = _attempt_context(db, resumed)
+    run.state = FlowRunState.ACTIVE
+    db.add(
+        RunEvent(
+            flow_run_id=run.id,
+            node_run_id=node_run.id,
+            attempt_id=resumed.id,
+            event_type="ATTEMPT_RESUMED",
+            payload_json={
+                "conversation_id": binding.openhands_conversation_id,
+                "reason": "NATIVE_USER_TURN_AFTER_RUNTIME_FAILURE",
+            },
+        )
+    )
+    task = enqueue(
+        db,
+        task_type="WAIT_RUNTIME_WAKEUP",
+        aggregate_type="ATTEMPT",
+        aggregate_id=resumed.id,
+        idempotency_key=f"wait-runtime-wakeup:{resumed.id}:v{resumed.state_version}:1",
+        payload={"wakeup_no": 1},
+    )
+    task.max_attempts = max(task.max_attempts, 100)
 
 
 def upload_node_attachment(
@@ -2223,6 +2302,24 @@ def resume_node_conversation(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     attempt = _attempt(db, attempt_id)
+    execution_conversation = attempt.conversation_id == binding.openhands_conversation_id
+    if not execution_conversation:
+        # An Attempt may have additional collaborative Conversations. They are
+        # independently owned by OpenHands and may still be resumed, but they
+        # are not the Attempt's output-producing Conversation and must never
+        # mutate the node orchestration projection.
+        result = get_runtime().run(
+            _node_handle(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+            )
+        )
+        finish(db)
+        return {"accepted": True, "cursor": result.cursor}
+    recover_failed_pause = (
+        attempt.state == AttemptState.END_BLOCKED
+        and attempt.runtime_phase == "FAILED"
+        and attempt.error_code == "RUNTIME_FAILED"
+    )
     if attempt.state != AttemptState.PAUSED or attempt.runtime_phase != "PAUSED":
         # Recover only the precise split-brain state caused when the native
         # interrupt succeeded but its local Attempt projection lost a race.
@@ -2232,38 +2329,61 @@ def resume_node_conversation(
             db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         )
         readiness = get_runtime().input_readiness(handle)
-        if (
-            attempt.state != AttemptState.EXECUTING
-            or attempt.runtime_phase != "RUNNING"
-            or readiness.execution_status.lower() != "paused"
-            or _record_native_pause(
-                db,
-                attempt_id=attempt_id,
-                binding=binding,
-                expected_version=attempt.state_version,
-            )
-            is None
-        ):
+        if readiness.execution_status.lower() != "paused":
             raise conflict(
                 "node attempt is not paused",
                 attempt_id=attempt.id,
                 state=attempt.state,
             )
-        attempt = _attempt(db, attempt_id)
+        if not recover_failed_pause:
+            if (
+                attempt.state != AttemptState.EXECUTING
+                or attempt.runtime_phase != "RUNNING"
+                or _record_native_pause(
+                    db,
+                    attempt_id=attempt_id,
+                    binding=binding,
+                    expected_version=attempt.state_version,
+                )
+                is None
+            ):
+                raise conflict(
+                    "node attempt is not paused",
+                    attempt_id=attempt.id,
+                    state=attempt.state,
+                )
+            attempt = _attempt(db, attempt_id)
     expected_version = attempt.state_version
+    resume_conditions = [
+        NodeAttempt.id == attempt_id,
+        NodeAttempt.state_version == expected_version,
+    ]
+    if recover_failed_pause:
+        resume_conditions.extend(
+            (
+                NodeAttempt.state == AttemptState.END_BLOCKED,
+                NodeAttempt.runtime_phase == "FAILED",
+                NodeAttempt.error_code == "RUNTIME_FAILED",
+            )
+        )
+    else:
+        resume_conditions.extend(
+            (
+                NodeAttempt.state == AttemptState.PAUSED,
+                NodeAttempt.runtime_phase == "PAUSED",
+            )
+        )
+    resume_values: dict[str, Any] = {
+        "state": AttemptState.EXECUTING,
+        "runtime_phase": "RESUMING",
+        "state_version": NodeAttempt.state_version + 1,
+    }
+    if recover_failed_pause:
+        resume_values.update(error_code=None, error_detail=None)
     claimed_id = db.scalar(
         update(NodeAttempt)
-        .where(
-            NodeAttempt.id == attempt_id,
-            NodeAttempt.state == AttemptState.PAUSED,
-            NodeAttempt.runtime_phase == "PAUSED",
-            NodeAttempt.state_version == expected_version,
-        )
-        .values(
-            state=AttemptState.EXECUTING,
-            runtime_phase="RESUMING",
-            state_version=NodeAttempt.state_version + 1,
-        )
+        .where(*resume_conditions)
+        .values(**resume_values)
         .returning(NodeAttempt.id)
         .execution_options(synchronize_session=False)
     )
@@ -2303,7 +2423,14 @@ def resume_node_conversation(
             node_run_id=node_run.id,
             attempt_id=running.id,
             event_type="ATTEMPT_RESUMED",
-            payload_json={"conversation_id": binding.openhands_conversation_id},
+            payload_json={
+                "conversation_id": binding.openhands_conversation_id,
+                **(
+                    {"reason": "NATIVE_PAUSE_AFTER_RUNTIME_FAILURE"}
+                    if recover_failed_pause
+                    else {}
+                ),
+            },
         )
     )
     task = enqueue(

@@ -531,6 +531,7 @@ def test_resume_node_conversation_reconciles_a_confirmed_native_pause(
         )
         db.add(binding)
         db.flush()
+        attempt.conversation_id = binding.openhands_conversation_id
 
         class NativePausedRuntime:
             def input_readiness(self, _handle: object) -> RuntimeInputReadiness:
@@ -637,6 +638,177 @@ def test_resume_node_conversation_does_not_reconcile_non_paused_native_state(
             "RUNNING",
             1,
         )
+
+
+def test_resume_node_conversation_recovers_a_failed_attempt_when_openhands_is_paused(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prior pause observation must not permanently own the native Conversation."""
+
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "END_BLOCKED"
+        attempt.runtime_phase = "FAILED"
+        attempt.error_code = "RUNTIME_FAILED"
+        attempt.error_detail = (
+            "Tool call interrupted before completion. The conversation was paused."
+        )
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="failed-paused-conversation",
+            lifecycle="ACTIVE",
+            create_idempotency_key=f"failed-paused:{attempt_id}",
+        )
+        db.add(binding)
+        db.flush()
+        attempt.conversation_id = binding.openhands_conversation_id
+
+        class NativePausedRuntime:
+            def input_readiness(self, _handle: object) -> RuntimeInputReadiness:
+                return RuntimeInputReadiness(ready=True, execution_status="paused")
+
+            def run(self, _handle: object) -> RuntimeResult:
+                return RuntimeResult(status="RUNNING", cursor="resumed-leaf")
+
+        monkeypatch.setattr(
+            flow_node_conversations, "_binding_for_attempt", lambda *_args, **_kwargs: binding
+        )
+        monkeypatch.setattr(
+            flow_node_conversations, "_node_handle", lambda *_args, **_kwargs: object()
+        )
+        monkeypatch.setattr(
+            flow_node_conversations, "get_runtime", lambda: NativePausedRuntime()
+        )
+
+        result = flow_node_conversations.resume_node_conversation(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+        )
+
+        db.expire_all()
+        resumed = db.get(NodeAttempt, attempt_id)
+        run = db.get(FlowRun, flow_run_id)
+        assert resumed is not None
+        assert run is not None
+        assert result == {"accepted": True, "cursor": "resumed-leaf"}
+        assert (resumed.state, resumed.runtime_phase, resumed.error_code, resumed.error_detail) == (
+            "EXECUTING",
+            "RUNNING",
+            None,
+            None,
+        )
+        assert run.state == "ACTIVE"
+        event = db.scalar(
+            select(RunEvent)
+            .where(RunEvent.attempt_id == attempt_id, RunEvent.event_type == "ATTEMPT_RESUMED")
+            .order_by(RunEvent.cursor.desc())
+        )
+        assert event is not None
+        assert event.payload_json["reason"] == "NATIVE_PAUSE_AFTER_RUNTIME_FAILURE"
+        assert db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.idempotency_key
+                == f"wait-runtime-wakeup:{attempt_id}:v{resumed.state_version}:1"
+            )
+        ) is not None
+
+
+def test_node_message_reconnects_a_failed_attempt_after_openhands_accepts_a_new_turn(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "END_BLOCKED"
+        attempt.runtime_phase = "FAILED"
+        attempt.error_code = "RUNTIME_FAILED"
+        attempt.error_detail = "A restart occurred while this tool was in progress."
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="restart-recovery-conversation",
+            lifecycle="ACTIVE",
+            create_idempotency_key=f"restart-recovery:{attempt_id}",
+        )
+        db.add(binding)
+        db.flush()
+        attempt.conversation_id = binding.openhands_conversation_id
+
+        class RestartRecoveredRuntime:
+            def can_accept_input(self, _handle: object) -> bool:
+                return True
+
+            def send_message(
+                self, _handle: object, _content: str, _images: tuple[str, ...]
+            ) -> RuntimeResult:
+                return RuntimeResult(status="RUNNING", cursor="new-user-turn")
+
+        monkeypatch.setattr(
+            flow_node_conversations, "_binding_for_attempt", lambda *_args, **_kwargs: binding
+        )
+        monkeypatch.setattr(
+            flow_node_conversations, "_node_handle", lambda *_args, **_kwargs: object()
+        )
+        monkeypatch.setattr(
+            flow_node_conversations, "get_runtime", lambda: RestartRecoveredRuntime()
+        )
+        monkeypatch.setattr(flow_node_conversations, "config_from_binding", lambda *_args: object())
+        monkeypatch.setattr(flow_node_conversations, "provider_for_config", lambda *_args: None)
+
+        result = flow_node_conversations.send_node_message(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+            content="请从中断处继续，并在完成后提交正式输出。",
+        )
+
+        db.expire_all()
+        resumed = db.get(NodeAttempt, attempt_id)
+        run = db.get(FlowRun, flow_run_id)
+        assert resumed is not None
+        assert run is not None
+        assert result == {"accepted": True, "cursor": "new-user-turn", "compacted": False}
+        assert (resumed.state, resumed.runtime_phase, resumed.error_code, resumed.error_detail) == (
+            "EXECUTING",
+            "RUNNING",
+            None,
+            None,
+        )
+        assert run.state == "ACTIVE"
+        event = db.scalar(
+            select(RunEvent)
+            .where(RunEvent.attempt_id == attempt_id, RunEvent.event_type == "ATTEMPT_RESUMED")
+            .order_by(RunEvent.cursor.desc())
+        )
+        assert event is not None
+        assert event.payload_json["reason"] == "NATIVE_USER_TURN_AFTER_RUNTIME_FAILURE"
+        assert db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.idempotency_key
+                == f"wait-runtime-wakeup:{attempt_id}:v{resumed.state_version}:1"
+            )
+        ) is not None
 
 
 def test_node_session_list_orders_recent_activity_first(

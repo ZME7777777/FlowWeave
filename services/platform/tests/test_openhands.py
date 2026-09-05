@@ -2795,6 +2795,50 @@ def test_openhands_projects_interrupted_agent_error_details():
     }
 
 
+def test_openhands_does_not_turn_an_explicit_pause_into_a_runtime_failure(openhands_settings):
+    runtime = OpenHandsRuntime(openhands_settings)
+    result = runtime._result_from_events(
+        _handle(),
+        [
+            {
+                "kind": "AgentErrorEvent",
+                "id": "pause-observation-1",
+                "parent_id": "tool-action-1",
+                "tool_call_id": "tool-call-1",
+                "error": "Tool call interrupted before completion. The conversation was paused.",
+            }
+        ],
+        "pause-observation-1",
+    )
+
+    assert result is None
+
+
+def test_openhands_keeps_a_restart_interruption_as_a_runtime_failure(openhands_settings):
+    runtime = OpenHandsRuntime(openhands_settings)
+    error = (
+        "A restart occurred while this tool was in progress. This may indicate a fatal memory "
+        "error or system crash. The tool execution was interrupted and did not complete."
+    )
+    result = runtime._result_from_events(
+        _handle(),
+        [
+            {
+                "kind": "AgentErrorEvent",
+                "id": "restart-observation-1",
+                "parent_id": "tool-action-1",
+                "tool_call_id": "tool-call-1",
+                "error": error,
+            }
+        ],
+        "restart-observation-1",
+    )
+
+    assert result is not None
+    assert result.status == "FAILED"
+    assert result.error == error
+
+
 def test_openhands_does_not_fail_a_completed_reply_for_late_autotitle_error(
     openhands_settings,
 ):

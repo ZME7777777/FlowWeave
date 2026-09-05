@@ -2287,6 +2287,15 @@ class OpenHandsRuntime:
                     cursor=cursor,
                 )
             if self._event_type(item) == "ERROR":
+                # OpenHands writes this exact AgentErrorEvent as the terminal
+                # observation for a tool that an operator intentionally
+                # paused.  It remains a formal, visible event, but it is not
+                # a failed Conversation turn: the native Conversation is in
+                # ``paused`` and can be resumed without a new user message.
+                # Treating it as RuntimeResult(FAILED) races the pause
+                # projection and permanently strands the FlowRun Attempt.
+                if self._is_explicit_pause_interruption(item):
+                    continue
                 # OpenHands 1.42/1.44 can publish an asynchronous native
                 # auto-title provider failure as a generic ConversationErrorEvent
                 # after the real assistant message.  The title is auxiliary
@@ -2316,6 +2325,23 @@ class OpenHandsRuntime:
                             cursor=cursor,
                         )
         return None
+
+    @staticmethod
+    def _is_explicit_pause_interruption(item: dict[str, Any]) -> bool:
+        """Recognize only OpenHands' synthetic result for an explicit pause.
+
+        Do not widen this to arbitrary interrupted-tool errors: a restart,
+        crash, timeout, or tool failure still has to be projected as a real
+        Runtime failure.  The exact text is emitted by the fixed OpenHands
+        Agent Server when its native interrupt endpoint stops an in-flight
+        tool.
+        """
+
+        return (
+            str(item.get("kind") or "") == "AgentErrorEvent"
+            and str(item.get("error") or "")
+            == "Tool call interrupted before completion. The conversation was paused."
+        )
 
     @staticmethod
     def _is_legacy_autotitle_protocol_error(item: dict[str, Any]) -> bool:
