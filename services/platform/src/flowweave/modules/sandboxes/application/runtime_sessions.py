@@ -336,17 +336,44 @@ def activate_runtime_generation(
         and generation.instance_id == instance_id
     ):
         return _fence(session, generation)
-    if session.active_generation not in {None, generation.generation}:
-        raise DomainError(
-            "RUNTIME_GENERATION_FENCED",
-            "Another Runtime generation is already active",
-            409,
-            {
-                "runtime_session_id": session.id,
-                "active_generation": session.active_generation,
-            },
-        )
     now = datetime.now(UTC)
+    if session.active_generation not in {None, generation.generation}:
+        active = db.scalar(
+            select(RuntimeGeneration)
+            .where(
+                RuntimeGeneration.runtime_session_id == session.id,
+                RuntimeGeneration.generation == session.active_generation,
+            )
+            .with_for_update()
+        )
+        active_runtime = db.get(ManagedSandbox, active.managed_runtime_id) if active else None
+        active_is_stale = (
+            active is None
+            or active_runtime is None
+            or active.state in {"FAILED", "STOPPED"}
+            or active_runtime.desired_state != "RUNNING"
+            or active_runtime.observed_state != "RUNNING"
+        )
+        if not active_is_stale:
+            raise DomainError(
+                "RUNTIME_GENERATION_FENCED",
+                "Another Runtime generation is already active",
+                409,
+                {
+                    "runtime_session_id": session.id,
+                    "active_generation": session.active_generation,
+                },
+            )
+        # A database row may outlive a deleted physical Runtime after a
+        # failed replacement.  Fence that stale writer before promoting the
+        # recovered generation, while keeping the normal dual-writer refusal.
+        if active is not None:
+            active.state = "STOPPED"
+            active.stopped_at = now
+            active.row_version += 1
+        session.active_generation = None
+        session.status = "RECONNECTING"
+        session.row_version += 1
     expected_generation_version = generation.row_version
     generation_result = db.execute(
         update(RuntimeGeneration)

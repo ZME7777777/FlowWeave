@@ -2358,8 +2358,9 @@ Runtime 使用项目根，并继续校验 allocation marker、权限、记录目
 完成：共享项目规格校验改为验证显式项目 allocation owner 的 UUID 与 allocation 根目录一致，保留
 记录目录 `/runtime/workspace/<record-id>` 的独立 bind mount；历史旧路径和缺少 `project_record_id` 的
 持久规格继续走兼容挂载，尚未绑定记录的 FlowRun Runtime 不再要求不存在的记录目录；历史旧路径在
-进入或确认节点会话时按 FlowRun allocation 幂等恢复 Runtime。新增父 allocation／子记录回归覆盖，并
-将原 Attempt Runtime 挂载断言更新为记录级路径。
+进入或确认节点会话时按 FlowRun allocation 幂等恢复 Runtime。恢复激活时仅对物理资源缺失或已停止的
+stale active generation 清除旧指针，仍运行的 generation 继续触发 fencing。新增父 allocation／子记录
+回归覆盖，并将原 Attempt Runtime 挂载断言更新为记录级路径。
 
 验收：受影响 Python `py_compile`、Ruff、定向 Runtime Provider 规格单测和 `git diff --check` 通过；
 涉及 Docker/数据库的完整定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture
