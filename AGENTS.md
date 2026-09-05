@@ -147,6 +147,10 @@ flowweave-alpine:3.22-amd64
   现有 `.env`，只核对变量名，不输出值。
 - 当前平台服务 `migration/api/worker/runtime-provider` 共用
   `flowweave-platform:remote-amd64`；修改共享平台源码必须一起更新，不能让这些进程运行不同代码。
+- **凡是更新 `api`，必须同时更新并重建 `stream-api`。** `stream-api` 是 API
+  服务链的一部分，即使它由独立 Compose/镜像管理，也必须从同一已提交版本构建并在本次发布中
+  recreate；先读取其实际部署入口，不能因它在当前 `deploy/compose.yaml` 中显示为 orphan 就删除、忽略或
+  用 `--remove-orphans` 处理。
 
 ### 新窗口更新镜像的标准流程
 
@@ -190,7 +194,8 @@ flowweave-alpine:3.22-amd64
      up -d --no-deps --force-recreate runtime-provider api worker
    ```
 
-   仅更新 Web 时只 recreate `web`。更新动态 Runtime 基础镜像只影响之后创建/发布的容器；已运行容器不会
+   同次更新 `api` 时还必须按 `stream-api` 的实际部署入口从同一 commit 重建并 recreate `stream-api`，再做
+   两个 API 入口的健康检查。仅更新 Web 时只 recreate `web`。更新动态 Runtime 基础镜像只影响之后创建/发布的容器；已运行容器不会
    原地替换，Environment 业务要使用新 Runtime 时还需成功发布新的 Environment Version。
 6. 部署后必须验证，而不是只看容器为 `Up`：
 
@@ -258,7 +263,7 @@ flowweave-alpine:3.22-amd64
    ```
 
    平台共享代码仍遵循上一节：先运行 `migration` 并确认 `Exited (0)`，再一起替换
-   `runtime-provider api worker`。禁止以 `down -v`、删除 volume、清空 Workspace 或重建数据库作为部署或
+   `runtime-provider api worker`；若本次更新 `api`，还必须从同一 commit 更新 `stream-api`。禁止以 `down -v`、删除 volume、清空 Workspace 或重建数据库作为部署或
    排障手段。
 5. **验证“真实浏览器请求”，不只验证 HTML 或容器状态。** Web 前缀部署必须同时检查静态资源、带前缀 API、
    FastGPT 根入口和受影响页面。至少：
