@@ -1,5 +1,6 @@
 import { Activity, Bot, Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyRound, Library, LogOut, PlayCircle, Settings, TerminalSquare } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { FlowsPage } from './pages/FlowsPage';
 import { NodesPage } from './pages/NodesPage';
 import { ModelsPage } from './pages/ModelsPage';
@@ -34,12 +35,42 @@ const settingsNav = [
   { view: 'models' as const, label: '大模型配置', description: '配置模型服务与可用模型', icon: BrainCircuit },
 ];
 
+function clearAgentIdentityStorage() {
+  for (const key of Object.keys(sessionStorage)) {
+    if (
+      key.startsWith('flowweave.agent.')
+      || key.startsWith('flowweave:agent-session-tools:agent-workspace:')
+    ) {
+      sessionStorage.removeItem(key);
+    }
+  }
+}
+
 export function App() {
+  const queryClient = useQueryClient();
   const { view, setView } = useWorkbenchStore();
   const [, setRouteVersion] = useState(0);
   const [user, setUser] = useState<AuthUser | null>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsMenu = useRef<HTMLDivElement>(null);
+  const replaceIdentity = useCallback(async (nextUser: AuthUser | null) => {
+    // Unmount authenticated product surfaces before an old request can
+    // finish under the newly authenticated browser session. The default
+    // Agent Workspace ID is shared, so retaining its query key would reuse
+    // the previous account's conversation projection for up to staleTime.
+    setUser(undefined);
+    setSettingsOpen(false);
+    await queryClient.cancelQueries();
+    queryClient.clear();
+    clearAgentIdentityStorage();
+    const pathname = withoutDeploymentBase(window.location.pathname);
+    if (pathname.startsWith('/agent/conversations/')) {
+      window.history.replaceState({}, '', withDeploymentBase('/agent'));
+      setView('agent-workbench');
+      setRouteVersion(value => value + 1);
+    }
+    setUser(nextUser);
+  }, [queryClient, setView]);
   useEscapeClose(() => setSettingsOpen(false), settingsOpen);
   useEffect(() => {
     if (!settingsOpen) return;
@@ -52,15 +83,15 @@ export function App() {
   useEffect(() => {
     let active = true;
     void api.authMe().then(value => { if (active) setUser(value); }).catch(() => {
-      if (active) setUser(null);
+      if (active) void replaceIdentity(null);
     });
-    const requireLogin = () => setUser(null);
+    const requireLogin = () => { void replaceIdentity(null); };
     window.addEventListener('flowweave:auth-required', requireLogin);
     return () => {
       active = false;
       window.removeEventListener('flowweave:auth-required', requireLogin);
     };
-  }, []);
+  }, [replaceIdentity]);
   useEffect(() => {
     const update = (event: PopStateEvent) => {
       const flowRun = event.state?.flowweaveFlowRun;
@@ -122,9 +153,9 @@ export function App() {
   const terminalRunId = terminalParams.get('terminalRun');
   const terminalConversationId = terminalParams.get('terminalConversation');
   if (user === undefined) return <div className="auth-loading"><Hexagon size={30} fill="currentColor"/><span>正在验证登录状态…</span></div>;
-  if (user === null) return <LoginScreen onLogin={setUser}/>;
+  if (user === null) return <LoginScreen onLogin={replaceIdentity}/>;
   const logout = async () => {
-    try { await api.logout(); } finally { setUser(null); }
+    try { await api.logout(); } finally { await replaceIdentity(null); }
   };
   if (terminalRunId && terminalConversationId) return <StandaloneAgentTerminal runId={terminalRunId} conversationId={terminalConversationId}/>;
   const renderedView = view === 'agent-workbench' ? 'nodes' : view;
