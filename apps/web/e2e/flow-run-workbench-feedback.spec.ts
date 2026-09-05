@@ -301,7 +301,15 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(graph.locator('.run-graph-node.current')).toContainText('当前激活 · 运行 1 次');
   const selectedGraphNode = graph.locator('.run-graph-node.snapshot-selected');
   await expect(selectedGraphNode).toHaveAttribute('data-selected', 'true');
-  await expect(selectedGraphNode.getByText('已选中', { exact: true })).toBeVisible();
+  const selectedMarker = selectedGraphNode.getByText('已选中', { exact: true });
+  const executionLabel = selectedGraphNode.locator('.run-node-execution');
+  await expect(selectedMarker).toBeVisible();
+  await expect(executionLabel).toHaveText('当前激活 · 运行 1 次');
+  const markerBox = await selectedMarker.boundingBox();
+  const executionBox = await executionLabel.boundingBox();
+  expect(markerBox).not.toBeNull();
+  expect(executionBox).not.toBeNull();
+  expect(markerBox!.y + markerBox!.height).toBeLessThanOrEqual(executionBox!.y);
   await expect(graph.locator('.flow-direction-edge .react-flow__edge-path')).toHaveCount(1);
   await expect(graph.locator('.flow-mapping-edge .react-flow__edge-path')).toHaveCount(1);
   await expect(graph.locator('.run-graph-node .data-port-handle')).toHaveCount(6);
@@ -314,8 +322,12 @@ test('run projection stays neutral until record selection and automatic save rep
   await page.mouse.up();
   await expect.poll(async () => (await draggableNode.boundingBox())?.x ?? 0).toBeGreaterThan(beforeDrag!.x + 50);
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(1);
-  await manualRecord.click();
+  const toolbar = page.locator('.run-workbench-toolbar');
+  const toolbarBox = await toolbar.boundingBox();
+  expect(toolbarBox).not.toBeNull();
+  await page.mouse.click(toolbarBox!.x + toolbarBox!.width - 8, toolbarBox!.y + toolbarBox!.height / 2);
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 
   await manualRecord.click();

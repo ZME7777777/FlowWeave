@@ -37,7 +37,7 @@ const FLOW_STATE_LABELS: Record<string, string> = {
 // Bump this whenever graph rendering changes. It also guarantees that a web
 // deployment produces a new content-hashed bundle instead of reusing an
 // immutable asset cached by an earlier graph renderer.
-const GRAPH_RENDER_REVISION = '2026-09-03.2';
+const GRAPH_RENDER_REVISION = '2026-09-05.1';
 
 const nodeForRun = (run: FlowRun, nodeRun: NodeRun) => {
   const snapshotId = nodeRun.attempts.at(-1)?.snapshot_id;
@@ -1173,7 +1173,9 @@ export function WorkbenchPage() {
     <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `250px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: '250px minmax(500px, 1fr)' }}>
       {rail}
       <main className="run-main">
-        <div className="run-workbench-toolbar">
+        <div className="run-workbench-toolbar" onClick={event => {
+          if (!isInteractiveClick(event.target)) clearSelection();
+        }}>
           <button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button>
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
