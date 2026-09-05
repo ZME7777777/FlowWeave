@@ -2737,6 +2737,31 @@ def test_openhands_projects_native_conversation_error_details():
     }
 
 
+def test_openhands_projects_interrupted_agent_error_details():
+    event = {
+        "kind": "AgentErrorEvent",
+        "id": "agent-error-1",
+        "timestamp": "2026-08-26T10:00:05+00:00",
+        "source": "agent",
+        "parent_id": "tool-action-1",
+        "tool_call_id": "tool-call-1",
+        "tool_name": "terminal",
+        "error": "Tool call interrupted before completion. The conversation was paused.",
+        "classification": {"kind": "agent_action", "retryable": True, "user_action": "retry"},
+    }
+
+    assert OpenHandsRuntime._event_type(event) == "ERROR"
+    assert OpenHandsRuntime._event_payload(event) == {
+        "source_type": "AgentErrorEvent",
+        "source": "agent",
+        "content": "Tool call interrupted before completion. The conversation was paused.",
+        "timestamp": "2026-08-26T10:00:05+00:00",
+        "parent_id": "tool-action-1",
+        "event_name": "AgentErrorEvent",
+        "classification": {"kind": "agent_action", "retryable": True, "user_action": "retry"},
+    }
+
+
 def test_openhands_does_not_fail_a_completed_reply_for_late_autotitle_error(
     openhands_settings,
 ):

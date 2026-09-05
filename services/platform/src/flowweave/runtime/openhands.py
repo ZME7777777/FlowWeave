@@ -1582,6 +1582,13 @@ class OpenHandsRuntime:
             # failed turn indistinguishable from a missing response.
             detail = item.get("detail")
             return detail[:20_000] if isinstance(detail, str) else ""
+        if kind == "AgentErrorEvent":
+            # AgentErrorEvent is used for tool-scaffold failures, including the
+            # synthetic observation OpenHands writes when a tool is interrupted
+            # by an explicit user pause.  Preserve its formal error text rather
+            # than turning it into an empty, generic UI failure.
+            error = item.get("error")
+            return error[:20_000] if isinstance(error, str) else ""
         if kind == "MessageEvent":
             message = item.get("llm_message")
             if isinstance(message, dict):
@@ -1823,7 +1830,7 @@ class OpenHandsRuntime:
                     "llm_response_id": item.get("llm_response_id"),
                 }
             )
-        elif kind == "ConversationErrorEvent":
+        elif kind in {"ConversationErrorEvent", "AgentErrorEvent"}:
             payload["event_name"] = kind
             code = item.get("code")
             if isinstance(code, str):

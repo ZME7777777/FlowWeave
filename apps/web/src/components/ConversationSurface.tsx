@@ -849,7 +849,16 @@ const NETWORK_ERROR_CODES = new Set([
   'RequestError',
 ]);
 
+function isPauseInterruption(item: Item): boolean {
+  const sourceType = String(item.event.payload.source_type ?? '');
+  const content = item.content.toLowerCase();
+  return sourceType === 'AgentErrorEvent'
+    && content.includes('tool call interrupted before completion')
+    && content.includes('conversation was paused');
+}
+
 function ConversationFailure({ item }: { item: Item }) {
+  if (isPauseInterruption(item)) return null;
   const code = typeof item.event.payload.error_code === 'string' ? item.event.payload.error_code : '';
   // OpenHands 1.42 emitted failed auto-title metadata as a regular terminal
   // ConversationErrorEvent. The runtime patch prevents new events; this is a

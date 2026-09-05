@@ -608,7 +608,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/events')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        events: modelIsResponding ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : conversations.length ? [
+        events: modelIsResponding ? [
+          { id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } },
+          ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
+        ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'user-request', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先检查当前工作目录。', thought: '我先检查当前工作目录。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
           { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'unrelated-file-action', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/workspace', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03Z' } },
@@ -1089,6 +1092,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByText('本轮没有生成回复')).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
