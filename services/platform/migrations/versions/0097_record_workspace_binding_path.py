@@ -1,6 +1,6 @@
 """Allow record-scoped Runtime workspace roots in conversation bindings.
 
-Revision ID: 0097_record_workspace_binding_path
+Revision ID: 0097_record_ws_path
 Revises: 0096_shared_business_resources
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0097_record_workspace_binding_path"
+revision = "0097_record_ws_path"
 down_revision = "0096_shared_business_resources"
 branch_labels = None
 depends_on = None
