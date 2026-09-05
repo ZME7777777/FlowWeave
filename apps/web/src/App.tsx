@@ -1,4 +1,4 @@
-import { Activity, Bot, Boxes, BrainCircuit, CalendarClock, GitFork, Hexagon, KeyRound, Library, PlayCircle, TerminalSquare } from 'lucide-react';
+import { Activity, Bot, Boxes, BrainCircuit, CalendarClock, GitFork, Hexagon, KeyRound, Library, LogOut, PlayCircle, TerminalSquare } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { FlowsPage } from './pages/FlowsPage';
 import { NodesPage } from './pages/NodesPage';
@@ -14,6 +14,9 @@ import { AgentWorkbenchPage } from './pages/AgentWorkbenchPage';
 import { FlowNodeSessionPage } from './pages/FlowNodeSessionPage';
 import { useWorkbenchStore } from './store/workbench';
 import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
+import { api } from './api/client';
+import type { AuthUser } from './types';
+import { LoginScreen } from './components/LoginScreen';
 
 const nav = [
   { view: 'nodes' as const, label: '节点资产', icon: Boxes },
@@ -30,6 +33,19 @@ const nav = [
 export function App() {
   const { view, setView } = useWorkbenchStore();
   const [, setRouteVersion] = useState(0);
+  const [user, setUser] = useState<AuthUser | null>();
+  useEffect(() => {
+    let active = true;
+    void api.authMe().then(value => { if (active) setUser(value); }).catch(() => {
+      if (active) setUser(null);
+    });
+    const requireLogin = () => setUser(null);
+    window.addEventListener('flowweave:auth-required', requireLogin);
+    return () => {
+      active = false;
+      window.removeEventListener('flowweave:auth-required', requireLogin);
+    };
+  }, []);
   useEffect(() => {
     const update = (event: PopStateEvent) => {
       const flowRun = event.state?.flowweaveFlowRun;
@@ -89,9 +105,14 @@ export function App() {
   const terminalParams = new URLSearchParams(window.location.search);
   const terminalRunId = terminalParams.get('terminalRun');
   const terminalConversationId = terminalParams.get('terminalConversation');
+  if (user === undefined) return <div className="auth-loading"><Hexagon size={30} fill="currentColor"/><span>正在验证登录状态…</span></div>;
+  if (user === null) return <LoginScreen onLogin={setUser}/>;
+  const logout = async () => {
+    try { await api.logout(); } finally { setUser(null); }
+  };
   if (terminalRunId && terminalConversationId) return <StandaloneAgentTerminal runId={terminalRunId} conversationId={terminalConversationId}/>;
   const renderedView = view === 'agent-workbench' ? 'nodes' : view;
-  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar"><button className="brand" onClick={() => selectView('nodes')}><Hexagon size={23} fill="currentColor"/>FlowWeave</button><nav>{nav.map(item => <button key={item.view} className={(nodeSessionRoute ? item.view === 'runs' : isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav><span className="kernel-status"><Activity size={14}/>{nodeSessionRoute ? 'FlowRun 节点会话' : isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span></header>
+  return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar"><button className="brand" onClick={() => selectView('nodes')}><Hexagon size={23} fill="currentColor"/>FlowWeave</button><nav>{nav.map(item => <button key={item.view} className={(nodeSessionRoute ? item.view === 'runs' : isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav><span className="kernel-status"><Activity size={14}/>{nodeSessionRoute ? 'FlowRun 节点会话' : isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span><div className="account-menu"><span><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '用户'}</small></span><button type="button" onClick={() => void logout()} title="退出登录"><LogOut size={15}/></button></div></header>
     {isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{<div className="principle-bar">一个 FlowRun 共享一个可替换 Runtime 与 Workspace；全部会话保留各自的 OpenHands 原生身份和事件树。</div>}{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}
   </div>;
 }

@@ -885,6 +885,10 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
       current.onclose = event => {
         if (socket === current) socket = null;
         if (disposed || event.code === 1000) return;
+        if (event.code === 4401) {
+          window.dispatchEvent(new Event('flowweave:auth-required'));
+          return;
+        }
         if (event.code === 4409 || attempts >= reconnectDelays.length) { setState('unavailable'); setDetail(event.reason || '终端暂时不可用'); return; }
         const delay = reconnectDelays[attempts];
         attempts += 1;

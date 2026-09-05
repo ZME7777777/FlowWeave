@@ -11,9 +11,14 @@ from flowweave.shared.database import Base, now, uid
 
 class TerminalEnvironment(Base):
     __tablename__ = "terminal_environments"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "name", name="uq_terminal_environment_owner_name"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    name: Mapped[str] = mapped_column(String(200), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
     base_image: Mapped[str] = mapped_column(String(500))
     # The user-facing repository@manifest-digest reference and the resolved

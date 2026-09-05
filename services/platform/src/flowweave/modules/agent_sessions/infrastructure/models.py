@@ -29,15 +29,20 @@ class AgentConversationBinding(Base):
     __tablename__ = "agent_conversation_bindings"
     __table_args__ = (
         UniqueConstraint(
+            "owner_user_id",
             "runtime_session_id",
             "openhands_conversation_id",
-            name="uq_agent_conversation_runtime_id",
+            name="uq_agent_conversation_owner_runtime_id",
         ),
         CheckConstraint(
             "host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')",
             name="ck_agent_conversation_host_kind",
         ),
-        UniqueConstraint("create_idempotency_key", name="uq_agent_conversation_create_key"),
+        UniqueConstraint(
+            "owner_user_id",
+            "create_idempotency_key",
+            name="uq_agent_conversation_owner_create_key",
+        ),
         CheckConstraint(
             "working_directory IS NULL OR working_directory = '/runtime/workspace/project' "
             "OR working_directory LIKE '/runtime/workspace/project/%'",
@@ -141,7 +146,11 @@ class AgentConversationCapability(Base):
 class AgentConversationCommand(Base):
     __tablename__ = "agent_conversation_commands"
     __table_args__ = (
-        UniqueConstraint("idempotency_key", name="uq_agent_conversation_command_key"),
+        UniqueConstraint(
+            "owner_user_id",
+            "idempotency_key",
+            name="uq_agent_conversation_command_owner_key",
+        ),
         CheckConstraint(
             "command_type IN ('CREATE', 'DELETE', 'RENAME', 'FORK')", name="ck_agent_command_type"
         ),

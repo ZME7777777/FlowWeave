@@ -10,7 +10,12 @@ from flowweave.shared.settings import get_settings
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 
 
-def ssh_remote_descriptor(project_root: Path, working_directory: str) -> dict[str, Any]:
+def ssh_remote_descriptor(
+    project_root: Path,
+    working_directory: str,
+    *,
+    runtime_mount_root: PurePosixPath = _RUNTIME_PROJECT,
+) -> dict[str, Any]:
     """Return a JetBrains Gateway-ready SSH descriptor when deployment enables it.
 
     Runtime workspace paths are container-internal. The client must instead
@@ -43,7 +48,8 @@ def ssh_remote_descriptor(project_root: Path, working_directory: str) -> dict[st
     runtime_directory = PurePosixPath(working_directory)
     if (
         not runtime_directory.is_absolute()
-        or not runtime_directory.is_relative_to(_RUNTIME_PROJECT)
+        or not runtime_mount_root.is_absolute()
+        or not runtime_directory.is_relative_to(runtime_mount_root)
         or runtime_directory.as_posix() != working_directory
     ):
         return {
@@ -52,7 +58,7 @@ def ssh_remote_descriptor(project_root: Path, working_directory: str) -> dict[st
             "note": "当前工作目录不是可连接的项目工作区。",
         }
 
-    relative_directory = runtime_directory.relative_to(_RUNTIME_PROJECT)
+    relative_directory = runtime_directory.relative_to(runtime_mount_root)
     remote_path = remote_root.joinpath(relative_project, *relative_directory.parts)
     command = f"ssh -p {settings.ide_ssh_port} {user}@{host}"
     return {

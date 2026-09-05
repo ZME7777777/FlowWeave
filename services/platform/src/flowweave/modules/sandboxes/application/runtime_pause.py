@@ -30,7 +30,10 @@ def process_flow_run_runtime_pause(
         raise RuntimeError("task lease was lost before Runtime pause")
     session = db.scalar(
         select(FlowRunRuntime)
-        .where(FlowRunRuntime.flow_run_id == flow_run_id)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
         .with_for_update()
     )
     if (

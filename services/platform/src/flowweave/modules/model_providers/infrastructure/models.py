@@ -21,9 +21,12 @@ from flowweave.shared.database import Base, now, uid
 
 class ModelProvider(Base):
     __tablename__ = "model_providers"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "name", name="uq_model_provider_owner_name"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    name: Mapped[str] = mapped_column(String(200), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
     base_url: Mapped[str] = mapped_column(Text)
     auth_type: Mapped[str] = mapped_column(String(30), default="API_KEY")
     encrypted_api_key: Mapped[bytes | None] = mapped_column(LargeBinary)

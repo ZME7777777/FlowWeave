@@ -1,4 +1,5 @@
 import type {
+  AuthUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
   AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleWrite,
@@ -12,6 +13,7 @@ import { deploymentBasePath } from '../deploymentPath';
 const API_BASE = import.meta.env.VITE_API_BASE_URL || deploymentBasePath;
 const ROOT = '/api/v1';
 const absoluteApiUrl = (path: string) => new URL(`${API_BASE}${ROOT}${path}`, window.location.origin);
+const notifyAuthenticationRequired = () => window.dispatchEvent(new Event('flowweave:auth-required'));
 export const randomId = () => {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   const bytes = new Uint8Array(16);
@@ -80,7 +82,7 @@ export const artifactContentUrl = (artifactId: string, download = false) =>
 async function requestText(path: string, signal?: AbortSignal): Promise<string> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${ROOT}${path}`, { signal });
+    response = await fetch(`${API_BASE}${ROOT}${path}`, { signal, credentials: 'include' });
   } catch {
     throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
   }
@@ -94,6 +96,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(`${API_BASE}${ROOT}${path}`, {
       ...init,
+      credentials: 'include',
       // Runtime replacement and other control-plane state may recover without
       // changing the route. Never let the browser reuse a stale dynamic GET.
       cache: init.method === undefined || init.method === 'GET' ? 'no-store' : init.cache,
@@ -103,7 +106,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
   }
   if (!response.ok) {
-    throw await responseError(response);
+    const error = await responseError(response);
+    if (response.status === 401 && path !== '/auth/me' && path !== '/auth/login') {
+      notifyAuthenticationRequired();
+    }
+    throw error;
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
@@ -176,6 +183,10 @@ const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map
 );
 
 export const api = {
+  authMe: () => request<AuthUser>('/auth/me'),
+  login: (username: string, password: string) =>
+    request<AuthUser>('/auth/login', json('POST', { username, password })),
+  logout: () => request<void>('/auth/logout', json('POST')),
   defaultAgentWorkspace: () => request<AgentWorkspace>('/agent-workspaces/default'),
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
   updateAgentWorkspaceSettings: (id: string, default_model_provider_id: string | null) =>
@@ -541,6 +552,7 @@ export function subscribeToConversationStream(
     };
     socket.onclose = event => {
       socket = undefined;
+      if (event.code === 4401) { notifyAuthenticationRequired(); onStatus?.('disabled'); return; }
       if (disposed || event.code === 4409) { onStatus?.('disabled'); return; }
       onStatus?.('recovering');
       const delay = Math.min(500 * (2 ** reconnectAttempt), 5000);
@@ -613,6 +625,7 @@ export function subscribeToAgentWorkspaceStream(
     };
     socket.onclose = event => {
       socket = undefined;
+      if (event.code === 4401) { notifyAuthenticationRequired(); onStatus?.('disabled'); return; }
       if (disposed || event.code === 4409) { onStatus?.('disabled'); return; }
       onStatus?.('recovering');
       const delay = reconnectDelays[Math.min(reconnectAttempt, reconnectDelays.length - 1)];
@@ -740,14 +753,16 @@ export function subscribeToNodeSessionStream(
       else if (event.type === 'event' && event.event && typeof event.event.id === 'string') onEvent({ type: 'event', event: event.event });
       else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
     } catch { /* REST remains authoritative. */ } };
-    socket.onclose = event => { socket = undefined; if (disposed || event.code === 4409) { onStatus?.('disabled'); return; } onStatus?.('recovering'); retry = window.setTimeout(connect, Math.min(1000 * 2 ** attempts++, 10_000)); };
+    socket.onclose = event => { socket = undefined; if (event.code === 4401) { notifyAuthenticationRequired(); onStatus?.('disabled'); return; } if (disposed || event.code === 4409) { onStatus?.('disabled'); return; } onStatus?.('recovering'); retry = window.setTimeout(connect, Math.min(1000 * 2 ** attempts++, 10_000)); };
   };
   connect();
   return () => { disposed = true; if (retry !== undefined) window.clearTimeout(retry); socket?.close(1000, 'Conversation changed'); onStatus?.('disabled'); };
 }
 
 export function subscribeToRun(runId: string, onEvent: () => void): () => void {
-  const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`);
+  const source = new EventSource(`${API_BASE}${ROOT}/flow-runs/${runId}/events`, {
+    withCredentials: true,
+  });
   source.onmessage = onEvent;
   ['ATTEMPT_CREATED', 'HUMAN_CONFIRM_REQUIRED', 'ARTIFACT_VERSION_CREATED', 'NODE_RUN_ACCEPTED', 'SNAPSHOT_SYNCED', 'FLOW_RUN_COMPLETED'].forEach(type => source.addEventListener(type, onEvent));
   return () => source.close();

@@ -8,7 +8,6 @@ the Runtime endpoint to callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -50,26 +49,6 @@ class FlowNodeSessionHost:
 
 _READ_PERMISSIONS = frozenset({LIST_SESSIONS, READ_SESSIONS, ACCESS_FILES})
 _WRITE_PERMISSIONS = frozenset({CREATE_SESSIONS, WRITE_SESSIONS, ACCESS_TERMINAL, CONTROL_SESSIONS})
-_RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
-
-
-def _runtime_working_directory(*, workspace_ref: str) -> str:
-    """Map a node session to its Attempt-owned project mount.
-
-    ``workspace_ref`` is historical lineage only.  The Attempt Runtime mounts
-    its own persistent project root at this stable OpenHands path, so it must
-    never be interpreted against another FlowRun's host allocation.
-    """
-
-    if not workspace_ref.strip():
-        raise DomainError(
-            "NODE_WORKSPACE_REQUIRED",
-            "The selected node Attempt has no isolated workspace",
-            409,
-        )
-    return str(_RUNTIME_PROJECT)
-
-
 def resolve_flow_node_session_host(
     db: Session,
     *,
@@ -115,9 +94,12 @@ def resolve_flow_node_session_host(
             409,
             {"node_attempt_id": attempt.id, "state": attempt.state},
         )
-    should_ensure_runtime = require_start_permission or (
-        ensure_startable_runtime and attempt.state == "WAITING_START_CONFIRMATION"
+    workspace = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=run.id, node_attempt_id=attempt.id
     )
+    should_ensure_runtime = workspace.attempt_owned and (require_start_permission or (
+        ensure_startable_runtime and attempt.state == "WAITING_START_CONFIRMATION"
+    ))
     if should_ensure_runtime:
         if not run.environment_version_id:
             raise DomainError(
@@ -133,7 +115,6 @@ def resolve_flow_node_session_host(
                 409,
             )
         validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-        sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=attempt.id)
         sandboxes.ensure_node_attempt_runtime(
             db,
             flow_run_id=run.id,
@@ -143,7 +124,7 @@ def resolve_flow_node_session_host(
             environment_version_id=environment.id,
             environment_version_no=environment.version_no,
         )
-    runtime_session_id = sandboxes.active_node_attempt_runtime_connection(
+    runtime_session_id = sandboxes.active_node_runtime_connection(
         db, flow_run_id=run.id, node_attempt_id=attempt.id
     ).runtime_session_id
     node = runtime_node(
@@ -153,15 +134,8 @@ def resolve_flow_node_session_host(
         snapshot_id=snapshot.id,
         instance_key=node_run.flow_node_snapshot_key,
     )
-    working_directory = (attempt.workspace_ref or "").strip()
-    if not working_directory:
-        raise DomainError(
-            "NODE_WORKSPACE_REQUIRED",
-            "The selected node Attempt has no isolated workspace",
-            409,
-            {"node_attempt_id": attempt.id},
-        )
-    runtime_working_directory = _runtime_working_directory(workspace_ref=working_directory)
+    working_directory = str(workspace.host_working_directory)
+    runtime_working_directory = str(workspace.runtime_working_directory)
     return FlowNodeSessionHost(
         session=AgentSessionHostContext.create(
             host_kind="FLOW_NODE",

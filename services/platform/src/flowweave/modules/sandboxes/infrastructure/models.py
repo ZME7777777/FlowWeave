@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     JSON,
@@ -166,6 +166,8 @@ class ManagedSandbox(Base):
     """Durable desired and observed state for one isolated compute resource."""
 
     __tablename__ = "managed_sandboxes"
+    __tenant_scoped__: ClassVar[bool] = False
+    owner_user_id: ClassVar[None] = None
     __table_args__ = (
         UniqueConstraint("backend", "backend_resource_name", name="uq_sandbox_backend_name"),
         UniqueConstraint(

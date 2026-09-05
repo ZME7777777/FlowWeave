@@ -250,13 +250,20 @@ class GateEvaluation(Base):
 
 class HumanAction(Base):
     __tablename__ = "human_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "idempotency_key",
+            name="uq_human_action_owner_key",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
     node_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
     attempt_id: Mapped[str | None] = mapped_column(String(36), index=True)
     action_type: Mapped[str] = mapped_column(String(60))
-    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160))
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 

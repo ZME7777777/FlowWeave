@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     statement_timeout_ms: int = Field(default=30_000, ge=100)
 
     credentials_master_key: str = ""
+    flowweave_admin_password: str = ""
+    flowweave_user_password: str = ""
     lark_api_base_url: str = "https://open.feishu.cn"
 
     runtime_adapter: str = "openhands"
@@ -178,4 +180,12 @@ class Settings(BaseSettings):
         if self.app_env == "production":
             if not self.credentials_master_key:
                 raise ValueError("CREDENTIALS_MASTER_KEY is required in production")
+            if len(self.flowweave_admin_password) < 12:
+                raise ValueError(
+                    "FLOWWEAVE_ADMIN_PASSWORD must contain at least 12 characters in production"
+                )
+            if len(self.flowweave_user_password) < 12:
+                raise ValueError(
+                    "FLOWWEAVE_USER_PASSWORD must contain at least 12 characters in production"
+                )
         return self

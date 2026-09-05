@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from sqlalchemy import select
@@ -15,7 +16,9 @@ from flowweave.modules.model_providers.application.service import (
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     capability_materialization_lock,
+    node_attempt_workspace_context,
     runtime_allocation_for_flow_run,
+    runtime_allocation_for_node_attempt,
 )
 from flowweave.runtime.base import (
     RuntimeAgentContext,
@@ -363,6 +366,7 @@ def build_runtime_request(
     memory_materialized: bool = False,
     agent_spec: RuntimeAgentSpec | None = None,
     conversation_id: str | None = None,
+    node_attempt_id: str | None = None,
 ) -> StartAttemptRequest:
     conversation_secrets, credential_context = credentials_for_agent(db)
     if credential_context and agent_spec is not None:
@@ -376,6 +380,13 @@ def build_runtime_request(
                 ),
             ),
         )
+    workspace_context = (
+        node_attempt_workspace_context(
+            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+        )
+        if node_attempt_id is not None
+        else None
+    )
     # Interactive Agent conversations are only hosted by the selected node
     # Attempt. They deliberately do not inherit that node's execution
     # contract, inputs, startup prompt, output targets, memory, hooks, or
@@ -403,35 +414,69 @@ def build_runtime_request(
             environment_version_no=environment_version_no or 0,
             runtime_workspace_relative="",
             runtime_working_dir_relative="",
+            runtime_working_directory=(
+                str(workspace_context.runtime_working_directory)
+                if workspace_context is not None
+                else ""
+            ),
             memory_enabled=False,
             runtime_sandbox_id=runtime_sandbox_id,
             runtime_resource_name=runtime_resource_name,
             runtime_base_url=runtime_base_url,
             conversation_secrets=conversation_secrets,
         )
-    runtime_allocation = runtime_allocation_for_flow_run(
-        db, flow_run_id, manifest_digest=runtime_manifest_hash
+    if workspace_context is not None and not workspace_context.attempt_owned:
+        raise DomainError(
+            "NODE_WORKSPACE_REQUIRES_LEGACY_RUNTIME",
+            "The historical Attempt must continue on its FlowRun Runtime",
+            409,
+            {"node_attempt_id": node_attempt_id},
+        )
+    runtime_allocation = (
+        runtime_allocation_for_node_attempt(
+            db,
+            flow_run_id=flow_run_id,
+            node_attempt_id=node_attempt_id,
+            manifest_digest=runtime_manifest_hash,
+        )
+        if node_attempt_id is not None
+        else runtime_allocation_for_flow_run(
+            db, flow_run_id, manifest_digest=runtime_manifest_hash
+        )
     )
+    materialization_owner_id = node_attempt_id or flow_run_id
     asset = cast(dict[str, Any], node.get("asset") or {})
     with capability_materialization_lock(runtime_allocation):
         skills, plugins, mcp_servers, node_workspace_ref = materialize_node_workspace(
             asset,
-            flow_run_id=flow_run_id,
+            flow_run_id=materialization_owner_id,
             manifest_digest=runtime_manifest_hash,
         )
         hook_config = materialize_hook_config(
             asset,
-            flow_run_id=flow_run_id,
+            flow_run_id=materialization_owner_id,
             manifest_digest=runtime_manifest_hash,
         )
-        ensure_flow_run_attempt_workspace(
-            flow_run_id=flow_run_id,
-            asset_id=str(asset.get("id") or ""),
-            workspace_ref=workspace_ref,
-        )
-        runtime_workspace_relative, runtime_working_dir_relative = isolated_runtime_workspace_paths(
-            workspace_ref, node_workspace_ref
-        )
+        if workspace_context is None:
+            ensure_flow_run_attempt_workspace(
+                flow_run_id=materialization_owner_id,
+                asset_id=str(asset.get("id") or ""),
+                workspace_ref=workspace_ref,
+            )
+            runtime_workspace_relative, runtime_working_dir_relative = (
+                isolated_runtime_workspace_paths(workspace_ref, node_workspace_ref)
+            )
+            runtime_working_directory = ""
+        else:
+            if Path(workspace_ref) != workspace_context.host_working_directory:
+                raise DomainError(
+                    "RUNTIME_WORKSPACE_INVALID",
+                    "The Attempt workspace no longer matches its Runtime allocation",
+                    409,
+                )
+            runtime_workspace_relative = ""
+            runtime_working_dir_relative = ""
+            runtime_working_directory = str(workspace_context.runtime_working_directory)
     if agent_spec is not None:
         return StartAttemptRequest(
             attempt_id=attempt_id,
@@ -453,6 +498,7 @@ def build_runtime_request(
             environment_version_no=environment_version_no or 0,
             runtime_workspace_relative=runtime_workspace_relative,
             runtime_working_dir_relative=runtime_working_dir_relative,
+            runtime_working_directory=runtime_working_directory,
             memory_enabled=False,
             runtime_sandbox_id=runtime_sandbox_id,
             runtime_resource_name=runtime_resource_name,
@@ -779,6 +825,7 @@ def build_runtime_request(
         environment_version_no=environment_version_no or 0,
         runtime_workspace_relative=runtime_workspace_relative,
         runtime_working_dir_relative=runtime_working_dir_relative,
+        runtime_working_directory=runtime_working_directory,
         memory_enabled=memory_enabled,
         runtime_sandbox_id=runtime_sandbox_id,
         runtime_resource_name=runtime_resource_name,

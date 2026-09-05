@@ -59,6 +59,17 @@ class RuntimeStorageAllocation:
     relative_root: str
 
 
+@dataclass(frozen=True, slots=True)
+class NodeAttemptWorkspaceContext:
+    """The one physical and Runtime-visible workspace owned by an Attempt."""
+
+    attempt_owned: bool
+    host_mount_root: Path
+    host_working_directory: Path
+    runtime_mount_root: PurePosixPath
+    runtime_working_directory: PurePosixPath
+
+
 def _canonical_uuid(value: str, *, field: str) -> str:
     try:
         canonical = str(UUID(value))
@@ -388,7 +399,10 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
 
     run_id = _canonical_uuid(flow_run_id, field="FlowRun")
     existing = db.scalar(
-        select(FlowRunRuntimeAllocation).where(FlowRunRuntimeAllocation.flow_run_id == run_id)
+        select(FlowRunRuntimeAllocation).where(
+            FlowRunRuntimeAllocation.flow_run_id == run_id,
+            FlowRunRuntimeAllocation.node_attempt_id.is_(None),
+        )
     )
     if existing is not None:
         root = _verify_layout(existing)
@@ -587,6 +601,106 @@ def node_attempt_workspace_project_path(
     return _host_root(allocation.relative_root) / "workspace" / "project"
 
 
+def node_attempt_workspace_context(
+    db: Session, *, flow_run_id: str, node_attempt_id: str
+) -> NodeAttemptWorkspaceContext:
+    """Resolve new Attempt-owned storage or the untouched legacy FlowRun storage.
+
+    Merely opening an historical Attempt must not allocate new storage.  The
+    compatibility switch is the persisted workspace's actual ownership: only
+    a path already inside this Attempt's allocation uses the Attempt Runtime.
+    """
+
+    attempt = db.get(NodeAttempt, node_attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id) if attempt is not None else None
+    if node_run is None or node_run.flow_run_id != flow_run_id:
+        raise DomainError(
+            "RUNTIME_ALLOCATION_OWNER_INVALID",
+            "The Runtime Attempt does not belong to this FlowRun",
+            409,
+        )
+    raw = (attempt.workspace_ref or "").strip()
+    if not raw:
+        raise DomainError(
+            "NODE_WORKSPACE_REQUIRED",
+            "The selected node Attempt has no isolated workspace",
+            409,
+            {"node_attempt_id": node_attempt_id},
+        )
+    host_working = Path(raw)
+    allocation = db.scalar(
+        select(FlowRunRuntimeAllocation).where(
+            FlowRunRuntimeAllocation.flow_run_id == flow_run_id,
+            FlowRunRuntimeAllocation.node_attempt_id == node_attempt_id,
+        )
+    )
+    if allocation is not None:
+        attempt_project = _verify_layout(allocation) / "workspace" / "project"
+        if host_working.is_absolute() and host_working.is_relative_to(attempt_project):
+            relative = host_working.relative_to(attempt_project)
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                raise DomainError(
+                    "NODE_WORKSPACE_INVALID",
+                    "The Attempt-owned workspace layout is invalid",
+                    409,
+                )
+            runtime_root = openhands_flow_run_project_path()
+            return NodeAttemptWorkspaceContext(
+                attempt_owned=True,
+                host_mount_root=attempt_project,
+                host_working_directory=host_working,
+                runtime_mount_root=runtime_root,
+                runtime_working_directory=runtime_root.joinpath(*relative.parts),
+            )
+
+    # Historical Attempts retain their original FlowRun allocation and path.
+    # An accidentally-created Attempt allocation is intentionally ignored.
+    runtime_owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    legacy_roots = (
+        (flow_run_workspace_nodes_path(runtime_owner_id), openhands_flow_run_nodes_path()),
+        (flow_run_workspace_project_path(runtime_owner_id), openhands_flow_run_project_path()),
+    )
+    for host_root, runtime_root in legacy_roots:
+        if host_working.is_absolute() and host_working.is_relative_to(host_root):
+            relative = host_working.relative_to(host_root)
+            if relative.parts and not any(
+                part in {"", ".", ".."} for part in relative.parts
+            ):
+                return NodeAttemptWorkspaceContext(
+                    attempt_owned=False,
+                    host_mount_root=host_root,
+                    host_working_directory=host_working,
+                    runtime_mount_root=runtime_root,
+                    runtime_working_directory=runtime_root.joinpath(*relative.parts),
+                )
+    # Runtime-native paths are accepted only for old fixtures/data that were
+    # persisted before host-path provenance became mandatory.
+    runtime_path = PurePosixPath(raw)
+    runtime_host_roots = (
+        (openhands_flow_run_nodes_path(), flow_run_workspace_nodes_path(runtime_owner_id)),
+        (openhands_flow_run_project_path(), flow_run_workspace_project_path(runtime_owner_id)),
+    )
+    for runtime_root, host_root in runtime_host_roots:
+        if runtime_path.is_absolute() and runtime_path.is_relative_to(runtime_root):
+            relative = runtime_path.relative_to(runtime_root)
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                continue
+            return NodeAttemptWorkspaceContext(
+                attempt_owned=False,
+                host_mount_root=host_root,
+                host_working_directory=host_root.joinpath(*relative.parts),
+                runtime_mount_root=runtime_root,
+                runtime_working_directory=runtime_path,
+            )
+    raise DomainError(
+        "NODE_WORKSPACE_REQUIRES_RERUN",
+        "The historical Attempt workspace cannot be matched to its Runtime "
+        "allocation; rerun the node",
+        409,
+        {"node_attempt_id": node_attempt_id},
+    )
+
+
 def ensure_capability_manifest_directory(
     allocation: FlowRunRuntimeAllocation, manifest_digest: str
 ) -> Path:
@@ -617,7 +731,10 @@ def runtime_allocation_for_flow_run(
 ) -> FlowRunRuntimeAllocation:
     flow_run_id = runtime_owner_flow_run_id(db, flow_run_id)
     allocation = db.scalar(
-        select(FlowRunRuntimeAllocation).where(FlowRunRuntimeAllocation.flow_run_id == flow_run_id)
+        select(FlowRunRuntimeAllocation).where(
+            FlowRunRuntimeAllocation.flow_run_id == flow_run_id,
+            FlowRunRuntimeAllocation.node_attempt_id.is_(None),
+        )
     )
     if allocation is None:
         raise DomainError(
@@ -710,7 +827,10 @@ def delete_flow_run_runtime_allocation(db: Session, flow_run_id: str) -> None:
 
     allocation = db.scalar(
         select(FlowRunRuntimeAllocation)
-        .where(FlowRunRuntimeAllocation.flow_run_id == flow_run_id)
+        .where(
+            FlowRunRuntimeAllocation.flow_run_id == flow_run_id,
+            FlowRunRuntimeAllocation.node_attempt_id.is_(None),
+        )
         .with_for_update()
     )
     if allocation is None:
@@ -803,6 +923,7 @@ def _remove_capability_manifest(root: Path, allocation_id: str, manifest_digest:
 
 
 __all__ = (
+    "NodeAttemptWorkspaceContext",
     "RuntimeStorageAllocation",
     "allocate_flow_run_runtime",
     "capability_materialization_lock",
@@ -812,6 +933,7 @@ __all__ = (
     "flow_run_workspace_nodes_path",
     "flow_run_workspace_project_path",
     "node_attempt_workspace_project_path",
+    "node_attempt_workspace_context",
     "openhands_flow_run_capability_path",
     "openhands_flow_run_nodes_path",
     "openhands_flow_run_project_path",

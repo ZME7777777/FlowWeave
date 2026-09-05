@@ -42,7 +42,12 @@ def runtime_overview(db: Session, flow_run_id: str) -> dict[str, Any]:
     if run is None:
         raise not_found("flow_run", flow_run_id)
     owner_id = runtime_owner_flow_run_id(db, flow_run_id)
-    session = db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == owner_id))
+    session = db.scalar(
+        select(FlowRunRuntime).where(
+            FlowRunRuntime.flow_run_id == owner_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+    )
     if session is None:
         return {
             "flow_run_id": flow_run_id,
@@ -122,7 +127,10 @@ def runtime_readiness_by_flow_run(
     if not flow_run_ids:
         return {}
     sessions = db.scalars(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id.in_(flow_run_ids))
+        select(FlowRunRuntime).where(
+            FlowRunRuntime.flow_run_id.in_(flow_run_ids),
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
     )
     return {
         item.flow_run_id: {
@@ -145,7 +153,12 @@ def request_runtime_replacement(
     """Fence writes immediately and enqueue one generation-scoped replacement."""
 
     session = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+        .with_for_update()
     )
     if session is None or session.active_generation is None:
         raise DomainError(
@@ -203,7 +216,12 @@ def request_runtime_pause(
 
     owner_id = runtime_owner_flow_run_id(db, flow_run_id)
     session = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == owner_id).with_for_update()
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == owner_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+        .with_for_update()
     )
     if session is None or session.active_generation is None:
         raise DomainError(
@@ -341,7 +359,12 @@ def request_runtime_resume(
 
     owner_id = runtime_owner_flow_run_id(db, flow_run_id)
     session = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == owner_id).with_for_update()
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == owner_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+        .with_for_update()
     )
     if session is None or session.active_generation is None:
         raise DomainError(

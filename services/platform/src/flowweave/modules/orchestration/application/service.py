@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import shutil
+import stat
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -50,7 +51,6 @@ from flowweave.modules.runs.public import (
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import (
-    RuntimeCondenser,
     RuntimeHandle,
     RuntimePendingConfirmation,
     RuntimeResult,
@@ -68,8 +68,7 @@ from flowweave.runtime.request import (
 )
 from flowweave.runtime.routing import runtime_for
 from flowweave.runtime.workspace import (
-    attempt_workspace_path,
-    ensure_flow_run_attempt_workspace,
+    ensure_node_attempt_workspace,
 )
 from flowweave.shared.application.transactions import (
     finish,
@@ -86,9 +85,9 @@ from flowweave.shared.models import (
     BackgroundTask,
     EnvironmentVersion,
     FlowRun,
+    FlowRunRuntime,
     FlowRunSchedule,
     FlowRunScheduleOccurrence,
-    FlowRunRuntime,
     FlowRunState,
     GateEvaluation,
     HumanAction,
@@ -103,15 +102,17 @@ from flowweave.shared.models import (
     now,
 )
 from flowweave.shared.schemas import (
+    AgentPresetWrite,
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    AutomaticNodePlanWrite,
     AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
     AutomaticRunStartWrite,
-    AutomaticNodePlanWrite,
-    AgentPresetWrite,
+    FlowRunScheduleStateWrite,
+    FlowRunScheduleWrite,
     GateRemediationWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
@@ -121,8 +122,6 @@ from flowweave.shared.schemas import (
     NodeRunStart,
     RejectWrite,
     RunStart,
-    FlowRunScheduleStateWrite,
-    FlowRunScheduleWrite,
     RuntimeCancelRecoveryWrite,
     RuntimeConfirmationDecisionWrite,
     SyncSnapshotWrite,
@@ -2704,7 +2703,6 @@ def _create_node_run(
             latest.id,
         )
         return existing, latest
-    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
     sequence = (
         db.scalar(select(func.max(NodeRun.sequence_no)).where(NodeRun.flow_run_id == run.id)) or 0
     ) + 1
@@ -2728,22 +2726,20 @@ def _create_node_run(
         context_ids_json=context_ids,
         agent_preset_json=agent_preset,
         gate_policies_json=gate_policies or [],
-        workspace_ref=str(
-            attempt_workspace_path(
-                asset_id=asset_id,
-                run_id=runtime_owner_id,
-                node_run_id=node_run.id,
-                attempt_no=1,
-            )
-        ),
     )
     db.add(attempt)
     db.flush()
-    ensure_flow_run_attempt_workspace(
-        flow_run_id=runtime_owner_id,
-        asset_id=asset_id,
-        workspace_ref=attempt.workspace_ref or "",
+    sandboxes.allocate_node_attempt_runtime(
+        db, flow_run_id=run.id, node_attempt_id=attempt.id
     )
+    attempt.workspace_ref = str(ensure_node_attempt_workspace(
+        db,
+        flow_run_id=run.id,
+        node_attempt_id=attempt.id,
+        asset_id=asset_id,
+        node_run_id=node_run.id,
+        attempt_no=attempt.attempt_no,
+    ))
     for field_key, artifact_id in artifact_ids.items():
         db.add(
             AttemptInputBinding(
@@ -4130,12 +4126,24 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     )
     session_config = agent_sessions.config_from_binding(db, session_binding)
     provider = agent_sessions.provider_for_config(db, session_config)
+    workspace = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=run.id, node_attempt_id=attempt.id
+    )
     runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
-    host_root = sandboxes.flow_run_capability_path(
-        runtime_owner_id,
-        snapshot.runtime_manifest_hash,
-        "conversations",
-        session_binding.id,
+    host_root = (
+        sandboxes.node_attempt_capability_path(
+            attempt.id,
+            snapshot.runtime_manifest_hash,
+            "conversations",
+            session_binding.id,
+        )
+        if workspace.attempt_owned
+        else sandboxes.flow_run_capability_path(
+            runtime_owner_id,
+            snapshot.runtime_manifest_hash,
+            "conversations",
+            session_binding.id,
+        )
     )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(
@@ -4178,7 +4186,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         )
     request = build_runtime_request(
         db,
-        flow_run_id=runtime_owner_id,
+        flow_run_id=run.id if workspace.attempt_owned else runtime_owner_id,
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=attempt.id,
         execution_key=f"attempt:{attempt.id}:start",
@@ -4194,13 +4202,14 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         environment_version_no=environment.version_no,
         agent_spec=agent_spec,
         conversation_id=session_binding.openhands_conversation_id,
+        node_attempt_id=attempt.id if workspace.attempt_owned else None,
     )
-    # Attempt-local paths remain provenance/materialization roots.  The
-    # FlowRun Agent writes relative outputs in its frozen shared project
-    # working directory, which is the only valid FILE parser root.
     return replace(
         request,
-        output_workspace_root=session_binding.working_directory or "/runtime/workspace/project",
+        output_workspace_root=(
+            session_binding.working_directory
+            or str(workspace.runtime_working_directory)
+        ),
     )
 
 
@@ -4384,13 +4393,28 @@ def process_start_runtime(
     request = _runtime_request(db, attempt)
     allocation = None
     if request.environment_image and get_settings().runtime_adapter != "mock":
-        allocation = sandboxes.ensure_flow_run_runtime(
-            db,
-            flow_run_id=flow_run_id,
-            image=request.environment_image,
-            environment_id=request.environment_id,
-            environment_version_id=request.environment_version_id,
-            environment_version_no=request.environment_version_no,
+        workspace = sandboxes.node_attempt_workspace_context(
+            db, flow_run_id=flow_run_id, node_attempt_id=attempt.id
+        )
+        allocation = (
+            sandboxes.ensure_node_attempt_runtime(
+                db,
+                flow_run_id=flow_run_id,
+                node_attempt_id=attempt.id,
+                image=request.environment_image,
+                environment_id=request.environment_id,
+                environment_version_id=request.environment_version_id,
+                environment_version_no=request.environment_version_no,
+            )
+            if workspace.attempt_owned
+            else sandboxes.ensure_flow_run_runtime(
+                db,
+                flow_run_id=flow_run_id,
+                image=request.environment_image,
+                environment_id=request.environment_id,
+                environment_version_id=request.environment_version_id,
+                environment_version_no=request.environment_version_no,
+            )
         )
         request = replace(
             request,
@@ -4434,6 +4458,9 @@ def process_start_runtime(
         flow_run_id=flow_run_id,
         openhands_conversation_id=handle.conversation_id,
         display_label=f"运行 {claimed.id}",
+        node_run_id=claimed.node_run_id,
+        node_attempt_id=claimed.id,
+        working_directory=request.runtime_working_directory or request.workspace_ref,
         allow_inactive_session=get_settings().runtime_adapter == "mock",
     )
     input_event_id = handle.cursor
@@ -5717,16 +5744,21 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
             attempt_no=1,
             snapshot_id=snapshot.id,
             state=AttemptState.WAITING_INPUT,
-            workspace_ref=str(
-                attempt_workspace_path(
-                    asset_id=asset_id, run_id=run.id, node_run_id=node_run.id, attempt_no=1
-                )
-            ),
         )
         db.add(attempt)
         db.flush()
-        ensure_flow_run_attempt_workspace(
-            flow_run_id=run.id, asset_id=asset_id, workspace_ref=attempt.workspace_ref or ""
+        sandboxes.allocate_node_attempt_runtime(
+            db, flow_run_id=run.id, node_attempt_id=attempt.id
+        )
+        attempt.workspace_ref = str(
+            ensure_node_attempt_workspace(
+                db,
+                flow_run_id=run.id,
+                node_attempt_id=attempt.id,
+                asset_id=asset_id,
+                node_run_id=node_run.id,
+                attempt_no=attempt.attempt_no,
+            )
         )
         for field_key, artifact_id in bindings.items():
             db.add(
@@ -6079,18 +6111,80 @@ def _gate_remediation_prompt(
     return prompt[:16_000], evaluation_ids
 
 
+def _copy_gate_remediation_workspace(source: Path, target: Path) -> None:
+    """Copy one verified Attempt tree without following filesystem links."""
+
+    try:
+        source_metadata = source.lstat()
+        target_metadata = target.lstat()
+    except OSError as exc:
+        raise DomainError(
+            "NODE_WORKSPACE_REQUIRES_RERUN",
+            "The gate remediation workspace is unavailable; rerun the node",
+            409,
+        ) from exc
+    if (
+        stat.S_ISLNK(source_metadata.st_mode)
+        or not stat.S_ISDIR(source_metadata.st_mode)
+        or stat.S_ISLNK(target_metadata.st_mode)
+        or not stat.S_ISDIR(target_metadata.st_mode)
+    ):
+        raise DomainError(
+            "NODE_WORKSPACE_INVALID",
+            "The gate remediation workspace must be a plain directory",
+            409,
+        )
+
+    pending = [(source, target)]
+    while pending:
+        source_directory, target_directory = pending.pop()
+        try:
+            entries = list(source_directory.iterdir())
+        except OSError as exc:
+            raise DomainError(
+                "NODE_WORKSPACE_REQUIRES_RERUN",
+                "The gate remediation workspace cannot be copied; rerun the node",
+                409,
+            ) from exc
+        for entry in entries:
+            destination = target_directory / entry.name
+            try:
+                metadata = entry.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise DomainError(
+                        "NODE_WORKSPACE_INVALID",
+                        "The gate remediation workspace cannot contain symbolic links",
+                        409,
+                    )
+                if stat.S_ISDIR(metadata.st_mode):
+                    destination.mkdir(mode=0o700, exist_ok=False)
+                    pending.append((entry, destination))
+                elif stat.S_ISREG(metadata.st_mode):
+                    shutil.copyfile(entry, destination, follow_symlinks=False)
+                    destination.chmod(0o700 if metadata.st_mode & 0o111 else 0o600)
+                else:
+                    raise DomainError(
+                        "NODE_WORKSPACE_INVALID",
+                        "The gate remediation workspace contains an unsupported file",
+                        409,
+                    )
+            except DomainError:
+                raise
+            except OSError as exc:
+                raise DomainError(
+                    "NODE_WORKSPACE_REQUIRES_RERUN",
+                    "The gate remediation workspace cannot be copied; rerun the node",
+                    409,
+                ) from exc
+
+
 def remediate_gate_failure(
     db: Session,
     attempt_id: str,
     payload: GateRemediationWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """Fork a failed END-gate execution into a new, auditable repair Attempt.
-
-    The old Attempt is retained as REJECTED with all of its Artifacts and Gate
-    decisions. The new Attempt owns a native OpenHands fork and becomes the
-    only source for any subsequently frozen revision outputs.
-    """
+    """Branch a failed END gate into a new, isolated repair Attempt."""
 
     current = _attempt(db, attempt_id)
     node_run = _node_run(db, current.node_run_id)
@@ -6147,23 +6241,34 @@ def remediate_gate_failure(
         snapshot_id=current.snapshot_id,
         context_ids_json=current.context_ids_json,
         agent_preset_json=current.agent_preset_json,
-        workspace_ref=str(
-            attempt_workspace_path(
-                asset_id=asset_id, run_id=run.id, node_run_id=node_run.id, attempt_no=next_no
-            )
-        ),
     )
     revision.state = AttemptState.EXECUTING
-    revision.runtime_phase = "RUNNING"
-    revision.startup_mode = current.startup_mode
-    revision.startup_capability_key = current.startup_capability_key
-    revision.startup_prompt = current.startup_prompt
+    revision.runtime_phase = "STARTING"
+    revision.startup_mode = "PROMPT"
+    revision.startup_capability_key = None
+    revision.startup_prompt = instruction
     revision.gate_policies_json = current.gate_policies_json
     revision.output_targets_json = current.output_targets_json
     db.add(revision)
     db.flush()
-    ensure_flow_run_attempt_workspace(
-        flow_run_id=run.id, asset_id=asset_id, workspace_ref=revision.workspace_ref or ""
+    sandboxes.allocate_node_attempt_runtime(
+        db, flow_run_id=run.id, node_attempt_id=revision.id
+    )
+    revision.workspace_ref = str(
+        ensure_node_attempt_workspace(
+            db,
+            flow_run_id=run.id,
+            node_attempt_id=revision.id,
+            asset_id=asset_id,
+            node_run_id=node_run.id,
+            attempt_no=revision.attempt_no,
+        )
+    )
+    source_workspace = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=run.id, node_attempt_id=current.id
+    )
+    _copy_gate_remediation_workspace(
+        source_workspace.host_working_directory, Path(revision.workspace_ref)
     )
     for row in _bindings(db, current.id):
         db.add(
@@ -6174,35 +6279,45 @@ def remediate_gate_failure(
                 binding_source="COPIED_FOR_GATE_REMEDIATION",
             )
         )
+    if not run.environment_version_id:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED",
+            "The FlowRun has no Environment Version",
+            409,
+        )
+    environment = lock_referenceable_version(db, run.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The frozen FlowRun Environment Version is unavailable",
+            409,
+        )
+    allocation = sandboxes.runtime_allocation_for_node_attempt(
+        db, flow_run_id=run.id, node_attempt_id=revision.id
+    )
+    runtime_session = sandboxes.ensure_node_attempt_runtime_session(
+        db,
+        flow_run_id=run.id,
+        node_attempt_id=revision.id,
+        environment_version_id=environment.id,
+        runtime_image_digest=environment.image_digest,
+        workspace_allocation=allocation,
+    )
+    target_workspace = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=run.id, node_attempt_id=revision.id
+    )
     config = agent_sessions.config_from_binding(db, source)
     target = agent_sessions.reserve_flow_node_binding(
         db,
-        runtime_session_id=source.runtime_session_id,
+        runtime_session_id=runtime_session.id,
         flow_run_id=run.id,
         node_run_id=node_run.id,
         node_attempt_id=revision.id,
-        working_directory=source.working_directory or "/runtime/workspace/project",
-        work_directory_version_id=source.work_directory_version_id,
+        working_directory=str(target_workspace.runtime_working_directory),
         create_idempotency_key=f"attempt-runtime:{revision.id}",
         display_title=f"返工 {revision.id}",
         config=config,
     )
-    fork = runtime.fork_conversation(
-        source_handle,
-        target_conversation_id=target.openhands_conversation_id,
-        title=target.display_title or "门禁返工",
-        from_event_id=fork_event_id,
-        expected_source_leaf_event_id=identity.event_id,
-        reset_metrics=True,
-        condenser=RuntimeCondenser(
-            kind="LLM_SUMMARIZING", max_size=200, max_tokens_ratio=0.75, keep_first=4
-        ),
-        condenser_provider=agent_sessions.provider_for_config(db, config),
-    )
-    if fork.handle.conversation_id != target.openhands_conversation_id:
-        raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "返工会话分叉身份校验失败", 409)
-    target.lifecycle = "ACTIVE"
-    revision.conversation_id = target.openhands_conversation_id
     current = _claim_attempt_version(
         db,
         current.id,
@@ -6219,8 +6334,9 @@ def remediate_gate_failure(
             "expected_state_version": payload.expected_state_version,
             "remediation_attempt_id": revision.id,
             "source_conversation_id": source.openhands_conversation_id,
-            "fork_conversation_id": target.openhands_conversation_id,
+            "target_conversation_id": target.openhands_conversation_id,
             "fork_event_id": fork_event_id,
+            "runtime_migration": "NEW_ATTEMPT_RUNTIME",
             "failed_gate_evaluation_ids": failed_ids,
         },
         node_run.id,
@@ -6258,23 +6374,17 @@ def remediate_gate_failure(
             node_run.id,
             revision.id,
         )
-    target_handle = _active_attempt_runtime_handle(db, revision)
-    result = runtime.send_message(target_handle, instruction)
-    if result.status not in {"RUNNING", "IDLE"}:
-        prepared_outputs = _prepare_runtime_outputs(
-            result, revision.output_targets_json or {}, target_handle
-        )
-        _apply_runtime_result(
+    if not _inline_execution():
+        enqueue(
             db,
-            revision,
-            result,
-            prepared_outputs=prepared_outputs,
-            result_key=f"gate-remediation:{revision.id}:{result.cursor or '0'}",
-            commit=False,
+            task_type="START_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=revision.id,
+            idempotency_key=f"start-runtime:{revision.id}",
         )
-    _dispatch_poll(db, revision, 1, delayed=True)
-    _dispatch_runtime_wakeup(db, revision, 1)
     finish(db)
+    if _inline_execution():
+        process_start_runtime(db, revision.id)
     return attempt_detail(db, revision.id)
 
 
@@ -6340,19 +6450,21 @@ def reject_attempt(
         snapshot_id=run.active_snapshot_id,
         context_ids_json=attempt.context_ids_json,
         agent_preset_json=attempt.agent_preset_json,
-        workspace_ref=str(
-            attempt_workspace_path(
-                asset_id=next_asset_id,
-                run_id=run.id,
-                node_run_id=node_run.id,
-                attempt_no=next_no,
-            )
-        ),
     )
     db.add(next_attempt)
     db.flush()
-    ensure_flow_run_attempt_workspace(
-        flow_run_id=run.id, asset_id=next_asset_id, workspace_ref=next_attempt.workspace_ref or ""
+    sandboxes.allocate_node_attempt_runtime(
+        db, flow_run_id=run.id, node_attempt_id=next_attempt.id
+    )
+    next_attempt.workspace_ref = str(
+        ensure_node_attempt_workspace(
+            db,
+            flow_run_id=run.id,
+            node_attempt_id=next_attempt.id,
+            asset_id=next_asset_id,
+            node_run_id=node_run.id,
+            attempt_no=next_attempt.attempt_no,
+        )
     )
     if payload.copy_input_bindings:
         for binding in _bindings(db, attempt.id):

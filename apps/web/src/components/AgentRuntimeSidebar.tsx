@@ -56,6 +56,10 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
       current.onclose = event => {
         if (socket === current) socket = null;
         if (disposed || event.code === 1000) return;
+        if (event.code === 4401) {
+          window.dispatchEvent(new Event('flowweave:auth-required'));
+          return;
+        }
         attempts += 1;
         if (attempts <= 5 && event.code !== 4409) {
           reconnectTimer = window.setTimeout(connect, Math.min(1000 * 2 ** (attempts - 1), 8000));

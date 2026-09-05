@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -22,9 +23,17 @@ from flowweave.modules.environments.presentation.router import router as environ
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
 from flowweave.modules.runs.presentation.router import router as runs_router
+from flowweave.modules.users.application import service as users
+from flowweave.modules.users.application.audit import AuditRecord
+from flowweave.modules.users.application.security import (
+    bind_principal,
+    reset_principal,
+)
+from flowweave.modules.users.presentation.router import router as users_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
 from flowweave.shared.errors import DomainError
+from flowweave.shared.http import require_authenticated_connection
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -51,6 +60,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container = container
+        async with container.database.session() as session:
+            await session.run_sync(
+                lambda db: users.ensure_builtin_users(
+                    db,
+                    admin_password=configured.flowweave_admin_password,
+                    user_password=configured.flowweave_user_password,
+                )
+            )
+            await session.commit()
+        container.audit_writer.start()
         try:
             yield
         finally:
@@ -64,6 +83,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Response:
         request_id = request.headers.get("X-Request-ID") or str(uuid4())
         request.state.request_id = request_id
+        started_at = monotonic()
+        principal = None
+        if request.url.path.startswith("/api/v1/"):
+            async with container.database.session() as auth_session:
+                principal = await auth_session.run_sync(
+                    lambda db: users.authenticate(
+                        db, request.cookies.get(users.SESSION_COOKIE)
+                    )
+                )
+                if principal is not None:
+                    await auth_session.commit()
+                else:
+                    await auth_session.rollback()
+        is_public = request.url.path.startswith("/health") or request.url.path in {
+            "/api/v1/auth/login",
+            "/api/v1/auth/logout",
+            "/api/v1/auth/me",
+        }
+        if principal is None and not is_public:
+            return JSONResponse(
+                status_code=401,
+                content=error_body(
+                    "AUTHENTICATION_REQUIRED", "请先登录", request_id
+                ),
+                headers={"X-Request-ID": request_id},
+            )
+        principal_token = bind_principal(principal)
         settings_token = bind_settings(container.settings)
         runtime_token = bind_runtime(container.runtime)
         store_token = bind_artifact_store(container.artifact_store)
@@ -71,8 +117,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
+            audit_principal = principal or getattr(request.state, "audit_principal", None)
+            if audit_principal is not None and request.url.path.startswith("/api/v1/"):
+                container.audit_writer.submit(
+                    AuditRecord(
+                        user_id=audit_principal.user_id,
+                        username=audit_principal.username,
+                        request_id=request_id,
+                        method=request.method,
+                        route=request.scope.get("route").path
+                        if request.scope.get("route") is not None
+                        else request.url.path,
+                        status_code=response.status_code,
+                        duration_ms=max(0, int((monotonic() - started_at) * 1000)),
+                        client_ip=request.client.host if request.client else None,
+                    )
+                )
             return response
         finally:
+            reset_principal(principal_token)
             reset_sandbox(sandbox_token)
             reset_artifact_store(store_token)
             reset_runtime(runtime_token)
@@ -104,10 +167,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise exc
         diagnostic = getattr(getattr(exc, "orig", None), "diag", None)
         constraint = getattr(diagnostic, "constraint_name", None)
-        if constraint == "flow_definitions_name_key":
+        if constraint in {"flow_definitions_name_key", "uq_flow_definition_owner_name"}:
             code = "FLOW_NAME_CONFLICT"
             message = "流程名称已存在，请使用其他名称。"
-        elif constraint == "uq_asset_active_directory_name":
+        elif constraint in {
+            "uq_asset_active_directory_name",
+            "uq_asset_owner_directory_name",
+        }:
             code = "NODE_ASSET_NAME_CONFLICT"
             message = "当前目录已存在同名节点资产，请使用其他名称。"
         else:
@@ -140,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route("/health/live", liveness, methods=["GET"])
     app.add_api_route("/health/ready", readiness, methods=["GET"])
     app.add_api_route("/health", health, methods=["GET"])
+    app.include_router(users_router, prefix="/api/v1")
 
     for router in (
         agent_sessions_router,
@@ -152,5 +219,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conversations_router,
         credentials_router,
     ):
-        app.include_router(router, prefix="/api/v1")
+        app.include_router(
+            router,
+            prefix="/api/v1",
+            dependencies=[Depends(require_authenticated_connection)],
+        )
     return app

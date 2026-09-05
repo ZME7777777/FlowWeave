@@ -16,6 +16,7 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     flow_run_capability_path,
     flow_run_workspace_nodes_path,
     flow_run_workspace_project_path,
+    node_attempt_workspace_project_path,
     openhands_flow_run_capability_path,
     openhands_flow_run_nodes_path,
 )
@@ -160,6 +161,55 @@ def attempt_workspace_path(
         / _segment(node_run_id, "node-run")
         / str(attempt_no)
     )
+
+
+def node_attempt_workspace_path(
+    db: Any,
+    *,
+    flow_run_id: str,
+    node_attempt_id: str,
+    asset_id: str,
+    node_run_id: str,
+    attempt_no: int,
+) -> Path:
+    """Return the one real work directory inside a new Attempt allocation."""
+
+    return (
+        node_attempt_workspace_project_path(
+            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+        )
+        / "nodes"
+        / _segment(asset_id, "node")
+        / "sessions"
+        / _segment(node_run_id, "node-run")
+        / str(attempt_no)
+    )
+
+
+def ensure_node_attempt_workspace(
+    db: Any,
+    *,
+    flow_run_id: str,
+    node_attempt_id: str,
+    asset_id: str,
+    node_run_id: str,
+    attempt_no: int,
+) -> Path:
+    """Materialize and persist the canonical directory for a new Attempt."""
+
+    candidate = node_attempt_workspace_path(
+        db,
+        flow_run_id=flow_run_id,
+        node_attempt_id=node_attempt_id,
+        asset_id=asset_id,
+        node_run_id=node_run_id,
+        attempt_no=attempt_no,
+    )
+    project_root = node_attempt_workspace_project_path(
+        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+    )
+    _ensure_plain_directory_tree(project_root, candidate)
+    return candidate
 
 
 def ensure_flow_run_attempt_workspace(

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -35,6 +36,11 @@ class RuntimeConfirmationApproval(Base):
             unique=True,
             postgresql_where=text("state IN ('PENDING', 'DECIDING')"),
         ),
+        UniqueConstraint(
+            "owner_user_id",
+            "decision_idempotency_key",
+            name="uq_runtime_confirmation_owner_decision_key",
+        ),
         CheckConstraint("action_count > 0", name="ck_runtime_confirmation_action_count"),
         CheckConstraint("state_version > 0", name="ck_runtime_confirmation_version"),
         CheckConstraint(
@@ -53,7 +59,7 @@ class RuntimeConfirmationApproval(Base):
     state: Mapped[str] = mapped_column(String(20), default="PENDING")
     decision_accept: Mapped[bool | None] = mapped_column(Boolean)
     decision_reason: Mapped[str | None] = mapped_column(Text)
-    decision_idempotency_key: Mapped[str | None] = mapped_column(String(180), unique=True)
+    decision_idempotency_key: Mapped[str | None] = mapped_column(String(180))
     decided_by: Mapped[str | None] = mapped_column(String(160))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state_version: Mapped[int] = mapped_column(Integer, default=1)

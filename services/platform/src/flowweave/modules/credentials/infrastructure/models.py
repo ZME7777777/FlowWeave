@@ -21,7 +21,12 @@ from flowweave.shared.database import Base, now, uid
 class WebsiteCredential(Base):
     __tablename__ = "website_credentials"
     __table_args__ = (
-        UniqueConstraint("target_host", "name", name="uq_website_credential_host_name"),
+        UniqueConstraint(
+            "owner_user_id",
+            "target_host",
+            "name",
+            name="uq_website_credential_owner_host_name",
+        ),
         CheckConstraint(
             "auth_type IN ('USERNAME_PASSWORD', 'BEARER_TOKEN')",
             name="ck_website_credential_auth_type",

@@ -46,7 +46,7 @@ def _failure_reason(exc: Exception) -> str:
         return "http_timeout"
     if isinstance(exc, httpx.HTTPError):
         return "http_transport_error"
-    if isinstance(exc, (KeyError, IndexError, TypeError)):
+    if isinstance(exc, KeyError | IndexError | TypeError):
         return "malformed_provider_response"
     if isinstance(exc, ValueError):
         message = str(exc)

@@ -26,11 +26,13 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkspacePreference
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
+from flowweave.modules.users.application.security import user_runtime_project_root
 from flowweave.runtime.base import (
     RuntimeCondenser,
     RuntimeHandle,
@@ -165,11 +167,32 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
     }
 
 
-def _workspace_dict(workspace: AgentWorkspace) -> dict[str, Any]:
+def _workspace_preference(
+    db: Session, workspace: AgentWorkspace, *, create: bool = False
+) -> AgentWorkspacePreference | None:
+    preference = db.scalar(
+        select(AgentWorkspacePreference).where(
+            AgentWorkspacePreference.workspace_id == workspace.id
+        )
+    )
+    if preference is None and create:
+        preference = AgentWorkspacePreference(
+            workspace_id=workspace.id,
+            default_model_provider_id=workspace.default_model_provider_id,
+        )
+        db.add(preference)
+        db.flush()
+    return preference
+
+
+def _workspace_dict(db: Session, workspace: AgentWorkspace) -> dict[str, Any]:
+    preference = _workspace_preference(db, workspace)
     return {
         "id": workspace.id,
         "display_name": workspace.display_name,
-        "default_model_provider_id": workspace.default_model_provider_id,
+        "default_model_provider_id": (
+            preference.default_model_provider_id if preference is not None else None
+        ),
         "desired_state": workspace.desired_state,
         "updated_at": workspace.updated_at.isoformat(),
     }
@@ -365,19 +388,21 @@ def default_workspace(db: Session) -> dict[str, Any]:
     )
     if workspace is None:
         raise DomainError("AGENT_WORKSPACE_NOT_READY", "Agent 工作区正在初始化", 503)
-    return _workspace_dict(workspace)
+    return _workspace_dict(db, workspace)
 
 
 def get_workspace(db: Session, workspace_id: str) -> dict[str, Any]:
-    return _workspace_dict(_workspace(db, workspace_id))
+    return _workspace_dict(db, _workspace(db, workspace_id))
 
 
 def update_workspace_settings(
     db: Session, workspace_id: str, default_model_provider_id: str | None
 ) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
+    preference = _workspace_preference(db, workspace, create=True)
+    assert preference is not None
     if default_model_provider_id is None:
-        workspace.default_model_provider_id = None
+        preference.default_model_provider_id = None
     else:
         if not has_connected_default_model(db, default_model_provider_id):
             raise DomainError(
@@ -385,10 +410,10 @@ def update_workspace_settings(
                 "默认模型必须是已测试成功且存在启用默认模型的配置",
                 409,
             )
-        workspace.default_model_provider_id = default_model_provider_id
-    workspace.updated_at = now()
+        preference.default_model_provider_id = default_model_provider_id
+    preference.updated_at = now()
     db.flush()
-    return _workspace_dict(workspace)
+    return _workspace_dict(db, workspace)
 
 
 def runtime_status(db: Session, workspace_id: str) -> dict[str, Any]:
@@ -687,7 +712,7 @@ def create_conversation(
         reasoning_effort=provider.reasoning_effort,
         streaming_callback_ready=True,
         openhands_conversation_id=conversation_id,
-        working_directory=_PROJECT_ROOT,
+        working_directory=user_runtime_project_root(),
         display_title=title.strip() if title and title.strip() else None,
         create_idempotency_key=idempotency_key,
     )
@@ -708,7 +733,9 @@ def create_conversation(
     )
     db.add(command)
     try:
-        _create_native_conversation(db, workspace, binding, provider, _PROJECT_ROOT)
+        _create_native_conversation(
+            db, workspace, binding, provider, user_runtime_project_root()
+        )
     except DomainError as exc:
         binding.lifecycle = "FAILED"
         command.state = "FAILED"

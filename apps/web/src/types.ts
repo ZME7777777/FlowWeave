@@ -580,3 +580,9 @@ export interface FlowRunRuntimeOverview {
     physical_delete_operation: 'DELETE_FLOW_RUN';
   };
 }
+export interface AuthUser {
+  id: string;
+  username: string;
+  role: 'SUPER_ADMIN' | 'USER';
+  is_super_admin: boolean;
+}

@@ -262,6 +262,27 @@ def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_set
     assert runtime._request_workspace_path(request) == "/runtime/workspace/project/backend"
 
 
+@pytest.mark.parametrize(
+    "working_directory",
+    [
+        "/runtime/workspace/project/nodes/asset/sessions/node-run/1",
+        "/runtime/workspace/nodes/asset/sessions/node-run/1",
+    ],
+)
+def test_openhands_preserves_attempt_runtime_working_directory(
+    openhands_settings, working_directory: str
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    request = replace(
+        _request(),
+        runtime_working_directory=working_directory,
+        runtime_sandbox_id="attempt-runtime-1",
+        runtime_resource_name="attempt-runtime",
+    )
+
+    assert runtime._request_workspace_path(request) == working_directory
+
+
 def _state(**values: object) -> dict[str, object]:
     return {
         "id": "10000000-0000-4000-8000-000000000002",

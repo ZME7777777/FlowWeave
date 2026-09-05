@@ -49,13 +49,31 @@ def bind_openhands_conversation(
             409,
             {"flow_run_id": flow_run_id},
         )
-    # A native Conversation is only bound after its Attempt Runtime is active.
-    # ``allow_inactive_session`` is retained for API compatibility but cannot
-    # weaken this ownership boundary.
-    del allow_inactive_session
-    runtime_session_id = sandboxes.active_node_attempt_runtime_connection(
-        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
-    ).runtime_session_id
+    reserved = db.scalar(
+        select(AgentConversationBinding)
+        .where(
+            AgentConversationBinding.host_kind == _FLOW_NODE,
+            AgentConversationBinding.flow_run_id == flow_run_id,
+            AgentConversationBinding.node_attempt_id == node_attempt_id,
+            AgentConversationBinding.openhands_conversation_id == openhands_conversation_id,
+        )
+        .with_for_update()
+    )
+    if allow_inactive_session:
+        # MockRuntime has no physical generation. It may activate only the
+        # reservation frozen for this exact Attempt and Conversation.
+        if reserved is None:
+            raise DomainError(
+                "RUNTIME_CONVERSATION_UNBOUND",
+                "The mock Conversation has no frozen Attempt reservation",
+                409,
+                {"flow_run_id": flow_run_id, "node_attempt_id": node_attempt_id},
+            )
+        runtime_session_id = reserved.runtime_session_id
+    else:
+        runtime_session_id = sandboxes.active_node_runtime_connection(
+            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+        ).runtime_session_id
     item = db.scalar(
         select(AgentConversationBinding)
         .where(
@@ -88,7 +106,11 @@ def bind_openhands_conversation(
         )
         db.add(item)
     else:
-        if item.host_kind != _FLOW_NODE or item.flow_run_id != flow_run_id:
+        if (
+            item.host_kind != _FLOW_NODE
+            or item.flow_run_id != flow_run_id
+            or item.node_attempt_id != node_attempt_id
+        ):
             raise DomainError(
                 "RUNTIME_CONVERSATION_OWNER_CONFLICT",
                 "The OpenHands Conversation belongs to another FlowRun",
@@ -186,7 +208,7 @@ def active_runtime_handle(
             409,
             {"flow_run_id": flow_run_id, "binding_id": binding.id},
         )
-    connection = sandboxes.active_node_attempt_runtime_connection(
+    connection = sandboxes.active_node_runtime_connection(
         db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
     )
     if connection.runtime_session_id != locator.runtime_session_id:

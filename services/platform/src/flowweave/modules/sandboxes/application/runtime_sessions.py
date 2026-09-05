@@ -7,6 +7,9 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.sandboxes.application.runtime_allocation import (
+    node_attempt_workspace_context,
+)
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntime,
@@ -81,7 +84,12 @@ def ensure_flow_run_runtime_session(
             {"flow_run_id": flow_run_id},
         )
     item = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+        .with_for_update()
     )
     if item is None:
         item = FlowRunRuntime(
@@ -473,7 +481,12 @@ def acquire_runtime_replacement_lease(
         raise ValueError("Invalid Runtime replacement lease")
     now = datetime.now(UTC)
     session = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+        .with_for_update()
     )
     if session is None or session.active_generation is None:
         raise DomainError(
@@ -892,6 +905,7 @@ def active_flow_run_runtime_connection(db: Session, *, flow_run_id: str) -> Acti
         .join(ManagedSandbox, ManagedSandbox.id == RuntimeGeneration.managed_runtime_id)
         .where(
             FlowRunRuntime.flow_run_id == owner_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
             FlowRunRuntime.status == "ACTIVE",
             RuntimeGeneration.state == "READY",
             ManagedSandbox.kind == "AGENT_RUNTIME",
@@ -962,11 +976,31 @@ def active_node_attempt_runtime_connection(
     )
 
 
+def active_node_runtime_connection(
+    db: Session, *, flow_run_id: str, node_attempt_id: str
+) -> ActiveRuntimeConnection:
+    """Route new Attempt-owned workspaces and untouched legacy Attempts correctly."""
+
+    context = node_attempt_workspace_context(
+        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+    )
+    if context.attempt_owned:
+        return active_node_attempt_runtime_connection(
+            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+        )
+    return active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
+
+
 def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
     """Remove logical Runtime records after all physical generations are gone."""
 
     session = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+        .with_for_update()
     )
     if session is None:
         return
@@ -1099,6 +1133,7 @@ __all__ = (
     "acquire_runtime_replacement_lease",
     "active_flow_run_runtime_connection",
     "active_node_attempt_runtime_connection",
+    "active_node_runtime_connection",
     "activate_runtime_generation",
     "activate_runtime_replacement",
     "attach_runtime_replacement_generation",

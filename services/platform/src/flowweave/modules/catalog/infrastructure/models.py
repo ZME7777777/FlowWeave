@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     JSON,
@@ -36,9 +36,10 @@ class NodeAsset(Base):
     __tablename__ = "node_assets"
     __table_args__ = (
         UniqueConstraint(
+            "owner_user_id",
             "directory_id",
             "name",
-            name="uq_asset_directory_name",
+            name="uq_asset_owner_directory_name",
             postgresql_nulls_not_distinct=True,
         ),
     )
@@ -125,6 +126,8 @@ class CapabilityBlob(Base):
     """Content-addressed immutable bytes referenced by published versions."""
 
     __tablename__ = "capability_blobs"
+    __tenant_scoped__: ClassVar[bool] = False
+    owner_user_id: ClassVar[None] = None
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -140,7 +143,10 @@ class CapabilityPackage(Base):
     __tablename__ = "capability_packages"
     __table_args__ = (
         UniqueConstraint(
-            "capability_type", "capability_key", name="uq_capability_package_identity"
+            "owner_user_id",
+            "capability_type",
+            "capability_key",
+            name="uq_capability_package_owner_identity",
         ),
     )
 
@@ -160,6 +166,9 @@ class CapabilityVersion(Base):
     __table_args__ = (
         UniqueConstraint("package_id", "version_no", name="uq_capability_version_number"),
         UniqueConstraint(
+            "owner_user_id", "digest", name="uq_capability_version_owner_digest"
+        ),
+        UniqueConstraint(
             "source_import_id",
             "source_position",
             name="uq_capability_version_import_position",
@@ -172,7 +181,7 @@ class CapabilityVersion(Base):
     package_id: Mapped[str] = mapped_column(String(36), index=True)
     blob_id: Mapped[str] = mapped_column(String(36), index=True)
     version_no: Mapped[int] = mapped_column(Integer)
-    digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    digest: Mapped[str] = mapped_column(String(64), index=True)
     normalized_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_filename: Mapped[str] = mapped_column(String(255))
     source_import_id: Mapped[str | None] = mapped_column(String(36), index=True)
@@ -337,12 +346,13 @@ class PluginSourceResolution(Base):
         ),
         CheckConstraint("state_version > 0", name="ck_plugin_source_resolution_version_positive"),
         UniqueConstraint(
+            "owner_user_id",
             "source_kind",
             "source_url",
             "requested_commit",
             "repo_path",
             "marketplace_plugin_name",
-            name="uq_plugin_source_resolution_identity",
+            name="uq_plugin_source_resolution_owner_identity",
         ),
     )
 
@@ -378,12 +388,19 @@ class MemorySource(Base):
     __table_args__ = (
         CheckConstraint("scope IN ('USER', 'PROJECT')", name="ck_memory_source_scope"),
         UniqueConstraint(
-            "scope", "scope_key", "source_key", name="uq_memory_source_scope_identity"
+            "owner_user_id",
+            "scope",
+            "scope_key",
+            "source_key",
+            name="uq_memory_source_owner_scope_identity",
+        ),
+        UniqueConstraint(
+            "owner_user_id", "source_key", name="uq_memory_source_owner_key"
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    source_key: Mapped[str] = mapped_column(String(200), unique=True)
+    source_key: Mapped[str] = mapped_column(String(200))
     display_name: Mapped[str] = mapped_column(String(200))
     owner_id: Mapped[str] = mapped_column(String(200), index=True)
     scope: Mapped[str] = mapped_column(String(20), index=True)
@@ -480,9 +497,14 @@ class MemorySourceVersionReference(Base):
 
 class CapabilityCollection(Base):
     __tablename__ = "capability_collections"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "name", name="uq_capability_collection_owner_name"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    name: Mapped[str] = mapped_column(String(200), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
     category: Mapped[str] = mapped_column(String(120), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     row_version: Mapped[int] = mapped_column(Integer, default=1)

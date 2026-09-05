@@ -15,6 +15,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkspacePreference
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.runtime.base import (
     RuntimeAgentContext,
@@ -109,7 +110,18 @@ def resolve_session_config(
     """Resolve the one default Agent configuration used by every host."""
 
     workspace = default_workspace(db)
-    provider_id = model_provider_id or (workspace.default_model_provider_id if workspace else None)
+    preference = (
+        db.scalar(
+            select(AgentWorkspacePreference).where(
+                AgentWorkspacePreference.workspace_id == workspace.id
+            )
+        )
+        if workspace is not None
+        else None
+    )
+    provider_id = model_provider_id or (
+        preference.default_model_provider_id if preference is not None else None
+    )
     selected_model: str | None
     selected_effort: str | None
     if provider_id:
@@ -218,7 +230,12 @@ def reserve_flow_node_binding(
         )
     )
     if existing is not None:
-        if existing.host_kind != "FLOW_NODE" or existing.flow_run_id != flow_run_id:
+        if (
+            existing.host_kind != "FLOW_NODE"
+            or existing.flow_run_id != flow_run_id
+            or existing.node_attempt_id != node_attempt_id
+            or existing.runtime_session_id != runtime_session_id
+        ):
             raise DomainError(
                 "AGENT_CONVERSATION_COMMAND_CONFLICT",
                 "会话创建请求冲突",
@@ -232,7 +249,7 @@ def reserve_flow_node_binding(
         runtime_session_id=runtime_session_id,
         host_kind="FLOW_NODE",
         host_id=flow_run_id,
-        conversation_scope_id=flow_run_id,
+        conversation_scope_id=node_attempt_id,
         flow_run_id=flow_run_id,
         node_run_id=node_run_id,
         node_attempt_id=node_attempt_id,

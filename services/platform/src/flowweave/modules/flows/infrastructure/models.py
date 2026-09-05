@@ -20,9 +20,12 @@ from flowweave.shared.database import Base, now, uid
 
 class FlowDefinition(Base):
     __tablename__ = "flow_definitions"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "name", name="uq_flow_definition_owner_name"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    name: Mapped[str] = mapped_column(String(200), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
     default_entry_key: Mapped[str | None] = mapped_column(String(100))
     row_version: Mapped[int] = mapped_column(Integer, default=1)

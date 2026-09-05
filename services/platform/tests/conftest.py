@@ -124,6 +124,8 @@ def settings(test_database_url: str, tmp_path_factory: pytest.TempPathFactory) -
     return Settings(
         database_url=test_database_url,
         credentials_master_key="Qy0d9T_0Y4GxN31PqYqzRo6YD_s-hnbJFRb_v8xQwFc=",
+        flowweave_admin_password="flowweave-test-password",
+        flowweave_user_password="user-test-password",
         runtime_adapter="mock",
         execution_mode="inline",
         seed_demo=False,
@@ -200,6 +202,11 @@ def database(
 @pytest.fixture
 def client(settings: Settings, sync_session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as value:
+        logged_in = value.post(
+            "/api/v1/auth/login",
+            json={"username": "flowweave", "password": settings.flowweave_admin_password},
+        )
+        assert logged_in.status_code == 200, logged_in.text
         value.environment_version_id = _seed_ready_environment(sync_session_factory)  # type: ignore[attr-defined]
         yield value
 
@@ -209,6 +216,14 @@ def worker_client(
     worker_settings: Settings, sync_session_factory: sessionmaker[Session]
 ) -> Iterator[TestClient]:
     with TestClient(create_app(worker_settings)) as value:
+        logged_in = value.post(
+            "/api/v1/auth/login",
+            json={
+                "username": "flowweave",
+                "password": worker_settings.flowweave_admin_password,
+            },
+        )
+        assert logged_in.status_code == 200, logged_in.text
         value.environment_version_id = _seed_ready_environment(sync_session_factory)  # type: ignore[attr-defined]
         yield value
 
@@ -218,6 +233,31 @@ def public_client(
     settings: Settings, sync_session_factory: sessionmaker[Session]
 ) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as value:
+        logged_in = value.post(
+            "/api/v1/auth/login",
+            json={"username": "flowweave", "password": settings.flowweave_admin_password},
+        )
+        assert logged_in.status_code == 200, logged_in.text
+        value.environment_version_id = _seed_ready_environment(sync_session_factory)  # type: ignore[attr-defined]
+        yield value
+
+
+@pytest.fixture
+def anonymous_client(settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(settings)) as value:
+        yield value
+
+
+@pytest.fixture
+def user_client(
+    settings: Settings, sync_session_factory: sessionmaker[Session]
+) -> Iterator[TestClient]:
+    with TestClient(create_app(settings)) as value:
+        logged_in = value.post(
+            "/api/v1/auth/login",
+            json={"username": "user", "password": settings.flowweave_user_password},
+        )
+        assert logged_in.status_code == 200, logged_in.text
         value.environment_version_id = _seed_ready_environment(sync_session_factory)  # type: ignore[attr-defined]
         yield value
 

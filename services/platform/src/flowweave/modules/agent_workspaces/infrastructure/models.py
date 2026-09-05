@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import ClassVar
 
 from sqlalchemy import (
     CheckConstraint,
@@ -26,6 +27,8 @@ class AgentWorkspace(Base):
     """A durable, Flow-independent workspace for direct Agent conversations."""
 
     __tablename__ = "agent_workspaces"
+    __tenant_scoped__: ClassVar[bool] = False
+    owner_user_id: ClassVar[None] = None
     __table_args__ = (
         CheckConstraint(
             "desired_state IN ('RUNNING', 'MAINTENANCE')",
@@ -44,6 +47,8 @@ class AgentWorkspace(Base):
 
 class AgentWorkspaceRuntimeSecretReference(Base):
     __tablename__ = "agent_workspace_runtime_secret_references"
+    __tenant_scoped__: ClassVar[bool] = False
+    owner_user_id: ClassVar[None] = None
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     workspace_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
@@ -54,6 +59,8 @@ class AgentWorkspaceRuntimeSecretReference(Base):
 
 class AgentWorkspaceRuntimeAllocation(Base):
     __tablename__ = "agent_workspace_runtime_allocations"
+    __tenant_scoped__: ClassVar[bool] = False
+    owner_user_id: ClassVar[None] = None
     __table_args__ = (
         CheckConstraint(
             "relative_root LIKE '.agent-workspaces/%'",
@@ -74,6 +81,8 @@ class AgentWorkspaceRuntimeAllocation(Base):
 
 class AgentWorkspaceRuntime(Base):
     __tablename__ = "agent_workspace_runtimes"
+    __tenant_scoped__: ClassVar[bool] = False
+    owner_user_id: ClassVar[None] = None
     __table_args__ = (
         CheckConstraint(
             "active_generation IS NULL OR active_generation >= 1",
@@ -108,6 +117,8 @@ class AgentWorkspaceRuntime(Base):
 
 class AgentWorkspaceRuntimeGeneration(Base):
     __tablename__ = "agent_workspace_runtime_generations"
+    __tenant_scoped__: ClassVar[bool] = False
+    owner_user_id: ClassVar[None] = None
     __table_args__ = (
         UniqueConstraint(
             "runtime_session_id", "generation", name="uq_agent_workspace_runtime_generation"
@@ -139,13 +150,33 @@ class AgentWorkspaceRuntimeGeneration(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class AgentWorkspacePreference(Base):
+    """Per-user configuration for the shared default Agent Runtime host."""
+
+    __tablename__ = "agent_workspace_preferences"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "workspace_id", name="uq_agent_workspace_preference_owner"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    default_model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class AgentWorkDirectory(Base):
     """A named product grouping over one or more project-root subdirectories."""
 
     __tablename__ = "agent_work_directories"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id", "display_name", name="uq_agent_work_directory_workspace_name"
+            "owner_user_id",
+            "workspace_id",
+            "display_name",
+            name="uq_agent_work_directory_owner_workspace_name",
         ),
         UniqueConstraint(
             "flow_run_id",
@@ -219,9 +250,17 @@ class AgentWorkspaceCapability(Base):
     __tablename__ = "agent_workspace_capabilities"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id", "capability_version_id", name="uq_agent_workspace_capability"
+            "owner_user_id",
+            "workspace_id",
+            "capability_version_id",
+            name="uq_agent_workspace_capability_owner",
         ),
-        UniqueConstraint("workspace_id", "position", name="uq_agent_workspace_capability_position"),
+        UniqueConstraint(
+            "owner_user_id",
+            "workspace_id",
+            "position",
+            name="uq_agent_workspace_capability_owner_position",
+        ),
         CheckConstraint(
             "capability_type IN ('SKILL', 'MCP', 'PLUGIN')",
             name="ck_agent_workspace_capability_type",
@@ -241,6 +280,7 @@ class AgentWorkspaceCapability(Base):
 
 __all__ = (
     "AgentWorkspace",
+    "AgentWorkspacePreference",
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentWorkspaceCapability",

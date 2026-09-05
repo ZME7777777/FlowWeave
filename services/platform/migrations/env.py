@@ -14,6 +14,7 @@ from flowweave.modules.model_providers.infrastructure import models as provider_
 from flowweave.modules.runs.infrastructure import models as run_models  # noqa: F401
 from flowweave.modules.sandboxes.infrastructure import models as sandbox_models  # noqa: F401
 from flowweave.modules.tasks.infrastructure import models as task_models  # noqa: F401
+from flowweave.modules.users.infrastructure import models as user_models  # noqa: F401
 from flowweave.shared.database import Base
 
 config = context.config

@@ -18,7 +18,10 @@ from flowweave.modules.environments.public import (
     expire_setup_sessions,
     recover_environment_cleanup_tasks,
 )
-from flowweave.modules.orchestration.public import recover_runtime_deliveries, scan_due_flow_run_schedules
+from flowweave.modules.orchestration.public import (
+    recover_runtime_deliveries,
+    scan_due_flow_run_schedules,
+)
 from flowweave.modules.sandboxes.public import reconcile_managed_sandboxes
 from flowweave.modules.tasks.application.handlers import handle, record_terminal_failure
 from flowweave.modules.tasks.application.service import (
@@ -29,6 +32,7 @@ from flowweave.modules.tasks.application.service import (
     recover_expired,
     succeed,
 )
+from flowweave.modules.users.application.security import tenant_bypass, tenant_user
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.shared.application.transactions import (
     mark_uow_owned,
@@ -134,30 +138,37 @@ class TaskWorker:
             self._contexts()
         )
         with settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox:
-            async with self.container.database.session() as session:
-                try:
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), recover_expired(db, commit=False))[1]
-                    )
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
-                    )
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
-                    )
-                    await session.run_sync(
-                        lambda db: (
-                            mark_uow_owned(db),
-                            recover_environment_cleanup_tasks(db, commit=False),
-                        )[1]
-                    )
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), ensure_default_agent_workspace(db))[1]
-                    )
-                    await session.commit()
-                except BaseException:
-                    await session.rollback()
-                    raise
+            with tenant_bypass():
+                async with self.container.database.session() as session:
+                    try:
+                        await session.run_sync(
+                            lambda db: (
+                                mark_uow_owned(db),
+                                recover_expired(db, commit=False),
+                            )[1]
+                        )
+                        await session.run_sync(
+                            lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
+                        )
+                        await session.run_sync(
+                            lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
+                        )
+                        await session.run_sync(
+                            lambda db: (
+                                mark_uow_owned(db),
+                                recover_environment_cleanup_tasks(db, commit=False),
+                            )[1]
+                        )
+                        await session.run_sync(
+                            lambda db: (
+                                mark_uow_owned(db),
+                                ensure_default_agent_workspace(db),
+                            )[1]
+                        )
+                        await session.commit()
+                    except BaseException:
+                        await session.rollback()
+                        raise
 
     async def run_once(self) -> bool:
         settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (
@@ -165,14 +176,15 @@ class TaskWorker:
         )
         with settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox:
             async with self.container.database.session() as session:
-                claimed = await session.run_sync(
-                    lambda db: claim(
-                        db,
-                        self.owner,
-                        lease_seconds=self.container.settings.task_lease_seconds,
-                        commit=False,
+                with tenant_bypass():
+                    claimed = await session.run_sync(
+                        lambda db: claim(
+                            db,
+                            self.owner,
+                            lease_seconds=self.container.settings.task_lease_seconds,
+                            commit=False,
+                        )
                     )
-                )
                 if claimed is None:
                     await session.rollback()
                     return False
@@ -186,57 +198,66 @@ class TaskWorker:
                 lease_seconds=self.container.settings.task_lease_seconds,
             )
             renewer.start()
-            async with self.container.database.session() as session:
-                try:
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), handle(db, task, lease))[1]
-                    )
-                except Exception as exc:
-                    error = (
-                        f"{exc.code}: {exc.message}" if isinstance(exc, DomainError) else str(exc)
-                    )
-                    renewer.stop()
-                    await session.rollback()
-                    await session.run_sync(run_rollback_actions)
-                    if not renewer.lost.is_set():
-                        permanent = bool(
-                            isinstance(exc, DomainError)
-                            and (
-                                (
-                                    task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
-                                    and exc.code
-                                    in {
-                                        "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
-                                        "ENVIRONMENT_IMAGE_TAG_CONFLICT",
-                                    }
-                                )
-                                or (
-                                    task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
-                                    and exc.code == "SANDBOX_RESOURCE_CONFLICT"
+            with tenant_user(task.owner_user_id):
+                async with self.container.database.session() as session:
+                    try:
+                        await session.run_sync(
+                            lambda db: (mark_uow_owned(db), handle(db, task, lease))[1]
+                        )
+                    except Exception as exc:
+                        error = (
+                            f"{exc.code}: {exc.message}"
+                            if isinstance(exc, DomainError)
+                            else str(exc)
+                        )
+                        renewer.stop()
+                        await session.rollback()
+                        await session.run_sync(run_rollback_actions)
+                        if not renewer.lost.is_set():
+                            permanent = bool(
+                                isinstance(exc, DomainError)
+                                and (
+                                    (
+                                        task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
+                                        and exc.code
+                                        in {
+                                            "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+                                            "ENVIRONMENT_IMAGE_TAG_CONFLICT",
+                                        }
+                                    )
+                                    or (
+                                        task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
+                                        and exc.code == "SANDBOX_RESOURCE_CONFLICT"
+                                    )
                                 )
                             )
-                        )
-                        failed = await session.run_sync(
-                            lambda db: fail(db, lease, error, permanent=permanent, commit=False)
-                        )
-                        if failed:
-                            await session.run_sync(
-                                lambda db: record_terminal_failure(db, lease.task_id, error)
+                            failed = await session.run_sync(
+                                lambda db: fail(
+                                    db, lease, error, permanent=permanent, commit=False
+                                )
                             )
+                            if failed:
+                                await session.run_sync(
+                                    lambda db: record_terminal_failure(
+                                        db, lease.task_id, error
+                                    )
+                                )
+                                await session.commit()
+                            else:
+                                await session.rollback()
+                    else:
+                        renewer.stop()
+                        if renewer.lost.is_set():
+                            await session.rollback()
+                            await session.run_sync(run_rollback_actions)
+                        elif await session.run_sync(
+                            lambda db: succeed(db, lease, commit=False)
+                        ):
                             await session.commit()
+                            await session.run_sync(run_commit_actions)
                         else:
                             await session.rollback()
-                else:
-                    renewer.stop()
-                    if renewer.lost.is_set():
-                        await session.rollback()
-                        await session.run_sync(run_rollback_actions)
-                    elif await session.run_sync(lambda db: succeed(db, lease, commit=False)):
-                        await session.commit()
-                        await session.run_sync(run_commit_actions)
-                    else:
-                        await session.rollback()
-                        await session.run_sync(run_rollback_actions)
+                            await session.run_sync(run_rollback_actions)
             return True
 
     async def run_maintenance(self) -> int:
@@ -244,41 +265,45 @@ class TaskWorker:
             self._contexts()
         )
         with settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox:
-            async with self.container.database.session() as session:
-                try:
-                    # A process can restart in the narrow interval before a
-                    # claimed task's lease expires. Startup recovery then sees
-                    # it as live, but without this recurring sweep it remains
-                    # RUNNING forever once its lease elapses.
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), recover_expired(db, commit=False))[1]
-                    )
-                    expired = await session.run_sync(
-                        lambda db: (
-                            mark_uow_owned(db),
-                            expire_setup_sessions(db, commit=False),
-                        )[1]
-                    )
-                    await session.run_sync(
-                        lambda db: recover_environment_cleanup_tasks(db, commit=False)
-                    )
-                    await session.run_sync(
-                        lambda db: recover_default_agent_workspace_runtime_task(db)
-                    )
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
-                    )
-                    await session.run_sync(
-                        lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
-                    )
-                    # Publish maintenance intent before the reconciler opens its
-                    # independent short control transactions.
-                    await session.commit()
-                    await session.run_sync(reconcile_managed_sandboxes)
-                    return expired
-                except BaseException:
-                    await session.rollback()
-                    raise
+            with tenant_bypass():
+                async with self.container.database.session() as session:
+                    try:
+                        # A process can restart in the narrow interval before a
+                        # claimed task's lease expires. Startup recovery then sees
+                        # it as live, but without this recurring sweep it remains
+                        # RUNNING forever once its lease elapses.
+                        await session.run_sync(
+                            lambda db: (
+                                mark_uow_owned(db),
+                                recover_expired(db, commit=False),
+                            )[1]
+                        )
+                        expired = await session.run_sync(
+                            lambda db: (
+                                mark_uow_owned(db),
+                                expire_setup_sessions(db, commit=False),
+                            )[1]
+                        )
+                        await session.run_sync(
+                            lambda db: recover_environment_cleanup_tasks(db, commit=False)
+                        )
+                        await session.run_sync(
+                            lambda db: recover_default_agent_workspace_runtime_task(db)
+                        )
+                        await session.run_sync(
+                            lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
+                        )
+                        await session.run_sync(
+                            lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
+                        )
+                        # Publish maintenance intent before the reconciler opens its
+                        # independent short control transactions.
+                        await session.commit()
+                        await session.run_sync(reconcile_managed_sandboxes)
+                        return expired
+                    except BaseException:
+                        await session.rollback()
+                        raise
 
     def _run_sync(self, operation: Coroutine[Any, Any, Any]) -> Any:
         if self._sync_loop is None:

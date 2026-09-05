@@ -36,20 +36,19 @@ AgentWorkDirectoryPath = agent_workspace_host.AgentWorkDirectoryPath
 AgentWorkDirectoryVersion = agent_workspace_host.AgentWorkDirectoryVersion
 
 
-def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
-    host = resolve_flow_node_session_host(
+def _authorize_entry(
+    db: Session, *, flow_run_id: str, attempt_id: str
+) -> tuple[Path, PurePosixPath, Path, PurePosixPath]:
+    resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         require_start_permission=False,
     )
-    # The stable in-container project path belongs to this Attempt Runtime
-    # allocation. Never resolve it through the FlowRun allocation: that would
-    # expose files produced by another Attempt.
-    del host
-    root = sandboxes.node_attempt_workspace_project_path(
+    workspace = sandboxes.node_attempt_workspace_context(
         db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
     )
+    root = workspace.host_working_directory
     try:
         metadata = root.lstat()
         resolved = root.resolve(strict=True)
@@ -59,7 +58,12 @@ def _authorize_entry(db: Session, *, flow_run_id: str, attempt_id: str) -> Path:
         ) from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise DomainError("FLOW_RUN_WORKSPACE_INVALID", "FlowRun 工作区不是普通目录", 409)
-    return resolved
+    return (
+        resolved,
+        workspace.runtime_working_directory,
+        workspace.host_mount_root,
+        workspace.runtime_mount_root,
+    )
 
 
 def _version_paths(db: Session, version_id: str) -> tuple[str, ...]:
@@ -75,6 +79,40 @@ def _version_paths(db: Session, version_id: str) -> tuple[str, ...]:
     return paths
 
 
+def _binding_working_directory(
+    runtime_root: PurePosixPath, frozen: str | None
+) -> str:
+    """Keep a frozen cwd only when it still belongs to this Attempt."""
+
+    if frozen:
+        parsed = PurePosixPath(frozen)
+        if (
+            parsed.is_absolute()
+            and parsed.is_relative_to(runtime_root)
+            and parsed.as_posix() == frozen
+            and not any(part in {"", ".", ".."} for part in parsed.parts)
+        ):
+            return frozen
+    return runtime_root.as_posix()
+
+
+def _version_working_directory(
+    runtime_root: PurePosixPath, working_path: str
+) -> str:
+    if working_path == ".":
+        return runtime_root.as_posix()
+    parsed = PurePosixPath(working_path)
+    if (
+        parsed.is_absolute()
+        or parsed.as_posix() != working_path
+        or any(part in {"", ".", ".."} for part in parsed.parts)
+    ):
+        raise DomainError(
+            "AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409
+        )
+    return str(runtime_root.joinpath(*parsed.parts))
+
+
 def _scope(
     db: Session,
     *,
@@ -82,6 +120,7 @@ def _scope(
     attempt_id: str,
     binding_id: str | None,
     work_directory_id: str | None,
+    runtime_root: PurePosixPath,
 ) -> tuple[str, dict[str, Any] | None, tuple[str, ...]]:
     host = resolve_flow_node_session_host(
         db,
@@ -100,7 +139,9 @@ def _scope(
             binding_id=binding_id,
         )
         if binding.work_directory_version_id is None:
-            working_directory = binding.working_directory or attempt_root
+            working_directory = _binding_working_directory(
+                runtime_root, binding.working_directory or attempt_root
+            )
             return working_directory, None, (working_directory,)
         version = db.get(AgentWorkDirectoryVersion, binding.work_directory_version_id)
         directory = (
@@ -114,6 +155,9 @@ def _scope(
         ):
             raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
         paths = _version_paths(db, version.id)
+        working_directory = _version_working_directory(
+            runtime_root, version.working_path
+        )
         details = {
             "id": directory.id,
             "display_name": directory.display_name,
@@ -122,39 +166,43 @@ def _scope(
                 "id": version.id,
                 "version": version.version,
                 "selected_paths": list(paths),
-                "working_directory": binding.working_directory or str(_RUNTIME_PROJECT),
+                "working_directory": working_directory,
             },
         }
-        roots = tuple(str(_RUNTIME_PROJECT / path) for path in paths)
-        return binding.working_directory or str(_RUNTIME_PROJECT), details, roots
+        roots = tuple(str(runtime_root / path) for path in paths)
+        return working_directory, details, roots
     if work_directory_id:
         directory = agent_workspace_host.get_flow_run_work_directory(
             db, flow_run_id, attempt_id, work_directory_id
         )
         paths = tuple(directory["current_version"]["selected_paths"])
-        roots = tuple(str(_RUNTIME_PROJECT / path) for path in paths)
+        roots = tuple(str(runtime_root / path) for path in paths)
         return directory["current_version"]["working_directory"], directory, roots
-    return str(_RUNTIME_PROJECT), None, (str(_RUNTIME_PROJECT),)
+    return str(runtime_root), None, (str(runtime_root),)
 
 
-def _runtime_path(project_root: Path, candidate: Path) -> str:
+def _runtime_path(
+    project_root: Path, runtime_root: PurePosixPath, candidate: Path
+) -> str:
     relative = candidate.relative_to(project_root)
-    return str(_RUNTIME_PROJECT.joinpath(*relative.parts))
+    return str(runtime_root.joinpath(*relative.parts))
 
 
-def _validate_scope_roots(project_root: Path, roots: tuple[str, ...]) -> None:
+def _validate_scope_roots(
+    project_root: Path, runtime_root: PurePosixPath, roots: tuple[str, ...]
+) -> None:
     """Revalidate frozen directory paths against the mutable project tree.
 
     A directory was safe when its immutable version was created, but a later
     filesystem mutation must not turn it into a symlink to another scope.
     """
 
-    for runtime_root in roots:
-        parsed = PurePosixPath(runtime_root)
+    for raw_root in roots:
+        parsed = PurePosixPath(raw_root)
         if (
             not parsed.is_absolute()
-            or not parsed.is_relative_to(_RUNTIME_PROJECT)
-            or parsed.as_posix() != runtime_root
+            or not parsed.is_relative_to(runtime_root)
+            or parsed.as_posix() != raw_root
             or any(part in {"", ".", ".."} for part in parsed.parts)
         ):
             raise DomainError(
@@ -163,7 +211,7 @@ def _validate_scope_roots(project_root: Path, roots: tuple[str, ...]) -> None:
                 409,
             )
         current = project_root
-        for part in parsed.relative_to(_RUNTIME_PROJECT).parts:
+        for part in parsed.relative_to(runtime_root).parts:
             current = current / part
             try:
                 metadata = current.lstat()
@@ -181,13 +229,15 @@ def _validate_scope_roots(project_root: Path, roots: tuple[str, ...]) -> None:
                 )
 
 
-def _entries(project_root: Path, roots: tuple[str, ...]) -> list[dict[str, Any]]:
+def _entries(
+    project_root: Path, runtime_root: PurePosixPath, roots: tuple[str, ...]
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for runtime_root in roots:
-        relative = PurePosixPath(runtime_root).relative_to(_RUNTIME_PROJECT)
+    for raw_root in roots:
+        relative = PurePosixPath(raw_root).relative_to(runtime_root)
         host_root = project_root.joinpath(*relative.parts)
         if host_root != project_root:
-            items.append({"path": runtime_root, "kind": "directory", "size": 0})
+            items.append({"path": raw_root, "kind": "directory", "size": 0})
         for current, directories, files in os.walk(host_root, followlinks=False):
             current_path = Path(current)
             directories[:] = sorted(
@@ -208,7 +258,7 @@ def _entries(project_root: Path, roots: tuple[str, ...]) -> list[dict[str, Any]]
                     continue
                 items.append(
                     {
-                        "path": _runtime_path(project_root, candidate),
+                        "path": _runtime_path(project_root, runtime_root, candidate),
                         "kind": kind,
                         "size": metadata.st_size if kind == "file" else 0,
                     }
@@ -218,17 +268,19 @@ def _entries(project_root: Path, roots: tuple[str, ...]) -> list[dict[str, Any]]
     return items
 
 
-def _host_file(project_root: Path, path: str, roots: tuple[str, ...]) -> Path:
+def _host_file(
+    project_root: Path, runtime_root: PurePosixPath, path: str, roots: tuple[str, ...]
+) -> Path:
     parsed = PurePosixPath(path)
     if (
         not parsed.is_absolute()
-        or not parsed.is_relative_to(_RUNTIME_PROJECT)
+        or not parsed.is_relative_to(runtime_root)
         or parsed.as_posix() != path
         or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
         or not any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
     ):
         raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "文件路径不在当前工作区范围内", 422)
-    relative = parsed.relative_to(_RUNTIME_PROJECT)
+    relative = parsed.relative_to(runtime_root)
     candidate = project_root.joinpath(*relative.parts)
     try:
         metadata = candidate.lstat()
@@ -238,7 +290,7 @@ def _host_file(project_root: Path, path: str, roots: tuple[str, ...]) -> Path:
     authorized_roots: list[Path] = []
     try:
         for root in roots:
-            root_relative = PurePosixPath(root).relative_to(_RUNTIME_PROJECT)
+            root_relative = PurePosixPath(root).relative_to(runtime_root)
             authorized_roots.append(
                 project_root.joinpath(*root_relative.parts).resolve(strict=True)
             )
@@ -266,15 +318,18 @@ def details(
     binding_id: str | None = None,
     work_directory_id: str | None = None,
 ) -> dict[str, Any]:
-    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    project_root, runtime_root, mount_root, runtime_mount_root = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
     working_directory, directory, roots = _scope(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         binding_id=binding_id,
         work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
     )
-    _validate_scope_roots(project_root, roots)
+    _validate_scope_roots(project_root, runtime_root, roots)
     scope = (
         {"kind": "ROOT", "display_name": "根工作区"}
         if directory is None
@@ -285,17 +340,21 @@ def details(
         }
     )
     return {
-        "root": str(_RUNTIME_PROJECT),
+        "root": str(runtime_root),
         "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
-        "files": _entries(project_root, roots),
+        "files": _entries(project_root, runtime_root, roots),
         "repositories": [],
         # This entry was authorized against an active Attempt Runtime.
         "runtime": {"state": "ACTIVE", "write_available": True},
         "ide": {
             "workspace_path": working_directory,
-            "gateway": ssh_remote_descriptor(project_root, working_directory),
+            "gateway": ssh_remote_descriptor(
+                mount_root,
+                working_directory,
+                runtime_mount_root=runtime_mount_root,
+            ),
         },
     }
 
@@ -309,16 +368,19 @@ def read_file(
     work_directory_id: str | None,
     path: str,
 ) -> tuple[bytes, str, str]:
-    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
     _, _, roots = _scope(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         binding_id=binding_id,
         work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
     )
-    _validate_scope_roots(project_root, roots)
-    candidate = _host_file(project_root, path, roots)
+    _validate_scope_roots(project_root, runtime_root, roots)
+    candidate = _host_file(project_root, runtime_root, path, roots)
     try:
         content = candidate.read_bytes()
     except OSError as exc:
@@ -359,22 +421,25 @@ def delete_entries(
         raise DomainError("FLOW_RUN_WORKSPACE_DELETE_EMPTY", "请选择要删除的文件或目录", 422)
     if len(set(paths)) > 100:
         raise DomainError("FLOW_RUN_WORKSPACE_DELETE_TOO_MANY", "一次最多删除 100 项", 422)
-    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
     _, _, roots = _scope(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         binding_id=binding_id,
         work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
     )
-    _validate_scope_roots(project_root, roots)
+    _validate_scope_roots(project_root, runtime_root, roots)
     candidates: list[tuple[str, Path]] = []
     for path in sorted(set(paths)):
         parsed = PurePosixPath(path)
         if (
             path in roots
             or not parsed.is_absolute()
-            or not parsed.is_relative_to(_RUNTIME_PROJECT)
+            or not parsed.is_relative_to(runtime_root)
             or parsed.as_posix() != path
             or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
             or not any(path.startswith(root.rstrip("/") + "/") for root in roots)
@@ -384,7 +449,7 @@ def delete_entries(
                 "不能删除当前工作区根目录或范围外路径",
                 422,
             )
-        candidate = project_root.joinpath(*parsed.relative_to(_RUNTIME_PROJECT).parts)
+        candidate = project_root.joinpath(*parsed.relative_to(runtime_root).parts)
         try:
             metadata = candidate.lstat()
             resolved = candidate.resolve(strict=True)
@@ -453,7 +518,9 @@ def read_candidate_output_file(
     # The Attempt-local directory is server-side provenance only. FlowRun
     # Agents write their candidate files in the shared project mount, so use
     # the same fully authorized root as the node workspace drawer.
-    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    project_root, _, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
     try:
         root_metadata = project_root.lstat()
         candidate = project_root.joinpath(*relative.parts)
@@ -482,13 +549,19 @@ def read_candidate_output_file(
 def conversation_working_directory(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> str:
-    project_root = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
-    # A node Attempt grants access to a FlowRun session, but must never move
-    # the interactive terminal out of the shared Agent project. Existing
-    # bindings can contain the old nested Attempt path; ignore it here.
-    del binding_id
-    _validate_scope_roots(project_root, (str(_RUNTIME_PROJECT),))
-    return str(_RUNTIME_PROJECT)
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    working_directory, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=None,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return working_directory
 
 
 __all__ = (

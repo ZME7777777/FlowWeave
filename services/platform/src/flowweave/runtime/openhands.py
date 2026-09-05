@@ -861,6 +861,24 @@ class OpenHandsRuntime:
         return str(self.openhands_workspace_root / relative)
 
     def _request_workspace_path(self, request: StartAttemptRequest) -> str:
+        if request.runtime_working_directory:
+            working = PurePosixPath(request.runtime_working_directory)
+            workspace_roots = (
+                PurePosixPath("/runtime/workspace/project"),
+                PurePosixPath("/runtime/workspace/nodes"),
+            )
+            if (
+                not working.is_absolute()
+                or not any(working.is_relative_to(root) for root in workspace_roots)
+                or working.as_posix() != request.runtime_working_directory
+                or any(part in {"", ".", ".."} for part in working.parts)
+            ):
+                raise DomainError(
+                    "RUNTIME_WORKSPACE_INVALID",
+                    "The Attempt Runtime working directory is invalid",
+                    422,
+                )
+            return working.as_posix()
         if request.runtime_resource_name:
             workspace = PurePosixPath(request.workspace_ref)
             project_root = PurePosixPath("/runtime/workspace/project")

@@ -7,6 +7,7 @@ import httpx
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.runs.infrastructure.event_listener import RunEventListener
+from flowweave.modules.users.application.audit import AuditWriter
 from flowweave.runtime.base import RuntimePort
 from flowweave.runtime.mock import MockRuntime
 from flowweave.runtime.openhands import OpenHandsRuntime
@@ -33,8 +34,10 @@ class Container:
     plugin_resolver: PluginResolverPort
     sandbox: SandboxPort
     run_event_listener: RunEventListener
+    audit_writer: AuditWriter
 
     async def close(self) -> None:
+        await self.audit_writer.close()
         await self.http.aclose()
         await self.database.dispose()
 
@@ -47,10 +50,11 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         runtime = MockRuntime()
     else:
         raise ValueError(f"Unsupported runtime adapter: {settings.runtime_adapter}")
+    database = Database(settings)
     return Container(
         settings=settings,
         role=role,
-        database=Database(settings),
+        database=database,
         http=httpx.AsyncClient(timeout=timeout, follow_redirects=False),
         runtime=runtime,
         artifact_store=build_artifact_store(settings),
@@ -58,4 +62,5 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         plugin_resolver=build_plugin_resolver(settings),
         sandbox=build_sandbox(settings),
         run_event_listener=RunEventListener(settings.database_url),
+        audit_writer=AuditWriter(database.sessions),
     )

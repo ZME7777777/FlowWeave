@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID, current_user_id
 from flowweave.shared.models import BackgroundTask, TaskState
 
 
@@ -27,12 +28,17 @@ def enqueue(
     payload: dict[str, Any] | None = None,
     available_at: datetime | None = None,
 ) -> BackgroundTask:
+    owner_user_id = current_user_id(default=FLOWWEAVE_USER_ID)
     existing = db.scalar(
-        select(BackgroundTask).where(BackgroundTask.idempotency_key == idempotency_key)
+        select(BackgroundTask).where(
+            BackgroundTask.owner_user_id == owner_user_id,
+            BackgroundTask.idempotency_key == idempotency_key,
+        )
     )
     if existing:
         return existing
     task = BackgroundTask(
+        owner_user_id=owner_user_id,
         task_type=task_type,
         aggregate_type=aggregate_type,
         aggregate_id=aggregate_id,

@@ -23,6 +23,10 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkDirectoryVersion,
     AgentWorkspace,
 )
+from flowweave.modules.users.application.security import (
+    current_user_id,
+    user_runtime_project_root,
+)
 from flowweave.runtime.base import RuntimeWorkspaceFile
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.settings import get_settings
@@ -92,6 +96,32 @@ def _project_root(db: Session, workspace_id: str) -> Path:
         raise DomainError(
             "AGENT_WORKSPACE_STORAGE_INVALID",
             "工作区持久化目录无效",
+            409,
+        )
+    users_root = resolved / "users"
+    user_root = users_root / current_user_id()
+    try:
+        users_root.mkdir(mode=0o700, exist_ok=True)
+        user_root.mkdir(mode=0o700, exist_ok=True)
+        users_metadata = users_root.lstat()
+        user_metadata = user_root.lstat()
+        resolved_user_root = user_root.resolve(strict=True)
+    except OSError as exc:
+        raise DomainError(
+            "AGENT_WORKSPACE_STORAGE_UNAVAILABLE",
+            "用户工作区持久化目录不可用",
+            503,
+        ) from exc
+    if (
+        stat.S_ISLNK(users_metadata.st_mode)
+        or stat.S_ISLNK(user_metadata.st_mode)
+        or not stat.S_ISDIR(users_metadata.st_mode)
+        or not stat.S_ISDIR(user_metadata.st_mode)
+        or not resolved_user_root.is_relative_to(resolved)
+    ):
+        raise DomainError(
+            "AGENT_WORKSPACE_STORAGE_INVALID",
+            "用户工作区持久化目录无效",
             409,
         )
     return resolved
@@ -252,9 +282,9 @@ def _working_directory(
         )
         if binding is None:
             raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
-        return binding.working_directory or _PROJECT_ROOT, None
+        return binding.working_directory or user_runtime_project_root(), None
     if not work_directory_id:
-        return _PROJECT_ROOT, None
+        return user_runtime_project_root(), None
     directory = work_directories.get_work_directory(db, workspace_id, work_directory_id)
     # A browser draft contains only an ID. Revalidate the active directory and
     # its real project-tree path before exposing it to file or terminal APIs.
@@ -330,8 +360,9 @@ def _file_scope_roots(
         )
     elif work_directory_id:
         raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作目录不存在", 404)
+    user_root = user_runtime_project_root()
     if version_id is None:
-        return (_PROJECT_ROOT,)
+        return (user_root,)
     relative_paths = tuple(
         db.scalars(
             select(AgentWorkDirectoryPath.relative_path)
@@ -341,14 +372,12 @@ def _file_scope_roots(
     )
     if not relative_paths:
         raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
-    return tuple(f"{_PROJECT_ROOT}/{path}" for path in relative_paths)
+    return tuple(f"{user_root}/{path}" for path in relative_paths)
 
 
 def _scoped_workspace_entries(
     project_root: Path, working_directory: str, file_roots: tuple[str, ...]
 ) -> list[dict[str, Any]]:
-    if file_roots == (_PROJECT_ROOT,):
-        return _workspace_entries(project_root, _PROJECT_ROOT)
     if len(file_roots) == 1 and file_roots[0] == working_directory:
         return _workspace_entries(project_root, working_directory)
     entries: list[dict[str, Any]] = []
@@ -549,7 +578,7 @@ def details(
     except DomainError:
         container_short_id = None
     return {
-        "root": _PROJECT_ROOT,
+        "root": user_runtime_project_root(),
         "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
@@ -695,7 +724,9 @@ def delete_entry(
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
     file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
-    if not any(path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots):
+    if path in file_roots or not any(
+        path == root or path.startswith(root.rstrip("/") + "/") for root in file_roots
+    ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
     if _subtree_has_bound_attachment(db, workspace_id, path):
         raise DomainError("AGENT_WORKSPACE_ATTACHMENT_PROTECTED", "会话附件不能从文件栏删除", 409)
@@ -766,7 +797,7 @@ def create_entry(
     if kind not in {"FILE", "DIRECTORY"}:
         raise DomainError("AGENT_WORKSPACE_ENTRY_KIND_INVALID", "只支持创建文件或目录", 422)
     parsed = PurePosixPath(parent_path)
-    if parent_path != _PROJECT_ROOT and (
+    if parent_path != user_runtime_project_root() and (
         not parent_path.startswith(_PROJECT_ROOT + "/")
         or parsed.as_posix() != parent_path
         or ".." in parsed.parts
@@ -780,11 +811,7 @@ def create_entry(
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父目录不在当前工作目录范围内", 422)
     project_root = _project_root(db, workspace_id)
-    parent = (
-        project_root
-        if parent_path == _PROJECT_ROOT
-        else _host_path(project_root, parent_path, require_file=False)
-    )
+    parent = _host_path(project_root, parent_path, require_file=False)
     try:
         parent_mode = parent.lstat().st_mode
     except OSError as exc:

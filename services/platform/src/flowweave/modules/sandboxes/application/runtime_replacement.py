@@ -105,7 +105,12 @@ def record_terminal_runtime_replacement_failure(
     """Make exhausted replacement retries explicitly diagnosable and non-routable."""
 
     session = db.scalar(
-        select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id).with_for_update()
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == flow_run_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+        .with_for_update()
     )
     if (
         session is None
@@ -162,7 +167,10 @@ def _ensure_replacement_state(
             with Session(bind=connection, expire_on_commit=False) as control_db:
                 current_session = control_db.scalar(
                     select(FlowRunRuntime)
-                    .where(FlowRunRuntime.flow_run_id == flow_run_id)
+                    .where(
+                        FlowRunRuntime.flow_run_id == flow_run_id,
+                        FlowRunRuntime.node_attempt_id.is_(None),
+                    )
                     .with_for_update()
                 )
                 if (

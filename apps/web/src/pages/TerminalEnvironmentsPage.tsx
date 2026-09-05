@@ -163,6 +163,10 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
         if (socket.current === ws) socket.current = null;
         setConnected(false);
         if (disposed || event.code === 1000) return;
+        if (event.code === 4401) {
+          window.dispatchEvent(new Event('flowweave:auth-required'));
+          return;
+        }
         if (event.code === 4404 || event.code === 4409) {
           setReconnecting(false);
           void queryClient.invalidateQueries({ queryKey: ['terminal-environments'] });

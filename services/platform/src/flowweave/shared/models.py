@@ -82,6 +82,7 @@ from flowweave.modules.sandboxes.infrastructure.models import (
 from flowweave.modules.tasks.infrastructure.models import (
     BackgroundTask,
 )
+from flowweave.modules.users.infrastructure.models import User, UserOperationLog, UserSession
 from flowweave.shared.database import now, uid
 from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunState, TaskState
 
@@ -150,6 +151,9 @@ __all__ = (
     "RuntimeConfirmationApproval",
     "WebsiteCredential",
     "TaskState",
+    "User",
+    "UserOperationLog",
+    "UserSession",
     "TerminalEnvironment",
     "now",
     "uid",
