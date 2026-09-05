@@ -1612,7 +1612,7 @@ def send_node_message(
     if provider is not None:
         runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, prompt, image_urls)
-    _resume_failed_attempt_for_native_turn(
+    _ensure_blocked_attempt_wakeup(
         db,
         attempt_id=attempt_id,
         binding=binding,
@@ -1626,75 +1626,32 @@ def send_node_message(
     return {"accepted": True, "cursor": result.cursor, "compacted": False}
 
 
-def _resume_failed_attempt_for_native_turn(
+def _ensure_blocked_attempt_wakeup(
     db: Session,
     *,
     attempt_id: str,
     binding: AgentConversationBinding,
 ) -> None:
-    """Reconnect a failed Attempt when OpenHands accepts a new native turn.
+    """Ensure the native event driver outlives an END_BLOCKED projection.
 
-    ``END_BLOCKED/RUNTIME_FAILED`` is FlowWeave's projection of a previous
-    terminal OpenHands event, not ownership of the Conversation lifecycle.
-    OpenHands can accept a new user event after errors such as an interrupted
-    tool during a Runtime restart.  Once it has accepted that event, resume
-    the Attempt projection and its wake-up driver so later formal events
-    (FinishAction, confirmation, or another error) determine the next node
-    state.
+    Sending a message is not a FlowWeave node-state transition.  It merely
+    gives the primary OpenHands Conversation another native event to emit.
+    The Worker will read that event and, only when OpenHands reports execution
+    again, update the Attempt projection.
     """
 
     current = _attempt(db, attempt_id)
     if not (
         current.state == AttemptState.END_BLOCKED
-        and current.runtime_phase == "FAILED"
-        and current.error_code == "RUNTIME_FAILED"
         and current.conversation_id == binding.openhands_conversation_id
     ):
         return
-    claimed_id = db.scalar(
-        update(NodeAttempt)
-        .where(
-            NodeAttempt.id == attempt_id,
-            NodeAttempt.state == AttemptState.END_BLOCKED,
-            NodeAttempt.runtime_phase == "FAILED",
-            NodeAttempt.error_code == "RUNTIME_FAILED",
-            NodeAttempt.state_version == current.state_version,
-        )
-        .values(
-            state=AttemptState.EXECUTING,
-            runtime_phase="RUNNING",
-            error_code=None,
-            error_detail=None,
-            state_version=NodeAttempt.state_version + 1,
-        )
-        .returning(NodeAttempt.id)
-        .execution_options(synchronize_session=False)
-    )
-    if claimed_id is None:
-        db.expire_all()
-        return
-    db.expire_all()
-    resumed = _attempt(db, attempt_id)
-    node_run, run, _ = _attempt_context(db, resumed)
-    run.state = FlowRunState.ACTIVE
-    db.add(
-        RunEvent(
-            flow_run_id=run.id,
-            node_run_id=node_run.id,
-            attempt_id=resumed.id,
-            event_type="ATTEMPT_RESUMED",
-            payload_json={
-                "conversation_id": binding.openhands_conversation_id,
-                "reason": "NATIVE_USER_TURN_AFTER_RUNTIME_FAILURE",
-            },
-        )
-    )
     task = enqueue(
         db,
         task_type="WAIT_RUNTIME_WAKEUP",
         aggregate_type="ATTEMPT",
-        aggregate_id=resumed.id,
-        idempotency_key=f"wait-runtime-wakeup:{resumed.id}:v{resumed.state_version}:1",
+        aggregate_id=current.id,
+        idempotency_key=f"wait-runtime-wakeup:{current.id}:v{current.state_version}:1",
         payload={"wakeup_no": 1},
     )
     task.max_attempts = max(task.max_attempts, 100)
@@ -2315,11 +2272,7 @@ def resume_node_conversation(
         )
         finish(db)
         return {"accepted": True, "cursor": result.cursor}
-    recover_failed_pause = (
-        attempt.state == AttemptState.END_BLOCKED
-        and attempt.runtime_phase == "FAILED"
-        and attempt.error_code == "RUNTIME_FAILED"
-    )
+    recover_blocked_attempt = attempt.state == AttemptState.END_BLOCKED
     if attempt.state != AttemptState.PAUSED or attempt.runtime_phase != "PAUSED":
         # Recover only the precise split-brain state caused when the native
         # interrupt succeeded but its local Attempt projection lost a race.
@@ -2335,7 +2288,7 @@ def resume_node_conversation(
                 attempt_id=attempt.id,
                 state=attempt.state,
             )
-        if not recover_failed_pause:
+        if not recover_blocked_attempt:
             if (
                 attempt.state != AttemptState.EXECUTING
                 or attempt.runtime_phase != "RUNNING"
@@ -2358,12 +2311,10 @@ def resume_node_conversation(
         NodeAttempt.id == attempt_id,
         NodeAttempt.state_version == expected_version,
     ]
-    if recover_failed_pause:
+    if recover_blocked_attempt:
         resume_conditions.extend(
             (
                 NodeAttempt.state == AttemptState.END_BLOCKED,
-                NodeAttempt.runtime_phase == "FAILED",
-                NodeAttempt.error_code == "RUNTIME_FAILED",
             )
         )
     else:
@@ -2378,7 +2329,7 @@ def resume_node_conversation(
         "runtime_phase": "RESUMING",
         "state_version": NodeAttempt.state_version + 1,
     }
-    if recover_failed_pause:
+    if recover_blocked_attempt:
         resume_values.update(error_code=None, error_detail=None)
     claimed_id = db.scalar(
         update(NodeAttempt)
@@ -2426,8 +2377,8 @@ def resume_node_conversation(
             payload_json={
                 "conversation_id": binding.openhands_conversation_id,
                 **(
-                    {"reason": "NATIVE_PAUSE_AFTER_RUNTIME_FAILURE"}
-                    if recover_failed_pause
+                    {"reason": "NATIVE_PAUSE_AFTER_BLOCKED_PROJECTION"}
+                    if recover_blocked_attempt
                     else {}
                 ),
             },

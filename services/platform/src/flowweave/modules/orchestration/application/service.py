@@ -1037,6 +1037,23 @@ def _dispatch_runtime_wakeup(
     task.max_attempts = max(task.max_attempts, 100)
 
 
+def _observes_native_conversation(attempt: NodeAttempt) -> bool:
+    """Whether an Attempt must retain its formal OpenHands event subscription.
+
+    ``END_BLOCKED`` is a FlowWeave control-plane projection, not a terminal
+    instruction for the underlying OpenHands Conversation.  In particular, a
+    later native user turn can follow a tool, gate, or delivery failure.  Keep
+    observing its primary Conversation until the user explicitly cancels the
+    Attempt; a subsequent native execution state then determines the next
+    projection.
+    """
+
+    return bool(attempt.conversation_id) and (
+        attempt.state == AttemptState.END_BLOCKED
+        or (attempt.state == AttemptState.EXECUTING and attempt.runtime_phase == "RUNNING")
+    )
+
+
 def process_runtime_wakeup(
     db: Session,
     attempt_id: str,
@@ -1047,7 +1064,8 @@ def process_runtime_wakeup(
     commit: bool = True,
 ) -> None:
     attempt = _attempt(db, attempt_id)
-    if attempt.state != AttemptState.EXECUTING or attempt.runtime_phase != "RUNNING":
+    observing_blocked_attempt = attempt.state == AttemptState.END_BLOCKED
+    if not _observes_native_conversation(attempt):
         return
     expected_version = attempt.state_version
     handle = _active_attempt_runtime_handle(db, attempt)
@@ -1062,10 +1080,17 @@ def process_runtime_wakeup(
         wakeup = None
     _require_current_lease(db, lease)
     current = _attempt(db, attempt_id)
-    if (
-        current.state != AttemptState.EXECUTING
-        or current.runtime_phase != "RUNNING"
-        or current.state_version != expected_version
+    if current.state_version != expected_version:
+        # State changes do not revoke the native Conversation.  For example a
+        # poll can project END_BLOCKED while this long-poll is in flight.  The
+        # replacement subscription observes the same formal Conversation
+        # rather than silently abandoning it.
+        if _observes_native_conversation(current):
+            _dispatch_runtime_wakeup(db, current, wakeup_no + 1, delayed=True)
+            _finish_transaction(db, commit)
+        return
+    if not _observes_native_conversation(current) or (
+        observing_blocked_attempt != (current.state == AttemptState.END_BLOCKED)
     ):
         return
     # Wake-up frames reduce latency, but are not a durable terminal-state
@@ -3864,6 +3889,10 @@ def recover_runtime_tasks(db: Session) -> int:
                     (NodeAttempt.state == AttemptState.WAITING_CONFIRMATION)
                     & (NodeAttempt.runtime_phase == "CONFIRMING")
                 )
+                | (
+                    (NodeAttempt.state == AttemptState.END_BLOCKED)
+                    & NodeAttempt.conversation_id.is_not(None)
+                )
             )
             .order_by(NodeAttempt.updated_at, NodeAttempt.id)
             .with_for_update(skip_locked=True)
@@ -3879,6 +3908,12 @@ def recover_runtime_tasks(db: Session) -> int:
         elif attempt.runtime_phase == "RUNNING":
             # Event wakeups are the normal driver. Recovery only reinstates the
             # long-poll subscription; it does not restore the old poll loop.
+            task_type = "WAIT_RUNTIME_WAKEUP"
+            payload = {"wakeup_no": 1}
+        elif attempt.state == AttemptState.END_BLOCKED:
+            # Do not retry the failed operation.  Retain only the formal
+            # OpenHands event subscription, which can later prove a native
+            # continuation independently of why FlowWeave blocked the node.
             task_type = "WAIT_RUNTIME_WAKEUP"
             payload = {"wakeup_no": 1}
         elif attempt.runtime_phase == "CANCELLING":
@@ -3997,7 +4032,7 @@ def recover_runtime_tasks(db: Session) -> int:
             if task_type == "CANCEL_RUNTIME":
                 existing.max_attempts = 20
         recovered += 1
-        if attempt.runtime_phase == "RUNNING":
+        if _observes_native_conversation(attempt):
             wakeup_active = db.scalar(
                 select(BackgroundTask.id).where(
                     BackgroundTask.aggregate_id == attempt.id,
@@ -4393,7 +4428,7 @@ def _claim_runtime_phase(
     attempt_id: str,
     expected_version: int,
     expected_state: str,
-    expected_phase: str,
+    expected_phase: str | None,
     **values: object,
 ) -> NodeAttempt | None:
     """Atomically fence a runtime callback against concurrent Attempt changes."""
@@ -4702,7 +4737,8 @@ def process_poll_runtime(
     commit: bool = True,
 ) -> None:
     attempt = _attempt(db, attempt_id)
-    if attempt.state != AttemptState.EXECUTING or attempt.runtime_phase != "RUNNING":
+    observing_blocked_attempt = attempt.state == AttemptState.END_BLOCKED
+    if not _observes_native_conversation(attempt):
         return
     expected_version = attempt.state_version
     current_attempt_id = attempt.id
@@ -4711,12 +4747,58 @@ def process_poll_runtime(
     runtime = get_runtime()
     batch = runtime.read_events(handle)
     result = batch.result or runtime.inspect(replace(handle, cursor=batch.cursor or handle.cursor))
+    native_execution_status = (
+        runtime.input_readiness(handle).execution_status.lower()
+        if observing_blocked_attempt
+        else ""
+    )
     pending_confirmation = (
         runtime.get_pending_confirmation(replace(handle, cursor=batch.cursor or handle.cursor))
         if result.status == "CONFIRMATION_REQUIRED"
         else None
     )
     _require_current_lease(db, lease)
+    if observing_blocked_attempt:
+        current = _attempt(db, current_attempt_id)
+        if (
+            not _observes_native_conversation(current)
+            or current.state != AttemptState.END_BLOCKED
+            or current.state_version != expected_version
+        ):
+            return
+        if native_execution_status not in {"starting", "running", "executing"}:
+            # A historical terminal event is not proof of a new turn.  Keep
+            # the event subscription, but wait until OpenHands itself reports
+            # that this primary Conversation is executing again.
+            _finish_transaction(db, commit)
+            return
+        resumed = _claim_runtime_phase(
+            db,
+            current_attempt_id,
+            expected_version,
+            AttemptState.END_BLOCKED,
+            current.runtime_phase,
+            state=AttemptState.EXECUTING,
+            runtime_phase="RUNNING",
+            error_code=None,
+            error_detail=None,
+        )
+        if resumed is None:
+            return
+        node_run = _node_run(db, resumed.node_run_id)
+        run = _run(db, node_run.flow_run_id)
+        run.state = FlowRunState.ACTIVE
+        _event(
+            db,
+            run.id,
+            "ATTEMPT_RESUMED",
+            {"reason": "NATIVE_CONVERSATION_EVENT_AFTER_BLOCKED_PROJECTION"},
+            node_run.id,
+            resumed.id,
+        )
+        _dispatch_runtime_wakeup(db, resumed, 1)
+        _finish_transaction(db, commit)
+        return
     if result.status == "RUNNING":
         # A reconciliation observation is not an Attempt command or business
         # transition.  In particular, it must not consume ``state_version``

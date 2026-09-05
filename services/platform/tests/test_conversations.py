@@ -640,7 +640,7 @@ def test_resume_node_conversation_does_not_reconcile_non_paused_native_state(
         )
 
 
-def test_resume_node_conversation_recovers_a_failed_attempt_when_openhands_is_paused(
+def test_resume_node_conversation_recovers_an_end_blocked_attempt_when_openhands_is_paused(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A prior pause observation must not permanently own the native Conversation."""
@@ -650,8 +650,8 @@ def test_resume_node_conversation_recovers_a_failed_attempt_when_openhands_is_pa
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None
         attempt.state = "END_BLOCKED"
-        attempt.runtime_phase = "FAILED"
-        attempt.error_code = "RUNTIME_FAILED"
+        attempt.runtime_phase = "COMPLETED"
+        attempt.error_code = "END_GATE_DELIVERY_FAILED"
         attempt.error_detail = (
             "Tool call interrupted before completion. The conversation was paused."
         )
@@ -716,7 +716,7 @@ def test_resume_node_conversation_recovers_a_failed_attempt_when_openhands_is_pa
             .order_by(RunEvent.cursor.desc())
         )
         assert event is not None
-        assert event.payload_json["reason"] == "NATIVE_PAUSE_AFTER_RUNTIME_FAILURE"
+        assert event.payload_json["reason"] == "NATIVE_PAUSE_AFTER_BLOCKED_PROJECTION"
         assert db.scalar(
             select(BackgroundTask).where(
                 BackgroundTask.idempotency_key
@@ -725,7 +725,7 @@ def test_resume_node_conversation_recovers_a_failed_attempt_when_openhands_is_pa
         ) is not None
 
 
-def test_node_message_reconnects_a_failed_attempt_after_openhands_accepts_a_new_turn(
+def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db_session_factory() as db:
@@ -733,8 +733,8 @@ def test_node_message_reconnects_a_failed_attempt_after_openhands_accepts_a_new_
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None
         attempt.state = "END_BLOCKED"
-        attempt.runtime_phase = "FAILED"
-        attempt.error_code = "RUNTIME_FAILED"
+        attempt.runtime_phase = "COMPLETED"
+        attempt.error_code = "END_GATE_DELIVERY_FAILED"
         attempt.error_detail = "A restart occurred while this tool was in progress."
         binding = AgentConversationBinding(
             workspace_id=None,
@@ -784,29 +784,22 @@ def test_node_message_reconnects_a_failed_attempt_after_openhands_accepts_a_new_
         )
 
         db.expire_all()
-        resumed = db.get(NodeAttempt, attempt_id)
+        blocked = db.get(NodeAttempt, attempt_id)
         run = db.get(FlowRun, flow_run_id)
-        assert resumed is not None
+        assert blocked is not None
         assert run is not None
         assert result == {"accepted": True, "cursor": "new-user-turn", "compacted": False}
-        assert (resumed.state, resumed.runtime_phase, resumed.error_code, resumed.error_detail) == (
-            "EXECUTING",
-            "RUNNING",
-            None,
-            None,
+        assert (blocked.state, blocked.runtime_phase, blocked.error_code, blocked.error_detail) == (
+            "END_BLOCKED",
+            "COMPLETED",
+            "END_GATE_DELIVERY_FAILED",
+            "A restart occurred while this tool was in progress.",
         )
-        assert run.state == "ACTIVE"
-        event = db.scalar(
-            select(RunEvent)
-            .where(RunEvent.attempt_id == attempt_id, RunEvent.event_type == "ATTEMPT_RESUMED")
-            .order_by(RunEvent.cursor.desc())
-        )
-        assert event is not None
-        assert event.payload_json["reason"] == "NATIVE_USER_TURN_AFTER_RUNTIME_FAILURE"
+        assert run.state == "WAITING_HUMAN"
         assert db.scalar(
             select(BackgroundTask).where(
                 BackgroundTask.idempotency_key
-                == f"wait-runtime-wakeup:{attempt_id}:v{resumed.state_version}:1"
+                == f"wait-runtime-wakeup:{attempt_id}:v{blocked.state_version}:1"
             )
         ) is not None
 
