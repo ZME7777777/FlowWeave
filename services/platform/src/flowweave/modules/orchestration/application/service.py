@@ -4319,33 +4319,62 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
     Conversation ID through the normal handle path.
     """
 
-    if get_settings().runtime_adapter == "mock":
-        return
-    request = _runtime_request(db, attempt)
-    if not request.environment_image:
-        return
     flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
     workspace = sandboxes.node_attempt_workspace_context(
         db, flow_run_id=flow_run_id, node_attempt_id=attempt.id
     )
+    if get_settings().runtime_adapter == "mock":
+        return
+    runtime_owner_id = (
+        flow_run_id
+        if workspace.attempt_owned
+        else sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
+    )
+    session = db.scalar(
+        select(FlowRunRuntime)
+        .where(
+            FlowRunRuntime.flow_run_id == runtime_owner_id,
+            (
+                FlowRunRuntime.node_attempt_id == attempt.id
+                if workspace.attempt_owned
+                else FlowRunRuntime.node_attempt_id.is_(None)
+            ),
+        )
+        .with_for_update()
+    )
+    if session is None:
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_ACTIVE",
+            "The Attempt has no immutable Runtime Session to reconnect",
+            409,
+            {"attempt_id": attempt.id},
+        )
+    environment = lock_referenceable_version(db, session.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The Runtime Session's frozen Environment Version is unavailable",
+            409,
+            {"environment_version_id": session.environment_version_id},
+        )
     if workspace.attempt_owned:
         sandboxes.ensure_node_attempt_runtime(
             db,
             flow_run_id=flow_run_id,
             node_attempt_id=attempt.id,
-            image=request.environment_image,
-            environment_id=request.environment_id,
-            environment_version_id=request.environment_version_id,
-            environment_version_no=request.environment_version_no,
+            image=session.runtime_image_digest,
+            environment_id=environment.environment_id,
+            environment_version_id=environment.id,
+            environment_version_no=environment.version_no,
         )
         return
     sandboxes.ensure_flow_run_runtime(
         db,
         flow_run_id=flow_run_id,
-        image=request.environment_image,
-        environment_id=request.environment_id,
-        environment_version_id=request.environment_version_id,
-        environment_version_no=request.environment_version_no,
+        image=session.runtime_image_digest,
+        environment_id=environment.environment_id,
+        environment_version_id=environment.id,
+        environment_version_no=environment.version_no,
     )
 
 
