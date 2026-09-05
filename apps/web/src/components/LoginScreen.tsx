@@ -48,7 +48,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => Promise<
         </div>
         <div className="login-hero-copy">
           <p className="eyebrow">DESIGN · ORCHESTRATE · GOVERN</p>
-          <h1>好的解决方案<br/><em>不该只运行一次。</em></h1>
+          <h1>好的解决方案<br/><em>不该只运行一次</em></h1>
           <p>编排可复用的 Agent 能力，以不可变快照驱动每次运行，让执行过程始终可控、可追溯。</p>
           <div className="login-proof" aria-label="产品能力">
             <span><i/>可视化编排</span>
