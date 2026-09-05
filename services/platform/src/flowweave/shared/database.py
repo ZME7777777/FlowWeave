@@ -137,7 +137,7 @@ def _enforce_tenant_reads(execute_state: Any) -> None:
             statement = statement.options(
                 with_loader_criteria(
                     model,
-                    lambda entity, tenant_id=user_id: entity.owner_user_id == tenant_id,
+                    model.owner_user_id == user_id,
                     include_aliases=True,
                 )
             )
