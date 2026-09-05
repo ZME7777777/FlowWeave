@@ -1167,7 +1167,11 @@ chmod 0700 "$target"
         )
         shared_project_valid = (
             is_node_attempt
-            and project_flow_run_id == flow_run_id
+            # A nested automatic record executes in its own Attempt Runtime,
+            # while its record directory lives under the parent FlowRun
+            # allocation.  The allocation identity is carried by
+            # ``project_flow_run_id`` and need not equal the child Run ID.
+            and re.fullmatch(r"[0-9a-f-]{36}", project_flow_run_id) is not None
             and re.fullmatch(r"[0-9a-f-]{36}", project_allocation_id) is not None
             and re.fullmatch(r"[0-9a-f-]{36}", project_record_id) is not None
             and len(project_relative.parts) == 3
