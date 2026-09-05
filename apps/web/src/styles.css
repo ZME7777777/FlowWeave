@@ -127,7 +127,7 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 
 /* The workbench graph is the primary business view and fills the remaining viewport. */
 .run-main{display:flex;min-height:0;flex-direction:column;overflow:hidden}
-.run-workbench-toolbar{display:flex;flex:0 0 auto;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.run-workbench-toolbar>.back{position:static;width:max-content;margin:0;padding:8px 11px;border:1px solid #cbd6d0;border-radius:6px;background:#fff;color:var(--green);box-shadow:0 4px 14px #17342612;font-size:12px;font-weight:600}.run-workbench-toolbar>.back:hover{border-color:#8fb5a0;background:#f4f9f5}.run-workbench-toolbar .flow-run-management{align-items:flex-end}
+.run-workbench-toolbar{display:flex;flex:0 0 auto;align-items:flex-start;gap:12px;margin-bottom:10px}.run-workbench-toolbar>.back{position:static;width:max-content;margin:0;padding:8px 11px;border:1px solid #cbd6d0;border-radius:6px;background:#fff;color:var(--green);box-shadow:0 4px 14px #17342612;font-size:12px;font-weight:600}.run-workbench-toolbar>.back:hover{border-color:#8fb5a0;background:#f4f9f5}.run-workbench-toolbar-clear{min-width:36px;min-height:36px;flex:1 1 auto;align-self:stretch;border:0;background:transparent;padding:0}.run-workbench-toolbar-clear:focus-visible{outline:2px solid #78a98e;outline-offset:2px}.run-workbench-toolbar .flow-run-management{margin-left:auto;align-items:flex-end}
 .run-main>.snapshot-sync{flex:0 0 auto}
 .run-main>.run-graph{display:flex;min-height:320px;flex:1 1 auto;flex-direction:column}
 .run-main>.run-graph>.run-graph-canvas{min-height:0;height:auto;flex:1 1 auto}

@@ -37,7 +37,7 @@ const FLOW_STATE_LABELS: Record<string, string> = {
 // Bump this whenever graph rendering changes. It also guarantees that a web
 // deployment produces a new content-hashed bundle instead of reusing an
 // immutable asset cached by an earlier graph renderer.
-const GRAPH_RENDER_REVISION = '2026-09-05.1';
+const GRAPH_RENDER_REVISION = '2026-09-05.2';
 
 const nodeForRun = (run: FlowRun, nodeRun: NodeRun) => {
   const snapshotId = nodeRun.attempts.at(-1)?.snapshot_id;
@@ -278,7 +278,7 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
   }, [graphNodes, setNodes]);
   const graphKey = `${GRAPH_RENDER_REVISION}:${snapshot?.id ?? 'snapshot'}:${snapshot?.definition_hash ?? ''}`;
   const help = neutralView ? neutralHelp ?? '选择一条运行记录后查看执行状态。' : selectable.size < reachable.size ? '灰色节点需先完成上游配置；红色节点仍需补齐当前配置。' : missingPlans.size ? '红色节点尚未完成连续运行配置；点击节点可单独配置。' : showExecutionState ? '灰色节点尚未激活；实线表示流程走向，蓝线表示产物映射。可拖拽节点调整当前视图。' : `${neutralHelp ?? '选择一条运行记录后查看执行状态。'} 可拖拽节点调整当前视图。`;
-  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><h3>运行快照 v{snapshot?.version ?? '-'}</h3><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
+  return <section className="run-graph" data-graph-render-revision={GRAPH_RENDER_REVISION}><header><div><small>{help}</small></div><div className="flow-link-mode run-link-mode" aria-label="运行图连线模式"><button type="button" className={linkMode === 'flow' ? 'active' : ''} aria-pressed={linkMode === 'flow'} onClick={() => setLinkMode('flow')}>流程走向</button><button type="button" className={linkMode === 'data' ? 'active' : ''} aria-pressed={linkMode === 'data'} onClick={() => setLinkMode('data')}>产物流转</button></div><span>定义 Hash {snapshot?.definition_hash.slice(0, 8)}</span></header><div className="run-graph-canvas"><ReactFlow key={graphKey} nodeTypes={runSnapshotNodeTypes} edgeTypes={flowMappingEdgeTypes} nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodesConnectable={false} fitView onPaneClick={onClearSelection} onNodeClick={(_, node) => { if (selectable.has(node.id)) onSelect(node.id); }}><Background/><Controls showInteractive={false}/></ReactFlow></div></section>;
 }
 function GateList({ evaluations, policies = [], onViewDetails }: { evaluations: GateEvaluation[]; policies?: GatePolicy[]; onViewDetails?: (evaluation: GateEvaluation) => void }) {
   const configured = [...policies].sort((left, right) => left.stage.localeCompare(right.stage) || left.position - right.position);
@@ -1173,10 +1173,9 @@ export function WorkbenchPage() {
     <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `250px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: '250px minmax(500px, 1fr)' }}>
       {rail}
       <main className="run-main">
-        <div className="run-workbench-toolbar" onClick={event => {
-          if (!isInteractiveClick(event.target)) clearSelection();
-        }}>
+        <div className="run-workbench-toolbar">
           <button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button>
+          <button type="button" className="run-workbench-toolbar-clear" aria-label="取消当前选择" onClick={clearSelection}/>
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
         {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}

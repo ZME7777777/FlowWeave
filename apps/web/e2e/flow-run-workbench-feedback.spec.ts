@@ -290,6 +290,7 @@ test('run projection stays neutral until record selection and automatic save rep
   const graph = page.locator('.run-graph');
   await expect(page.locator('.run-main .run-title')).toHaveCount(0);
   await expect(page.locator('.run-main h1')).toHaveCount(0);
+  await expect(graph.getByText('运行快照 v1', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '返回运行列表' })).toBeVisible();
   await expect(graph).toContainText('未选择逐步运行记录，当前显示中性流程定义');
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
@@ -322,10 +323,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await page.mouse.up();
   await expect.poll(async () => (await draggableNode.boundingBox())?.x ?? 0).toBeGreaterThan(beforeDrag!.x + 50);
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(1);
-  const toolbar = page.locator('.run-workbench-toolbar');
-  const toolbarBox = await toolbar.boundingBox();
-  expect(toolbarBox).not.toBeNull();
-  await page.mouse.click(toolbarBox!.x + toolbarBox!.width - 8, toolbarBox!.y + toolbarBox!.height / 2);
+  await page.getByRole('button', { name: '取消当前选择' }).click();
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
