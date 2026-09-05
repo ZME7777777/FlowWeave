@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-164 后续范围待拆分）
+> 下一可执行切片：`无`（FR-165 后续范围待拆分）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2419,6 +2419,21 @@ build、`git diff --check` 与任务状态唯一性通过；唯一 Alembic head 
 真实暂停浏览器验收未执行：既有 Agent Workspace Runtime 将 `/runtime/workspace` 挂载为只读，新会话创建
 工作目录时由 OpenHands 抛出 `Errno 30` 并返回 502；该环境阻塞与本切片暂停事件展示无关，未伪记为通过。
 
+### FR-165 流程节点目录折叠与顶部导航间距 — DONE
+
+依赖：`FR-164`。
+
+目标：流程编排左侧节点资产按现有目录路径提供独立的展开／收起入口，目录标题显示节点数量，折叠仅隐藏该目录
+节点且不影响搜索、拖拽或点击添加。顶部一级导航与品牌区之间增加起始留白，并适度扩大桌面 Tab 间距，使首个
+Tab 与 Agent 会话左栏边界更协调；窄屏继续按现有断点收紧。不得改变节点目录、流程定义或导航路由契约。
+
+完成：节点资产目录标题改为带文件夹、展开状态和数量的可访问按钮，各目录默认展开且可独立折叠；节点按钮仍
+保留既有拖拽与点击添加行为。桌面主导航增加起始偏移和 Tab 间隔，1260px 与 1080px 断点逐级恢复紧凑布局。
+新增流程编排浏览器断言覆盖目录的 `aria-expanded`、隐藏与恢复；未修改平台 API、Runtime 或 OpenHands。
+
+验收：Web ESLint、TypeScript typecheck、production build、Alembic head、任务状态唯一性与
+`git diff --check` 通过。定向 Playwright 因本地 Web／API 服务未运行未执行目标断言，未伪记为通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2434,6 +2449,7 @@ build、`git diff --check` 与任务状态唯一性通过；唯一 Alembic head 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-165 | Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check`；流程编排定向 Playwright | PASS（静态与构建）：目录折叠和顶部导航间距通过 Web 检查，唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT`。Playwright 因本地 Web／API 服务未运行未执行目标断言，未伪记为通过。 |
 | 2026-09-05 | FR-164 | commit 绑定 Platform／Web linux/amd64 远端构建与定向发布；Migration、Compose 健康态、内外网前缀路由、静态 JS、Agent 深层路由、FastGPT 根入口与登录态浏览器请求 | PASS（发布与基础可用性）：commit `2f23110` 已发布，Migration 为 `Exited (0)`，API／Runtime Provider healthy，Worker／Web 为 Up，页面和带前缀 API 请求正常。BLOCKED（真实暂停）：既有 Agent Workspace Runtime 的 `/runtime/workspace` 只读挂载导致 OpenHands 创建工作目录时报 `Errno 30`、新会话 API 返回 502，未进入暂停按钮阶段，未伪记为通过。 |
 | 2026-09-05 | FR-164 | OpenHands 错误投影定向 pytest（2 passed）；Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck/production build；Alembic head、任务状态唯一性与 `git diff --check`；定向 Agent Workspace Playwright | PASS（适配器与静态检查）：暂停产生的合成 `AgentErrorEvent` 保留正式诊断内容但不再渲染任何提示，真实错误展示不变。唯一 Alembic head 为 `0097_record_ws_path`。Playwright 因本地 API 未启动在 Agent 会话导航前超时，目标暂停断言未执行、未伪记为通过。 |
 | 2026-09-05 | FR-163 | Web ESLint、TypeScript typecheck/production build；linux/amd64 Web 定向发布；真实逐步运行启动、Conversation binding 与深层会话页面 | PASS：启动请求返回 200，Attempt 进入 EXECUTING，binding 使用记录级 UUID 根目录且新会话正常执行；失败请求已具备可见反馈。 |

@@ -1765,6 +1765,13 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await page.getByRole('button', { name: '新建流程' }).click();
   const library = page.getByTestId('flow-library');
   const assetButton = library.getByRole('button', { name: assetName, exact: true }).last();
+  const assetDirectory = library.locator('.flow-asset-group-toggle').filter({ hasText: '未分类' });
+  await expect(assetDirectory).toHaveAttribute('aria-expanded', 'true');
+  await assetDirectory.click();
+  await expect(assetDirectory).toHaveAttribute('aria-expanded', 'false');
+  await expect(assetButton).toBeHidden();
+  await assetDirectory.click();
+  await expect(assetButton).toBeVisible();
   const canvas = page.getByTestId('flow-designer');
   await expect(canvas.locator('.react-flow__pane')).toBeVisible();
   await expect(canvas.getByRole('button', { name: '流程走向' })).toHaveAttribute('aria-pressed', 'true');

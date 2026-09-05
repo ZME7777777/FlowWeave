@@ -492,6 +492,25 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 @media(max-width:1180px){.context-tab-divider{margin-right:3px}.context-tab{gap:5px}.context-tab>span:last-child{max-width:92px}}
 @media(max-width:980px){.context-tab>span:last-child{display:none}.context-tab-divider{margin-right:1px}}
 
+/* Flow asset directories can be folded while composing a flow. */
+.flow-asset-group>.flow-asset-group-toggle{display:flex!important;width:100%;grid-template-columns:none!important;align-items:center;justify-content:space-between;gap:6px;border:0!important;background:transparent!important;padding:7px 6px!important;color:#65736b!important;text-align:left!important}
+.flow-asset-group>.flow-asset-group-toggle:hover{background:#e8f0ea!important;color:var(--green)!important}
+.flow-asset-group-title{display:flex;min-width:0;align-items:center;gap:5px}
+.flow-asset-group-title b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}
+.flow-asset-group-toggle>small{flex:0 0 auto;color:var(--muted);font:9px 'DM Mono'}
+.flow-asset-group-items{display:grid;gap:1px}
+.flow-asset-group-items>button{display:grid!important;grid-template-columns:29px minmax(0,1fr)!important}
+.flow-asset-group-items>button>span:last-child{min-width:0}
+.flow-asset-group-items>button b,.flow-asset-group-items>button small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flow-asset-group-items>button b{font-size:10px}
+.flow-asset-group-items>button small{margin-top:3px;color:var(--muted);font:8px 'DM Mono'}
+
+/* Give the primary tabs a deliberate start point after the brand mark. */
+.topbar nav{margin-left:20px;gap:4px}
+.topbar nav button{padding:0 16px}
+@media(max-width:1260px){.topbar nav{margin-left:8px;gap:2px}.topbar nav button{padding:0 9px}}
+@media(max-width:1080px){.topbar nav{margin-left:0}.topbar nav button{padding:0 8px}}
+
 
 /* Keep the account menu aligned to its trigger and compact at a glance. */
 .account-popover{width:100%;min-width:100%;border-radius:8px;padding:5px}
