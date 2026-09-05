@@ -2466,6 +2466,22 @@ PostgreSQL/Runtime replacement 验证留待 FR-12 最终门禁，不以静态检
 验收：远端 PostgreSQL 事务提交成功，Workspace 备份和迁移后目录检查完成；受影响 Python `py_compile`
 与 `git diff --check` 通过。真实新 Runtime 重建与原 Conversation reload 待部署后验证。
 
+### FR-168 Agent 工作区分组操作按钮视觉收口 — DONE
+
+依赖：`FR-167`。
+
+目标：Agent 会话左栏的工作区分组操作复用节点目录的轻量图标语义。分组“新建会话”和“删除工作区”按钮
+默认均不得显示独立边框、白色按钮底或红色危险背景；删除风险继续由明确的无障碍名称和应用内二次确认表达，
+悬停／键盘聚焦反馈保持清晰。不得改变会话创建、工作区删除、折叠、Runtime、OpenHands 或 FlowRun 行为。
+
+验收：补充 Agent 工作台定向 Playwright，覆盖两种操作按钮默认无边框、无独立底色且删除按钮不使用红色；
+运行 Web ESLint、TypeScript typecheck、production build、Alembic head、任务状态唯一性与
+`git diff --check`。本切片使用独立 Git commit。
+
+完成：工作区分组的新建会话与删除按钮收敛为 26px 透明图标动作，默认无边框、白底或红色危险底，颜色与
+节点目录操作一致；悬停使用浅绿反馈，键盘聚焦保留清晰外圈。删除入口的危险语义继续由无障碍名称和应用内
+确认对话框表达，未改变创建、删除或折叠行为。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2481,6 +2497,7 @@ PostgreSQL/Runtime replacement 验证留待 FR-12 最终门禁，不以静态检
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-168 | Web ESLint、TypeScript typecheck、production build；Agent 工作台定向 Playwright；本地真实页面 DOM／视觉核对；Alembic head、任务状态唯一性与 `git diff --check` | PASS：工作区分组的新建会话和删除按钮均为 26×26、0px 边框、透明背景和统一绿色；删除按钮不再常驻红色背景，悬停与键盘聚焦反馈保留。定向 Playwright 1 passed，Web 三项检查通过；未改变会话或工作区行为。 |
 | 2026-09-05 | FR-166 | 受影响 Python `py_compile`；`git diff --check`；Ruff | PASS（静态）：独立 Agent 根目录改为用户 UUID，Runtime 挂载与 OpenHands Handle 对齐；节点物理 Runtime 丢失进入幂等重建路径并保留原 Session/Conversation。Ruff 因本机未安装未执行；真实 Docker／PostgreSQL／Runtime replacement 验证留待 FR-12。 |
 | 2026-09-05 | FR-165 | Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check`；流程编排定向 Playwright | PASS（静态与构建）：目录折叠和顶部导航间距通过 Web 检查，唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT`。Playwright 因本地 Web／API 服务未运行未执行目标断言，未伪记为通过。 |
 | 2026-09-05 | FR-164 | commit 绑定 Platform／Web linux/amd64 远端构建与定向发布；Migration、Compose 健康态、内外网前缀路由、静态 JS、Agent 深层路由、FastGPT 根入口与登录态浏览器请求 | PASS（发布与基础可用性）：commit `2f23110` 已发布，Migration 为 `Exited (0)`，API／Runtime Provider healthy，Worker／Web 为 Up，页面和带前缀 API 请求正常。BLOCKED（真实暂停）：既有 Agent Workspace Runtime 的 `/runtime/workspace` 只读挂载导致 OpenHands 创建工作目录时报 `Errno 30`、新会话 API 返回 502，未进入暂停按钮阶段，未伪记为通过。 |

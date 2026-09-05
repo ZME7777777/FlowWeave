@@ -1269,6 +1269,7 @@ test('selected conversation text is sent and rendered as a compact reference car
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
   const now = new Date().toISOString();
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
@@ -1294,8 +1295,15 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   const projectToggle = projectGroup.locator('.agent-workspace-group-toggle');
 
   const rootConversation = rootGroup.getByRole('button', { name: '根会话' });
+  const rootCreateConversation = rootGroup.getByRole('button', { name: '在根工作区中新建会话' });
+  const projectDelete = projectGroup.getByRole('button', { name: '删除工作区 ai-playbook' });
   await expect(rootConversation).toBeVisible();
   await expect(rootConversation).toHaveCSS('height', '38px');
+  await expect(rootCreateConversation).toHaveCSS('border-top-width', '0px');
+  await expect(rootCreateConversation).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(projectDelete).toHaveCSS('border-top-width', '0px');
+  await expect(projectDelete).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(projectDelete).toHaveCSS('color', 'rgb(66, 107, 85)');
   await rootToggle.click();
   await expect(rootToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeHidden();

@@ -137,10 +137,12 @@
 .agent-file-tree-row>[role=group]{grid-column:1/-1!important}
 .agent-workspace-group>header{display:flex;align-items:center;justify-content:space-between;gap:6px}
 .agent-workspace-group-toggle{min-width:0;flex:1 1 auto}
-.agent-workspace-group-actions{display:flex;flex:0 0 auto;align-items:center;gap:4px}
-.agent-workspace-group-actions>button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #c9d6ce;border-radius:6px;background:#fff;padding:0;color:#28704d}
-.agent-workspace-group-actions>button:hover:not(:disabled){border-color:#8db39b;background:#e7f1ea}
-.agent-workspace-group-actions>button.danger{border-color:#efc9c9;background:#fffafa;color:#a14a4a}
+.agent-workspace-group-actions{display:flex;flex:0 0 auto;align-items:center;gap:2px}
+.agent-workspace-group-actions>button{display:grid;width:26px;height:26px;place-items:center;border:0;border-radius:5px;background:transparent;padding:0;color:#426b55}
+.agent-workspace-group-actions>button:hover:not(:disabled){background:#e6f0e9;color:#276540}
+.agent-workspace-group-actions>button.danger{border:0;background:transparent;color:#426b55}
+.agent-workspace-group-actions>button.danger:hover:not(:disabled){background:#e6f0e9;color:#276540}
+.agent-workspace-group-actions>button:focus-visible{outline:2px solid #83aa92;outline-offset:1px}
 .agent-workspace-group-actions>button:disabled{cursor:not-allowed;opacity:.45}
 
 /* File-tree maintenance controls: selection and disclosure stay adjacent at
