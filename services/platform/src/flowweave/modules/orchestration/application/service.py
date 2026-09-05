@@ -4340,7 +4340,6 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
                 else FlowRunRuntime.node_attempt_id.is_(None)
             ),
         )
-        .with_for_update()
     )
     if session is None:
         raise DomainError(
