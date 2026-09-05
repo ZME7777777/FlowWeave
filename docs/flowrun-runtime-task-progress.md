@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-166 后续真实 Runtime 验证待环境具备后执行）
+> 下一可执行切片：`无`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2451,6 +2451,20 @@ OpenHands 工作目录和文件/终端 API 使用同一用户根；不得新建�
 
 验收：受影响 Python `py_compile`、`git diff --check` 通过；本机未安装 Ruff，未运行 Ruff；真实 Docker/
 PostgreSQL/Runtime replacement 验证留待 FR-12 最终门禁，不以静态检查替代运行时验收。
+
+### FR-167 独立 Agent 用户目录数据迁移 — DONE
+
+依赖：`FR-166`。
+
+目标：独立 Agent 只使用 `/runtime/workspace/project/users/<user_id>`，历史默认用户使用随机 UUID；迁移旧
+共享项目数据、Conversation 工作目录、附件路径和 Runtime 规格，不保留旧路径兼容分支。
+
+完成：应用层仅生成用户隔离根；远端已备份数据库与 Workspace，历史项目数据和 OpenHands 状态已迁移，
+租户引用、会话 binding、附件路径和 Agent Runtime 规格已更新为随机用户 UUID。当前共享 Runtime 仍无法
+提供操作系统级跨用户目录隔离；该要求需后续按用户独立 Runtime/bind mount 拓扑实施。
+
+验收：远端 PostgreSQL 事务提交成功，Workspace 备份和迁移后目录检查完成；受影响 Python `py_compile`
+与 `git diff --check` 通过。真实新 Runtime 重建与原 Conversation reload 待部署后验证。
 
 ## 7. 恢复工作检查表
 

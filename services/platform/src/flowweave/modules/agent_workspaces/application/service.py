@@ -26,6 +26,7 @@ from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import BackgroundTask, TaskState
 from flowweave.shared.settings import get_settings
+from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID
 
 _SCOPE_KEY = "platform-default"
 _ROOT = PurePosixPath(".agent-workspaces")
@@ -556,6 +557,7 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
             spec_json={
                 "port": 8000,
                 "agent_workspace_id": workspace.id,
+                "agent_user_id": FLOWWEAVE_USER_ID,
                 "project_record_id": workspace.id,
                 "runtime_allocation_id": allocation.id,
                 "runtime_allocation_relative": allocation.relative_root,

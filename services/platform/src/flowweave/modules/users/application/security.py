@@ -15,7 +15,7 @@ _current_principal: ContextVar[Principal | None] = ContextVar(
 _tenant_bypass: ContextVar[bool] = ContextVar("flowweave_tenant_bypass", default=False)
 _tenant_user_id: ContextVar[str | None] = ContextVar("flowweave_tenant_user_id", default=None)
 
-FLOWWEAVE_USER_ID = "00000000-0000-0000-0000-000000000001"
+FLOWWEAVE_USER_ID = "6311561c-06e4-41ad-8afe-aac35cfa83ec"
 USER_USER_ID = "00000000-0000-0000-0000-000000000002"
 _RUNTIME_WORKSPACE_ROOT = "/runtime/workspace"
 
@@ -99,7 +99,10 @@ def user_runtime_project_root(workspace_id: str | None = None) -> str:
     """
 
     del workspace_id
-    return f"{_RUNTIME_WORKSPACE_ROOT}/{current_user_id(default=FLOWWEAVE_USER_ID)}"
+    return (
+        f"{_RUNTIME_WORKSPACE_ROOT}/project/users/"
+        f"{current_user_id(default=FLOWWEAVE_USER_ID)}"
+    )
 
 
 @contextmanager

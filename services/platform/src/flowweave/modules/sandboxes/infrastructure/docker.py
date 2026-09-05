@@ -45,6 +45,7 @@ _RUNTIME_SPEC_FIELDS = frozenset(
         "flow_run_id",
         "node_attempt_id",
         "agent_workspace_id",
+        "agent_user_id",
         "runtime_allocation_id",
         "runtime_allocation_relative",
         "runtime_secret_reference_id",
@@ -967,8 +968,10 @@ chmod 0700 "$target"
                     409,
                 )
             record_id = str((resource.spec_json or {}).get("project_record_id") or "")
+            agent_user_id = str((resource.spec_json or {}).get("agent_user_id") or "")
             workspace_path = (
-                "/runtime/workspace"
+                "/runtime/workspace/project/users/"
+                + agent_user_id
                 if resource.owner_type == "AGENT_WORKSPACE"
                 else (
                     f"/runtime/workspace/{record_id}"
@@ -1145,6 +1148,7 @@ chmod 0700 "$target"
         flow_run_id = str(spec.get("flow_run_id") or "")
         node_attempt_id = str(spec.get("node_attempt_id") or "")
         agent_workspace_id = str(spec.get("agent_workspace_id") or "")
+        agent_user_id = str(spec.get("agent_user_id") or "")
         runtime_allocation_id = str(
             spec.get("runtime_allocation_id") or spec.get("agent_workspace_allocation_id") or ""
         )
@@ -1188,6 +1192,7 @@ chmod 0700 "$target"
         is_agent_workspace = (
             resource.owner_type == "AGENT_WORKSPACE"
             and resource.owner_id == agent_workspace_id
+            and re.fullmatch(r"[0-9a-f-]{36}", agent_user_id) is not None
             and relative == PurePosixPath(".agent-workspaces/platform-default")
         )
         record_id_valid = re.fullmatch(r"[0-9a-f-]{36}", project_record_id) is not None
@@ -1309,7 +1314,8 @@ chmod 0700 "$target"
                 409,
             ) from exc
         record_mount = (
-            f"type=bind,src={allocation_root / 'workspace/project'},dst=/runtime/workspace"
+            f"type=bind,src={allocation_root / 'workspace/project'},"
+            "dst=/runtime/workspace/project"
             if is_agent_workspace
             else (
                 f"type=bind,src={project_root / 'workspace/project' / project_record_id},"

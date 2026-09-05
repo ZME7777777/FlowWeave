@@ -862,11 +862,12 @@ class OpenHandsRuntime:
 
     @staticmethod
     def _validated_workspace_root(value: str) -> PurePosixPath:
-        # Handles reconstructed from pre-record-root data do not carry the
-        # derived root. Keep that historical locator readable; every newly
-        # built Runtime request supplies an explicit record root.
         if not value:
-            return PurePosixPath("/runtime/workspace/project")
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Runtime user workspace root is required",
+                422,
+            )
         root = PurePosixPath(value)
         if (
             not root.is_absolute()
@@ -878,24 +879,29 @@ class OpenHandsRuntime:
                 "The Runtime workspace root is invalid",
                 422,
             )
-        if root == PurePosixPath("/runtime/workspace/project"):
-            return root
         prefix = PurePosixPath("/runtime/workspace")
-        if not root.is_relative_to(prefix) or len(root.relative_to(prefix).parts) != 1:
+        if not root.is_relative_to(prefix):
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",
                 "The Runtime record workspace root is invalid",
                 422,
             )
+        relative = root.relative_to(prefix)
+        if relative.parts[:2] != ("project", "users") or len(relative.parts) != 3:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Runtime user workspace root is invalid",
+                422,
+            )
         try:
-            record_id = str(UUID(root.name))
+            record_id = str(UUID(relative.parts[2]))
         except ValueError as exc:
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",
                 "The Runtime record workspace identity is invalid",
                 422,
             ) from exc
-        if record_id != root.name:
+        if record_id != relative.parts[2]:
             raise DomainError(
                 "RUNTIME_WORKSPACE_INVALID",
                 "The Runtime record workspace identity is not canonical",
