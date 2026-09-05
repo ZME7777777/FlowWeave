@@ -555,43 +555,44 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .account-menu>.account-trigger[aria-expanded=true]{
   position:relative;
   z-index:2;
-  border-color:#cfd9d2;
+  border-color:transparent;
   border-bottom-color:#e5ebe7;
   border-radius:8px 8px 0 0;
   background:#fff;
+  background-clip:padding-box;
   color:var(--ink);
+  box-shadow:none;
 }
 .account-menu>.account-trigger[aria-expanded=true] .account-avatar{background:#e7efe9;color:var(--green)}
 .account-menu>.account-trigger[aria-expanded=true] .account-identity small{color:var(--muted)}
 .account-menu>.account-trigger[aria-expanded=true]>svg{color:var(--green)}
-.account-menu:has(>.account-popover){filter:drop-shadow(0 16px 24px #08150f38)}
 .account-menu>.account-popover{
   z-index:1;
-  top:calc(50% + 19px);
+  top:calc(50% - 20px);
   overflow:hidden;
   border-color:#cfd9d2;
-  border-top:0;
-  border-radius:0 0 8px 8px;
+  border-radius:9px;
   background:#fff;
-  padding:5px;
-  box-shadow:none;
+  padding:45px 5px 5px;
+  box-shadow:0 18px 38px #08150f38;
   transform-origin:top right;
   animation:account-popover-open .14s ease-out;
 }
 .account-menu>.account-popover .account-popover-heading{
-  min-height:32px;
-  grid-template-columns:20px minmax(0,1fr);
-  gap:6px;
-  margin:0 1px 4px;
+  min-height:24px;
+  display:flex;
+  align-items:center;
+  margin:0 3px 4px;
   border-bottom:1px solid #e5ebe7;
   background:transparent;
-  padding:3px 6px 7px;
-  color:var(--green);
+  padding:2px 6px 6px;
+  color:#7b8981;
 }
-.account-menu>.account-popover .account-popover-heading>svg{justify-self:center}
+.account-menu>.account-popover .account-popover-heading>svg{display:none}
+.account-menu>.account-popover .account-popover-heading b{font-size:8px;letter-spacing:.9px}
 @keyframes account-popover-open{
-  from{opacity:0;transform:translateY(-4px)}
-  to{opacity:1;transform:translateY(0)}
+  from{opacity:0}
+  to{opacity:1}
 }
 @media(prefers-reduced-motion:reduce){
   .account-menu>.account-popover{animation:none}
