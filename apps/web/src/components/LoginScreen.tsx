@@ -1,4 +1,4 @@
-import { Boxes, GitFork, Hexagon, LockKeyhole, LogIn, ShieldCheck, UserRound } from 'lucide-react';
+import { Hexagon, LockKeyhole, LogIn, ShieldCheck, UserRound } from 'lucide-react';
 import { FormEvent, useState } from 'react';
 import { api, ApiError } from '../api/client';
 import type { AuthUser } from '../types';
@@ -25,19 +25,77 @@ export function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) 
 
   return <main className="login-page">
     <div className="login-grid">
-      <section className="login-hero" aria-labelledby="login-hero-title">
-        <div className="login-brand"><span><Hexagon size={25} fill="currentColor"/></span><b>FlowWeave</b></div>
-        <div className="login-hero-copy">
-          <p className="eyebrow">AGENT OPERATIONS PLATFORM</p>
-          <h1 id="login-hero-title">让每一次智能执行，<br/><em>清晰、可控、可追溯。</em></h1>
-          <p>将节点能力、流程编排与 Agent 会话汇聚在同一工作空间，从设计到运行始终保持上下文连续。</p>
-          <div className="login-capabilities" aria-label="平台能力">
-            <span><Boxes size={15}/>节点与能力资产</span>
-            <span><GitFork size={15}/>可视化流程编排</span>
-            <span><ShieldCheck size={15}/>运行治理与审计</span>
-          </div>
+      <section className="login-hero" aria-label="Agent 流程动态视觉">
+        <div className="agent-flow-visual" aria-hidden="true">
+          <span className="agent-flow-aurora aurora-one"/>
+          <span className="agent-flow-aurora aurora-two"/>
+          <svg viewBox="0 0 760 680" focusable="false">
+            <defs>
+              <radialGradient id="agent-core-fill">
+                <stop offset="0" stopColor="#f4ffac"/>
+                <stop offset="0.36" stopColor="#d8f256"/>
+                <stop offset="1" stopColor="#4e8a61" stopOpacity="0.15"/>
+              </radialGradient>
+              <linearGradient id="agent-flow-line" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stopColor="#d8f256" stopOpacity="0"/>
+                <stop offset="0.5" stopColor="#d8f256"/>
+                <stop offset="1" stopColor="#7ee6b1" stopOpacity="0"/>
+              </linearGradient>
+              <filter id="agent-glow" x="-80%" y="-80%" width="260%" height="260%">
+                <feGaussianBlur stdDeviation="8" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+
+            <g className="agent-orbit agent-orbit-outer">
+              <ellipse cx="380" cy="340" rx="286" ry="214"/>
+              <circle className="orbit-particle" cx="94" cy="340" r="5"/>
+              <circle className="orbit-particle particle-dim" cx="666" cy="340" r="3"/>
+            </g>
+            <g className="agent-orbit agent-orbit-cross">
+              <ellipse cx="380" cy="340" rx="246" ry="148"/>
+              <circle className="orbit-particle" cx="626" cy="340" r="4"/>
+            </g>
+            <g className="agent-orbit agent-orbit-inner">
+              <ellipse cx="380" cy="340" rx="166" ry="166"/>
+              <circle className="orbit-particle particle-dim" cx="380" cy="174" r="4"/>
+            </g>
+
+            <g className="agent-flow-paths">
+              <path d="M104 180 C220 154 250 270 326 307"/>
+              <path d="M97 483 C201 510 244 430 322 375"/>
+              <path d="M438 310 C516 260 575 180 674 214"/>
+              <path d="M439 374 C520 420 573 502 677 465"/>
+              <path d="M184 102 C260 146 305 198 347 276"/>
+              <path d="M412 404 C438 500 498 553 574 594"/>
+            </g>
+            <g className="agent-flow-paths flow-path-highlight">
+              <path d="M104 180 C220 154 250 270 326 307"/>
+              <path d="M97 483 C201 510 244 430 322 375"/>
+              <path d="M438 310 C516 260 575 180 674 214"/>
+              <path d="M439 374 C520 420 573 502 677 465"/>
+              <path d="M184 102 C260 146 305 198 347 276"/>
+              <path d="M412 404 C438 500 498 553 574 594"/>
+            </g>
+
+            <g className="agent-node node-a"><circle r="25"/><circle r="7"/><path d="M-10 0h20M0-10v20"/></g>
+            <g className="agent-node node-b"><rect x="-23" y="-23" width="46" height="46" rx="12"/><circle r="7"/><path d="M-12-9L12 9M-12 9L12-9"/></g>
+            <g className="agent-node node-c"><polygon points="0,-28 25,-14 25,14 0,28 -25,14 -25,-14"/><circle r="7"/><circle r="14"/></g>
+            <g className="agent-node node-d"><circle r="24"/><path d="M-11-7h22M-11 0h14M-11 7h18"/></g>
+            <g className="agent-node node-e"><rect x="-22" y="-22" width="44" height="44" rx="22"/><path d="M-10 5L-2-5l7 7 8-12"/></g>
+            <g className="agent-node node-f"><polygon points="0,-23 22,-7 14,19 -14,19 -22,-7"/><circle r="6"/></g>
+
+            <g className="agent-core" filter="url(#agent-glow)">
+              <circle className="core-wave core-wave-one" cx="380" cy="340" r="66"/>
+              <circle className="core-wave core-wave-two" cx="380" cy="340" r="66"/>
+              <circle className="core-shell" cx="380" cy="340" r="76"/>
+              <polygon className="core-shape" points="380,282 430,311 430,369 380,398 330,369 330,311"/>
+              <circle className="core-eye" cx="380" cy="340" r="21"/>
+              <circle className="core-seed" cx="380" cy="340" r="8"/>
+            </g>
+          </svg>
+          <span className="agent-flow-grain"/>
         </div>
-        <p className="login-hero-foot"><i/>ARTIFACT-DRIVEN AGENT RUNTIME</p>
       </section>
       <section className="login-panel" aria-label="登录区域">
         <div className="login-card">
