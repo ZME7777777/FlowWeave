@@ -308,6 +308,23 @@ def runtime_allocation_for_agent_workspace(
     return allocation
 
 
+def agent_workspace_record_path(db: Session, workspace_id: str) -> Path:
+    """Return the host directory mounted for one Agent Workspace record."""
+
+    allocation = runtime_allocation_for_agent_workspace(db, workspace_id)
+    project_store = _verify_allocation(allocation) / "workspace" / "project"
+    target = project_store / workspace_id
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise DomainError(
+            "AGENT_WORKSPACE_ALLOCATION_CONFLICT",
+            "The Agent Workspace record path is not a plain directory",
+            409,
+        )
+    target.mkdir(mode=0o700, exist_ok=True)
+    target.chmod(0o700)
+    return target
+
+
 def resolve_agent_workspace_runtime_secret(db: Session, allocation_id: str) -> str:
     allocation = db.get(AgentWorkspaceRuntimeAllocation, allocation_id)
     reference = (
@@ -428,6 +445,7 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
     if workspace is None or workspace.desired_state != "RUNNING":
         return
     allocation = runtime_allocation_for_agent_workspace(db, workspace.id)
+    agent_workspace_record_path(db, workspace.id)
     runtime = db.scalar(
         select(AgentWorkspaceRuntime)
         .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
@@ -539,6 +557,7 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
             spec_json={
                 "port": 8000,
                 "agent_workspace_id": workspace.id,
+                "project_record_id": workspace.id,
                 "runtime_allocation_id": allocation.id,
                 "runtime_allocation_relative": allocation.relative_root,
                 "runtime_secret_reference_id": allocation.secret_reference_id,
@@ -629,6 +648,7 @@ def mark_agent_workspace_runtime_lost(db: Session, workspace_id: str, sandbox_id
 
 __all__ = (
     "agent_workspace_owner_is_active",
+    "agent_workspace_record_path",
     "ensure_default_agent_workspace",
     "mark_agent_workspace_runtime_lost",
     "process_agent_workspace_runtime",

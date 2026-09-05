@@ -89,6 +89,14 @@ class RuntimeProviderSpec(_StrictModel):
         pattern=r"^\.(?:flow-run-runtimes/[0-9a-f]{32}/[0-9a-f-]{36}|agent-workspaces/platform-default)$",
     )
     runtime_secret_reference_id: UUID | None = None
+    project_flow_run_id: UUID | None = None
+    project_allocation_id: UUID | None = None
+    project_allocation_relative: str | None = Field(
+        default=None,
+        max_length=500,
+        pattern=r"^\.flow-run-runtimes/[0-9a-f]{32}/[0-9a-f-]{36}$",
+    )
+    project_record_id: UUID | None = None
 
     @field_validator("workspace_relative")
     @classmethod
@@ -106,6 +114,11 @@ class RuntimeProviderSpec(_StrictModel):
             self.runtime_allocation_relative,
             self.runtime_secret_reference_id,
         )
+        shared_project_fields = (
+            self.project_flow_run_id,
+            self.project_allocation_id,
+            self.project_allocation_relative,
+        )
         # An Attempt Runtime is still scoped to its containing FlowRun, so its
         # contract deliberately carries both identities. The Agent Workspace
         # remains a distinct persistent owner.
@@ -115,12 +128,23 @@ class RuntimeProviderSpec(_StrictModel):
             raise ValueError("Persistent Runtime owner contracts are mutually exclusive")
         if self.node_attempt_id is not None and self.flow_run_id is None:
             raise ValueError("Node Attempt Runtime requires its FlowRun identity")
+        if self.node_attempt_id is not None:
+            if not all(value is not None for value in shared_project_fields):
+                raise ValueError(
+                    "Node Attempt Runtime shared project fields must be provided together"
+                )
+        elif any(value is not None for value in shared_project_fields):
+            raise ValueError("Only a Node Attempt Runtime may select a shared project allocation")
         persistent_runtime = any(
             value is not None
             for value in (self.flow_run_id, self.node_attempt_id, self.agent_workspace_id)
         )
         if persistent_runtime and not all(allocation_fields):
             raise ValueError("Persistent Runtime allocation fields must be provided together")
+        if persistent_runtime and self.project_record_id is None:
+            raise ValueError("Persistent Runtime requires a project record identity")
+        if not persistent_runtime and self.project_record_id is not None:
+            raise ValueError("Temporary Runtime must not select a project record")
         if not persistent_runtime and any(value is not None for value in allocation_fields):
             raise ValueError("Persistent Runtime allocation requires an explicit owner")
         if persistent_runtime == (self.workspace_relative is not None):

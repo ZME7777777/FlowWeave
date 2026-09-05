@@ -211,6 +211,9 @@ def active_runtime_handle(
     connection = sandboxes.active_node_runtime_connection(
         db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
     )
+    workspace = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
+    )
     if connection.runtime_session_id != locator.runtime_session_id:
         raise DomainError(
             "RUNTIME_CONVERSATION_SESSION_DRIFT",
@@ -228,6 +231,7 @@ def active_runtime_handle(
         cursor=cursor,
         runtime_resource_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
+        workspace_root=str(workspace.runtime_mount_root),
     )
 
 

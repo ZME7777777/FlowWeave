@@ -373,6 +373,11 @@ def build_runtime_request(
         if node_attempt_id is not None
         else None
     )
+    workspace_root = (
+        str(workspace_context.runtime_mount_root)
+        if workspace_context is not None
+        else "/runtime/workspace/project"
+    )
     # Interactive Agent conversations are only hosted by the selected node
     # Attempt. They deliberately do not inherit that node's execution
     # contract, inputs, startup prompt, output targets, memory, hooks, or
@@ -389,6 +394,7 @@ def build_runtime_request(
             conversation_id=conversation_id,
             agent_spec=agent_spec,
             node_workspace_ref="",
+            workspace_root=workspace_root,
             interaction_mode="COLLABORATION",
             startup_prompt=None,
             startup_capability_key=None,
@@ -483,6 +489,7 @@ def build_runtime_request(
             conversation_id=conversation_id,
             agent_spec=agent_spec,
             node_workspace_ref=node_workspace_ref,
+            workspace_root=workspace_root,
             interaction_mode=interaction_mode,
             startup_prompt=startup_prompt,
             startup_capability_key=startup_capability_key,
@@ -810,6 +817,7 @@ def build_runtime_request(
         workspace_ref=workspace_ref,
         agent_spec=agent_spec,
         node_workspace_ref=node_workspace_ref,
+        workspace_root=workspace_root,
         interaction_mode=interaction_mode,
         startup_prompt=startup_prompt,
         startup_capability_key=startup_capability_key,

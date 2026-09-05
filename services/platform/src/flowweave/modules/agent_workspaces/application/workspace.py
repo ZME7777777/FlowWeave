@@ -24,14 +24,13 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
 )
 from flowweave.modules.users.application.security import (
+    agent_workspace_runtime_root,
     current_user_id,
     user_runtime_project_root,
 )
 from flowweave.runtime.base import RuntimeWorkspaceFile
 from flowweave.shared.errors import DomainError, not_found
-from flowweave.shared.settings import get_settings
 
-_PROJECT_ROOT = "/runtime/workspace/project"
 _MAX_INDEX_ENTRIES = 20_000
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 _GIT_TIMEOUT_SECONDS = 2
@@ -58,27 +57,7 @@ def _workspace(db: Session, workspace_id: str) -> AgentWorkspace:
 
 def _project_root(db: Session, workspace_id: str) -> Path:
     """Resolve the platform-owned persistent project root without using Runtime."""
-
-    allocation = service.runtime_allocation_for_agent_workspace(db, workspace_id)
-    configured_root = Path(get_settings().workspace_root).absolute()
-    try:
-        storage_metadata = configured_root.lstat()
-        storage_root = configured_root.resolve(strict=True)
-    except OSError as exc:
-        raise DomainError(
-            "AGENT_WORKSPACE_STORAGE_UNAVAILABLE",
-            "工作区持久化目录不可用",
-            503,
-        ) from exc
-    if stat.S_ISLNK(storage_metadata.st_mode) or not stat.S_ISDIR(storage_metadata.st_mode):
-        raise DomainError(
-            "AGENT_WORKSPACE_STORAGE_INVALID",
-            "工作区持久化根目录无效",
-            409,
-        )
-    project_root = storage_root.joinpath(
-        *PurePosixPath(allocation.relative_root).parts, "workspace", "project"
-    )
+    project_root = service.agent_workspace_record_path(db, workspace_id)
     try:
         metadata = project_root.lstat()
         resolved = project_root.resolve(strict=True)
@@ -91,7 +70,7 @@ def _project_root(db: Session, workspace_id: str) -> Path:
     if (
         stat.S_ISLNK(metadata.st_mode)
         or not stat.S_ISDIR(metadata.st_mode)
-        or not resolved.is_relative_to(storage_root)
+        or resolved != project_root.resolve()
     ):
         raise DomainError(
             "AGENT_WORKSPACE_STORAGE_INVALID",
@@ -127,16 +106,22 @@ def _project_root(db: Session, workspace_id: str) -> Path:
     return resolved
 
 
-def _host_path(project_root: Path, runtime_path: str, *, require_file: bool) -> Path:
+def _runtime_root(workspace_id: str) -> str:
+    return agent_workspace_runtime_root(workspace_id)
+
+
+def _host_path(
+    project_root: Path, runtime_root: str, runtime_path: str, *, require_file: bool
+) -> Path:
     parsed = PurePosixPath(runtime_path)
     if (
-        not runtime_path.startswith(_PROJECT_ROOT + "/")
+        not runtime_path.startswith(runtime_root + "/")
         or parsed.as_posix() != runtime_path
         or ".." in parsed.parts
         or any(part.startswith(".") for part in parsed.parts)
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
-    relative = parsed.relative_to(PurePosixPath(_PROJECT_ROOT))
+    relative = parsed.relative_to(PurePosixPath(runtime_root))
     candidate = project_root.joinpath(*relative.parts)
     try:
         metadata = candidate.lstat()
@@ -152,11 +137,13 @@ def _host_path(project_root: Path, runtime_path: str, *, require_file: bool) -> 
     return resolved
 
 
-def _workspace_entries(project_root: Path, working_directory: str) -> list[dict[str, Any]]:
+def _workspace_entries(
+    project_root: Path, runtime_root: str, working_directory: str
+) -> list[dict[str, Any]]:
     host_root = (
         project_root
-        if working_directory == _PROJECT_ROOT
-        else _host_path(project_root, working_directory, require_file=False)
+        if working_directory == runtime_root
+        else _host_path(project_root, runtime_root, working_directory, require_file=False)
     )
     if not host_root.is_dir():
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "当前工作目录不存在", 409)
@@ -182,7 +169,7 @@ def _workspace_entries(project_root: Path, working_directory: str) -> list[dict[
             relative = host_path.relative_to(project_root).as_posix()
             entries.append(
                 {
-                    "path": f"{_PROJECT_ROOT}/{relative}",
+                    "path": f"{runtime_root}/{relative}",
                     "kind": kind,
                     "size": metadata.st_size if kind == "file" else 0,
                 }
@@ -224,21 +211,27 @@ def _repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
     return details
 
 
-def _scope_repositories(project_root: Path, file_roots: tuple[str, ...]) -> list[tuple[Path, str]]:
+def _scope_repositories(
+    project_root: Path, runtime_workspace_root: str, file_roots: tuple[str, ...]
+) -> list[tuple[Path, str]]:
     """Find repositories intersecting the visible scope, including an owning parent repo."""
 
     found: dict[Path, str] = {}
     for runtime_root in file_roots:
         host_root = (
             project_root
-            if runtime_root == _PROJECT_ROOT
-            else _host_path(project_root, runtime_root, require_file=False)
+            if runtime_root == runtime_workspace_root
+            else _host_path(project_root, runtime_workspace_root, runtime_root, require_file=False)
         )
         current = host_root
         while current.is_relative_to(project_root):
             if (current / ".git").is_dir():
                 relative = current.relative_to(project_root).as_posix()
-                found[current] = _PROJECT_ROOT if relative == "." else f"{_PROJECT_ROOT}/{relative}"
+                found[current] = (
+                    runtime_workspace_root
+                    if relative == "."
+                    else f"{runtime_workspace_root}/{relative}"
+                )
                 break
             if current == project_root:
                 break
@@ -248,7 +241,9 @@ def _scope_repositories(project_root: Path, file_roots: tuple[str, ...]) -> list
             if ".git" in directory_names:
                 relative = current_path.relative_to(project_root).as_posix()
                 found[current_path] = (
-                    _PROJECT_ROOT if relative == "." else f"{_PROJECT_ROOT}/{relative}"
+                    runtime_workspace_root
+                    if relative == "."
+                    else f"{runtime_workspace_root}/{relative}"
                 )
             directory_names[:] = [
                 name
@@ -282,9 +277,9 @@ def _working_directory(
         )
         if binding is None:
             raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
-        return binding.working_directory or user_runtime_project_root(), None
+        return binding.working_directory or user_runtime_project_root(workspace_id), None
     if not work_directory_id:
-        return user_runtime_project_root(), None
+        return user_runtime_project_root(workspace_id), None
     directory = work_directories.get_work_directory(db, workspace_id, work_directory_id)
     # A browser draft contains only an ID. Revalidate the active directory and
     # its real project-tree path before exposing it to file or terminal APIs.
@@ -360,7 +355,7 @@ def _file_scope_roots(
         )
     elif work_directory_id:
         raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作目录不存在", 404)
-    user_root = user_runtime_project_root()
+    user_root = user_runtime_project_root(workspace_id)
     if version_id is None:
         return (user_root,)
     relative_paths = tuple(
@@ -376,21 +371,24 @@ def _file_scope_roots(
 
 
 def _scoped_workspace_entries(
-    project_root: Path, working_directory: str, file_roots: tuple[str, ...]
+    project_root: Path,
+    runtime_root: str,
+    working_directory: str,
+    file_roots: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     if len(file_roots) == 1 and file_roots[0] == working_directory:
-        return _workspace_entries(project_root, working_directory)
+        return _workspace_entries(project_root, runtime_root, working_directory)
     entries: list[dict[str, Any]] = []
     for root in file_roots:
         entries.append({"path": root, "kind": "directory", "size": 0})
-        entries.extend(_workspace_entries(project_root, root))
+        entries.extend(_workspace_entries(project_root, runtime_root, root))
         if len(entries) >= _MAX_INDEX_ENTRIES:
             break
     return entries[:_MAX_INDEX_ENTRIES]
 
 
 def _bound_attachment_entries(
-    db: Session, binding_id: str | None, project_root: Path
+    db: Session, binding_id: str | None, project_root: Path, runtime_root: str
 ) -> list[dict[str, Any]]:
     """Return only files explicitly attached to the requested conversation.
 
@@ -409,7 +407,7 @@ def _bound_attachment_entries(
     entries: list[dict[str, Any]] = []
     for attachment in attachments:
         try:
-            host_path = _host_path(project_root, attachment.path, require_file=True)
+            host_path = _host_path(project_root, runtime_root, attachment.path, require_file=True)
             size = host_path.stat().st_size
         except (DomainError, OSError):
             continue
@@ -458,7 +456,7 @@ def _subtree_has_bound_attachment(db: Session, workspace_id: str, path: str) -> 
 
 
 _PRIVATE_ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/project/uploads/"
+    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"[0-9a-f]{32}(?:--[A-Za-z0-9][A-Za-z0-9._-]{0,180})?$"
 )
@@ -499,11 +497,12 @@ def delete_bound_attachment_files(db: Session, workspace_id: str, binding_id: st
         .distinct()
     ).all()
     project_root = _project_root(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
     private_paths = set(paths)
     uploads = project_root / "uploads"
     try:
         private_paths.update(
-            str(PurePosixPath(_PROJECT_ROOT) / "uploads" / candidate.name)
+            str(PurePosixPath(runtime_root) / "uploads" / candidate.name)
             for candidate in uploads.glob(f"{binding_id}-*")
             if candidate.is_file()
         )
@@ -523,7 +522,7 @@ def delete_bound_attachment_files(db: Session, workspace_id: str, binding_id: st
         if referenced_elsewhere is not None:
             continue
         try:
-            _host_path(project_root, path, require_file=True).unlink()
+            _host_path(project_root, runtime_root, path, require_file=True).unlink()
         except (DomainError, OSError):
             # The conversation deletion has already succeeded upstream. Missing
             # files and transient storage cleanup failures must not resurrect it.
@@ -567,9 +566,12 @@ def details(
     scope = _scope_details(db, workspace_id, work_directory_id, binding_id, directory)
     file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
     project_root = _project_root(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
     repositories = [
         _repository_details(host_repository, runtime_path)
-        for host_repository, runtime_path in _scope_repositories(project_root, file_roots)
+        for host_repository, runtime_path in _scope_repositories(
+            project_root, runtime_root, file_roots
+        )
     ]
     try:
         session_service = agent_sessions.conversations
@@ -578,7 +580,7 @@ def details(
     except DomainError:
         container_short_id = None
     return {
-        "root": user_runtime_project_root(),
+        "root": runtime_root,
         "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
@@ -586,8 +588,10 @@ def details(
             {
                 entry["path"]: entry
                 for entry in (
-                    _scoped_workspace_entries(project_root, working_directory, file_roots)
-                    + _bound_attachment_entries(db, binding_id, project_root)
+                    _scoped_workspace_entries(
+                        project_root, runtime_root, working_directory, file_roots
+                    )
+                    + _bound_attachment_entries(db, binding_id, project_root, runtime_root)
                 )
             }.values()
         ),
@@ -608,9 +612,10 @@ def download(
     work_directory_id: str | None = None,
 ) -> Any:
     _workspace(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
     parsed = PurePosixPath(path)
     if (
-        not path.startswith(_PROJECT_ROOT + "/")
+        not path.startswith(runtime_root + "/")
         or parsed.as_posix() != path
         or ".." in parsed.parts
         or any(part in {".git", ".openhands"} for part in parsed.parts)
@@ -623,7 +628,7 @@ def download(
     )
     if not in_workspace_scope and not _is_bound_attachment(db, binding_id, path):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
-    host_path = _host_path(_project_root(db, workspace_id), path, require_file=True)
+    host_path = _host_path(_project_root(db, workspace_id), runtime_root, path, require_file=True)
     try:
         size = host_path.stat().st_size
     except OSError as exc:
@@ -664,6 +669,7 @@ def delete_entries(
     if len(set(paths)) > 100:
         raise DomainError("AGENT_WORKSPACE_DELETE_TOO_MANY", "一次最多删除 100 项", 422)
     _workspace(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
     _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
     roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
     project_root = _project_root(db, workspace_id)
@@ -671,7 +677,7 @@ def delete_entries(
     for path in sorted(set(paths), key=lambda value: (value.count("/"), value)):
         parsed = PurePosixPath(path)
         if (
-            not path.startswith(_PROJECT_ROOT + "/")
+            not path.startswith(runtime_root + "/")
             or parsed.as_posix() != path
             or ".." in parsed.parts
             or any(part in {".git", ".openhands"} or part.startswith(".") for part in parsed.parts)
@@ -680,7 +686,7 @@ def delete_entries(
             or _is_bound_attachment(db, binding_id, path)
         ):
             raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
-        candidate = _host_path(project_root, path, require_file=False)
+        candidate = _host_path(project_root, runtime_root, path, require_file=False)
         metadata = candidate.lstat()
         if stat.S_ISLNK(metadata.st_mode) or not (
             stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
@@ -688,7 +694,8 @@ def delete_entries(
             raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "只能删除普通文件或目录", 422)
         candidates.append((path, candidate))
     selected = [
-        item for item in candidates
+        item
+        for item in candidates
         if not any(item[0].startswith(parent[0] + "/") for parent in candidates if parent != item)
     ]
     for _, candidate in selected:
@@ -713,10 +720,11 @@ def delete_entry(
 ) -> None:
     """Delete a user-visible ordinary file or a verified directory subtree."""
     _workspace(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
     parsed = PurePosixPath(path)
     if (
-        path == _PROJECT_ROOT
-        or not path.startswith(_PROJECT_ROOT + "/")
+        path == runtime_root
+        or not path.startswith(runtime_root + "/")
         or parsed.as_posix() != path
         or ".." in parsed.parts
         or any(part.startswith(".") for part in parsed.parts)
@@ -730,7 +738,7 @@ def delete_entry(
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在当前工作目录范围内", 422)
     if _subtree_has_bound_attachment(db, workspace_id, path):
         raise DomainError("AGENT_WORKSPACE_ATTACHMENT_PROTECTED", "会话附件不能从文件栏删除", 409)
-    host_path = _host_path(_project_root(db, workspace_id), path, require_file=False)
+    host_path = _host_path(_project_root(db, workspace_id), runtime_root, path, require_file=False)
 
     def validate_tree(target: Path) -> None:
         try:
@@ -791,14 +799,15 @@ def create_entry(
     """Create an empty ordinary file or directory in the authorized scope."""
 
     _workspace(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
     name = name.strip()
     if not name or name in {".", ".."} or name.startswith(".") or "/" in name or "\\" in name:
         raise DomainError("AGENT_WORKSPACE_ENTRY_NAME_INVALID", "名称必须是非隐藏的单级文件名", 422)
     if kind not in {"FILE", "DIRECTORY"}:
         raise DomainError("AGENT_WORKSPACE_ENTRY_KIND_INVALID", "只支持创建文件或目录", 422)
     parsed = PurePosixPath(parent_path)
-    if parent_path != user_runtime_project_root() and (
-        not parent_path.startswith(_PROJECT_ROOT + "/")
+    if parent_path != runtime_root and (
+        not parent_path.startswith(runtime_root + "/")
         or parsed.as_posix() != parent_path
         or ".." in parsed.parts
         or any(part.startswith(".") for part in parsed.parts)
@@ -811,7 +820,7 @@ def create_entry(
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父目录不在当前工作目录范围内", 422)
     project_root = _project_root(db, workspace_id)
-    parent = _host_path(project_root, parent_path, require_file=False)
+    parent = _host_path(project_root, runtime_root, parent_path, require_file=False)
     try:
         parent_mode = parent.lstat().st_mode
     except OSError as exc:

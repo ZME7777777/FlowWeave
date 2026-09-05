@@ -172,17 +172,11 @@ def node_attempt_workspace_path(
     node_run_id: str,
     attempt_no: int,
 ) -> Path:
-    """Return the one real work directory inside a new Attempt allocation."""
+    """Return the shared project root used by every node in this FlowRun."""
 
-    return (
-        node_attempt_workspace_project_path(
-            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
-        )
-        / "nodes"
-        / _segment(asset_id, "node")
-        / "sessions"
-        / _segment(node_run_id, "node-run")
-        / str(attempt_no)
+    del asset_id, node_run_id, attempt_no
+    return node_attempt_workspace_project_path(
+        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
     )
 
 
@@ -195,7 +189,7 @@ def ensure_node_attempt_workspace(
     node_run_id: str,
     attempt_no: int,
 ) -> Path:
-    """Materialize and persist the canonical directory for a new Attempt."""
+    """Return the already materialized FlowRun project for a new Attempt."""
 
     candidate = node_attempt_workspace_path(
         db,

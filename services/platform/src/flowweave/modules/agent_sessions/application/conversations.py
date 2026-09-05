@@ -58,7 +58,7 @@ _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT"}
 _COMPACTION_EVENT_WAIT_SECONDS = 120.0
 _SANDBOX_PROJECT_IMAGE = re.compile(
-    r"sandbox:(/runtime/workspace/project/[A-Za-z0-9][A-Za-z0-9._/-]*)"
+    r"sandbox:(/runtime/workspace/(?:project|[0-9a-f-]{36})/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
 _MECHANICAL_TITLE = re.compile(
     r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
@@ -67,7 +67,7 @@ _MECHANICAL_TITLE = re.compile(
 _CONVERSATION_REFERENCE_MARKER = "\n\n---FLOWWEAVE_CONVERSATION_REFERENCES---\n"
 _PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
     (
-        "当前会话的项目根目录是 /runtime/workspace/project。",
+        "当前会话的项目根目录是记录级工作区根目录。",
         "所有需要保留的代码、配置、文档和用户产物必须写入该目录或其子目录。",
         "可按需求或功能自行创建子目录；优先使用相对于项目根的路径。",
         "不要将用户项目文件写入项目根以外的位置，例如 /runtime 的其他目录、/tmp 或 HOME。",
@@ -460,6 +460,7 @@ def _handle(
         conversation_id=binding.openhands_conversation_id,
         runtime_resource_id=sandbox.id,
         runtime_resource_name=sandbox.backend_resource_name,
+        workspace_root=f"/runtime/workspace/{workspace.id}",
     )
 
 
@@ -641,6 +642,7 @@ def _create_native_conversation(
         node={"asset": {"name": "Agent Workspace"}},
         bindings=[],
         workspace_ref=working_directory,
+        workspace_root=f"/runtime/workspace/{workspace.id}",
         conversation_id=binding.openhands_conversation_id,
         agent_spec=agent_spec,
         environment_image=runtime.runtime_image_digest,
@@ -712,7 +714,7 @@ def create_conversation(
         reasoning_effort=provider.reasoning_effort,
         streaming_callback_ready=True,
         openhands_conversation_id=conversation_id,
-        working_directory=user_runtime_project_root(),
+        working_directory=user_runtime_project_root(workspace.id),
         display_title=title.strip() if title and title.strip() else None,
         create_idempotency_key=idempotency_key,
     )
@@ -734,7 +736,7 @@ def create_conversation(
     db.add(command)
     try:
         _create_native_conversation(
-            db, workspace, binding, provider, user_runtime_project_root()
+            db, workspace, binding, provider, user_runtime_project_root(workspace.id)
         )
     except DomainError as exc:
         binding.lifecycle = "FAILED"
@@ -1797,16 +1799,16 @@ def message(
 
 
 _ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/project/uploads/"
+    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"(?P<object>[0-9a-f]{32})(?:--(?P<filename>[A-Za-z0-9][A-Za-z0-9._-]{0,180}))?$"
 )
 _LEGACY_ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/project/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}$"
+    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}$"
 )
 _ATTACHMENT_SUFFIX = re.compile(
     r"(?:\n\n)?(?:已上传到共享工作区的附件：|请查看已上传到共享工作区的附件：)\n"
-    r"(?P<paths>(?:- /runtime/workspace/project/uploads/.+\n?)+)$"
+    r"(?P<paths>(?:- /runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/.+\n?)+)$"
 )
 
 
@@ -1994,6 +1996,7 @@ def upload_attachment(
             conversation_id="",
             runtime_resource_id=resource_id,
             runtime_resource_name=resource_name,
+            workspace_root=f"/runtime/workspace/{workspace.id}",
         )
     else:
         bound_conversation = _binding(db, workspace_id, binding_id)

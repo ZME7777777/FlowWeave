@@ -713,12 +713,13 @@ def test_node_session_list_orders_recent_activity_first(
         ]
 
 
-def test_node_workspace_projection_isolates_node_attempt_work_directories(
+def test_node_workspace_projection_shares_project_across_node_attempts(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each node entry exposes only its own Attempt Runtime project root."""
+    """Every node in one continuous run sees the same project files."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
+        allocate_flow_run_runtime,
         allocate_node_attempt_runtime,
         node_attempt_workspace_project_path,
     )
@@ -750,6 +751,7 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         )
         db.add(second_attempt)
         db.flush()
+        allocate_flow_run_runtime(db, flow_run_id)
         allocate_node_attempt_runtime(db, flow_run_id=flow_run_id, node_attempt_id=first_attempt_id)
         allocate_node_attempt_runtime(
             db, flow_run_id=flow_run_id, node_attempt_id=second_attempt.id
@@ -760,6 +762,7 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         second_root = node_attempt_workspace_project_path(
             db, flow_run_id=flow_run_id, node_attempt_id=second_attempt.id
         )
+        assert first_root == second_root
         (first_root / "first.txt").write_text("first")
         (second_root / "second.txt").write_text("second")
         first_attempt.workspace_ref = str(first_root)
@@ -800,7 +803,7 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         first_runtime_path = "/runtime/workspace/project/first.txt"
         second_runtime_path = "/runtime/workspace/project/second.txt"
         assert first_runtime_path in paths
-        assert second_runtime_path not in paths
+        assert second_runtime_path in paths
         content, _content_type, filename = flow_node_workspace.read_file(
             db,
             flow_run_id=flow_run_id,
@@ -811,6 +814,16 @@ def test_node_workspace_projection_isolates_node_attempt_work_directories(
         )
         assert content == b"first"
         assert filename == "first.txt"
+        second_content, _content_type, second_filename = flow_node_workspace.read_file(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=second_attempt.id,
+            binding_id=None,
+            work_directory_id=None,
+            path=first_runtime_path,
+        )
+        assert second_content == b"first"
+        assert second_filename == "first.txt"
         directory = work_directories.create_flow_run_work_directory(
             db, flow_run_id, first_attempt_id, "节点一目录", (".",)
         )
@@ -857,6 +870,7 @@ def test_node_candidate_output_preview_resolves_only_a_declared_relative_file(
     """A candidate preview never trusts a path from the Conversation transcript."""
 
     from flowweave.modules.sandboxes.application.runtime_allocation import (
+        allocate_flow_run_runtime,
         allocate_node_attempt_runtime,
         node_attempt_workspace_project_path,
     )
@@ -865,6 +879,7 @@ def test_node_candidate_output_preview_resolves_only_a_declared_relative_file(
         flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None
+        allocate_flow_run_runtime(db, flow_run_id)
         allocate_node_attempt_runtime(db, flow_run_id=flow_run_id, node_attempt_id=attempt_id)
         project_root = node_attempt_workspace_project_path(
             db, flow_run_id=flow_run_id, node_attempt_id=attempt_id

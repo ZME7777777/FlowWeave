@@ -178,16 +178,10 @@ def _node_capability_root(
             node_attempt_id=attempt_id,
             manifest_digest=manifest_digest,
         )
-        return sandboxes.node_attempt_capability_path(
-            attempt_id, manifest_digest, *relative_parts
-        )
+        return sandboxes.node_attempt_capability_path(attempt_id, manifest_digest, *relative_parts)
     runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
-    sandboxes.runtime_allocation_for_flow_run(
-        db, runtime_owner_id, manifest_digest=manifest_digest
-    )
-    return sandboxes.flow_run_capability_path(
-        runtime_owner_id, manifest_digest, *relative_parts
-    )
+    sandboxes.runtime_allocation_for_flow_run(db, runtime_owner_id, manifest_digest=manifest_digest)
+    return sandboxes.flow_run_capability_path(runtime_owner_id, manifest_digest, *relative_parts)
 
 
 def _is_gate_sidecar(item: AgentConversationBinding) -> bool:
@@ -991,6 +985,11 @@ def _create_or_reload_node_bootstrap(
         conversation_id=binding.openhands_conversation_id,
         runtime_resource_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
+        workspace_root=str(
+            sandboxes.node_attempt_workspace_context(
+                db, flow_run_id=run.id, node_attempt_id=binding.node_attempt_id
+            ).runtime_mount_root
+        ),
     )
     runtime = get_runtime()
     if allow_existing:
@@ -1646,6 +1645,11 @@ def upload_node_attachment(
             conversation_id="",
             runtime_resource_id=connection.managed_runtime_id,
             runtime_resource_name=connection.resource_name,
+            workspace_root=str(
+                sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+                ).runtime_mount_root
+            ),
         )
     path = get_runtime().upload_workspace_file(
         handle,

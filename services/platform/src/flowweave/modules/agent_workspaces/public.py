@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_workspaces.application.service import (
     agent_workspace_owner_is_active,
+    agent_workspace_record_path,
     ensure_default_agent_workspace,
     mark_agent_workspace_runtime_lost,
     process_agent_workspace_runtime,
@@ -123,6 +124,7 @@ def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: 
 
 __all__ = (
     "agent_workspace_owner_is_active",
+    "agent_workspace_record_path",
     "AgentWorkDirectory",
     "AgentWorkDirectoryPath",
     "AgentWorkDirectoryVersion",

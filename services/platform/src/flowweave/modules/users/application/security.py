@@ -13,13 +13,11 @@ _current_principal: ContextVar[Principal | None] = ContextVar(
     "flowweave_current_principal", default=None
 )
 _tenant_bypass: ContextVar[bool] = ContextVar("flowweave_tenant_bypass", default=False)
-_tenant_user_id: ContextVar[str | None] = ContextVar(
-    "flowweave_tenant_user_id", default=None
-)
+_tenant_user_id: ContextVar[str | None] = ContextVar("flowweave_tenant_user_id", default=None)
 
 FLOWWEAVE_USER_ID = "00000000-0000-0000-0000-000000000001"
 USER_USER_ID = "00000000-0000-0000-0000-000000000002"
-_RUNTIME_PROJECT_ROOT = "/runtime/workspace/project"
+_RUNTIME_WORKSPACE_ROOT = "/runtime/workspace"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,10 +84,19 @@ def tenant_filter_bypassed() -> bool:
     return _tenant_bypass.get()
 
 
-def user_runtime_project_root() -> str:
-    """Return the current user's directory inside the shared Agent container."""
+def agent_workspace_runtime_root(workspace_id: str) -> str:
+    """Return the server-derived Runtime root for one Agent Workspace record."""
 
-    return f"{_RUNTIME_PROJECT_ROOT}/users/{current_user_id(default=FLOWWEAVE_USER_ID)}"
+    return f"{_RUNTIME_WORKSPACE_ROOT}/{workspace_id}"
+
+
+def user_runtime_project_root(workspace_id: str) -> str:
+    """Return the current user's directory inside one Agent Workspace record."""
+
+    return (
+        f"{agent_workspace_runtime_root(workspace_id)}/users/"
+        f"{current_user_id(default=FLOWWEAVE_USER_ID)}"
+    )
 
 
 @contextmanager
@@ -114,6 +121,7 @@ __all__ = (
     "Principal",
     "FLOWWEAVE_USER_ID",
     "USER_USER_ID",
+    "agent_workspace_runtime_root",
     "bind_principal",
     "current_principal",
     "current_user_id",

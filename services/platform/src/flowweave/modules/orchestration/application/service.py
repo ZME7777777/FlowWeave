@@ -472,6 +472,13 @@ def _active_attempt_runtime_handle(
         openhands_conversation_id=openhands_conversation_id,
     )
     output_root = binding.working_directory or "/runtime/workspace/project"
+    workspace_root = output_root
+    if binding.node_attempt_id:
+        workspace_root = str(
+            sandboxes.node_attempt_workspace_context(
+                db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
+            ).runtime_mount_root
+        )
     output_contract = {
         field_key: {
             "artifact_type": str(target.get("artifact_type") or "URL"),
@@ -487,6 +494,7 @@ def _active_attempt_runtime_handle(
             conversation_id=openhands_conversation_id,
             cursor=cursor,
             output_contract=output_contract,
+            workspace_root=workspace_root,
         )
     return replace(
         agent_sessions.flow_node_locator.active_runtime_handle(
@@ -1743,7 +1751,11 @@ def _prepare_gate_plan(
             flow_run_id=run.id,
             node_run_id=node_run.id,
             node_attempt_id=attempt.id,
-            working_directory="/runtime/workspace/project",
+            working_directory=str(
+                sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=run.id, node_attempt_id=attempt.id
+                ).runtime_mount_root
+            ),
             create_idempotency_key=(f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}"),
             display_title=f"门禁 {policy['id']} · 第 {execution_no} 次",
             config=session_config,
@@ -1785,6 +1797,7 @@ def _prepare_gate_plan(
         )
         request = replace(
             request,
+            workspace_root=binding.working_directory or "/runtime/workspace/project",
             runtime_sandbox_id=connection.managed_runtime_id,
             runtime_resource_name=connection.resource_name,
             runtime_base_url=f"http://{connection.resource_name}:8000",
@@ -1924,7 +1937,9 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
         db.scalars(
             select(FlowRunScheduleOccurrence)
             .where(FlowRunScheduleOccurrence.schedule_id == schedule.id)
-            .order_by(FlowRunScheduleOccurrence.created_at.desc(), FlowRunScheduleOccurrence.id.desc())
+            .order_by(
+                FlowRunScheduleOccurrence.created_at.desc(), FlowRunScheduleOccurrence.id.desc()
+            )
         )
     )
     records: list[dict[str, Any]] = []
@@ -1934,7 +1949,9 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
             {
                 "id": occurrence.id,
                 "config_version": occurrence.config_version,
-                "scheduled_for": occurrence.scheduled_for.isoformat() if occurrence.scheduled_for else None,
+                "scheduled_for": occurrence.scheduled_for.isoformat()
+                if occurrence.scheduled_for
+                else None,
                 "trigger_kind": occurrence.trigger_kind,
                 "state": occurrence.state,
                 "error_detail": occurrence.error_detail,
@@ -1974,7 +1991,9 @@ def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     definition = _snapshot_definition(db, flow.id, environment_version_id=environment.id)
     reachable = _reachable_node_keys(definition, payload.start_node_key)
-    first = next(item for item in definition["nodes"] if item["instance_key"] == payload.start_node_key)
+    first = next(
+        item for item in definition["nodes"] if item["instance_key"] == payload.start_node_key
+    )
     input_fields = {
         str(item.get("field_key") or ""): str(item.get("data_type") or "")
         for item in cast(dict[str, Any], first.get("asset") or {}).get("inputs", [])
@@ -2048,7 +2067,9 @@ def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict
 def list_flow_run_schedules(db: Session) -> list[dict[str, Any]]:
     schedules = list(
         db.scalars(
-            select(FlowRunSchedule).order_by(FlowRunSchedule.created_at.desc(), FlowRunSchedule.id.desc())
+            select(FlowRunSchedule).order_by(
+                FlowRunSchedule.created_at.desc(), FlowRunSchedule.id.desc()
+            )
         )
     )
     return [_schedule_dict(db, item) for item in schedules]
@@ -2057,11 +2078,17 @@ def list_flow_run_schedules(db: Session) -> list[dict[str, Any]]:
 def set_flow_run_schedule_state(
     db: Session, schedule_id: str, payload: FlowRunScheduleStateWrite
 ) -> dict[str, Any]:
-    schedule = db.scalar(select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update())
+    schedule = db.scalar(
+        select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
+    )
     if schedule is None:
         raise not_found("flow_run_schedule", schedule_id)
     if schedule.row_version != payload.expected_row_version:
-        raise conflict("schedule was modified", expected=payload.expected_row_version, actual=schedule.row_version)
+        raise conflict(
+            "schedule was modified",
+            expected=payload.expected_row_version,
+            actual=schedule.row_version,
+        )
     schedule.status = payload.status
     schedule.row_version += 1
     if payload.status == "ACTIVE" and schedule.next_run_at is None:
@@ -2071,7 +2098,9 @@ def set_flow_run_schedule_state(
 
 
 def trigger_flow_run_schedule(db: Session, schedule_id: str) -> dict[str, Any]:
-    schedule = db.scalar(select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update())
+    schedule = db.scalar(
+        select(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id).with_for_update()
+    )
     if schedule is None:
         raise not_found("flow_run_schedule", schedule_id)
     occurrence = FlowRunScheduleOccurrence(
@@ -2123,7 +2152,11 @@ def delete_flow_run_schedule(db: Session, schedule_id: str) -> None:
             BackgroundTask.aggregate_id.in_(occurrence_ids),
         )
     )
-    db.execute(delete(FlowRunScheduleOccurrence).where(FlowRunScheduleOccurrence.schedule_id == schedule.id))
+    db.execute(
+        delete(FlowRunScheduleOccurrence).where(
+            FlowRunScheduleOccurrence.schedule_id == schedule.id
+        )
+    )
     db.delete(schedule)
     finish(db)
 
@@ -2220,7 +2253,9 @@ def process_flow_run_schedule_occurrence(
                     ).model_dump(mode="json"),
                     "gates": [],
                     "artifact_ids": {},
-                    "input_urls": cast(dict[str, str], plan.get("input_urls") or {}) if key == schedule.start_node_key else {},
+                    "input_urls": cast(dict[str, str], plan.get("input_urls") or {})
+                    if key == schedule.start_node_key
+                    else {},
                 }
                 for key in _reachable_node_keys(definition, schedule.start_node_key)
             }
@@ -2231,7 +2266,10 @@ def process_flow_run_schedule_occurrence(
                     name=f"{schedule.name} · 连续运行",
                     environment_version_id=schedule.environment_version_id,
                     start_node_key=schedule.start_node_key,
-                    node_plans={key: AutomaticNodePlanWrite.model_validate(value) for key, value in node_plans.items()},
+                    node_plans={
+                        key: AutomaticNodePlanWrite.model_validate(value)
+                        for key, value in node_plans.items()
+                    },
                 ),
             )
             start_automatic_run(
@@ -2729,17 +2767,17 @@ def _create_node_run(
     )
     db.add(attempt)
     db.flush()
-    sandboxes.allocate_node_attempt_runtime(
-        db, flow_run_id=run.id, node_attempt_id=attempt.id
+    sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=attempt.id)
+    attempt.workspace_ref = str(
+        ensure_node_attempt_workspace(
+            db,
+            flow_run_id=run.id,
+            node_attempt_id=attempt.id,
+            asset_id=asset_id,
+            node_run_id=node_run.id,
+            attempt_no=attempt.attempt_no,
+        )
     )
-    attempt.workspace_ref = str(ensure_node_attempt_workspace(
-        db,
-        flow_run_id=run.id,
-        node_attempt_id=attempt.id,
-        asset_id=asset_id,
-        node_run_id=node_run.id,
-        attempt_no=attempt.attempt_no,
-    ))
     for field_key, artifact_id in artifact_ids.items():
         db.add(
             AttemptInputBinding(
@@ -4207,8 +4245,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
     return replace(
         request,
         output_workspace_root=(
-            session_binding.working_directory
-            or str(workspace.runtime_working_directory)
+            session_binding.working_directory or str(workspace.runtime_working_directory)
         ),
     )
 
@@ -4598,7 +4635,7 @@ def _prepare_runtime_outputs(
                 raise DomainError("RUNTIME_OUTPUT_INVALID", "Unsupported runtime output type", 422)
             path = content.strip()
             workspace_path = PurePosixPath(path)
-            project_root = PurePosixPath("/runtime/workspace/project")
+            project_root = PurePosixPath(handle.workspace_root or "/runtime/workspace/project")
             if (
                 not workspace_path.is_absolute()
                 or ".." in workspace_path.parts
@@ -5747,9 +5784,7 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
         )
         db.add(attempt)
         db.flush()
-        sandboxes.allocate_node_attempt_runtime(
-            db, flow_run_id=run.id, node_attempt_id=attempt.id
-        )
+        sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=attempt.id)
         attempt.workspace_ref = str(
             ensure_node_attempt_workspace(
                 db,
@@ -6114,6 +6149,10 @@ def _gate_remediation_prompt(
 def _copy_gate_remediation_workspace(source: Path, target: Path) -> None:
     """Copy one verified Attempt tree without following filesystem links."""
 
+    if source == target:
+        # Attempts in one FlowRun deliberately share the same project.
+        return
+
     try:
         source_metadata = source.lstat()
         target_metadata = target.lstat()
@@ -6251,25 +6290,20 @@ def remediate_gate_failure(
     revision.output_targets_json = current.output_targets_json
     db.add(revision)
     db.flush()
-    sandboxes.allocate_node_attempt_runtime(
-        db, flow_run_id=run.id, node_attempt_id=revision.id
+    sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=revision.id)
+    revision_workspace = ensure_node_attempt_workspace(
+        db,
+        flow_run_id=run.id,
+        node_attempt_id=revision.id,
+        asset_id=asset_id,
+        node_run_id=node_run.id,
+        attempt_no=revision.attempt_no,
     )
-    revision.workspace_ref = str(
-        ensure_node_attempt_workspace(
-            db,
-            flow_run_id=run.id,
-            node_attempt_id=revision.id,
-            asset_id=asset_id,
-            node_run_id=node_run.id,
-            attempt_no=revision.attempt_no,
-        )
-    )
+    revision.workspace_ref = str(revision_workspace)
     source_workspace = sandboxes.node_attempt_workspace_context(
         db, flow_run_id=run.id, node_attempt_id=current.id
     )
-    _copy_gate_remediation_workspace(
-        source_workspace.host_working_directory, Path(revision.workspace_ref)
-    )
+    _copy_gate_remediation_workspace(source_workspace.host_working_directory, revision_workspace)
     for row in _bindings(db, current.id):
         db.add(
             AttemptInputBinding(
@@ -6453,9 +6487,7 @@ def reject_attempt(
     )
     db.add(next_attempt)
     db.flush()
-    sandboxes.allocate_node_attempt_runtime(
-        db, flow_run_id=run.id, node_attempt_id=next_attempt.id
-    )
+    sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=next_attempt.id)
     next_attempt.workspace_ref = str(
         ensure_node_attempt_workspace(
             db,
@@ -6875,7 +6907,11 @@ def delete_run(db: Session, run_id: str) -> None:
                     BackgroundTask.aggregate_id.in_(occurrence_ids),
                 )
             )
-            db.execute(delete(FlowRunScheduleOccurrence).where(FlowRunScheduleOccurrence.schedule_id == schedule_id))
+            db.execute(
+                delete(FlowRunScheduleOccurrence).where(
+                    FlowRunScheduleOccurrence.schedule_id == schedule_id
+                )
+            )
             db.execute(delete(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id))
     finish(db)
 

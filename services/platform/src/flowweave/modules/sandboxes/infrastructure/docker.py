@@ -48,9 +48,21 @@ _RUNTIME_SPEC_FIELDS = frozenset(
         "runtime_allocation_id",
         "runtime_allocation_relative",
         "runtime_secret_reference_id",
+        "project_flow_run_id",
+        "project_allocation_id",
+        "project_allocation_relative",
+        "project_record_id",
     }
 )
-_PRE_NODE_ATTEMPT_RUNTIME_SPEC_FIELDS = _RUNTIME_SPEC_FIELDS - {"node_attempt_id"}
+_PRE_SHARED_PROJECT_RUNTIME_SPEC_FIELDS = _RUNTIME_SPEC_FIELDS - {
+    "project_flow_run_id",
+    "project_allocation_id",
+    "project_allocation_relative",
+    "project_record_id",
+}
+_PRE_NODE_ATTEMPT_RUNTIME_SPEC_FIELDS = _PRE_SHARED_PROJECT_RUNTIME_SPEC_FIELDS - {
+    "node_attempt_id"
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,12 +162,25 @@ class DockerSandboxProvider:
         # node_attempt_id so containers created by that release remain valid.
         expanded = {key: spec.get(key) for key in _RUNTIME_SPEC_FIELDS}
         accepted.add(cls._hash_spec(expanded))
+        project_fields = (
+            spec.get("project_flow_run_id"),
+            spec.get("project_allocation_id"),
+            spec.get("project_allocation_relative"),
+            spec.get("project_record_id"),
+        )
+        if not any(value is not None for value in project_fields):
+            historical_project = {
+                key: spec.get(key) for key in _PRE_SHARED_PROJECT_RUNTIME_SPEC_FIELDS
+            }
+            accepted.add(cls._hash_spec(historical_project))
 
         # Containers created before node_attempt_id existed carry the same
         # expanded model dump without that one field. This compatibility is
         # valid only when the current contract has no Attempt identity; an
         # actual Attempt owner can never be erased from the immutable hash.
-        if spec.get("node_attempt_id") is None:
+        if spec.get("node_attempt_id") is None and not any(
+            value is not None for value in project_fields
+        ):
             legacy = {key: spec.get(key) for key in _PRE_NODE_ATTEMPT_RUNTIME_SPEC_FIELDS}
             accepted.add(cls._hash_spec(legacy))
         return frozenset(accepted)
@@ -924,7 +949,11 @@ chmod 0700 "$target"
             self.settings.sandbox_manager_scope,
             resource.backend_resource_name,
         )
-        persistent_runtime = resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}
+        persistent_runtime = resource.owner_type in {
+            "FLOW_RUN",
+            "FLOW_NODE_ATTEMPT",
+            "AGENT_WORKSPACE",
+        }
         runtime_tmpfs = [
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
@@ -937,9 +966,15 @@ chmod 0700 "$target"
                     "The persistent Runtime Secret Reference is unavailable",
                     409,
                 )
+            record_id = str((resource.spec_json or {}).get("project_record_id") or "")
+            workspace_path = (
+                f"/runtime/workspace/{record_id}"
+                if re.fullmatch(r"[0-9a-f-]{36}", record_id)
+                else "/runtime/workspace/project"  # Legacy persisted resource only.
+            )
             runtime_environment = [
                 "-e",
-                "OH_WORKSPACE_PATH=/runtime/workspace/project",
+                f"OH_WORKSPACE_PATH={workspace_path}",
                 "-e",
                 "OH_CONVERSATIONS_PATH=/runtime/state/conversations",
                 "-e",
@@ -1109,6 +1144,11 @@ chmod 0700 "$target"
         runtime_allocation_id = str(
             spec.get("runtime_allocation_id") or spec.get("agent_workspace_allocation_id") or ""
         )
+        project_flow_run_id = str(spec.get("project_flow_run_id") or "")
+        project_allocation_id = str(spec.get("project_allocation_id") or "")
+        project_relative_raw = str(spec.get("project_allocation_relative") or "")
+        project_record_id = str(spec.get("project_record_id") or "")
+        project_relative = PurePosixPath(project_relative_raw)
         relative = PurePosixPath(relative_raw)
         is_flow_run = (
             resource.owner_type == "FLOW_RUN"
@@ -1125,16 +1165,37 @@ chmod 0700 "$target"
             and relative.parts[0] == ".flow-run-runtimes"
             and relative.parts[-1] == node_attempt_id
         )
+        shared_project_valid = (
+            is_node_attempt
+            and project_flow_run_id == flow_run_id
+            and re.fullmatch(r"[0-9a-f-]{36}", project_allocation_id) is not None
+            and re.fullmatch(r"[0-9a-f-]{36}", project_record_id) is not None
+            and len(project_relative.parts) == 3
+            and project_relative.parts[0] == ".flow-run-runtimes"
+            and project_relative.parts[1] == relative.parts[1]
+            and project_relative.parts[-1] == project_flow_run_id
+            and not project_relative.is_absolute()
+            and not any(part in {"", ".", ".."} for part in project_relative.parts)
+        )
         is_agent_workspace = (
             resource.owner_type == "AGENT_WORKSPACE"
             and resource.owner_id == agent_workspace_id
             and relative == PurePosixPath(".agent-workspaces/platform-default")
+        )
+        record_id_valid = re.fullmatch(r"[0-9a-f-]{36}", project_record_id) is not None
+        direct_record_valid = record_id_valid and (
+            (is_flow_run and project_record_id == flow_run_id)
+            or (is_agent_workspace and project_record_id == agent_workspace_id)
+        )
+        legacy_record = not project_record_id and not any(
+            (project_flow_run_id, project_allocation_id, project_relative_raw)
         )
         if (
             not (is_flow_run or is_node_attempt or is_agent_workspace)
             or relative.is_absolute()
             or not re.fullmatch(r"[0-9a-f-]{36}", runtime_allocation_id)
             or any(part in {"", ".", ".."} for part in relative.parts)
+            or (not legacy_record and not shared_project_valid and not direct_record_valid)
         ):
             raise DomainError(
                 "SANDBOX_WORKSPACE_INVALID",
@@ -1144,9 +1205,18 @@ chmod 0700 "$target"
         source_root, validation_root = self._workspace_source_roots()
         allocation_root = source_root.joinpath(*relative.parts)
         validation_allocation_root = validation_root.joinpath(*relative.parts)
+        project_root = (
+            source_root.joinpath(*project_relative.parts)
+            if shared_project_valid
+            else allocation_root
+        )
+        validation_project_root = (
+            validation_root.joinpath(*project_relative.parts)
+            if shared_project_valid
+            else validation_allocation_root
+        )
         paths = {
             "workspace/project": 0o700,
-            "workspace/nodes": 0o700,
             "state/conversations": 0o700,
             "state/bash-events": 0o700,
             "state/persistence": 0o700,
@@ -1156,6 +1226,8 @@ chmod 0700 "$target"
             # access is read-only at the bind-mount boundary.
             "capabilities": 0o700,
         }
+        if not is_agent_workspace:
+            paths["workspace/nodes"] = 0o700
         try:
             root_metadata = validation_allocation_root.lstat()
             marker = validation_allocation_root / ".flowweave-allocation"
@@ -1181,18 +1253,59 @@ chmod 0700 "$target"
                     or metadata.st_gid != root_metadata.st_gid
                 ):
                     raise ValueError(f"invalid allocation path: {path}")
+            if shared_project_valid:
+                project_allocation_metadata = validation_project_root.lstat()
+                project_marker = validation_project_root / ".flowweave-allocation"
+                project_marker_metadata = project_marker.lstat()
+                project_metadata = (
+                    validation_project_root / "workspace/project" / project_record_id
+                ).lstat()
+                if (
+                    stat.S_ISLNK(project_allocation_metadata.st_mode)
+                    or not stat.S_ISDIR(project_allocation_metadata.st_mode)
+                    or stat.S_IMODE(project_allocation_metadata.st_mode) != 0o700
+                    or not stat.S_ISREG(project_marker_metadata.st_mode)
+                    or stat.S_IMODE(project_marker_metadata.st_mode) != 0o400
+                    or project_marker_metadata.st_uid != project_allocation_metadata.st_uid
+                    or project_marker_metadata.st_gid != project_allocation_metadata.st_gid
+                    or project_marker.read_text(encoding="ascii") != project_allocation_id
+                    or stat.S_ISLNK(project_metadata.st_mode)
+                    or not stat.S_ISDIR(project_metadata.st_mode)
+                    or stat.S_IMODE(project_metadata.st_mode) != 0o700
+                    or project_metadata.st_uid != project_allocation_metadata.st_uid
+                    or project_metadata.st_gid != project_allocation_metadata.st_gid
+                    or project_allocation_metadata.st_uid != root_metadata.st_uid
+                    or project_allocation_metadata.st_gid != root_metadata.st_gid
+                ):
+                    raise ValueError("invalid shared project allocation")
+            elif direct_record_valid:
+                project_metadata = (
+                    validation_allocation_root / "workspace/project" / project_record_id
+                ).lstat()
+                if (
+                    stat.S_ISLNK(project_metadata.st_mode)
+                    or not stat.S_ISDIR(project_metadata.st_mode)
+                    or stat.S_IMODE(project_metadata.st_mode) != 0o700
+                    or project_metadata.st_uid != root_metadata.st_uid
+                    or project_metadata.st_gid != root_metadata.st_gid
+                ):
+                    raise ValueError("invalid record project directory")
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise DomainError(
                 "SANDBOX_WORKSPACE_SOURCE_INVALID",
                 "The persistent Runtime host directories failed integrity validation",
                 409,
             ) from exc
+        record_mount = (
+            f"type=bind,src={project_root / 'workspace/project' / project_record_id},"
+            f"dst=/runtime/workspace/{project_record_id}"
+            if shared_project_valid or direct_record_valid
+            else (
+                f"type=bind,src={project_root / 'workspace/project'},dst=/runtime/workspace/project"
+            )
+        )
         specifications = [
-            (
-                f"type=bind,src={allocation_root / 'workspace/project'},"
-                "dst=/runtime/workspace/project"
-            ),
-            (f"type=bind,src={allocation_root / 'workspace/nodes'},dst=/runtime/workspace/nodes"),
+            record_mount,
             (
                 f"type=bind,src={allocation_root / 'state/conversations'},"
                 "dst=/runtime/state/conversations"
@@ -1219,6 +1332,11 @@ chmod 0700 "$target"
                 "dst=/runtime/capabilities,readonly"
             ),
         ]
+        if not is_agent_workspace:
+            specifications.insert(
+                1,
+                f"type=bind,src={allocation_root / 'workspace/nodes'},dst=/runtime/workspace/nodes",
+            )
         return [item for value in specifications for item in ("--mount", value)]
 
     def _wait_for_agent_server(self, resource_name: str) -> None:

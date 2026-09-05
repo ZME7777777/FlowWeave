@@ -345,6 +345,10 @@ class StartAttemptRequest:
     conversation_id: str | None = None
     agent_spec: RuntimeAgentSpec = field(default_factory=RuntimeAgentSpec)
     node_workspace_ref: str = ""
+    # Server-derived root of the selected product record inside the Runtime.
+    # New requests always set /runtime/workspace/<record-id>. An empty value is
+    # invalid at the adapter boundary and exists only for legacy reconstruction.
+    workspace_root: str = ""
     # Private Runtime parser state for relative FILE candidates. It never
     # enters the Agent-visible output contract.
     output_workspace_root: str = ""
@@ -385,6 +389,9 @@ class RuntimeHandle:
     # after a Worker/adapter process restart. It never enters an OpenHands
     # request or the Agent-visible output contract.
     output_contract: dict[str, dict[str, str]] = field(default_factory=_empty_output_targets)
+    # Preserve the server-derived workspace boundary across reloads, uploads,
+    # polling and native forks.
+    workspace_root: str = ""
 
 
 @dataclass(frozen=True, slots=True)

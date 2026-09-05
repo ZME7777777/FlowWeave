@@ -29,7 +29,7 @@ from flowweave.shared.application.transactions import (
 from flowweave.shared.credentials_crypto import decrypt_secret, encrypt_secret
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import NodeAttempt, NodeRun
+from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun
 from flowweave.shared.settings import get_settings
 
 _ROOT_NAME = ".flow-run-runtimes"
@@ -61,7 +61,7 @@ class RuntimeStorageAllocation:
 
 @dataclass(frozen=True, slots=True)
 class NodeAttemptWorkspaceContext:
-    """The one physical and Runtime-visible workspace owned by an Attempt."""
+    """The project visible to one Attempt and the Runtime that executes it."""
 
     attempt_owned: bool
     host_mount_root: Path
@@ -200,7 +200,56 @@ def node_attempt_capability_path(
 
 
 def openhands_flow_run_project_path() -> PurePosixPath:
+    """Return the historical fixed project path used by legacy Runtimes."""
+
     return PurePosixPath("/runtime/workspace/project")
+
+
+def openhands_flow_run_record_path(record_id: str) -> PurePosixPath:
+    """Return the canonical in-container root for one execution record."""
+
+    return PurePosixPath("/runtime/workspace", _canonical_uuid(record_id, field="Runtime record"))
+
+
+def flow_run_record_id(db: Session, *, flow_run_id: str, node_attempt_id: str) -> str:
+    """Resolve the product record that owns one node workspace."""
+
+    attempt = db.get(NodeAttempt, node_attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id) if attempt is not None else None
+    run = db.get(FlowRun, flow_run_id)
+    if attempt is None or node_run is None or run is None or node_run.flow_run_id != run.id:
+        raise DomainError(
+            "RUNTIME_ALLOCATION_OWNER_INVALID",
+            "The Runtime Attempt does not belong to this FlowRun",
+            409,
+        )
+    # A continuous execution is represented by a (possibly nested) automatic
+    # FlowRun and contains several NodeRuns. Manual/direct entries are the
+    # individual NodeRun records listed inside the outer FlowRun workbench.
+    return run.id if run.run_mode == "AUTOMATIC" else node_run.id
+
+
+def _record_project_path(db: Session, *, flow_run_id: str, node_attempt_id: str) -> Path:
+    runtime_owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    allocation = runtime_allocation_for_flow_run(db, runtime_owner_id)
+    project_store = _verify_layout(allocation) / "workspace" / "project"
+    record_id = flow_run_record_id(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
+    target = project_store / record_id
+    if project_store.is_symlink() or not project_store.is_dir():
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The FlowRun project store is not a plain directory",
+            409,
+        )
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise DomainError(
+            "RUNTIME_WORKSPACE_INVALID",
+            "The execution record workspace is not a plain directory",
+            409,
+        )
+    target.mkdir(mode=0o700, exist_ok=True)
+    target.chmod(0o700)
+    return target
 
 
 def openhands_flow_run_nodes_path() -> PurePosixPath:
@@ -588,32 +637,24 @@ def runtime_allocation_for_node_attempt(
 def node_attempt_workspace_project_path(
     db: Session, *, flow_run_id: str, node_attempt_id: str
 ) -> Path:
-    """Return the persistent project root owned by one NodeAttempt.
+    """Return the outer Runtime's directory for this execution record."""
 
-    A FlowRun and each of its Attempts have distinct Runtime allocations.  The
-    browser-visible ``/runtime/workspace/project`` path must therefore resolve
-    through the Attempt allocation, never through the FlowRun allocation.
-    """
-
-    allocation = runtime_allocation_for_node_attempt(
-        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
-    )
-    return _host_root(allocation.relative_root) / "workspace" / "project"
+    return _record_project_path(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
 
 
 def node_attempt_workspace_context(
     db: Session, *, flow_run_id: str, node_attempt_id: str
 ) -> NodeAttemptWorkspaceContext:
-    """Resolve new Attempt-owned storage or the untouched legacy FlowRun storage.
+    """Resolve the shared project while preserving historical Runtime routing.
 
-    Merely opening an historical Attempt must not allocate new storage.  The
-    compatibility switch is the persisted workspace's actual ownership: only
-    a path already inside this Attempt's allocation uses the Attempt Runtime.
+    New Attempts execute in isolated Attempt Runtimes but mount the FlowRun's
+    shared project. Historical Attempt-private and FlowRun Runtime layouts stay
+    readable without moving or merging existing files.
     """
 
     attempt = db.get(NodeAttempt, node_attempt_id)
     node_run = db.get(NodeRun, attempt.node_run_id) if attempt is not None else None
-    if node_run is None or node_run.flow_run_id != flow_run_id:
+    if attempt is None or node_run is None or node_run.flow_run_id != flow_run_id:
         raise DomainError(
             "RUNTIME_ALLOCATION_OWNER_INVALID",
             "The Runtime Attempt does not belong to this FlowRun",
@@ -635,6 +676,30 @@ def node_attempt_workspace_context(
         )
     )
     if allocation is not None:
+        shared_project = _record_project_path(
+            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+        )
+        if host_working.is_absolute() and host_working.is_relative_to(shared_project):
+            relative = host_working.relative_to(shared_project)
+            if any(part in {"", ".", ".."} for part in relative.parts):
+                raise DomainError(
+                    "NODE_WORKSPACE_INVALID",
+                    "The shared FlowRun workspace layout is invalid",
+                    409,
+                )
+            runtime_root = openhands_flow_run_record_path(
+                flow_run_record_id(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
+            )
+            return NodeAttemptWorkspaceContext(
+                attempt_owned=True,
+                host_mount_root=shared_project,
+                host_working_directory=host_working,
+                runtime_mount_root=runtime_root,
+                runtime_working_directory=runtime_root.joinpath(*relative.parts),
+            )
+
+        # Compatibility for Attempts created while each Runtime owned a private
+        # project. Do not copy or merge those files implicitly.
         attempt_project = _verify_layout(allocation) / "workspace" / "project"
         if host_working.is_absolute() and host_working.is_relative_to(attempt_project):
             relative = host_working.relative_to(attempt_project)
@@ -663,9 +728,7 @@ def node_attempt_workspace_context(
     for host_root, runtime_root in legacy_roots:
         if host_working.is_absolute() and host_working.is_relative_to(host_root):
             relative = host_working.relative_to(host_root)
-            if relative.parts and not any(
-                part in {"", ".", ".."} for part in relative.parts
-            ):
+            if relative.parts and not any(part in {"", ".", ".."} for part in relative.parts):
                 return NodeAttemptWorkspaceContext(
                     attempt_owned=False,
                     host_mount_root=host_root,
@@ -930,6 +993,7 @@ __all__ = (
     "delete_flow_run_runtime_allocation",
     "ensure_capability_manifest_directory",
     "flow_run_capability_path",
+    "flow_run_record_id",
     "flow_run_workspace_nodes_path",
     "flow_run_workspace_project_path",
     "node_attempt_workspace_project_path",
@@ -937,6 +1001,7 @@ __all__ = (
     "openhands_flow_run_capability_path",
     "openhands_flow_run_nodes_path",
     "openhands_flow_run_project_path",
+    "openhands_flow_run_record_path",
     "resolve_runtime_secret",
     "runtime_allocation_for_flow_run",
 )

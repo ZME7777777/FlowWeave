@@ -210,9 +210,7 @@ def _flow_run_root(db: Session, flow_run_id: str, node_attempt_id: str) -> Path:
     ).host_working_directory
 
 
-def _flow_run_runtime_root(
-    db: Session, flow_run_id: str, node_attempt_id: str
-) -> PurePosixPath:
+def _flow_run_runtime_root(db: Session, flow_run_id: str, node_attempt_id: str) -> PurePosixPath:
     _flow_run_attempt(db, flow_run_id, node_attempt_id)
     return sandboxes.node_attempt_workspace_context(
         db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
@@ -301,8 +299,8 @@ def _path_values(db: Session, version_id: str) -> tuple[str, ...]:
     )
 
 
-def _agent_working_directory(working_path: str) -> str:
-    root = PurePosixPath(user_runtime_project_root())
+def _agent_working_directory(workspace_id: str, working_path: str) -> str:
+    root = PurePosixPath(user_runtime_project_root(workspace_id))
     if working_path == ".":
         return root.as_posix()
     return (root / working_path).as_posix()
@@ -328,7 +326,7 @@ def _dict(db: Session, item: AgentWorkDirectory) -> dict[str, Any]:
             "version": version.version,
             "selected_paths": list(_path_values(db, version.id)),
             "working_directory": (
-                _agent_working_directory(version.working_path)
+                _agent_working_directory(str(item.workspace_id), version.working_path)
                 if item.workspace_id is not None
                 else _flow_run_working_directory(
                     db,
@@ -343,12 +341,16 @@ def _dict(db: Session, item: AgentWorkDirectory) -> dict[str, Any]:
     }
 
 
-def root_context(*, agent_workspace: bool = True) -> dict[str, Any]:
+def root_context(
+    *, workspace_id: str | None = None, agent_workspace: bool = True
+) -> dict[str, Any]:
     return {
         "kind": "ROOT",
         "display_name": "根工作区",
         "working_directory": (
-            user_runtime_project_root()
+            user_runtime_project_root(workspace_id)
+            if workspace_id is not None
+            else None
             if agent_workspace
             else _RUNTIME_PROJECT_ROOT.as_posix()
         ),
@@ -362,13 +364,13 @@ def conversation_context(
 
     _workspace(db, workspace_id)
     if work_directory_id is None:
-        return None, user_runtime_project_root()
+        return None, user_runtime_project_root(workspace_id)
     item = _directory(db, workspace_id, work_directory_id, lock=True)
     version = _version(db, item)
     # A version was checked when saved, but the underlying project tree is
     # mutable. Re-check it before handing the path to OpenHands.
     _validate_paths(db, workspace_id, _path_values(db, version.id))
-    return version.id, _agent_working_directory(version.working_path)
+    return version.id, _agent_working_directory(workspace_id, version.working_path)
 
 
 def frozen_conversation_context(
@@ -626,9 +628,7 @@ def frozen_flow_run_conversation_context(
     if version is None:
         raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
     _validate_flow_run_paths(db, flow_run_id, node_attempt_id, _path_values(db, version.id))
-    return _flow_run_working_directory(
-        db, flow_run_id, node_attempt_id, version.working_path
-    )
+    return _flow_run_working_directory(db, flow_run_id, node_attempt_id, version.working_path)
 
 
 __all__ = (

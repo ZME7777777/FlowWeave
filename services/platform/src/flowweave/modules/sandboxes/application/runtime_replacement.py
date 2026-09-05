@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.sandboxes.application.runtime_allocation import (
+    node_attempt_workspace_context,
     resolve_runtime_secret,
 )
 from flowweave.modules.sandboxes.application.runtime_sessions import (
@@ -363,11 +364,12 @@ def _renew(control_db: Session, state: _ReplacementState) -> FlowRunRuntime:
     return session
 
 
-def _handle(resource_name: str, conversation_id: str) -> RuntimeHandle:
+def _handle(resource_name: str, conversation_id: str, *, workspace_root: str = "") -> RuntimeHandle:
     return RuntimeHandle(
         job_id=f"env-chat:{resource_name}",
         conversation_id=conversation_id,
         runtime_resource_name=resource_name,
+        workspace_root=workspace_root,
     )
 
 
@@ -376,8 +378,9 @@ def _probe_identity(
     resource_name: str,
     conversation_id: str,
     expected: RuntimeConversationIdentity | None,
+    workspace_root: str = "",
 ) -> RuntimeConversationIdentity:
-    handle = _handle(resource_name, conversation_id)
+    handle = _handle(resource_name, conversation_id, workspace_root=workspace_root)
     identity = runtime_for("openhands", handle).reload_conversation(
         handle,
         expected=expected,
@@ -507,11 +510,21 @@ def process_flow_run_runtime_replacement(
                 409,
             )
         if binding is not None and source_runtime is not None and source.state == "READY":
+            workspace_root = ""
+            if binding.node_attempt_id and binding.flow_run_id:
+                workspace_root = str(
+                    node_attempt_workspace_context(
+                        db,
+                        flow_run_id=binding.flow_run_id,
+                        node_attempt_id=binding.node_attempt_id,
+                    ).runtime_mount_root
+                )
             try:
                 expected_identity = _probe_identity(
                     resource_name=source_runtime.backend_resource_name,
                     conversation_id=binding.openhands_conversation_id,
                     expected=None,
+                    workspace_root=workspace_root,
                 )
             except DomainError as exc:
                 if exc.code in _NON_RETRYABLE_RELOAD_ERRORS:
@@ -581,10 +594,20 @@ def process_flow_run_runtime_replacement(
             _require_task_lease(db, lease)
 
         if binding is not None:
+            workspace_root = ""
+            if binding.node_attempt_id and binding.flow_run_id:
+                workspace_root = str(
+                    node_attempt_workspace_context(
+                        db,
+                        flow_run_id=binding.flow_run_id,
+                        node_attempt_id=binding.node_attempt_id,
+                    ).runtime_mount_root
+                )
             _probe_identity(
                 resource_name=target_runtime.backend_resource_name,
                 conversation_id=binding.openhands_conversation_id,
                 expected=expected_identity,
+                workspace_root=workspace_root,
             )
 
         if source_runtime is not None:

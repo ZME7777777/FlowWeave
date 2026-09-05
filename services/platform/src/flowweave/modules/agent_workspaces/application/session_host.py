@@ -76,7 +76,7 @@ def resolve_agent_workspace_session_host(
         host_id=workspace.id,
         conversation_scope_id=workspace.id,
         runtime_session_id=runtime.id,
-        working_directory=user_runtime_project_root(),
+        working_directory=user_runtime_project_root(workspace.id),
         model_policy={
             "default_model_provider_id": (
                 preference.default_model_provider_id if preference is not None else None

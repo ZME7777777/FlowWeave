@@ -112,6 +112,11 @@ def _node_attempt_runtime_payload() -> dict[str, object]:
             "runtime_allocation_id": _ENVIRONMENT_ID,
             "runtime_allocation_relative": ".flow-run-runtimes/" + "a" * 32 + "/" + _OWNER_ID,
             "runtime_secret_reference_id": _ENVIRONMENT_VERSION_ID,
+            "project_flow_run_id": _ENVIRONMENT_ID,
+            "project_allocation_id": _RESOURCE_ID,
+            "project_allocation_relative": (
+                ".flow-run-runtimes/" + "a" * 32 + "/" + _ENVIRONMENT_ID
+            ),
             "port": 8000,
             "environment_id": _ENVIRONMENT_ID,
             "environment_version_id": _ENVIRONMENT_VERSION_ID,

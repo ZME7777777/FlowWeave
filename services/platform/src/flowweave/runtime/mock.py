@@ -91,6 +91,7 @@ class MockRuntime:
             job_id=f"mock-job-{request.attempt_id}",
             conversation_id=request.conversation_id or f"mock-conversation-{request.attempt_id}",
             cursor="1",
+            workspace_root=request.workspace_root,
         )
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         return handle
@@ -110,6 +111,7 @@ class MockRuntime:
             job_id=f"mock-job-{request.attempt_id}",
             conversation_id=request.conversation_id or f"mock-conversation-{request.attempt_id}",
             cursor="1",
+            workspace_root=request.workspace_root,
         )
         if request.node.get("config_override", {}).get("mock_human_required"):
             result = RuntimeResult(
@@ -218,7 +220,7 @@ class MockRuntime:
             ).strip("._-")[:181]
             or "attachment"
         )
-        return f"/runtime/workspace/project/uploads/{owner}-{uuid4().hex}--{safe_name}"
+        return f"{handle.workspace_root}/uploads/{owner}-{uuid4().hex}--{safe_name}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         del handle
@@ -367,6 +369,7 @@ class MockRuntime:
             cursor=from_event_id or expected_source_leaf_event_id,
             runtime_resource_id=handle.runtime_resource_id,
             runtime_resource_name=handle.runtime_resource_name,
+            workspace_root=handle.workspace_root,
         )
         self._results[fork_handle.job_id] = RuntimeResult(status="IDLE", cursor=fork_handle.cursor)
         if condenser is not None:

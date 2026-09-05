@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
 from flowweave.modules.sandboxes.application.runtime_allocation import (
+    flow_run_record_id,
     resolve_runtime_secret,
     runtime_allocation_for_flow_run,
     runtime_allocation_for_node_attempt,
@@ -254,10 +255,22 @@ def _create_managed_runtime(
             flow_run_id=attempt_flow_run_id,
             node_attempt_id=attempt_runtime_id,
         )
+        project_allocation = runtime_allocation_for_flow_run(db, flow_run_id)
+        project_record_id = flow_run_record_id(
+            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+        )
+    elif flow_run_runtime:
+        attempt_flow_run_id = None
+        attempt_runtime_id = None
+        node_attempt_allocation = None
+        project_allocation = None
+        project_record_id = flow_run_id
     else:
         attempt_flow_run_id = None
         attempt_runtime_id = None
         node_attempt_allocation = None
+        project_allocation = None
+        project_record_id = None
     flow_run_allocation = (
         node_attempt_allocation
         if node_attempt_runtime
@@ -387,6 +400,20 @@ def _create_managed_runtime(
                                 if flow_run_allocation is not None
                                 else None
                             ),
+                            "project_flow_run_id": (
+                                project_allocation.flow_run_id
+                                if project_allocation is not None
+                                else None
+                            ),
+                            "project_allocation_id": (
+                                project_allocation.id if project_allocation is not None else None
+                            ),
+                            "project_allocation_relative": (
+                                project_allocation.relative_root
+                                if project_allocation is not None
+                                else None
+                            ),
+                            "project_record_id": project_record_id,
                         },
                         idle_expires_at=created_at
                         + timedelta(seconds=get_settings().sandbox_runtime_idle_ttl_seconds)
@@ -710,6 +737,10 @@ def _sandbox_spec_signature(resource: ManagedSandbox) -> tuple[object, ...]:
         resource.image_reference,
         resource.runtime_allocation_id,
         str((resource.spec_json or {}).get("runtime_allocation_relative") or ""),
+        str((resource.spec_json or {}).get("project_flow_run_id") or ""),
+        str((resource.spec_json or {}).get("project_allocation_id") or ""),
+        str((resource.spec_json or {}).get("project_allocation_relative") or ""),
+        str((resource.spec_json or {}).get("project_record_id") or ""),
         str((resource.spec_json or {}).get("workspace_relative") or ""),
     )
 

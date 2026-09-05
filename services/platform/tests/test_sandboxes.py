@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select, text
@@ -1112,6 +1113,106 @@ def test_runtime_workspace_mount_fails_closed(settings, workspace_relative):
         "SANDBOX_WORKSPACE_INVALID",
         "SANDBOX_WORKSPACE_SOURCE_INVALID",
     }
+
+
+def _runtime_allocation_tree(root: Path, allocation_id: str) -> None:
+    root.mkdir(mode=0o700, parents=True)
+    root.chmod(0o700)
+    marker = root / ".flowweave-allocation"
+    marker.write_text(allocation_id, encoding="ascii")
+    marker.chmod(0o400)
+    for relative in (
+        "workspace/project",
+        "workspace/nodes",
+        "state/conversations",
+        "state/bash-events",
+        "state/persistence/profiles",
+        "capabilities",
+    ):
+        path = root / relative
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.chmod(0o700)
+    for relative in ("workspace", "state", "state/persistence"):
+        (root / relative).chmod(0o700)
+
+
+def test_attempt_runtime_mounts_flow_run_project_and_keeps_attempt_state(settings, tmp_path):
+    scope = "a" * 32
+    flow_run_id = "11111111-1111-4111-8111-111111111111"
+    attempt_id = "22222222-2222-4222-8222-222222222222"
+    flow_allocation_id = "33333333-3333-4333-8333-333333333333"
+    attempt_allocation_id = "44444444-4444-4444-8444-444444444444"
+    flow_relative = f".flow-run-runtimes/{scope}/{flow_run_id}"
+    attempt_relative = f".flow-run-runtimes/{scope}/{attempt_id}"
+    flow_root = tmp_path / flow_relative
+    attempt_root = tmp_path / attempt_relative
+    _runtime_allocation_tree(flow_root, flow_allocation_id)
+    _runtime_allocation_tree(attempt_root, attempt_allocation_id)
+    provider = DockerSandboxProvider(
+        _docker_settings(
+            settings,
+            runtime_host_workspace_root=tmp_path,
+            flow_run_runtime_validation_root=tmp_path,
+        )
+    )
+    resource = _runtime_resource()
+    resource.owner_type = "FLOW_NODE_ATTEMPT"
+    resource.owner_id = attempt_id
+    resource.runtime_allocation_id = attempt_allocation_id
+    resource.spec_json = {
+        "flow_run_id": flow_run_id,
+        "node_attempt_id": attempt_id,
+        "runtime_allocation_id": attempt_allocation_id,
+        "runtime_allocation_relative": attempt_relative,
+        "project_flow_run_id": flow_run_id,
+        "project_allocation_id": flow_allocation_id,
+        "project_allocation_relative": flow_relative,
+    }
+
+    mounts = provider._flow_run_runtime_mounts(resource)
+
+    specifications = mounts[1::2]
+    assert (
+        f"type=bind,src={flow_root / 'workspace/project'},dst=/runtime/workspace/project"
+    ) in specifications
+    assert (
+        f"type=bind,src={attempt_root / 'state/conversations'},dst=/runtime/state/conversations"
+    ) in specifications
+    assert (
+        f"type=bind,src={attempt_root / 'capabilities'},dst=/runtime/capabilities,readonly"
+    ) in specifications
+
+
+def test_attempt_runtime_rejects_partial_shared_project_contract(settings, tmp_path):
+    scope = "a" * 32
+    flow_run_id = "11111111-1111-4111-8111-111111111111"
+    attempt_id = "22222222-2222-4222-8222-222222222222"
+    attempt_allocation_id = "44444444-4444-4444-8444-444444444444"
+    attempt_relative = f".flow-run-runtimes/{scope}/{attempt_id}"
+    _runtime_allocation_tree(tmp_path / attempt_relative, attempt_allocation_id)
+    provider = DockerSandboxProvider(
+        _docker_settings(
+            settings,
+            runtime_host_workspace_root=tmp_path,
+            flow_run_runtime_validation_root=tmp_path,
+        )
+    )
+    resource = _runtime_resource()
+    resource.owner_type = "FLOW_NODE_ATTEMPT"
+    resource.owner_id = attempt_id
+    resource.runtime_allocation_id = attempt_allocation_id
+    resource.spec_json = {
+        "flow_run_id": flow_run_id,
+        "node_attempt_id": attempt_id,
+        "runtime_allocation_id": attempt_allocation_id,
+        "runtime_allocation_relative": attempt_relative,
+        "project_flow_run_id": flow_run_id,
+    }
+
+    with pytest.raises(DomainError) as caught:
+        provider._flow_run_runtime_mounts(resource)
+
+    assert caught.value.code == "SANDBOX_WORKSPACE_INVALID"
 
 
 def test_reconciler_recreates_a_missing_expected_resource(

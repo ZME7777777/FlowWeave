@@ -860,11 +860,55 @@ class OpenHandsRuntime:
             relative = Path(path.name)
         return str(self.openhands_workspace_root / relative)
 
+    @staticmethod
+    def _validated_workspace_root(value: str) -> PurePosixPath:
+        # Handles reconstructed from pre-record-root data do not carry the
+        # derived root. Keep that historical locator readable; every newly
+        # built Runtime request supplies an explicit record root.
+        if not value:
+            return PurePosixPath("/runtime/workspace/project")
+        root = PurePosixPath(value)
+        if (
+            not root.is_absolute()
+            or root.as_posix() != value
+            or any(part in {"", ".", ".."} for part in root.parts)
+        ):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Runtime workspace root is invalid",
+                422,
+            )
+        if root == PurePosixPath("/runtime/workspace/project"):
+            return root
+        prefix = PurePosixPath("/runtime/workspace")
+        if not root.is_relative_to(prefix) or len(root.relative_to(prefix).parts) != 1:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Runtime record workspace root is invalid",
+                422,
+            )
+        try:
+            record_id = str(UUID(root.name))
+        except ValueError as exc:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Runtime record workspace identity is invalid",
+                422,
+            ) from exc
+        if record_id != root.name:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Runtime record workspace identity is not canonical",
+                422,
+            )
+        return root
+
     def _request_workspace_path(self, request: StartAttemptRequest) -> str:
+        workspace_root = self._validated_workspace_root(request.workspace_root)
         if request.runtime_working_directory:
             working = PurePosixPath(request.runtime_working_directory)
             workspace_roots = (
-                PurePosixPath("/runtime/workspace/project"),
+                workspace_root,
                 PurePosixPath("/runtime/workspace/nodes"),
             )
             if (
@@ -881,11 +925,10 @@ class OpenHandsRuntime:
             return working.as_posix()
         if request.runtime_resource_name:
             workspace = PurePosixPath(request.workspace_ref)
-            project_root = PurePosixPath("/runtime/workspace/project")
             if (
                 workspace.is_absolute()
                 and ".." not in workspace.parts
-                and workspace.is_relative_to(project_root)
+                and workspace.is_relative_to(workspace_root)
             ):
                 # Agent Workspace conversations may freeze a selected project
                 # subdirectory. The running Agent Server sees the same mounted
@@ -928,9 +971,9 @@ class OpenHandsRuntime:
     def _output_contract(request: StartAttemptRequest) -> list[dict[str, str]]:
         if request.interaction_mode == "COLLABORATION":
             return []
-        workspace_root = request.output_workspace_root or "/runtime/workspace/project"
+        project_root = OpenHandsRuntime._validated_workspace_root(request.workspace_root)
+        workspace_root = request.output_workspace_root or project_root.as_posix()
         root = PurePosixPath(workspace_root)
-        project_root = PurePosixPath("/runtime/workspace/project")
         if (
             not root.is_absolute()
             or root.as_posix() != workspace_root
@@ -1305,6 +1348,7 @@ class OpenHandsRuntime:
             runtime_resource_id=request.runtime_sandbox_id,
             runtime_resource_name=request.runtime_resource_name,
             output_contract={item["field_key"]: item for item in self._contracts[conversation_id]},
+            workspace_root=request.workspace_root,
         )
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
@@ -1401,7 +1445,7 @@ class OpenHandsRuntime:
         working_dir_raw = workspace.get("working_dir")
         working_dir = PurePosixPath(working_dir_raw) if isinstance(working_dir_raw, str) else None
         workspace_roots = (
-            PurePosixPath("/runtime/workspace/project"),
+            self._validated_workspace_root(handle.workspace_root),
             PurePosixPath("/runtime/workspace/nodes"),
         )
         if (
@@ -2978,7 +3022,8 @@ class OpenHandsRuntime:
         # safe display suffix.  The suffix lets the workspace and browsers
         # identify ordinary files (notably PDFs) without trusting a caller
         # supplied path.
-        target = f"/runtime/workspace/project/uploads/{owner_id}-{uuid4().hex}--{safe_name}"
+        workspace_root = self._validated_workspace_root(handle.workspace_root)
+        target = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--{safe_name}"
         try:
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.post(
@@ -3196,9 +3241,7 @@ class OpenHandsRuntime:
         expected_base_url = str(expected["base_url"]).rstrip("/")
         actual_base_url_value = actual.get("base_url")
         actual_base_url = (
-            actual_base_url_value.rstrip("/")
-            if isinstance(actual_base_url_value, str)
-            else None
+            actual_base_url_value.rstrip("/") if isinstance(actual_base_url_value, str) else None
         )
         matches = (
             actual.get("usage_id") == expected["usage_id"]
@@ -3574,6 +3617,7 @@ class OpenHandsRuntime:
             cursor=requested_event_id,
             runtime_resource_id=handle.runtime_resource_id,
             runtime_resource_name=handle.runtime_resource_name,
+            workspace_root=handle.workspace_root,
         )
         completed_event_id = self.resolve_fork_boundary(source_handle, requested_event_id)
         if completed_event_id == requested_event_id:
@@ -3670,6 +3714,7 @@ class OpenHandsRuntime:
             cursor=leaf,
             runtime_resource_id=handle.runtime_resource_id,
             runtime_resource_name=handle.runtime_resource_name,
+            workspace_root=handle.workspace_root,
         )
         return RuntimeForkResult(
             handle=fork_handle,

@@ -2329,6 +2329,24 @@ Agent Runtime 的物理健康态为 Docker `RUNNING`，并在逻辑镜像已更�
 查询改用物理 `RUNNING`，镜像漂移恢复会先删除旧 generation 并从外置状态创建单调递增的 N+1。历史绑定
 继续使用其冻结工作目录，不猜测迁移 OpenHands Conversation。
 
+### FR-160 记录级 Runtime Workspace 根目录 — DONE
+
+依赖：`FR-159`。
+
+目标：同一条执行记录中的多个节点共享一个服务端推导的记录级根目录；节点不再把
+`/runtime/workspace/<node>/sessions/<attempt>` 当作项目根。FlowRun 的项目、OpenHands
+workspace、FlowWeave 文件与输入输出附件均按记录 UUID 隔离并挂载到
+`/runtime/workspace/<record-id>`，不同记录之间保持独立。节点 Runtime 仍可拥有自己的
+状态与能力目录，但共享所属 FlowRun 的记录项目目录；历史旧路径继续只读兼容，不隐式搬迁。
+
+完成：新增记录根路径解析、共享项目挂载和规格字段；节点会话、终端、附件、文件 API、输出
+合同与 OpenHands reload 均携带并校验记录根；Agent Workspace 也将其持久项目提升为 workspace
+记录根。新增跨节点共享与部分规格拒绝测试，保留 UUID、租户、符号链接和权限校验。
+
+验收：受影响 Python `py_compile`、Ruff format/check、OpenHands 定向 pytest（95 passed）、
+`git diff --check` 通过；容器/数据库定向测试因本机 Docker daemon 未运行无法执行，未伪记为通过。
+唯一 Alembic head 未变，任务状态无 `CURRENT`。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
