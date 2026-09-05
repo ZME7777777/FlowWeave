@@ -166,6 +166,14 @@ function CandidateOutputReply({ outputs, onPreviewFile }: {
   })}</div></section>;
 }
 
+const PAUSE_INTERRUPTION_CONTENT = 'Tool call interrupted before completion. The conversation was paused.';
+
+function isPauseInterruptionEvent(event: OpenHandsConversationEvent): boolean {
+  return event.event_type === 'ERROR'
+    && String(event.payload.source_type ?? '') === 'AgentErrorEvent'
+    && String(event.payload.content ?? '') === PAUSE_INTERRUPTION_CONTENT;
+}
+
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
   const content = typeof event.payload.content === 'string' ? event.payload.content : '';
   const thought = typeof event.payload.thought === 'string' ? event.payload.thought : '';
@@ -850,11 +858,7 @@ const NETWORK_ERROR_CODES = new Set([
 ]);
 
 function isPauseInterruption(item: Item): boolean {
-  const sourceType = String(item.event.payload.source_type ?? '');
-  const content = item.content.toLowerCase();
-  return sourceType === 'AgentErrorEvent'
-    && content.includes('tool call interrupted before completion')
-    && content.includes('conversation was paused');
+  return isPauseInterruptionEvent(item.event);
 }
 
 function ConversationFailure({ item }: { item: Item }) {
@@ -908,8 +912,15 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [condensationElapsed, setCondensationElapsed] = useState(0);
   const [selectedReference, setSelectedReference] = useState<{ reference: ConversationReference; left: number; top: number }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
-  const turns = useMemo(() => turnsFor(events), [events]);
-  const avatarSlots = useMemo(() => subagentAvatarSlots(events), [events]);
+  // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
+  // the authoritative event for recovery and audit, but it is neither an
+  // execution failure nor useful conversation content.
+  const visibleEvents = useMemo(
+    () => events.filter(event => !isPauseInterruptionEvent(event)),
+    [events],
+  );
+  const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
     id: turn.user.event.id,
     content: turn.user.content,
