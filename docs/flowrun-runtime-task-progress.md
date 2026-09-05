@@ -2366,6 +2366,20 @@ stale active generation 清除旧指针，仍运行的 generation 继续触发 f
 涉及 Docker/数据库的完整定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture
 无法启动而未执行断言，未伪记为通过。
 
+### FR-162 记录级工作目录会话绑定约束 — DONE
+
+依赖：`FR-161`。
+
+目标：数据库对 Agent Conversation binding 的工作目录约束必须接受当前记录级 Runtime 根
+`/runtime/workspace/<record-id>` 及其子目录，同时继续接受历史 `/runtime/workspace/project` 路径。
+
+完成：新增 `0097_record_workspace_binding_path` 迁移并同步 ORM 检查约束；补充记录 UUID 工作目录绑定回归。
+远端故障日志确认此前所有新 Attempt 均在 binding insert 阶段被旧约束拒绝，返回的通用 `DATA_CONFLICT`
+并非重名或重复关联。
+
+验收：受影响 Python `py_compile`、`git diff --check` 通过；本机缺少 SQLAlchemy 且 Docker daemon 不可用，
+未运行数据库行为测试，部署后使用远端 PostgreSQL 迁移和真实启动请求复验。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2381,6 +2395,7 @@ stale active generation 清除旧指针，仍运行的 generation 继续触发 f
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-162 | 受影响 Python `py_compile`；`git diff --check`；远端 PostgreSQL 约束与真实 FlowRun Attempt 启动请求 | PASS：新增迁移已应用后，记录级 `/runtime/workspace/<UUID>` binding 可写入；历史路径保持兼容，真实启动请求不再因 `ck_agent_conversation_working_directory` 返回 409。 |
 | 2026-09-05 | FR-161 | 受影响 Python `py_compile`、Ruff；Runtime Provider 规格单测；`git diff --check`；Docker Provider 定向 pytest | PASS（静态与纯模型）：历史持久规格可被 Runtime Provider 解析，部分 shared-project 规格仍拒绝；挂载与历史恢复代码通过语法和 whitespace 检查。容器/数据库相关 3 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
 | 2026-09-05 | FR-159 | 受影响 Python `py_compile`、Ruff format/check、生产源码定向 Pyright（0 errors）；纯逻辑旧 schema 哈希兼容／空字段稳定／真实漂移拒绝探针；Alembic head、任务状态唯一性与 `git diff --check`；定向平台 pytest | PASS（静态与纯逻辑）：旧 FlowRun、Agent Workspace 及新增 Attempt schema 的既有容器哈希可精确兼容，新哈希不受可选空字段影响，真实 allocation 漂移继续返回 `SANDBOX_RESOURCE_CONFLICT`；Agent Runtime 健康态和镜像 N+1 恢复代码通过静态检查。唯一 Alembic head 为 `0096_shared_business_resources`。9 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
 | 2026-09-05 | FR-158 | Web ESLint、TypeScript typecheck/production build；定向 Playwright（1 passed）；`git diff --check` 与任务状态唯一性 | PASS：发送后的会话引用卡片可点击，弹窗显示完整所选文本，“定位原消息”关闭预览并滚回 source event；正文仍不展开引用内容。 |

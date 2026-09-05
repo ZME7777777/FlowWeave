@@ -178,6 +178,30 @@ def test_binding_is_an_idempotent_minimal_locator(
         assert "flow_run_id" in AgentConversationBinding.__table__.columns
 
 
+def test_binding_accepts_record_scoped_runtime_workspace(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id = _runtime_context(db)
+        record_id = str(uuid4())
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            runtime_session_id=runtime_session_id,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=record_id,
+            flow_run_id=flow_run_id,
+            node_run_id=record_id,
+            node_attempt_id=record_id,
+            working_directory=f"/runtime/workspace/{record_id}",
+            openhands_conversation_id=str(uuid4()),
+            lifecycle="PROVISIONING",
+            create_idempotency_key=f"record-workspace:{record_id}",
+        )
+        db.add(binding)
+        db.flush()
+
+
 def test_unbound_conversation_fails_closed(
     db_session_factory: sessionmaker[Session],
 ) -> None:

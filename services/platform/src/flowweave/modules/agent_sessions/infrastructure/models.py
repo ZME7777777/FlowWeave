@@ -44,8 +44,12 @@ class AgentConversationBinding(Base):
             name="uq_agent_conversation_owner_create_key",
         ),
         CheckConstraint(
-            "working_directory IS NULL OR working_directory = '/runtime/workspace/project' "
-            "OR working_directory LIKE '/runtime/workspace/project/%'",
+            "working_directory IS NULL "
+            "OR working_directory = '/runtime/workspace/project' "
+            "OR working_directory LIKE '/runtime/workspace/project/%' "
+            "OR working_directory ~ '^/runtime/workspace/"
+            "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+            "(/.*)?$'",
             name="ck_agent_conversation_working_directory",
         ),
         CheckConstraint(
