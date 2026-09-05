@@ -82,6 +82,7 @@ class RuntimeProviderSpec(_StrictModel):
     flow_run_id: UUID | None = None
     node_attempt_id: UUID | None = None
     agent_workspace_id: UUID | None = None
+    agent_user_id: UUID | None = None
     runtime_allocation_id: UUID | None = None
     runtime_allocation_relative: str | None = Field(
         default=None,
@@ -126,6 +127,10 @@ class RuntimeProviderSpec(_StrictModel):
             self.flow_run_id is not None or self.node_attempt_id is not None
         ):
             raise ValueError("Persistent Runtime owner contracts are mutually exclusive")
+        if self.agent_workspace_id is not None and self.agent_user_id is None:
+            raise ValueError("Agent Workspace Runtime requires its user identity")
+        if self.agent_workspace_id is None and self.agent_user_id is not None:
+            raise ValueError("Only an Agent Workspace Runtime may select a user identity")
         if self.node_attempt_id is not None and self.flow_run_id is None:
             raise ValueError("Node Attempt Runtime requires its FlowRun identity")
         if self.node_attempt_id is not None:
