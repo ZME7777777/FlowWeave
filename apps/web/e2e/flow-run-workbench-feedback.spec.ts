@@ -1,6 +1,12 @@
 import { expect, test } from '@playwright/test';
 
 const now = '2026-09-01T00:00:00Z';
+const authenticatedUser = {
+  id: '00000000-0000-0000-0000-000000000001',
+  username: 'flowweave',
+  role: 'SUPER_ADMIN',
+  is_super_admin: true,
+};
 const asset = {
   id: 'asset-1', name: '测试节点', description: '', icon_kind: 'LUCIDE', icon_value: 'bot', row_version: 1,
   inputs: [
@@ -124,6 +130,7 @@ test('step configuration is saved before start and direct launch has its own tab
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
     const respond = (body: unknown, status = 200) => route.fulfill({
       status,
       contentType: 'application/json',
@@ -226,6 +233,7 @@ test('run projection stays neutral until record selection and automatic save rep
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
     if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
     if (path === '/api/v1/terminal-environments') return respond([]);
@@ -450,6 +458,7 @@ test('FR-130 running automatic records show execution facts and chat attempts su
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
     const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
@@ -513,6 +522,7 @@ test('returning from an automatic node session preserves the selected automatic 
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
     const respond = (body: unknown, status = 200) => route.fulfill({
       status, contentType: 'application/json', body: JSON.stringify(body),
     });
@@ -573,6 +583,7 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
     const respond = (body: unknown, status = 200) => route.fulfill({
       status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
     });
@@ -640,6 +651,7 @@ test('unstarted chat records can be deleted without a cancellation round trip', 
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
     const respond = (body: unknown, status = 200) => route.fulfill({
       status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
     });
@@ -694,6 +706,7 @@ test('manual and automatic records support modifier selection for deletion while
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
     const respond = (body: unknown, status = 200) => route.fulfill({
       status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
     });
