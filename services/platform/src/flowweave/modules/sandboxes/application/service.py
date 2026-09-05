@@ -264,7 +264,10 @@ def _create_managed_runtime(
         attempt_runtime_id = None
         node_attempt_allocation = None
         project_allocation = None
-        project_record_id = flow_run_id
+        # A FlowRun Runtime is preprovisioned before a concrete execution
+        # record exists.  Mount its project store root; Attempt Runtimes bind
+        # the record-specific directory once a NodeRun is created.
+        project_record_id = None
     else:
         attempt_flow_run_id = None
         attempt_runtime_id = None

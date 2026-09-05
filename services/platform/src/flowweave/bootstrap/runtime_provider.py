@@ -141,8 +141,8 @@ class RuntimeProviderSpec(_StrictModel):
         )
         if persistent_runtime and not all(allocation_fields):
             raise ValueError("Persistent Runtime allocation fields must be provided together")
-        if persistent_runtime and self.project_record_id is None:
-            raise ValueError("Persistent Runtime requires a project record identity")
+        if persistent_runtime and self.project_record_id is None and any(shared_project_fields):
+            raise ValueError("Shared project Runtime requires a project record identity")
         if not persistent_runtime and self.project_record_id is not None:
             raise ValueError("Temporary Runtime must not select a project record")
         if not persistent_runtime and any(value is not None for value in allocation_fields):

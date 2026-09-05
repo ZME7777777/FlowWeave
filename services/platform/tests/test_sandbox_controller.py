@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flowweave.bootstrap import runtime_provider as controller_module
-from flowweave.bootstrap.runtime_provider import create_app
+from flowweave.bootstrap.runtime_provider import RuntimeProviderSpec, create_app
 from flowweave.modules.environments.infrastructure import docker as environments_docker
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
@@ -47,6 +47,39 @@ def _headers() -> dict[str, str]:
 
 def _api_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {_API_KEY}"}
+
+
+def test_runtime_provider_accepts_legacy_persistent_flow_run_spec() -> None:
+    spec = RuntimeProviderSpec(
+        port=8000,
+        flow_run_id=_OWNER_ID,
+        runtime_allocation_id=_ENVIRONMENT_ID,
+        runtime_allocation_relative=".flow-run-runtimes/" + "a" * 32 + "/" + _OWNER_ID,
+        runtime_secret_reference_id=_ENVIRONMENT_VERSION_ID,
+        environment_id=_ENVIRONMENT_ID,
+        environment_version_id=_ENVIRONMENT_VERSION_ID,
+        environment_version_no=1,
+    )
+
+    assert spec.project_record_id is None
+
+
+def test_runtime_provider_rejects_partial_shared_project_without_record() -> None:
+    with pytest.raises(ValueError, match="project record identity"):
+        RuntimeProviderSpec(
+            port=8000,
+            flow_run_id=_OWNER_ID,
+            node_attempt_id=_RESOURCE_ID,
+            runtime_allocation_id=_ENVIRONMENT_ID,
+            runtime_allocation_relative=".flow-run-runtimes/" + "a" * 32 + "/" + _RESOURCE_ID,
+            runtime_secret_reference_id=_ENVIRONMENT_VERSION_ID,
+            environment_id=_ENVIRONMENT_ID,
+            environment_version_id=_ENVIRONMENT_VERSION_ID,
+            environment_version_no=1,
+            project_flow_run_id=_OWNER_ID,
+            project_allocation_id=_ENVIRONMENT_ID,
+            project_allocation_relative=".flow-run-runtimes/" + "a" * 32 + "/" + _OWNER_ID,
+        )
 
 
 def _ensure_payload(**updates: object) -> dict[str, object]:

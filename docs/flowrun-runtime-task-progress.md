@@ -2347,21 +2347,23 @@ workspace、FlowWeave 文件与输入输出附件均按记录 UUID 隔离并挂�
 `git diff --check` 通过；容器/数据库定向测试因本机 Docker daemon 未运行无法执行，未伪记为通过。
 唯一 Alembic head 未变，任务状态无 `CURRENT`。
 
-### FR-161 嵌套自动记录 Runtime 项目挂载校验 — DONE
+### FR-161 嵌套自动记录与历史 Runtime 规格兼容 — DONE
 
 依赖：`FR-160`。
 
 目标：允许嵌套自动记录在自己的 Attempt Runtime 中运行，同时使用父 FlowRun allocation 下按记录 UUID
-隔离的项目目录；Runtime Provider 不得再错误要求项目 allocation owner 等于子 FlowRun，并继续校验
-allocation marker、权限、记录目录和状态挂载的完整性。
+隔离的项目目录；历史 FlowRun Runtime 规格缺少记录字段时可继续重连，尚未创建记录的 FlowRun 预置
+Runtime 使用项目根，并继续校验 allocation marker、权限、记录目录和状态挂载的完整性。
 
 完成：共享项目规格校验改为验证显式项目 allocation owner 的 UUID 与 allocation 根目录一致，保留
-记录目录 `/runtime/workspace/<record-id>` 的独立 bind mount；历史旧路径在进入或确认节点会话时按
-FlowRun allocation 幂等恢复 Runtime；新增父 allocation／子记录回归覆盖，并将原 Attempt Runtime
-挂载断言更新为记录级路径。
+记录目录 `/runtime/workspace/<record-id>` 的独立 bind mount；历史旧路径和缺少 `project_record_id` 的
+持久规格继续走兼容挂载，尚未绑定记录的 FlowRun Runtime 不再要求不存在的记录目录；历史旧路径在
+进入或确认节点会话时按 FlowRun allocation 幂等恢复 Runtime。新增父 allocation／子记录回归覆盖，并
+将原 Attempt Runtime 挂载断言更新为记录级路径。
 
-验收：受影响 Python `py_compile`、`git diff --check` 通过；定向 Provider pytest 因本机 Docker daemon
-未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。
+验收：受影响 Python `py_compile`、Ruff、定向 Runtime Provider 规格单测和 `git diff --check` 通过；
+涉及 Docker/数据库的完整定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture
+无法启动而未执行断言，未伪记为通过。
 
 ## 7. 恢复工作检查表
 
@@ -2378,7 +2380,7 @@ FlowRun allocation 幂等恢复 Runtime；新增父 allocation／子记录回归
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
-| 2026-09-05 | FR-161 | 受影响 Python `py_compile`；`git diff --check`；Runtime Provider 定向 pytest | PASS（静态）：嵌套记录项目 owner 校验与记录级 bind mount 代码通过语法和 whitespace 检查；3 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
+| 2026-09-05 | FR-161 | 受影响 Python `py_compile`、Ruff；Runtime Provider 规格单测；`git diff --check`；Docker Provider 定向 pytest | PASS（静态与纯模型）：历史持久规格可被 Runtime Provider 解析，部分 shared-project 规格仍拒绝；挂载与历史恢复代码通过语法和 whitespace 检查。容器/数据库相关 3 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
 | 2026-09-05 | FR-159 | 受影响 Python `py_compile`、Ruff format/check、生产源码定向 Pyright（0 errors）；纯逻辑旧 schema 哈希兼容／空字段稳定／真实漂移拒绝探针；Alembic head、任务状态唯一性与 `git diff --check`；定向平台 pytest | PASS（静态与纯逻辑）：旧 FlowRun、Agent Workspace 及新增 Attempt schema 的既有容器哈希可精确兼容，新哈希不受可选空字段影响，真实 allocation 漂移继续返回 `SANDBOX_RESOURCE_CONFLICT`；Agent Runtime 健康态和镜像 N+1 恢复代码通过静态检查。唯一 Alembic head 为 `0096_shared_business_resources`。9 个定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 在 setup 阶段失败而未执行断言，未伪记为通过。 |
 | 2026-09-05 | FR-158 | Web ESLint、TypeScript typecheck/production build；定向 Playwright（1 passed）；`git diff --check` 与任务状态唯一性 | PASS：发送后的会话引用卡片可点击，弹窗显示完整所选文本，“定位原消息”关闭预览并滚回 source event；正文仍不展开引用内容。 |
 | 2026-09-05 | FR-156 | Web ESLint、TypeScript typecheck/production build；FlowRun Workbench 定向 Playwright（7 passed，新增逐步配置保存后启动与直接启动独立分类覆盖）；受影响 Python `py_compile`、Ruff；Alembic head、`git diff --check` 与任务状态唯一性；定向平台 pytest；全量 Pyright 基线复核 | PASS（静态与浏览器）：三类记录与统一右侧面板生效，逐步保存不立即执行，记录行启动使用冻结提示词，直接启动独立建档；唯一 Alembic head 为 `0092_node_run_names`。定向平台 pytest 因本机 Docker daemon 未运行，Testcontainers PostgreSQL fixture 在 setup 阶段失败，4 个目标测试未执行断言，未伪记为通过。Pyright 仍报告仓库既有 40 项 Unknown／类型基线错误，本切片新增行无新增诊断。 |
