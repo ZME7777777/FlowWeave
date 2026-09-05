@@ -438,7 +438,8 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     assert "https://example.feishu.cn/docx/prd-input" in system_context
     assert "https://example.feishu.cn/docx/prd-template" not in system_context
     assert "流程输入" in system_context
-    assert "URL 输出返回安全 HTTP(S) uri" in system_context
+    assert "URL 输出必须是安全 HTTP(S) uri" in system_context
+    assert "平台会在服务端单独校验候选输出" in system_context
     assert "不得写入 token、cookie 或凭据" in system_context
     assert payload["agent"]["llm"] == {
         "model": "openai/gpt-5.6-sol",

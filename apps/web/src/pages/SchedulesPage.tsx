@@ -72,7 +72,7 @@ export function SchedulesPage() {
   const { data: flows = [] } = useQuery({ queryKey: ['flows'], queryFn: api.flows });
   const { data: environments = [] } = useQuery({ queryKey: ['terminal-environments'], queryFn: api.terminalEnvironments });
   const refresh = async () => { await qc.invalidateQueries({ queryKey: ['flow-run-schedules'] }); };
-  const toggle = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => setter(old => { const next = new Set(old); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const toggle = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => setter(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const setState = async (schedule: FlowRunSchedule) => { await api.setFlowRunScheduleState(schedule.id, schedule.row_version, schedule.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE'); await refresh(); };
   const trigger = async (schedule: FlowRunSchedule) => { await api.triggerFlowRunSchedule(schedule.id); await refresh(); };
   const remove = async (schedule: FlowRunSchedule) => { if (await dialog.confirm({ title: `删除定时任务“${schedule.name}”？`, message: '仅无执行记录的任务可以直接删除；已有 FlowRun 请先按运行记录的删除规则处理。', confirmLabel: '删除任务', tone: 'danger' })) { await api.deleteFlowRunSchedule(schedule.id); await refresh(); } };

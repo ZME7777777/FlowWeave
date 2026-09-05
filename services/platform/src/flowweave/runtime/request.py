@@ -368,22 +368,8 @@ def build_runtime_request(
     conversation_id: str | None = None,
     node_attempt_id: str | None = None,
 ) -> StartAttemptRequest:
-    conversation_secrets, credential_context = credentials_for_agent(db)
-    if credential_context and agent_spec is not None:
-        context = agent_spec.agent_context
-        agent_spec = replace(
-            agent_spec,
-            agent_context=replace(
-                context,
-                system_message_suffix="\n\n".join(
-                    part for part in (context.system_message_suffix, credential_context) if part
-                ),
-            ),
-        )
     workspace_context = (
-        node_attempt_workspace_context(
-            db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
-        )
+        node_attempt_workspace_context(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
         if node_attempt_id is not None
         else None
     )
@@ -423,7 +409,19 @@ def build_runtime_request(
             runtime_sandbox_id=runtime_sandbox_id,
             runtime_resource_name=runtime_resource_name,
             runtime_base_url=runtime_base_url,
-            conversation_secrets=conversation_secrets,
+            conversation_secrets={},
+        )
+    conversation_secrets, credential_context = credentials_for_agent(db)
+    if credential_context and agent_spec is not None:
+        context = agent_spec.agent_context
+        agent_spec = replace(
+            agent_spec,
+            agent_context=replace(
+                context,
+                system_message_suffix="\n\n".join(
+                    part for part in (context.system_message_suffix, credential_context) if part
+                ),
+            ),
         )
     if workspace_context is not None and not workspace_context.attempt_owned:
         raise DomainError(
@@ -440,9 +438,7 @@ def build_runtime_request(
             manifest_digest=runtime_manifest_hash,
         )
         if node_attempt_id is not None
-        else runtime_allocation_for_flow_run(
-            db, flow_run_id, manifest_digest=runtime_manifest_hash
-        )
+        else runtime_allocation_for_flow_run(db, flow_run_id, manifest_digest=runtime_manifest_hash)
     )
     materialization_owner_id = node_attempt_id or flow_run_id
     asset = cast(dict[str, Any], node.get("asset") or {})
