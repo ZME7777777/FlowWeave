@@ -87,12 +87,19 @@ class FrozenSessionConfig:
 
 
 def system_context(working_directory: str) -> str:
-    if working_directory == PROJECT_ROOT:
-        return PROJECT_ROOT_SYSTEM_CONTEXT
-    return PROJECT_ROOT_SYSTEM_CONTEXT + (
-        f"\n本次会话的默认工作目录是 {working_directory}；"
-        "优先在该目录及其子目录内组织本次工作的文件。"
-    )
+    root = working_directory
+    parsed = Path(working_directory)
+    runtime_prefix = Path("/runtime/workspace")
+    try:
+        relative = parsed.relative_to(runtime_prefix)
+    except ValueError:
+        relative = Path()
+    if relative.parts and len(relative.parts) >= 1:
+        root = (runtime_prefix / relative.parts[0]).as_posix()
+    context = PROJECT_ROOT_SYSTEM_CONTEXT.replace(PROJECT_ROOT, root)
+    if working_directory != root:
+        context += f"\n本次会话的默认工作目录是 {working_directory}；优先在该目录及其子目录内组织本次工作的文件。"
+    return context
 
 
 def default_workspace(db: Session) -> AgentWorkspace | None:

@@ -1010,6 +1010,38 @@ def _apply_reconcile_outcome(
             )
 
             mark_agent_workspace_runtime_lost(control_db, current.owner_id, current.id)
+        elif (
+            errors
+            and runtime_replacement_required
+            and current.kind == "AGENT_RUNTIME"
+            and current.owner_type == "FLOW_NODE_ATTEMPT"
+        ):
+            # Attempt Runtimes have no separate replacement queue. Mark the
+            # missing physical generation for idempotent cleanup and let the
+            # next session access call ``ensure_node_attempt_runtime`` to
+            # provision generation N+1 while preserving the same session and
+            # Conversation locator.
+            current.desired_state = "DELETED"
+            current.next_reconcile_at = now
+            active_session = control_db.scalar(
+                select(FlowRunRuntime)
+                .join(
+                    RuntimeGeneration,
+                    (RuntimeGeneration.runtime_session_id == FlowRunRuntime.id)
+                    & (RuntimeGeneration.generation == FlowRunRuntime.active_generation),
+                )
+                .where(
+                    FlowRunRuntime.node_attempt_id == current.owner_id,
+                    FlowRunRuntime.status == "ACTIVE",
+                    RuntimeGeneration.managed_runtime_id == current.id,
+                    RuntimeGeneration.generation == current.generation,
+                )
+                .with_for_update()
+            )
+            if active_session is not None:
+                active_session.status = "RECONNECTING"
+                active_session.row_version += 1
+                active_session.updated_at = now
         control_db.commit()
     return deleted, errors
 

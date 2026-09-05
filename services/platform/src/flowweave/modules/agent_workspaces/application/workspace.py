@@ -24,7 +24,6 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
 )
 from flowweave.modules.users.application.security import (
-    agent_workspace_runtime_root,
     current_user_id,
     user_runtime_project_root,
 )
@@ -77,12 +76,9 @@ def _project_root(db: Session, workspace_id: str) -> Path:
             "工作区持久化目录无效",
             409,
         )
-    users_root = resolved / "users"
-    user_root = users_root / current_user_id()
+    user_root = resolved / current_user_id()
     try:
-        users_root.mkdir(mode=0o700, exist_ok=True)
         user_root.mkdir(mode=0o700, exist_ok=True)
-        users_metadata = users_root.lstat()
         user_metadata = user_root.lstat()
         resolved_user_root = user_root.resolve(strict=True)
     except OSError as exc:
@@ -92,9 +88,7 @@ def _project_root(db: Session, workspace_id: str) -> Path:
             503,
         ) from exc
     if (
-        stat.S_ISLNK(users_metadata.st_mode)
-        or stat.S_ISLNK(user_metadata.st_mode)
-        or not stat.S_ISDIR(users_metadata.st_mode)
+        stat.S_ISLNK(user_metadata.st_mode)
         or not stat.S_ISDIR(user_metadata.st_mode)
         or not resolved_user_root.is_relative_to(resolved)
     ):
@@ -107,7 +101,7 @@ def _project_root(db: Session, workspace_id: str) -> Path:
 
 
 def _runtime_root(workspace_id: str) -> str:
-    return agent_workspace_runtime_root(workspace_id)
+    return user_runtime_project_root(workspace_id)
 
 
 def _host_path(

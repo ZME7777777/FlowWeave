@@ -968,9 +968,13 @@ chmod 0700 "$target"
                 )
             record_id = str((resource.spec_json or {}).get("project_record_id") or "")
             workspace_path = (
-                f"/runtime/workspace/{record_id}"
-                if re.fullmatch(r"[0-9a-f-]{36}", record_id)
-                else "/runtime/workspace/project"  # Legacy persisted resource only.
+                "/runtime/workspace"
+                if resource.owner_type == "AGENT_WORKSPACE"
+                else (
+                    f"/runtime/workspace/{record_id}"
+                    if re.fullmatch(r"[0-9a-f-]{36}", record_id)
+                    else "/runtime/workspace/project"
+                )
             )
             runtime_environment = [
                 "-e",
@@ -1188,8 +1192,7 @@ chmod 0700 "$target"
         )
         record_id_valid = re.fullmatch(r"[0-9a-f-]{36}", project_record_id) is not None
         direct_record_valid = record_id_valid and (
-            (is_flow_run and project_record_id == flow_run_id)
-            or (is_agent_workspace and project_record_id == agent_workspace_id)
+            is_flow_run and project_record_id == flow_run_id
         )
         legacy_record = not project_record_id and not any(
             (project_flow_run_id, project_allocation_id, project_relative_raw)
@@ -1199,7 +1202,12 @@ chmod 0700 "$target"
             or relative.is_absolute()
             or not re.fullmatch(r"[0-9a-f-]{36}", runtime_allocation_id)
             or any(part in {"", ".", ".."} for part in relative.parts)
-            or (not legacy_record and not shared_project_valid and not direct_record_valid)
+            or (
+                not legacy_record
+                and not shared_project_valid
+                and not direct_record_valid
+                and not is_agent_workspace
+            )
         ):
             raise DomainError(
                 "SANDBOX_WORKSPACE_INVALID",
@@ -1301,11 +1309,16 @@ chmod 0700 "$target"
                 409,
             ) from exc
         record_mount = (
-            f"type=bind,src={project_root / 'workspace/project' / project_record_id},"
-            f"dst=/runtime/workspace/{project_record_id}"
-            if shared_project_valid or direct_record_valid
+            f"type=bind,src={allocation_root / 'workspace/project'},dst=/runtime/workspace"
+            if is_agent_workspace
             else (
-                f"type=bind,src={project_root / 'workspace/project'},dst=/runtime/workspace/project"
+                f"type=bind,src={project_root / 'workspace/project' / project_record_id},"
+                f"dst=/runtime/workspace/{project_record_id}"
+                if shared_project_valid or direct_record_valid
+                else (
+                    f"type=bind,src={project_root / 'workspace/project'},"
+                    "dst=/runtime/workspace/project"
+                )
             )
         )
         specifications = [

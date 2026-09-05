@@ -90,13 +90,16 @@ def agent_workspace_runtime_root(workspace_id: str) -> str:
     return f"{_RUNTIME_WORKSPACE_ROOT}/{workspace_id}"
 
 
-def user_runtime_project_root(workspace_id: str) -> str:
-    """Return the current user's directory inside one Agent Workspace record."""
+def user_runtime_project_root(workspace_id: str | None = None) -> str:
+    """Return the user's stable Runtime project root.
 
-    return (
-        f"{agent_workspace_runtime_root(workspace_id)}/users/"
-        f"{current_user_id(default=FLOWWEAVE_USER_ID)}"
-    )
+    ``workspace_id`` remains accepted for callers that still pass the legacy
+    Agent Workspace identifier, but it is intentionally not part of the
+    product path. Direct Agent sessions are user-owned resources.
+    """
+
+    del workspace_id
+    return f"{_RUNTIME_WORKSPACE_ROOT}/{current_user_id(default=FLOWWEAVE_USER_ID)}"
 
 
 @contextmanager

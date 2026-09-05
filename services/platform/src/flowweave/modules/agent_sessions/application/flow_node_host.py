@@ -28,6 +28,7 @@ from flowweave.modules.environments.public import (
 )
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.manifest import runtime_node
+from flowweave.shared.domain.enums import AttemptState
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import FlowRun, NodeAttempt, NodeRun, RunSnapshot
 
@@ -99,11 +100,23 @@ def resolve_flow_node_session_host(
     workspace = sandboxes.node_attempt_workspace_context(
         db, flow_run_id=run.id, node_attempt_id=attempt.id
     )
+    existing_session_needs_runtime = (
+        workspace.attempt_owned
+        and attempt.conversation_id is not None
+        and attempt.state
+        not in {
+            AttemptState.WAITING_INPUT,
+            AttemptState.START_GATES,
+            AttemptState.START_BLOCKED,
+            AttemptState.WAITING_START_CONFIRMATION,
+        }
+    )
     should_ensure_runtime = (
         workspace.attempt_owned
         and (
             require_start_permission
             or (ensure_startable_runtime and attempt.state == "WAITING_START_CONFIRMATION")
+            or existing_session_needs_runtime
         )
     ) or (not workspace.attempt_owned and (require_start_permission or ensure_startable_runtime))
     if should_ensure_runtime:

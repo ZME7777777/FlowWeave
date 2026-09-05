@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`无`（FR-165 后续范围待拆分）
+> 下一可执行切片：`无`（FR-166 后续真实 Runtime 验证待环境具备后执行）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2434,6 +2434,24 @@ Tab 与 Agent 会话左栏边界更协调；窄屏继续按现有断点收紧。
 验收：Web ESLint、TypeScript typecheck、production build、Alembic head、任务状态唯一性与
 `git diff --check` 通过。定向 Playwright 因本地 Web／API 服务未运行未执行目标断言，未伪记为通过。
 
+### FR-166 Agent 会话 Runtime 身份与节点 Runtime 丢失恢复 — DONE
+
+依赖：`FR-165`。
+
+目标：独立 Agent 会话的项目根严格按当前用户绑定为 `/runtime/workspace/<user-id>`，Runtime 挂载、
+OpenHands 工作目录和文件/终端 API 使用同一用户根；不得新建或继续回退到 `/runtime/workspace/project`。
+节点 Attempt 的物理 Runtime 丢失时，保留原 Runtime Session、Conversation ID、记录级项目目录和外置状态，
+通过幂等重建生成新的物理 Runtime，不再因缺失 Sandbox 直接返回 `RUNTIME_SESSION_NOT_ACTIVE`。
+
+完成：独立 Agent 的用户项目根统一为 `/runtime/workspace/<user-id>`；Agent Workspace 持久项目目录整体
+挂载到 `/runtime/workspace`，OpenHands 环境变量、会话 Handle、工作目录、文件和终端 API 使用同一用户根，
+并保留旧 binding/Conversation 的外置状态。节点 Attempt 的物理 Runtime 丢失时，reconcile 将旧资源标记为
+待清理并冻结 Session 为 `RECONNECTING`；已有会话入口复用原 Session/Conversation，经
+`ensure_node_attempt_runtime` 幂等创建单调递增的新 generation。
+
+验收：受影响 Python `py_compile`、`git diff --check` 通过；本机未安装 Ruff，未运行 Ruff；真实 Docker/
+PostgreSQL/Runtime replacement 验证留待 FR-12 最终门禁，不以静态检查替代运行时验收。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2449,6 +2467,7 @@ Tab 与 Agent 会话左栏边界更协调；窄屏继续按现有断点收紧。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-166 | 受影响 Python `py_compile`；`git diff --check`；Ruff | PASS（静态）：独立 Agent 根目录改为用户 UUID，Runtime 挂载与 OpenHands Handle 对齐；节点物理 Runtime 丢失进入幂等重建路径并保留原 Session/Conversation。Ruff 因本机未安装未执行；真实 Docker／PostgreSQL／Runtime replacement 验证留待 FR-12。 |
 | 2026-09-05 | FR-165 | Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check`；流程编排定向 Playwright | PASS（静态与构建）：目录折叠和顶部导航间距通过 Web 检查，唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT`。Playwright 因本地 Web／API 服务未运行未执行目标断言，未伪记为通过。 |
 | 2026-09-05 | FR-164 | commit 绑定 Platform／Web linux/amd64 远端构建与定向发布；Migration、Compose 健康态、内外网前缀路由、静态 JS、Agent 深层路由、FastGPT 根入口与登录态浏览器请求 | PASS（发布与基础可用性）：commit `2f23110` 已发布，Migration 为 `Exited (0)`，API／Runtime Provider healthy，Worker／Web 为 Up，页面和带前缀 API 请求正常。BLOCKED（真实暂停）：既有 Agent Workspace Runtime 的 `/runtime/workspace` 只读挂载导致 OpenHands 创建工作目录时报 `Errno 30`、新会话 API 返回 502，未进入暂停按钮阶段，未伪记为通过。 |
 | 2026-09-05 | FR-164 | OpenHands 错误投影定向 pytest（2 passed）；Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck/production build；Alembic head、任务状态唯一性与 `git diff --check`；定向 Agent Workspace Playwright | PASS（适配器与静态检查）：暂停产生的合成 `AgentErrorEvent` 保留正式诊断内容但不再渲染任何提示，真实错误展示不变。唯一 Alembic head 为 `0097_record_ws_path`。Playwright 因本地 API 未启动在 Agent 会话导航前超时，目标暂停断言未执行、未伪记为通过。 |

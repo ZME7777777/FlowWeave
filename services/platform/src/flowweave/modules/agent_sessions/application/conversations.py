@@ -460,7 +460,7 @@ def _handle(
         conversation_id=binding.openhands_conversation_id,
         runtime_resource_id=sandbox.id,
         runtime_resource_name=sandbox.backend_resource_name,
-        workspace_root=f"/runtime/workspace/{workspace.id}",
+        workspace_root=user_runtime_project_root(workspace.id),
     )
 
 
@@ -642,7 +642,7 @@ def _create_native_conversation(
         node={"asset": {"name": "Agent Workspace"}},
         bindings=[],
         workspace_ref=working_directory,
-        workspace_root=f"/runtime/workspace/{workspace.id}",
+        workspace_root=user_runtime_project_root(workspace.id),
         conversation_id=binding.openhands_conversation_id,
         agent_spec=agent_spec,
         environment_image=runtime.runtime_image_digest,
@@ -1996,7 +1996,7 @@ def upload_attachment(
             conversation_id="",
             runtime_resource_id=resource_id,
             runtime_resource_name=resource_name,
-            workspace_root=f"/runtime/workspace/{workspace.id}",
+            workspace_root=user_runtime_project_root(workspace.id),
         )
     else:
         bound_conversation = _binding(db, workspace_id, binding_id)
