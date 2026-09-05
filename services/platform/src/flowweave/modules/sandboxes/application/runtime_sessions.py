@@ -1019,22 +1019,23 @@ def active_node_runtime_connection(
 
 
 def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
-    """Remove logical Runtime records after all physical generations are gone."""
+    """Remove all of one FlowRun's Runtime Sessions after physical cleanup."""
 
-    session = db.scalar(
-        select(FlowRunRuntime)
-        .where(
-            FlowRunRuntime.flow_run_id == flow_run_id,
-            FlowRunRuntime.node_attempt_id.is_(None),
+    sessions = list(
+        db.scalars(
+            select(FlowRunRuntime)
+            .where(FlowRunRuntime.flow_run_id == flow_run_id)
+            .with_for_update()
         )
-        .with_for_update()
     )
-    if session is None:
+    if not sessions:
         return
+
+    session_ids = [session.id for session in sessions]
     linked_runtime_id = db.scalar(
         select(RuntimeGeneration.managed_runtime_id)
         .where(
-            RuntimeGeneration.runtime_session_id == session.id,
+            RuntimeGeneration.runtime_session_id.in_(session_ids),
             RuntimeGeneration.managed_runtime_id.is_not(None),
         )
         .limit(1)
@@ -1046,17 +1047,21 @@ def delete_flow_run_runtime_session(db: Session, flow_run_id: str) -> None:
             409,
             {"flow_run_id": flow_run_id, "managed_runtime_id": linked_runtime_id},
         )
-    session.active_generation = None
-    session.replacement_generation = None
-    session.replacement_lease_token = None
-    session.replacement_lease_owner = None
-    session.replacement_lease_until = None
-    session.status = "DELETING"
-    session.row_version += 1
-    session.updated_at = datetime.now(UTC)
+    for session in sessions:
+        session.active_generation = None
+        session.replacement_generation = None
+        session.replacement_lease_token = None
+        session.replacement_lease_owner = None
+        session.replacement_lease_until = None
+        session.status = "DELETING"
+        session.row_version += 1
+        session.updated_at = datetime.now(UTC)
     db.flush()
-    db.execute(delete(RuntimeGeneration).where(RuntimeGeneration.runtime_session_id == session.id))
-    db.delete(session)
+    db.execute(
+        delete(RuntimeGeneration).where(RuntimeGeneration.runtime_session_id.in_(session_ids))
+    )
+    for session in sessions:
+        db.delete(session)
     db.flush()
 
 

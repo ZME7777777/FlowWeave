@@ -645,7 +645,9 @@ def test_controller_accepts_mcp_oauth_authorization_runtime(settings, monkeypatc
     assert observed == ["MCP_OAUTH_AUTHORIZATION"]
 
 
-def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, monkeypatch):
+def test_controller_runtime_event_stream_allows_api_and_worker_for_owned_agent_runtime(
+    settings, monkeypatch
+):
     verification: dict[str, object] = {}
 
     def inspect_owned(
@@ -687,18 +689,26 @@ def test_controller_runtime_event_stream_requires_owned_agent_runtime(settings, 
     }
 
     with TestClient(create_app(_settings(settings))) as client:
-        response = client.post("/v1/runtimes/events", headers=_api_headers(), json=payload)
-        denied = client.post("/v1/runtimes/events", headers=_headers(), json=payload)
+        api_response = client.post("/v1/runtimes/events", headers=_api_headers(), json=payload)
+        worker_response = client.post("/v1/runtimes/events", headers=_headers(), json=payload)
+        denied = client.post(
+            "/v1/runtimes/events",
+            headers={"Authorization": "Bearer not-a-controller-principal"},
+            json=payload,
+        )
 
-    assert response.status_code == 200
-    assert [json.loads(line) for line in response.text.splitlines()] == [
+    expected_events = [
         {"kind": "StreamingDeltaEvent", "content": "hello"},
         {"kind": "MessageEvent", "source": "agent"},
     ]
+    assert api_response.status_code == 200
+    assert worker_response.status_code == 200
+    assert [json.loads(line) for line in api_response.text.splitlines()] == expected_events
+    assert [json.loads(line) for line in worker_response.text.splitlines()] == expected_events
     assert verification["resource_id"] == _RESOURCE_ID
     assert verification["manager_scope"] == _SCOPE
     assert verification["kind"] == "agent-runtime"
-    assert denied.status_code == 403
+    assert denied.status_code == 401
 
 
 @pytest.mark.asyncio

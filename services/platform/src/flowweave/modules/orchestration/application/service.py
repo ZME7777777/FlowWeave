@@ -6904,6 +6904,11 @@ def _delete_run_records(db: Session, run_id: str) -> None:
         path = Path(attempt.workspace_ref).resolve()
         if path != workspace_root and path.is_relative_to(workspace_root):
             workspace_paths.add(path)
+    # Remove every physical generation while the NodeAttempt-owned Runtime
+    # Sessions still identify this FlowRun.  The reconciler intentionally
+    # never TTL-reaps these persistent OpenHands Runtimes, so permanent Run
+    # deletion is their only cleanup authority.
+    sandboxes.delete_flow_run_runtimes_now(db, run.id)
     task_aggregate_ids = [*attempt_ids, *conversation_ids]
     if task_aggregate_ids:
         db.execute(
@@ -6970,7 +6975,6 @@ def _delete_run_records(db: Session, run_id: str) -> None:
     if node_run_ids:
         db.execute(delete(NodeRun).where(NodeRun.id.in_(node_run_ids)))
     db.execute(delete(RunSnapshot).where(RunSnapshot.flow_run_id == run.id))
-    sandboxes.delete_flow_run_runtimes_now(db, run.id)
     sandboxes.delete_flow_run_runtime_allocation(db, run.id)
     db.delete(run)
     store = get_artifact_store()

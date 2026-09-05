@@ -2506,6 +2506,26 @@ WebSocket 统一使用 URL 绑定的 `0600` 会话文件，登录密码不会进
 Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 API 返回路径，不再硬编码旧项目根。未修改
 平台认证、调度、Runtime 或 OpenHands 实现。
 
+### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
+
+依赖：`FR-169`。
+
+目标：修复 Attempt-owned OpenHands Runtime 被后台 TTL／owner grace 回收、导致正在执行的 Tool 被中断并由
+新 generation 重新加载的缺陷；`FLOW_NODE_ATTEMPT` 与 FlowRun、Agent Workspace 同属显式生命周期的持久
+Runtime，只有永久删除所属 FlowRun 才可释放。Runtime Provider 必须允许 Worker 订阅已授权 Runtime 的原生
+事件流，使节点状态始终由 OpenHands 原生事件投影。Runtime 意外丢失继续进入受控重连和原 Conversation ID
+reload，禁止后台静默创建空 Server；不得删除或迁移现有会话。
+
+验收：Runtime Provider 角色授权回归、节点 Runtime TTL／missing-container 回归、FlowRun 显式删除清理回归；
+受影响 Python 格式、静态和定向测试、Alembic head、任务状态唯一性及 `git diff --check`。完成后使用独立 Git
+commit，并按生产部署基线一并更新 API、Worker、Runtime Provider 与 stream-api。
+
+完成：Runtime Provider 的原生事件端点已同时授权 API 和 Worker，而 scope、签名和 immutable Runtime
+ownership 校验保持不变。`FLOW_NODE_ATTEMPT` 进入单一持久 Runtime owner 集合，后台 reconciliation 不再按
+idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标记为 `RECONNECTING`，由后续原生会话访问以
+原 Conversation ID 恢复，绝不静默启动空会话。FlowRun 的永久删除改为在 Attempt 记录仍可关联时显式释放
+所有 Attempt Runtime、generation 与 session，防止持久化修复造成泄漏；不删除现有 OpenHands 状态。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2521,6 +2541,7 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-05 | FR-170 | 受影响 Python Ruff check、`py_compile`、定向 Pyright（0 errors）、Alembic head、任务状态唯一性与 `git diff --check`；Runtime Provider／Sandbox／wakeup 定向 pytest | PASS（静态）：Worker 可订阅 `/v1/runtimes/events`，未授权 bearer 继续拒绝；回归覆盖 Attempt Runtime 的 TTL/hard-expiry 保留、物理丢失不静默重建、永久 FlowRun 删除回收 Attempt Runtime。定向 pytest 未执行断言：本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在 collection setup 失败；未伪记为通过。生产将使用已提交源码镜像重建并验证 Worker 订阅、服务日志与现有会话不被删除。 |
 | 2026-09-05 | FR-169 | CLI Node 测试（10 passed）、语法检查与 typecheck；npm pack 与隔离安装 smoke；全部 FlowWeave Skill `quick_validate.py`（11 passed）；Alembic head、任务状态唯一性、敏感值扫描与 `git diff --check` | PASS：真实本地测试服务验证登录 Cookie 获取、`0600` 会话文件、HTTP／WebSocket 自动鉴权、跨 base URL 拒绝和退出清理；调度创建、CAS 暂停／恢复、手动触发与删除映射通过。npm 包清单仅含 README、CLI 入口和 package metadata，隔离安装后的 `flowweave --help` 包含 auth／schedule；唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT` 或下一切片。 |
 | 2026-09-05 | FR-168 | Web ESLint、TypeScript typecheck、production build；Agent 工作台定向 Playwright；本地真实页面 DOM／视觉核对；Alembic head、任务状态唯一性与 `git diff --check` | PASS：工作区分组的新建会话和删除按钮均为 26×26、0px 边框、透明背景和统一绿色；删除按钮不再常驻红色背景，悬停与键盘聚焦反馈保留。定向 Playwright 1 passed，Web 三项检查通过；未改变会话或工作区行为。 |
 | 2026-09-05 | FR-166 | 受影响 Python `py_compile`；`git diff --check`；Ruff | PASS（静态）：独立 Agent 根目录改为用户 UUID，Runtime 挂载与 OpenHands Handle 对齐；节点物理 Runtime 丢失进入幂等重建路径并保留原 Session/Conversation。Ruff 因本机未安装未执行；真实 Docker／PostgreSQL／Runtime replacement 验证留待 FR-12。 |

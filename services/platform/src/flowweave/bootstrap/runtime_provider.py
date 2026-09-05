@@ -734,7 +734,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/plugins/resolve": frozenset({"worker"}),
                 "/v1/plugins/resolve-marketplace": frozenset({"worker"}),
                 "/v1/plugins/list-marketplace": frozenset({"api"}),
-                "/v1/runtimes/events": frozenset({"api"}),
+                # Both API (browser-facing reads) and Worker (durable wake-up
+                # subscriptions) consume the native OpenHands event stream.
+                # The handler still verifies manager scope and immutable
+                # Runtime ownership before it reaches a container.
+                "/v1/runtimes/events": frozenset({"api", "worker"}),
                 "/v1/runtimes/validate-plugin": frozenset({"api"}),
                 "/v1/terminals/start": frozenset({"api"}),
                 "/v1/terminals/read": frozenset({"api"}),

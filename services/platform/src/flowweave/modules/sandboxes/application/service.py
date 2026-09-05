@@ -44,6 +44,12 @@ from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.infrastructure.docker_control import ephemeral_lease_is_expired
 from flowweave.shared.settings import get_settings
 
+# These Runtimes own externally persisted OpenHands state.  They must live
+# until their product lifecycle explicitly deletes them: treating any one of
+# them as temporary lets reconciliation interrupt a live tool call and then
+# silently start a fresh Agent Server generation.
+_PERSISTENT_RUNTIME_OWNER_TYPES = frozenset({"FLOW_RUN", "FLOW_NODE_ATTEMPT", "AGENT_WORKSPACE"})
+
 
 @dataclass(frozen=True, slots=True)
 class ReconcileReport:
@@ -87,7 +93,7 @@ def _control_engine(db: Session) -> Engine:
 
 
 def _renew_runtime_lease(resource: ManagedSandbox, *, now: datetime) -> None:
-    if resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}:
+    if resource.owner_type in _PERSISTENT_RUNTIME_OWNER_TYPES:
         resource.last_activity_at = now
         resource.idle_expires_at = None
         return
@@ -616,9 +622,10 @@ def request_delete_durable(db: Session, sandbox_id: str | None) -> None:
         resource = control_db.get(ManagedSandbox, sandbox_id)
         if resource is None:
             return
-        if resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}:
-            # Attempt/Conversation cleanup cannot stop Run-owned compute. The
-            # explicit FlowRun deletion path uses delete_sandbox_now instead.
+        if resource.owner_type in _PERSISTENT_RUNTIME_OWNER_TYPES:
+            # Attempt/Conversation cleanup cannot stop compute whose
+            # OpenHands state is persistent. The explicit FlowRun/Workspace
+            # deletion paths use delete_sandbox_now instead.
             return
         resource.desired_state = "DELETED"
         resource.next_reconcile_at = datetime.now(UTC)
@@ -662,8 +669,23 @@ def delete_flow_run_runtimes_now(db: Session, flow_run_id: str) -> None:
         db.scalars(
             select(ManagedSandbox.id).where(
                 ManagedSandbox.kind == "AGENT_RUNTIME",
-                ManagedSandbox.owner_type == "FLOW_RUN",
-                ManagedSandbox.owner_id == flow_run_id,
+                (
+                    (ManagedSandbox.owner_type == "FLOW_RUN")
+                    & (ManagedSandbox.owner_id == flow_run_id)
+                )
+                | (
+                    ManagedSandbox.id.in_(
+                        select(RuntimeGeneration.managed_runtime_id)
+                        .join(
+                            FlowRunRuntime,
+                            FlowRunRuntime.id == RuntimeGeneration.runtime_session_id,
+                        )
+                        .where(
+                            FlowRunRuntime.flow_run_id == flow_run_id,
+                            RuntimeGeneration.managed_runtime_id.is_not(None),
+                        )
+                    )
+                ),
             )
         )
     )
@@ -677,7 +699,7 @@ def request_delete(db: Session, sandbox_id: str) -> None:
     resource = db.get(ManagedSandbox, sandbox_id)
     if resource is None:
         return
-    if resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}:
+    if resource.owner_type in _PERSISTENT_RUNTIME_OWNER_TYPES:
         return
     resource.desired_state = "DELETED"
     resource.next_reconcile_at = datetime.now(UTC)
@@ -770,7 +792,7 @@ def _owner_is_active(
             now=now,
             binding_grace_seconds=binding_grace_seconds,
         )
-    if resource.owner_type == "FLOW_RUN":
+    if resource.owner_type in {"FLOW_RUN", "FLOW_NODE_ATTEMPT"}:
         return True
     if resource.owner_type == "AGENT_WORKSPACE":
         from flowweave.modules.agent_workspaces.public import (
@@ -828,14 +850,14 @@ def _claim_reconcile_batch(
             owner_inactive = not owner_active
             idle_expired = (
                 resource.kind == "AGENT_RUNTIME"
-                and resource.owner_type not in {"FLOW_RUN", "AGENT_WORKSPACE"}
+                and resource.owner_type not in _PERSISTENT_RUNTIME_OWNER_TYPES
                 and resource.idle_expires_at is not None
                 and resource.idle_expires_at <= now
             )
             # Temporary compute retains an absolute safety boundary. FlowRun
             # compute follows the explicit Run lifecycle instead of a wall clock.
             hard_expired = (
-                resource.owner_type not in {"FLOW_RUN", "AGENT_WORKSPACE"}
+                resource.owner_type not in _PERSISTENT_RUNTIME_OWNER_TYPES
                 and resource.hard_expires_at <= now
             )
             if (hard_expired or idle_expired or owner_inactive) and (
@@ -881,7 +903,7 @@ def _perform_reconcile(
         if (
             observation is None
             and resource.kind == "AGENT_RUNTIME"
-            and resource.owner_type in {"FLOW_RUN", "AGENT_WORKSPACE"}
+            and resource.owner_type in _PERSISTENT_RUNTIME_OWNER_TYPES
         ):
             return _ReconcileOutcome("RUNTIME_LOST")
         observation = provider.ensure_running(resource, runtime_secret_key=runtime_secret_key)

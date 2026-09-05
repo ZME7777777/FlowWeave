@@ -19,6 +19,7 @@ from flowweave.modules.sandboxes.application.service import (
     _owner_is_active,
     create_setup_sandbox,
     create_temporary_runtime,
+    delete_flow_run_runtimes_now,
     reconcile_managed_sandboxes,
     request_delete_durable,
     touch_runtime,
@@ -27,6 +28,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
     DockerSandboxProvider,
 )
+from flowweave.modules.sandboxes.infrastructure.models import FlowRunRuntime, RuntimeGeneration
 from flowweave.shared.application.transactions import (
     mark_uow_owned,
     run_rollback_actions,
@@ -1593,6 +1595,173 @@ def test_reconciler_deletes_idle_runtime_before_hard_limit(
     with db_session_factory() as db:
         assert db.get(ManagedSandbox, resource_id) is None
     assert report.expired == 1
+    assert deleted == [resource_id]
+
+
+def test_reconciler_never_ttl_reaps_persistent_node_attempt_runtime(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    with db_session_factory() as db:
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="FLOW_NODE_ATTEMPT",
+            owner_id="attempt-persistent-runtime",
+            backend="docker",
+            backend_resource_name="fw-sbx-attempt-persistent",
+            observed_state="RUNNING",
+            image_reference="runtime:locked",
+            spec_json={"port": 8000, "bound": True},
+            created_at=now - timedelta(days=1),
+            idle_expires_at=now - timedelta(hours=1),
+            hard_expires_at=now - timedelta(minutes=1),
+            next_reconcile_at=now - timedelta(seconds=1),
+        )
+        db.add(resource)
+        db.commit()
+        resource_id = resource.id
+
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider, "inspect", lambda self, _name: _observation(resource)
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "delete", lambda self, item: deleted.append(item.id))
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+
+    with db_session_factory() as db:
+        persisted = db.get(ManagedSandbox, resource_id)
+        assert persisted is not None
+        assert persisted.desired_state == "RUNNING"
+    assert report.expired == 0
+    assert report.deleted == 0
+    assert deleted == []
+
+
+def test_reconciler_does_not_silently_recreate_missing_node_attempt_runtime(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    with db_session_factory() as db:
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="FLOW_NODE_ATTEMPT",
+            owner_id="attempt-missing-runtime",
+            backend="docker",
+            backend_resource_name="fw-sbx-attempt-missing",
+            observed_state="RUNNING",
+            image_reference="runtime:locked",
+            spec_json={"port": 8000, "bound": True},
+            idle_expires_at=None,
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now - timedelta(seconds=1),
+        )
+        db.add(resource)
+        db.commit()
+        resource_id = resource.id
+
+    recreated: list[str] = []
+    monkeypatch.setattr(DockerSandboxProvider, "inspect", lambda self, _name: None)
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, item, **_kwargs: recreated.append(item.id) or _observation(item),
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+        db.commit()
+
+    with db_session_factory() as db:
+        persisted = db.get(ManagedSandbox, resource_id)
+        assert persisted is not None
+        assert persisted.observed_state == "ERROR"
+        assert persisted.last_error_code == "SANDBOX_RUNTIME_LOST"
+        assert persisted.desired_state == "DELETED"
+    assert report.errors == 1
+    assert recreated == []
+
+
+def test_explicit_flow_run_delete_cleans_up_node_attempt_runtime(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    flow_run_id = "11111111-1111-4111-8111-111111111111"
+    node_attempt_id = "22222222-2222-4222-8222-222222222222"
+    with db_session_factory() as db:
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="FLOW_NODE_ATTEMPT",
+            owner_id=node_attempt_id,
+            backend="docker",
+            backend_resource_name="fw-sbx-explicit-attempt-delete",
+            observed_state="RUNNING",
+            image_reference="runtime:locked",
+            spec_json={"port": 8000, "bound": True},
+            idle_expires_at=None,
+            hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            next_reconcile_at=datetime.now(UTC),
+        )
+        db.add(resource)
+        db.flush()
+        session = FlowRunRuntime(
+            flow_run_id=flow_run_id,
+            node_attempt_id=node_attempt_id,
+            environment_version_id="33333333-3333-4333-8333-333333333333",
+            runtime_image_digest="runtime:locked",
+            workspace_allocation_id="44444444-4444-4444-8444-444444444444",
+            active_generation=1,
+            replacement_generation=None,
+            replacement_lease_token=None,
+            replacement_lease_owner=None,
+            replacement_lease_until=None,
+            replacement_started_at=None,
+            replacement_not_before=None,
+            replacement_error_code=None,
+            replacement_error_summary=None,
+            status="ACTIVE",
+            stopped_at=None,
+        )
+        db.add(session)
+        db.flush()
+        db.add(
+            RuntimeGeneration(
+                runtime_session_id=session.id,
+                generation=1,
+                managed_runtime_id=resource.id,
+                instance_id="container-id",
+                runtime_image_digest="runtime:locked",
+                state="READY",
+                fence_token="55555555-5555-4555-8555-555555555555",
+            )
+        )
+        db.commit()
+        resource_id = resource.id
+        session_id = session.id
+
+    deleted: list[str] = []
+    monkeypatch.setattr(DockerSandboxProvider, "delete", lambda self, item: deleted.append(item.id))
+
+    with settings_context(configured), db_session_factory() as db:
+        delete_flow_run_runtimes_now(db, flow_run_id)
+        db.commit()
+
+    with db_session_factory() as db:
+        assert db.get(ManagedSandbox, resource_id) is None
+        assert db.get(FlowRunRuntime, session_id) is None
+        assert (
+            db.scalar(
+                select(RuntimeGeneration.id).where(
+                    RuntimeGeneration.runtime_session_id == session_id
+                )
+            )
+            is None
+        )
     assert deleted == [resource_id]
 
 
