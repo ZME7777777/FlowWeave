@@ -5,7 +5,6 @@ import copy
 import hashlib
 import json
 import shutil
-import stat
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -1564,8 +1563,46 @@ def _record_gate_results(
         if next_state == AttemptState.WAITING_ACCEPTANCE:
             _dispatch_automatic_advance(db, attempt)
             return
-        # A failed automatic gate is intentionally not silently retried or
-        # bypassed. It is a visible operator intervention point.
+        if stage == "END" and next_state == AttemptState.END_BLOCKED:
+            if _automatic_gate_remediation_round(db, attempt) < 3:
+                try:
+                    _remediate_gate_failure(
+                        db,
+                        attempt,
+                        node_run,
+                        run,
+                        expected_state_version=attempt.state_version,
+                        idempotency_key=(
+                            f"automatic-gate-remediation:{attempt.id}:"
+                            f"round{_automatic_gate_remediation_round(db, attempt)}"
+                        ),
+                        automatic=True,
+                    )
+                    return
+                except DomainError as exc:
+                    # The gate result remains authoritative.  A transient
+                    # native-Fork problem must not turn it into a fabricated
+                    # runtime failure or discard the human intervention path.
+                    _event(
+                        db,
+                        run.id,
+                        "AUTOMATIC_GATE_REMEDIATION_FAILED",
+                        {"stage": stage, "error_code": exc.code},
+                        node_run.id,
+                        attempt.id,
+                    )
+            else:
+                _event(
+                    db,
+                    run.id,
+                    "AUTOMATIC_GATE_REMEDIATION_LIMIT_REACHED",
+                    {"stage": stage, "max_failed_rounds": 3},
+                    node_run.id,
+                    attempt.id,
+                )
+        # Start-gate failures have no primary execution Conversation to fork.
+        # End-gate failures enter the same human path only after the bounded
+        # native-Fork remediation policy above has been exhausted or failed.
         run.state = FlowRunState.WAITING_HUMAN
         _event(
             db,
@@ -6268,6 +6305,13 @@ def _gate_remediation_prompt(
 ) -> tuple[str, list[str]]:
     """Render a bounded, evidence-preserving repair instruction for the main Agent."""
 
+    latest_failed_round = db.scalar(
+        select(func.max(GateEvaluation.evaluation_attempt)).where(
+            GateEvaluation.attempt_id == attempt.id,
+            GateEvaluation.stage == "END",
+            GateEvaluation.decision.in_(("FAIL", "ERROR")),
+        )
+    )
     failed = list(
         db.scalars(
             select(GateEvaluation)
@@ -6275,6 +6319,7 @@ def _gate_remediation_prompt(
                 GateEvaluation.attempt_id == attempt.id,
                 GateEvaluation.stage == "END",
                 GateEvaluation.decision.in_(("FAIL", "ERROR")),
+                GateEvaluation.evaluation_attempt == latest_failed_round,
             )
             .order_by(GateEvaluation.policy_position, GateEvaluation.evaluation_attempt)
         )
@@ -6328,75 +6373,107 @@ def _gate_remediation_prompt(
     return prompt[:16_000], evaluation_ids
 
 
-def _copy_gate_remediation_workspace(source: Path, target: Path) -> None:
-    """Copy one verified Attempt tree without following filesystem links."""
+def _automatic_gate_remediation_round(db: Session, attempt: NodeAttempt) -> int:
+    """Count failed END-gate rounds, never individual policies.
 
-    if source == target:
-        # Attempts in one FlowRun deliberately share the same project.
-        return
+    A gate stage may execute several policies.  They share one
+    ``evaluation_attempt`` number, so this remains a three-repair bound even
+    when a node has multiple end gates.
+    """
 
-    try:
-        source_metadata = source.lstat()
-        target_metadata = target.lstat()
-    except OSError as exc:
-        raise DomainError(
-            "NODE_WORKSPACE_REQUIRES_RERUN",
-            "The gate remediation workspace is unavailable; rerun the node",
-            409,
-        ) from exc
-    if (
-        stat.S_ISLNK(source_metadata.st_mode)
-        or not stat.S_ISDIR(source_metadata.st_mode)
-        or stat.S_ISLNK(target_metadata.st_mode)
-        or not stat.S_ISDIR(target_metadata.st_mode)
-    ):
-        raise DomainError(
-            "NODE_WORKSPACE_INVALID",
-            "The gate remediation workspace must be a plain directory",
-            409,
+    return int(
+        db.scalar(
+            select(func.max(GateEvaluation.evaluation_attempt)).where(
+                GateEvaluation.attempt_id == attempt.id,
+                GateEvaluation.stage == "END",
+                GateEvaluation.decision.in_(("FAIL", "ERROR")),
+            )
         )
+        or 0
+    )
 
-    pending = [(source, target)]
-    while pending:
-        source_directory, target_directory = pending.pop()
-        try:
-            entries = list(source_directory.iterdir())
-        except OSError as exc:
-            raise DomainError(
-                "NODE_WORKSPACE_REQUIRES_RERUN",
-                "The gate remediation workspace cannot be copied; rerun the node",
-                409,
-            ) from exc
-        for entry in entries:
-            destination = target_directory / entry.name
-            try:
-                metadata = entry.lstat()
-                if stat.S_ISLNK(metadata.st_mode):
-                    raise DomainError(
-                        "NODE_WORKSPACE_INVALID",
-                        "The gate remediation workspace cannot contain symbolic links",
-                        409,
-                    )
-                if stat.S_ISDIR(metadata.st_mode):
-                    destination.mkdir(mode=0o700, exist_ok=False)
-                    pending.append((entry, destination))
-                elif stat.S_ISREG(metadata.st_mode):
-                    shutil.copyfile(entry, destination, follow_symlinks=False)
-                    destination.chmod(0o700 if metadata.st_mode & 0o111 else 0o600)
-                else:
-                    raise DomainError(
-                        "NODE_WORKSPACE_INVALID",
-                        "The gate remediation workspace contains an unsupported file",
-                        409,
-                    )
-            except DomainError:
-                raise
-            except OSError as exc:
-                raise DomainError(
-                    "NODE_WORKSPACE_REQUIRES_RERUN",
-                    "The gate remediation workspace cannot be copied; rerun the node",
-                    409,
-                ) from exc
+
+def _remediate_gate_failure(
+    db: Session,
+    current: NodeAttempt,
+    node_run: NodeRun,
+    run: FlowRun,
+    *,
+    expected_state_version: int,
+    idempotency_key: str,
+    automatic: bool,
+) -> NodeAttempt:
+    """Native-fork the failed execution Conversation and send one gate report.
+
+    The Attempt is the FlowWeave projection of a logical node execution; its
+    Conversation can legitimately move to a new OpenHands branch.  Keeping
+    the Attempt (and its gate history) is what lets the worker count repair
+    rounds without inventing a new execution or copying a workspace.
+    """
+
+    if current.state != AttemptState.END_BLOCKED or current.error_code is not None:
+        raise illegal(
+            "only a failed END gate can be remediated through a conversation fork",
+            state=current.state,
+            error_code=current.error_code,
+        )
+    if current.state_version != expected_state_version:
+        raise conflict(
+            "attempt was modified",
+            expected=expected_state_version,
+            actual=current.state_version,
+        )
+    if not current.conversation_id:
+        raise illegal("failed attempt has no primary execution conversation")
+    source_binding = agent_sessions.flow_node_locator.conversation_binding(
+        db,
+        flow_run_id=run.id,
+        openhands_conversation_id=current.conversation_id,
+    )
+    source_handle = _active_attempt_runtime_handle(db, current)
+    runtime = get_runtime()
+    if not runtime.can_accept_input(source_handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "主执行会话仍在运行，暂不能创建返工分支", 409)
+    source_identity = runtime.reload_conversation(source_handle)
+    if not source_identity.event_id:
+        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "主执行会话缺少可分叉的完成边界", 409)
+    instruction, failed_ids = _gate_remediation_prompt(db, current, node_run)
+    forked = agent_sessions.flow_node_conversations.fork_node_conversation(
+        db,
+        flow_run_id=run.id,
+        attempt_id=current.id,
+        binding_id=source_binding.id,
+        event_id=source_identity.event_id,
+        title=f"门禁返工 · 第 {_automatic_gate_remediation_round(db, current)} 轮",
+        idempotency_key=idempotency_key,
+    )
+    target_binding_id = str(forked["id"])
+    target_conversation_id = str(forked["openhands_conversation_id"])
+    current.conversation_id = target_conversation_id
+    agent_sessions.flow_node_conversations.send_node_message(
+        db,
+        flow_run_id=run.id,
+        attempt_id=current.id,
+        binding_id=target_binding_id,
+        content=instruction,
+    )
+    _event(
+        db,
+        run.id,
+        "GATE_REMEDIATION_FORKED",
+        {
+            "automatic": automatic,
+            "source_attempt_id": current.id,
+            "source_conversation_id": source_binding.openhands_conversation_id,
+            "target_conversation_id": target_conversation_id,
+            "fork_event_id": source_identity.event_id,
+            "failed_gate_evaluation_ids": failed_ids,
+            "failed_gate_round": _automatic_gate_remediation_round(db, current),
+        },
+        node_run.id,
+        current.id,
+    )
+    return current
 
 
 def remediate_gate_failure(
@@ -6405,7 +6482,7 @@ def remediate_gate_failure(
     payload: GateRemediationWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """Branch a failed END gate into a new, isolated repair Attempt."""
+    """Manually request the same native-Fork repair available to auto-run."""
 
     current = _attempt(db, attempt_id)
     node_run = _node_run(db, current.node_run_id)
@@ -6414,194 +6491,27 @@ def remediate_gate_failure(
     if existing is not None:
         if existing.action_type != "FORK_GATE_REMEDIATION" or existing.attempt_id != attempt_id:
             raise conflict("gate remediation idempotency key is already used")
-        target_id = str(existing.payload_json.get("remediation_attempt_id") or "")
-        if target_id:
-            return attempt_detail(db, target_id)
-        raise conflict("gate remediation action has no remediation attempt")
-    if current.state != AttemptState.END_BLOCKED or current.error_code is not None:
-        raise illegal(
-            "only a failed END gate can be remediated through a conversation fork",
-            state=current.state,
-            error_code=current.error_code,
-        )
-    if current.state_version != payload.expected_state_version:
-        raise conflict(
-            "attempt was modified",
-            expected=payload.expected_state_version,
-            actual=current.state_version,
-        )
-    if not current.conversation_id:
-        raise illegal("failed attempt has no primary execution conversation")
-    source = agent_sessions.flow_node_binding_for_attempt(db, current.id)
-    source_handle = _active_attempt_runtime_handle(db, current)
-    runtime = get_runtime()
-    if not runtime.can_accept_input(source_handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "主执行会话仍在运行，暂不能创建返工分支", 409)
-    identity = runtime.reload_conversation(source_handle)
-    if not identity.event_id:
-        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "主执行会话缺少可分叉的完成边界", 409)
-    fork_event_id = runtime.resolve_fork_boundary(source_handle, identity.event_id)
-    identity = runtime.reload_conversation(source_handle)
-    if not identity.event_id:
-        raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "主执行会话完成边界不可用", 409)
-    instruction, failed_ids = _gate_remediation_prompt(db, current, node_run)
-    snapshot = _snapshot(db, current.snapshot_id)
-    node = _node(snapshot, node_run.flow_node_snapshot_key)
-    asset_id = str(cast(dict[str, Any], node.get("asset") or {}).get("id") or "")
-    if not asset_id:
-        raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
-    next_no = (
-        db.scalar(
-            select(func.max(NodeAttempt.attempt_no)).where(NodeAttempt.node_run_id == node_run.id)
-        )
-        or 0
-    ) + 1
-    revision = NodeAttempt(
-        node_run_id=node_run.id,
-        attempt_no=next_no,
-        snapshot_id=current.snapshot_id,
-        context_ids_json=current.context_ids_json,
-        agent_preset_json=current.agent_preset_json,
-    )
-    revision.state = AttemptState.EXECUTING
-    revision.runtime_phase = "STARTING"
-    revision.startup_mode = "PROMPT"
-    revision.startup_capability_key = None
-    revision.startup_prompt = instruction
-    revision.gate_policies_json = current.gate_policies_json
-    revision.output_targets_json = current.output_targets_json
-    db.add(revision)
-    db.flush()
-    sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=revision.id)
-    revision_workspace = ensure_node_attempt_workspace(
+        return attempt_detail(db, attempt_id)
+    current = _remediate_gate_failure(
         db,
-        flow_run_id=run.id,
-        node_attempt_id=revision.id,
-        asset_id=asset_id,
-        node_run_id=node_run.id,
-        attempt_no=revision.attempt_no,
-    )
-    revision.workspace_ref = str(revision_workspace)
-    source_workspace = sandboxes.node_attempt_workspace_context(
-        db, flow_run_id=run.id, node_attempt_id=current.id
-    )
-    _copy_gate_remediation_workspace(source_workspace.host_working_directory, revision_workspace)
-    for row in _bindings(db, current.id):
-        db.add(
-            AttemptInputBinding(
-                attempt_id=revision.id,
-                input_field_key=row.input_field_key,
-                artifact_version_id=row.artifact_version_id,
-                binding_source="COPIED_FOR_GATE_REMEDIATION",
-            )
-        )
-    if not run.environment_version_id:
-        raise DomainError(
-            "RUN_ENVIRONMENT_REQUIRED",
-            "The FlowRun has no Environment Version",
-            409,
-        )
-    environment = lock_referenceable_version(db, run.environment_version_id)
-    if environment is None:
-        raise DomainError(
-            "RUN_ENVIRONMENT_VERSION_INVALID",
-            "The frozen FlowRun Environment Version is unavailable",
-            409,
-        )
-    allocation = sandboxes.runtime_allocation_for_node_attempt(
-        db, flow_run_id=run.id, node_attempt_id=revision.id
-    )
-    runtime_session = sandboxes.ensure_node_attempt_runtime_session(
-        db,
-        flow_run_id=run.id,
-        node_attempt_id=revision.id,
-        environment_version_id=environment.id,
-        runtime_image_digest=environment.image_digest,
-        workspace_allocation=allocation,
-    )
-    target_workspace = sandboxes.node_attempt_workspace_context(
-        db, flow_run_id=run.id, node_attempt_id=revision.id
-    )
-    config = agent_sessions.config_from_binding(db, source)
-    target = agent_sessions.reserve_flow_node_binding(
-        db,
-        runtime_session_id=runtime_session.id,
-        flow_run_id=run.id,
-        node_run_id=node_run.id,
-        node_attempt_id=revision.id,
-        working_directory=str(target_workspace.runtime_working_directory),
-        create_idempotency_key=f"attempt-runtime:{revision.id}",
-        display_title=f"返工 {revision.id}",
-        config=config,
-    )
-    current = _claim_attempt_version(
-        db,
-        current.id,
-        payload.expected_state_version,
-        {AttemptState.END_BLOCKED},
-        next_state=AttemptState.REJECTED,
+        current,
+        node_run,
+        run,
+        expected_state_version=payload.expected_state_version,
+        idempotency_key=idempotency_key,
+        automatic=False,
     )
     _action(
         db,
         run.id,
         "FORK_GATE_REMEDIATION",
         idempotency_key,
-        {
-            "expected_state_version": payload.expected_state_version,
-            "remediation_attempt_id": revision.id,
-            "source_conversation_id": source.openhands_conversation_id,
-            "target_conversation_id": target.openhands_conversation_id,
-            "fork_event_id": fork_event_id,
-            "runtime_migration": "NEW_ATTEMPT_RUNTIME",
-            "failed_gate_evaluation_ids": failed_ids,
-        },
+        {"expected_state_version": payload.expected_state_version, "attempt_id": current.id},
         node_run.id,
         current.id,
     )
-    run.state = FlowRunState.ACTIVE
-    _event(
-        db,
-        run.id,
-        "GATE_REMEDIATION_FORKED",
-        {
-            "source_attempt_id": current.id,
-            "remediation_attempt_id": revision.id,
-            "failed_gate_evaluation_ids": failed_ids,
-            "fork_event_id": fork_event_id,
-        },
-        node_run.id,
-        revision.id,
-    )
-    if db.scalar(
-        select(RunEvent)
-        .where(
-            RunEvent.flow_run_id == run.id,
-            RunEvent.node_run_id == node_run.id,
-            RunEvent.attempt_id == current.id,
-            RunEvent.event_type == "STEP_RUN_CONFIGURATION_SAVED",
-        )
-        .limit(1)
-    ):
-        _event(
-            db,
-            run.id,
-            "STEP_RUN_CONFIGURATION_SAVED",
-            {"flow_node_key": node_run.flow_node_snapshot_key, "remediation": True},
-            node_run.id,
-            revision.id,
-        )
-    if not _inline_execution():
-        enqueue(
-            db,
-            task_type="START_RUNTIME",
-            aggregate_type="ATTEMPT",
-            aggregate_id=revision.id,
-            idempotency_key=f"start-runtime:{revision.id}",
-        )
     finish(db)
-    if _inline_execution():
-        process_start_runtime(db, revision.id)
-    return attempt_detail(db, revision.id)
+    return attempt_detail(db, current.id)
 
 
 def gate_evaluation_events(
