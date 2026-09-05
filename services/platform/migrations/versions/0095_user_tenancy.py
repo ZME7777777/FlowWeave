@@ -164,7 +164,7 @@ _LEGACY_UNIQUE_NAMES = {
     ("agent_conversation_commands", ("idempotency_key",)): "uq_agent_conversation_command_key",
     ("website_credentials", ("target_host", "name")): "uq_website_credential_host_name",
     ("node_assets", ("directory_id", "name")): "uq_asset_directory_name",
-    ("capability_versions", ("digest",)): "capability_versions_digest_key",
+    ("capability_versions", ("digest",)): "uq_capability_version_digest",
     (
         "plugin_source_resolutions",
         ("source_kind", "source_url", "requested_commit", "repo_path", "marketplace_plugin_name"),
@@ -173,7 +173,7 @@ _LEGACY_UNIQUE_NAMES = {
     (
         "runtime_confirmation_approvals",
         ("decision_idempotency_key",),
-    ): "runtime_confirmation_approvals_decision_idempotency_key_key",
+    ): "uq_runtime_confirmation_decision_idempotency",
 }
 
 # Existing user-owned tables. Shared control-plane and authentication tables
@@ -272,9 +272,7 @@ def _add_owner(table: str) -> None:
 
 def _scope_business_uniques() -> None:
     for table, old_columns, new_name, new_columns in _OWNER_UNIQUES:
-        op.drop_constraint(
-            _LEGACY_UNIQUE_NAMES[(table, old_columns)], table, type_="unique"
-        )
+        op.drop_constraint(_LEGACY_UNIQUE_NAMES[(table, old_columns)], table, type_="unique")
         options = {"postgresql_nulls_not_distinct": True} if table == "node_assets" else {}
         op.create_unique_constraint(new_name, table, list(new_columns), **options)
 
