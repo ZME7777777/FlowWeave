@@ -106,6 +106,16 @@ def test_external_container_images_are_immutable() -> None:
     assert not violations, "Mutable external container images:\n" + "\n".join(violations)
 
 
+def test_platform_image_has_git_for_marketplace_head_resolution() -> None:
+    """FR-181: the official Marketplace HEAD lookup runs in the API image."""
+
+    dockerfile = (REPOSITORY / "services" / "platform" / "Dockerfile").read_text()
+    marketplace = (SOURCE / "modules" / "catalog" / "application" / "plugin_sources.py").read_text()
+
+    assert "curl ca-certificates git" in dockerfile
+    assert '["git", "ls-remote", _OPENHANDS_MARKETPLACE_SOURCE, "HEAD"]' in marketplace
+
+
 def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     """The runtime must use verified source, never a floating local checkout."""
 

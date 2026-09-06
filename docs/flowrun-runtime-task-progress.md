@@ -2590,6 +2590,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：CLI 升级至 `0.3.0`，新增 `schedule templates`、`schedule occurrences` 和 `capability marketplace`、`marketplace-preview`、`marketplace-resolve`、`plugin-resolution`、`plugin-publish`；命令验证 occurrence 分页边界并保留全部写请求 dry-run。调度、能力、Agent Workspace、FlowRun 工作台、FlowRun 和平台基准 Skill 已同步最新冻结与删除边界。未修改平台 API、Runtime 或 OpenHands 实现。
 
+### FR-181 OpenHands Marketplace HEAD 解析镜像依赖 — DONE
+
+依赖：`FR-179`。
+
+目标：修复 OpenHands Marketplace 在 platform API 镜像中读取公开仓库 HEAD 时失败的问题。该路径使用受限的 `git ls-remote` 仅将可信的公开仓库 HEAD 转换为完整不可变 commit；platform 运行镜像必须提供 Git 可执行文件，且不得改变解析器隔离、来源 allowlist、内容冻结或 Runtime 不访问远端仓库的边界。
+
+完成：platform runtime image 安装 `git`，使 Marketplace HEAD 解析与已有 `subprocess` 调用匹配；新增静态架构回归同时断言 API 镜像包含 Git 和 Marketplace 使用固定官方仓库的 `git ls-remote` 请求。未改变 Git Plugin、ZIP 导入、解析器网络隔离或发布流程。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2625,6 +2633,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-181 | Dockerfile 静态回归、受影响 Python Ruff/`py_compile`、`git diff --check` | PASS：platform 镜像显式安装 Git，OpenHands Marketplace 的 HEAD 解析不再因可执行文件缺失返回 503。Docker daemon 在本机不可用，未构建镜像或执行容器 smoke。 |
 | 2026-09-06 | FR-180 | CLI Node 测试、语法检查、npm pack 清单、全部 FlowWeave Skill `quick_validate.py`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：CLI 11 项测试通过，新增定时任务母版／occurrence 与 OpenHands Marketplace 映射均覆盖 dry-run URL、请求体和分页边界；`npm pack --dry-run` 仅包含 README、CLI 入口和 package metadata。11 个仓库 FlowWeave Skill 全部通过快速格式与 frontmatter 校验；唯一 Alembic head 为 `0098_schedule_templates_cron`，无 `CURRENT`，无 whitespace 错误。 |
 | 2026-09-06 | FR-179 | 受影响 Python Ruff format/check、`py_compile`；Web ESLint、TypeScript typecheck；不依赖 Docker 的 Markdown／Hook／Marketplace 直接单元路径；`git diff --check` | PASS：Hook 新导入返回 410，原有记录未删除；OpenHands Marketplace 将公开仓库 HEAD 固定为完整 SHA 后才进入现有隔离解析；Agent Definition Markdown 正确冻结正文、触发示例及治理默认值。`pytest tests/test_capability_retirement.py` 尝试执行，但本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在断言前失败（3 errors），未伪记为通过。 |
 | 2026-09-06 | FR-178 | Web ESLint、TypeScript typecheck 与 `git diff --check` | PASS：Agent 会话能力筛选标签统一为 `all`／`plugin`／`MCP`／`skill`／`context`；不改变能力加载或 OpenHands Runtime 行为。 |
