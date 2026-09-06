@@ -116,6 +116,16 @@ def test_platform_image_has_git_for_marketplace_head_resolution() -> None:
     assert '["git", "ls-remote", _OPENHANDS_MARKETPLACE_SOURCE, "HEAD"]' in marketplace
 
 
+def test_api_binds_plugin_resolver_for_marketplace_requests() -> None:
+    """FR-182: API handlers use the container resolver, including thread work."""
+
+    api = (SOURCE / "bootstrap" / "api.py").read_text()
+
+    assert "bind_plugin_resolver, reset_plugin_resolver" in api
+    assert "resolver_token = bind_plugin_resolver(container.plugin_resolver)" in api
+    assert "reset_plugin_resolver(resolver_token)" in api
+
+
 def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     """The runtime must use verified source, never a floating local checkout."""
 

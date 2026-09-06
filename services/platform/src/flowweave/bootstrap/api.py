@@ -34,6 +34,7 @@ from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import require_authenticated_connection, shared_business_scope
+from flowweave.shared.plugin_resolver import bind_plugin_resolver, reset_plugin_resolver
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -88,9 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if request.url.path.startswith("/api/v1/"):
             async with container.database.session() as auth_session:
                 principal = await auth_session.run_sync(
-                    lambda db: users.authenticate(
-                        db, request.cookies.get(users.SESSION_COOKIE)
-                    )
+                    lambda db: users.authenticate(db, request.cookies.get(users.SESSION_COOKIE))
                 )
                 if principal is not None:
                     await auth_session.commit()
@@ -104,15 +103,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if principal is None and not is_public:
             return JSONResponse(
                 status_code=401,
-                content=error_body(
-                    "AUTHENTICATION_REQUIRED", "请先登录", request_id
-                ),
+                content=error_body("AUTHENTICATION_REQUIRED", "请先登录", request_id),
                 headers={"X-Request-ID": request_id},
             )
         principal_token = bind_principal(principal)
         settings_token = bind_settings(container.settings)
         runtime_token = bind_runtime(container.runtime)
         store_token = bind_artifact_store(container.artifact_store)
+        resolver_token = bind_plugin_resolver(container.plugin_resolver)
         sandbox_token = bind_sandbox(container.sandbox)
         try:
             response = await call_next(request)
@@ -137,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             reset_principal(principal_token)
             reset_sandbox(sandbox_token)
+            reset_plugin_resolver(resolver_token)
             reset_artifact_store(store_token)
             reset_runtime(runtime_token)
             reset_settings(settings_token)
