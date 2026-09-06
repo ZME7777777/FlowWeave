@@ -590,7 +590,13 @@ test('returning from an automatic node session preserves the selected automatic 
 });
 
 test('cancelled manual records return to the neutral graph and can be deleted', async ({ page }) => {
-  let currentRun = run;
+  const waitingInputAttempt = { ...attempt, state: 'WAITING_INPUT', runtime_phase: 'WAITING_INPUT' };
+  const waitingInputRun = {
+    ...run,
+    current_attempt_state: 'WAITING_INPUT',
+    node_runs: [{ ...nodeRun, attempts: [waitingInputAttempt] }],
+  };
+  let currentRun = waitingInputRun;
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -629,11 +635,15 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
   await page.locator('.run-open').click();
 
   const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
-  await expect(deleteButton).toBeDisabled();
+  await expect(deleteButton).toBeEnabled();
   await expect(page.getByRole('button', { name: '取消整个流程' })).toHaveCount(0);
 
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
-  await expect(deleteButton).toBeDisabled();
+  await deleteButton.click();
+  const blockedDeleteDialog = page.getByRole('alertdialog');
+  await expect(blockedDeleteDialog).toContainText('所选记录正在等待补充输入');
+  await expect(blockedDeleteDialog).toContainText('请先在右侧取消本轮节点执行');
+  await blockedDeleteDialog.getByRole('button', { name: '我知道了', exact: true }).click();
   await page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' }).click();
   const cancelDialog = page.getByRole('alertdialog');
   await expect(cancelDialog).toContainText('其他节点执行和整个流程不会被取消');
