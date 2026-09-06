@@ -358,22 +358,29 @@ function ComposerCapabilityAutocomplete({
     const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
     const minHeight = Math.max(Number.parseFloat(styles.minHeight), lineHeight + verticalPadding);
     const maxHeight = lineHeight * 10 + verticalPadding;
-    // Measure a clone with the cap removed. `scrollHeight` on the live
-    // textarea can retain an old scrollable layout and falsely mark a short
-    // draft as overflowing after a previous long draft.
-    const measurement = textarea.cloneNode() as HTMLTextAreaElement;
-    measurement.value = textarea.value;
+    // Measure text in a standalone element rather than another textarea. A
+    // cloned textarea may retain its old scroll-box state and report an
+    // inflated scrollHeight after a long draft is shortened.
+    const measurement = document.createElement('div');
+    measurement.textContent = textarea.value || ' ';
     measurement.setAttribute('aria-hidden', 'true');
     measurement.style.setProperty('position', 'fixed', 'important');
     measurement.style.setProperty('visibility', 'hidden', 'important');
     measurement.style.setProperty('pointer-events', 'none', 'important');
-    measurement.style.setProperty('height', '0px', 'important');
-    measurement.style.setProperty('min-height', '0px', 'important');
-    measurement.style.setProperty('max-height', 'none', 'important');
-    measurement.style.setProperty('overflow-y', 'hidden', 'important');
-    measurement.style.setProperty('width', `${textarea.getBoundingClientRect().width}px`, 'important');
+    measurement.style.setProperty('box-sizing', 'content-box', 'important');
+    measurement.style.setProperty('width', `${Math.max(0, textarea.clientWidth - verticalPadding)}px`, 'important');
+    measurement.style.setProperty('margin', '0', 'important');
+    measurement.style.setProperty('padding', '0', 'important');
+    measurement.style.setProperty('border', '0', 'important');
+    measurement.style.setProperty('font', styles.font, 'important');
+    measurement.style.setProperty('font-kerning', styles.fontKerning, 'important');
+    measurement.style.setProperty('letter-spacing', styles.letterSpacing, 'important');
+    measurement.style.setProperty('line-height', styles.lineHeight, 'important');
+    measurement.style.setProperty('white-space', 'pre-wrap', 'important');
+    measurement.style.setProperty('overflow-wrap', 'anywhere', 'important');
+    measurement.style.setProperty('word-break', 'break-word', 'important');
     document.body.append(measurement);
-    const contentHeight = measurement.scrollHeight;
+    const contentHeight = measurement.getBoundingClientRect().height + verticalPadding;
     measurement.remove();
     const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
     textarea.style.height = `${height}px`;
