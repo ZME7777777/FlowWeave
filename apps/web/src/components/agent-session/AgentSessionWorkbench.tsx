@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, /* GitBranch — Git repository summary is temporarily hidden; retain for its future enhancement. */ ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, randomId } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
@@ -346,6 +346,37 @@ function ComposerCapabilityAutocomplete({
   const dragDepth = useRef(0);
   const [activeIndex, setActiveIndex] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
+  const [inputOverflowing, setInputOverflowing] = useState(false);
+  const resizeInput = useCallback(() => {
+    const textarea = input.current;
+    if (!textarea) return;
+    // Reset below the CSS minimum before measuring. Resetting to `auto` can
+    // retain the old layout box. The cap is based on ten text lines, not the
+    // attachment area or an incidental max-height box-model value.
+    textarea.style.height = '0px';
+    const styles = window.getComputedStyle(textarea);
+    const lineHeight = Number.parseFloat(styles.lineHeight);
+    const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+    const minHeight = Math.max(Number.parseFloat(styles.minHeight), lineHeight + verticalPadding);
+    const maxHeight = lineHeight * 10 + verticalPadding;
+    const contentHeight = textarea.scrollHeight;
+    const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
+    textarea.style.height = `${height}px`;
+    setInputOverflowing(current => {
+      const next = contentHeight > maxHeight + 1;
+      return current === next ? current : next;
+    });
+  }, []);
+  useLayoutEffect(() => { resizeInput(); }, [draft, resizeInput]);
+  useEffect(() => {
+    window.addEventListener('resize', resizeInput);
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(resizeInput);
+    if (input.current?.parentElement) observer?.observe(input.current.parentElement);
+    return () => {
+      window.removeEventListener('resize', resizeInput);
+      observer?.disconnect();
+    };
+  }, [resizeInput]);
   const trigger = composerTrigger(draft);
   const visible = useMemo(() => {
     if (!trigger) return [];
@@ -396,7 +427,7 @@ function ComposerCapabilityAutocomplete({
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <textarea ref={input} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
         event.preventDefault();
