@@ -9,18 +9,26 @@ description: 创建、查询、暂停、恢复、手动触发或删除 FlowWeave
 
 ## 创建前检查
 
-先读取并校验 Flow，再选择真实的 READY Environment Version 和起始节点。`FlowRunScheduleWrite` 还会冻结运行方式、间隔、启动提示、Agent preset 与起点 URL 输入；连续运行要求所有可达节点的输入已映射或配置。
+定时任务只能从一条已满足启动条件的**连续运行** FlowRun 记录创建。先读取平台提供的可用母版，而不是重新选择 Flow、Environment、节点、输入或 Agent 配置；这些事实会随母版冻结，后续修改源记录不会改写调度。
 
 ```bash
-flowweave flow get <flow-id>
-flowweave flow validate <flow-id>
-flowweave environment get <environment-id>
+flowweave schedule templates
 flowweave schedule create --data-file ./schedule.json --dry-run
 flowweave schedule create --data-file ./schedule.json
 flowweave schedule list
 ```
 
-请求字段和枚举以在线 OpenAPI 为准。创建成功后从 `schedule list` 核对 ID、`config_version`、`row_version`、`next_run_at` 和 occurrence；不要根据名称或页面顺序猜 ID。
+`schedule.json` 只包含 `name`、从 `schedule templates` 返回的 `source_flow_run_id`，以及标准五段 `cron_expression`。请求字段和枚举以在线 OpenAPI 为准。创建成功后从 `schedule list` 核对 ID、母版、`config_version`、`row_version`、`next_run_at` 和 occurrence；不要根据名称或页面顺序猜 ID。Cron 按 UTC 计算，旧分钟间隔配置不会被当作完整 Cron 继续运行。
+
+## 执行历史
+
+调度首页只读取目录摘要。需要查看实际执行时，再按需分页读取 occurrence；每条 occurrence 的生成 FlowRun 与 NodeRun 是真实执行身份，不能根据名称或触发时间猜测。
+
+```bash
+flowweave schedule occurrences <schedule-id> --page 1 --page-size 10
+flowweave run get <flow-run-id>
+flowweave run node <flow-run-id> --node <node-run-id>
+```
 
 ## 状态、触发与删除
 
@@ -31,6 +39,6 @@ flowweave schedule pause <schedule-id> --expected-row-version <row-version> --dr
 flowweave schedule resume <schedule-id> --expected-row-version <row-version> --dry-run
 ```
 
-`schedule trigger <schedule-id>` 会新增一次 `MANUAL` occurrence 并异步物化运行，不会复用或改写既有 occurrence。只有用户明确要求立即触发时才执行；返回后观察 occurrence 与其 FlowRun，而不是重复触发。
+`schedule trigger <schedule-id>` 会新增一次 `MANUAL` occurrence 并异步物化独立的连续运行，不会复用或改写既有 occurrence。只有用户明确要求立即触发时才执行；返回后观察 occurrence 与其 FlowRun，而不是重复触发。
 
-删除前先读取调度及全部 occurrence。已有 FlowRun 记录时平台会拒绝删除，必须按 `flowweave-runs` 的精确删除与 Runtime 清理契约处理；不得通过数据库、Worker 或外部 cron 绕过。仅在用户明确授权精确调度 ID 后使用 `schedule delete`。
+删除前先读取调度及 occurrence。生成的 FlowRun 可单独删除，且不会静默删除该调度；反过来，母版仍被调度引用、或调度仍有生成记录时，平台会明确拒绝删除。必须按 `flowweave-runs` 的精确删除与 Runtime 清理契约处理；不得通过数据库、Worker 或外部 cron 绕过。仅在用户明确授权精确调度 ID 后使用 `schedule delete`。

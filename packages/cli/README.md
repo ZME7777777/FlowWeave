@@ -21,7 +21,9 @@ flowweave health --ready
 
 读取 FlowRun 中的记录使用 `flowweave run node <run-id> --node <node-run-id>`；只有用户明确要求时才能执行 `node-copy` 或 `node-delete`。暂停或恢复 Runtime 前，必须先读取 `run runtime`，将返回的 `generation` 与 session `row_version` 写入 `expected_generation`、`expected_session_row_version` 后传给 `run pause` 或 `run resume`。供应商上游余额/用量使用 `flowweave model usage <provider-id>`，它可能依赖该供应商的有效 API 凭据。
 
-周期任务使用 `schedule list/create/pause/resume/trigger/delete`。创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、已就绪连续运行记录的 `source_flow_run_id` 和五段 `cron_expression`；节点、环境、输入和启动提示词由该记录的冻结母版提供。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除已有执行记录的调度会被平台拒绝。
+周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。
+
+能力命令还支持受治理的 OpenHands Plugin Marketplace：`capability marketplace` 读取服务端固定到完整 commit 的公开目录；使用返回的 `source`、`commit`、`repo_path` 与插件名称调用 `capability marketplace-resolve --data-file ./marketplace-plugin.json`，随后读取 `capability plugin-resolution <resolution-id>`，并以当前 `state_version` 调用 `capability plugin-publish <resolution-id> --data '{"expected_state_version": 1}'`。自定义受信任 Marketplace 可先用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。Agent Definition 只能以 UTF-8 `.md`/`.markdown` 的 OpenHands YAML frontmatter + Markdown 正文通过 `capability validate|import --type AGENT_DEFINITION --file <file>` 导入；Hook 已下线，新的 `--type HOOK` 导入会被明确拒绝。
 
 `api`、`upload`、`ws` 是完整契约入口：任意当前或未来的 REST、multipart、WebSocket 原子接口均可直接调用，不需要等待 CLI 发布。三者都会使用当前 `auth login` 会话；不得用 `--header` 手工传 Cookie。写操作支持 `--dry-run`，并可使用 `-H 'Idempotency-Key: …'` 传入一次性幂等键。对于没有快捷命令的新接口，先运行 `flowweave openapi --paths`，再通过通用命令调用。
 

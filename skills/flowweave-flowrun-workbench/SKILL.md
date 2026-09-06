@@ -53,6 +53,8 @@ flowweave upload post /flow-runs/<run-id>/artifacts/upload \
 
 END gate 失败后，风险接受和补救 fork 都需要用户明确授权、当前 Attempt 的 `expected_state_version`，并应使用公开原子接口：`POST /node-attempts/<attempt-id>/accept-gate-risk`（还必须提供具体 `reason`）或 `POST /node-attempts/<attempt-id>/remediate-gate-failure`。先读取 gate evaluation；审查会话证据只能通过 `GET /node-attempts/<attempt-id>/gate-evaluations/<evaluation-id>/conversation/events` 读取，不得猜测评估、事件或版本 ID。
 
+取消节点 Attempt 后，相关会话、终端与工作区立即只读；仍可读取正式 Conversation、事件与文件历史，但不得发送消息、上传附件、暂停／继续、分叉、重跑、调整模型／能力或删除工作区。不要因后台原生 interrupt 尚在重试而调用任何写接口，也不得以 Runtime ensure 重新激活已取消 Attempt。
+
 节点会话可在首条消息或后续消息的 `references` 数组中引用已验证的 conversation event；每项只包含来源 `event_id` 和给用户显示/发送的 `content`。引用前读取来源会话事件，最多传入服务端 schema 允许的数量；不得伪造、改写或把引用当作跨 Run/Workspace 的绕过授权方式。
 
 如果状态卡住，先读取 Run、NodeRun、Runtime 和 events，保留失败上下文；不可进入 Docker 或 OpenHands 私有端点“手工完成”节点。取消或拒绝前必须有用户的明确授权。

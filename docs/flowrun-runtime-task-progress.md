@@ -2582,6 +2582,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：能力仓库不再显示 Hook 模块或编辑器，Hook 编辑组件已删除，通用导入接口对 `HOOK` 返回 `410 HOOK_CAPABILITY_RETIRED`，未删除旧能力数据。Plugin 页面新增 OpenHands Marketplace：服务端读取固定公开仓库 HEAD、返回不可变目录快照；用户选择条目后仍经既有隔离解析、内容 hash 与发布流程冻结，ZIP/Git 导入未改变。Agent Definition 仅接收 UTF-8 `.md`／`.markdown` 文件；解析 `<example>` 为适用示例，正文冻结为系统提示词，缺省 `permission_mode` 和 `condenser` 冻结为 `never_confirm`／`NoOpCondenser`。卡片摘要隐藏 example 标签，详情显示模型、权限、工具、示例、预算与系统提示词。
 
+### FR-180 CLI 与页面 Skill 同步最新公开能力 — DONE
+
+依赖：`FR-179`。
+
+目标：将 FR-170–FR-179 中新增或变更的公开能力同步到可发布的 `@flowweave-ai/cli` 和仓库页面 Skill。CLI 必须补齐定时任务母版目录、分页 occurrence 详情及 OpenHands Marketplace 的受治理浏览、解析、状态读取和发布快捷命令；页面 Skill 必须反映 Cron 母版、执行详情、Hook 下线、Markdown Agent Definition、Agent 工作区级联删除和取消节点 Attempt 的只读围栏。不得以 CLI 或 Skill 引导直接访问 Docker、数据库、Runtime Provider 或 OpenHands 私有端点。
+
+完成：CLI 升级至 `0.3.0`，新增 `schedule templates`、`schedule occurrences` 和 `capability marketplace`、`marketplace-preview`、`marketplace-resolve`、`plugin-resolution`、`plugin-publish`；命令验证 occurrence 分页边界并保留全部写请求 dry-run。调度、能力、Agent Workspace、FlowRun 工作台、FlowRun 和平台基准 Skill 已同步最新冻结与删除边界。未修改平台 API、Runtime 或 OpenHands 实现。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2617,6 +2625,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-180 | CLI Node 测试、语法检查、npm pack 清单、全部 FlowWeave Skill `quick_validate.py`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：CLI 11 项测试通过，新增定时任务母版／occurrence 与 OpenHands Marketplace 映射均覆盖 dry-run URL、请求体和分页边界；`npm pack --dry-run` 仅包含 README、CLI 入口和 package metadata。11 个仓库 FlowWeave Skill 全部通过快速格式与 frontmatter 校验；唯一 Alembic head 为 `0098_schedule_templates_cron`，无 `CURRENT`，无 whitespace 错误。 |
 | 2026-09-06 | FR-179 | 受影响 Python Ruff format/check、`py_compile`；Web ESLint、TypeScript typecheck；不依赖 Docker 的 Markdown／Hook／Marketplace 直接单元路径；`git diff --check` | PASS：Hook 新导入返回 410，原有记录未删除；OpenHands Marketplace 将公开仓库 HEAD 固定为完整 SHA 后才进入现有隔离解析；Agent Definition Markdown 正确冻结正文、触发示例及治理默认值。`pytest tests/test_capability_retirement.py` 尝试执行，但本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在断言前失败（3 errors），未伪记为通过。 |
 | 2026-09-06 | FR-178 | Web ESLint、TypeScript typecheck 与 `git diff --check` | PASS：Agent 会话能力筛选标签统一为 `all`／`plugin`／`MCP`／`skill`／`context`；不改变能力加载或 OpenHands Runtime 行为。 |
 | 2026-09-06 | FR-175 | 受影响 Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck、production build；`git diff --check`；取消后会话写入定向 pytest | PASS（静态与构建）：取消 Attempt 后 Runtime DTO 立即转为只读，前端停止订阅可写流并移除控制入口；后端所有关键会话、终端和工作区写路径都以同一 Attempt 围栏 fail closed，继续不再落入泛化 `VERSION_CONFLICT`。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。 |

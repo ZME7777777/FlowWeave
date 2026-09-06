@@ -32,12 +32,12 @@ function usage() {
 页面域原子操作：
   node <list|get|create|update|delete> [ID] [--data JSON|--data-file FILE]
   node-directory <list|create|delete|delete-many> [ID] [--id ID ...]
-  capability <list|validate|commit|import> ...
+  capability <list|validate|commit|import|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish> ...
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
   run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-delete|work-directory-delete> ...
-  schedule <list|create|pause|resume|trigger|delete> ...
+  schedule <list|templates|occurrences|create|pause|resume|trigger|delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
   agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete> ...
 
@@ -334,6 +334,26 @@ async function nodeDirectory(args) {
 async function capability(args) {
   const [action, id] = positional(args);
   if (action === 'list') return request('GET', '/capabilities', args);
+  if (action === 'marketplace') {
+    if (id) throw new CliError('capability marketplace 不接受 ID');
+    return request('GET', '/plugin-marketplace-catalogs/openhands', args);
+  }
+  if (action === 'marketplace-preview') {
+    if (id) throw new CliError('capability marketplace-preview 不接受 ID');
+    return request('POST', '/plugin-marketplace-catalogs/preview', args);
+  }
+  if (action === 'marketplace-resolve') {
+    if (id) throw new CliError('capability marketplace-resolve 不接受 ID');
+    return request('POST', '/plugin-source-resolutions/marketplace', args);
+  }
+  if (action === 'plugin-resolution') {
+    if (!id) throw new CliError('capability plugin-resolution 需要 resolution ID');
+    return request('GET', `/plugin-source-resolutions/${id}`, args);
+  }
+  if (action === 'plugin-publish') {
+    if (!id) throw new CliError('capability plugin-publish 需要 resolution ID');
+    return request('POST', `/plugin-source-resolutions/${id}/publish`, args);
+  }
   if (action === 'validate' || action === 'import') {
     const type = option(args, '--type');
     const source = option(args, '--file');
@@ -350,7 +370,7 @@ async function capability(args) {
     if (!token) throw new CliError('capability commit 需要 --import-token');
     return request('POST', '/capability-imports', args, { body: { import_token: token } });
   }
-  throw new CliError('capability 支持 list|validate|commit|import');
+  throw new CliError('capability 支持 list|validate|commit|import|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish');
 }
 
 async function environment(args) {
@@ -463,11 +483,31 @@ async function schedule(args) {
     if (id) throw new CliError('schedule list 不接受 ID');
     return request('GET', '/flow-run-schedules', args);
   }
+  if (action === 'templates') {
+    if (id) throw new CliError('schedule templates 不接受 ID');
+    return request('GET', '/flow-run-schedule-templates', args);
+  }
   if (action === 'create') {
     if (id) throw new CliError('schedule create 不接受 ID');
     return request('POST', '/flow-run-schedules', args);
   }
   if (!id) throw new CliError(`schedule ${action || ''} 需要调度 ID`);
+  if (action === 'occurrences') {
+    const page = option(args, '--page');
+    const pageSize = option(args, '--page-size');
+    const query = [];
+    if (page !== undefined) {
+      const value = Number(page);
+      if (!Number.isSafeInteger(value) || value < 1) throw new CliError('schedule occurrences 的 --page 必须为正整数');
+      query.push(['page', String(value)]);
+    }
+    if (pageSize !== undefined) {
+      const value = Number(pageSize);
+      if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new CliError('schedule occurrences 的 --page-size 必须为 1 到 100 的整数');
+      query.push(['page_size', String(value)]);
+    }
+    return request('GET', `/flow-run-schedules/${id}/occurrences`, args, { query });
+  }
   if (action === 'pause' || action === 'resume') {
     const expected = Number(option(args, '--expected-row-version'));
     if (!Number.isSafeInteger(expected) || expected < 1) {
@@ -479,7 +519,7 @@ async function schedule(args) {
   }
   if (action === 'trigger') return request('POST', `/flow-run-schedules/${id}/trigger`, args, { body: {} });
   if (action === 'delete') return request('DELETE', `/flow-run-schedules/${id}`, args);
-  throw new CliError('schedule 支持 list|create|pause|resume|trigger|delete');
+  throw new CliError('schedule 支持 list|templates|occurrences|create|pause|resume|trigger|delete');
 }
 
 async function model(args) {

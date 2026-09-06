@@ -14,7 +14,7 @@ FlowWeave 是 Agent 执行的**治理控制面**。它管理业务资源、版�
 核心对象及关系如下：
 
 ```text
-能力（Skill / MCP / Plugin / Context）──可追溯版本、digest──┐
+能力（Skill / MCP / Plugin / Context / Agent Definition）──可追溯版本、digest──┐
 节点资产（输入/输出字段、提示词、目录）──被流程节点引用──┼─> 流程 Flow（可编辑模板）
 终端环境 Environment ──发布──> READY Environment Version ───┘        │
                                                                         ▼
@@ -99,7 +99,7 @@ Agent Workspace 的工作目录删除由已绑定会话保护；文件删除只�
 ## 页面 Skill 路由
 
 - 节点目录、节点、字段或执行提示词：`flowweave-node-assets`
-- Skill、MCP、Plugin、Context 的导入/版本/检测：`flowweave-capabilities`
+- Skill、MCP、Plugin、Context、Markdown Agent Definition 的导入/版本/检测：`flowweave-capabilities`（Hook 已下线，不能新建）
 - 终端环境、Setup Session、不可变版本：`flowweave-environments`
 - Flow 节点、控制边、端口映射与校验：`flowweave-flows`
 - FlowRun 创建、状态、取消、完成、Runtime：`flowweave-runs`

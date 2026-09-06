@@ -246,13 +246,19 @@ test('用户登录会话用于 HTTP 与 WebSocket，退出后从本地清除', a
   }
 });
 
-test('周期调度快捷命令保持创建、fencing、触发和删除契约', async () => {
+test('周期调度快捷命令保持母版、执行详情、创建、fencing、触发和删除契约', async () => {
   const config = await configured();
   invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
-  const created = invoke(config, 'schedule', 'create', '--data', '{"name":"每小时复核"}', '--dry-run');
+  const templates = invoke(config, 'schedule', 'templates', '--dry-run');
+  assert.equal(templates.status, 0, templates.stderr);
+  assert.equal(JSON.parse(templates.stdout).url, 'https://example.test/flowweave/api/v1/flow-run-schedule-templates');
+  const occurrences = invoke(config, 'schedule', 'occurrences', 'schedule-1', '--page', '2', '--page-size', '25', '--dry-run');
+  assert.equal(occurrences.status, 0, occurrences.stderr);
+  assert.equal(JSON.parse(occurrences.stdout).url, 'https://example.test/flowweave/api/v1/flow-run-schedules/schedule-1/occurrences?page=2&page_size=25');
+  const created = invoke(config, 'schedule', 'create', '--data', '{"name":"每小时复核","source_flow_run_id":"run-1","cron_expression":"0 * * * *"}', '--dry-run');
   assert.equal(created.status, 0, created.stderr);
   assert.deepEqual(JSON.parse(created.stdout), {
-    method: 'POST', payload: { name: '每小时复核' },
+    method: 'POST', payload: { name: '每小时复核', source_flow_run_id: 'run-1', cron_expression: '0 * * * *' },
     url: 'https://example.test/flowweave/api/v1/flow-run-schedules',
   });
   const paused = invoke(config, 'schedule', 'pause', 'schedule-1', '--expected-row-version', '3', '--dry-run');
@@ -271,4 +277,19 @@ test('周期调度快捷命令保持创建、fencing、触发和删除契约', a
   assert.equal(deleted.status, 0, deleted.stderr);
   assert.equal(JSON.parse(deleted.stdout).method, 'DELETE');
   assert.equal(invoke(config, 'schedule', 'pause', 'schedule-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'schedule', 'occurrences', 'schedule-1', '--page-size', '101', '--dry-run').status, 2);
+});
+
+test('能力快捷命令映射 OpenHands Marketplace 的冻结浏览、解析与发布', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const catalog = invoke(config, 'capability', 'marketplace', '--dry-run');
+  assert.equal(catalog.status, 0, catalog.stderr);
+  assert.equal(JSON.parse(catalog.stdout).url, 'https://example.test/flowweave/api/v1/plugin-marketplace-catalogs/openhands');
+  const resolution = invoke(config, 'capability', 'marketplace-resolve', '--data', '{"marketplace_source_url":"https://github.com/OpenHands/extensions.git","marketplace_commit":"0123456789012345678901234567890123456789","plugin_name":"demo"}', '--dry-run');
+  assert.equal(resolution.status, 0, resolution.stderr);
+  assert.equal(JSON.parse(resolution.stdout).url, 'https://example.test/flowweave/api/v1/plugin-source-resolutions/marketplace');
+  const publish = invoke(config, 'capability', 'plugin-publish', 'resolution-1', '--data', '{"expected_state_version":1}', '--dry-run');
+  assert.equal(publish.status, 0, publish.stderr);
+  assert.equal(JSON.parse(publish.stdout).url, 'https://example.test/flowweave/api/v1/plugin-source-resolutions/resolution-1/publish');
 });
