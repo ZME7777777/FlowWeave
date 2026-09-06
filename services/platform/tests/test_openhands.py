@@ -719,6 +719,38 @@ def test_openhands_classifies_explicit_mcp_initialization_timeout(openhands_sett
     assert raised.value.details == {"error_kind": "timeout"}
 
 
+def test_openhands_maps_missing_delete_conversation_400_to_idempotent_missing(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    path = "/api/conversations/10000000-0000-4000-8000-000000000020"
+    response = openhands_module.httpx.Response(
+        400,
+        json={"detail": "Bad Request"},
+        request=openhands_module.httpx.Request("DELETE", f"http://runtime:8000{path}"),
+    )
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request(self, *_args, **_kwargs):
+            return response
+
+    monkeypatch.setattr(openhands_module.httpx, "Client", lambda **_kwargs: FakeClient())
+    with pytest.raises(DomainError) as raised:
+        runtime._request(
+            "DELETE", path, base_url="http://runtime:8000", session_api_key="session-key"
+        )
+
+    assert raised.value.code == "RUNTIME_CONVERSATION_MISSING"
+    assert raised.value.status == 409
+    assert raised.value.details == {"status_code": 400, "path": path}
+
+
 def test_openhands_maps_formal_mcp_oauth_job_routes(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     calls: list[tuple[str, str, dict[str, object]]] = []

@@ -188,12 +188,20 @@ class OpenHandsRuntime:
                     409,
                     {"status_code": 400, "path": path},
                 ) from exc
-            if exc.response.status_code == 404 and path.startswith("/api/conversations/"):
+            # OpenHands 1.44 returns 400, rather than 404, when its DELETE
+            # conversation endpoint cannot find the native Conversation.  Its
+            # service returns False only for an absent record, so this is the
+            # same idempotent outcome as the 404 used by the other
+            # conversation endpoints.
+            if path.startswith("/api/conversations/") and (
+                exc.response.status_code == 404
+                or (method == "DELETE" and exc.response.status_code == 400)
+            ):
                 raise DomainError(
                     "RUNTIME_CONVERSATION_MISSING",
                     "The original OpenHands Conversation is unavailable and cannot be replaced",
                     409,
-                    {"status_code": 404, "path": path},
+                    {"status_code": exc.response.status_code, "path": path},
                 ) from exc
             raise DomainError(
                 "OPENHANDS_REQUEST_FAILED",
