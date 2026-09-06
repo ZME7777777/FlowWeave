@@ -2622,6 +2622,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：弹窗高度改为扣除遮罩层上下各 28px 的可用视口高度，目录仍为 2 列 × 3 行；不再在 900px 以下改为单列。未改变分页、解析、发布或任何 Runtime／安全边界。
 
+### FR-185 创建会话 Agent Definition 能力冻结 — DONE
+
+依赖：`FR-179`。
+
+目标：在顶层 Agent 会话与节点自动启动首个会话的能力选择器中增加英文 `agent` Tab，并让它对应已发布的 `AGENT_DEFINITION`。Agent Definition 与 Context 同为仅创建会话时可选、随会话冻结的能力；不得通过已有会话的动态加载接口新增、替换或删除。
+
+完成：新会话与节点首会话的能力配置器统一展示 `all`／`plugin`／`MCP`／`skill`／`context`／`agent`；创建请求可冻结 Agent Definition，并在创建 native OpenHands Conversation 时编译为正式 `agent_definitions` 字段。已有会话只可在 `agent`／`context` 标签查看创建时已冻结版本，不提供写操作；Skill、MCP、Plugin 的既有动态注册路径不变。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2657,6 +2665,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-185 | Agent Definition 创建范围、Runtime native `agent_definitions` 投影定向 pytest；受影响 Python Ruff/`py_compile`；Web ESLint、TypeScript typecheck、`git diff --check` | PASS（静态）：Ruff 与 `py_compile`、Web ESLint、TypeScript typecheck、`git diff --check` 通过。定向 pytest 在执行断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 2 errors，未伪记为通过；受影响 Python 文件的 Ruff format check 同时报出既有格式差异，未作无关格式化。 |
 | 2026-09-06 | FR-184 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：弹窗高度扣除遮罩层上下留白，且窄视口继续按两列呈现每页 6 项。生产浏览器复核随本切片定向发布执行。 |
 | 2026-09-06 | FR-183 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：Marketplace 使用固定高度无滚动双分区布局；搜索、刷新、分页、解析和发布状态的类型检查通过。 |
 | 2026-09-06 | FR-182 | 受影响 Python Ruff/`py_compile`、API Marketplace 回归、`git diff --check` | PASS：Marketplace 路由从 API 请求上下文获得 Plugin Resolver，线程化目录浏览不再抛出“Plugin resolver is not bound”。Docker daemon 在本机不可用，集成 fixture 由远端部署后的已认证请求验证。 |

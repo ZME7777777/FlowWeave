@@ -121,6 +121,59 @@ def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch)
     ) == ((published, "CONTEXT"),)
 
 
+def test_agent_definition_is_allowed_only_during_conversation_creation(monkeypatch):
+    published = SimpleNamespace(
+        package=SimpleNamespace(capability_type="AGENT_DEFINITION", capability_key="reviewer"),
+        version=SimpleNamespace(id="agent-version", digest="b" * 64),
+    )
+    monkeypatch.setattr(conversations, "resolve_version", lambda *_args: published)
+
+    with pytest.raises(conversations.DomainError, match="Agent 会话不支持该能力类型"):
+        conversations._validated_capabilities(None, ("agent-version",))
+
+    assert conversations._validated_capabilities(
+        None,
+        ("agent-version",),
+        allowed_types=conversations._CREATION_CAPABILITY_TYPES,
+    ) == ((published, "AGENT_DEFINITION"),)
+
+
+def test_agent_definition_is_compiled_only_into_new_conversation_spec(settings):
+    definition = FrozenSessionCapability(
+        version_id="agent-version",
+        capability_type="AGENT_DEFINITION",
+        capability_key="reviewer",
+        digest="b" * 64,
+        runtime_config={
+            "name": "reviewer",
+            "description": "Review a proposed change",
+            "model": "inherit",
+            "tools": ["terminal"],
+            "skills": [],
+            "system_prompt": "Review the change and report concrete findings.",
+            "when_to_use_examples": ["review a patch"],
+            "permission_mode": "never_confirm",
+            "max_iteration_per_run": 20,
+            "max_budget_per_run": 1.5,
+            "condenser": {"kind": "NoOpCondenser"},
+            "metadata": {},
+        },
+    )
+    with settings_context(settings):
+        spec = build_agent_spec(
+            FrozenSessionConfig(None, None, None, None, (definition,)),
+            provider=None,
+            binding_id="agent-definition-binding",
+            working_directory="/runtime/workspace/project",
+            host_root=settings.workspace_root / "agent-definition-test" / "host",
+            runtime_root=Path("/runtime/capabilities/conversations/agent-definition-binding"),
+        )
+
+    assert [(item.name, item.system_prompt) for item in spec.agent_definitions] == [
+        ("reviewer", "Review the change and report concrete findings.")
+    ]
+
+
 def test_agent_capability_validation_has_no_flowweave_count_limit(monkeypatch):
     published = {
         f"capability-{index}": SimpleNamespace(

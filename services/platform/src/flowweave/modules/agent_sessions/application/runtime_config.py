@@ -19,6 +19,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorksp
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.runtime.base import (
     RuntimeAgentContext,
+    RuntimeAgentDefinition,
     RuntimeAgentSpec,
     RuntimeBudgets,
     RuntimeCondenser,
@@ -32,6 +33,7 @@ from flowweave.runtime.workspace import (
     materialize_agent_workspace_capabilities,
     materialize_agent_workspace_capability_marketplace,
 )
+from flowweave.shared.domain.agent_definition import normalize_agent_definition_document
 from flowweave.shared.domain.openhands import FIXED_RUNTIME_TOOL_NAMES
 from flowweave.shared.errors import DomainError
 from flowweave.shared.settings import get_settings
@@ -358,6 +360,52 @@ def frozen_context_suffix(capabilities: tuple[FrozenSessionCapability, ...]) -> 
     return "已冻结 Context（仅作系统级会话背景）：\n" + "\n\n".join(sections) if sections else ""
 
 
+def frozen_agent_definitions(
+    capabilities: tuple[FrozenSessionCapability, ...],
+) -> tuple[RuntimeAgentDefinition, ...]:
+    """Compile creation-scoped Agent Definitions into the native request."""
+
+    definitions: list[RuntimeAgentDefinition] = []
+    names: set[str] = set()
+    for capability in capabilities:
+        if capability.capability_type != "AGENT_DEFINITION":
+            continue
+        try:
+            name, document = normalize_agent_definition_document(
+                capability.runtime_config, fallback_key=capability.capability_key
+            )
+        except ValueError as exc:
+            raise DomainError(
+                "AGENT_DEFINITION_CAPABILITY_INVALID",
+                "已冻结的 Agent Definition 无效",
+                409,
+                {"capability_version_id": capability.version_id},
+            ) from exc
+        if name in names:
+            raise DomainError(
+                "AGENT_DEFINITION_CAPABILITY_CONFLICT",
+                "一个会话不能冻结同名 Agent Definition",
+                409,
+                {"name": name},
+            )
+        names.add(name)
+        definitions.append(
+            RuntimeAgentDefinition(
+                name=name,
+                description=str(document["description"]),
+                tools=tuple(str(item) for item in document["tools"]),
+                system_prompt=str(document["system_prompt"]),
+                when_to_use_examples=tuple(
+                    str(item) for item in document["when_to_use_examples"]
+                ),
+                permission_mode=str(document["permission_mode"]),
+                max_iteration_per_run=document["max_iteration_per_run"],
+                max_budget_per_run=document["max_budget_per_run"],
+            )
+        )
+    return tuple(definitions)
+
+
 def build_agent_spec(
     config: FrozenSessionConfig,
     *,
@@ -416,6 +464,7 @@ def build_agent_spec(
         skills=skills,
         plugins=plugins,
         mcp_servers=mcp_servers,
+        agent_definitions=frozen_agent_definitions(config.capabilities),
         runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in TOOLS)),
     )
 
@@ -426,6 +475,7 @@ __all__ = (
     "build_agent_spec",
     "config_from_binding",
     "default_workspace",
+    "frozen_agent_definitions",
     "frozen_context_suffix",
     "freeze_config_on_binding",
     "flow_node_binding_for_attempt",
