@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from time import monotonic
@@ -37,6 +38,9 @@ from flowweave.shared.http import require_authenticated_connection, shared_busin
 from flowweave.shared.plugin_resolver import bind_plugin_resolver, reset_plugin_resolver
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.settings import bind_settings, reset_settings
+
+logger = logging.getLogger(__name__)
+_SLOW_REQUEST_SECONDS = 1.0
 
 
 def error_body(code: str, message: str, request_id: str, details: object = None) -> dict[str, Any]:
@@ -117,15 +121,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response.headers["X-Request-ID"] = request_id
             audit_principal = principal or getattr(request.state, "audit_principal", None)
             if audit_principal is not None and request.url.path.startswith("/api/v1/"):
+                matched_route = request.scope.get("route")
                 container.audit_writer.submit(
                     AuditRecord(
                         user_id=audit_principal.user_id,
                         username=audit_principal.username,
                         request_id=request_id,
                         method=request.method,
-                        route=request.scope.get("route").path
-                        if request.scope.get("route") is not None
-                        else request.url.path,
+                        route=(
+                            matched_route.path if matched_route is not None else request.url.path
+                        ),
                         status_code=response.status_code,
                         duration_ms=max(0, int((monotonic() - started_at) * 1000)),
                         client_ip=request.client.host if request.client else None,
@@ -198,7 +203,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    async def slow_request_logging(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        started_at = monotonic()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            duration = monotonic() - started_at
+            if duration >= _SLOW_REQUEST_SECONDS:
+                route = request.scope.get("route")
+                route_path = route.path if route is not None else request.url.path
+                logger.warning(
+                    "slow API request method=%s route=%s status=%d duration_ms=%d request_id=%s",
+                    request.method,
+                    route_path,
+                    status_code,
+                    int(duration * 1000),
+                    _request_id(request),
+                )
+
     app.middleware("http")(request_context)
+    app.middleware("http")(slow_request_logging)
     app.add_exception_handler(DomainError, domain_error)
     app.add_exception_handler(RequestValidationError, validation_error)
     app.add_exception_handler(IntegrityError, integrity_error)

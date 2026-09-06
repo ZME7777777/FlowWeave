@@ -33,7 +33,14 @@ from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
+from flowweave.shared.http import (
+    Db,
+    IdempotencyKey,
+    command_key,
+    get_container,
+    run_blocking,
+    run_sync,
+)
 from flowweave.shared.schemas import ConversationPatchWrite
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -579,11 +586,11 @@ async def node_session_events(
     flow_run_id: str,
     attempt_id: str,
     binding_id: str,
-    db: Db,
+    container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.read_node_conversation_events(
             session,
             flow_run_id=flow_run_id,
@@ -596,10 +603,10 @@ async def node_session_events(
 
 @router.get(f"{_BASE}/{{binding_id}}/input-readiness")
 async def node_session_input_readiness(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, bool | str]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.node_input_readiness(
             session,
             flow_run_id=flow_run_id,
@@ -611,10 +618,10 @@ async def node_session_input_readiness(
 
 @router.get(f"{_BASE}/{{binding_id}}/context")
 async def node_session_context(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.node_conversation_context(
             session,
             flow_run_id=flow_run_id,
@@ -626,10 +633,10 @@ async def node_session_context(
 
 @router.get(f"{_BASE}/{{binding_id}}/pending-confirmation")
 async def node_pending_confirmation(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.node_pending_confirmation(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),

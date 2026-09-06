@@ -25,7 +25,14 @@ from flowweave.modules.environments import public as environments
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
+from flowweave.shared.http import (
+    Db,
+    IdempotencyKey,
+    command_key,
+    get_container,
+    run_blocking,
+    run_sync,
+)
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -559,18 +566,21 @@ async def delete_agent_conversation(
 async def agent_events(
     workspace_id: str,
     binding_id: str,
-    db: Db,
+    container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.events(session, workspace_id, binding_id, cursor)
+    return await run_blocking(
+        container,
+        lambda session: conversations.events(session, workspace_id, binding_id, cursor),
     )
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation")
-async def agent_pending_confirmation(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db,
+async def agent_pending_confirmation(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking(
+        container,
         lambda session: conversations.pending_confirmation(session, workspace_id, binding_id),
     )
 
@@ -668,10 +678,10 @@ async def agent_workspace_attachment(
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/context")
 async def agent_context(
-    workspace_id: str, binding_id: str, db: Db
+    workspace_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, int | float | str | bool | None]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: conversations.conversation_context(session, workspace_id, binding_id),
     )
 
@@ -758,10 +768,10 @@ async def agent_interrupt(workspace_id: str, binding_id: str, db: Db) -> dict[st
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/input-readiness")
 async def agent_input_readiness(
-    workspace_id: str, binding_id: str, db: Db
+    workspace_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, bool | str]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: conversations.input_readiness(session, workspace_id, binding_id),
     )
 

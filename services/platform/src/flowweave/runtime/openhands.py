@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import math
 import re
 import tarfile
@@ -61,6 +62,9 @@ from flowweave.shared.infrastructure.docker_controller import (
     controller_is_remote,
     validate_owned_runtime_plugin,
 )
+
+logger = logging.getLogger(__name__)
+_INTERACTIVE_READ_TIMEOUT_SECONDS = 8.0
 
 
 class OpenHandsRuntime:
@@ -145,6 +149,8 @@ class OpenHandsRuntime:
         session_api_key: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        started_at = time.monotonic()
+        outcome = "error"
         try:
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.request(
@@ -159,6 +165,7 @@ class OpenHandsRuntime:
                 value = cast(object, response.json())
                 if not isinstance(value, dict):
                     raise ValueError("OpenHands response must be an object")
+                outcome = "ok"
                 return cast(dict[str, Any], value)
         except httpx.HTTPStatusError as exc:
             # OpenHands initializes configured MCP servers before accepting the
@@ -226,6 +233,17 @@ class OpenHandsRuntime:
                 502,
                 {"outcome_unknown": False},
             ) from exc
+        finally:
+            duration = time.monotonic() - started_at
+            if duration >= 1.0:
+                logger.warning(
+                    "slow OpenHands request method=%s path=%s runtime=%s duration_ms=%d outcome=%s",
+                    method,
+                    path,
+                    urlparse(base_url).hostname or "unknown",
+                    int(duration * 1000),
+                    outcome,
+                )
 
     @staticmethod
     def _incompatible(reason: str, **details: object) -> DomainError:
@@ -1432,7 +1450,9 @@ class OpenHandsRuntime:
             cls._formal_identity(item.get("tool_call_id"), field="tool_call_id", required=False),
         )
 
-    def _conversation_state(self, handle: RuntimeHandle) -> dict[str, Any]:
+    def _conversation_state(
+        self, handle: RuntimeHandle, *, timeout: float | None = None
+    ) -> dict[str, Any]:
         try:
             expected_id = str(UUID(handle.conversation_id))
         except ValueError as exc:
@@ -1447,11 +1467,13 @@ class OpenHandsRuntime:
                 "The OpenHands Conversation locator is not canonical",
                 409,
             )
+        request_options: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
         state = self._request(
             "GET",
             f"/api/conversations/{handle.conversation_id}",
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
+            **request_options,
         )
         if str(state.get("id") or "") != handle.conversation_id:
             raise DomainError(
@@ -1950,7 +1972,16 @@ class OpenHandsRuntime:
         seen_page_ids: set[str] = set()
         page_id = cursor
         first_page = True
+        deadline = time.monotonic() + _INTERACTIVE_READ_TIMEOUT_SECONDS
         while True:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise DomainError(
+                    "EXECUTOR_UNAVAILABLE",
+                    "OpenHands event history did not respond within the interactive read limit",
+                    503,
+                    {"outcome_unknown": False},
+                )
             if page_id is not None:
                 if page_id in seen_page_ids:
                     raise DomainError(
@@ -1968,6 +1999,7 @@ class OpenHandsRuntime:
                 base_url=base_url,
                 session_api_key=session_api_key,
                 params=params,
+                timeout=max(0.1, remaining_seconds),
             )
             raw_items: object = data.get("items", [])
             if not isinstance(raw_items, list) or any(
@@ -2158,7 +2190,7 @@ class OpenHandsRuntime:
     def get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
-        state = self._conversation_state(handle)
+        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         if str(state.get("execution_status") or "").lower() != "waiting_for_confirmation":
             return None
         leaf = str(state.get("leaf_event_id") or "") or None
@@ -2433,7 +2465,7 @@ class OpenHandsRuntime:
             )
             for item in visible_items
         )
-        state = self._conversation_state(handle)
+        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         state_cursor = str(state.get("leaf_event_id") or cursor or handle.cursor or "") or None
         return RuntimeEventBatch(
             events=events,
@@ -2454,7 +2486,7 @@ class OpenHandsRuntime:
             base_url=base_url,
             session_api_key=session_api_key,
         )
-        state = self._conversation_state(handle)
+        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         leaf_event_id = self._formal_identity(
             state.get("leaf_event_id"), field="leaf_event_id", required=False
         )
@@ -3190,7 +3222,7 @@ class OpenHandsRuntime:
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
         """Expose the current LLM's formal OpenHands context usage snapshot."""
-        state = self._conversation_state(handle)
+        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         agent = cast(object, state.get("agent"))
         agent_config = cast(dict[str, Any], agent) if isinstance(agent, dict) else {}
         llm = (
@@ -3360,7 +3392,7 @@ class OpenHandsRuntime:
         so an accepted interrupt request alone must not unlock a second send.
         """
 
-        state = self._conversation_state(handle)
+        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         status = str(state.get("execution_status") or "").lower()
         ready = status not in {
             "starting",

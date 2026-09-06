@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Annotated, TypeVar
 
@@ -24,6 +27,8 @@ from flowweave.shared.application.transactions import (
     run_rollback_actions,
 )
 from flowweave.shared.errors import DomainError
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -92,6 +97,64 @@ async def run_sync(db: AsyncSession, operation: Callable[[Session], T]) -> T:
         raise
     await db.run_sync(run_commit_actions)
     return result
+
+
+async def run_blocking(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run a synchronous DB/Runtime read in a bounded worker thread.
+
+    Several compatibility services perform synchronous OpenHands HTTP calls while
+    holding a SQLAlchemy session. Running them through ``AsyncSession.run_sync``
+    blocks the ASGI loop. A stalled conversation could therefore delay unrelated
+    authentication and control-plane requests. This helper uses a separate,
+    non-overflowing DB pool and a matching semaphore so both threads and database
+    connections have a hard process-local ceiling.
+    """
+
+    try:
+        await asyncio.wait_for(container.blocking_io_slots.acquire(), timeout=0.25)
+    except TimeoutError as exc:
+        logger.warning(
+            "blocking Runtime read pool saturated active_limit=%d",
+            container.settings.blocking_pool_size,
+        )
+        raise DomainError(
+            "RUNTIME_READ_SATURATED",
+            "Agent Runtime reads are busy; retry shortly",
+            503,
+        ) from exc
+
+    def execute() -> T:
+        with container.database.blocking_sessions() as session:
+            mark_uow_owned(session)
+            try:
+                result = operation(session)
+                session.commit()
+            except BaseException:
+                session.rollback()
+                run_rollback_actions(session)
+                raise
+            run_commit_actions(session)
+            return result
+
+    context = contextvars.copy_context()
+    worker = asyncio.ensure_future(
+        asyncio.get_running_loop().run_in_executor(
+            container.blocking_executor,
+            context.run,
+            execute,
+        )
+    )
+
+    def release_slot(completed: asyncio.Future[T]) -> None:
+        container.blocking_io_slots.release()
+        # A disconnected HTTP client cancels the request coroutine, but Python
+        # cannot stop an already-running thread. Consume its eventual exception
+        # and release capacity only after its bounded Runtime call has exited.
+        if not completed.cancelled():
+            completed.exception()
+
+    worker.add_done_callback(release_slot)
+    return await asyncio.shield(worker)
 
 
 Db = Annotated[AsyncSession, Depends(get_db)]

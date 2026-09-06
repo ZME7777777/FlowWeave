@@ -23,6 +23,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://flowweave:flowweave_dev@localhost:55432/flowweave"
     pool_size: int = Field(default=10, ge=1, le=100)
+    database_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    blocking_pool_size: int = Field(default=4, ge=1, le=16)
+    blocking_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     statement_timeout_ms: int = Field(default=30_000, ge=100)
 
     credentials_master_key: str = ""

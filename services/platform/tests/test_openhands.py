@@ -243,7 +243,7 @@ def test_openhands_input_readiness_returns_atomic_native_execution_state(
     monkeypatch.setattr(
         runtime,
         "_conversation_state",
-        lambda _handle: {"execution_status": execution_status},
+        lambda _handle, **_kwargs: {"execution_status": execution_status},
     )
 
     snapshot = runtime.input_readiness(_handle())

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Literal
 
@@ -35,10 +37,17 @@ class Container:
     sandbox: SandboxPort
     run_event_listener: RunEventListener
     audit_writer: AuditWriter
+    blocking_executor: ThreadPoolExecutor
+    blocking_io_slots: asyncio.Semaphore
 
     async def close(self) -> None:
         await self.audit_writer.close()
         await self.http.aclose()
+        await asyncio.to_thread(
+            self.blocking_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
         await self.database.dispose()
 
 
@@ -51,6 +60,10 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     else:
         raise ValueError(f"Unsupported runtime adapter: {settings.runtime_adapter}")
     database = Database(settings)
+    blocking_executor = ThreadPoolExecutor(
+        max_workers=settings.blocking_pool_size,
+        thread_name_prefix=f"flowweave-{role}-blocking",
+    )
     return Container(
         settings=settings,
         role=role,
@@ -63,4 +76,6 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         sandbox=build_sandbox(settings),
         run_event_listener=RunEventListener(settings.database_url),
         audit_writer=AuditWriter(database.sessions),
+        blocking_executor=blocking_executor,
+        blocking_io_slots=asyncio.Semaphore(settings.blocking_pool_size),
     )

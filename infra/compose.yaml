@@ -141,9 +141,14 @@ services:
   api:
     build: { context: .., dockerfile: services/platform/Dockerfile }
     user: "10001:10001"
-    command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory"]
+    command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
+      # Four independent REST workers prevent one process failure from taking
+      # out the control plane. Keep each worker's async and blocking pools small
+      # so the aggregate PostgreSQL and Runtime concurrency remains bounded.
+      POOL_SIZE: 5
+      BLOCKING_POOL_SIZE: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
       flowweave.runtime-client: "true"
@@ -182,6 +187,7 @@ services:
       # WebSocket relay. Keep its per-process pool bounded even when many
       # browser sessions are connected. REST owns its separate API pool.
       POOL_SIZE: 4
+      BLOCKING_POOL_SIZE: 1
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
       flowweave.runtime-client: "true"

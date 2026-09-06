@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import secrets
@@ -52,6 +53,29 @@ from flowweave.shared.infrastructure.sandbox import DockerSandbox
 from flowweave.shared.settings import bind_settings, reset_settings
 
 _MAX_REQUEST_BYTES = 2 * 1024 * 1024
+_RELAY_CONTROL_KEY = "_flowweave_runtime_event_relay_v2"
+_RELAY_MARKER = "FLOWWEAVE_EVENT_RELAY_V2"
+_RELAY_MAX_ACTIVE_PER_CHANNEL = 4
+_RELAY_HEARTBEAT_SECONDS = 10.0
+_RELAY_MAX_LIFETIME_SECONDS = 300.0
+
+logger = logging.getLogger(__name__)
+
+
+def _configure_runtime_provider_logging(level: str) -> None:
+    """Emit provider lifecycle diagnostics independently of Uvicorn's logger tree."""
+
+    if not any(
+        handler.get_name() == "flowweave-runtime-provider" for handler in logger.handlers
+    ):
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        handler.set_name("flowweave-runtime-provider")
+        logger.addHandler(handler)
+    logger.setLevel(level.upper())
+    logger.propagate = False
 
 
 class _StrictModel(BaseModel):
@@ -513,21 +537,110 @@ _RUNTIME_EVENT_RELAY = r"""
 import asyncio
 import json
 import os
+import signal
 import sys
+import time
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
+
+MARKER = "FLOWWEAVE_EVENT_RELAY_V2"
+CONTROL_KEY = "_flowweave_runtime_event_relay_v2"
+MAX_ACTIVE_PER_CHANNEL = 4
+HEARTBEAT_SECONDS = 10.0
+MAX_LIFETIME_SECONDS = 300.0
+
+
+def process_identity(pid, channel, conversation_id):
+    try:
+        parts = [item for item in open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0") if item]
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return None
+    try:
+        script = parts[parts.index(b"-c") + 1].decode(errors="replace")
+    except (ValueError, IndexError):
+        return None
+    channel_bytes = channel.encode()
+    conversation_bytes = conversation_id.encode()
+    if MARKER in script:
+        if len(parts) < 4 or parts[-4] != channel_bytes or parts[-3] != conversation_bytes:
+            return None
+        kind = "v2"
+    else:
+        legacy_tokens = (
+            "from websockets.asyncio.client import connect",
+            "/sockets/bash-events",
+            "session_api_key",
+            "timeout_seconds = float(sys.argv[3])",
+        )
+        if (
+            any(token not in script for token in legacy_tokens)
+            or len(parts) < 3
+            or parts[-3] != channel_bytes
+            or parts[-2] != conversation_bytes
+        ):
+            return None
+        kind = "legacy"
+    try:
+        # Field 22 in /proc/<pid>/stat is the kernel start time. Splitting
+        # after the final ')' handles process names containing whitespace.
+        suffix = open(f"/proc/{pid}/stat", encoding="utf-8").read().rsplit(")", 1)[1]
+        started = int(suffix.split()[19])
+    except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+        return None
+    return started, pid, kind
+
+
+def matching_relays(channel, conversation_id):
+    matches = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        identity = process_identity(int(entry), channel, conversation_id)
+        if identity is not None:
+            matches.append(identity)
+    return sorted(matches)
+
+
+def prune_excess_relays(channel, conversation_id):
+    current_pid = os.getpid()
+    matches = matching_relays(channel, conversation_id)
+    excess = max(0, len(matches) - MAX_ACTIVE_PER_CHANNEL)
+    for _started, pid, _kind in [item for item in matches if item[1] != current_pid][:excess]:
+        # Re-read the command line immediately before signaling to avoid PID
+        # reuse terminating an unrelated process.
+        if process_identity(pid, channel, conversation_id) is None:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    return max(1, len(matching_relays(channel, conversation_id)))
+
+
+def emit(relay_id, kind, **values):
+    print(json.dumps({CONTROL_KEY: {"relay_id": relay_id, "kind": kind, **values}}), flush=True)
 
 
 async def main():
     channel = sys.argv[1]
     conversation_id = sys.argv[2]
     timeout_seconds = float(sys.argv[3])
+    relay_id = sys.argv[4]
+    active_count = prune_excess_relays(channel, conversation_id)
+    emit(
+        relay_id,
+        "started",
+        pid=os.getpid(),
+        active_count=active_count,
+        max_lifetime_seconds=MAX_LIFETIME_SECONDS,
+    )
     path = (
         f"/sockets/events/{conversation_id}"
         if channel == "CONVERSATION"
         else "/sockets/bash-events"
     )
+    deadline = time.monotonic() + MAX_LIFETIME_SECONDS
     async with connect(
         f"ws://127.0.0.1:8000{path}",
         open_timeout=10,
@@ -540,11 +653,20 @@ async def main():
             "session_api_key": os.environ["SESSION_API_KEY"],
         }))
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                emit(relay_id, "stopping", reason="max_lifetime")
+                return
             try:
-                frame = await asyncio.wait_for(upstream.recv(), timeout=timeout_seconds)
+                frame = await asyncio.wait_for(
+                    upstream.recv(),
+                    timeout=max(0.1, min(timeout_seconds, HEARTBEAT_SECONDS, remaining)),
+                )
             except TimeoutError:
+                emit(relay_id, "heartbeat", pid=os.getpid())
                 continue
             except ConnectionClosed:
+                emit(relay_id, "stopping", reason="upstream_closed")
                 return
             if isinstance(frame, str):
                 print(frame, flush=True)
@@ -552,6 +674,99 @@ async def main():
 
 asyncio.run(main())
 """
+
+_RUNTIME_EVENT_RELAY_TERMINATE = r"""
+import json
+import os
+import signal
+import sys
+
+MARKER = "FLOWWEAVE_EVENT_RELAY_V2"
+pid = int(sys.argv[1])
+channel = sys.argv[2]
+conversation_id = sys.argv[3]
+relay_id = sys.argv[4]
+terminated = False
+active_count = 0
+try:
+    parts = [item for item in open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0") if item]
+    script = parts[parts.index(b"-c") + 1].decode(errors="replace")
+    owned = (
+        MARKER in script
+        and len(parts) >= 4
+        and parts[-4] == channel.encode()
+        and parts[-3] == conversation_id.encode()
+        and parts[-1] == relay_id.encode()
+    )
+    if owned:
+        os.kill(pid, signal.SIGTERM)
+        terminated = True
+except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+    pass
+for entry in os.listdir("/proc"):
+    if not entry.isdigit():
+        continue
+    try:
+        candidate = [
+            item for item in open(f"/proc/{entry}/cmdline", "rb").read().split(b"\0") if item
+        ]
+        candidate_script = candidate[candidate.index(b"-c") + 1].decode(errors="replace")
+        if (
+            MARKER in candidate_script
+            and len(candidate) >= 4
+            and candidate[-4] == channel.encode()
+            and candidate[-3] == conversation_id.encode()
+        ):
+            active_count += 1
+    except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+        pass
+if terminated:
+    active_count = max(0, active_count - 1)
+print(json.dumps({"terminated": terminated, "active_count": active_count}), flush=True)
+"""
+
+
+async def _terminate_runtime_event_relay(
+    configured: Settings,
+    container_id: str,
+    channel: str,
+    conversation_id: str,
+    relay_id: str,
+    remote_pid: int,
+) -> tuple[bool, int | None]:
+    cleanup = await asyncio.create_subprocess_exec(
+        configured.docker_binary,
+        "exec",
+        container_id,
+        "/runtime/.venv/bin/python",
+        "-u",
+        "-c",
+        _RUNTIME_EVENT_RELAY_TERMINATE,
+        str(remote_pid),
+        channel,
+        conversation_id,
+        relay_id,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=64 * 1024,
+        env={"PATH": os.defpath},
+    )
+    try:
+        stdout, _stderr = await asyncio.wait_for(cleanup.communicate(), timeout=3)
+    except TimeoutError:
+        cleanup.kill()
+        await cleanup.wait()
+        return False, None
+    try:
+        raw_result = cast(object, json.loads(stdout))
+    except ValueError:
+        return False, None
+    if not isinstance(raw_result, dict):
+        return False, None
+    result = cast(dict[str, Any], raw_result)
+    count = result.get("active_count")
+    active_count = count if isinstance(count, int) and count >= 0 else None
+    return result.get("terminated") is True, active_count
 
 
 async def _runtime_event_stream(
@@ -563,6 +778,11 @@ async def _runtime_event_stream(
 ) -> AsyncIterator[bytes]:
     """Run the fixed relay inside one ownership-verified Runtime container."""
 
+    relay_id = secrets.token_hex(16)
+    started_at = time.monotonic()
+    remote_pid: int | None = None
+    active_count: int | None = None
+    stop_reason = "consumer_closed"
     process = await asyncio.create_subprocess_exec(
         configured.docker_binary,
         "exec",
@@ -574,6 +794,7 @@ async def _runtime_event_stream(
         channel,
         conversation_id,
         str(timeout_seconds),
+        relay_id,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         # asyncio's default StreamReader limit is 64 KiB. OpenHands permits
@@ -584,23 +805,88 @@ async def _runtime_event_stream(
         limit=_MAX_REQUEST_BYTES,
         env={"PATH": os.defpath},
     )
+    logger.info(
+        "Runtime event relay starting container=%s conversation=%s channel=%s",
+        container_id,
+        conversation_id,
+        channel,
+    )
     assert process.stdout is not None
     try:
         while line := await process.stdout.readline():
             # The Runtime owns the JSON schema. Preserve only valid JSON objects
             # and normalize framing so one upstream event is one NDJSON record.
             try:
-                value = json.loads(line)
+                raw_value = cast(object, json.loads(line))
             except ValueError:
                 continue
-            if isinstance(value, dict):
+            if isinstance(raw_value, dict):
+                value = cast(dict[str, Any], raw_value)
+                raw_control = cast(object, value.get(_RELAY_CONTROL_KEY))
+                if isinstance(raw_control, dict):
+                    control = cast(dict[str, Any], raw_control)
+                    if control.get("relay_id") != relay_id:
+                        yield json.dumps(
+                            value, ensure_ascii=False, separators=(",", ":")
+                        ).encode() + b"\n"
+                        continue
+                    kind = control.get("kind")
+                    if kind == "started":
+                        pid = control.get("pid")
+                        count = control.get("active_count")
+                        if isinstance(pid, int) and pid > 1:
+                            remote_pid = pid
+                        if isinstance(count, int) and count >= 0:
+                            active_count = count
+                        logger.info(
+                            "Runtime event relay started container=%s conversation=%s "
+                            "channel=%s remote_pid=%s active_count=%s",
+                            container_id,
+                            conversation_id,
+                            channel,
+                            remote_pid,
+                            active_count,
+                        )
+                    elif kind == "stopping" and isinstance(control.get("reason"), str):
+                        stop_reason = str(control["reason"])
+                    # PID, heartbeat and lifecycle controls are internal and
+                    # must never appear as product conversation events.
+                    continue
                 yield json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
         return_code = await process.wait()
         if return_code:
-            assert process.stderr is not None
-            detail = (await process.stderr.read()).decode(errors="replace")[-2000:]
-            raise RuntimeError(f"Runtime event relay exited with {return_code}: {detail}")
+            stop_reason = f"relay_exit_{return_code}"
+            if process.stderr is not None:
+                await process.stderr.read()
+            raise RuntimeError(f"Runtime event relay exited with {return_code}")
+        if stop_reason == "consumer_closed":
+            stop_reason = "relay_completed"
+    except asyncio.CancelledError:
+        stop_reason = "consumer_cancelled"
+        raise
     finally:
+        remote_terminated = False
+        remaining_active_count: int | None = None
+        if remote_pid is not None:
+            try:
+                remote_terminated, remaining_active_count = await _terminate_runtime_event_relay(
+                    configured,
+                    container_id,
+                    channel,
+                    conversation_id,
+                    relay_id,
+                    remote_pid,
+                )
+            except (OSError, RuntimeError):
+                logger.warning(
+                    "Runtime event relay remote cleanup failed container=%s "
+                    "conversation=%s channel=%s remote_pid=%s",
+                    container_id,
+                    conversation_id,
+                    channel,
+                    remote_pid,
+                    exc_info=True,
+                )
         if process.returncode is None:
             process.terminate()
             try:
@@ -608,6 +894,20 @@ async def _runtime_event_stream(
             except TimeoutError:
                 process.kill()
                 await process.wait()
+        logger.info(
+            "Runtime event relay stopped container=%s conversation=%s channel=%s "
+            "remote_pid=%s start_active_count=%s remaining_active_count=%s "
+            "remote_terminated=%s reason=%s duration_ms=%d",
+            container_id,
+            conversation_id,
+            channel,
+            remote_pid,
+            active_count,
+            remaining_active_count,
+            remote_terminated,
+            stop_reason,
+            int((time.monotonic() - started_at) * 1000),
+        )
 
 
 def _observation_dict(value: object) -> dict[str, Any] | None:
@@ -664,6 +964,7 @@ def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     configured = (settings or Settings()).model_copy(update={"docker_controller_mode": "local"})
+    _configure_runtime_provider_logging(configured.log_level)
     if len(configured.docker_controller_api_key) < 32:
         raise ValueError("DOCKER_CONTROLLER_API_KEY must contain at least 32 characters")
     if len(configured.docker_controller_worker_api_key) < 32:

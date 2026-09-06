@@ -717,8 +717,24 @@ async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settin
         def __init__(self) -> None:
             self.reading = asyncio.Event()
             self.release = asyncio.Event()
+            self.calls = 0
 
         async def readline(self) -> bytes:
+            self.calls += 1
+            if self.calls == 1:
+                return (
+                    json.dumps(
+                        {
+                            controller_module._RELAY_CONTROL_KEY: {
+                                "relay_id": relay_id,
+                                "kind": "started",
+                                "pid": 4321,
+                                "active_count": 1,
+                            }
+                        }
+                    ).encode()
+                    + b"\n"
+                )
             self.reading.set()
             await self.release.wait()
             return b""
@@ -729,6 +745,7 @@ async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settin
             self.stderr = None
             self.returncode: int | None = None
             self.terminated = False
+            self.pid = 1234
 
         def terminate(self) -> None:
             self.terminated = True
@@ -744,9 +761,29 @@ async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settin
             assert self.returncode is not None
             return self.returncode
 
-    process = Process()
+    class CleanupProcess:
+        returncode = 0
 
-    async def create_process(*_args, **_kwargs):
+        async def communicate(self):
+            return b'{"terminated":true,"active_count":0}\n', b""
+
+        def kill(self) -> None:
+            raise AssertionError("remote cleanup must complete normally")
+
+        async def wait(self) -> int:
+            return 0
+
+    process = Process()
+    relay_id = "a" * 32
+    cleanup_calls: list[tuple[object, ...]] = []
+
+    async def create_process(*args, **_kwargs):
+        if controller_module._RUNTIME_EVENT_RELAY_TERMINATE in args:
+            cleanup_calls.append(args)
+            return CleanupProcess()
+        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 4
+        nonlocal relay_id
+        relay_id = str(args[relay_id_index])
         return process
 
     monkeypatch.setattr(controller_module.asyncio, "create_subprocess_exec", create_process)
@@ -764,6 +801,9 @@ async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settin
     await stream.aclose()
 
     assert process.terminated is True
+    assert len(cleanup_calls) == 1
+    assert "4321" in cleanup_calls[0]
+    assert relay_id in cleanup_calls[0]
 
 
 @pytest.mark.asyncio
@@ -775,8 +815,6 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
         "content": "x" * (70 * 1024),
     }
     stdout = asyncio.StreamReader(limit=controller_module._MAX_REQUEST_BYTES)
-    stdout.feed_data(json.dumps(payload).encode() + b"\n")
-    stdout.feed_eof()
     stderr = asyncio.StreamReader()
     stderr.feed_eof()
 
@@ -785,6 +823,7 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
             self.stdout = stdout
             self.stderr = stderr
             self.returncode: int | None = None
+            self.pid = 1234
 
         def terminate(self) -> None:
             self.returncode = -15
@@ -797,10 +836,56 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
                 self.returncode = 0
             return self.returncode
 
-    captured: dict[str, object] = {}
+    class CleanupProcess:
+        returncode = 0
 
-    async def create_process(*_args, **kwargs):
+        async def communicate(self):
+            return b'{"terminated":true,"active_count":0}\n', b""
+
+        def kill(self) -> None:
+            raise AssertionError("remote cleanup must complete normally")
+
+        async def wait(self) -> int:
+            return 0
+
+    captured: dict[str, object] = {}
+    cleanup_calls = 0
+
+    async def create_process(*args, **kwargs):
+        nonlocal cleanup_calls
+        if controller_module._RUNTIME_EVENT_RELAY_TERMINATE in args:
+            cleanup_calls += 1
+            return CleanupProcess()
         captured.update(kwargs)
+        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 4
+        relay_id = args[relay_id_index]
+        stdout.feed_data(
+            json.dumps(
+                {
+                    controller_module._RELAY_CONTROL_KEY: {
+                        "relay_id": relay_id,
+                        "kind": "started",
+                        "pid": 4321,
+                        "active_count": 1,
+                    }
+                }
+            ).encode()
+            + b"\n"
+        )
+        stdout.feed_data(
+            json.dumps(
+                {
+                    controller_module._RELAY_CONTROL_KEY: {
+                        "relay_id": relay_id,
+                        "kind": "heartbeat",
+                        "pid": 4321,
+                    }
+                }
+            ).encode()
+            + b"\n"
+        )
+        stdout.feed_data(json.dumps(payload).encode() + b"\n")
+        stdout.feed_eof()
         return Process()
 
     monkeypatch.setattr(controller_module.asyncio, "create_subprocess_exec", create_process)
@@ -817,6 +902,10 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
 
     assert captured["limit"] == 2 * 1024 * 1024
     assert records == [payload]
+    assert cleanup_calls == 1
+    assert "MAX_ACTIVE_PER_CHANNEL = 4" in controller_module._RUNTIME_EVENT_RELAY
+    assert "MAX_LIFETIME_SECONDS = 300.0" in controller_module._RUNTIME_EVENT_RELAY
+    assert "HEARTBEAT_SECONDS = 10.0" in controller_module._RUNTIME_EVENT_RELAY
 
 
 def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, monkeypatch):

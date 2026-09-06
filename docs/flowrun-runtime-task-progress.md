@@ -2658,6 +2658,27 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 原 Conversation ID 恢复，绝不静默启动空会话。FlowRun 的永久删除改为在 Attempt 记录仍可关联时显式释放
 所有 Attempt Runtime、generation 与 session，防止持久化修复造成泄漏；不删除现有 OpenHands 状态。
 
+### FR-187 Agent 事件中继回收与控制面并发隔离 — DONE
+
+依赖：`FR-186`。
+
+目标：修复浏览器刷新和 Platform／stream-api 重启后，Runtime 容器内 `docker exec` 事件中继失去客户端却不退出，
+持续累积并阻塞 OpenHands 会话锁与事件读取的问题。中继必须有心跳、绝对寿命、每会话并发上限和显式远端进程
+终止；Runtime Provider 必须记录启动、回收、异常与活动数。Agent 会话的事件、上下文、就绪和确认读取改到有界
+阻塞执行池，不能在 FastAPI 事件循环内执行同步 OpenHands 网络请求；数据库连接池继续有明确上限且不允许溢出。
+API 使用多 Worker 承担普通控制面请求，并记录慢请求的路由、耗时、状态和请求 ID。单个 Runtime 会话超时、锁死
+或中继泄漏不得再拖慢登录、能力、模型或其他控制面接口。完成后以 commit 绑定方式更新远端 Platform、
+Runtime Provider、API、Worker 与 stream-api，验证原会话 ID／事件保持、登录与 Agent 会话延迟、孤儿中继
+收敛、数据库连接和服务健康。
+
+完成：Agent 会话的事件、上下文、输入就绪和待确认读取已从 ASGI 事件循环移入容器自有的有界线程池；线程池、
+同步数据库连接池和信号量使用同一硬上限，普通异步连接池也禁止 overflow 并限制等待时间。客户端取消只取消等待，
+后台线程及数据库槽位在真实网络调用结束后才回收；交互式 OpenHands 读取使用 8 秒上限。REST API 使用 4 个独立
+Worker，单 Worker 的普通／阻塞池分别收口为 5／2，stream-api 阻塞池为 1。Runtime 事件中继携带随机实例标识和
+容器内 PID，每 10 秒心跳、最长运行 5 分钟、每会话通道最多 4 个；新中继会清理同会话旧版孤儿，Provider 在消费端
+关闭时以 PID、标记、会话、通道和实例标识二次校验后显式终止容器内进程。中继控制记录不进入产品事件流；API、
+OpenHands 请求和中继生命周期日志记录路由／Runtime、状态、耗时与请求 ID，不记录查询值、请求内容或凭据。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2673,6 +2694,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-187 | 受影响 Python Ruff、`py_compile`、定向 Pyright；并发取消／槽位回收、上下文传播、慢日志脱敏和中继 PID／心跳过滤直接单元检查；Linux 容器内中继控制探针；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS（实现与直接探针）：直接单元检查全部通过，Linux `/proc` 中继启动控制记录有效，Compose 解析和受影响文件 Ruff／语法检查通过。正式定向 pytest 9 项可收集，但隔离空库迁移在断言前被既有 `0092_node_run_names` 重复添加 `node_runs.name` 阻断，未伪记为通过；全量 Pyright 仍有仓库既有诊断，本切片新增基础设施文件无新增诊断。`compose_security_check.py` 仍因既有 stream-api 连接 docker-control 的基线规则失败，原始 Compose 语法有效。生产故障会话已在保留 Workspace、OpenHands state 与原 Conversation ID 的前提下清理 26 个孤儿中继并仅重启其 Runtime，events/search 恢复到约 76ms。 |
 | 2026-09-06 | FR-185 | Agent Definition 创建范围、Runtime native `agent_definitions` 投影定向 pytest；受影响 Python Ruff/`py_compile`；Web ESLint、TypeScript typecheck、`git diff --check` | PASS（静态）：Ruff 与 `py_compile`、Web ESLint、TypeScript typecheck、`git diff --check` 通过。定向 pytest 在执行断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 2 errors，未伪记为通过；受影响 Python 文件的 Ruff format check 同时报出既有格式差异，未作无关格式化。 |
 | 2026-09-06 | FR-184 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：弹窗高度扣除遮罩层上下留白，且窄视口继续按两列呈现每页 6 项。生产浏览器复核随本切片定向发布执行。 |
 | 2026-09-06 | FR-183 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：Marketplace 使用固定高度无滚动双分区布局；搜索、刷新、分页、解析和发布状态的类型检查通过。 |
