@@ -2614,6 +2614,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：目录区每页固定展示 6 个 Plugin，搜索会重置分页，且目录卡片文本截断而非撑开弹窗；解析器区独立呈现当前选择、状态、冻结信息与失败反馈，底部操作栏始终可见。目录与 Plugin 解析继续使用已固定的 commit，未改变解析、发布或安全校验策略。
 
+### FR-184 OpenHands Marketplace 弹窗视口边界收口 — DONE
+
+依赖：`FR-183`。
+
+目标：使 Marketplace 弹窗的固定高度与遮罩层的上下留白一致，避免短视口中底部操作栏被裁切；同时保证每页固定 6 项在窄视口仍以两列完整呈现，而不是因单列媒体规则被隐藏。
+
+完成：弹窗高度改为扣除遮罩层上下各 28px 的可用视口高度，目录仍为 2 列 × 3 行；不再在 900px 以下改为单列。未改变分页、解析、发布或任何 Runtime／安全边界。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2649,6 +2657,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-184 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：弹窗高度扣除遮罩层上下留白，且窄视口继续按两列呈现每页 6 项。生产浏览器复核随本切片定向发布执行。 |
 | 2026-09-06 | FR-183 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：Marketplace 使用固定高度无滚动双分区布局；搜索、刷新、分页、解析和发布状态的类型检查通过。 |
 | 2026-09-06 | FR-182 | 受影响 Python Ruff/`py_compile`、API Marketplace 回归、`git diff --check` | PASS：Marketplace 路由从 API 请求上下文获得 Plugin Resolver，线程化目录浏览不再抛出“Plugin resolver is not bound”。Docker daemon 在本机不可用，集成 fixture 由远端部署后的已认证请求验证。 |
 | 2026-09-06 | FR-181 | Dockerfile 静态回归、受影响 Python Ruff/`py_compile`、`git diff --check` | PASS：platform 镜像显式安装 Git，OpenHands Marketplace 的 HEAD 解析不再因可执行文件缺失返回 503。Docker daemon 在本机不可用，未构建镜像或执行容器 smoke。 |
