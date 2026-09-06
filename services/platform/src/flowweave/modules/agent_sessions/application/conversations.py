@@ -1700,12 +1700,42 @@ def message(
             {"binding_id": binding.id},
         )
     runtime = get_runtime()
-    if not runtime.can_accept_input(handle):
-        raise DomainError(
-            "AGENT_CONVERSATION_BUSY",
-            "Agent 正在处理上一条消息或停止请求，请稍候",
-            409,
-        )
+    readiness = runtime.input_readiness(handle)
+    if not readiness.ready:
+        # OpenHands 1.44.0 formally accepts a user event while its standard
+        # Agent is running. The current LLM/tool step is left intact; the
+        # native loop consumes the newly appended event on its next step.
+        # Do not run model rebinding, fork recovery, or compaction here: each
+        # of those mutates native state and is only safe at an idle boundary.
+        if readiness.execution_status not in {"running", "executing"}:
+            raise DomainError(
+                "AGENT_CONVERSATION_BUSY",
+                "Agent 正在处理停止或确认请求，请稍候",
+                409,
+            )
+        try:
+            result = runtime.send_message(handle, prompt, image_urls)
+        except DomainError as exc:
+            if exc.status >= 500:
+                raise DomainError(
+                    "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
+                ) from exc
+            raise
+        if result.cursor:
+            _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+        activity_at = now()
+        binding.last_connected_at = activity_at
+        binding.updated_at = activity_at
+        db.flush()
+        return {
+            "accepted": True,
+            "cursor": result.cursor,
+            "compacted": False,
+            "queued_during_turn": True,
+        }
+
+    # Idle-boundary work may safely mutate native Conversation configuration
+    # before the next event is appended.
     # OpenHands switch_llm changes the live Event Service but does not persist
     # the replacement LLM. Re-apply the complete persisted binding before
     # every user event so a Runtime reload cannot silently restore the model
@@ -1802,7 +1832,12 @@ def message(
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     db.flush()
-    return {"accepted": True, "cursor": result.cursor, "compacted": compacted}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "compacted": compacted,
+        "queued_during_turn": False,
+    }
 
 
 _ATTACHMENT_PATH = re.compile(

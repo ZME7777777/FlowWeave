@@ -3026,6 +3026,11 @@ class OpenHandsRuntime:
             f"/api/conversations/{handle.conversation_id}/events",
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
+            # A native running Agent may hold its event-state lock until the
+            # current LLM/tool step finishes. This formal event append must
+            # wait for that boundary rather than timing out at the ordinary
+            # short control-request limit and inviting a duplicate retry.
+            timeout=3600,
             json={
                 "role": "user",
                 "content": parts,

@@ -3409,12 +3409,13 @@ def test_agent_workspace_migrates_historical_streaming_callback_before_send(
         assert runtime.calls[-2:] == [f"switch:{provider_id}", "fork:assistant-event"]
 
 
-def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
+def test_agent_workspace_appends_guidance_while_native_turn_is_running(
     settings, db_session_factory, monkeypatch
 ):
     class SerialRuntime(MockRuntime):
         ready = True
         sent: list[str] = []
+        switched: int = 0
 
         def can_accept_input(self, handle):
             del handle
@@ -3422,10 +3423,13 @@ def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
 
         def send_message(self, handle, content, image_urls=()):
             del image_urls
-            assert self.ready
             self.sent.append(content)
             self.ready = False
             return super().send_message(handle, content)
+
+        def switch_model(self, handle, provider):
+            del handle, provider
+            self.switched += 1
 
         def interrupt(self, handle):
             del handle
@@ -3448,24 +3452,16 @@ def test_agent_workspace_blocks_resend_until_native_interrupt_has_settled(
             db, workspace.id, None, workspace.default_model_provider_id, "create-key"
         )
         conversations.message(db, workspace.id, created["id"], "first")
-        conversations.interrupt(db, workspace.id, created["id"])
-
-        try:
-            conversations.message(db, workspace.id, created["id"], "second")
-        except DomainError as exc:
-            assert exc.code == "AGENT_CONVERSATION_BUSY"
-            assert exc.status == 409
-        else:
-            raise AssertionError("a second message cannot be sent before interrupt settles")
-        assert runtime.sent == ["first"]
+        result = conversations.message(db, workspace.id, created["id"], "second")
+        assert result["queued_during_turn"] is True
+        assert runtime.sent == ["first", "second"]
+        # Model rebinding is an idle-boundary operation. The direct native
+        # event append must not mutate the model used by the active turn.
+        assert runtime.switched == 1
         assert conversations.input_readiness(db, workspace.id, created["id"]) == {
             "ready": False,
             "execution_status": "running",
         }
-
-        runtime.ready = True
-        conversations.message(db, workspace.id, created["id"], "second")
-        assert runtime.sent == ["first", "second"]
 
 
 def test_agent_workspace_confirmation_uses_native_batch_digest(

@@ -755,8 +755,11 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
         attempt.conversation_id = binding.openhands_conversation_id
 
         class RestartRecoveredRuntime:
-            def can_accept_input(self, _handle: object) -> bool:
-                return True
+            def input_readiness(self, _handle: object) -> RuntimeInputReadiness:
+                return RuntimeInputReadiness(ready=False, execution_status="running")
+
+            def switch_model(self, _handle: object, _provider: object) -> None:
+                raise AssertionError("a running native turn must not be rebound")
 
             def send_message(
                 self, _handle: object, _content: str, _images: tuple[str, ...]
@@ -788,7 +791,12 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
         run = db.get(FlowRun, flow_run_id)
         assert blocked is not None
         assert run is not None
-        assert result == {"accepted": True, "cursor": "new-user-turn", "compacted": False}
+        assert result == {
+            "accepted": True,
+            "cursor": "new-user-turn",
+            "compacted": False,
+            "queued_during_turn": True,
+        }
         assert (blocked.state, blocked.runtime_phase, blocked.error_code, blocked.error_detail) == (
             "END_BLOCKED",
             "COMPLETED",

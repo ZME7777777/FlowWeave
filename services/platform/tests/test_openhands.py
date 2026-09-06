@@ -1227,6 +1227,7 @@ def test_openhands_human_conversation_uses_dynamic_capability_selection(
         "content": [{"type": "text", "text": "你好"}],
         "run": True,
     }
+    assert requests[1]["timeout"] == 3600
     assert runtime._contracts[conversation_id] == []
 
 

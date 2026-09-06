@@ -2534,6 +2534,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：工作目录删除按所有历史版本显式定位对应 Agent Conversation binding，并依次调用既有原生删除和私有附件清理后物理删除目录记录图；确认文案同步为不可恢复的级联删除。附件路径合同扩展为用户根，并在上传返回和正式发送时同时核对不透明 owner UUID 与实际 Runtime 根；浏览器投影的 sandbox 图片路径使用同一用户根语法。Composer 现在区分 Enter 与 Command/Ctrl+Enter：前者保留队列，后者请求安全暂停并在 OpenHands `input_readiness` 就绪后优先发送；暂停请求失败会恢复草稿及附件，不丢失输入。
 
+### FR-174 OpenHands 原生运行中引导消息 — DONE
+
+依赖：`FR-173`。
+
+目标：纠正 Command/Ctrl+Enter 的“立即引导”语义。会话正在运行时，不得调用 OpenHands `/interrupt`、取消当前 LLM／Tool 步骤或等待暂停；应通过固定 OpenHands 1.44.0 正式 events 接口追加同一条 user event，并由 OpenHands 在当前步骤结束后的下一次模型调用中消费。普通 Enter 继续仅使用浏览器内顺序队列。一级 Agent Workspace 与 FlowRun 节点共享 Workbench 必须保持一致；运行中投递不得执行仅空闲时安全的换模、分叉恢复或上下文压缩。显式“暂停当前 Agent”仍使用原生 interrupt。
+
+完成：运行中的 Agent Workspace 与节点会话均以正式 `POST /api/conversations/{id}/events` 追加 user event，不再将 Command/Ctrl+Enter 映射为 interrupt。后端仅在 native `running`／`executing` 状态跳过模型重绑、分叉恢复和压缩；停止或确认状态仍关闭写入。前端将连续快捷键输入置于浏览器 FIFO，逐条提交但不清空当前流式内容；上一个回合结束时通过正式 user event identity 跟随下一未完成回合，普通 Enter 队列不会抢先发送。正式 events 请求可等待当前原生状态锁释放，避免短控制超时诱导重复投递；显式暂停和重写仍保留 interrupt。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2569,6 +2577,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-174 | 受影响 Python `py_compile`、Ruff；OpenHands events 请求定向 pytest；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与请求契约）：运行中的 Command/Ctrl+Enter 不再调用 interrupt，而是按 FIFO 将消息追加到 OpenHands 正式 events 接口；UI 保留当前流式内容并在先前回合结束后跟随正式的下一未完成 user event，普通 Enter 仍只走本地顺序队列。外层与节点会话在 `running`／`executing` 时均不会模型重绑、分叉恢复或压缩，停止／确认仍拒绝写入。两项数据库定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过；不依赖数据库的 OpenHands events 请求测试通过。 |
 | 2026-09-06 | FR-173 | 受影响 Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：工作区删除改为物理级联删除关联会话及私有附件；用户根附件路径在上传返回、发送和 sandbox 图片投影三处保持同一受限契约；Command/Ctrl+Enter 会等待原生暂停完成后优先发送，普通 Enter 继续排队。受影响 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行；定向 Playwright 因本地 Vite 服务不可达而未执行，均未伪记为通过。定向 Pyright 命中既有 `work_directories.py:395` 构造调用缺少 `working_path` 的 strict 基线诊断，未由本切片引入。 |
 | 2026-09-06 | FR-172 | Python `py_compile`、Ruff；后端原生完成事件定向回归（直接运行，不依赖数据库容器）；Web ESLint、TypeScript typecheck、production build；FlowRun 工作台 Playwright（1 passed）；任务状态唯一性与 `git diff --check` | PASS：后续正式 FinishAction 在 `END_BLOCKED` 时回投 Artifact／END gate，而不是因 native status 已完成被丢弃；失败节点在选中和已配置状态下仍显示红色。逐步记录删除的 API 回归新增递归目录断言；完整 pytest 未能运行，因为本机 Docker daemon 不可用，Testcontainers PostgreSQL 在 fixture setup 前失败，未伪记为通过。定向 Pyright 仍命中仓库既有 strict 类型基线（2020 项），本切片新增代码未产生单独诊断。 |
 | 2026-09-06 | FR-171 | Web ESLint、TypeScript typecheck、production build；能力仓库 Context Bundle 定向 Playwright（1 passed）；终端环境发布 IME 定向 Playwright（1 passed）；任务状态唯一性与 `git diff --check` | PASS：发送与最终回复分别以正式 OpenHands message timestamp 呈现 `HH:mm`，无有效 timestamp 时不会猜测也不会隐藏复制／编辑操作。成功提示有可访问关闭入口，浮层高度为 0px，不再压缩能力列表分页区域。中文 IME 候选确认不会调用发布接口，独立 Enter 才提交。未修改 OpenHands、Conversation/Event 持久化、Runtime、FlowRun 或能力导入契约。 |

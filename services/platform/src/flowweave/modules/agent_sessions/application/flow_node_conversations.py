@@ -1606,11 +1606,20 @@ def send_node_message(
     prompt, image_urls = message_payload(content, attachments, references)
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     runtime = get_runtime()
-    if not runtime.can_accept_input(handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理上一条消息，请稍候", 409)
-    provider = provider_for_config(db, config_from_binding(db, binding))
-    if provider is not None:
-        runtime.switch_model(handle, provider)
+    readiness = runtime.input_readiness(handle)
+    queued_during_turn = not readiness.ready
+    if queued_during_turn:
+        # A running standard OpenHands Agent natively appends this user event
+        # and consumes it after the current LLM/tool step. Do not interrupt the
+        # current turn or mutate model/fork/compaction state concurrently.
+        if readiness.execution_status not in {"running", "executing"}:
+            raise DomainError(
+                "AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409
+            )
+    else:
+        provider = provider_for_config(db, config_from_binding(db, binding))
+        if provider is not None:
+            runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, prompt, image_urls)
     _ensure_blocked_attempt_wakeup(
         db,
@@ -1623,7 +1632,12 @@ def send_node_message(
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     finish(db)
-    return {"accepted": True, "cursor": result.cursor, "compacted": False}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "compacted": False,
+        "queued_during_turn": queued_during_turn,
+    }
 
 
 def _ensure_blocked_attempt_wakeup(

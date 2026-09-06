@@ -29,7 +29,15 @@ interface QueuedMessage {
   items: AgentAttachment[];
   references: ConversationReference[];
 }
-interface BoundQueuedMessage extends QueuedMessage { bindingId: string; }
+interface BoundQueuedMessage extends QueuedMessage {
+  bindingId: string;
+  /**
+   * UI-only marker for Command/Ctrl+Enter while a native Agent turn is in
+   * progress. It never changes the transport payload: the server decides
+   * whether the formal user event is appended during a running turn.
+   */
+  nativeGuidance?: boolean;
+}
 interface ConversationDraft { id: string; workDirectoryId?: string; displayName: string; capabilityVersionIds?: string[]; }
 interface BootstrapRecovery {
   draft: ConversationDraft;
@@ -1479,7 +1487,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [confirmationReason, setConfirmationReason] = useState('');
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
-  const [pendingDirectSend, setPendingDirectSend] = useState<QueuedMessage>();
+  const [pendingNativeGuidance, setPendingNativeGuidance] = useState<BoundQueuedMessage[]>([]);
   const [pendingRewrite, setPendingRewrite] = useState<{ eventId: string; content: string }>();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1713,6 +1721,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     if (selected?.id) {
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-events', workspace.id, selected.id) });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, selected.id) });
     }
@@ -1780,7 +1789,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setOperationError(undefined);
+    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); setQueuedMessages([]); setPendingNativeGuidance([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setOperationError(undefined);
   }, [clearLiveText, composerScope]);
   useEffect(() => {
     if (!editing) setTitle(selected?.display_title ?? '');
@@ -1835,9 +1844,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if ((turnState === 'running' || turnState === 'resuming') && activeTurnEventId && hasFinishedTurn(displayedEvents, activeTurnEventId)) {
       clearLiveText();
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(undefined);
-      setTurnState('idle');
+      // OpenHands may already have accepted a Command/Ctrl+Enter guidance
+      // message while the previous turn finishes. Follow that formal user
+      // event instead of briefly reporting idle and releasing the Enter queue.
+      const nextUserEventId = latestUnfinishedUserEventId(displayedEvents);
+      if (nextUserEventId && nextUserEventId !== activeTurnEventId) {
+        setActiveTurnEventId(nextUserEventId);
+        setRequestStartedAt(Date.now());
+        setTurnState('running');
+      } else {
+        setActiveTurnEventId(undefined);
+        setRequestStartedAt(undefined);
+        setTurnState('idle');
+      }
       refresh();
     }
   }, [activeTurnEventId, clearLiveText, displayedEvents, refresh, turnState]);
@@ -1964,26 +1983,53 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content }))),
     onMutate: message => {
       const optimisticEventId = `pending-user:${randomId()}`;
+      if (message.nativeGuidance) {
+        // Preserve the active streamed answer. This optimistic user event is
+        // only a local projection until the formal OpenHands cursor returns.
+        setLiveEvents(current => mergeConversationEvents(current, [{
+          id: optimisticEventId,
+          event_type: 'MESSAGE',
+          payload: {
+            source: 'user',
+            content: message.content,
+            attachments: message.items,
+            conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
+          },
+        }]));
+        return { optimisticEventId, nativeGuidance: true };
+      }
       clearLiveText();
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
       setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })) } }]);
       setTurnState('running');
-      return { optimisticEventId };
+      return { optimisticEventId, nativeGuidance: false };
     },
     onSuccess: (value, message, context) => {
       const cursor = value.cursor;
       if (cursor) {
-        setActiveTurnEventId(cursor);
+        if (!context?.nativeGuidance) setActiveTurnEventId(cursor);
         setLiveEvents(current => mergeConversationEvents(
           current.filter(event => event.id !== context?.optimisticEventId),
           [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })) } }],
         ));
       }
-      setAttachments([]);
+      if (!context?.nativeGuidance) setAttachments([]);
       refresh();
     },
     onError: (error, message, context) => {
+      if (context?.nativeGuidance) {
+        setLiveEvents(current => current.filter(event => event.id !== context.optimisticEventId));
+        // Do not disturb the active native turn. Restore only empty composer
+        // fields so text entered after the shortcut is never overwritten.
+        if (activeComposerScope.current === message.bindingId) {
+          setDraft(current => current || message.content);
+          setAttachments(current => current.length ? current : message.items);
+          setReferences(current => current.length ? current : message.references);
+        }
+        reportOperationError(message.bindingId, error);
+        return;
+      }
       if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
         setQueuedMessages(current => [...current, { id: message.id, scope: message.bindingId, content: message.content, items: message.items, references: message.references }]);
         setLiveEvents(current => current.filter(event => event.id !== context?.optimisticEventId));
@@ -2071,12 +2117,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
   });
   const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: () => { refresh(); onHostStateChanged?.(); }, onError: error => {
-    if (pendingDirectSend) {
-      setDraft(pendingDirectSend.content);
-      setAttachments(pendingDirectSend.items);
-      setReferences(pendingDirectSend.references);
-      setPendingDirectSend(undefined);
-    }
     setTurnState('running');
     reportOperationError(selected?.id, error);
   } });
@@ -2140,17 +2180,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [pendingMigratedSend, selected?.id, send]);
   useEffect(() => {
     if (turnState !== 'pausing' || !inputReadinessQuery.data?.ready) return;
-    if (pendingDirectSend) {
-      const message = pendingDirectSend;
-      setPendingDirectSend(undefined);
-      if (selected?.streaming_callback_ready) send.mutate({ ...message, bindingId: selected.id });
-      else migrateStreaming.mutate(message);
-    } else if (pendingRewrite) {
+    if (pendingRewrite) {
       const request = pendingRewrite;
       setPendingRewrite(undefined);
       rewrite.mutate(request);
     } else setTurnState('paused');
-  }, [inputReadinessQuery.data?.ready, migrateStreaming, pendingDirectSend, pendingRewrite, rewrite, selected, send, turnState]);
+  }, [inputReadinessQuery.data?.ready, pendingRewrite, rewrite, turnState]);
   const requestRewrite = useCallback((eventId: string, content: string) => {
     if (turnState === 'running') {
       setPendingRewrite({ eventId, content });
@@ -2223,8 +2258,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setReferences([]);
     setOperationError(undefined);
     if (turnState === 'running') {
-      setPendingDirectSend(message);
-      interrupt.mutate();
+      // This is not a pause: OpenHands appends the formal user event and
+      // consumes it after the current LLM/tool step finishes. Submit direct
+      // guidance in FIFO order because each native append can wait for the
+      // active event lock while the Agent completes its current step.
+      if (selected?.streaming_callback_ready) {
+        setPendingNativeGuidance(current => [...current, {
+          ...message,
+          bindingId: selected.id,
+          nativeGuidance: true,
+        }]);
+      }
+      else {
+        setDraft(content);
+        setAttachments(attachments);
+        setReferences(references);
+      }
       return;
     }
     if (turnState === 'idle') {
@@ -2235,18 +2284,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDraft(content);
     setAttachments(attachments);
     setReferences(references);
-  }, [attachments, canWrite, composerScope, conversationDraft, draft, interrupt, migrateStreaming, pendingMigratedSend, references, selected, send, turnState]);
+  }, [attachments, canWrite, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, references, selected, send, turnState]);
   useEffect(() => {
-    if (turnState !== 'idle' || pendingDirectSend || !queuedMessages.length || send.isPending || migrateStreaming.isPending || pendingMigratedSend) return;
+    if (!pendingNativeGuidance.length || send.isPending || !selected?.streaming_callback_ready
+      || (turnState !== 'running' && turnState !== 'idle')) return;
+    const [next, ...rest] = pendingNativeGuidance;
+    setPendingNativeGuidance(rest);
+    // If the previous native turn finished before this browser-side FIFO
+    // reaches the API, send it as the next ordinary turn rather than carrying
+    // running-turn UI semantics into an idle Conversation.
+    send.mutate(turnState === 'running' ? next : { ...next, nativeGuidance: false });
+  }, [pendingNativeGuidance, selected?.streaming_callback_ready, send, turnState]);
+  useEffect(() => {
+    if (turnState !== 'idle' || pendingNativeGuidance.length || !queuedMessages.length || send.isPending || migrateStreaming.isPending || pendingMigratedSend) return;
     const [next, ...rest] = queuedMessages;
     setQueuedMessages(rest);
     if (selected?.streaming_callback_ready) send.mutate({ ...next, bindingId: selected.id });
     else migrateStreaming.mutate(next);
-  }, [migrateStreaming, pendingDirectSend, pendingMigratedSend, queuedMessages, selected, send, turnState]);
+  }, [migrateStreaming, pendingMigratedSend, pendingNativeGuidance.length, queuedMessages, selected, send, turnState]);
   useEffect(() => {
-    if (turnState === 'pausing' || pendingDirectSend || !queuedMessages.length || !inputReadinessQuery.data?.ready || send.isPending) return;
+    if (turnState === 'pausing' || !queuedMessages.length || !inputReadinessQuery.data?.ready || send.isPending) return;
     setTurnState('idle');
-  }, [inputReadinessQuery.data?.ready, pendingDirectSend, queuedMessages.length, send.isPending, turnState]);
+  }, [inputReadinessQuery.data?.ready, queuedMessages.length, send.isPending, turnState]);
 
   if (workspaceQuery.isLoading) return <main className="agent-workbench-loading">正在打开 Agent 工作台…</main>;
   if (workspaceQuery.error || !workspace) {

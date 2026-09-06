@@ -250,7 +250,7 @@ export const api = {
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references })),
+    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references })),
   uploadAgentAttachment: async (workspaceId: string, bindingId: string, file: File): Promise<AgentAttachment> => {
     const body = new FormData(); body.append('file', file, file.name);
     let response: Response;
@@ -667,7 +667,7 @@ export const nodeSessionApi = {
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], idempotencyKey = randomId()) =>
-    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references }, idempotencyKey)),
+    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references }, idempotencyKey)),
   pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentPendingConfirmation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideConfirmation: (flowRunId: string, attemptId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
