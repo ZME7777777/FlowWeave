@@ -2630,6 +2630,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：新会话与节点首会话的能力配置器统一展示 `all`／`plugin`／`MCP`／`skill`／`context`／`agent`；创建请求可冻结 Agent Definition，并在创建 native OpenHands Conversation 时编译为正式 `agent_definitions` 字段。已有会话只可在 `agent`／`context` 标签查看创建时已冻结版本，不提供写操作；Skill、MCP、Plugin 的既有动态注册路径不变。
 
+### FR-186 逐步运行历史清理与直接启动流转隔离 — DONE
+
+依赖：`FR-156`。
+
+目标：逐步运行的完成验收只为图流转记录创建下游待配置节点；`HUMAN_CHAT` 直接启动无论通过普通验收还是人工接受门禁风险，都不得创建或绑定下游节点。已停止且已验收的手动节点记录应与已取消记录一样可经既有受保护删除链路清理；仍需保留下游引用、受管工作区、产物和会话定位的完整检查，禁止直接按名称删除或猜测修复历史数据。
+
+完成：普通验收与人工接受门禁风险都明确排除 `HUMAN_CHAT`，因此直接启动保持单节点且无下游流转。手动记录在 Attempt 已完成（或以人工输出完成）且无运行时写入时，可走原有删除链路；该链路仍拒绝活跃执行、下游产物引用和越界工作区。新增 API 回归覆盖直接启动提交输出后验收不会创建 `design_b`，并验证该已验收记录可删除。受影响 Python `py_compile`、Ruff 和 `git diff --check` 通过；定向 pytest 因本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在执行断言前失败，未伪记为通过。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。

@@ -6008,6 +6008,13 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
         and latest.runtime_phase == "CANCELLED"
         and all(attempt.state in terminal_states for attempt in attempts)
     )
+    accepted_and_stopped = (
+        node_run.state == NodeRunState.ACCEPTED
+        and latest is not None
+        and latest.state == AttemptState.ACCEPTED
+        and latest.runtime_phase in {"COMPLETED", "MANUAL_OUTPUTS_SUBMITTED"}
+        and all(attempt.state in terminal_states for attempt in attempts)
+    )
     waiting_before_runtime = (
         node_run.state == NodeRunState.ACTIVE
         and latest is not None
@@ -6016,7 +6023,7 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
         and latest.runtime_phase is None
         and all(attempt.state in terminal_states for attempt in attempts[:-1])
     )
-    if not (cancelled_and_stopped or waiting_before_runtime):
+    if not (cancelled_and_stopped or accepted_and_stopped or waiting_before_runtime):
         raise DomainError(
             "NODE_RUN_DELETE_REQUIRES_CANCELLED",
             "运行中的单节点记录请先取消，并等待运行时停止后再删除",
@@ -6433,7 +6440,8 @@ def accept_attempt(
     node_run.state = NodeRunState.ACCEPTED
     node_run.accepted_attempt_id = attempt.id
     _event(db, run.id, "NODE_RUN_COMPLETED", {}, node_run.id, attempt.id)
-    _create_configurable_targets(db, run, node_run)
+    if node_run.created_from != "HUMAN_CHAT":
+        _create_configurable_targets(db, run, node_run)
     _recompute_run(db, run)
     finish(db)
     return run_detail(db, run.id)
@@ -6529,7 +6537,8 @@ def accept_gate_risk(
             node_run.id,
             attempt.id,
         )
-        _create_configurable_targets(db, run, node_run)
+        if node_run.created_from != "HUMAN_CHAT":
+            _create_configurable_targets(db, run, node_run)
         _recompute_run(db, run)
     finish(db)
     return run_detail(db, run.id)

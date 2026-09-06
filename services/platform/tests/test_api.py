@@ -968,6 +968,24 @@ def test_session_only_node_can_submit_explicit_outputs_and_enter_acceptance(
     )
     assert stale.status_code == 409, stale.text
 
+    accepted = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/accept",
+        json={"expected_state_version": result["state_version"]},
+        headers={"Idempotency-Key": "accept-direct-session-with-manual-output"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    direct_records = accepted.json()["node_runs"]
+    assert len(direct_records) == 1
+    assert direct_records[0]["flow_node_snapshot_key"] == "design_a"
+    assert direct_records[0]["created_from"] == "HUMAN_CHAT"
+    assert direct_records[0]["state"] == "ACCEPTED"
+
+    deleted = client.delete(
+        f"/api/v1/flow-runs/{run['id']}/nodes/{direct_records[0]['id']}"
+    )
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/flow-runs/{run['id']}").json()["node_runs"] == []
+
 
 def test_session_only_file_output_is_copied_from_authorized_project(
     client, skill_capability, monkeypatch
