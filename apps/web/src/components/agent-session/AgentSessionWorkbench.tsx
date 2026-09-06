@@ -350,6 +350,9 @@ function ComposerCapabilityAutocomplete({
   const resizeInput = useCallback(() => {
     const textarea = input.current;
     if (!textarea) return;
+    // The first layout pass can run while the composer is still being sized.
+    // Avoid treating that transient zero-width box as a long, wrapped draft.
+    if (textarea.getBoundingClientRect().width <= 0) return;
     const styles = window.getComputedStyle(textarea);
     const lineHeight = Number.parseFloat(styles.lineHeight);
     const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
@@ -385,9 +388,11 @@ function ComposerCapabilityAutocomplete({
     window.addEventListener('resize', resizeInput);
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(resizeInput);
     if (input.current?.parentElement) observer?.observe(input.current.parentElement);
+    const layoutFrame = requestAnimationFrame(resizeInput);
     return () => {
       window.removeEventListener('resize', resizeInput);
       observer?.disconnect();
+      cancelAnimationFrame(layoutFrame);
     };
   }, [resizeInput]);
   const trigger = composerTrigger(draft);
