@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -49,6 +52,9 @@ from flowweave.shared.schemas import (
 )
 from flowweave.shared.settings import get_settings
 
+_OPENHANDS_MARKETPLACE_SOURCE = "https://github.com/OpenHands/extensions.git"
+_OPENHANDS_MARKETPLACE_HEAD = re.compile(r"^([0-9a-f]{40})\s+HEAD$", re.MULTILINE)
+
 
 @dataclass(frozen=True, slots=True)
 class PluginSourcePublishPlan:
@@ -71,6 +77,32 @@ def list_marketplace_catalog(payload: MarketplaceCatalogWrite) -> dict[str, obje
     )
     return get_plugin_resolver().list_marketplace(
         MarketplaceCatalogRequest(marketplace.source, marketplace.commit, marketplace.repo_path)
+    )
+
+
+def list_openhands_marketplace_catalog() -> dict[str, object]:
+    """Resolve the trusted public Marketplace's mutable HEAD into one pinned browse request."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "ls-remote", _OPENHANDS_MARKETPLACE_SOURCE, "HEAD"],
+            capture_output=True,
+            check=False,
+            encoding="utf-8",
+            timeout=20,
+            env={"PATH": os.defpath},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DomainError(
+            "OPENHANDS_MARKETPLACE_UNAVAILABLE", "无法读取 OpenHands Marketplace", 503
+        ) from exc
+    match = _OPENHANDS_MARKETPLACE_HEAD.search(completed.stdout)
+    if completed.returncode or match is None:
+        raise DomainError(
+            "OPENHANDS_MARKETPLACE_UNAVAILABLE", "无法读取 OpenHands Marketplace", 503
+        )
+    return get_plugin_resolver().list_marketplace(
+        MarketplaceCatalogRequest(_OPENHANDS_MARKETPLACE_SOURCE, match.group(1), None)
     )
 
 

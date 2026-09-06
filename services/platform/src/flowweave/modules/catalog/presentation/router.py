@@ -318,6 +318,16 @@ async def preview_plugin_marketplace_catalog(
     return await asyncio.to_thread(plugin_sources.list_marketplace_catalog, payload)
 
 
+@router.get(
+    "/plugin-marketplace-catalogs/openhands",
+    response_model=MarketplaceCatalogRead,
+)
+async def openhands_plugin_marketplace_catalog() -> dict[str, object]:
+    """Browse the latest OpenHands public Marketplace as an immutable snapshot."""
+
+    return await asyncio.to_thread(plugin_sources.list_openhands_marketplace_catalog)
+
+
 @router.get("/plugin-source-resolutions/{resolution_id}")
 async def plugin_source_resolution(resolution_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(

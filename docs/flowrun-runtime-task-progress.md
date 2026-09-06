@@ -2574,6 +2574,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：当前会话和新会话共用的能力管理器已采用上述英文标签。`Hook` 与 `Agent Definition` 不在本切片加入当前会话选择器：固定 OpenHands 1.44.0 没有对应原生热注册接口，仍须在产品字段与创建期冻结方案明确后单独实现。
 
+### FR-179 Hook 下线、OpenHands Marketplace 与 Markdown Agent Definition — DONE
+
+依赖：`FR-178`。
+
+目标：将独立 Hook 能力从 FlowWeave 产品入口下线，避免将未接入当前会话能力加载路径的配置暴露给用户；旧的已存储数据保持兼容可读，但任何新的 Hook 导入必须被服务端明确拒绝。Plugin 模块以固定受信任的公开 `OpenHands/extensions` 仓库作为 Marketplace，浏览时先解析远端 `HEAD` 为完整 commit，再交给既有隔离解析器浏览与发布；本地 Plugin ZIP 导入继续保留。Agent Definition 移除 JSON／表单创建，改为上传 OpenHands 原生 Markdown（YAML frontmatter + Markdown 正文），展示无标记摘要、触发示例与只读详情；缺省权限／压缩设置必须冻结为当前治理的安全默认值，显式的非治理字段继续拒绝。
+
+完成：能力仓库不再显示 Hook 模块或编辑器，Hook 编辑组件已删除，通用导入接口对 `HOOK` 返回 `410 HOOK_CAPABILITY_RETIRED`，未删除旧能力数据。Plugin 页面新增 OpenHands Marketplace：服务端读取固定公开仓库 HEAD、返回不可变目录快照；用户选择条目后仍经既有隔离解析、内容 hash 与发布流程冻结，ZIP/Git 导入未改变。Agent Definition 仅接收 UTF-8 `.md`／`.markdown` 文件；解析 `<example>` 为适用示例，正文冻结为系统提示词，缺省 `permission_mode` 和 `condenser` 冻结为 `never_confirm`／`NoOpCondenser`。卡片摘要隐藏 example 标签，详情显示模型、权限、工具、示例、预算与系统提示词。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2609,6 +2617,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-179 | 受影响 Python Ruff format/check、`py_compile`；Web ESLint、TypeScript typecheck；不依赖 Docker 的 Markdown／Hook／Marketplace 直接单元路径；`git diff --check` | PASS：Hook 新导入返回 410，原有记录未删除；OpenHands Marketplace 将公开仓库 HEAD 固定为完整 SHA 后才进入现有隔离解析；Agent Definition Markdown 正确冻结正文、触发示例及治理默认值。`pytest tests/test_capability_retirement.py` 尝试执行，但本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在断言前失败（3 errors），未伪记为通过。 |
 | 2026-09-06 | FR-178 | Web ESLint、TypeScript typecheck 与 `git diff --check` | PASS：Agent 会话能力筛选标签统一为 `all`／`plugin`／`MCP`／`skill`／`context`；不改变能力加载或 OpenHands Runtime 行为。 |
 | 2026-09-06 | FR-175 | 受影响 Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck、production build；`git diff --check`；取消后会话写入定向 pytest | PASS（静态与构建）：取消 Attempt 后 Runtime DTO 立即转为只读，前端停止订阅可写流并移除控制入口；后端所有关键会话、终端和工作区写路径都以同一 Attempt 围栏 fail closed，继续不再落入泛化 `VERSION_CONFLICT`。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。 |
 | 2026-09-06 | FR-174 | 受影响 Python `py_compile`、Ruff；OpenHands events 请求定向 pytest；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与请求契约）：运行中的 Command/Ctrl+Enter 不再调用 interrupt，而是按 FIFO 将消息追加到 OpenHands 正式 events 接口；UI 保留当前流式内容并在先前回合结束后跟随正式的下一未完成 user event，普通 Enter 仍只走本地顺序队列。外层与节点会话在 `running`／`executing` 时均不会模型重绑、分叉恢复或压缩，停止／确认仍拒绝写入。两项数据库定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过；不依赖数据库的 OpenHands events 请求测试通过。 |

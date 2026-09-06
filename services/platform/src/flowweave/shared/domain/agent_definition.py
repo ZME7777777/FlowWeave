@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Any, cast
+
+import yaml
 
 from flowweave.shared.domain.openhands import normalize_fixed_tool_entries
 
@@ -20,6 +23,46 @@ _FIELDS = frozenset(
         "metadata",
     }
 )
+
+_EXAMPLE_PATTERN = re.compile(r"<example>(.*?)</example>", re.IGNORECASE | re.DOTALL)
+_FRONTMATTER_PATTERN = re.compile(
+    r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)(.*)\Z", re.DOTALL
+)
+
+
+def parse_agent_definition_markdown(
+    content: bytes, *, fallback_key: str
+) -> tuple[str, dict[str, Any]]:
+    """Parse OpenHands' Markdown AgentDefinition format into the governed subset."""
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Agent Definition must be UTF-8 Markdown") from exc
+    frontmatter = _FRONTMATTER_PATTERN.fullmatch(text)
+    if frontmatter is None:
+        raise ValueError("Agent Definition must start with YAML frontmatter")
+    try:
+        raw_frontmatter = yaml.safe_load(frontmatter.group(1))
+    except yaml.YAMLError as exc:
+        raise ValueError("Agent Definition YAML frontmatter is invalid") from exc
+    if raw_frontmatter is None:
+        raw_frontmatter = {}
+    if not isinstance(raw_frontmatter, dict):
+        raise ValueError("Agent Definition frontmatter must be an object")
+    document = cast(dict[str, Any], raw_frontmatter)
+    description = str(document.get("description") or "").strip()
+    document["when_to_use_examples"] = [
+        example.strip() for example in _EXAMPLE_PATTERN.findall(description) if example.strip()
+    ]
+    document["system_prompt"] = frontmatter.group(2).strip()
+    # OpenHands permits these to inherit its defaults. FlowWeave freezes the
+    # equivalent governed values so the uploaded document has no hidden
+    # confirmation or summarizer behaviour at execution time.
+    document.setdefault("permission_mode", "never_confirm")
+    if document.get("condenser") in (None, False, "none"):
+        document["condenser"] = {"kind": "NoOpCondenser"}
+    return normalize_agent_definition_document(document, fallback_key=fallback_key)
 
 
 def normalize_agent_definition_document(

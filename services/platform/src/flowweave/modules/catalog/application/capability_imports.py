@@ -35,7 +35,7 @@ from flowweave.shared.application.transactions import (
 from flowweave.shared.artifact_store import get_artifact_store
 from flowweave.shared.dependency_builder import get_dependency_builder
 from flowweave.shared.domain.agent_definition import (
-    normalize_agent_definition_document,
+    parse_agent_definition_markdown,
 )
 from flowweave.shared.domain.runtime_policy import (
     normalize_agent_profile_document,
@@ -1577,6 +1577,12 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     filename = Path(payload.filename).name
     if filename != payload.filename or not filename:
         raise _reject("Invalid filename")
+    if payload.capability_type == "HOOK":
+        raise DomainError(
+            "HOOK_CAPABILITY_RETIRED",
+            "Hook 已从 FlowWeave 产品中下线，不能再创建或导入",
+            410,
+        )
     if payload.capability_type in {"SKILL", "PLUGIN"}:
         if not filename.lower().endswith(".zip"):
             raise _reject(f"{payload.capability_type.title()} must be a ZIP")
@@ -1624,6 +1630,24 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
             ]
         }
     suffix = Path(filename).suffix.lower()
+    if payload.capability_type == "AGENT_DEFINITION":
+        if suffix not in {".md", ".markdown"}:
+            raise _reject("Agent Definition must be an OpenHands Markdown file")
+        if len(content) > CONFIG_MAX_BYTES:
+            raise _reject("Agent Definition exceeds 1 MiB")
+        if payload.mcp_scripts or payload.hook_scripts:
+            raise _reject("Agent Definition cannot include detached scripts")
+        try:
+            capability_key, normalized = parse_agent_definition_markdown(
+                content, fallback_key=Path(filename).stem
+            )
+        except ValueError as exc:
+            raise _reject(str(exc)) from exc
+        return content, {
+            "capabilities": [{"capability_key": capability_key, "normalized_config": normalized}],
+            "config": normalized,
+            "script_count": 0,
+        }
     if suffix != ".json":
         raise _reject(f"{payload.capability_type} config must be JSON")
     if len(content) > CONFIG_MAX_BYTES:
@@ -1641,15 +1665,7 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     if payload.capability_type == "MCP":
         capabilities = _mcp_capabilities(parsed)
     elif payload.capability_type == "HOOK":
-        capabilities = _hook_capabilities(parsed, Path(filename).stem)
-    elif payload.capability_type == "AGENT_DEFINITION":
-        try:
-            capability_key, normalized = normalize_agent_definition_document(
-                parsed, fallback_key=Path(filename).stem
-            )
-        except ValueError as exc:
-            raise _reject(str(exc)) from exc
-        capabilities = [{"capability_key": capability_key, "normalized_config": normalized}]
+        raise AssertionError("retired Hook import reached JSON validation")
     elif payload.capability_type in {
         "CONTEXT_POLICY",
         "MEMORY_POLICY",

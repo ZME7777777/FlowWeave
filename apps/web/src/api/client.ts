@@ -315,6 +315,8 @@ export const api = {
     request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
   previewMarketplaceCatalog: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null }) =>
     request<MarketplaceCatalog>('/plugin-marketplace-catalogs/preview', json('POST', body)),
+  openhandsMarketplaceCatalog: () =>
+    request<MarketplaceCatalog>('/plugin-marketplace-catalogs/openhands'),
   createMarketplacePluginResolution: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null; plugin_name: string }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions/marketplace', json('POST', body)),
   pluginSourceResolution: (id: string) =>
