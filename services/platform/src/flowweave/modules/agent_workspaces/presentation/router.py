@@ -159,7 +159,7 @@ def _key(value: str | None, action: str, identifier: str) -> str:
 
 
 def _project_stream_event(
-    event: dict[str, Any], *, workspace_id: str, binding_id: str
+    event: dict[str, Any], *, workspace_id: str, binding_id: str, working_directory: str
 ) -> dict[str, Any]:
     if event.get("type") != "event" or not isinstance(event.get("event"), dict):
         return event
@@ -174,7 +174,10 @@ def _project_stream_event(
             "payload": {
                 **payload,
                 "content": conversations.project_sandbox_images(
-                    payload["content"], workspace_id=workspace_id, binding_id=binding_id
+                    payload["content"],
+                    workspace_id=workspace_id,
+                    binding_id=binding_id,
+                    working_directory=working_directory,
                 ),
             },
         },
@@ -182,7 +185,13 @@ def _project_stream_event(
 
 
 async def _forward_runtime_events(
-    websocket: WebSocket, runtime: Any, handle: Any, *, workspace_id: str, binding_id: str
+    websocket: WebSocket,
+    runtime: Any,
+    handle: Any,
+    *,
+    workspace_id: str,
+    binding_id: str,
+    working_directory: str,
 ) -> None:
     """Forward one transient Runtime stream while actively observing disconnects.
 
@@ -216,7 +225,12 @@ async def _forward_runtime_events(
                 except StopAsyncIteration:
                     return
                 await websocket.send_json(
-                    _project_stream_event(event, workspace_id=workspace_id, binding_id=binding_id)
+                    _project_stream_event(
+                        event,
+                        workspace_id=workspace_id,
+                        binding_id=binding_id,
+                        working_directory=working_directory,
+                    )
                 )
                 event_task = asyncio.create_task(next_event())
     finally:
@@ -789,9 +803,10 @@ async def agent_conversation_stream(
     try:
         async with container.database.session() as db:
             try:
-                adapter, handle = await db.run_sync(
-                    lambda session: conversations.runtime_stream_details(
-                        session, workspace_id, binding_id
+                adapter, handle, conversation = await db.run_sync(
+                    lambda session: (
+                        *conversations.runtime_stream_details(session, workspace_id, binding_id),
+                        conversations.get_conversation(session, workspace_id, binding_id),
                     )
                 )
             except DomainError as exc:
@@ -802,7 +817,14 @@ async def agent_conversation_stream(
         await websocket.accept()
         try:
             await _forward_runtime_events(
-                websocket, runtime, handle, workspace_id=workspace_id, binding_id=binding_id
+                websocket,
+                runtime,
+                handle,
+                workspace_id=workspace_id,
+                binding_id=binding_id,
+                working_directory=str(
+                    conversation.get("working_directory") or handle.workspace_root
+                ),
             )
         except WebSocketDisconnect:
             pass
