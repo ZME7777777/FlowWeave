@@ -392,7 +392,7 @@ def frozen_conversation_context(
     if version is None:
         raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
     _validate_paths(db, workspace_id, _path_values(db, version.id))
-    return _agent_working_directory(version.working_path)
+    return _agent_working_directory(workspace_id, version.working_path)
 
 
 def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
