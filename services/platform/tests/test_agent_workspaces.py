@@ -85,14 +85,21 @@ def test_agent_conversation_stream_closes_idle_upstream_on_websocket_disconnect(
     stream_started = asyncio.Event()
     stream_closed = asyncio.Event()
 
-    class Runtime:
-        async def stream_events(self, _handle):
+    class IdleStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
             stream_started.set()
-            try:
-                await asyncio.Event().wait()
-                yield {}
-            finally:
-                stream_closed.set()
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            stream_closed.set()
+
+    class Runtime:
+        def stream_events(self, _handle):
+            return IdleStream()
 
     class Database:
         @asynccontextmanager
@@ -132,6 +139,11 @@ def test_agent_conversation_stream_closes_idle_upstream_on_websocket_disconnect(
         agent_router.conversations,
         "runtime_stream_details",
         lambda *_args: ("mock", object()),
+    )
+    monkeypatch.setattr(
+        agent_router.conversations,
+        "get_conversation",
+        lambda *_args: {"working_directory": "/runtime/workspace/project"},
     )
     monkeypatch.setattr(agent_router, "runtime_for", lambda *_args: runtime)
 

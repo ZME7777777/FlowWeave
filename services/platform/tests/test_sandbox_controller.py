@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -804,6 +805,93 @@ async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settin
     assert len(cleanup_calls) == 1
     assert "4321" in cleanup_calls[0]
     assert relay_id in cleanup_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_stream_shields_cleanup_from_response_cancel_scope(
+    settings, monkeypatch
+):
+    relay_started = asyncio.Event()
+    cleanup_completed = asyncio.Event()
+
+    class BlockingStdout:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.release = asyncio.Event()
+
+        async def readline(self) -> bytes:
+            self.calls += 1
+            if self.calls == 1:
+                return (
+                    json.dumps(
+                        {
+                            controller_module._RELAY_CONTROL_KEY: {
+                                "relay_id": relay_id,
+                                "kind": "started",
+                                "pid": 4321,
+                                "active_count": 1,
+                            }
+                        }
+                    ).encode()
+                    + b"\n"
+                )
+            relay_started.set()
+            await self.release.wait()
+            return b""
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdout = BlockingStdout()
+            self.stderr = None
+            self.returncode: int | None = None
+            self.pid = 1234
+
+        def terminate(self) -> None:
+            self.returncode = -15
+            self.stdout.release.set()
+
+        def kill(self) -> None:
+            self.returncode = -9
+            self.stdout.release.set()
+
+        async def wait(self) -> int:
+            await self.stdout.release.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = Process()
+    relay_id = "a" * 32
+
+    async def terminate(*_args, **_kwargs):
+        await anyio.sleep(0.01)
+        cleanup_completed.set()
+        return True, 0
+
+    async def create_process(*args, **_kwargs):
+        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 4
+        nonlocal relay_id
+        relay_id = str(args[relay_id_index])
+        return process
+
+    monkeypatch.setattr(controller_module, "_terminate_runtime_event_relay", terminate)
+    monkeypatch.setattr(controller_module.asyncio, "create_subprocess_exec", create_process)
+
+    async def consume() -> None:
+        async for _record in controller_module._runtime_event_stream(
+            _settings(settings),
+            "immutable-runtime-container-id",
+            "CONVERSATION",
+            "conversation-1",
+            10.0,
+        ):
+            pass
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(consume)
+        await relay_started.wait()
+        task_group.cancel_scope.cancel()
+
+    assert cleanup_completed.is_set()
 
 
 @pytest.mark.asyncio

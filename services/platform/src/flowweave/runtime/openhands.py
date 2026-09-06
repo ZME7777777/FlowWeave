@@ -2757,13 +2757,19 @@ class OpenHandsRuntime:
                     "The isolated Runtime stream has no verified sandbox binding",
                     409,
                 )
-            async for event in DockerControllerClient(self.settings).stream_runtime_events(
+            stream = DockerControllerClient(self.settings).stream_runtime_events(
                 resource_name=handle.runtime_resource_name,
                 resource_id=handle.runtime_resource_id,
                 conversation_id=handle.conversation_id,
-            ):
-                for visible in self._visible_stream_event(cast(dict[str, object], event)):
-                    yield visible
+            )
+            try:
+                async for event in stream:
+                    for visible in self._visible_stream_event(cast(dict[str, object], event)):
+                        yield visible
+            finally:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
             return
 
         base_url = self._base_url_for_handle(handle)

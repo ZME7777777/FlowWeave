@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 import pytest
 
 from flowweave.bootstrap.settings import Settings
@@ -35,6 +37,7 @@ from flowweave.runtime.base import (
 from flowweave.runtime.openhands import OpenHandsRuntime
 from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.errors import DomainError
+from flowweave.shared.infrastructure import docker_controller as docker_controller_module
 from flowweave.shared.infrastructure.docker_controller import DockerControllerClient
 
 
@@ -1950,6 +1953,93 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
         "resource_id": "sandbox-1",
         "conversation_id": "10000000-0000-4000-8000-000000000002",
     }
+
+
+@pytest.mark.asyncio
+async def test_openhands_isolated_stream_closes_controller_stream(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(
+            update={
+                "docker_controller_mode": "remote",
+                "docker_controller_api_key": "a" * 32,
+            }
+        )
+    )
+    controller_stream_closed = asyncio.Event()
+
+    class ControllerStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return {"kind": "StreamingDeltaEvent", "content": "visible"}
+
+        async def aclose(self) -> None:
+            controller_stream_closed.set()
+
+    monkeypatch.setattr(
+        DockerControllerClient,
+        "stream_runtime_events",
+        lambda *_args, **_kwargs: ControllerStream(),
+    )
+    handle = RuntimeHandle(
+        "env-chat:fw-sbx-runtime",
+        "10000000-0000-4000-8000-000000000002",
+        runtime_resource_id="sandbox-1",
+        runtime_resource_name="fw-sbx-runtime",
+    )
+    stream = runtime.stream_events(handle)
+
+    assert await anext(stream) == {"type": "delta", "content": "visible"}
+    await stream.aclose()
+
+    assert controller_stream_closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_controller_event_stream_closes_httpx_response(openhands_settings, monkeypatch):
+    response_closed = asyncio.Event()
+    hold_open = asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"kind":"StreamingDeltaEvent","content":"visible"}\n'
+            await hold_open.wait()
+
+        async def aclose(self) -> None:
+            response_closed.set()
+
+    body = Body()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=body)
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        docker_controller_module.httpx,
+        "AsyncClient",
+        lambda **_kwargs: async_client(transport=httpx.MockTransport(handler)),
+    )
+    client = DockerControllerClient(
+        openhands_settings.model_copy(
+            update={
+                "docker_controller_mode": "remote",
+                "docker_controller_api_key": "a" * 32,
+            }
+        )
+    )
+    stream = client.stream_runtime_events(
+        resource_name="fw-sbx-runtime",
+        resource_id="sandbox-1",
+        conversation_id="10000000-0000-4000-8000-000000000002",
+    )
+
+    assert await anext(stream) == {"kind": "StreamingDeltaEvent", "content": "visible"}
+    await stream.aclose()
+
+    assert response_closed.is_set()
 
 
 @pytest.mark.asyncio

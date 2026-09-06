@@ -18,6 +18,7 @@ from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
+from anyio import CancelScope
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
@@ -865,49 +866,57 @@ async def _runtime_event_stream(
         stop_reason = "consumer_cancelled"
         raise
     finally:
-        remote_terminated = False
-        remaining_active_count: int | None = None
-        if remote_pid is not None:
-            try:
-                remote_terminated, remaining_active_count = await _terminate_runtime_event_relay(
-                    configured,
-                    container_id,
-                    channel,
-                    conversation_id,
-                    relay_id,
-                    remote_pid,
-                )
-            except (OSError, RuntimeError):
-                logger.warning(
-                    "Runtime event relay remote cleanup failed container=%s "
-                    "conversation=%s channel=%s remote_pid=%s",
-                    container_id,
-                    conversation_id,
-                    channel,
-                    remote_pid,
-                    exc_info=True,
-                )
-        if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
-        logger.info(
-            "Runtime event relay stopped container=%s conversation=%s channel=%s "
-            "remote_pid=%s start_active_count=%s remaining_active_count=%s "
-            "remote_terminated=%s reason=%s duration_ms=%d",
-            container_id,
-            conversation_id,
-            channel,
-            remote_pid,
-            active_count,
-            remaining_active_count,
-            remote_terminated,
-            stop_reason,
-            int((time.monotonic() - started_at) * 1000),
-        )
+        # Starlette cancels StreamingResponse producers with an AnyIO cancel
+        # scope when the HTTP consumer disconnects.  Shield the bounded cleanup
+        # so that cancellation cannot interrupt the remote PID termination and
+        # leave the in-container relay behind.
+        with CancelScope(shield=True):
+            remote_terminated = False
+            remaining_active_count: int | None = None
+            if remote_pid is not None:
+                try:
+                    (
+                        remote_terminated,
+                        remaining_active_count,
+                    ) = await _terminate_runtime_event_relay(
+                        configured,
+                        container_id,
+                        channel,
+                        conversation_id,
+                        relay_id,
+                        remote_pid,
+                    )
+                except (OSError, RuntimeError):
+                    logger.warning(
+                        "Runtime event relay remote cleanup failed container=%s "
+                        "conversation=%s channel=%s remote_pid=%s",
+                        container_id,
+                        conversation_id,
+                        channel,
+                        remote_pid,
+                        exc_info=True,
+                    )
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+            logger.info(
+                "Runtime event relay stopped container=%s conversation=%s channel=%s "
+                "remote_pid=%s start_active_count=%s remaining_active_count=%s "
+                "remote_terminated=%s reason=%s duration_ms=%d",
+                container_id,
+                conversation_id,
+                channel,
+                remote_pid,
+                active_count,
+                remaining_active_count,
+                remote_terminated,
+                stop_reason,
+                int((time.monotonic() - started_at) * 1000),
+            )
 
 
 def _observation_dict(value: object) -> dict[str, Any] | None:

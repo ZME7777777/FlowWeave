@@ -2679,6 +2679,21 @@ Worker，单 Worker 的普通／阻塞池分别收口为 5／2，stream-api 阻�
 关闭时以 PID、标记、会话、通道和实例标识二次校验后显式终止容器内进程。中继控制记录不进入产品事件流；API、
 OpenHands 请求和中继生命周期日志记录路由／Runtime、状态、耗时与请求 ID，不记录查询值、请求内容或凭据。
 
+### FR-188 Agent 流断连主动回收闭环 — DONE
+
+依赖：`FR-187`。
+
+目标：补齐浏览器 WebSocket、OpenHands Runtime 适配器、HTTPX 流式响应和 Runtime Provider 中继之间的取消传播。
+消费端断开后必须显式关闭每层异步生成器；Provider 的远端 PID 清理必须屏蔽 Starlette
+`StreamingResponse` 断连取消域，不能在收到取消后再次中断。验收需证明嵌套控制器流被关闭、取消域内的远端清理
+完成，并在生产原故障会话上确认数秒内记录 `remote_terminated=true` 且活动中继数回到连接前水平。
+
+完成：Agent WebSocket 转发器继续显式关闭 Runtime 流，OpenHands 远端适配器新增对控制器子流的确定性
+`aclose()`，从而使 HTTPX streaming response 及时关闭。Runtime Provider 在 Starlette 取消
+`StreamingResponse` 生产任务时，以 AnyIO shield 完成已有 3 秒远端 PID 回收和 2 秒本地进程退出上限；取消仍向
+调用方传播，但不能再次打断回收。回归覆盖浏览器断连关闭外层流、OpenHands 关闭控制器子流、HTTPX response
+关闭，以及 AnyIO 取消域内的远端回收完成。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2694,6 +2709,7 @@ OpenHands 请求和中继生命周期日志记录路由／Runtime、状态、耗
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-188 | OpenHands 嵌套流与 HTTPX response 定向 pytest（3 passed）；WebSocket／普通取消／AnyIO 取消域回收直接单元检查（3 passed）；受影响 Python Ruff、`py_compile`、定向 Pyright；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS：消费端断开依次关闭 WebSocket Runtime 流、控制器子流和 HTTPX response；Runtime Provider 在 `StreamingResponse` 取消域已触发后仍完成远端 PID 回收和本地 `docker exec` 退出。数据库型测试入口仍受本机 Docker daemon 不可用阻断，当前回归均不依赖数据库并已直接执行。生产断连和中继活动数将在 commit 绑定定向部署后验证。 |
 | 2026-09-06 | FR-187 | 受影响 Python Ruff、`py_compile`、定向 Pyright；并发取消／槽位回收、上下文传播、慢日志脱敏和中继 PID／心跳过滤直接单元检查；Linux 容器内中继控制探针；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS（实现与直接探针）：直接单元检查全部通过，Linux `/proc` 中继启动控制记录有效，Compose 解析和受影响文件 Ruff／语法检查通过。正式定向 pytest 9 项可收集，但隔离空库迁移在断言前被既有 `0092_node_run_names` 重复添加 `node_runs.name` 阻断，未伪记为通过；全量 Pyright 仍有仓库既有诊断，本切片新增基础设施文件无新增诊断。`compose_security_check.py` 仍因既有 stream-api 连接 docker-control 的基线规则失败，原始 Compose 语法有效。生产故障会话已在保留 Workspace、OpenHands state 与原 Conversation ID 的前提下清理 26 个孤儿中继并仅重启其 Runtime，events/search 恢复到约 76ms。 |
 | 2026-09-06 | FR-185 | Agent Definition 创建范围、Runtime native `agent_definitions` 投影定向 pytest；受影响 Python Ruff/`py_compile`；Web ESLint、TypeScript typecheck、`git diff --check` | PASS（静态）：Ruff 与 `py_compile`、Web ESLint、TypeScript typecheck、`git diff --check` 通过。定向 pytest 在执行断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 2 errors，未伪记为通过；受影响 Python 文件的 Ruff format check 同时报出既有格式差异，未作无关格式化。 |
 | 2026-09-06 | FR-184 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：弹窗高度扣除遮罩层上下留白，且窄视口继续按两列呈现每页 6 项。生产浏览器复核随本切片定向发布执行。 |
