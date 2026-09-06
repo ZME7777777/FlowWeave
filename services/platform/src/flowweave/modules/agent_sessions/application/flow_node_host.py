@@ -52,6 +52,35 @@ _READ_PERMISSIONS = frozenset({LIST_SESSIONS, READ_SESSIONS, ACCESS_FILES})
 _WRITE_PERMISSIONS = frozenset({CREATE_SESSIONS, WRITE_SESSIONS, ACCESS_TERMINAL, CONTROL_SESSIONS})
 
 
+def assert_flow_node_session_writable(
+    db: Session, *, flow_run_id: str, attempt_id: str
+) -> NodeAttempt:
+    """Reject writes after a node Attempt has been cancelled.
+
+    A cancelled Attempt keeps its OpenHands Conversation and workspace for
+    audit and inspection.  It must never, however, regain a write path while
+    the asynchronous native interrupt is in flight or after it completes.
+    """
+
+    attempt = db.get(NodeAttempt, attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id) if attempt is not None else None
+    if node_run is None or node_run.flow_run_id != flow_run_id:
+        raise DomainError(
+            "NODE_CONVERSATION_CONTEXT_MISMATCH",
+            "The selected node Attempt does not belong to this FlowRun",
+            409,
+            {"flow_run_id": flow_run_id, "node_attempt_id": attempt_id},
+        )
+    if attempt.state == AttemptState.CANCELLED:
+        raise DomainError(
+            "NODE_ATTEMPT_CANCELLED",
+            "该节点执行已取消，会话和工作区仅可查看",
+            409,
+            {"node_attempt_id": attempt.id, "runtime_phase": attempt.runtime_phase},
+        )
+    return attempt
+
+
 def resolve_flow_node_session_host(
     db: Session,
     *,
@@ -109,6 +138,7 @@ def resolve_flow_node_session_host(
             AttemptState.START_GATES,
             AttemptState.START_BLOCKED,
             AttemptState.WAITING_START_CONFIRMATION,
+            AttemptState.CANCELLED,
         }
     )
     should_ensure_runtime = (
@@ -191,4 +221,8 @@ def resolve_flow_node_session_host(
     )
 
 
-__all__ = ("FlowNodeSessionHost", "resolve_flow_node_session_host")
+__all__ = (
+    "FlowNodeSessionHost",
+    "assert_flow_node_session_writable",
+    "resolve_flow_node_session_host",
+)

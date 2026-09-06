@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import flow_node_conversations
 from flowweave.modules.agent_sessions.application.flow_node_host import (
+    assert_flow_node_session_writable,
     resolve_flow_node_session_host,
 )
 from flowweave.modules.agent_sessions.application.ide import ssh_remote_descriptor
@@ -421,6 +422,7 @@ def delete_entries(
         raise DomainError("FLOW_RUN_WORKSPACE_DELETE_EMPTY", "请选择要删除的文件或目录", 422)
     if len(set(paths)) > 100:
         raise DomainError("FLOW_RUN_WORKSPACE_DELETE_TOO_MANY", "一次最多删除 100 项", 422)
+    assert_flow_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     project_root, runtime_root, _, _ = _authorize_entry(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
     )

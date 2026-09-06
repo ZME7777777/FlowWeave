@@ -2542,6 +2542,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：运行中的 Agent Workspace 与节点会话均以正式 `POST /api/conversations/{id}/events` 追加 user event，不再将 Command/Ctrl+Enter 映射为 interrupt。后端仅在 native `running`／`executing` 状态跳过模型重绑、分叉恢复和压缩；停止或确认状态仍关闭写入。前端将连续快捷键输入置于浏览器 FIFO，逐条提交但不清空当前流式内容；上一个回合结束时通过正式 user event identity 跟随下一未完成回合，普通 Enter 队列不会抢先发送。正式 events 请求可等待当前原生状态锁释放，避免短控制超时诱导重复投递；显式暂停和重写仍保留 interrupt。
 
+### FR-175 取消节点 Attempt 的原生暂停与只读围栏 — DONE
+
+依赖：`FR-174`。
+
+目标：取消节点 Attempt 后，FlowWeave 必须立即冻结该 Attempt 的会话、终端和工作区写入口，同时保留 OpenHands Conversation、正式事件和文件历史的只读访问。后台 `CANCEL_RUNTIME` 继续使用 OpenHands 原生 interrupt 并确认暂停；在其完成或重试期间，页面不得继续接收可写状态、暂停／继续／消息或其他会话控制。已取消 Attempt 不得被会话页面的 Runtime ensure 路径重新激活；“继续”必须返回明确的已取消只读错误，不能伪装成乐观锁冲突。
+
+完成：新增节点 Attempt 统一写入围栏，覆盖消息、附件、会话控制、确认、分叉、重跑、模型／能力、删除与终端，以及节点工作区删除。节点 Runtime 投影在 `CANCELLING` 和 `CANCELLED` 均返回 `write_available=false` 与明确说明；节点会话入口不再为已取消 Attempt 调用 Runtime ensure。前端对节点会话定期刷新该投影，显示只读说明并移除会话编辑、继续、暂停、分叉、重跑、能力、终端和工作区写入入口。新增回归覆盖取消后立即拒绝继续／发消息及只读投影。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2577,6 +2585,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-175 | 受影响 Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck、production build；`git diff --check`；取消后会话写入定向 pytest | PASS（静态与构建）：取消 Attempt 后 Runtime DTO 立即转为只读，前端停止订阅可写流并移除控制入口；后端所有关键会话、终端和工作区写路径都以同一 Attempt 围栏 fail closed，继续不再落入泛化 `VERSION_CONFLICT`。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。 |
 | 2026-09-06 | FR-174 | 受影响 Python `py_compile`、Ruff；OpenHands events 请求定向 pytest；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与请求契约）：运行中的 Command/Ctrl+Enter 不再调用 interrupt，而是按 FIFO 将消息追加到 OpenHands 正式 events 接口；UI 保留当前流式内容并在先前回合结束后跟随正式的下一未完成 user event，普通 Enter 仍只走本地顺序队列。外层与节点会话在 `running`／`executing` 时均不会模型重绑、分叉恢复或压缩，停止／确认仍拒绝写入。两项数据库定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过；不依赖数据库的 OpenHands events 请求测试通过。 |
 | 2026-09-06 | FR-173 | 受影响 Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：工作区删除改为物理级联删除关联会话及私有附件；用户根附件路径在上传返回、发送和 sandbox 图片投影三处保持同一受限契约；Command/Ctrl+Enter 会等待原生暂停完成后优先发送，普通 Enter 继续排队。受影响 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行；定向 Playwright 因本地 Vite 服务不可达而未执行，均未伪记为通过。定向 Pyright 命中既有 `work_directories.py:395` 构造调用缺少 `working_path` 的 strict 基线诊断，未由本切片引入。 |
 | 2026-09-06 | FR-172 | Python `py_compile`、Ruff；后端原生完成事件定向回归（直接运行，不依赖数据库容器）；Web ESLint、TypeScript typecheck、production build；FlowRun 工作台 Playwright（1 passed）；任务状态唯一性与 `git diff --check` | PASS：后续正式 FinishAction 在 `END_BLOCKED` 时回投 Artifact／END gate，而不是因 native status 已完成被丢弃；失败节点在选中和已配置状态下仍显示红色。逐步记录删除的 API 回归新增递归目录断言；完整 pytest 未能运行，因为本机 Docker daemon 不可用，Testcontainers PostgreSQL 在 fixture setup 前失败，未伪记为通过。定向 Pyright 仍命中仓库既有 strict 类型基线（2020 项），本切片新增代码未产生单独诊断。 |

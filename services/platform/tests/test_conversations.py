@@ -583,6 +583,56 @@ def test_resume_node_conversation_reconciles_a_confirmed_native_pause(
         assert wakeup.task_type == "WAIT_RUNTIME_WAKEUP"
 
 
+def test_cancelled_node_attempt_fences_every_session_write(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation is read-only immediately, before native interrupt settles."""
+
+    with db_session_factory() as db:
+        flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "CANCELLED"
+        attempt.runtime_phase = "CANCELLING"
+
+        with pytest.raises(DomainError) as paused:
+            flow_node_conversations.resume_node_conversation(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=str(uuid4()),
+            )
+        assert paused.value.code == "NODE_ATTEMPT_CANCELLED"
+
+        with pytest.raises(DomainError) as sent:
+            flow_node_conversations.send_node_message(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=str(uuid4()),
+                content="不应发送",
+            )
+        assert sent.value.code == "NODE_ATTEMPT_CANCELLED"
+
+        with pytest.raises(DomainError) as terminal:
+            flow_node_conversations.node_draft_terminal_resource_details(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id
+            )
+        assert terminal.value.code == "NODE_ATTEMPT_CANCELLED"
+
+        monkeypatch.setattr(
+            flow_node_conversations.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: None,
+        )
+        status = flow_node_conversations.node_runtime_status(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert status["state"] == "ACTIVE"
+        assert status["write_available"] is False
+        assert "正在停止" in str(status["message"])
+
+
 def test_resume_node_conversation_does_not_reconcile_non_paused_native_state(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
