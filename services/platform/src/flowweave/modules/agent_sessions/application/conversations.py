@@ -1236,11 +1236,19 @@ def delete_conversation(
     try:
         get_runtime().delete_conversation(_handle(db, workspace, item))
     except DomainError as exc:
-        command.state = "FAILED"
-        command.last_error_code = exc.code
-        command.failure_summary = "Conversation deletion failed; inspect protected logs"
-        item.lifecycle = "ACTIVE"
-        raise
+        # A durable binding can outlive a failed bootstrap or a crashed Runtime
+        # generation.  Once OpenHands authoritatively reports that the native
+        # Conversation is absent, there is nothing left to delete upstream.
+        # Treat that explicit 404 as an idempotent delete, then remove the
+        # FlowWeave locator and its private records below.  Other Runtime
+        # failures remain fail-closed so a still-existing Conversation is not
+        # hidden from the user.
+        if exc.code != "RUNTIME_CONVERSATION_MISSING":
+            command.state = "FAILED"
+            command.last_error_code = exc.code
+            command.failure_summary = "Conversation deletion failed; inspect protected logs"
+            item.lifecycle = "ACTIVE"
+            raise
     # The native conversation is now gone, so its private attachment objects
     # must not outlive it.  The helper only unlinks files bearing this binding's
     # opaque owner UUID and never traverses arbitrary workspace paths.

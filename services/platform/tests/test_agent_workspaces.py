@@ -1436,6 +1436,48 @@ def test_deleting_work_directory_cascades_its_conversations(settings, db_session
         assert db.get(AgentConversationBinding, second["id"]) is None
 
 
+def test_deleting_work_directory_discards_orphaned_provisioning_conversations(
+    settings, db_session_factory
+):
+    class MissingConversationRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted: list[str] = []
+
+        def delete_conversation(self, handle):
+            self.deleted.append(handle.conversation_id)
+            raise DomainError(
+                "RUNTIME_CONVERSATION_MISSING",
+                "The original OpenHands Conversation is unavailable and cannot be replaced",
+                409,
+            )
+
+    runtime = MissingConversationRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        (project_root / "orphaned-service").mkdir()
+        directory = work_directories.create_work_directory(
+            db, item.id, "孤儿创建记录", ("orphaned-service",)
+        )
+        created = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "orphaned-provisioning"
+        )
+        binding = db.get(AgentConversationBinding, created["id"])
+        assert binding is not None
+        native_conversation_id = binding.openhands_conversation_id
+        binding.lifecycle = "PROVISIONING"
+        binding.work_directory_version_id = directory["current_version"]["id"]
+        binding.working_directory = "/runtime/workspace/project/orphaned-service"
+        db.flush()
+
+        work_directories.delete_work_directory(db, item.id, directory["id"])
+
+        assert runtime.deleted == [native_conversation_id]
+        assert db.get(AgentWorkDirectory, directory["id"]) is None
+        assert db.get(AgentConversationBinding, created["id"]) is None
+
+
 def test_agent_workspace_accepts_user_root_attachment_paths():
     owner_id = str(uuid4())
     workspace_root = "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000002"
