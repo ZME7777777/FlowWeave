@@ -4874,6 +4874,60 @@ def process_poll_runtime(
             or current.state_version != expected_version
         ):
             return
+        # ``END_BLOCKED`` is only FlowWeave's projection of the prior
+        # operation. A formal FinishAction that is now the active native
+        # terminal event proves a later completed turn, even if OpenHands is
+        # already ``finished`` when the worker observes it. Project it through
+        # the ordinary Artifact and END-gate path. An old result is not
+        # accepted here: the native active branch returns FAILED while its
+        # error remains terminal, until a later FinishAction supersedes it.
+        if result.status == "COMPLETED":
+            resumed = _claim_runtime_phase(
+                db,
+                current_attempt_id,
+                expected_version,
+                AttemptState.END_BLOCKED,
+                current.runtime_phase,
+                state=AttemptState.EXECUTING,
+                runtime_phase="RUNNING",
+                error_code=None,
+                error_detail=None,
+            )
+            if resumed is None:
+                return
+            node_run = _node_run(db, resumed.node_run_id)
+            run = _run(db, node_run.flow_run_id)
+            run.state = FlowRunState.ACTIVE
+            _event(
+                db,
+                run.id,
+                "ATTEMPT_RESUMED",
+                {"reason": "NATIVE_COMPLETION_AFTER_BLOCKED_PROJECTION"},
+                node_run.id,
+                resumed.id,
+            )
+            prepared_outputs = _prepare_runtime_outputs(
+                result, resumed.output_targets_json or {}, handle
+            )
+            if result.cursor is None and batch.cursor is not None:
+                result = RuntimeResult(
+                    status=result.status,
+                    outputs=result.outputs,
+                    human_question=result.human_question,
+                    cursor=batch.cursor,
+                    error=result.error,
+                )
+            _apply_runtime_result(
+                db,
+                resumed,
+                result,
+                prepared_outputs=prepared_outputs,
+                result_key=f"poll:{poll_no}:{result.cursor or batch.cursor or '0'}",
+                pending_confirmation=pending_confirmation,
+                failure_code="RUNTIME_FAILED",
+                commit=commit,
+            )
+            return
         if native_execution_status not in {"starting", "running", "executing"}:
             # A historical terminal event is not proof of a new turn.  Keep
             # the event subscription, but wait until OpenHands itself reports
@@ -5741,6 +5795,43 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
             run.state = FlowRunState.ACTIVE
 
 
+def _record_workspace_paths_for_deletion(attempts: list[NodeAttempt]) -> set[Path]:
+    """Return only record-owned workspace roots that may be removed post-commit.
+
+    ``workspace_ref`` is server-derived, but it is durable historical data. Do
+    not let a malformed old value broaden a record delete into a workspace-root
+    delete. A missing path is harmless; an existing non-directory or link fails
+    closed before the database graph is changed.
+    """
+
+    workspace_root = Path(get_settings().workspace_root).resolve()
+    paths: set[Path] = set()
+    for attempt in attempts:
+        raw_path = (attempt.workspace_ref or "").strip()
+        if not raw_path:
+            continue
+        candidate = Path(raw_path)
+        if candidate.is_symlink() or (candidate.exists() and not candidate.is_dir()):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The execution record workspace is not a plain directory",
+                409,
+                {"attempt_id": attempt.id},
+            )
+        if not candidate.exists():
+            continue
+        path = candidate.resolve()
+        if path == workspace_root or not path.is_relative_to(workspace_root):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The execution record workspace is outside the managed workspace root",
+                409,
+                {"attempt_id": attempt.id},
+            )
+        paths.add(path)
+    return paths
+
+
 def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
     """Delete a manual execution that has not started, or has stopped.
 
@@ -5791,6 +5882,7 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
             409,
         )
 
+    workspace_paths = _record_workspace_paths_for_deletion(attempts)
     attempt_ids = [attempt.id for attempt in attempts]
     bindings = list(
         db.scalars(
@@ -5897,8 +5989,10 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
     for artifact in artifacts:
         if artifact.storage_key:
             register_commit_action(db, lambda key=artifact.storage_key: store.delete(key))
-    # Physical OpenHands persistence and Workspace content remain FlowRun-owned
-    # and are reclaimed only when the parent FlowRun is deleted.
+    for path in workspace_paths:
+        # The path was constrained to the managed workspace root and verified
+        # before deleting rows. Reclaim it only after a successful commit.
+        register_commit_action(db, lambda path=path: shutil.rmtree(path, ignore_errors=True))
     finish(db)
 
 

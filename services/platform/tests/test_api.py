@@ -2743,6 +2743,11 @@ def test_delete_unstarted_manual_node_run_preserves_runtime_and_restores_neutral
     ).json()
     assert created["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
     assert created["attempts"][0]["runtime_phase"] is None
+    record_workspace = Path(created["attempts"][0]["workspace_ref"])
+    nested_output = record_workspace / "nested" / "outputs" / "report.txt"
+    nested_output.parent.mkdir(parents=True)
+    nested_output.write_text("record-owned output", encoding="utf-8")
+    assert nested_output.is_file()
 
     with db_session_factory() as db:
         runtime_id = db.scalar(
@@ -2752,6 +2757,7 @@ def test_delete_unstarted_manual_node_run_preserves_runtime_and_restores_neutral
 
     deleted = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{created['id']}")
     assert deleted.status_code == 204, deleted.text
+    assert not record_workspace.exists()
     detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
     assert detail["state"] == "ACTIVE"
     assert detail["node_runs"] == []

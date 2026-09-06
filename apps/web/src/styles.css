@@ -393,12 +393,15 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .run-graph-node.automatic-missing .flow-node-head{border-color:#efcdcd!important}
 .run-graph-node.automatic-missing b,.run-graph-node.automatic-missing .flow-port-groups b{color:#8e3c3c!important}
 .run-graph-node.automatic-missing .flow-port-groups small{color:#aa6969!important}
+.run-graph-node.failed{border:2px solid #c95757!important;background:#fff4f4!important;color:#8e3c3c!important;box-shadow:0 0 0 3px #f8dddd!important}
+.run-graph-node.failed .flow-node-head{border-color:#efcdcd!important}.run-graph-node.failed b,.run-graph-node.failed .flow-port-groups b{color:#8e3c3c!important}.run-graph-node.failed .flow-port-groups small{color:#aa6969!important}
 .run-graph-node.automatic-configured{border:2px solid #5b9a72!important;background:#edf8f1!important;color:#276840!important;box-shadow:0 0 0 3px #dcefe2!important}
 .run-graph-node.automatic-configured .flow-node-head{border-color:#c7e2d0!important}.run-graph-node.automatic-configured b,.run-graph-node.automatic-configured .flow-port-groups b{color:#276840!important}
 .run-graph-node.automatic-locked{border-color:#d9dfdb!important;background:#f4f6f4!important;color:#98a39d!important;box-shadow:none!important;opacity:.68}.run-graph-node.automatic-locked .flow-node-head{border-color:#e1e6e3!important}.run-graph-node.automatic-locked b{color:#87928c!important}.run-graph-node.automatic-locked .flow-port-groups{opacity:.55}
 .run-graph-node.snapshot-selected{border-color:#0b6b4a!important;background:#edf9f1!important;box-shadow:0 0 0 5px #b9e8cd,0 12px 26px #17624935!important;outline:2px solid #0b6b4a;outline-offset:3px}
 .snapshot-selected-marker{display:none!important}.run-graph-node.snapshot-selected .snapshot-selected-marker{display:inline-flex!important;align-items:center;justify-self:end;border-radius:999px;background:#0b6b4a;padding:3px 6px;color:#fff!important;font:600 8px/1 'DM Mono',monospace;letter-spacing:.25px;white-space:nowrap}
 .run-graph-node.automatic-missing.snapshot-selected{border-color:#b84848!important;background:#fff0f0!important;box-shadow:0 0 0 4px #f3cccc!important}
+.run-graph-node.failed.snapshot-selected{border-color:#b84848!important;background:#fff0f0!important;box-shadow:0 0 0 4px #f3cccc!important;outline-color:#b84848!important}.run-graph-node.failed.snapshot-selected .snapshot-selected-marker{background:#b84848!important}
 
 /* Automatic mode edits one node at a time and intentionally shares the
    same compact inspector frame as the manual node console. */

@@ -518,6 +518,7 @@ test('FR-130 running automatic records show execution facts and chat attempts su
   await expect(page.locator('.attempt-control')).toContainText('连续运行需要人工处理');
   await expect(page.locator('.attempt-control')).toContainText('流转 Agent 选择了未授权节点');
   await expect(page.locator('.run-graph-node.failed')).toContainText('完成条件未通过');
+  await expect(page.locator('.run-graph-node.failed')).toHaveCSS('border-top-color', 'rgb(184, 72, 72)');
   await expect(page.locator('.run-graph-node.automatic-locked')).toContainText('测试节点2');
   await expect(page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' })).toHaveCount(0);
 });

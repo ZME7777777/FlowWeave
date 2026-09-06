@@ -237,10 +237,11 @@ function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachable
       const status = neutralView ? 'neutral'
         : !reachable.has(item.instance_key) ? 'out-of-scope'
         : !selectable.has(item.instance_key) ? 'automatic-locked'
+          : showExecutionState && latest?.state === 'ACTIVE' && blocked ? 'failed'
           : configuredPlans.has(item.instance_key) ? 'automatic-configured'
           : missingPlans.has(item.instance_key) ? 'automatic-missing'
           : !showExecutionState ? 'neutral'
-            : latest?.state === 'ACTIVE' ? blocked ? 'failed' : waiting ? 'waiting' : 'current'
+            : latest?.state === 'ACTIVE' ? waiting ? 'waiting' : 'current'
               : latest?.state === 'ACCEPTED' ? 'accepted'
                 : latest?.state === 'CANCELLED' ? 'cancelled' : 'inactive';
       const stateLabel = showExecutionState

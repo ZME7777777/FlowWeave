@@ -138,6 +138,101 @@ def test_native_running_event_recovers_an_end_blocked_native_conversation(monkey
     assert ensured == ["attempt-1"]
 
 
+def test_native_completion_after_runtime_failure_reenters_artifact_projection(monkeypatch):
+    """A later FinishAction must not be discarded just because it is already finished."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state=AttemptState.END_BLOCKED,
+        runtime_phase="FAILED",
+        error_code="RUNTIME_FAILED",
+        error_detail="interrupted tool",
+        conversation_id="conversation-1",
+        state_version=7,
+    )
+    resumed = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state_version=8,
+        output_targets_json={"report": {"artifact_type": "FILE"}},
+    )
+    run = SimpleNamespace(id="run-1", state="WAITING_HUMAN")
+    events: list[tuple[str, dict[str, object]]] = []
+    applied: list[tuple[object, RuntimeResult, object]] = []
+
+    class NativeCompletedRuntime:
+        def read_events(self, _handle):
+            return RuntimeEventBatch(
+                events=(),
+                cursor="finish-2",
+                result=RuntimeResult(
+                    status="COMPLETED",
+                    outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                ),
+            )
+
+        def input_readiness(self, _handle):
+            return RuntimeInputReadiness(ready=True, execution_status="finished")
+
+    monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: attempt)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_active_attempt_runtime_handle",
+        lambda *_args: SimpleNamespace(cursor=None),
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_ensure_attempt_runtime_for_native_observation", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_release_worker_read_transaction", lambda *_args: None
+    )
+    monkeypatch.setattr(orchestration_service, "_require_current_lease", lambda *_args: None)
+    monkeypatch.setattr(
+        orchestration_service, "_claim_runtime_phase", lambda *_args, **_kwargs: resumed
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_node_run",
+        lambda *_args: SimpleNamespace(id="node-run-1", flow_run_id="run-1"),
+    )
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_prepare_runtime_outputs", lambda *_args: ["prepared"]
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_apply_runtime_result",
+        lambda _db, item, result, **kwargs: applied.append(
+            (item, result, kwargs["prepared_outputs"])
+        ),
+    )
+
+    with runtime_context(NativeCompletedRuntime()):
+        orchestration_service.process_poll_runtime(None, "attempt-1", 1, commit=False)
+
+    assert run.state == "ACTIVE"
+    assert events == [
+        ("ATTEMPT_RESUMED", {"reason": "NATIVE_COMPLETION_AFTER_BLOCKED_PROJECTION"})
+    ]
+    assert applied == [
+        (
+            resumed,
+            RuntimeResult(
+                status="COMPLETED",
+                outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                cursor="finish-2",
+            ),
+            ["prepared"],
+        )
+    ]
+
+
 def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
     """A failed automatic END gate repairs on a native child Conversation."""
 

@@ -2514,6 +2514,16 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：会话界面使用 OpenHands 正式 user／assistant 事件的 timestamp 显示 `HH:mm`，缺失或无效时间不渲染且不影响用户消息操作。能力仓库成功提示改为可关闭、带焦点样式的 sticky 零高度浮层，因此不会挤占列表与分页；通用输入对话框在 `isComposing` 或 `keyCode=229` 时忽略 Enter，中文候选词确认后需独立 Enter 才会提交发布。
 
+### FR-172 节点完成事件回投、记录工作区清理与失败态可见性 — DONE
+
+依赖：`FR-171`。
+
+目标：当节点 Attempt 已因 Runtime 失败进入 `END_BLOCKED` 后，仍持续监听同一 OpenHands Conversation；若正式活动分支随后以 FinishAction 完成，必须把该完成事件重新投影到既有 Artifact 准备、结束门禁与流转状态机，而不能因为观察时 native status 已为 `finished` 丢弃。不得把浏览器候选卡片当作 Artifact 真相，也不得取消事件订阅或伪造会话事件。
+
+删除逐步运行记录时，事务提交后递归删除其受管 `workspace_ref` 记录根及全部后代文件／目录；删除目标必须是受管理根中的普通目录，拒绝符号链接、文件、工作区根与范围外路径。画布上的 `START_BLOCKED`／`END_BLOCKED` 必须优先于自动配置与选中态渲染为红色，并维持失败状态文字。
+
+完成：`END_BLOCKED` 的长期原生事件订阅现在一旦读到活动分支中的后续 FinishAction，会先以 CAS 清除旧失败投影，再将同一正式事件交给既有 Artifact 准备、登记与结束门禁流程；无需浏览器确认候选输出。逐步运行记录删除在事务提交后仅递归清理经 `workspace_root` 约束和普通目录校验的记录根，空路径或已不存在路径可安全忽略，符号链接／文件／工作区根／范围外路径均拒绝。失败节点的状态优先于自动配置和选中状态，选中失败节点继续使用红色边框与标识。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2549,6 +2559,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-172 | Python `py_compile`、Ruff；后端原生完成事件定向回归（直接运行，不依赖数据库容器）；Web ESLint、TypeScript typecheck、production build；FlowRun 工作台 Playwright（1 passed）；任务状态唯一性与 `git diff --check` | PASS：后续正式 FinishAction 在 `END_BLOCKED` 时回投 Artifact／END gate，而不是因 native status 已完成被丢弃；失败节点在选中和已配置状态下仍显示红色。逐步记录删除的 API 回归新增递归目录断言；完整 pytest 未能运行，因为本机 Docker daemon 不可用，Testcontainers PostgreSQL 在 fixture setup 前失败，未伪记为通过。定向 Pyright 仍命中仓库既有 strict 类型基线（2020 项），本切片新增代码未产生单独诊断。 |
 | 2026-09-06 | FR-171 | Web ESLint、TypeScript typecheck、production build；能力仓库 Context Bundle 定向 Playwright（1 passed）；终端环境发布 IME 定向 Playwright（1 passed）；任务状态唯一性与 `git diff --check` | PASS：发送与最终回复分别以正式 OpenHands message timestamp 呈现 `HH:mm`，无有效 timestamp 时不会猜测也不会隐藏复制／编辑操作。成功提示有可访问关闭入口，浮层高度为 0px，不再压缩能力列表分页区域。中文 IME 候选确认不会调用发布接口，独立 Enter 才提交。未修改 OpenHands、Conversation/Event 持久化、Runtime、FlowRun 或能力导入契约。 |
 | 2026-09-05 | FR-170 | 受影响 Python Ruff check、`py_compile`、定向 Pyright（0 errors）、Alembic head、任务状态唯一性与 `git diff --check`；Runtime Provider／Sandbox／wakeup 定向 pytest | PASS（静态）：Worker 可订阅 `/v1/runtimes/events`，未授权 bearer 继续拒绝；回归覆盖 Attempt Runtime 的 TTL/hard-expiry 保留、物理丢失不静默重建、永久 FlowRun 删除回收 Attempt Runtime。定向 pytest 未执行断言：本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在 collection setup 失败；未伪记为通过。生产将使用已提交源码镜像重建并验证 Worker 订阅、服务日志与现有会话不被删除。 |
 | 2026-09-05 | FR-169 | CLI Node 测试（10 passed）、语法检查与 typecheck；npm pack 与隔离安装 smoke；全部 FlowWeave Skill `quick_validate.py`（11 passed）；Alembic head、任务状态唯一性、敏感值扫描与 `git diff --check` | PASS：真实本地测试服务验证登录 Cookie 获取、`0600` 会话文件、HTTP／WebSocket 自动鉴权、跨 base URL 拒绝和退出清理；调度创建、CAS 暂停／恢复、手动触发与删除映射通过。npm 包清单仅含 README、CLI 入口和 package metadata，隔离安装后的 `flowweave --help` 包含 auth／schedule；唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT` 或下一切片。 |
