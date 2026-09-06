@@ -746,20 +746,28 @@ function useElapsedSeconds(startedAt: number | undefined, finishedAt: number | u
   return Math.max(0, ((finishedAt ?? now) - startedAt) / 1000);
 }
 
-function activeToolLabel(eventName: string): string {
+function activeToolLabel(eventName: string, toolName?: string, summary?: string, details?: Record<string, unknown>): string {
+  const description = typeof details?.description === 'string' ? details.description.trim() : '';
+  const explicitTool = summary?.trim() || toolName?.trim();
   if (eventName.includes('Terminal')) return '正在后台执行命令';
   if (eventName.includes('FileEditor')) return '正在处理文件';
   if (eventName.includes('Browser')) return '正在执行浏览器操作';
   if (eventName.includes('MCP')) return '正在调用 MCP 工具';
   if (eventName.includes('Skill')) return '正在使用技能';
-  if (eventName.includes('Task')) return '子智能体正在执行';
-  return '正在执行工具';
+  if (eventName.includes('Task')) return description ? `子智能体正在执行：${description}` : '子智能体正在执行';
+  const normalized = explicitTool || eventName.replace(/(?:Action|Observation)$/, '');
+  return normalized && normalized !== 'TOOL_CALL' ? `正在执行 ${normalized}` : '正在执行工具';
 }
 
 function activeActivityLabel(entries: ActivityEntry[], requestSubmitting: boolean): string {
   if (requestSubmitting) return '正在提交消息';
   const pendingTool = [...entries].reverse().find(entry => entry.action?.kind === 'tool' && entry.results.length === 0)?.action;
-  if (pendingTool) return activeToolLabel(String(pendingTool.event.payload.event_name ?? ''));
+  if (pendingTool) return activeToolLabel(
+    String(pendingTool.event.payload.event_name ?? ''),
+    typeof pendingTool.event.payload.tool_name === 'string' ? pendingTool.event.payload.tool_name : undefined,
+    typeof pendingTool.event.payload.summary === 'string' ? pendingTool.event.payload.summary : undefined,
+    pendingTool.event.payload.details,
+  );
   const latest = entries.at(-1)?.item;
   if (latest?.kind === 'condensation' && latest.event.event_type === 'CONDENSATION_REQUESTED') return '正在压缩上下文';
   return '正在思考';

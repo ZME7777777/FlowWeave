@@ -722,6 +722,42 @@ def test_openhands_classifies_explicit_mcp_initialization_timeout(openhands_sett
     assert raised.value.details == {"error_kind": "timeout"}
 
 
+def test_openhands_accepts_non_strict_control_characters_from_managed_event_history(
+    openhands_settings, monkeypatch
+):
+    """A malformed upstream string must not make a recoverable event page 503."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    response = openhands_module.httpx.Response(
+        200,
+        # A literal newline inside the JSON string reproduces the Agent Server
+        # event serializer defect observed in persisted tool output.
+        content=b'{"items":[{"id":"event-1","content":"first\nsecond"}],"next_page_id":null}',
+        request=openhands_module.httpx.Request(
+            "GET", "http://runtime:8000/api/conversations/conversation/events/search"
+        ),
+    )
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request(self, *_args, **_kwargs):
+            return response
+
+    monkeypatch.setattr(openhands_module.httpx, "Client", lambda **_kwargs: FakeClient())
+
+    assert runtime._request(
+        "GET",
+        "/api/conversations/conversation/events/search",
+        base_url="http://runtime:8000",
+        session_api_key="session-key",
+    ) == {"items": [{"id": "event-1", "content": "first\nsecond"}], "next_page_id": None}
+
+
 def test_openhands_maps_missing_delete_conversation_400_to_idempotent_missing(
     openhands_settings, monkeypatch
 ):

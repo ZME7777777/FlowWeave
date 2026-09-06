@@ -162,7 +162,14 @@ class OpenHandsRuntime:
                 if missing_ok and response.status_code == 404:
                     return {"_flowweave_missing": True}
                 response.raise_for_status()
-                value = cast(object, response.json())
+                # OpenHands event history can contain persisted terminal or
+                # tool output with literal control characters. The fixed
+                # server's JSONResponse path can therefore emit a non-strict
+                # JSON string on a later events/search page. Accept only that
+                # JSON lexical compatibility here; every response is still
+                # required to be an object and event pages continue through
+                # the formal identity/shape validation in _events.
+                value = cast(object, json.loads(response.content, strict=False))
                 if not isinstance(value, dict):
                     raise ValueError("OpenHands response must be an object")
                 outcome = "ok"

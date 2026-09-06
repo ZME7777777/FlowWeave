@@ -151,8 +151,8 @@ function taskOutcomeText(value: unknown): string | undefined {
   }).filter(Boolean).join('\n').slice(0, 1_000) || undefined;
 }
 
-function RuntimeTaskRecord({ task, definitions }: {
-  task: RuntimeTaskProjection; definitions: CapabilityAsset[];
+function RuntimeTaskRecord({ task, definitions, onInterrupt, interrupting }: {
+  task: RuntimeTaskProjection; definitions: CapabilityAsset[]; onInterrupt?: () => void; interrupting?: boolean;
 }) {
   const definition = definitions.find(item => item.capability_type === 'AGENT_DEFINITION' && item.capability_key === task.subagentType);
   const document = definition?.document && typeof definition.document === 'object' ? definition.document : {};
@@ -165,19 +165,20 @@ function RuntimeTaskRecord({ task, definitions }: {
       <header><div><span className="eyebrow">SUBAGENT</span><h2>{task.subagentType}</h2><p>{runtimeTaskStatus(task)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div></header>
       <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${task.status.toLowerCase()}`}>{runtimeTaskStatus(task)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}</dl></section>
       <section><h3>子智能体定义</h3>{nativeDefinition ? <p className="agent-subagent-note">这是 OpenHands 原生 <code>{task.subagentType}</code> 类型。当前正式事件未携带可版本化的 FlowWeave Agent Definition，因此不会把它伪装成自定义定义。</p> : <><p>{definition.description || '已发布的 FlowWeave Agent Definition。'}</p><dl><dt>已发布版本</dt><dd>{definition.version}</dd><dt>内容摘要</dt><dd><code>{definition.content_hash.slice(0, 16)}</code></dd>{tools.length > 0 && <><dt>允许工具</dt><dd>{tools.join('、')}</dd></>}{skills.length > 0 && <><dt>技能</dt><dd>{skills.join('、')}</dd></>}</dl><p className="agent-subagent-note">此处展示当前可读取的已发布定义。会话运行时使用的定义版本由 OpenHands 创建请求冻结，事件未提供版本 ID 时不据此声称两者相同。</p></>}</section>
+      {task.status === 'RUNNING' && onInterrupt && <section><h3>停止</h3><p className="agent-subagent-note">OpenHands 原生 Task 不提供单独停止此子智能体的公开接口。停止会中断当前 Agent 回合，并一并停止其中运行的子智能体。</p><button type="button" className="agent-subagent-stop" disabled={interrupting} onClick={onInterrupt}>{interrupting ? '正在停止当前 Agent…' : '停止当前 Agent'}</button></section>}
       {outcome && <section><h3>执行结果</h3><pre>{outcome}</pre></section>}
     </section>
 }
 
-function RuntimeTaskTab({ tasks, definitions, selectedTaskId, onSelect }: {
-  tasks: RuntimeTaskProjection[]; definitions: CapabilityAsset[]; selectedTaskId?: string; onSelect: (taskId: string) => void;
+function RuntimeTaskTab({ tasks, definitions, selectedTaskId, onSelect, onInterrupt, interrupting }: {
+  tasks: RuntimeTaskProjection[]; definitions: CapabilityAsset[]; selectedTaskId?: string; onSelect: (taskId: string) => void; onInterrupt?: () => void; interrupting?: boolean;
 }) {
   const running = tasks.filter(task => task.status === 'RUNNING').length;
   const selectedTask = tasks.find(task => task.id === selectedTaskId) ?? tasks[0];
   if (!selectedTask) return <div className="agent-drawer-empty"><b>暂无子智能体记录</b><span>本会话出现 OpenHands TaskAction 后，记录会显示在这里。</span></div>;
   return <section className="agent-subagent-tab" aria-label="子智能体记录">
     <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><RuntimeTaskGlyph task={task} size={13}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
-    <RuntimeTaskRecord task={selectedTask} definitions={definitions}/>
+    <RuntimeTaskRecord task={selectedTask} definitions={definitions} onInterrupt={onInterrupt} interrupting={interrupting}/>
   </section>;
 }
 
@@ -1221,9 +1222,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, sources, attachmentRequest, candidatePreviewRequest, runtimeAvailable, runtimeTasks, agentDefinitions,
+  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, sources, attachmentRequest, candidatePreviewRequest, runtimeAvailable, runtimeTasks, agentDefinitions, onInterrupt, interrupting,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[];
+  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; onInterrupt?: () => void; interrupting?: boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -1525,7 +1526,7 @@ function WorkspaceDrawer({
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
-          {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))}/></div>}
+          {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} onInterrupt={onInterrupt} interrupting={interrupting}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
         </div>)}
       </div>
@@ -2588,7 +2589,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} runtimeAvailable={Boolean(runtime?.write_available && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} runtimeAvailable={Boolean(runtime?.write_available && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} onInterrupt={turnState === 'running' ? () => interrupt.mutate() : undefined} interrupting={interrupt.isPending}/>
     {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });

@@ -2694,6 +2694,23 @@ OpenHands 请求和中继生命周期日志记录路由／Runtime、状态、耗
 调用方传播，但不能再次打断回收。回归覆盖浏览器断连关闭外层流、OpenHands 关闭控制器子流、HTTPX response
 关闭，以及 AnyIO 取消域内的远端回收完成。
 
+### FR-189 Agent 事件页容错、工具反馈与子代理停止入口 — DONE
+
+依赖：`FR-188`。
+
+目标：修复 OpenHands `events/search` 在包含未转义控制字符的历史 Action/Observation 文本时使受权代理严格
+JSON 解析失败、继而在刷新后丢失未终态工具身份并误显示为“正在思考”的问题。只对受管 OpenHands 响应采用
+兼容 JSON 解码，随后继续执行既有对象、正式 event id、parent_id、action_id 与 tool_call_id 校验和安全投影；
+无效结构不得被吞掉。当前轮必须显示正在执行的具体工具或子代理说明，不能只显示泛化“正在执行工具”。
+子代理详情应提供“停止当前 Agent”入口，并明确固定 OpenHands 1.44.0 原生 Task 没有按单个 child cancel 的
+公开接口：该入口使用父 Conversation 正式 interrupt，因此会中止当前回合及其中运行的子代理，不能伪装成单子代理
+独立取消。不得修改 OpenHands、持久化消息／事件或 FlowRun Runtime 拓扑。
+
+完成：受管 OpenHands HTTP 响应改用兼容控制字符的 JSON 解码；解码后仍要求对象响应，事件页继续执行既有正式
+身份、分页锚点、对象形状与安全投影校验。当前轮状态优先显示安全投影的具体工具名称、摘要或子代理任务说明。
+运行中的子代理详情新增“停止当前 Agent”入口，明确说明这是父 Conversation 的正式 interrupt，会中止该回合内
+所有运行中的子代理；固定 OpenHands 1.44.0 没有公开的单 child cancel API。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2709,6 +2726,7 @@ OpenHands 请求和中继生命周期日志记录路由／Runtime、状态、耗
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-189 | OpenHands 非严格事件页解码与原生 Task 生命周期定向 pytest（2 passed）；受影响 Python Ruff/Pyright；Web ESLint、TypeScript typecheck、production build；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：含未转义换行的受管 OpenHands 响应可被读取，后续事件结构与正式 identity 校验不变；当前轮会显示具体工具或子代理任务说明。子代理面板仅提供受原生 interrupt 支持的“停止当前 Agent”，不伪造单子代理取消。 |
 | 2026-09-06 | FR-188 | OpenHands 嵌套流与 HTTPX response 定向 pytest（3 passed）；WebSocket／普通取消／AnyIO 取消域回收直接单元检查（3 passed）；受影响 Python Ruff、`py_compile`、定向 Pyright；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS：消费端断开依次关闭 WebSocket Runtime 流、控制器子流和 HTTPX response；Runtime Provider 在 `StreamingResponse` 取消域已触发后仍完成远端 PID 回收和本地 `docker exec` 退出。数据库型测试入口仍受本机 Docker daemon 不可用阻断，当前回归均不依赖数据库并已直接执行。生产断连和中继活动数将在 commit 绑定定向部署后验证。 |
 | 2026-09-06 | FR-187 | 受影响 Python Ruff、`py_compile`、定向 Pyright；并发取消／槽位回收、上下文传播、慢日志脱敏和中继 PID／心跳过滤直接单元检查；Linux 容器内中继控制探针；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS（实现与直接探针）：直接单元检查全部通过，Linux `/proc` 中继启动控制记录有效，Compose 解析和受影响文件 Ruff／语法检查通过。正式定向 pytest 9 项可收集，但隔离空库迁移在断言前被既有 `0092_node_run_names` 重复添加 `node_runs.name` 阻断，未伪记为通过；全量 Pyright 仍有仓库既有诊断，本切片新增基础设施文件无新增诊断。`compose_security_check.py` 仍因既有 stream-api 连接 docker-control 的基线规则失败，原始 Compose 语法有效。生产故障会话已在保留 Workspace、OpenHands state 与原 Conversation ID 的前提下清理 26 个孤儿中继并仅重启其 Runtime，events/search 恢复到约 76ms。 |
 | 2026-09-06 | FR-185 | Agent Definition 创建范围、Runtime native `agent_definitions` 投影定向 pytest；受影响 Python Ruff/`py_compile`；Web ESLint、TypeScript typecheck、`git diff --check` | PASS（静态）：Ruff 与 `py_compile`、Web ESLint、TypeScript typecheck、`git diff --check` 通过。定向 pytest 在执行断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 2 errors，未伪记为通过；受影响 Python 文件的 Ruff format check 同时报出既有格式差异，未作无关格式化。 |
