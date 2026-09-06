@@ -57,8 +57,11 @@ _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT"}
 _COMPACTION_EVENT_WAIT_SECONDS = 120.0
+_RUNTIME_WORKSPACE_PATH = (
+    r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
+)
 _SANDBOX_PROJECT_IMAGE = re.compile(
-    r"sandbox:(/runtime/workspace/(?:project|[0-9a-f-]{36})/[A-Za-z0-9][A-Za-z0-9._/-]*)"
+    rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
 _MECHANICAL_TITLE = re.compile(
     r"^(?:未命名会话|新会话)\s*(?:[0-9]+|[一二三四五六七八九十]+)?$",
@@ -1067,7 +1070,11 @@ def bootstrap_conversation(
         db.commit()
 
     assert binding is not None and command is not None
-    _validate_attachment_owners(binding.id, attachments)
+    _validate_attachment_owners(
+        binding.id,
+        attachments,
+        workspace_root=user_runtime_project_root(workspace.id),
+    )
     if not binding.model_provider_id or not binding.working_directory:
         error = DomainError("AGENT_CONVERSATION_BOOTSTRAP_INVALID", "会话创建数据不完整", 409)
         _record_bootstrap_failure(db, binding, command, error)
@@ -1682,7 +1689,8 @@ def message(
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
-    _validate_attachment_owners(binding.id, attachments)
+    handle = _handle(db, workspace, binding)
+    _validate_attachment_owners(binding.id, attachments, workspace_root=handle.workspace_root)
     prompt, image_urls = _message_payload(content, attachments, references)
     if not binding.streaming_callback_ready:
         raise DomainError(
@@ -1691,7 +1699,6 @@ def message(
             409,
             {"binding_id": binding.id},
         )
-    handle = _handle(db, workspace, binding)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError(
@@ -1799,16 +1806,16 @@ def message(
 
 
 _ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/"
+    rf"^(?P<workspace_root>{_RUNTIME_WORKSPACE_PATH})/uploads/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"(?P<object>[0-9a-f]{32})(?:--(?P<filename>[A-Za-z0-9][A-Za-z0-9._-]{0,180}))?$"
 )
 _LEGACY_ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/[0-9a-f]{32}-[A-Za-z0-9._-]{1,180}$"
+    rf"^{_RUNTIME_WORKSPACE_PATH}/uploads/[0-9a-f]{{32}}-[A-Za-z0-9._-]{{1,180}}$"
 )
 _ATTACHMENT_SUFFIX = re.compile(
     r"(?:\n\n)?(?:已上传到共享工作区的附件：|请查看已上传到共享工作区的附件：)\n"
-    r"(?P<paths>(?:- /runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/.+\n?)+)$"
+    rf"(?P<paths>(?:- {_RUNTIME_WORKSPACE_PATH}/uploads/.+\n?)+)$"
 )
 
 
@@ -1923,13 +1930,20 @@ def _project_conversation_references(content: str) -> tuple[str, tuple[dict[str,
 
 
 def _validate_attachment_owners(
-    binding_id: str, attachments: tuple[dict[str, str | int], ...]
+    binding_id: str,
+    attachments: tuple[dict[str, str | int], ...],
+    *,
+    workspace_root: str | None = None,
 ) -> None:
     """Reject private attachment paths belonging to another conversation."""
 
     for item in attachments:
         matched = _ATTACHMENT_PATH.fullmatch(str(item.get("path") or ""))
-        if matched is None or matched.group("owner") != binding_id:
+        if (
+            matched is None
+            or matched.group("owner") != binding_id
+            or (workspace_root is not None and matched.group("workspace_root") != workspace_root)
+        ):
             raise DomainError("AGENT_ATTACHMENT_INVALID", "附件不属于当前会话，请重新上传", 422)
 
 
@@ -2010,7 +2024,11 @@ def upload_attachment(
         attachment_owner_id=owner_id,
     )
     matched_path = _ATTACHMENT_PATH.fullmatch(path)
-    if matched_path is None or matched_path.group("owner") != owner_id:
+    if (
+        matched_path is None
+        or matched_path.group("owner") != owner_id
+        or matched_path.group("workspace_root") != handle.workspace_root
+    ):
         raise DomainError("RUNTIME_PROTOCOL_ERROR", "OpenHands 返回了无效附件路径", 502)
     # A conversation-bound upload is safe to preview before the user sends it.
     # Persist a pending projection so the file endpoint can authorize this exact

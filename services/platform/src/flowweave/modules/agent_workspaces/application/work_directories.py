@@ -489,16 +489,31 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
             )
         )
     )
-    if version_ids and db.scalar(
-        select(AgentConversationBinding.id)
-        .where(AgentConversationBinding.work_directory_version_id.in_(version_ids))
-        .limit(1)
-    ):
-        raise DomainError(
-            "AGENT_WORK_DIRECTORY_IN_USE",
-            "工作目录仍被会话引用，请先删除相关会话",
-            409,
+    # A work-directory is the owner-facing unit in the Agent Workspace UI.
+    # Deleting it must therefore remove every Conversation frozen against any
+    # of its versions, rather than leaving an unusable directory behind and
+    # asking the user to discover and remove each conversation separately.
+    # Import lazily to preserve the host/session dependency direction.
+    if version_ids:
+        from flowweave.modules.agent_sessions.application import conversations
+
+        binding_ids = list(
+            db.scalars(
+                select(AgentConversationBinding.id)
+                .where(
+                    AgentConversationBinding.workspace_id == workspace_id,
+                    AgentConversationBinding.work_directory_version_id.in_(version_ids),
+                )
+                .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
+            )
         )
+        for binding_id in binding_ids:
+            conversations.delete_conversation(
+                db,
+                workspace_id,
+                binding_id,
+                f"delete-work-directory:{work_directory_id}:{binding_id}",
+            )
     if version_ids:
         db.execute(
             delete(AgentWorkDirectoryPath).where(AgentWorkDirectoryPath.version_id.in_(version_ids))

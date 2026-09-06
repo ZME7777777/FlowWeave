@@ -326,10 +326,11 @@ function stringValues(value: unknown): string[] {
 }
 
 function ComposerCapabilityAutocomplete({
-  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onManageCapabilities, onNativeAction,
+  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction,
 }: {
   draft: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
   onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onDropFiles?: (files: File[]) => void; onDropWorkspaceFiles?: (paths: string[]) => void; onSubmit: () => void;
+  onDirectSubmit?: () => void;
   onManageCapabilities?: () => void;
   onNativeAction?: (action: NativeComposerAction) => void;
 }) {
@@ -389,6 +390,11 @@ function ComposerCapabilityAutocomplete({
   }}>
     <textarea ref={input} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+        event.preventDefault();
+        onDirectSubmit?.();
+        return;
+      }
       if (hasMenu && event.key === 'Escape') { onDraftChange(draft.slice(0, -trigger!.query.length - 1)); return; }
       if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
         event.preventDefault();
@@ -1473,6 +1479,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [confirmationReason, setConfirmationReason] = useState('');
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [pendingDirectSend, setPendingDirectSend] = useState<QueuedMessage>();
   const [pendingRewrite, setPendingRewrite] = useState<{ eventId: string; content: string }>();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -2063,7 +2070,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setCondensationStatus(current => current ? { ...current, state: 'failed', message } : current);
     },
   });
-  const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: () => { refresh(); onHostStateChanged?.(); }, onError: error => { setTurnState('running'); reportOperationError(selected?.id, error); } });
+  const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: () => { refresh(); onHostStateChanged?.(); }, onError: error => {
+    if (pendingDirectSend) {
+      setDraft(pendingDirectSend.content);
+      setAttachments(pendingDirectSend.items);
+      setReferences(pendingDirectSend.references);
+      setPendingDirectSend(undefined);
+    }
+    setTurnState('running');
+    reportOperationError(selected?.id, error);
+  } });
   const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); setTurnState('running'); refresh(); onHostStateChanged?.(); }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
   const decideConfirmation = useMutation({
     mutationFn: (accept: boolean) => api.decideConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
@@ -2124,12 +2140,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [pendingMigratedSend, selected?.id, send]);
   useEffect(() => {
     if (turnState !== 'pausing' || !inputReadinessQuery.data?.ready) return;
-    if (pendingRewrite) {
+    if (pendingDirectSend) {
+      const message = pendingDirectSend;
+      setPendingDirectSend(undefined);
+      if (selected?.streaming_callback_ready) send.mutate({ ...message, bindingId: selected.id });
+      else migrateStreaming.mutate(message);
+    } else if (pendingRewrite) {
       const request = pendingRewrite;
       setPendingRewrite(undefined);
       rewrite.mutate(request);
     } else setTurnState('paused');
-  }, [inputReadinessQuery.data?.ready, pendingRewrite, rewrite, turnState]);
+  }, [inputReadinessQuery.data?.ready, migrateStreaming, pendingDirectSend, pendingRewrite, rewrite, selected, send, turnState]);
   const requestRewrite = useCallback((eventId: string, content: string) => {
     if (turnState === 'running') {
       setPendingRewrite({ eventId, content });
@@ -2192,17 +2213,40 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     else setQueuedMessages(items => [...items, message]);
   }, [attachments, bootstrap, canBootstrap, canWrite, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, references, selected, send, turnState]);
+  const sendDraftDirectly = useCallback(() => {
+    const content = draft.trim();
+    if ((!content && !attachments.length && !references.length) || !composerScope || conversationDraft
+      || !canWrite || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
+    const message = { id: randomId(), scope: composerScope, content, items: attachments, references };
+    setDraft('');
+    setAttachments([]);
+    setReferences([]);
+    setOperationError(undefined);
+    if (turnState === 'running') {
+      setPendingDirectSend(message);
+      interrupt.mutate();
+      return;
+    }
+    if (turnState === 'idle') {
+      if (selected?.streaming_callback_ready) send.mutate({ ...message, bindingId: selected.id });
+      else migrateStreaming.mutate(message);
+      return;
+    }
+    setDraft(content);
+    setAttachments(attachments);
+    setReferences(references);
+  }, [attachments, canWrite, composerScope, conversationDraft, draft, interrupt, migrateStreaming, pendingMigratedSend, references, selected, send, turnState]);
   useEffect(() => {
-    if (turnState !== 'idle' || !queuedMessages.length || send.isPending || migrateStreaming.isPending || pendingMigratedSend) return;
+    if (turnState !== 'idle' || pendingDirectSend || !queuedMessages.length || send.isPending || migrateStreaming.isPending || pendingMigratedSend) return;
     const [next, ...rest] = queuedMessages;
     setQueuedMessages(rest);
     if (selected?.streaming_callback_ready) send.mutate({ ...next, bindingId: selected.id });
     else migrateStreaming.mutate(next);
-  }, [migrateStreaming, pendingMigratedSend, queuedMessages, selected, send, turnState]);
+  }, [migrateStreaming, pendingDirectSend, pendingMigratedSend, queuedMessages, selected, send, turnState]);
   useEffect(() => {
-    if (turnState === 'pausing' || !queuedMessages.length || !inputReadinessQuery.data?.ready || send.isPending) return;
+    if (turnState === 'pausing' || pendingDirectSend || !queuedMessages.length || !inputReadinessQuery.data?.ready || send.isPending) return;
     setTurnState('idle');
-  }, [inputReadinessQuery.data?.ready, queuedMessages.length, send.isPending, turnState]);
+  }, [inputReadinessQuery.data?.ready, pendingDirectSend, queuedMessages.length, send.isPending, turnState]);
 
   if (workspaceQuery.isLoading) return <main className="agent-workbench-loading">正在打开 Agent 工作台…</main>;
   if (workspaceQuery.error || !workspace) {
@@ -2333,7 +2377,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onNavigate(host.conversationPath(bindingId));
   };
   const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
-    if (!api.deleteWorkDirectory || !await dialog.confirm({ title: `删除工作区“${directory.display_name}”？`, message: '仅删除工作区目录记录，已有会话仍会保留其冻结目录版本；正在使用该目录的会话会阻止删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    if (!api.deleteWorkDirectory || !await dialog.confirm({ title: `删除工作区“${directory.display_name}”？`, message: '这会永久删除该工作区及其中所有会话、附件和冻结目录版本，无法恢复。', confirmLabel: '确认删除', tone: 'danger' })) return;
     try {
       await api.deleteWorkDirectory(workspace!.id, directory.id);
       if (conversationDraft?.workDirectoryId === directory.id) setConversationDraft(undefined);
@@ -2367,7 +2411,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">
           <ShieldAlert size={17}/><div><b>当前上下文用量较低</b><p>Token {contextProgress?.usedLabel} / {contextProgress?.windowLabel}（{contextProgress?.percentage}%），事件 {activeEventCount.toLocaleString()} / {eventLimit.toLocaleString()}（{eventProgress}%）。现在压缩可能没有足够的可压缩区间，并且仍会调用摘要模型。</p><footer><button type="button" onClick={() => setCondensationConfirmationOpen(false)}>取消</button><button type="button" className="primary" onClick={() => condense.mutate()}>仍然压缩</button></footer></div>
         </section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（输入 $ 选择 Skill，/ 选择 OpenHands 原生能力、命令或 MCP）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={features.attachments && composerScope ? paths => { for (const path of paths) { void fetch(fileUrl(workspace.id, path, { bindingId: selected?.id, workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId, download: false })).then(async response => { if (!response.ok) throw new Error('无法读取工作区文件，请稍后重试。'); const blob = await response.blob(); const filename = path.split('/').filter(Boolean).pop() || 'attachment'; upload.mutate({ file: new File([blob], filename, { type: blob.type || 'application/octet-stream' }), scope: composerScope }); }).catch(error => reportOperationError(composerScope, error)); } } : undefined} onSubmit={enqueueDraft} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={features.attachments && composerScope ? paths => { for (const path of paths) { void fetch(fileUrl(workspace.id, path, { bindingId: selected?.id, workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId, download: false })).then(async response => { if (!response.ok) throw new Error('无法读取工作区文件，请稍后重试。'); const blob = await response.blob(); const filename = path.split('/').filter(Boolean).pop() || 'attachment'; upload.mutate({ file: new File([blob], filename, { type: blob.type || 'application/octet-stream' }), scope: composerScope }); }).catch(error => reportOperationError(composerScope, error)); } } : undefined} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         <footer>

@@ -1410,6 +1410,53 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
         assert not upload_path.exists()
 
 
+def test_deleting_work_directory_cascades_its_conversations(settings, db_session_factory):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        (project_root / "service").mkdir()
+        directory = work_directories.create_work_directory(db, item.id, "服务", ("service",))
+        first = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "delete-directory-first"
+        )
+        second = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "delete-directory-second"
+        )
+        for binding_id in (first["id"], second["id"]):
+            binding = db.get(AgentConversationBinding, binding_id)
+            assert binding is not None
+            binding.work_directory_version_id = directory["current_version"]["id"]
+            binding.working_directory = "/runtime/workspace/project/service"
+        db.flush()
+
+        work_directories.delete_work_directory(db, item.id, directory["id"])
+
+        assert db.get(AgentWorkDirectory, directory["id"]) is None
+        assert db.get(AgentConversationBinding, first["id"]) is None
+        assert db.get(AgentConversationBinding, second["id"]) is None
+
+
+def test_agent_workspace_accepts_user_root_attachment_paths():
+    owner_id = str(uuid4())
+    workspace_root = "/runtime/workspace/project/users/00000000-0000-0000-0000-000000000002"
+    path = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--pasted.png"
+    attachments = ({"path": path, "image_data_url": "data:image/png;base64,aW1hZ2U="},)
+
+    conversations.validate_attachment_owners(
+        owner_id, attachments, workspace_root=workspace_root
+    )
+    prompt, image_urls = conversations.message_payload("", attachments)
+
+    assert path in prompt
+    assert image_urls == ("data:image/png;base64,aW1hZ2U=",)
+    with pytest.raises(DomainError, match="附件不属于当前会话"):
+        conversations.validate_attachment_owners(
+            owner_id,
+            attachments,
+            workspace_root="/runtime/workspace/project/users/00000000-0000-0000-0000-000000000003",
+        )
+
+
 def test_agent_workspace_multi_directory_files_are_scoped_and_frozen(settings, db_session_factory):
     with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
         item = _ready_workspace_for_conversation(db)
