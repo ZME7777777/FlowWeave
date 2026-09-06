@@ -209,9 +209,10 @@ test('environment publishing reopens as progress instead of reconnecting the ter
   expect(terminalAttachments).toBe(0);
 });
 
-test('closing an environment terminal only hides its existing connection', async ({ page }) => {
+test('environment publishing ignores IME confirmation before a separate Enter submits', async ({ page }) => {
   let terminalAttachments = 0;
   const terminalInputs: string[] = [];
+  const publishedDescriptions: string[] = [];
   const environment = {
     id: 'environment-running', name: '持续连接终端环境', description: '', row_version: 1, versions: [],
     active_sessions: [{
@@ -221,9 +222,19 @@ test('closing an environment terminal only hides its existing connection', async
     }],
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'terminal-user', username: 'terminal-user', role: 'USER', is_super_admin: false }),
+  }));
+  await page.route('**/api/v1/environment-setup-sessions/*/publish', async route => {
+    publishedDescriptions.push((route.request().postDataJSON() as { description?: string }).description ?? '');
+    await route.fulfill({ status: 202, contentType: 'application/json', body: '{}' });
+  });
   await page.route('**/api/v1/terminal-environments**', async route => {
     const request = route.request();
-    if (request.method() === 'GET' && new URL(request.url()).pathname.endsWith('/terminal-environments')) {
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && pathname.endsWith('/terminal-environments')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([environment]) });
       return;
     }
@@ -240,7 +251,8 @@ test('closing an environment terminal only hides its existing connection', async
   });
 
   await login(page);
-  await page.getByRole('button', { name: '终端环境' }).click();
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '终端环境' }).click();
   await page.getByRole('button', { name: '继续配置' }).click();
   await expect.poll(() => terminalAttachments).toBe(1);
   const terminalScreen = page.locator('.terminal-screen .xterm-screen');
@@ -260,6 +272,44 @@ test('closing an environment terminal only hides its existing connection', async
   });
   expect(copiedTerminalSelection.copied).toContain('nnected');
   expect(copiedTerminalSelection.prevented).toBe(true);
+  await page.getByRole('button', { name: '发布环境版本' }).click();
+  const publishDialog = page.getByRole('alertdialog', { name: '发布环境版本' });
+  const publishDescription = publishDialog.getByLabel('版本说明（可选）');
+  await publishDescription.fill('cli');
+  await publishDescription.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
+  await expect(publishDialog).toBeVisible();
+  await expect(publishDescription).toHaveValue('cli');
+  expect(publishedDescriptions).toEqual([]);
+  await publishDescription.press('Enter');
+  await expect.poll(() => publishedDescriptions).toEqual(['cli']);
+});
+
+test('closing an environment terminal only hides its existing connection', async ({ page }) => {
+  let terminalAttachments = 0;
+  const environment = {
+    id: 'environment-hide-terminal', name: '可隐藏终端环境', description: '', row_version: 1, versions: [],
+    active_sessions: [{
+      id: 'setup-session-hide-terminal', environment_id: 'environment-hide-terminal', base_version_id: null,
+      state: 'RUNNING', base_image_reference: 'flowweave-openhands-runtime:1',
+      expires_at: new Date(Date.now() + 60_000).toISOString(), error_detail: null,
+    }],
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'terminal-user', username: 'terminal-user', role: 'USER', is_super_admin: false }),
+  }));
+  await page.route('**/api/v1/terminal-environments', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([environment]),
+  }));
+  await page.routeWebSocket('**/api/v1/environment-setup-sessions/*/terminal*', () => { terminalAttachments += 1; });
+
+  await login(page);
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '终端环境' }).click();
+  await page.getByRole('button', { name: '继续配置' }).click();
+  await expect.poll(() => terminalAttachments).toBe(1);
   await page.getByRole('button', { name: '关闭视图' }).click();
   await page.getByRole('button', { name: '继续配置' }).click();
   await expect.poll(() => terminalAttachments).toBe(1);
@@ -885,6 +935,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('.conversation-activity-group');
+  await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([/\d{2}:\d{2}/, /\d{2}:\d{2}/]);
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await completedTurn.getByRole('button', { name: '复制消息' }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('检查工作目录');

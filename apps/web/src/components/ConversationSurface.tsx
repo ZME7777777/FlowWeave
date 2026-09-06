@@ -618,6 +618,17 @@ function formatEventTime(raw: unknown): string {
   }).format(value);
 }
 
+/** Format the wall-clock time attached to an actual OpenHands message event. */
+function formatMessageTime(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  const normalized = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : `${raw}Z`;
+  const value = Date.parse(normalized);
+  if (!Number.isFinite(value)) return undefined;
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(value);
+}
+
 function condensationReason(item: Item): string {
   const detail = item.event.payload.condensation_reason_detail;
   if (typeof detail === 'string' && detail.trim()) return detail;
@@ -824,6 +835,7 @@ function AgentReply({ event, content, onFork, onPreviewCandidateFile }: {
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
 }) {
   const eventId = event.id;
+  const timestamp = formatMessageTime(event.payload.timestamp);
   const candidateMessage = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction'
     ? candidateOutputMessage(content)
     : { businessConclusion: content };
@@ -831,7 +843,10 @@ function AgentReply({ event, content, onFork, onPreviewCandidateFile }: {
     {candidateMessage.businessConclusion ? <MessageMarkdown>{candidateMessage.businessConclusion}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
-    {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
+    {(timestamp || onFork) && <footer className="conversation-message-meta assistant">
+      {timestamp && <time dateTime={typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined}>{timestamp}</time>}
+      {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
+    </footer>}
   </article>;
 }
 
@@ -1071,8 +1086,9 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
           finishedAt,
           isCurrent && !turn.assistant && !failures.length,
         );
+        const userTimestamp = turn.user ? formatMessageTime(turn.user.event.payload.timestamp) : undefined;
         return <section className="conversation-turn" key={turn.id}>
-          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></article>)}
+          {turn.user && (editingEventId === turn.user.event.id ? <form data-user-event-id={turn.user.event.id} className="conversation-message user conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form> : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>)}
           {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup

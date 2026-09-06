@@ -45,7 +45,14 @@ export function ProductDialogProvider({ children }: { children: ReactNode }) {
     <section className={`modal product-dialog ${request.tone === 'danger' ? 'danger-dialog' : ''}`} role="alertdialog" aria-modal="true" aria-labelledby="product-dialog-title" aria-describedby="product-dialog-message">
       <header><span className="product-dialog-icon">{request.kind === 'prompt' ? <FolderPlus size={20}/> : request.tone === 'danger' ? <AlertTriangle size={20}/> : <HelpCircle size={20}/>}</span><div><span className="eyebrow">{request.kind === 'prompt' ? 'INPUT REQUIRED' : 'PLEASE CONFIRM'}</span><h2 id="product-dialog-title">{request.title}</h2></div><button type="button" className="ghost product-dialog-close" aria-label="关闭对话框" onClick={() => settle(request.kind === 'confirm' ? false : null)}><X size={17}/></button></header>
       <p id="product-dialog-message">{request.message}</p>
-      {request.kind === 'prompt' && <label>{request.inputLabel}<input autoFocus value={value} placeholder={request.placeholder} onChange={event => setValue(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); confirm(); } }}/></label>}
+      {request.kind === 'prompt' && <label>{request.inputLabel}<input autoFocus value={value} placeholder={request.placeholder} onChange={event => setValue(event.target.value)} onKeyDown={event => {
+        // Enter confirms an IME candidate before it is a form submission. Do
+        // not publish/create until composition has ended and the user presses
+        // a separate Enter key.
+        if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        confirm();
+      }}/></label>}
       <footer><button type="button" className="secondary" onClick={() => settle(request.kind === 'confirm' ? false : null)}>{request.cancelLabel ?? '取消'}</button><button type="button" className={request.tone === 'danger' ? 'danger product-dialog-confirm' : 'primary'} disabled={request.kind === 'prompt' && !value.trim()} onClick={confirm}>{request.confirmLabel ?? '确认'}</button></footer>
     </section>
   </div>}</DialogContext.Provider>;

@@ -1,5 +1,13 @@
 import { expect, test } from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'capability-user', username: 'capability-user', role: 'USER', is_super_admin: false }),
+  }));
+});
+
 test('Context module opens a titled text upload form', async ({ page }) => {
   await page.route('**/api/v1/capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
@@ -65,6 +73,9 @@ test('Context Bundle is parsed before its editable directory is published', asyn
   await dialog.getByRole('option', { name: 'guides/02.md' }).click();
   await dialog.getByRole('button', { name: '确认并发布' }).click();
   await expect(page.getByRole('status')).toContainText('已发布 Context“资料包”');
+  await expect(page.locator('.capability-notice-layer')).toHaveCSS('height', '0px');
+  await page.getByRole('button', { name: '关闭成功提示' }).click();
+  await expect(page.getByRole('status')).toHaveCount(0);
   expect(confirmedManifest).toEqual({
     entrypoint: 'guides/02.md', conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS', documents: [
       { path: 'guides/02.md', title: '最终章节' }, { path: 'README.md', title: '总览' },

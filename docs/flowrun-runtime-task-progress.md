@@ -2506,6 +2506,14 @@ WebSocket 统一使用 URL 绑定的 `0600` 会话文件，登录密码不会进
 Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 API 返回路径，不再硬编码旧项目根。未修改
 平台认证、调度、Runtime 或 OpenHands 实现。
 
+### FR-171 会话消息时间与能力提示布局 — DONE
+
+依赖：`FR-170`。
+
+目标：在共享 Agent 会话视图中仅使用 OpenHands 正式消息事件的 timestamp，分别显示用户发送与 Agent 最终回复的墙钟时间；缺失或非法 timestamp 不得猜测。能力仓库的成功提示必须提供可访问的关闭入口，并以不占用数据流高度的浮层呈现，保证能力列表与分页继续保有自身的可滚动可见区域。通用输入对话框必须在中文等 IME 组合输入期间忽略 Enter，避免环境版本说明的候选词确认误触发发布。不得修改 OpenHands、Conversation/Event 持久化、Runtime、FlowRun 或能力导入契约。
+
+完成：会话界面使用 OpenHands 正式 user／assistant 事件的 timestamp 显示 `HH:mm`，缺失或无效时间不渲染且不影响用户消息操作。能力仓库成功提示改为可关闭、带焦点样式的 sticky 零高度浮层，因此不会挤占列表与分页；通用输入对话框在 `isComposing` 或 `keyCode=229` 时忽略 Enter，中文候选词确认后需独立 Enter 才会提交发布。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2541,6 +2549,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-171 | Web ESLint、TypeScript typecheck、production build；能力仓库 Context Bundle 定向 Playwright（1 passed）；终端环境发布 IME 定向 Playwright（1 passed）；任务状态唯一性与 `git diff --check` | PASS：发送与最终回复分别以正式 OpenHands message timestamp 呈现 `HH:mm`，无有效 timestamp 时不会猜测也不会隐藏复制／编辑操作。成功提示有可访问关闭入口，浮层高度为 0px，不再压缩能力列表分页区域。中文 IME 候选确认不会调用发布接口，独立 Enter 才提交。未修改 OpenHands、Conversation/Event 持久化、Runtime、FlowRun 或能力导入契约。 |
 | 2026-09-05 | FR-170 | 受影响 Python Ruff check、`py_compile`、定向 Pyright（0 errors）、Alembic head、任务状态唯一性与 `git diff --check`；Runtime Provider／Sandbox／wakeup 定向 pytest | PASS（静态）：Worker 可订阅 `/v1/runtimes/events`，未授权 bearer 继续拒绝；回归覆盖 Attempt Runtime 的 TTL/hard-expiry 保留、物理丢失不静默重建、永久 FlowRun 删除回收 Attempt Runtime。定向 pytest 未执行断言：本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在 collection setup 失败；未伪记为通过。生产将使用已提交源码镜像重建并验证 Worker 订阅、服务日志与现有会话不被删除。 |
 | 2026-09-05 | FR-169 | CLI Node 测试（10 passed）、语法检查与 typecheck；npm pack 与隔离安装 smoke；全部 FlowWeave Skill `quick_validate.py`（11 passed）；Alembic head、任务状态唯一性、敏感值扫描与 `git diff --check` | PASS：真实本地测试服务验证登录 Cookie 获取、`0600` 会话文件、HTTP／WebSocket 自动鉴权、跨 base URL 拒绝和退出清理；调度创建、CAS 暂停／恢复、手动触发与删除映射通过。npm 包清单仅含 README、CLI 入口和 package metadata，隔离安装后的 `flowweave --help` 包含 auth／schedule；唯一 Alembic head 为 `0097_record_ws_path`，无 `CURRENT` 或下一切片。 |
 | 2026-09-05 | FR-168 | Web ESLint、TypeScript typecheck、production build；Agent 工作台定向 Playwright；本地真实页面 DOM／视觉核对；Alembic head、任务状态唯一性与 `git diff --check` | PASS：工作区分组的新建会话和删除按钮均为 26×26、0px 边框、透明背景和统一绿色；删除按钮不再常驻红色背景，悬停与键盘聚焦反馈保留。定向 Playwright 1 passed，Web 三项检查通过；未改变会话或工作区行为。 |
