@@ -64,18 +64,24 @@ class FlowRunSchedule(Base):
 
     __tablename__ = "flow_run_schedules"
     __table_args__ = (
-        CheckConstraint("run_mode IN ('MANUAL', 'AUTOMATIC')", name="ck_schedule_run_mode"),
-        CheckConstraint("interval_minutes >= 1", name="ck_schedule_interval_positive"),
+        CheckConstraint(
+            "cron_expression IS NULL OR length(cron_expression) > 0",
+            name="ck_schedule_cron_present",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     flow_definition_id: Mapped[str] = mapped_column(String(36), index=True)
     environment_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    # The selected FlowRun is protected while this schedule exists.  Its
+    # immutable snapshot plus plan_json form the schedule's execution master.
+    source_flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
     name: Mapped[str] = mapped_column(String(220))
     run_mode: Mapped[str] = mapped_column(String(20), index=True)
     start_node_key: Mapped[str] = mapped_column(String(100))
     plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     interval_minutes: Mapped[int] = mapped_column(Integer)
+    cron_expression: Mapped[str | None] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # A future configuration-update command increments this generation. Each

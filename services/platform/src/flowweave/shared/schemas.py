@@ -470,25 +470,16 @@ class NodeRunStart(ApiModel):
 
 
 class FlowRunScheduleWrite(ApiModel):
-    """The independently managed configuration for a recurring FlowRun."""
+    """A recurring execution frozen from one ready continuous-run record."""
 
     name: str = Field(min_length=1, max_length=220)
-    flow_definition_id: str = Field(min_length=1, max_length=36)
-    environment_version_id: str = Field(min_length=1, max_length=36)
-    run_mode: Literal["MANUAL", "AUTOMATIC"]
-    start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
-    interval_minutes: int = Field(ge=1, le=43_200)
-    startup_prompt: str = Field(min_length=1, max_length=200_000)
-    agent_preset: AgentPresetWrite
-    input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
+    source_flow_run_id: str = Field(min_length=1, max_length=36)
+    cron_expression: str = Field(min_length=9, max_length=120)
 
     @model_validator(mode="after")
     def validate_input_urls(self) -> FlowRunScheduleWrite:
         self.name = self.name.strip()
-        self.input_urls = {
-            field_key: _http_url(value, f"input URL for {field_key}")
-            for field_key, value in self.input_urls.items()
-        }
+        self.cron_expression = " ".join(self.cron_expression.split())
         return self
 
 

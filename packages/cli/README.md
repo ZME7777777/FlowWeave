@@ -21,7 +21,7 @@ flowweave health --ready
 
 读取 FlowRun 中的记录使用 `flowweave run node <run-id> --node <node-run-id>`；只有用户明确要求时才能执行 `node-copy` 或 `node-delete`。暂停或恢复 Runtime 前，必须先读取 `run runtime`，将返回的 `generation` 与 session `row_version` 写入 `expected_generation`、`expected_session_row_version` 后传给 `run pause` 或 `run resume`。供应商上游余额/用量使用 `flowweave model usage <provider-id>`，它可能依赖该供应商的有效 API 凭据。
 
-周期任务使用 `schedule list/create/pause/resume/trigger/delete`。创建请求必须使用在线 `FlowRunScheduleWrite` schema；暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除已有执行记录的调度会被平台拒绝。
+周期任务使用 `schedule list/create/pause/resume/trigger/delete`。创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、已就绪连续运行记录的 `source_flow_run_id` 和五段 `cron_expression`；节点、环境、输入和启动提示词由该记录的冻结母版提供。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除已有执行记录的调度会被平台拒绝。
 
 `api`、`upload`、`ws` 是完整契约入口：任意当前或未来的 REST、multipart、WebSocket 原子接口均可直接调用，不需要等待 CLI 发布。三者都会使用当前 `auth login` 会话；不得用 `--header` 手工传 Cookie。写操作支持 `--dry-run`，并可使用 `-H 'Idempotency-Key: …'` 传入一次性幂等键。对于没有快捷命令的新接口，先运行 `flowweave openapi --paths`，再通过通用命令调用。
 

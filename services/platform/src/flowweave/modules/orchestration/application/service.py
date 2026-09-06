@@ -105,7 +105,6 @@ from flowweave.shared.schemas import (
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
-    AutomaticNodePlanWrite,
     AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
@@ -2015,6 +2014,118 @@ def _schedule_agent_preset(plan: dict[str, Any]) -> AgentPresetWrite:
     return AgentPresetWrite.model_validate({field: plan.get(field) for field in fields})
 
 
+_CRON_BOUNDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
+
+
+def _cron_values(field: str, lower: int, upper: int) -> set[int]:
+    """Parse one standard five-field cron item without accepting aliases.
+
+    Keeping this small parser in the control plane makes the persisted
+    expression deterministic and avoids a scheduler-library-specific dialect.
+    """
+
+    values: set[int] = set()
+    for item in field.split(","):
+        base, separator, step_text = item.partition("/")
+        if separator:
+            if not step_text.isdigit() or int(step_text) < 1:
+                raise ValueError("cron step must be a positive integer")
+            step = int(step_text)
+        else:
+            step = 1
+        if base == "*":
+            start, end = lower, upper
+        elif "-" in base:
+            start_text, end_text = base.split("-", 1)
+            if not start_text.isdigit() or not end_text.isdigit():
+                raise ValueError("cron range is invalid")
+            start, end = int(start_text), int(end_text)
+        elif base.isdigit():
+            start = end = int(base)
+        else:
+            raise ValueError("cron field is invalid")
+        if start < lower or end > upper or start > end:
+            raise ValueError("cron value is outside its field range")
+        values.update(range(start, end + 1, step))
+    # Standard cron accepts both 0 and 7 for Sunday.
+    if lower == 0 and upper == 7 and 7 in values:
+        values.remove(7)
+        values.add(0)
+    return values
+
+
+def _parse_cron(expression: str) -> tuple[set[int], set[int], set[int], set[int], set[int]]:
+    fields = expression.split()
+    if len(fields) != 5:
+        raise ValueError("cron must contain minute, hour, day-of-month, month and day-of-week")
+    return cast(
+        tuple[set[int], set[int], set[int], set[int], set[int]],
+        tuple(
+            _cron_values(field, *bounds) for field, bounds in zip(fields, _CRON_BOUNDS, strict=True)
+        ),
+    )
+
+
+def _next_cron_at(expression: str, after: datetime) -> datetime:
+    minute, hour, day, month, weekday = _parse_cron(expression)
+    candidate = after.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    # A one-year bound prevents a malformed but syntactically valid expression
+    # from turning a Worker scan into an unbounded loop.
+    for _ in range(366 * 24 * 60):
+        cron_weekday = (candidate.weekday() + 1) % 7
+        day_matches = candidate.day in day
+        weekday_matches = cron_weekday in weekday
+        day_restricted = len(day) != 31
+        weekday_restricted = len(weekday) != 7
+        calendar_matches = (
+            day_matches and weekday_matches
+            if not day_restricted or not weekday_restricted
+            else day_matches or weekday_matches
+        )
+        if (
+            candidate.minute in minute
+            and candidate.hour in hour
+            and candidate.month in month
+            and calendar_matches
+        ):
+            return candidate
+        candidate += timedelta(minutes=1)
+    raise ValueError("cron has no matching time in the next year")
+
+
+def list_flow_run_schedule_templates(db: Session) -> list[dict[str, Any]]:
+    """Only ready continuous records can become a schedule master."""
+
+    runs = list(
+        db.scalars(
+            select(FlowRun)
+            .where(FlowRun.run_mode == "AUTOMATIC")
+            .order_by(FlowRun.started_at.desc(), FlowRun.id.desc())
+        )
+    )
+    records: list[dict[str, Any]] = []
+    for run in runs:
+        plan = dict(run.automation_plan_json or {})
+        readiness = cast(dict[str, Any], plan.get("readiness") or {})
+        if (
+            not readiness.get("ready")
+            or not run.active_snapshot_id
+            or not run.environment_version_id
+        ):
+            continue
+        records.append(
+            {
+                "id": run.id,
+                "name": run.name,
+                "flow_definition_id": run.flow_definition_id,
+                "flow_name": _active_snapshot(db, run).definition_json.get("name"),
+                "state": run.state,
+                "run_no": run.run_no,
+            }
+        )
+    return records
+
+
 def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
     occurrences = list(
         db.scalars(
@@ -2045,10 +2156,12 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
         "id": schedule.id,
         "flow_definition_id": schedule.flow_definition_id,
         "environment_version_id": schedule.environment_version_id,
+        "source_flow_run_id": schedule.source_flow_run_id,
         "name": schedule.name,
         "run_mode": schedule.run_mode,
         "start_node_key": schedule.start_node_key,
         "interval_minutes": schedule.interval_minutes,
+        "cron_expression": schedule.cron_expression,
         "status": schedule.status,
         "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
         "config_version": schedule.config_version,
@@ -2062,84 +2175,45 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
 
 
 def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict[str, Any]:
-    flow = load_flow(db, payload.flow_definition_id)
-    environment = lock_referenceable_version(db, payload.environment_version_id)
-    if environment is None:
+    source = _run(db, payload.source_flow_run_id)
+    plan = copy.deepcopy(dict(source.automation_plan_json or {}))
+    readiness = cast(dict[str, Any], plan.get("readiness") or {})
+    if source.run_mode != "AUTOMATIC" or not readiness.get("ready"):
         raise DomainError(
-            "RUN_ENVIRONMENT_VERSION_INVALID",
-            "The selected schedule Environment Version is not READY",
+            "SCHEDULE_TEMPLATE_NOT_READY",
+            "Schedule source must be a ready continuous-run record",
             422,
-            {"environment_version_id": payload.environment_version_id},
+            {"source_flow_run_id": source.id},
         )
-    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
-    definition = _snapshot_definition(db, flow.id, environment_version_id=environment.id)
-    reachable = _reachable_node_keys(definition, payload.start_node_key)
-    first = next(
-        item for item in definition["nodes"] if item["instance_key"] == payload.start_node_key
-    )
-    input_fields = {
-        str(item.get("field_key") or ""): str(item.get("data_type") or "")
-        for item in cast(dict[str, Any], first.get("asset") or {}).get("inputs", [])
-    }
-    unknown = sorted(set(payload.input_urls) - set(input_fields))
-    non_url = sorted(key for key in payload.input_urls if input_fields.get(key) != "URL")
-    if unknown or non_url:
+    if not source.environment_version_id or not source.active_snapshot_id:
         raise DomainError(
-            "SCHEDULE_INPUT_INVALID",
-            "schedule inputs must be declared URL inputs of its start node",
-            422,
-            {"unknown_fields": unknown, "non_url_fields": non_url},
+            "SCHEDULE_TEMPLATE_INVALID", "Schedule source is missing its frozen runtime", 409
         )
-    if payload.run_mode == "AUTOMATIC":
-        # A recurring continuous run has no later draft-editing step.  Verify
-        # that every reachable node can receive each declared input from the
-        # frozen graph or the schedule's start-node URL configuration before
-        # accepting the schedule.  This prevents a Worker from creating an
-        # otherwise valid parent FlowRun only to discover an unstartable child
-        # automatic plan.
-        reachable_set = set(reachable)
-        missing_by_node: dict[str, list[str]] = {}
-        for node in definition["nodes"]:
-            node_key = str(node.get("instance_key") or "")
-            if node_key not in reachable_set:
-                continue
-            asset = cast(dict[str, Any], node.get("asset") or {})
-            declared = {
-                str(field.get("field_key") or "")
-                for field in cast(list[dict[str, Any]], asset.get("inputs") or [])
-                if str(field.get("field_key") or "")
-            }
-            mapped = {
-                str(mapping.get("target_input_key") or "")
-                for mapping in definition.get("port_mappings", [])
-                if str(mapping.get("target_instance_key") or "") == node_key
-                and str(mapping.get("source_instance_key") or "") in reachable_set
-            }
-            explicit = set(payload.input_urls) if node_key == payload.start_node_key else set()
-            missing = sorted(declared - mapped - explicit)
-            if missing:
-                missing_by_node[node_key] = missing
-        if missing_by_node:
-            raise DomainError(
-                "SCHEDULE_AUTOMATIC_INPUT_REQUIRED",
-                "continuous schedules require every reachable input to be mapped or configured",
-                422,
-                {"missing_inputs": missing_by_node},
-            )
-    preset = _freeze_draft_agent_preset(db, payload.agent_preset.model_dump())
+    snapshot = _active_snapshot(db, source)
+    try:
+        next_run_at = _next_cron_at(payload.cron_expression, datetime.now(UTC))
+    except ValueError as exc:
+        raise DomainError("SCHEDULE_CRON_INVALID", str(exc), 422) from exc
     schedule = FlowRunSchedule(
-        flow_definition_id=flow.id,
-        environment_version_id=environment.id,
+        flow_definition_id=source.flow_definition_id,
+        environment_version_id=source.environment_version_id,
+        source_flow_run_id=source.id,
         name=payload.name,
-        run_mode=payload.run_mode,
-        start_node_key=payload.start_node_key,
-        interval_minutes=payload.interval_minutes,
-        next_run_at=datetime.now(UTC) + timedelta(minutes=payload.interval_minutes),
+        run_mode="AUTOMATIC",
+        start_node_key=str(plan.get("start_node_key") or ""),
+        # Retained only for historical rows; cron_expression is authoritative.
+        interval_minutes=1,
+        cron_expression=payload.cron_expression,
+        next_run_at=next_run_at,
         plan_json={
-            "startup_prompt": payload.startup_prompt,
-            "agent_preset": preset,
-            "input_urls": dict(payload.input_urls),
-            "reachable_node_keys": reachable,
+            "automation_plan": plan,
+            "snapshot": {
+                "schema_version": snapshot.schema_version,
+                "definition_json": copy.deepcopy(snapshot.definition_json),
+                "definition_hash": snapshot.definition_hash,
+                "runtime_manifest_json": copy.deepcopy(snapshot.runtime_manifest_json),
+                "runtime_manifest_hash": snapshot.runtime_manifest_hash,
+            },
         },
     )
     db.add(schedule)
@@ -2174,8 +2248,14 @@ def set_flow_run_schedule_state(
         )
     schedule.status = payload.status
     schedule.row_version += 1
-    if payload.status == "ACTIVE" and schedule.next_run_at is None:
-        schedule.next_run_at = datetime.now(UTC) + timedelta(minutes=schedule.interval_minutes)
+    if payload.status == "ACTIVE":
+        if not schedule.cron_expression:
+            raise DomainError(
+                "SCHEDULE_TEMPLATE_REQUIRED",
+                "Legacy schedules must be recreated from a ready record",
+                409,
+            )
+        schedule.next_run_at = _next_cron_at(schedule.cron_expression, datetime.now(UTC))
     finish(db)
     return _schedule_dict(db, schedule)
 
@@ -2278,8 +2358,12 @@ def scan_due_flow_run_schedules(db: Session) -> int:
             idempotency_key=f"materialize-flow-run-schedule:{occurrence.id}",
         )
         # Do not replay all missed wall-clock slots after an outage. One due slot
-        # becomes one auditable occurrence, then the next future cadence resumes.
-        schedule.next_run_at = now_utc + timedelta(minutes=schedule.interval_minutes)
+        # becomes one auditable occurrence, then the next cron slot resumes.
+        if not schedule.cron_expression:
+            schedule.status = "PAUSED"
+            schedule.next_run_at = None
+        else:
+            schedule.next_run_at = _next_cron_at(schedule.cron_expression, now_utc)
         schedule.row_version += 1
     db.flush()
     return len(schedules)
@@ -2301,66 +2385,8 @@ def process_flow_run_schedule_occurrence(
         occurrence.error_detail = "schedule was deleted before materialization"
         _finish_transaction(db, commit)
         return
-    plan = dict(schedule.plan_json or {})
     try:
-        parent = start_flow(
-            db,
-            schedule.flow_definition_id,
-            RunStart(
-                name=f"{schedule.name} · {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}",
-                environment_version_id=schedule.environment_version_id,
-            ),
-        )
-        run = _run(db, str(parent["id"]))
-        run.schedule_id = schedule.id
-        run.schedule_occurrence_id = occurrence.id
-        if schedule.run_mode == "MANUAL":
-            start_node_run(
-                db,
-                run.id,
-                schedule.start_node_key,
-                NodeRunStart(
-                    startup_mode="PROMPT",
-                    startup_prompt=str(plan.get("startup_prompt") or ""),
-                    input_urls=cast(dict[str, str], plan.get("input_urls") or {}),
-                    agent_preset=_schedule_agent_preset(dict(plan.get("agent_preset") or {})),
-                ),
-            )
-        else:
-            definition = _active_snapshot(db, run).definition_json
-            node_plans = {
-                key: {
-                    "startup_prompt": str(plan.get("startup_prompt") or ""),
-                    "agent_preset": _schedule_agent_preset(
-                        dict(plan.get("agent_preset") or {})
-                    ).model_dump(mode="json"),
-                    "gates": [],
-                    "artifact_ids": {},
-                    "input_urls": cast(dict[str, str], plan.get("input_urls") or {})
-                    if key == schedule.start_node_key
-                    else {},
-                }
-                for key in _reachable_node_keys(definition, schedule.start_node_key)
-            }
-            draft = create_nested_automatic_run_draft(
-                db,
-                run.id,
-                AutomaticRunDraftWrite(
-                    name=f"{schedule.name} · 连续运行",
-                    environment_version_id=schedule.environment_version_id,
-                    start_node_key=schedule.start_node_key,
-                    node_plans={
-                        key: AutomaticNodePlanWrite.model_validate(value)
-                        for key, value in node_plans.items()
-                    },
-                ),
-            )
-            start_automatic_run(
-                db,
-                str(draft["id"]),
-                AutomaticRunStartWrite(expected_row_version=int(draft["row_version"])),
-                f"start-scheduled-automatic:{occurrence.id}",
-            )
+        run = _materialize_scheduled_run(db, schedule, occurrence)
         occurrence.flow_run_id = run.id
         occurrence.state = "STARTED"
         schedule.last_run_at = datetime.now(UTC)
@@ -2369,6 +2395,88 @@ def process_flow_run_schedule_occurrence(
         occurrence.state = "FAILED"
         occurrence.error_detail = f"{exc.code}: {exc.message}"
     _finish_transaction(db, commit)
+
+
+def _materialize_scheduled_run(
+    db: Session, schedule: FlowRunSchedule, occurrence: FlowRunScheduleOccurrence
+) -> FlowRun:
+    """Create one independent FlowRun strictly from the frozen schedule master."""
+
+    if not schedule.source_flow_run_id:
+        raise DomainError("SCHEDULE_TEMPLATE_REQUIRED", "Schedule has no execution master", 409)
+    source = _run(db, schedule.source_flow_run_id)
+    template = dict(schedule.plan_json or {})
+    plan = copy.deepcopy(cast(dict[str, Any], template.get("automation_plan") or {}))
+    snapshot_template = cast(dict[str, Any], template.get("snapshot") or {})
+    readiness = cast(dict[str, Any], plan.get("readiness") or {})
+    if not readiness.get("ready") or not snapshot_template:
+        raise DomainError("SCHEDULE_TEMPLATE_INVALID", "Frozen schedule master is incomplete", 409)
+    run_no = (
+        db.scalar(
+            select(func.max(FlowRun.run_no)).where(
+                FlowRun.flow_definition_id == schedule.flow_definition_id
+            )
+        )
+        or 0
+    ) + 1
+    run = FlowRun(
+        flow_definition_id=schedule.flow_definition_id,
+        run_no=run_no,
+        name=f"{schedule.name} · {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}",
+        run_mode="AUTOMATIC",
+        state=FlowRunState.DRAFT,
+        environment_version_id=schedule.environment_version_id,
+        schedule_id=schedule.id,
+        schedule_occurrence_id=occurrence.id,
+    )
+    db.add(run)
+    db.flush()
+    snapshot = RunSnapshot(
+        flow_run_id=run.id,
+        version=1,
+        schema_version=int(snapshot_template["schema_version"]),
+        definition_json=copy.deepcopy(snapshot_template["definition_json"]),
+        definition_hash=str(snapshot_template["definition_hash"]),
+        runtime_manifest_json=copy.deepcopy(snapshot_template["runtime_manifest_json"]),
+        runtime_manifest_hash=str(snapshot_template["runtime_manifest_hash"]),
+        environment_version_id=schedule.environment_version_id,
+    )
+    db.add(snapshot)
+    db.flush()
+    node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
+    for node_key, node_plan in node_plans.items():
+        mutable_plan = cast(dict[str, Any], node_plan)
+        artifact_ids = cast(dict[str, Any], mutable_plan.get("artifact_ids") or {})
+        mutable_plan["artifact_ids"] = {
+            str(field_key): _copy_automatic_plan_artifact(
+                db, source, run, str(node_key), str(artifact_id), source="SCHEDULE_TEMPLATE_COPY"
+            )
+            for field_key, artifact_id in artifact_ids.items()
+        }
+    plan["node_plans"] = node_plans
+    plan["status"] = "DRAFT"
+    run.automation_plan_json = plan
+    run.active_snapshot_id = snapshot.id
+    hold_snapshot_memory_references(
+        db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
+    )
+    _event(
+        db,
+        run.id,
+        "SCHEDULE_FLOW_RUN_CREATED",
+        {
+            "schedule_id": schedule.id,
+            "occurrence_id": occurrence.id,
+            "source_flow_run_id": source.id,
+        },
+    )
+    start_automatic_run(
+        db,
+        run.id,
+        AutomaticRunStartWrite(expected_row_version=run.row_version),
+        f"start-scheduled-automatic:{occurrence.id}",
+    )
+    return run
 
 
 def process_readiness(db: Session, attempt_id: str, *, commit: bool = True) -> None:
@@ -6944,6 +7052,16 @@ def _delete_run_records(db: Session, run_id: str) -> None:
     """
 
     run = _run(db, run_id)
+    template_schedule_ids = list(
+        db.scalars(select(FlowRunSchedule.id).where(FlowRunSchedule.source_flow_run_id == run.id))
+    )
+    if template_schedule_ids:
+        raise DomainError(
+            "FLOW_RUN_SCHEDULE_TEMPLATE_IN_USE",
+            "Delete schedules that use this FlowRun as their execution master first",
+            409,
+            {"schedule_ids": template_schedule_ids},
+        )
     child_run_ids = list(
         db.scalars(
             select(FlowRun.id)
@@ -7080,29 +7198,10 @@ def _delete_run_records(db: Session, run_id: str) -> None:
 
 def delete_run(db: Session, run_id: str) -> None:
     """Permanently remove a run and every nested execution record it owns."""
-    run = _run(db, run_id)
-    schedule_id = run.schedule_id
     _delete_run_records(db, run_id)
-    if schedule_id:
-        remaining = db.scalar(
-            select(func.count(FlowRun.id)).where(FlowRun.schedule_id == schedule_id)
-        )
-        if not remaining:
-            occurrence_ids = select(FlowRunScheduleOccurrence.id).where(
-                FlowRunScheduleOccurrence.schedule_id == schedule_id
-            )
-            db.execute(
-                delete(BackgroundTask).where(
-                    BackgroundTask.aggregate_type == "FLOW_RUN_SCHEDULE_OCCURRENCE",
-                    BackgroundTask.aggregate_id.in_(occurrence_ids),
-                )
-            )
-            db.execute(
-                delete(FlowRunScheduleOccurrence).where(
-                    FlowRunScheduleOccurrence.schedule_id == schedule_id
-                )
-            )
-            db.execute(delete(FlowRunSchedule).where(FlowRunSchedule.id == schedule_id))
+    # A schedule is a persistent configuration directory, not an execution
+    # record. Deleting its final generated FlowRun must not silently remove the
+    # Cron task or its frozen master; explicit schedule deletion owns that.
     finish(db)
 
 

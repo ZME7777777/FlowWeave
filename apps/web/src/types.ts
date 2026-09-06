@@ -349,15 +349,18 @@ export interface FlowRunScheduleOccurrence {
 }
 export interface FlowRunSchedule {
   id: string; flow_definition_id: string; environment_version_id: string; name: string;
-  run_mode: 'MANUAL' | 'AUTOMATIC'; start_node_key: string; interval_minutes: number;
+  source_flow_run_id?: string | null; run_mode: 'MANUAL' | 'AUTOMATIC'; start_node_key: string; interval_minutes: number;
+  cron_expression?: string | null;
   status: 'ACTIVE' | 'PAUSED'; next_run_at?: string | null; row_version: number;
   config_version: number; last_run_at?: string | null; has_execution: boolean;
   created_at: string; updated_at: string; occurrences: FlowRunScheduleOccurrence[];
 }
 export interface FlowRunScheduleWrite {
-  name: string; flow_definition_id: string; environment_version_id: string;
-  run_mode: 'MANUAL' | 'AUTOMATIC'; start_node_key: string; interval_minutes: number;
-  startup_prompt: string; agent_preset: AgentPreset; input_urls: Record<string, string>;
+  name: string; source_flow_run_id: string; cron_expression: string;
+}
+export interface FlowRunScheduleTemplate {
+  id: string; name: string; flow_definition_id: string; flow_name?: string | null;
+  state: string; run_no: number;
 }
 export interface RunEvent {
   cursor: number; flow_run_id: string; node_run_id?: string | null; attempt_id?: string | null;

@@ -21,6 +21,8 @@ from flowweave.shared.schemas import (
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
     AutomaticRunStartWrite,
+    FlowRunScheduleStateWrite,
+    FlowRunScheduleWrite,
     GateRemediationWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
@@ -28,8 +30,6 @@ from flowweave.shared.schemas import (
     ManualAttemptOutputsWrite,
     NodeRunCopyWrite,
     NodeRunStart,
-    FlowRunScheduleStateWrite,
-    FlowRunScheduleWrite,
     RejectWrite,
     RunStart,
     RuntimeCancelRecoveryWrite,
@@ -51,6 +51,11 @@ async def flow_run_schedules(db: Db) -> list[dict[str, Any]]:
     return await run_sync(db, service.list_flow_run_schedules)
 
 
+@router.get("/flow-run-schedule-templates")
+async def flow_run_schedule_templates(db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, service.list_flow_run_schedule_templates)
+
+
 @router.post("/flow-run-schedules", status_code=201)
 async def create_flow_run_schedule(payload: FlowRunScheduleWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_flow_run_schedule(session, payload))
@@ -67,7 +72,9 @@ async def set_flow_run_schedule_state(
 
 @router.post("/flow-run-schedules/{schedule_id}/trigger")
 async def trigger_flow_run_schedule(schedule_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(db, lambda session: service.trigger_flow_run_schedule(session, schedule_id))
+    return await run_sync(
+        db, lambda session: service.trigger_flow_run_schedule(session, schedule_id)
+    )
 
 
 @router.delete("/flow-run-schedules/{schedule_id}", status_code=204, response_class=Response)
