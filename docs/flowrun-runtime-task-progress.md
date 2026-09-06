@@ -2566,6 +2566,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：调度列表投影新增母版 FlowRun 摘要，Web 按源记录分组为三级目录；“查看详情”使用新的分页 occurrence API，按 `scheduled_for`、创建时间倒序返回。弹窗中每个 occurrence 显示其生成 FlowRun 与全部 NodeRun，NodeRun 点击直接打开对应 FlowRun 工作台的节点执行记录。首页只加载目录摘要，历史执行记录按当前弹窗页按需读取。
 
+### FR-178 会话能力标签术语统一 — DONE
+
+依赖：`FR-177`。
+
+目标：统一 Agent 会话能力管理器的标签术语，避免同一组筛选项混用中文“技能／插件”和英文 `Context`。标签固定显示为 `all`、`plugin`、`MCP`、`skill` 与 `context`；只改变呈现文案，不改变能力类型、冻结、注册、加载、权限或 OpenHands 契约。
+
+完成：当前会话和新会话共用的能力管理器已采用上述英文标签。`Hook` 与 `Agent Definition` 不在本切片加入当前会话选择器：固定 OpenHands 1.44.0 没有对应原生热注册接口，仍须在产品字段与创建期冻结方案明确后单独实现。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2601,6 +2609,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-178 | Web ESLint、TypeScript typecheck 与 `git diff --check` | PASS：Agent 会话能力筛选标签统一为 `all`／`plugin`／`MCP`／`skill`／`context`；不改变能力加载或 OpenHands Runtime 行为。 |
 | 2026-09-06 | FR-175 | 受影响 Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck、production build；`git diff --check`；取消后会话写入定向 pytest | PASS（静态与构建）：取消 Attempt 后 Runtime DTO 立即转为只读，前端停止订阅可写流并移除控制入口；后端所有关键会话、终端和工作区写路径都以同一 Attempt 围栏 fail closed，继续不再落入泛化 `VERSION_CONFLICT`。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。 |
 | 2026-09-06 | FR-174 | 受影响 Python `py_compile`、Ruff；OpenHands events 请求定向 pytest；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与请求契约）：运行中的 Command/Ctrl+Enter 不再调用 interrupt，而是按 FIFO 将消息追加到 OpenHands 正式 events 接口；UI 保留当前流式内容并在先前回合结束后跟随正式的下一未完成 user event，普通 Enter 仍只走本地顺序队列。外层与节点会话在 `running`／`executing` 时均不会模型重绑、分叉恢复或压缩，停止／确认仍拒绝写入。两项数据库定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行，未伪记为通过；不依赖数据库的 OpenHands events 请求测试通过。 |
 | 2026-09-06 | FR-173 | 受影响 Python `py_compile`、Ruff；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：工作区删除改为物理级联删除关联会话及私有附件；用户根附件路径在上传返回、发送和 sandbox 图片投影三处保持同一受限契约；Command/Ctrl+Enter 会等待原生暂停完成后优先发送，普通 Enter 继续排队。受影响 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行；定向 Playwright 因本地 Vite 服务不可达而未执行，均未伪记为通过。定向 Pyright 命中既有 `work_directories.py:395` 构造调用缺少 `working_path` 的 strict 基线诊断，未由本切片引入。 |
