@@ -669,10 +669,10 @@ function NodeConfigurationPanel({
   return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{feedback}<div className="node-console-mode-bar">{fixedModeLabel ? <div className="node-console-mode-summary"><b>{fixedModeLabel}</b><small>{mode === 'CHAT' ? '人工直接进入节点会话' : '保存配置后从左侧记录启动'}</small></div> : <nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>}{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
 }
 
-function NodeConsole({ run, node, startupMode, pendingNodeRun, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; startupMode: 'PROMPT' | 'CHAT'; pendingNodeRun?: NodeRun; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
+function NodeConsole({ run, node, startupMode, pendingNodeRun, initialBindings, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; startupMode: 'PROMPT' | 'CHAT'; pendingNodeRun?: NodeRun; initialBindings?: Record<string, string>; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
   const pendingAttempt = pendingNodeRun?.attempts.at(-1);
-  const inheritedBindingsJson = JSON.stringify(Object.fromEntries(
+  const inheritedBindingsJson = JSON.stringify(initialBindings ?? Object.fromEntries(
     (pendingAttempt?.input_bindings ?? []).map(item => [item.input_field_key, item.artifact_version_id]),
   ));
   const [promptTab, setPromptTab] = useState<PromptConfigurationTab>('inputs');
@@ -711,7 +711,7 @@ function NodeConsole({ run, node, startupMode, pendingNodeRun, refresh, onActiva
   const runAction = <button className="primary node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
   const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
   const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{pendingAttempt && <p className="field-hint">上游节点的映射产物已自动填入；可继续补充本节点配置，保存后再从左侧启动。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="保存配置后会随记录冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  return <><NodeConfigurationPanel title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(pendingAttempt || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入；可继续补充本节点配置，保存后再从左侧启动。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="保存配置后会随记录冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string } }) {
@@ -983,6 +983,19 @@ export function WorkbenchPage() {
   const pendingConfigurationNodeRun = mode === 'MANUAL' && selectedNodeKey
     ? nodeRecords.find(item => item.flow_node_snapshot_key === selectedNodeKey && isUnconfiguredStepRecord(item))
     : undefined;
+  const selectedManualRecord = nodeRecords.find(item => manualSelectedIds.has(item.id));
+  const inheritedTransitionBindings = (() => {
+    if (pendingConfigurationNodeRun || !snapshot || !selectedNodeKey || !selectedManualRecord || attemptState(selectedManualRecord) !== 'ACCEPTED') return undefined;
+    const targetIsSuccessor = snapshot.definition.edges.some(edge => edge.source_instance_key === selectedManualRecord.flow_node_snapshot_key && edge.target_instance_key === selectedNodeKey);
+    if (!targetIsSuccessor) return undefined;
+    const outputArtifacts = selectedManualRecord.attempts.at(-1)?.artifacts ?? [];
+    return Object.fromEntries(snapshot.definition.port_mappings.flatMap(mapping => {
+      if (mapping.source_instance_key !== selectedManualRecord.flow_node_snapshot_key || mapping.target_instance_key !== selectedNodeKey) return [];
+      const artifact = outputArtifacts.find(item => item.field_key === mapping.source_output_key)
+        ?? run.artifacts.find(item => item.producer_attempt_id === selectedManualRecord.accepted_attempt_id && item.field_key === mapping.source_output_key);
+      return artifact ? [[mapping.target_input_key, artifact.id]] : [];
+    }));
+  })();
   const automaticRecords = (automatic.data ?? []).map(record => automaticDrafts[record.id] ?? record);
   const selectedAutomatic = automaticRecords.find(item => item.id === selectedAutomaticId);
   const selectedAutomaticNodeRun = selectedAutomatic?.state === 'DRAFT' ? undefined : selectedAutomatic?.node_runs.find(
@@ -1127,6 +1140,11 @@ export function WorkbenchPage() {
     const selectedRecord = run.node_runs.find(candidate => candidate.id === id);
     if (!selectedRecord) return;
     const item = mode === 'MANUAL' ? pendingStepRecordAfter(nodeRecords, selectedRecord) : selectedRecord;
+    const missingSuccessorKeys = mode === 'MANUAL' && item.id === selectedRecord.id && attemptState(selectedRecord) === 'ACCEPTED'
+      ? [...new Set((snapshot?.definition.edges ?? []).filter(edge => edge.source_instance_key === selectedRecord.flow_node_snapshot_key).map(edge => edge.target_instance_key))]
+        .filter(key => !nodeRecords.some(candidate => candidate.flow_node_snapshot_key === key && candidate.state !== 'CANCELLED'))
+      : [];
+    const missingSuccessorKey = missingSuccessorKeys.length === 1 ? missingSuccessorKeys[0] : undefined;
     if (modifiers.range && selectedId) {
       setManualSelectedIds(new Set(rangeIds(nodeRecords, selectedId, id)));
     } else if (modifiers.extend) {
@@ -1142,8 +1160,8 @@ export function WorkbenchPage() {
     if (item.id !== selectedRecord.id && !modifiers.extend && !modifiers.range) {
       setManualSelectedIds(new Set([item.id]));
     }
-    setSelectedNodeKey(item?.flow_node_snapshot_key);
-    if (mode === 'MANUAL' && isUnconfiguredStepRecord(item)) {
+    setSelectedNodeKey(missingSuccessorKey ?? item.flow_node_snapshot_key);
+    if ((mode === 'MANUAL' && isUnconfiguredStepRecord(item)) || missingSuccessorKey) {
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
     } else {
       selectExecution(id, item?.attempts.at(-1)?.id);
@@ -1213,7 +1231,7 @@ export function WorkbenchPage() {
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
-        {mode === 'AUTOMATIC' && selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={run} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomaticNodeRun && selectedAutomaticAttempt ? <AttemptPanel run={selectedAutomatic} nodeRun={selectedAutomaticNodeRun} attempt={selectedAutomaticAttempt} refresh={() => { void automatic.refetch(); }} navigate={() => { void automatic.refetch(); }} sessionReturnContext={{ runId: run.id, mode: 'AUTOMATIC', automaticRecordId: selectedAutomatic.id }}/> : <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} sessionReturnContext={{ runId: run.id, mode }}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}
+        {mode === 'AUTOMATIC' && selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={run} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomaticNodeRun && selectedAutomaticAttempt ? <AttemptPanel run={selectedAutomatic} nodeRun={selectedAutomaticNodeRun} attempt={selectedAutomaticAttempt} refresh={() => { void automatic.refetch(); }} navigate={() => { void automatic.refetch(); }} sessionReturnContext={{ runId: run.id, mode: 'AUTOMATIC', automaticRecordId: selectedAutomatic.id }}/> : <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={refresh} navigate={navigate} sessionReturnContext={{ runId: run.id, mode }}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={refresh} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}
       </aside>}
     </section>
     {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'MANUAL' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onCopy={async name => {

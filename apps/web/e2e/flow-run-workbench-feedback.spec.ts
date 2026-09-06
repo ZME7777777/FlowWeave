@@ -272,6 +272,69 @@ test('a completed step selects its sole downstream configuration with mapped out
   await expect(page.getByRole('button', { name: '启动逐步运行 测试节点2' })).toBeVisible();
 });
 
+test('an accepted legacy step recreates its missing downstream configuration with mapped outputs', async ({ page }) => {
+  const transitionDefinition = {
+    ...definition,
+    nodes: [definition.nodes[0], { ...definition.nodes[1], asset: { ...definition.nodes[1].asset, inputs: [asset.inputs[0]] } }],
+  };
+  const transitionSnapshot = { ...snapshot, definition: transitionDefinition };
+  const mappedArtifact = {
+    id: 'legacy-n1-output-1', flow_run_id: run.id, producer_attempt_id: 'legacy-accepted-attempt', consumer_node_key: null,
+    field_key: 'output_1', version_no: 1, artifact_type: 'URL', storage_key: null,
+    uri: 'https://example.com/legacy-n1-output', inline_content: null, content_hash: 'legacy-output-hash', byte_size: 34,
+    mime_type: 'text/uri-list', source: 'AGENT_OUTPUT', metadata: { display_name: 'N1 历史输出' }, created_at: now,
+  };
+  const acceptedNodeRun = {
+    ...nodeRun, state: 'ACCEPTED', accepted_attempt_id: 'legacy-accepted-attempt', attempts: [{
+      ...attempt, id: 'legacy-accepted-attempt', state: 'ACCEPTED', state_version: 3, artifacts: [mappedArtifact],
+    }],
+  };
+  const configuredNodeRun = {
+    ...nodeRun, id: 'legacy-configured-n2', flow_node_snapshot_key: 'second', sequence_no: 2,
+    created_from: 'HUMAN_START', attempts: [{
+      ...attempt, id: 'legacy-configured-attempt', node_run_id: 'legacy-configured-n2', state: 'WAITING_START_CONFIRMATION',
+      state_version: 1, runtime_phase: null, input_bindings: [{ id: 'legacy-binding', input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'HUMAN_START' }],
+    }],
+  };
+  let currentRun = {
+    ...run, active_snapshot_id: transitionSnapshot.id, snapshots: [transitionSnapshot],
+    current_node_key: 'first', current_node_name: '测试节点', current_attempt_state: 'ACCEPTED',
+    progress: { accepted: 1, terminal: 1, active: 0 }, node_runs: [acceptedNodeRun], artifacts: [mappedArtifact],
+  };
+  let savedBody: Record<string, unknown> | undefined;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([transitionDefinition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(transitionDefinition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/nodes/second/runs` && request.method() === 'POST') {
+      savedBody = request.postDataJSON() as Record<string, unknown>;
+      currentRun = { ...currentRun, current_node_key: 'second', current_node_name: '测试节点2', current_attempt_state: 'WAITING_START_CONFIRMATION', progress: { accepted: 1, terminal: 1, active: 1 }, node_runs: [acceptedNodeRun, configuredNodeRun] };
+      return respond(configuredNodeRun, 201);
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.getByRole('button', { name: '测试节点 第 1 次执行 · 已验收' }).click();
+
+  const consolePanel = page.locator('.node-console');
+  await expect(page.locator('.run-graph-node.snapshot-selected')).toContainText('测试节点2');
+  await expect(consolePanel.getByRole('link', { name: 'https://example.com/legacy-n1-output' })).toBeVisible();
+  await consolePanel.getByRole('button', { name: '保存配置' }).click();
+  await expect.poll(() => savedBody).toEqual(expect.objectContaining({ artifact_ids: { input_1: mappedArtifact.id } }));
+  await expect(page.getByRole('button', { name: '启动逐步运行 测试节点2' })).toBeVisible();
+});
+
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
   let saveRequests = 0;
   let nodeCopyRequests = 0;
