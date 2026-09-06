@@ -2606,6 +2606,14 @@ Skill，并将 Agent 与 FlowRun 工作区说明同步为用户级／记录级 A
 
 完成：API 请求上下文绑定并在 finally 中重置 Plugin Resolver，使 `asyncio.to_thread` 目录浏览继承正确的 Resolver；新增已认证 API 路由回归，验证官方 HEAD 解析后目录请求返回 200。未改动 Resolver 实现、源校验、权限或发布流程。
 
+### FR-183 OpenHands Marketplace 分页弹窗布局 — DONE
+
+依赖：`FR-182`。
+
+目标：将 Marketplace 弹窗改为无需滚动即可完整操作的“目录／解析器”双分区：搜索与刷新同行、目录以固定分页展示、解析与发布固定在底部；移除冗余的顶部说明与大块来源信息，避免窄视口下标题、搜索或操作按钮被截断。
+
+完成：目录区每页固定展示 6 个 Plugin，搜索会重置分页，且目录卡片文本截断而非撑开弹窗；解析器区独立呈现当前选择、状态、冻结信息与失败反馈，底部操作栏始终可见。目录与 Plugin 解析继续使用已固定的 commit，未改变解析、发布或安全校验策略。
+
 ### FR-170 节点 Runtime 持久化与原生事件订阅恢复 — DONE
 
 依赖：`FR-169`。
@@ -2641,6 +2649,7 @@ idle、hard TTL 或 owner grace 删除它；物理容器确实消失时也只标
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-06 | FR-183 | Web ESLint、TypeScript typecheck、`git diff --check` | PASS：Marketplace 使用固定高度无滚动双分区布局；搜索、刷新、分页、解析和发布状态的类型检查通过。 |
 | 2026-09-06 | FR-182 | 受影响 Python Ruff/`py_compile`、API Marketplace 回归、`git diff --check` | PASS：Marketplace 路由从 API 请求上下文获得 Plugin Resolver，线程化目录浏览不再抛出“Plugin resolver is not bound”。Docker daemon 在本机不可用，集成 fixture 由远端部署后的已认证请求验证。 |
 | 2026-09-06 | FR-181 | Dockerfile 静态回归、受影响 Python Ruff/`py_compile`、`git diff --check` | PASS：platform 镜像显式安装 Git，OpenHands Marketplace 的 HEAD 解析不再因可执行文件缺失返回 503。Docker daemon 在本机不可用，未构建镜像或执行容器 smoke。 |
 | 2026-09-06 | FR-180 | CLI Node 测试、语法检查、npm pack 清单、全部 FlowWeave Skill `quick_validate.py`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：CLI 11 项测试通过，新增定时任务母版／occurrence 与 OpenHands Marketplace 映射均覆盖 dry-run URL、请求体和分页边界；`npm pack --dry-run` 仅包含 README、CLI 入口和 package metadata。11 个仓库 FlowWeave Skill 全部通过快速格式与 frontmatter 校验；唯一 Alembic head 为 `0098_schedule_templates_cron`，无 `CURRENT`，无 whitespace 错误。 |
