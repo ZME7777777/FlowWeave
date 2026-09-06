@@ -5973,13 +5973,13 @@ def _record_workspace_paths_for_deletion(attempts: list[NodeAttempt]) -> set[Pat
 
 
 def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
-    """Delete a manual execution that has not started, or has stopped.
+    """Delete a manual execution that has not reached Runtime execution, or has stopped.
 
-    A chat-only Attempt pauses at ``WAITING_START_CONFIRMATION`` before it
-    claims a Runtime phase.  It is only a draft execution record at that
-    point, so requiring a cancel round-trip makes its delete action appear to
-    do nothing.  Its FlowRun-owned Conversation persistence is still retained
-    below, exactly as it is for a cancelled record.
+    ``WAITING_INPUT`` and chat-only ``WAITING_START_CONFIRMATION`` Attempts
+    have not claimed a Runtime phase. They are draft execution records, so
+    requiring a cancel round-trip makes deletion appear to do nothing. Their
+    FlowRun-owned Conversation persistence is still retained below, exactly
+    as it is for a cancelled record.
     """
 
     run = _locked_run(db, flow_run_id)
@@ -6008,14 +6008,15 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
         and latest.runtime_phase == "CANCELLED"
         and all(attempt.state in terminal_states for attempt in attempts)
     )
-    waiting_to_start = (
+    waiting_before_runtime = (
         node_run.state == NodeRunState.ACTIVE
         and latest is not None
-        and latest.state == AttemptState.WAITING_START_CONFIRMATION
+        and latest.state
+        in {AttemptState.WAITING_INPUT, AttemptState.WAITING_START_CONFIRMATION}
         and latest.runtime_phase is None
         and all(attempt.state in terminal_states for attempt in attempts[:-1])
     )
-    if not (cancelled_and_stopped or waiting_to_start):
+    if not (cancelled_and_stopped or waiting_before_runtime):
         raise DomainError(
             "NODE_RUN_DELETE_REQUIRES_CANCELLED",
             "运行中的单节点记录请先取消，并等待运行时停止后再删除",

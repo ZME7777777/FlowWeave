@@ -590,13 +590,7 @@ test('returning from an automatic node session preserves the selected automatic 
 });
 
 test('cancelled manual records return to the neutral graph and can be deleted', async ({ page }) => {
-  const waitingInputAttempt = { ...attempt, state: 'WAITING_INPUT', runtime_phase: 'WAITING_INPUT' };
-  const waitingInputRun = {
-    ...run,
-    current_attempt_state: 'WAITING_INPUT',
-    node_runs: [{ ...nodeRun, attempts: [waitingInputAttempt] }],
-  };
-  let currentRun = waitingInputRun;
+  let currentRun = run;
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -641,7 +635,7 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
   await deleteButton.click();
   const blockedDeleteDialog = page.getByRole('alertdialog');
-  await expect(blockedDeleteDialog).toContainText('所选记录正在等待补充输入');
+  await expect(blockedDeleteDialog).toContainText('所选记录仍在执行中');
   await expect(blockedDeleteDialog).toContainText('请先在右侧取消本轮节点执行');
   await blockedDeleteDialog.getByRole('button', { name: '我知道了', exact: true }).click();
   await page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' }).click();
@@ -665,6 +659,48 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
   await expect(page.locator('.run-side-panel')).toHaveCount(0);
   await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
   await expect(page.locator('.run-side-panel .node-console')).toBeVisible();
+});
+
+test('waiting-input manual records can be deleted without cancellation', async ({ page }) => {
+  const waitingInputAttempt = { ...attempt, state: 'WAITING_INPUT', runtime_phase: null };
+  let currentRun = {
+    ...run,
+    current_attempt_state: 'WAITING_INPUT',
+    node_runs: [{ ...nodeRun, attempts: [waitingInputAttempt] }],
+  };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status, contentType: 'application/json', body: status === 204 ? undefined : JSON.stringify(body),
+    });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/nodes/${nodeRun.id}` && request.method() === 'DELETE') {
+      currentRun = { ...currentRun, node_runs: [], progress: { accepted: 0, terminal: 0, active: 0 } };
+      return respond(undefined, 204);
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
+
+  const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
+  await expect(deleteButton).toBeEnabled();
+  await deleteButton.click();
+  const deleteDialog = page.getByRole('alertdialog');
+  await expect(deleteDialog).toContainText('节点执行记录与产物将被永久删除');
+  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
+  await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 });
 
 test('unstarted chat records can be deleted without a cancellation round trip', async ({ page }) => {

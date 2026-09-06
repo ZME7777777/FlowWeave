@@ -2781,6 +2781,26 @@ def test_delete_unstarted_manual_node_run_preserves_runtime_and_restores_neutral
     assert other.json()["flow_node_snapshot_key"] == "design_b"
 
 
+def test_delete_waiting_input_manual_node_run_without_cancellation(client, skill_capability):
+    asset = create_asset(client, skill_capability, "删除待输入记录")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    waiting_record = run["node_runs"][0]
+    waiting_attempt = waiting_record["attempts"][0]
+    assert waiting_attempt["state"] == "WAITING_INPUT"
+    assert waiting_attempt["runtime_phase"] is None
+
+    deleted = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{waiting_record['id']}")
+    assert deleted.status_code == 204, deleted.text
+
+    detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
+    assert detail["state"] == "ACTIVE"
+    assert detail["node_runs"] == []
+
+
 def test_hard_delete_detaches_active_runtime_generation(
     client, skill_capability, db_session_factory, monkeypatch
 ):
