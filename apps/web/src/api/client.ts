@@ -216,11 +216,13 @@ export const api = {
     return requestText(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, signal);
   },
   deleteAgentWorkspaceFile: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; recursive?: boolean } = {}) => {
-    const query = new URLSearchParams({ path });
+    const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
-    if (options.recursive) query.set('recursive', 'true');
-    return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, json('DELETE'));
+    // Workspace deletion is intentionally handled by the validated batch
+    // endpoint. It recursively removes ordinary directories after checking
+    // their complete subtree, so clients never need a separate unsafe route.
+    return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/entries${query.size ? `?${query}` : ''}`, json('DELETE', { paths: [path] }));
   },
   createAgentWorkspaceEntry: (id: string, parent_path: string, name: string, kind: 'FILE' | 'DIRECTORY', options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams();
