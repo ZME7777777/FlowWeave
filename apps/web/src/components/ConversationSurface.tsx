@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentAttachment, AgentConversationReference, OpenHandsConversationEvent } from '../types';
+import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
@@ -97,16 +98,24 @@ function ConversationReferencePreview({ reference, onClose, onLocate }: {
 
 function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) {
   const [failed, setFailed] = useState(false);
-  const safeSource = typeof src === 'string' && /^(?:https?:|data:image\/|blob:|\/)/i.test(src);
+  // Runtime message projection deliberately produces API-root paths so the
+  // backend does not need to know where the web app is mounted.  Resolve them
+  // through the same base used by the API client: a leading `/api/v1` would
+  // otherwise bypass a `/flowweave` deployment prefix and be handled by the
+  // host application's API instead.
+  const resolvedSource = typeof src === 'string' && src.startsWith('/api/v1/')
+    ? `${import.meta.env.VITE_API_BASE_URL || deploymentBasePath}${src}`
+    : src;
+  const safeSource = typeof resolvedSource === 'string' && /^(?:https?:|data:image\/|blob:|\/)/i.test(resolvedSource);
   if (!safeSource || failed) {
     return <span className="conversation-image-unavailable" role="status">
       <b>{alt || '图片无法显示'}</b>
       {safeSource
-        ? <a href={src} target="_blank" rel="noreferrer">在新窗口打开图片</a>
+        ? <a href={resolvedSource} target="_blank" rel="noreferrer">在新窗口打开图片</a>
         : <small>图片地址无效</small>}
     </span>;
   }
-  return <img {...props} className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={src} alt={alt ?? ''} onError={() => setFailed(true)}/>;
+  return <img {...props} className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={resolvedSource} alt={alt ?? ''} onError={() => setFailed(true)}/>;
 }
 
 function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<'a'>) {
