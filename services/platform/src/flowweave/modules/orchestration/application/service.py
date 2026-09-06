@@ -2126,37 +2126,38 @@ def list_flow_run_schedule_templates(db: Session) -> list[dict[str, Any]]:
     return records
 
 
+def _schedule_occurrence_dict(
+    db: Session, occurrence: FlowRunScheduleOccurrence
+) -> dict[str, Any]:
+    run = db.get(FlowRun, occurrence.flow_run_id) if occurrence.flow_run_id else None
+    return {
+        "id": occurrence.id,
+        "config_version": occurrence.config_version,
+        "scheduled_for": occurrence.scheduled_for.isoformat() if occurrence.scheduled_for else None,
+        "trigger_kind": occurrence.trigger_kind,
+        "state": occurrence.state,
+        "error_detail": occurrence.error_detail,
+        "flow_run": run_detail(db, run.id) if run else None,
+    }
+
+
 def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
-    occurrences = list(
-        db.scalars(
-            select(FlowRunScheduleOccurrence)
-            .where(FlowRunScheduleOccurrence.schedule_id == schedule.id)
-            .order_by(
-                FlowRunScheduleOccurrence.created_at.desc(), FlowRunScheduleOccurrence.id.desc()
-            )
-        )
-    )
-    records: list[dict[str, Any]] = []
-    for occurrence in occurrences:
-        run = db.get(FlowRun, occurrence.flow_run_id) if occurrence.flow_run_id else None
-        records.append(
-            {
-                "id": occurrence.id,
-                "config_version": occurrence.config_version,
-                "scheduled_for": occurrence.scheduled_for.isoformat()
-                if occurrence.scheduled_for
-                else None,
-                "trigger_kind": occurrence.trigger_kind,
-                "state": occurrence.state,
-                "error_detail": occurrence.error_detail,
-                "flow_run": run_detail(db, run.id) if run else None,
-            }
-        )
+    source = db.get(FlowRun, schedule.source_flow_run_id) if schedule.source_flow_run_id else None
     return {
         "id": schedule.id,
         "flow_definition_id": schedule.flow_definition_id,
         "environment_version_id": schedule.environment_version_id,
         "source_flow_run_id": schedule.source_flow_run_id,
+        "source_flow_run": (
+            {
+                "id": source.id,
+                "name": source.name,
+                "run_no": source.run_no,
+                "state": source.state,
+            }
+            if source
+            else None
+        ),
         "name": schedule.name,
         "run_mode": schedule.run_mode,
         "start_node_key": schedule.start_node_key,
@@ -2170,7 +2171,38 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
         "row_version": schedule.row_version,
         "created_at": schedule.created_at.isoformat(),
         "updated_at": schedule.updated_at.isoformat(),
-        "occurrences": records,
+    }
+
+
+def list_flow_run_schedule_occurrences(
+    db: Session, schedule_id: str, *, page: int, page_size: int
+) -> dict[str, Any]:
+    schedule = db.get(FlowRunSchedule, schedule_id)
+    if schedule is None:
+        raise not_found("flow_run_schedule", schedule_id)
+    total = db.scalar(
+        select(func.count(FlowRunScheduleOccurrence.id)).where(
+            FlowRunScheduleOccurrence.schedule_id == schedule.id
+        )
+    ) or 0
+    occurrences = list(
+        db.scalars(
+            select(FlowRunScheduleOccurrence)
+            .where(FlowRunScheduleOccurrence.schedule_id == schedule.id)
+            .order_by(
+                FlowRunScheduleOccurrence.scheduled_for.desc().nulls_last(),
+                FlowRunScheduleOccurrence.created_at.desc(),
+                FlowRunScheduleOccurrence.id.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return {
+        "items": [_schedule_occurrence_dict(db, occurrence) for occurrence in occurrences],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 

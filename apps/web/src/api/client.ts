@@ -2,7 +2,7 @@ import type {
   AuthUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleWrite, FlowRunScheduleTemplate,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
@@ -387,6 +387,7 @@ export const api = {
     request<FlowRun>(`/flows/${flowId}/runs`, json('POST', body)),
   runs: () => request<FlowRunSummary[]>('/flow-runs'),
   flowRunSchedules: () => request<FlowRunSchedule[]>('/flow-run-schedules'),
+  flowRunScheduleOccurrences: (id: string, page: number, pageSize = 10) => request<FlowRunScheduleOccurrencePage>(`/flow-run-schedules/${encodeURIComponent(id)}/occurrences?page=${page}&page_size=${pageSize}`),
   flowRunScheduleTemplates: () => request<FlowRunScheduleTemplate[]>('/flow-run-schedule-templates'),
   createFlowRunSchedule: (body: FlowRunScheduleWrite) => request<FlowRunSchedule>('/flow-run-schedules', json('POST', body)),
   setFlowRunScheduleState: (id: string, expected_row_version: number, status: 'ACTIVE' | 'PAUSED') =>

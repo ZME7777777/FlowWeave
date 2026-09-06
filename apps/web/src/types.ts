@@ -347,13 +347,17 @@ export interface FlowRunScheduleOccurrence {
   id: string; scheduled_for?: string | null; trigger_kind: 'SCHEDULED' | 'MANUAL';
   config_version: number; state: 'PENDING' | 'STARTED' | 'FAILED'; error_detail?: string | null; flow_run?: FlowRun | null;
 }
+export interface FlowRunScheduleOccurrencePage {
+  items: FlowRunScheduleOccurrence[]; total: number; page: number; page_size: number;
+}
 export interface FlowRunSchedule {
   id: string; flow_definition_id: string; environment_version_id: string; name: string;
   source_flow_run_id?: string | null; run_mode: 'MANUAL' | 'AUTOMATIC'; start_node_key: string; interval_minutes: number;
   cron_expression?: string | null;
+  source_flow_run?: { id: string; name: string; run_no: number; state: string } | null;
   status: 'ACTIVE' | 'PAUSED'; next_run_at?: string | null; row_version: number;
   config_version: number; last_run_at?: string | null; has_execution: boolean;
-  created_at: string; updated_at: string; occurrences: FlowRunScheduleOccurrence[];
+  created_at: string; updated_at: string;
 }
 export interface FlowRunScheduleWrite {
   name: string; source_flow_run_id: string; cron_expression: string;

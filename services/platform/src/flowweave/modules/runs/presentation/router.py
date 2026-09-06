@@ -56,6 +56,21 @@ async def flow_run_schedule_templates(db: Db) -> list[dict[str, Any]]:
     return await run_sync(db, service.list_flow_run_schedule_templates)
 
 
+@router.get("/flow-run-schedules/{schedule_id}/occurrences")
+async def flow_run_schedule_occurrences(
+    schedule_id: str,
+    db: Db,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.list_flow_run_schedule_occurrences(
+            session, schedule_id, page=page, page_size=page_size
+        ),
+    )
+
+
 @router.post("/flow-run-schedules", status_code=201)
 async def create_flow_run_schedule(payload: FlowRunScheduleWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_flow_run_schedule(session, payload))
