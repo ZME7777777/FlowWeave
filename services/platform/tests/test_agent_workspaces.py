@@ -1282,6 +1282,26 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
         assert raised.value.code == "AGENT_WORK_DIRECTORY_NOT_FOUND"
 
 
+def test_agent_workspace_creates_entries_at_the_authorized_root_and_subdirectory(
+    settings, db_session_factory
+):
+    """The runtime root is a valid parent, despite `_host_path` being descendant-only."""
+
+    with settings_context(settings), db_session_factory() as db:
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        (project_root / "docs").mkdir()
+        runtime_root = workspace._runtime_root(item.id)
+
+        workspace.create_entry(db, item.id, runtime_root, "README.md", "FILE")
+        workspace.create_entry(
+            db, item.id, f"{runtime_root}/docs", "guide.md", "FILE"
+        )
+
+        assert (project_root / "README.md").is_file()
+        assert (project_root / "docs/guide.md").is_file()
+
+
 def test_agent_workspace_details_exposes_configured_ssh_remote(settings, db_session_factory):
     configured = settings.model_copy(
         update={

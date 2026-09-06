@@ -827,7 +827,15 @@ def create_entry(
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父目录不在当前工作目录范围内", 422)
     project_root = _project_root(db, workspace_id)
-    parent = _host_path(project_root, runtime_root, parent_path, require_file=False)
+    # `_host_path` intentionally accepts only descendants of `runtime_root`,
+    # while the workspace root itself is also a valid parent for a new entry.
+    # Resolve that root directly after the preceding scope checks rather than
+    # passing it through the descendant-only helper.
+    parent = (
+        project_root
+        if parent_path == runtime_root
+        else _host_path(project_root, runtime_root, parent_path, require_file=False)
+    )
     try:
         parent_mode = parent.lstat().st_mode
     except OSError as exc:

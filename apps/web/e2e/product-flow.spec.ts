@@ -463,6 +463,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let renameRequests = 0;
   let contextAvailable = false;
   let manualCondensations = 0;
+  const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   let compactionScenario = false;
   const longFinalReply = Array.from(
     { length: 90 },
@@ -527,6 +528,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/workspace/file')) {
       await route.fulfill({ status: 200, contentType: 'text/plain', body: 'workspace file preview\n' });
+      return;
+    }
+    if (path.endsWith('/workspace/entries') && request.method() === 'POST') {
+      workspaceEntryCreates.push(JSON.parse(request.postData() ?? '{}') as { parent_path: string; name: string; kind: string });
+      await route.fulfill({ status: 201, contentType: 'application/json', body: '' });
       return;
     }
     if (path.endsWith('/conversations') && request.method() === 'GET') {
@@ -784,6 +790,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
+  await page.getByLabel('新建文件').click();
+  const createFileDialog = page.getByRole('alertdialog');
+  await createFileDialog.getByRole('textbox', { name: '名称' }).fill('notes.md');
+  await createFileDialog.getByRole('button', { name: '创建', exact: true }).click();
+  await expect.poll(() => workspaceEntryCreates).toEqual([{
+    parent_path: '/runtime/workspace/project', name: 'notes.md', kind: 'FILE',
+  }]);
   await page.getByText('README.md', { exact: true }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
   await page.getByLabel('新增工作区工具').click();

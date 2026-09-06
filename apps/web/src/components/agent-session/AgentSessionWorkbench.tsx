@@ -973,28 +973,53 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
   return roots;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, onExpandedChange, onDirectoriesChange, onSelect, onToggle, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onDirectoriesChange: (paths: string[]) => void; onSelect: (path: string) => void; onToggle: (path: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, onExpandedChange, onDirectoriesChange, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onDirectoriesChange: (paths: string[]) => void; onSelect: (path: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
+  const selectionAnchor = useRef<string | undefined>(undefined);
   useEffect(() => {
     const paths: string[] = [];
     const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
     collect(nodes);
     onDirectoriesChange(paths);
-    onExpandedChange(current => current.size ? new Set([...current].filter(path => paths.includes(path))) : new Set(paths));
+    onExpandedChange(current => new Set([...current].filter(path => paths.includes(path))));
   }, [nodes, onDirectoriesChange, onExpandedChange]);
+  const visibleNodes = useMemo(() => {
+    const visible: WorkspaceTreeNode[] = [];
+    const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => {
+      visible.push(node);
+      if (node.kind === 'directory' && expanded.has(node.path)) collect(node.children);
+    });
+    collect(nodes);
+    return visible;
+  }, [expanded, nodes]);
+  const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
+    const toggling = event.metaKey || event.ctrlKey;
+    const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.path === selectionAnchor.current) : -1;
+    const targetIndex = visibleNodes.findIndex(item => item.path === node.path);
+    if (event.shiftKey && anchorIndex >= 0 && targetIndex >= 0) {
+      const range = visibleNodes.slice(Math.min(anchorIndex, targetIndex), Math.max(anchorIndex, targetIndex) + 1).map(item => item.path);
+      onSelectionChange(new Set(toggling ? [...selectedPaths, ...range] : range));
+    } else if (toggling) {
+      const next = new Set(selectedPaths);
+      if (next.has(node.path)) next.delete(node.path); else next.add(node.path);
+      onSelectionChange(next);
+      selectionAnchor.current = node.path;
+    } else {
+      onSelectionChange(new Set([node.path]));
+      selectionAnchor.current = node.path;
+    }
+    if (node.kind === 'file') onSelect(node.path);
+    else onActivateDirectory(node.path);
+  };
   const renderNodes = (items: WorkspaceTreeNode[], depth = 0): ReactNode => items.map(node => {
     const open = expanded.has(node.path);
-    return <div key={node.path} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} style={{ '--tree-depth': depth } as CSSProperties}>
-      <label className="resource-check" style={{ '--tree-depth': depth } as CSSProperties}><input type="checkbox" aria-label={`选择 ${node.name}`} checked={selectedPaths.has(node.path)} onChange={() => onToggle(node.path)}/></label>
-      <button type="button" draggable={node.kind === 'file'} className={`${node.kind}${selectedFile === node.path ? ' active' : ''}`} style={{ '--tree-depth': depth } as CSSProperties} onDragStart={event => {
+    return <div key={node.path} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} aria-selected={selectedPaths.has(node.path)} style={{ '--tree-depth': depth } as CSSProperties}>
+      {node.kind === 'directory' ? <button type="button" className="agent-file-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={() => onExpandedChange(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-tree-spacer" aria-hidden="true"/>}
+      <button type="button" draggable={node.kind === 'file'} className={`agent-file-tree-item ${node.kind}${selectedFile === node.path ? ' active' : ''}`} onDragStart={event => {
         if (node.kind !== 'file') return;
         event.dataTransfer.effectAllowed = 'copy';
         event.dataTransfer.setData(WORKSPACE_FILE_TRANSFER_TYPE, node.path);
-      }} onClick={() => {
-        if (node.kind === 'file') onSelect(node.path);
-        else onExpandedChange(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; });
-      }} onContextMenu={event => { event.preventDefault(); onContextMenu(node.path, node.kind, event); }}>
-        {node.kind === 'directory' ? open ? <ChevronDown size={13}/> : <ChevronRight size={13}/> : <span className="agent-tree-spacer"/>}
+      }} onClick={event => selectEntry(node, event)} onContextMenu={event => { event.preventDefault(); if (node.kind === 'directory') onActivateDirectory(node.path); onContextMenu(node.path, node.kind, event); }}>
         {node.kind === 'directory' ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}
         <span>{node.name}</span>
         {node.kind === 'file' && <em>{node.size ? `${Math.ceil(node.size / 1024)} KB` : '0 KB'}</em>}
@@ -1170,6 +1195,7 @@ function WorkspaceDrawer({
   const handledCandidatePreviewRequestKey = useRef<string | undefined>(undefined);
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
+  const [activeDirectory, setActiveDirectory] = useState<string>();
   const [expandedFilePaths, setExpandedFilePaths] = useState<Set<string>>(new Set());
   const [fileDirectoryPaths, setFileDirectoryPaths] = useState<string[]>([]);
   const allFileDirectoriesExpanded = fileDirectoryPaths.length > 0 && fileDirectoryPaths.every(path => expandedFilePaths.has(path));
@@ -1226,6 +1252,12 @@ function WorkspaceDrawer({
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const details = detailsQuery.data;
+  useEffect(() => {
+    // A directory belongs to the currently authorized session scope. Never
+    // reuse a selection after switching conversations or work directories.
+    setActiveDirectory(undefined);
+    setSelectedEntryPaths(new Set());
+  }, [bindingId, details?.working_directory, workDirectoryId]);
   const selectedFile = scopeState.selectedFile;
   const selectedAttachment = attachments.find(item => item.path === selectedFile);
   const selectedMimeType = selectedAttachment?.mime_type ?? '';
@@ -1288,7 +1320,6 @@ function WorkspaceDrawer({
   }, [onOpen, runtimeAvailable, updateScope]);
   const selectFile = (path: string) => { setCandidatePreview(undefined); openFiles(path); };
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
-  const toggleEntry = (path: string) => setSelectedEntryPaths(current => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; });
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
     if (!api.deleteFile || !items.length) return;
     const directories = items.filter(item => item.kind === 'directory');
@@ -1308,6 +1339,15 @@ function WorkspaceDrawer({
       await api.createFile(workspaceId, parentPath, name, kind, { bindingId, workDirectoryId });
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
     } catch (reason) { setPanelError(reason instanceof Error ? reason.message : '创建失败'); }
+  };
+  const createAtActiveDirectory = (kind: 'FILE' | 'DIRECTORY') => {
+    if (!details) return;
+    const parentPath = details.scope.kind === 'ROOT' ? details.working_directory : activeDirectory;
+    if (!parentPath) {
+      setPanelError('请先在文件树中选择要新建内容的目录。');
+      return;
+    }
+    void createEntry(parentPath, kind);
   };
   const closeTab = async (tab: WorkspaceToolTab) => {
     if (tab.kind === 'terminal') {
@@ -1417,8 +1457,8 @@ function WorkspaceDrawer({
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
-              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => void createEntry(details.working_directory, 'FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => void createEntry(details.working_directory, 'DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" title="全选当前文件" aria-label="全选当前文件" onClick={() => setSelectedEntryPaths(current => current.size === visibleFiles.length ? new Set() : new Set(visibleFiles.map(item => item.path)))}><Check size={13}/></button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
-              <WorkspaceFileTree entries={visibleFiles} root={details.root} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onSelect={selectFile} onToggle={toggleEntry} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 150) }); }}/>
+              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onSelect={selectFile} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={setActiveDirectory} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 150) }); }}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>
