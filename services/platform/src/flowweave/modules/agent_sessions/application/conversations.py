@@ -57,9 +57,7 @@ _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION"}
 _COMPACTION_EVENT_WAIT_SECONDS = 120.0
-_RUNTIME_WORKSPACE_PATH = (
-    r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
-)
+_RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
 _SANDBOX_PROJECT_IMAGE = re.compile(
     rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
@@ -112,6 +110,12 @@ def _project_sandbox_images(content: str, *, workspace_id: str, binding_id: str)
         return f"/api/v1/agent-workspaces/{workspace_id}/workspace/file?{query}"
 
     return _SANDBOX_PROJECT_IMAGE.sub(replace_url, content)
+
+
+def project_sandbox_images(content: str, *, workspace_id: str, binding_id: str) -> str:
+    """Project a Runtime-local image URL for an Agent Workspace browser client."""
+
+    return _project_sandbox_images(content, workspace_id=workspace_id, binding_id=binding_id)
 
 
 def _binding(

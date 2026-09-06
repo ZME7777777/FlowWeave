@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, update
@@ -116,6 +118,29 @@ def _attempt_context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, FlowRu
 _FLOW_NODE = "FLOW_NODE"
 _MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
+_RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
+_SANDBOX_PROJECT_IMAGE = re.compile(
+    rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
+)
+
+
+def project_sandbox_images(
+    content: str, *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> str:
+    """Map Runtime-local images to the scoped FlowRun file endpoint.
+
+    Only node-workspace paths are projected. The endpoint still validates the
+    FlowRun, Attempt and Conversation before returning the inline image.
+    """
+
+    def replace_url(match: re.Match[str]) -> str:
+        query = urlencode({"path": match.group(1), "binding_id": binding_id})
+        return (
+            f"/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}"
+            f"/agent-sessions/workspace/file?{query}"
+        )
+
+    return _SANDBOX_PROJECT_IMAGE.sub(replace_url, content)
 
 
 def _node_context_suffix(db: Session, *, snapshot: RunSnapshot, attempt_id: str | None) -> str:
@@ -1466,8 +1491,27 @@ def _event_batch_dict(
     for attachment in stored:
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
+    if binding.node_attempt_id is None:
+        raise DomainError(
+            "RUNTIME_CONVERSATION_SESSION_DRIFT",
+            "The Conversation reservation has no Node Attempt Runtime owner",
+            409,
+        )
+    attempt = _attempt(db, binding.node_attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id)
+    if node_run is None:
+        raise DomainError("NODE_RUN_NOT_FOUND", "节点执行记录不可用", 409)
+
     def project(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
+        content = payload.get("content")
+        if isinstance(content, str):
+            payload["content"] = project_sandbox_images(
+                content,
+                flow_run_id=node_run.flow_run_id,
+                attempt_id=attempt.id,
+                binding_id=binding.id,
+            )
         display_content, references = project_conversation_references(
             str(payload.get("content") or "")
         )

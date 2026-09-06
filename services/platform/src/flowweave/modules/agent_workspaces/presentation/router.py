@@ -158,7 +158,32 @@ def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
 
-async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: Any) -> None:
+def _project_stream_event(
+    event: dict[str, Any], *, workspace_id: str, binding_id: str
+) -> dict[str, Any]:
+    if event.get("type") != "event" or not isinstance(event.get("event"), dict):
+        return event
+    native_event = event["event"]
+    payload = native_event.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
+        return event
+    return {
+        **event,
+        "event": {
+            **native_event,
+            "payload": {
+                **payload,
+                "content": conversations.project_sandbox_images(
+                    payload["content"], workspace_id=workspace_id, binding_id=binding_id
+                ),
+            },
+        },
+    }
+
+
+async def _forward_runtime_events(
+    websocket: WebSocket, runtime: Any, handle: Any, *, workspace_id: str, binding_id: str
+) -> None:
     """Forward one transient Runtime stream while actively observing disconnects.
 
     An idle Runtime event stream has no writes through which ``send_json`` can
@@ -190,7 +215,9 @@ async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: An
                     event = event_task.result()
                 except StopAsyncIteration:
                     return
-                await websocket.send_json(event)
+                await websocket.send_json(
+                    _project_stream_event(event, workspace_id=workspace_id, binding_id=binding_id)
+                )
                 event_task = asyncio.create_task(next_event())
     finally:
         for task in (event_task, receive_task):
@@ -774,7 +801,9 @@ async def agent_conversation_stream(
             runtime = runtime_for(adapter, handle)
         await websocket.accept()
         try:
-            await _forward_runtime_events(websocket, runtime, handle)
+            await _forward_runtime_events(
+                websocket, runtime, handle, workspace_id=workspace_id, binding_id=binding_id
+            )
         except WebSocketDisconnect:
             pass
         except Exception:

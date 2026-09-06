@@ -123,7 +123,41 @@ def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
 
-async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: Any) -> None:
+def _project_stream_event(
+    event: dict[str, Any], *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> dict[str, Any]:
+    if event.get("type") != "event" or not isinstance(event.get("event"), dict):
+        return event
+    native_event = event["event"]
+    payload = native_event.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
+        return event
+    return {
+        **event,
+        "event": {
+            **native_event,
+            "payload": {
+                **payload,
+                "content": agent_sessions.flow_node_conversations.project_sandbox_images(
+                    payload["content"],
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                ),
+            },
+        },
+    }
+
+
+async def _forward_runtime_events(
+    websocket: WebSocket,
+    runtime: Any,
+    handle: Any,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+) -> None:
     stream = runtime.stream_events(handle)
     event_task: asyncio.Task[Any] | None = None
     receive_task: asyncio.Task[Any] | None = None
@@ -148,7 +182,14 @@ async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: An
                     event = event_task.result()
                 except StopAsyncIteration:
                     return
-                await websocket.send_json(event)
+                await websocket.send_json(
+                    _project_stream_event(
+                        event,
+                        flow_run_id=flow_run_id,
+                        attempt_id=attempt_id,
+                        binding_id=binding_id,
+                    )
+                )
                 event_task = asyncio.create_task(next_event())
     finally:
         for task in (event_task, receive_task):
@@ -859,7 +900,14 @@ async def node_session_stream(
             runtime = runtime_for(adapter, handle)
         await websocket.accept()
         try:
-            await _forward_runtime_events(websocket, runtime, handle)
+            await _forward_runtime_events(
+                websocket,
+                runtime,
+                handle,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+            )
         except WebSocketDisconnect:
             pass
         except Exception:
