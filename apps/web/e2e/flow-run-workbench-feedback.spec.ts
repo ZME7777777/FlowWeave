@@ -956,3 +956,99 @@ test('manual and automatic records support modifier selection for deletion while
   await expect.poll(() => deletedAutomaticIds).toEqual(['automatic-record-1', 'automatic-record-2']);
   await expect(page.locator('.automatic-record-list > article')).toHaveCount(0);
 });
+
+test('the step graph keeps the full persisted path while selecting node details', async ({ page }) => {
+  const completedFirst = {
+    ...nodeRun, id: 'completed-first', name: '已完成的首节点记录', sequence_no: 1, state: 'ACCEPTED',
+    attempts: [{ ...attempt, id: 'completed-first-attempt', node_run_id: 'completed-first', state: 'ACCEPTED' }],
+  };
+  const activeSecond = {
+    ...nodeRun, id: 'active-second', name: '正在执行的第二节点记录', flow_node_snapshot_key: 'second', sequence_no: 2,
+    attempts: [{ ...attempt, id: 'active-second-attempt', node_run_id: 'active-second', state: 'EXECUTING' }],
+  };
+  const currentRun = { ...run, node_runs: [completedFirst, activeSecond] };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authenticatedUser) });
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }) });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+
+  const graphNodes = page.locator('.run-graph-node');
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '已完成的首节点记录' }).click();
+  await expect(graphNodes.nth(0)).toContainText('已完成');
+  await expect(graphNodes.nth(1)).toContainText('当前激活');
+
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '正在执行的第二节点记录' }).click();
+  await expect(graphNodes.nth(0)).toContainText('已完成');
+  await expect(graphNodes.nth(1)).toContainText('当前激活');
+});
+
+test('selecting a historical attempt renders its own frozen graph snapshot', async ({ page }) => {
+  const historicalDefinition = {
+    ...definition,
+    nodes: [
+      { ...definition.nodes[0], alias: '历史冻结首节点' },
+      { ...definition.nodes[1], alias: '历史冻结次节点' },
+    ],
+  };
+  const activeDefinition = {
+    ...definition,
+    row_version: 2,
+    nodes: [
+      { ...definition.nodes[0], alias: '活动版本首节点' },
+      { ...definition.nodes[1], alias: '活动版本次节点' },
+    ],
+  };
+  const historicalSnapshot = {
+    ...snapshot, id: 'historical-snapshot', version: 1, definition_hash: 'historical-snapshot-hash', definition: historicalDefinition,
+  };
+  const activeSnapshot = {
+    ...snapshot, id: 'active-snapshot', version: 2, definition_hash: 'active-snapshot-hash', definition: activeDefinition,
+  };
+  const historicalRecord = {
+    ...nodeRun, id: 'historical-record', name: '历史执行记录',
+    attempts: [{ ...attempt, id: 'historical-attempt', node_run_id: 'historical-record', snapshot_id: historicalSnapshot.id }],
+  };
+  const currentRun = {
+    ...run, active_snapshot_id: activeSnapshot.id, active_snapshot_version: activeSnapshot.version,
+    snapshots: [historicalSnapshot, activeSnapshot], node_runs: [historicalRecord],
+  };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([activeDefinition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(activeDefinition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }) });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '历史执行记录' }).click();
+
+  const graph = page.locator('.run-graph');
+  await expect(graph).toContainText('历史冻结首节点');
+  await expect(graph).toContainText('历史冻结次节点');
+  await expect(graph).not.toContainText('活动版本首节点');
+  await expect(graph).toContainText('定义 Hash historic');
+});

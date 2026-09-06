@@ -177,8 +177,10 @@ function SnapshotGraphNode({ data, selected }: NodeProps<Node<SnapshotGraphNodeD
 
 const runSnapshotNodeTypes = { snapshotNode: SnapshotGraphNode };
 
-function reachableNodeKeys(run: FlowRun, startNodeKey?: string): Set<string> {
-  const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
+function reachableNodeKeys(run: FlowRun, startNodeKey?: string, snapshotId?: string): Set<string> {
+  const snapshot = (snapshotId ? run.snapshots.find(item => item.id === snapshotId) : undefined)
+    ?? run.snapshots.find(item => item.id === run.active_snapshot_id)
+    ?? run.snapshots.at(-1);
   if (!startNodeKey || !snapshot) return new Set(snapshot?.definition.nodes.map(node => node.instance_key));
   const downstream = new Map<string, string[]>();
   for (const edge of snapshot.definition.edges ?? []) {
@@ -228,9 +230,14 @@ function readyAutomaticPlanKeys(record?: FlowRunAutomaticRecord): Set<string> {
   return new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
 }
 
-function SnapshotGraph({ run, selectedKey, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; selectedKey?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
+function SnapshotGraph({ run, snapshotId, selectedKey, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; selectedKey?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
-  const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
+  // A NodeAttempt executes against its immutable snapshot.  Its facts and the
+  // graph shown beside them must therefore come from the same definition; the
+  // active snapshot is only the neutral/new-configuration fallback.
+  const snapshot = (snapshotId ? run.snapshots.find(item => item.id === snapshotId) : undefined)
+    ?? run.snapshots.find(item => item.id === run.active_snapshot_id)
+    ?? run.snapshots.at(-1);
   const reachable = useMemo(() => new Set(reachableKeys ?? (snapshot?.definition.nodes ?? []).map(node => node.instance_key)), [reachableKeys, snapshot]);
   const selectable = useMemo(() => new Set(selectableKeys ?? reachable), [reachable, selectableKeys]);
   const configuredPlans = useMemo(() => new Set(configuredPlanKeys), [configuredPlanKeys]);
@@ -844,7 +851,9 @@ function CopyRecordDialog({ mode, sourceName, onClose, onCopy }: { mode: CopyTar
 }
 
 function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }: { parent: FlowRun; record: FlowRunAutomaticRecord; selectedKey?: string; onDraft: (record: FlowRunAutomaticRecord) => void; onSaved: (record: FlowRunAutomaticRecord) => void }) {
-  const snapshot = parent.snapshots.find(item => item.id === parent.active_snapshot_id) ?? parent.snapshots.at(-1);
+  // A continuous record owns its own frozen FlowRun snapshot.  The parent can
+  // later sync to a newer definition, which must not alter this draft's plan.
+  const snapshot = record.snapshots.find(item => item.id === record.active_snapshot_id) ?? record.snapshots.at(-1);
   const [name, setName] = useState(record.name);
   const [plans, setPlans] = useState(record.node_plans);
   const [inputArtifacts, setInputArtifacts] = useState(record.artifacts);
@@ -1076,15 +1085,20 @@ export function WorkbenchPage() {
     }
   };
   const automaticNeutralView = mode === 'AUTOMATIC' && !selectedAutomatic;
+  const graphRun = mode === 'AUTOMATIC' && selectedAutomatic ? selectedAutomatic : run;
+  const selectedExecutionSnapshotId = mode === 'AUTOMATIC'
+    ? selectedAutomaticAttempt?.snapshot_id
+    : attempt?.snapshot_id;
+  const graphSnapshotId = selectedExecutionSnapshotId;
   const graphReachableKeys = mode === 'AUTOMATIC' && selectedAutomatic
       ? selectedAutomatic.reachable_node_keys
-      : reachableNodeKeys(run);
+      : reachableNodeKeys(graphRun, undefined, graphSnapshotId);
   // A new manual run still begins from the graph. Once an execution is selected,
   // however, clicking a never-run node must not discard that selection.
   const graphSelectableKeys = mode === 'AUTOMATIC'
     ? selectedAutomatic
       ? selectedAutomatic.state === 'DRAFT'
-        ? unlockedAutomaticNodeKeys(run, selectedAutomatic)
+        ? unlockedAutomaticNodeKeys(graphRun, selectedAutomatic)
         : new Set(selectedAutomatic.node_runs.map(item => item.flow_node_snapshot_key))
       : new Set<string>()
     : graphReachableKeys;
@@ -1093,6 +1107,13 @@ export function WorkbenchPage() {
   const missingAutomaticPlanKeys = mode === 'AUTOMATIC' && selectedAutomatic?.state === 'DRAFT'
     ? selectedAutomatic.readiness.issues.map(issue => issue.node_key) : [];
   const graphSelectedKey = selectedNodeKey ?? (mode !== 'AUTOMATIC' ? nodeRun?.flow_node_snapshot_key : undefined);
+  // A step run is one FlowRun that pauses at each node: the left rail selects
+  // the node detail, while its graph continues to show the full persisted
+  // step-by-step path. Direct launches are independent single-node sessions,
+  // so their graph must remain scoped to the selected NodeRun.
+  const directExecutionRun = mode === 'DIRECT' && nodeRun
+    ? { ...categorizedRun, node_runs: [nodeRun] }
+    : undefined;
   const showExecutionState = mode !== 'AUTOMATIC'
     ? Boolean(nodeRun)
     : Boolean(selectedAutomatic && selectedAutomatic.state !== 'DRAFT');
@@ -1227,7 +1248,7 @@ export function WorkbenchPage() {
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
         {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
-        <SnapshotGraph run={run} selectedKey={graphSelectedKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={mode === 'AUTOMATIC' ? selectedAutomatic : categorizedRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
+        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} selectedKey={graphSelectedKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={mode === 'AUTOMATIC' ? selectedAutomatic : mode === 'MANUAL' ? categorizedRun : directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
