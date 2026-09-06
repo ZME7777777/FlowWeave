@@ -350,18 +350,31 @@ function ComposerCapabilityAutocomplete({
   const resizeInput = useCallback(() => {
     const textarea = input.current;
     if (!textarea) return;
-    // Reset below the CSS minimum before measuring. Resetting to `auto` can
-    // retain the old layout box. The cap is based on ten text lines, not the
-    // attachment area or an incidental max-height box-model value.
-    textarea.style.height = '0px';
     const styles = window.getComputedStyle(textarea);
     const lineHeight = Number.parseFloat(styles.lineHeight);
     const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
     const minHeight = Math.max(Number.parseFloat(styles.minHeight), lineHeight + verticalPadding);
     const maxHeight = lineHeight * 10 + verticalPadding;
-    const contentHeight = textarea.scrollHeight;
+    // Measure a clone with the cap removed. `scrollHeight` on the live
+    // textarea can retain an old scrollable layout and falsely mark a short
+    // draft as overflowing after a previous long draft.
+    const measurement = textarea.cloneNode() as HTMLTextAreaElement;
+    measurement.value = textarea.value;
+    measurement.setAttribute('aria-hidden', 'true');
+    measurement.style.setProperty('position', 'fixed', 'important');
+    measurement.style.setProperty('visibility', 'hidden', 'important');
+    measurement.style.setProperty('pointer-events', 'none', 'important');
+    measurement.style.setProperty('height', '0px', 'important');
+    measurement.style.setProperty('min-height', '0px', 'important');
+    measurement.style.setProperty('max-height', 'none', 'important');
+    measurement.style.setProperty('overflow-y', 'hidden', 'important');
+    measurement.style.setProperty('width', `${textarea.getBoundingClientRect().width}px`, 'important');
+    document.body.append(measurement);
+    const contentHeight = measurement.scrollHeight;
+    measurement.remove();
     const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
     textarea.style.height = `${height}px`;
+    textarea.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
     setInputOverflowing(current => {
       const next = contentHeight > maxHeight + 1;
       return current === next ? current : next;
