@@ -48,6 +48,10 @@ from flowweave.modules.environments.infrastructure.models import (
     EnvironmentVersion,
     TerminalEnvironment,
 )
+from flowweave.modules.event_automations.infrastructure.models import (
+    EventTriggerAction,
+    EventTriggerVersion,
+)
 from flowweave.modules.flows.infrastructure.models import (
     FlowDefinition,
     FlowEdge,
@@ -119,6 +123,8 @@ __all__ = (
     "MemorySourceVersionReference",
     "EnvironmentSetupSession",
     "EnvironmentVersion",
+    "EventTriggerAction",
+    "EventTriggerVersion",
     "FlowDefinition",
     "FlowEdge",
     "FlowPortMapping",

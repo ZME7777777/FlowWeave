@@ -1,0 +1,1 @@
+"""Event automation persistence adapters."""
