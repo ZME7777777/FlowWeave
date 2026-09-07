@@ -121,6 +121,15 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[]): RuntimeTa
     item.finishedAt = typeof event.payload.timestamp === 'string' ? event.payload.timestamp : item.finishedAt;
     item.outcome = task.outcome;
   }
+  for (const event of events) {
+    if (event.event_type !== 'ERROR' || event.payload.event_name !== 'AgentErrorEvent') continue;
+    const toolCallId = typeof event.payload.tool_call_id === 'string' ? event.payload.tool_call_id : '';
+    const item = toolCallId ? byToolCall.get(toolCallId) : undefined;
+    if (!item) continue;
+    item.status = 'ERROR';
+    item.finishedAt = typeof event.payload.timestamp === 'string' ? event.payload.timestamp : item.finishedAt;
+    item.outcome = { is_error: true, content: event.payload.content };
+  }
   return [...tasks.values()].sort((left, right) => (right.startedAt || '').localeCompare(left.startedAt || ''));
 }
 
@@ -165,7 +174,7 @@ function RuntimeTaskRecord({ task, definitions, onInterrupt, interrupting }: {
       <header><div><span className="eyebrow">SUBAGENT</span><h2>{task.subagentType}</h2><p>{runtimeTaskStatus(task)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div></header>
       <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${task.status.toLowerCase()}`}>{runtimeTaskStatus(task)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}</dl></section>
       <section><h3>子智能体定义</h3>{nativeDefinition ? <p className="agent-subagent-note">这是 OpenHands 原生 <code>{task.subagentType}</code> 类型。当前正式事件未携带可版本化的 FlowWeave Agent Definition，因此不会把它伪装成自定义定义。</p> : <><p>{definition.description || '已发布的 FlowWeave Agent Definition。'}</p><dl><dt>已发布版本</dt><dd>{definition.version}</dd><dt>内容摘要</dt><dd><code>{definition.content_hash.slice(0, 16)}</code></dd>{tools.length > 0 && <><dt>允许工具</dt><dd>{tools.join('、')}</dd></>}{skills.length > 0 && <><dt>技能</dt><dd>{skills.join('、')}</dd></>}</dl><p className="agent-subagent-note">此处展示当前可读取的已发布定义。会话运行时使用的定义版本由 OpenHands 创建请求冻结，事件未提供版本 ID 时不据此声称两者相同。</p></>}</section>
-      {task.status === 'RUNNING' && onInterrupt && <section><h3>停止</h3><p className="agent-subagent-note">OpenHands 原生 Task 不提供单独停止此子智能体的公开接口。停止会中断当前 Agent 回合，并一并停止其中运行的子智能体。</p><button type="button" className="agent-subagent-stop" disabled={interrupting} onClick={onInterrupt}>{interrupting ? '正在停止当前 Agent…' : '停止当前 Agent'}</button></section>}
+      {task.status === 'RUNNING' && onInterrupt && <section><h3>停止</h3><p className="agent-subagent-note">OpenHands 原生 Task 不提供单独停止此子智能体的公开接口。此操作会立即中断父 Agent 的当前等待；平台随后通过 Runtime 隔离保证子智能体物理终止，不会自动恢复被手动暂停的父 Agent。</p><button type="button" className="agent-subagent-stop" disabled={interrupting} onClick={onInterrupt}>{interrupting ? '正在停止当前 Agent…' : '停止当前 Agent'}</button></section>}
       {outcome && <section><h3>执行结果</h3><pre>{outcome}</pre></section>}
     </section>
 }

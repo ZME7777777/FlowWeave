@@ -5,6 +5,11 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_workspaces.application.task_watchdog import (
+    process_task_timeout_confirmation,
+    process_task_timeout_resume,
+    process_task_timeout_watchdog,
+)
 from flowweave.modules.agent_workspaces.public import (
     process_agent_conversation_title,
     process_agent_workspace_runtime,
@@ -86,6 +91,24 @@ def _generate_agent_conversation_title(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
     process_agent_conversation_title(db, aggregate_id, payload, lease)
+
+
+def _watch_agent_task_timeout(
+    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
+) -> None:
+    process_task_timeout_watchdog(db, aggregate_id, payload, lease)
+
+
+def _confirm_agent_task_timeout(
+    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
+) -> None:
+    process_task_timeout_confirmation(db, aggregate_id, payload, lease)
+
+
+def _resume_agent_task_timeout(
+    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
+) -> None:
+    process_task_timeout_resume(db, aggregate_id, payload, lease)
 
 
 def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
@@ -233,6 +256,9 @@ HANDLERS: dict[str, Handler] = {
     "PAUSE_FLOW_RUN_RUNTIME": _pause_flow_run_runtime,
     "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
     "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,
+    "WATCH_AGENT_TASK_TIMEOUT": _watch_agent_task_timeout,
+    "CONFIRM_AGENT_TASK_TIMEOUT": _confirm_agent_task_timeout,
+    "RESUME_AGENT_TASK_TIMEOUT": _resume_agent_task_timeout,
     "POLL_RUNTIME": _poll_runtime,
     "WAIT_RUNTIME_WAKEUP": _wait_runtime_wakeup,
     "RESUME_RUNTIME": _resume_runtime,

@@ -87,6 +87,18 @@ from flowweave.shared.schemas import (
 from flowweave.shared.settings import get_settings
 
 
+def _observe_task_watchdogs_after_send(
+    db: Session, binding: AgentConversationBinding, handle: RuntimeHandle
+) -> None:
+    """Register native Task deadlines immediately after message delivery."""
+
+    from flowweave.modules.agent_workspaces.application.task_watchdog import (
+        observe_task_watchdogs_from_runtime,
+    )
+
+    observe_task_watchdogs_from_runtime(db, binding, handle)
+
+
 def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
     item = db.get(NodeAttempt, attempt_id)
     if item is None:
@@ -1243,6 +1255,9 @@ def bootstrap_node_conversation(
         delivered = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.details.get("outcome_unknown") is True:
+            # Delivery may have succeeded before the transport failed; retain
+            # the native Task watchdog before identity reconciliation.
+            _observe_task_watchdogs_after_send(db, binding, handle)
             try:
                 reconciled = initial_user_event_id(handle, previous_event_id)
             except DomainError:
@@ -1274,6 +1289,7 @@ def bootstrap_node_conversation(
             pass
         _delete_node_bootstrap_reservation(db, binding, command)
         raise
+    _observe_task_watchdogs_after_send(db, binding, handle)
 
     try:
         initial_event_id = delivered.cursor or initial_user_event_id(handle, previous_event_id)
@@ -1588,6 +1604,7 @@ def send_question(
     if provider is not None:
         runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, text, image_urls)
+    _observe_task_watchdogs_after_send(db, item, handle)
     db.add(
         HumanAction(
             flow_run_id=item.flow_run_id,
@@ -1684,6 +1701,7 @@ def send_node_message(
         if provider is not None:
             runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, prompt, image_urls)
+    _observe_task_watchdogs_after_send(db, binding, handle)
     _ensure_blocked_attempt_wakeup(
         db,
         attempt_id=attempt_id,
@@ -2039,6 +2057,7 @@ def rerun_node_message(
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     runtime.navigate(handle, parent_id)
     result = runtime.send_message(handle, content.strip())
+    _observe_task_watchdogs_after_send(db, binding, handle)
     activity_at = now()
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
@@ -2388,9 +2407,7 @@ def resume_node_conversation(
         # are not the Attempt's output-producing Conversation and must never
         # mutate the node orchestration projection.
         result = get_runtime().run(
-            _node_handle(
-                db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-            )
+            _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
         )
         finish(db)
         return {"accepted": True, "cursor": result.cursor}
@@ -2434,11 +2451,7 @@ def resume_node_conversation(
         NodeAttempt.state_version == expected_version,
     ]
     if recover_blocked_attempt:
-        resume_conditions.extend(
-            (
-                NodeAttempt.state == AttemptState.END_BLOCKED,
-            )
-        )
+        resume_conditions.extend((NodeAttempt.state == AttemptState.END_BLOCKED,))
     else:
         resume_conditions.extend(
             (

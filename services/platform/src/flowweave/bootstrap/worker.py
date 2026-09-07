@@ -135,7 +135,12 @@ class TaskWorker:
 
     @staticmethod
     def _task_tenant_context(task: Any):
-        if task.task_type == "GENERATE_AGENT_CONVERSATION_TITLE":
+        if task.task_type in {
+            "GENERATE_AGENT_CONVERSATION_TITLE",
+            "WATCH_AGENT_TASK_TIMEOUT",
+            "CONFIRM_AGENT_TASK_TIMEOUT",
+            "RESUME_AGENT_TASK_TIMEOUT",
+        }:
             return tenant_user(task.owner_user_id)
         return tenant_bypass()
 

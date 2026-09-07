@@ -497,6 +497,38 @@ def _handle(
     )
 
 
+def resolve_task_watchdog_runtime(
+    db: Session, binding_id: str
+) -> tuple[str, AgentConversationBinding, RuntimeHandle, int, str]:
+    """Resolve and fence the active Runtime used by one direct-session watchdog."""
+
+    binding = db.scalar(
+        select(AgentConversationBinding)
+        .where(
+            AgentConversationBinding.id == binding_id,
+            AgentConversationBinding.host_kind == "AGENT_WORKSPACE",
+            AgentConversationBinding.lifecycle == "ACTIVE",
+        )
+        .with_for_update()
+    )
+    if binding is None or binding.workspace_id is None:
+        raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+    workspace = _workspace(db, binding.workspace_id)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    if runtime is None or runtime.active_generation is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    handle = _handle(db, workspace, binding)
+    return (
+        workspace.id,
+        binding,
+        handle,
+        int(runtime.active_generation),
+        handle.runtime_resource_id,
+    )
+
+
 def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
     _workspace(db, workspace_id)
     return [
@@ -886,6 +918,18 @@ def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[st
     }
 
 
+def _observe_task_watchdogs_after_send(
+    db: Session, binding: AgentConversationBinding, handle: RuntimeHandle
+) -> None:
+    """Register native Task deadlines without persisting Conversation data."""
+
+    from flowweave.modules.agent_workspaces.application.task_watchdog import (
+        observe_task_watchdogs_from_runtime,
+    )
+
+    observe_task_watchdogs_from_runtime(db, binding, handle)
+
+
 def normalized_first_sentence(content: str) -> str:
     """A useful local title while the independent metadata task is pending."""
 
@@ -1160,6 +1204,9 @@ def bootstrap_conversation(
         delivered = get_runtime().send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.details.get("outcome_unknown") is True:
+            # The Runtime may have accepted the event before the transport
+            # failed; observe native Task actions before reconciling identity.
+            _observe_task_watchdogs_after_send(db, binding, handle)
             try:
                 reconciled = _initial_user_event_id(handle, previous_event_id)
             except DomainError:
@@ -1186,6 +1233,7 @@ def bootstrap_conversation(
             pass
         _record_bootstrap_failure(db, binding, command, exc)
         raise
+    _observe_task_watchdogs_after_send(db, binding, handle)
     initial_event_id = delivered.cursor or _initial_user_event_id(handle, previous_event_id)
     if initial_event_id is None:
         command.state = "AMBIGUOUS"
@@ -1292,6 +1340,15 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
     batch = get_runtime().read_active_events(replace(handle, cursor=cursor))
+    # A native Task blocks its parent and has no wall-clock timeout. Register
+    # one durable watchdog from formal event identities while this normal REST
+    # recovery read already owns a transaction. No Conversation state is
+    # copied into FlowWeave.
+    from flowweave.modules.agent_workspaces.application.task_watchdog import (
+        observe_task_watchdogs,
+    )
+
+    observe_task_watchdogs(db, binding, batch.events)
     # OpenHands 1.44 persists a Condensation when compaction finishes, but an
     # automatic event/token-triggered compaction has no separate durable start
     # event and the Condensation itself does not retain its trigger reason.
@@ -1764,6 +1821,7 @@ def message(
                     "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
                 ) from exc
             raise
+        _observe_task_watchdogs_after_send(db, binding, handle)
         if result.cursor:
             _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
         activity_at = now()
@@ -1869,6 +1927,7 @@ def message(
                 "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
             ) from exc
         raise
+    _observe_task_watchdogs_after_send(db, binding, handle)
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
@@ -2490,9 +2549,21 @@ def migrate_streaming_conversation(
 
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     workspace = _workspace(db, workspace_id)
-    get_runtime().interrupt(
-        _handle(db, workspace, _binding(db, workspace_id, binding_id, lock=True))
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    handle = _handle(db, workspace, binding)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )
+    if runtime is None or runtime.active_generation is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    native = get_runtime()
+    events = native.read_active_events(handle).events
+    from flowweave.modules.agent_workspaces.application.task_watchdog import (
+        prepare_manual_interrupt,
+    )
+
+    prepare_manual_interrupt(db, binding, events, generation=int(runtime.active_generation))
+    native.interrupt(handle)
 
 
 def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str, bool | str]:
@@ -2546,6 +2617,7 @@ def rewrite_message(
                 "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "重新发送结果不确定，请先刷新会话", 504
             ) from exc
         raise
+    _observe_task_watchdogs_after_send(db, binding, handle)
     activity_at = now()
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at

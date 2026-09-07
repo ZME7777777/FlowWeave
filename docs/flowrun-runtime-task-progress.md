@@ -2732,6 +2732,29 @@ schedule identity，工作台据此派生不可删除的定时目录，并从定
 后台先以 Attempt 状态机取消活跃执行，确认 Runtime 停止后删除精确绑定的 OpenHands Conversation、FlowWeave
 投影、记录工作区、产物和执行图；共享父 FlowRun Runtime 保留。连续运行面板同时开放单 Attempt 取消入口。
 
+### FR-191 Agent Workspace 子智能体超时隔离与父会话续跑 — DONE
+
+依赖：`FR-189`。
+
+目标：只使用固定 OpenHands 1.44.0 正式 Conversation、Event、interrupt、reload 和 run 契约，为直接 Agent
+Workspace 会话中的原生 Task 增加 FlowWeave wall-clock watchdog。watchdog 必须只按正式 `action_id`、
+`tool_call_id` 和事件时间识别未完成 Task；自然完成与超时竞态不得触发 Runtime 替换。到期后先正式 interrupt
+父 Conversation 并确认匹配的 `AgentErrorEvent`，再通过现有受管 generation N→N+1 路径物理清除可能仍在运行的
+Task worker，验证原 Conversation ID 和事件身份后自动执行正式 run，使父 Agent 接收失败工具结果并继续回复。
+BackgroundTask 幂等键和 generation fencing 必须保证重复轮询、Worker 重试及并发恢复只处理一次；恢复失败保持可见，
+不得创建空 Conversation、伪造 `TaskObservation` 或修改 OpenHands 源码。同步修正页面对手动 interrupt 的过强终止
+承诺，并将正式 `AgentErrorEvent.tool_call_id` 投影为对应子智能体失败状态。
+
+验收：不依赖 Docker 的 watchdog 身份匹配、自然完成竞态、interrupt 确认、generation replacement 调度、原身份
+reload 与父会话续跑定向测试；受影响 Python Ruff／`py_compile`、Web ESLint／TypeScript typecheck、Alembic head、
+任务状态唯一性与 `git diff --check`。完成后使用独立 Git commit，并停止，不进入部署或下一切片。
+
+完成：服务端在每次消息成功交付后以及事件读取补偿路径读取 OpenHands active events，按正式 Task action/tool identity
+登记幂等 wall-clock watchdog；不依赖浏览器持续连接。到期先调用父 Conversation 的正式 interrupt，确认匹配
+`AgentErrorEvent` 后进入现有 Runtime generation replacement，复用原 Conversation ID 和事件身份 reload，并以正式
+`run` 续跑父会话。手动 interrupt 会撤销自动 deadline、fence 已 claim 但尚未执行的 watchdog，并把确认任务标记为
+`resume_parent=false`；自然完成竞态不替换 Runtime。未修改 OpenHands 源码、Conversation/Event 内容或 FlowRun 拓扑。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2747,6 +2770,7 @@ schedule identity，工作台据此派生不可删除的定时目录，并从定
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-191 | watchdog 身份／竞态／lease fencing 定向 pytest（9 passed）；受影响 Python Ruff format/check、`py_compile`、watchdog 定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：消息服务端发送成功后和 bootstrap 路径立即登记 Task deadline，事件读取保留补偿扫描；手动暂停不会误触发已 claim watchdog 或自动恢复父会话；超时在正式错误确认后调度 generation replacement、原 ID reload 和父会话续跑。唯一 Alembic head 为 `0098_schedule_templates_cron`。本机 Docker daemon 不可用，未运行依赖 Testcontainers PostgreSQL 的业务集成测试，未伪记为通过。 |
 | 2026-09-07 | FR-190 | 受影响 Python Ruff、`py_compile`；Web ESLint、TypeScript typecheck、production build；定时任务与 FlowRun 工作台定向 Playwright（14 passed）；目标 pytest 收集（6 collected）；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态、构建与浏览器）：整行展开、立即运行反馈、父 FlowRun 连续记录恢复、派生目录、活跃记录删除、连续 Attempt 取消和错误反馈均通过浏览器回归；唯一 Alembic head 为 `0098_schedule_templates_cron`。6 项数据库定向 pytest 在断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 setup errors，未伪记为通过。受影响的 4 个 Python 文件 Ruff format check 命中提交前已存在的格式基线，本切片未扩大无关格式化。 |
 | 2026-09-06 | FR-189 | OpenHands 非严格事件页解码与原生 Task 生命周期定向 pytest（2 passed）；受影响 Python Ruff/Pyright；Web ESLint、TypeScript typecheck、production build；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：含未转义换行的受管 OpenHands 响应可被读取，后续事件结构与正式 identity 校验不变；当前轮会显示具体工具或子代理任务说明。子代理面板仅提供受原生 interrupt 支持的“停止当前 Agent”，不伪造单子代理取消。 |
 | 2026-09-06 | FR-188 | OpenHands 嵌套流与 HTTPX response 定向 pytest（3 passed）；WebSocket／普通取消／AnyIO 取消域回收直接单元检查（3 passed）；受影响 Python Ruff、`py_compile`、定向 Pyright；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS：消费端断开依次关闭 WebSocket Runtime 流、控制器子流和 HTTPX response；Runtime Provider 在 `StreamingResponse` 取消域已触发后仍完成远端 PID 回收和本地 `docker exec` 退出。数据库型测试入口仍受本机 Docker daemon 不可用阻断，当前回归均不依赖数据库并已直接执行。生产断连和中继活动数将在 commit 绑定定向部署后验证。 |

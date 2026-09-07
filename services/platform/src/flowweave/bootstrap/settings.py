@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     ide_ssh_port: int = Field(default=22, ge=1, le=65_535)
     conversation_limit_per_flow_run: int = Field(default=20, ge=1, le=100)
     conversation_message_max_chars: int = Field(default=20_000, ge=1, le=100_000)
+    # OpenHands Task is intentionally blocking and has no native wall-clock
+    # timeout. FlowWeave watches the formal TaskAction/AgentError identities
+    # and replaces the owned Runtime generation if this deadline is exceeded.
+    agent_task_timeout_seconds: int = Field(default=600, ge=30, le=3600)
 
     artifact_backend: str = "local"
     artifact_root: Path = Path("./var/artifacts")

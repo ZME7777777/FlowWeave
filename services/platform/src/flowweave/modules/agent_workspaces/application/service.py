@@ -21,12 +21,12 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.environments.public import resolve_setup_image
 from flowweave.modules.sandboxes.public import DockerSandboxProvider, ManagedSandbox, backend_name
 from flowweave.modules.tasks.public import enqueue
+from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID
 from flowweave.shared.credentials_crypto import decrypt_secret, encrypt_secret
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import BackgroundTask, TaskState
 from flowweave.shared.settings import get_settings
-from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID
 
 _SCOPE_KEY = "platform-default"
 _ROOT = PurePosixPath(".agent-workspaces")
@@ -614,7 +614,14 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
     db.flush()
 
 
-def mark_agent_workspace_runtime_lost(db: Session, workspace_id: str, sandbox_id: str) -> None:
+def mark_agent_workspace_runtime_lost(
+    db: Session,
+    workspace_id: str,
+    sandbox_id: str,
+    *,
+    failure_code: str = "SANDBOX_RUNTIME_LOST",
+    failure_summary: str = "The Agent Runtime is being replaced",
+) -> None:
     runtime = db.scalar(
         select(AgentWorkspaceRuntime)
         .join(
@@ -630,8 +637,8 @@ def mark_agent_workspace_runtime_lost(db: Session, workspace_id: str, sandbox_id
     if runtime is None:
         return
     runtime.status = "RECONNECTING"
-    runtime.failure_code = "SANDBOX_RUNTIME_LOST"
-    runtime.failure_summary = "The Agent Runtime is being replaced"
+    runtime.failure_code = failure_code[:100]
+    runtime.failure_summary = failure_summary[:2000]
     runtime.row_version += 1
     resource = db.get(ManagedSandbox, sandbox_id)
     if resource is not None:
