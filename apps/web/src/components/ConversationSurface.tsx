@@ -2,7 +2,7 @@ import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, File
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentAttachment, AgentConversationReference, OpenHandsConversationEvent } from '../types';
+import type { AgentAttachment, AgentConversationReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
@@ -893,8 +893,26 @@ function isPauseInterruption(item: Item): boolean {
   return isPauseInterruptionEvent(item.event);
 }
 
-function ConversationFailure({ item }: { item: Item }) {
+function isManualTaskInterruption(item: Item, taskControl: RuntimeTaskControlSnapshot[]): boolean {
+  if (item.event.event_type !== 'ERROR') return false;
+  const toolCallId = typeof item.event.payload.tool_call_id === 'string' ? item.event.payload.tool_call_id : '';
+  if (!toolCallId) return false;
+  return taskControl.some(control => control.tool_call_id === toolCallId && [
+    'INTERRUPT_CONFIRMING',
+    'INTERRUPT_CONFIRMED',
+    'INTERRUPT_CONFIRMATION_FAILED',
+    'RUNTIME_REPLACING',
+    'RECOVERED',
+  ].includes(control.control_state));
+}
+
+function ConversationFailure({ item, taskControl = [] }: { item: Item; taskControl?: RuntimeTaskControlSnapshot[] }) {
   if (isPauseInterruption(item)) return null;
+  if (isManualTaskInterruption(item, taskControl)) {
+    return <article className="conversation-interruption" data-turn-terminal="true" data-event-id={item.event.id} role="status">
+      <Check size={15}/><div><b>本轮已按你的操作停止</b><p>你主动停止了当前 Agent 执行，部分子智能体尚未返回结果，本轮不会继续生成回复。</p><small>子智能体结果未确认</small></div>
+    </article>;
+  }
   const code = typeof item.event.payload.error_code === 'string' ? item.event.payload.error_code : '';
   // OpenHands 1.42 emitted failed auto-title metadata as a regular terminal
   // ConversationErrorEvent. The runtime patch prevents new events; this is a
@@ -915,7 +933,7 @@ function ConversationFailure({ item }: { item: Item }) {
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference }: {
+export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [] }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -929,6 +947,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   onOpenAttachment?: (attachment: AgentAttachment) => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onAddReference?: (reference: ConversationReference) => void;
+  taskControl?: RuntimeTaskControlSnapshot[];
 }) {
   const surface = useRef<HTMLElement>(null);
   const shell = useRef<HTMLDivElement>(null);
@@ -1119,7 +1138,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
             />)}
           {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting}/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile}/>}
-          {failures.map(item => <ConversationFailure key={item.event.id} item={item}/>)}
+          {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
       {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}

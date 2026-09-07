@@ -2890,6 +2890,16 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 完成：`INTERRUPT_CONFIRMED`、`RECOVERED` 和恢复失败阶段不再计入活动任务；耗时在平台控制阶段结束时冻结，
 页面明确显示“中断已确认，结果未返回”或对应恢复状态，保留 OpenHands 结果未确认的事实边界。
 
+### FR-201 用户主动停止提示样式 — DONE
+
+依赖：`FR-200`。
+
+目标：用户主动停止 Agent 后，Conversation Surface 不应展示底层模型/工具异常卡片；仅在错误事件能够通过正式
+`tool_call_id` 对上中断控制记录时，显示与会话风格一致的停止提醒。
+
+完成：新增绿色中性“本轮已按你的操作停止”提醒，说明部分子智能体结果尚未返回；普通 LLM、工具和网络错误仍按
+原错误卡片展示，避免把真实故障误归因于用户停止。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2905,6 +2915,7 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-201 | Web ESLint、TypeScript typecheck；`git diff --check` | PASS：中断关联错误事件显示用户主动停止提醒并隐藏底层异常详情；非中断错误渲染路径保持不变。 |
 | 2026-09-07 | FR-200 | Web TypeScript typecheck；`git diff --check` | PASS：中断确认后的子任务不再显示为运行中、不再显示停止按钮或继续累加耗时；未修改 OpenHands。 |
 | 2026-09-07 | FR-199 | Agent Task watchdog 定向 pytest（9 passed）；受影响 Python `py_compile`；Web TypeScript typecheck；`git diff --check` | PASS：watchdog 控制阶段通过事件响应投影给 Agent Workspace 与 FlowRun 节点会话，前端可区分观察、超时、确认中断、Runtime 恢复和处理失败；未修改 OpenHands，未声称子 Agent 已被单独取消。 |
 | 2026-09-07 | FR-198 | Web ESLint、TypeScript typecheck、production build；新增连续运行自动交接定向 Playwright；`git diff --check` 与任务状态唯一性 | PASS：连续 Attempt 在 `WAITING_START_CONFIRMATION` 显示自动启动提示且不暴露逐步运行人工启动文案／按钮；逐步运行既有保存配置后左侧启动回归通过。整份工作台 Playwright 套件另有 2 条既有断言漂移（请求现含 `force_advance: false`、会话删除按钮使模糊角色选择器不再唯一），与本切片无关，未伪记为通过。 |

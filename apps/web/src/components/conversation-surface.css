@@ -139,6 +139,11 @@
 .conversation-failure b{font-size:12px}
 .conversation-failure p{margin:3px 0 0}
 .conversation-failure small{display:block;margin-top:5px;color:#a46a62;font:10px 'DM Mono',ui-monospace,monospace}
+.conversation-interruption{display:flex;align-items:flex-start;gap:9px;margin:0;border:1px solid #d8e6dc;border-radius:10px;background:#f5faf6;padding:11px 12px;color:#3f604c;font-size:12px;line-height:1.55}
+.conversation-interruption>svg{flex:0 0 auto;margin-top:2px;color:#4c9564}
+.conversation-interruption b{font-size:12px}
+.conversation-interruption p{margin:3px 0 0}
+.conversation-interruption small{display:block;margin-top:5px;color:#72927d;font:10px 'DM Mono',ui-monospace,monospace}
 .conversation-activity-command,.conversation-activity-path{display:block;max-width:100%;overflow:auto;margin-top:6px;border-radius:6px;background:#f2f4f2;padding:5px 7px;color:#546259;font:10px/1.45 'DM Mono',ui-monospace,monospace;white-space:pre-wrap}
 .conversation-activity-path{width:fit-content;background:transparent;padding:0;color:#7a877e}
 @media(min-width:760px){.conversation-surface{padding-left:clamp(54px,7vw,128px)}
