@@ -85,7 +85,7 @@ async def set_flow_run_schedule_state(
     )
 
 
-@router.post("/flow-run-schedules/{schedule_id}/trigger")
+@router.post("/flow-run-schedules/{schedule_id}/trigger", status_code=202)
 async def trigger_flow_run_schedule(schedule_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.trigger_flow_run_schedule(session, schedule_id)
@@ -166,18 +166,15 @@ async def start_nested_automatic_run(
 
 @router.delete(
     "/flow-runs/{parent_run_id}/automatic-runs/{run_id}",
-    status_code=204,
+    status_code=202,
     response_class=Response,
 )
 async def delete_nested_automatic_run(parent_run_id: str, run_id: str, db: Db) -> Response:
     await run_sync(
         db,
-        lambda session: (
-            service.nested_automatic_run(session, parent_run_id, run_id),
-            service.delete_run(session, run_id),
-        )[1],
+        lambda session: service.delete_nested_automatic_run_record(session, parent_run_id, run_id),
     )
-    return Response(status_code=204)
+    return Response(status_code=202)
 
 
 @router.post("/flow-runs/{parent_run_id}/automatic-runs/{run_id}/copy", status_code=201)
@@ -302,10 +299,10 @@ async def node_run(run_id: str, node_run_id: str, db: Db) -> dict[str, Any]:
     return result
 
 
-@router.delete("/flow-runs/{run_id}/nodes/{node_run_id}", status_code=204, response_class=Response)
+@router.delete("/flow-runs/{run_id}/nodes/{node_run_id}", status_code=202, response_class=Response)
 async def delete_node_run(run_id: str, node_run_id: str, db: Db) -> Response:
     await run_sync(db, lambda session: service.delete_node_run(session, run_id, node_run_id))
-    return Response(status_code=204)
+    return Response(status_code=202)
 
 
 @router.post("/flow-runs/{run_id}/artifacts", status_code=201)

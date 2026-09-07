@@ -2711,6 +2711,27 @@ JSON 解析失败、继而在刷新后丢失未终态工具身份并误显示为
 运行中的子代理详情新增“停止当前 Agent”入口，明确说明这是父 Conversation 的正式 interrupt，会中止该回合内
 所有运行中的子代理；固定 OpenHands 1.44.0 没有公开的单 child cancel API。
 
+### FR-190 定时连续运行归属与记录删除闭环 — DONE
+
+依赖：`FR-189`。
+
+目标：定时任务每次 occurrence 必须在原始用户 FlowRun 内物化为连续运行记录，并按定时任务名称形成仅由记录派生的
+目录；目录不提供删除操作，最后一条记录删除后自然消失。定时详情进入记录时必须恢复原父 FlowRun、连续运行 Tab、
+目标连续记录及其 NodeRun／Attempt，不得把内部子 FlowRun 当作新的顶层逐步运行。定时任务流程／母版行的可点击区域
+铺满空白区，整行均可展开；“立即运行”提供防重复忙碌态及成功／失败反馈。
+
+逐步与连续运行的活跃记录都允许直接请求删除：平台先以正式 Attempt 状态机发起后台取消，再在 Runtime 停止后删除
+精确绑定的 OpenHands 原生 Conversation、FlowWeave 会话投影、记录工作区、产物和执行图。删除任务必须持久、幂等、
+可恢复，不能删除共享父 FlowRun Runtime／Workspace，也不能绕过下游产物引用保护。连续运行 Attempt 同时提供
+“取消本轮节点执行”入口。验收覆盖调度父归属／详情导航／派生目录、触发反馈、整行展开、活跃记录异步删除、原生
+会话与工作区回收，以及失败可见反馈；完成后提交独立 Git commit 并停止，不进入部署。
+
+完成：定时 occurrence 继续复用正式连续运行内部子记录，但父归属固定为母版所在的原始人工 FlowRun；公开详情携带
+schedule identity，工作台据此派生不可删除的定时目录，并从定时详情恢复父 FlowRun、连续运行 Tab、记录、NodeRun
+和 Attempt。流程／母版整行均可展开，“立即运行”提供忙碌态与成功／错误反馈。逐步和连续记录删除统一返回 202，
+后台先以 Attempt 状态机取消活跃执行，确认 Runtime 停止后删除精确绑定的 OpenHands Conversation、FlowWeave
+投影、记录工作区、产物和执行图；共享父 FlowRun Runtime 保留。连续运行面板同时开放单 Attempt 取消入口。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2726,6 +2747,7 @@ JSON 解析失败、继而在刷新后丢失未终态工具身份并误显示为
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-190 | 受影响 Python Ruff、`py_compile`；Web ESLint、TypeScript typecheck、production build；定时任务与 FlowRun 工作台定向 Playwright（14 passed）；目标 pytest 收集（6 collected）；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态、构建与浏览器）：整行展开、立即运行反馈、父 FlowRun 连续记录恢复、派生目录、活跃记录删除、连续 Attempt 取消和错误反馈均通过浏览器回归；唯一 Alembic head 为 `0098_schedule_templates_cron`。6 项数据库定向 pytest 在断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 setup errors，未伪记为通过。受影响的 4 个 Python 文件 Ruff format check 命中提交前已存在的格式基线，本切片未扩大无关格式化。 |
 | 2026-09-06 | FR-189 | OpenHands 非严格事件页解码与原生 Task 生命周期定向 pytest（2 passed）；受影响 Python Ruff/Pyright；Web ESLint、TypeScript typecheck、production build；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：含未转义换行的受管 OpenHands 响应可被读取，后续事件结构与正式 identity 校验不变；当前轮会显示具体工具或子代理任务说明。子代理面板仅提供受原生 interrupt 支持的“停止当前 Agent”，不伪造单子代理取消。 |
 | 2026-09-06 | FR-188 | OpenHands 嵌套流与 HTTPX response 定向 pytest（3 passed）；WebSocket／普通取消／AnyIO 取消域回收直接单元检查（3 passed）；受影响 Python Ruff、`py_compile`、定向 Pyright；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS：消费端断开依次关闭 WebSocket Runtime 流、控制器子流和 HTTPX response；Runtime Provider 在 `StreamingResponse` 取消域已触发后仍完成远端 PID 回收和本地 `docker exec` 退出。数据库型测试入口仍受本机 Docker daemon 不可用阻断，当前回归均不依赖数据库并已直接执行。生产断连和中继活动数将在 commit 绑定定向部署后验证。 |
 | 2026-09-06 | FR-187 | 受影响 Python Ruff、`py_compile`、定向 Pyright；并发取消／槽位回收、上下文传播、慢日志脱敏和中继 PID／心跳过滤直接单元检查；Linux 容器内中继控制探针；Compose 解析、Alembic head、任务状态唯一性与 `git diff --check` | PASS（实现与直接探针）：直接单元检查全部通过，Linux `/proc` 中继启动控制记录有效，Compose 解析和受影响文件 Ruff／语法检查通过。正式定向 pytest 9 项可收集，但隔离空库迁移在断言前被既有 `0092_node_run_names` 重复添加 `node_runs.name` 阻断，未伪记为通过；全量 Pyright 仍有仓库既有诊断，本切片新增基础设施文件无新增诊断。`compose_security_check.py` 仍因既有 stream-api 连接 docker-control 的基线规则失败，原始 Compose 语法有效。生产故障会话已在保留 Workspace、OpenHands state 与原 Conversation ID 的前提下清理 26 个孤儿中继并仅重启其 Runtime，events/search 恢复到约 76ms。 |

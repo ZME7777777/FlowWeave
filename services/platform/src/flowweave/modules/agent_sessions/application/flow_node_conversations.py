@@ -1973,6 +1973,38 @@ def delete_node_conversation(
     finish(db)
 
 
+def delete_flow_node_conversation_for_record_cleanup(
+    db: Session,
+    *,
+    flow_run_id: str,
+    binding_id: str,
+    expected_node_run_id: str | None = None,
+) -> None:
+    """Delete one native node Conversation during durable record cleanup.
+
+    Record deletion runs only after the Attempt state machine has made the
+    session read-only, so the normal user-write fence is intentionally not
+    applicable.  The immutable binding still has to belong to the exact
+    FlowRun and, when supplied, NodeRun selected for deletion.
+    """
+
+    binding = _binding_for_run(
+        db,
+        flow_run_id,
+        binding_id,
+        lock=True,
+        allow_gate_sidecar=True,
+    )
+    if expected_node_run_id is not None and binding.node_run_id != expected_node_run_id:
+        raise not_found("flow_run_conversation_binding", binding_id)
+    try:
+        get_runtime().delete_conversation(_handle(db, binding.id))
+    except DomainError as exc:
+        if exc.code != "RUNTIME_CONVERSATION_MISSING":
+            raise
+    delete_binding_records(db, binding.id)
+
+
 def rerun_node_message(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str, event_id: str, content: str
 ) -> dict[str, Any]:

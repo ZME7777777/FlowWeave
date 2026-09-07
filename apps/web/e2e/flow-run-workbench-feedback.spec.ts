@@ -651,7 +651,7 @@ test('FR-130 running automatic records show execution facts and chat attempts su
   await expect(page.locator('.run-graph-node.failed')).toContainText('完成条件未通过');
   await expect(page.locator('.run-graph-node.failed')).toHaveCSS('border-top-color', 'rgb(184, 72, 72)');
   await expect(page.locator('.run-graph-node.automatic-locked')).toContainText('测试节点2');
-  await expect(page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' })).toHaveCount(0);
+  await expect(page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' })).toBeVisible();
 });
 
 test('returning from an automatic node session preserves the selected automatic record', async ({ page }) => {
@@ -720,7 +720,7 @@ test('returning from an automatic node session preserves the selected automatic 
   await expect(page.locator('.attempt-control')).toContainText('END_BLOCKED');
 });
 
-test('cancelled manual records return to the neutral graph and can be deleted', async ({ page }) => {
+test('active manual records can be deleted through background cancellation and cleanup', async ({ page }) => {
   let currentRun = run;
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -765,25 +765,9 @@ test('cancelled manual records return to the neutral graph and can be deleted', 
 
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
   await deleteButton.click();
-  const blockedDeleteDialog = page.getByRole('alertdialog');
-  await expect(blockedDeleteDialog).toContainText('所选记录仍在执行中');
-  await expect(blockedDeleteDialog).toContainText('请先在右侧取消本轮节点执行');
-  await blockedDeleteDialog.getByRole('button', { name: '我知道了', exact: true }).click();
-  await page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' }).click();
-  const cancelDialog = page.getByRole('alertdialog');
-  await expect(cancelDialog).toContainText('其他节点执行和整个流程不会被取消');
-  await cancelDialog.getByRole('button', { name: '取消本轮执行' }).click();
-
-  await expect(page.locator('.run-side-panel')).toHaveCount(0);
-  await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
-  await expect(page.getByTestId('flow-run-state')).toHaveText('运行中');
-  await expect(page.locator('.run-graph')).toContainText('未选择逐步运行记录，当前显示中性流程定义');
-
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
-  await expect(deleteButton).toBeEnabled();
-  await deleteButton.click();
   const deleteDialog = page.getByRole('alertdialog');
-  await expect(deleteDialog).toContainText('FlowRun、共享 Runtime 和 OpenHands 状态继续保留');
+  await expect(deleteDialog).toContainText('后台会先取消仍在运行的节点');
+  await expect(deleteDialog).toContainText('OpenHands 会话、记录工作区、产物和执行记录');
   await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
 
   await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
@@ -829,7 +813,7 @@ test('waiting-input manual records can be deleted without cancellation', async (
   await expect(deleteButton).toBeEnabled();
   await deleteButton.click();
   const deleteDialog = page.getByRole('alertdialog');
-  await expect(deleteDialog).toContainText('节点执行记录与产物将被永久删除');
+  await expect(deleteDialog).toContainText('OpenHands 会话、记录工作区、产物和执行记录');
   await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
   await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 });
@@ -867,7 +851,7 @@ test('unstarted chat records can be deleted without a cancellation round trip', 
   await expect(deleteButton).toBeEnabled();
   await deleteButton.click();
   const deleteDialog = page.getByRole('alertdialog');
-  await expect(deleteDialog).toContainText('FlowRun、共享 Runtime 和 OpenHands 状态继续保留');
+  await expect(deleteDialog).toContainText('OpenHands 会话、记录工作区、产物和执行记录');
   await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
 
   await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
@@ -886,8 +870,8 @@ test('manual and automatic records support modifier selection for deletion while
   ];
   let currentRun = { ...run, node_runs: manualRecords };
   let automaticRecords = [
-    { ...frozenAutomaticBase, id: 'automatic-record-1', name: '自动记录 1' },
-    { ...frozenAutomaticBase, id: 'automatic-record-2', name: '自动记录 2', run_no: 3 },
+    { ...frozenAutomaticBase, id: 'automatic-record-1', name: '自动记录 1', schedule_id: 'schedule-1', schedule_name: '每小时检查' },
+    { ...frozenAutomaticBase, id: 'automatic-record-2', name: '自动记录 2', run_no: 3, schedule_id: 'schedule-1', schedule_name: '每小时检查' },
   ];
   const deletedManualIds: string[] = [];
   const deletedAutomaticIds: string[] = [];
@@ -933,17 +917,20 @@ test('manual and automatic records support modifier selection for deletion while
   await expect(manualDelete).toBeEnabled();
   await manualDelete.click();
   const manualDialog = page.getByRole('alertdialog');
-  await expect(manualDialog).toContainText('2 条节点执行记录与产物将被永久删除');
+  await expect(manualDialog).toContainText('这 2 条记录的 OpenHands 会话、工作区、产物和执行数据');
   await manualDialog.getByRole('button', { name: '删除', exact: true }).click();
   await expect.poll(() => deletedManualIds).toEqual(['manual-record-1', 'manual-record-2']);
   await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 
   await page.getByRole('tab', { name: '连续运行' }).click();
+  const scheduleDirectory = page.locator('.automatic-schedule-directory');
+  await expect(scheduleDirectory.getByRole('button', { name: /每小时检查/ })).toHaveAttribute('aria-expanded', 'true');
+  await expect(scheduleDirectory.getByRole('button', { name: /删除/ })).toHaveCount(0);
   const automaticFirst = page.locator('.automatic-record-select').filter({ hasText: '自动记录 1' });
   const automaticSecond = page.locator('.automatic-record-select').filter({ hasText: '自动记录 2' });
   await automaticFirst.click();
   await automaticSecond.click({ modifiers: ['Shift'] });
-  await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(2);
+  await expect(page.locator('.automatic-schedule-directory-records > article.active')).toHaveCount(2);
   await page.getByRole('button', { name: '拷贝', exact: true }).click();
   const copyDialog = page.getByRole('dialog', { name: '拷贝连续运行记录' });
   await expect(copyDialog.getByRole('textbox', { name: '副本名称' })).toHaveValue('自动记录 2 · 副本');
@@ -951,10 +938,10 @@ test('manual and automatic records support modifier selection for deletion while
   const automaticDelete = page.locator('.automatic-record-toolbar').getByRole('button', { name: '删除 (2)' });
   await automaticDelete.click();
   const automaticDialog = page.getByRole('alertdialog');
-  await expect(automaticDialog).toContainText('2 条记录的计划、执行历史与产物将被永久删除');
+  await expect(automaticDialog).toContainText('这 2 条记录的 OpenHands 会话、工作区、产物和执行历史');
   await automaticDialog.getByRole('button', { name: '删除', exact: true }).click();
   await expect.poll(() => deletedAutomaticIds).toEqual(['automatic-record-1', 'automatic-record-2']);
-  await expect(page.locator('.automatic-record-list > article')).toHaveCount(0);
+  await expect(page.locator('.automatic-schedule-directory')).toHaveCount(0);
 });
 
 test('the step graph keeps the full persisted path while selecting node details', async ({ page }) => {

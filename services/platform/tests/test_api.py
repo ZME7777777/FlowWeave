@@ -18,7 +18,9 @@ from flowweave.modules.agent_workspaces.public import (
 from flowweave.modules.orchestration.application import service as orchestration_service
 from flowweave.modules.sandboxes.infrastructure.docker import DockerSandboxProvider
 from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch
+from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
+from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AgentConversationBinding,
@@ -46,6 +48,7 @@ from flowweave.shared.models import (
     TaskState,
     TerminalEnvironment,
 )
+from flowweave.shared.settings import settings_context
 
 
 def asset_payload(name="方案生成", skill=None):
@@ -625,6 +628,7 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     class ReconciledBootstrapRuntime(MockRuntime):
         sent = 0
         expose_first_event = False
+        deleted_conversation_ids: list[str] = []
 
         def send_message(self, handle, content, image_urls=()):
             self.sent += 1
@@ -650,6 +654,10 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
                     ),
                 )
             )
+
+        def delete_conversation(self, handle):
+            self.deleted_conversation_ids.append(handle.conversation_id)
+            super().delete_conversation(handle)
 
     recovered_runtime = ReconciledBootstrapRuntime()
     client.app.state.container.runtime = recovered_runtime
@@ -718,6 +726,23 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
         # writable so rootless bind mounts can publish and roll back bundles.
         assert capabilities.stat().st_mode & 0o777 == 0o700
     assert node_run["flow_node_snapshot_key"] == "design_b"
+    record_workspace = Path(attempt["workspace_ref"])
+    assert record_workspace.is_dir()
+    deleted = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{node_run['id']}")
+    assert deleted.status_code == 202, deleted.text
+    app_container = client.app.state.container
+    with (
+        settings_context(app_container.settings),
+        runtime_context(recovered_runtime),
+        artifact_store_context(app_container.artifact_store),
+        db_session_factory() as db,
+    ):
+        orchestration_service.process_delete_node_run_record(db, node_run["id"], run["id"])
+    with db_session_factory() as db:
+        assert db.get(AgentConversationBinding, binding_id) is None
+        assert db.get(NodeRun, node_run["id"]) is None
+    assert recovered_runtime.deleted_conversation_ids == [binding_id]
+    assert not record_workspace.exists()
     client.app.state.container.runtime = original_runtime
 
 
@@ -911,7 +936,7 @@ def test_session_only_node_launch_skips_inputs_gates_outputs_and_runtime_executi
 
 
 def test_session_only_node_can_submit_explicit_outputs_and_enter_acceptance(
-    client, skill_capability
+    client, skill_capability, db_session_factory
 ):
     asset = create_asset(client, skill_capability, name="人工会话产出节点")
     flow = create_flow(client, asset["id"])
@@ -983,7 +1008,15 @@ def test_session_only_node_can_submit_explicit_outputs_and_enter_acceptance(
     deleted = client.delete(
         f"/api/v1/flow-runs/{run['id']}/nodes/{direct_records[0]['id']}"
     )
-    assert deleted.status_code == 204, deleted.text
+    assert deleted.status_code == 202, deleted.text
+    app_container = client.app.state.container
+    with (
+        settings_context(app_container.settings),
+        runtime_context(app_container.runtime),
+        artifact_store_context(app_container.artifact_store),
+        db_session_factory() as db,
+    ):
+        orchestration_service.process_delete_node_run_record(db, direct_records[0]["id"], run["id"])
     assert client.get(f"/api/v1/flow-runs/{run['id']}").json()["node_runs"] == []
 
 
@@ -2774,7 +2807,15 @@ def test_delete_unstarted_manual_node_run_preserves_runtime_and_restores_neutral
         assert runtime_id is not None
 
     deleted = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{created['id']}")
-    assert deleted.status_code == 204, deleted.text
+    assert deleted.status_code == 202, deleted.text
+    app_container = client.app.state.container
+    with (
+        settings_context(app_container.settings),
+        runtime_context(app_container.runtime),
+        artifact_store_context(app_container.artifact_store),
+        db_session_factory() as db,
+    ):
+        orchestration_service.process_delete_node_run_record(db, created["id"], run["id"])
     assert not record_workspace.exists()
     detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
     assert detail["state"] == "ACTIVE"
@@ -2799,7 +2840,9 @@ def test_delete_unstarted_manual_node_run_preserves_runtime_and_restores_neutral
     assert other.json()["flow_node_snapshot_key"] == "design_b"
 
 
-def test_delete_waiting_input_manual_node_run_without_cancellation(client, skill_capability):
+def test_delete_waiting_input_manual_node_run_without_cancellation(
+    client, skill_capability, db_session_factory
+):
     asset = create_asset(client, skill_capability, "删除待输入记录")
     flow = create_flow(client, asset["id"])
     run = client.post(
@@ -2812,7 +2855,15 @@ def test_delete_waiting_input_manual_node_run_without_cancellation(client, skill
     assert waiting_attempt["runtime_phase"] is None
 
     deleted = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{waiting_record['id']}")
-    assert deleted.status_code == 204, deleted.text
+    assert deleted.status_code == 202, deleted.text
+    app_container = client.app.state.container
+    with (
+        settings_context(app_container.settings),
+        runtime_context(app_container.runtime),
+        artifact_store_context(app_container.artifact_store),
+        db_session_factory() as db,
+    ):
+        orchestration_service.process_delete_node_run_record(db, waiting_record["id"], run["id"])
 
     detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
     assert detail["state"] == "ACTIVE"

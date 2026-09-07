@@ -866,3 +866,27 @@ body:has(.login-page){min-width:0}
   .login-page .login-panel .login-card form{margin-top:24px}
 }
 .schedule-master-group{margin:4px 0;border:1px solid #e2e9e4;border-radius:8px;background:#f9fbf9}.schedule-master-group>header{padding:9px 10px}.schedule-name{display:flex;min-width:0;align-items:center;gap:7px;color:var(--green)}.schedule-name>span{display:grid;min-width:0;gap:3px}.schedule-name b,.schedule-name small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.schedule-name b{color:var(--ink);font-size:12px}.schedule-name small{color:var(--muted);font-size:9px}.schedule-detail-dialog{width:min(760px,94vw);max-height:min(760px,88vh);display:flex;flex-direction:column}.schedule-occurrence-list{min-height:180px;overflow:auto;padding:4px 0}.schedule-occurrence-record{border:1px solid #dce5df;border-radius:8px;background:#fff;padding:10px}.schedule-occurrence-record+.schedule-occurrence-record{margin-top:8px}.schedule-occurrence-record>header{display:flex;align-items:flex-start;gap:7px;color:var(--green)}.schedule-occurrence-record>header span{display:grid;gap:3px}.schedule-occurrence-record>header b{color:var(--ink);font-size:11px}.schedule-occurrence-record>header small,.schedule-occurrence-record>p{margin:0;color:var(--muted);font-size:9px}.schedule-occurrence-nodes{display:grid;gap:5px;margin-top:9px}.schedule-occurrence-nodes button{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:7px;border:1px solid #e1e8e3;border-radius:6px;background:#fafcfb;padding:7px;color:var(--green);text-align:left}.schedule-occurrence-nodes button:hover{border-color:#91b49d;background:#eff7f1}.schedule-occurrence-nodes span{display:grid;gap:2px;min-width:0}.schedule-occurrence-nodes b{color:#425148;font-size:10px}.schedule-occurrence-nodes small{color:var(--muted);font-size:9px}
+
+/* FR-190: hierarchy headers are full-row disclosure controls. */
+.schedule-flow-group>header{padding:0}
+.schedule-flow-group>header .schedule-tree-toggle,.schedule-master-group>header .schedule-tree-toggle{width:100%;flex:1;padding:12px 14px}
+.schedule-master-group>header{padding:0}
+.schedule-master-group>header .schedule-tree-toggle{padding:9px 10px}
+.schedule-flow-meta{margin-left:auto;font-style:normal}
+.schedule-actions button:hover:not(:disabled){border-color:#86ad95;background:#edf6ef;color:var(--green)}
+.schedule-actions button:disabled{cursor:wait;opacity:.6}
+.schedule-trigger-feedback{margin:0;border-top:1px solid #e5ebe7;padding:7px 14px;font-size:10px}
+.schedule-trigger-feedback.success{background:#edf7ef;color:var(--green)}
+.schedule-trigger-feedback.error{background:#fff1f1;color:var(--red)}
+.schedule-occurrence-nodes button:disabled{cursor:not-allowed;opacity:.55}
+
+.automatic-schedule-directory{overflow:hidden;border:1px solid #d8e3dc;border-radius:7px;background:#f7faf8}
+.automatic-schedule-directory-toggle{display:grid;width:100%;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:6px;border:0;background:transparent;padding:9px;color:var(--green);text-align:left}
+.automatic-schedule-directory-toggle:hover{background:#edf5ef}
+.automatic-schedule-directory-toggle span{display:grid;min-width:0;gap:3px}
+.automatic-schedule-directory-toggle b,.automatic-schedule-directory-toggle small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.automatic-schedule-directory-toggle b{color:var(--ink);font-size:10px}
+.automatic-schedule-directory-toggle small{color:var(--muted);font-size:8px}
+.automatic-schedule-directory-records{display:grid;gap:5px;border-top:1px solid #e0e8e2;padding:6px}
+.automatic-schedule-directory-records>article{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:stretch;overflow:hidden;border:1px solid transparent;border-radius:6px;background:#fff}
+.automatic-schedule-directory-records>article.active{border-color:#b7ccbe;background:#e2ebe4}

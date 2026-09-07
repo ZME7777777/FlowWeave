@@ -112,7 +112,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw error;
   }
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+  if (response.status === 204) return undefined as T;
+  const responseText = await response.text();
+  return responseText ? JSON.parse(responseText) as T : undefined as T;
 }
 
 const json = (method: string, body?: unknown, idempotencyKey?: string | true): RequestInit => ({

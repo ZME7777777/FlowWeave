@@ -16,6 +16,7 @@ interface WorkbenchState {
   selectedAutomaticRecordId?: string;
   setView: (view: ViewName) => void;
   openRun: (runId: string, nodeRunId?: string) => void;
+  openAutomaticRecord: (parentRunId: string, recordId: string, nodeRunId?: string, attemptId?: string) => void;
   selectNodeRun: (id: string) => void;
   selectAttempt: (id: string) => void;
   selectExecution: (nodeRunId: string, attemptId?: string) => void;
@@ -66,6 +67,10 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       openRun: (selectedRunId, selectedNodeRunId) => set({
         view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId: undefined,
         selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined,
+      }),
+      openAutomaticRecord: (selectedRunId, selectedAutomaticRecordId, selectedNodeRunId, selectedAttemptId) => set({
+        view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId,
+        selectedWorkbenchMode: 'AUTOMATIC', selectedAutomaticRecordId,
       }),
       selectNodeRun: selectedNodeRunId => set({ selectedNodeRunId, selectedAttemptId: undefined }),
       selectAttempt: selectedAttemptId => set({ selectedAttemptId }),

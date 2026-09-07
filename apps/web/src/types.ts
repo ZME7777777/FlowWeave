@@ -338,6 +338,9 @@ export interface FlowRunSummary {
 }
 export interface FlowRun extends FlowRunSummary {
   row_version: number; active_snapshot_id: string; active_snapshot_version: number;
+  parent_flow_run_id?: string | null;
+  schedule_id?: string | null; schedule_name?: string | null;
+  schedule_occurrence_id?: string | null;
   environment_version?: EnvironmentVersion | null;
   lark_folder_token: string | null; lark_folder_url: string | null;
   progress: { accepted: number; terminal: number; active: number };

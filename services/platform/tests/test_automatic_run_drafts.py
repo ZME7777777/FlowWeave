@@ -360,13 +360,81 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     deleted = worker_client.delete(
         f"/api/v1/flow-runs/{parent['id']}/automatic-runs/{disposable['id']}"
     )
-    assert deleted.status_code == 204, deleted.text
+    assert deleted.status_code == 202, deleted.text
+    for _ in range(8):
+        with db_session_factory() as db:
+            if db.get(FlowRun, disposable["id"]) is None:
+                break
+        assert worker._run_once_sync() is True
     assert worker_client.get(f"/api/v1/flow-runs/{parent['id']}").status_code == 200
     with db_session_factory() as db:
         assert db.get(FlowRun, disposable["id"]) is None
         assert db.scalar(
             select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"])
         ) is not None
+
+
+def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
+    worker_client, worker_container
+):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    flow = _create_flow(worker_client)
+    parent = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "定时任务所属 FlowRun",
+            "environment_version_id": worker_client.environment_version_id,
+        },
+    ).json()
+    source = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
+        json={
+            "name": "定时连续运行母版",
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan("执行起点", input_url="https://example.com/scheduled-input"),
+                "second": _node_plan("执行下游"),
+            },
+        },
+    ).json()
+    assert source["automation_plan"]["readiness"] == {"ready": True, "issues": []}
+
+    created = worker_client.post(
+        "/api/v1/flow-run-schedules",
+        json={
+            "name": "每小时检查",
+            "source_flow_run_id": source["id"],
+            "cron_expression": "0 * * * *",
+        },
+    )
+    assert created.status_code == 201, created.text
+    schedule = created.json()
+    triggered = worker_client.post(f"/api/v1/flow-run-schedules/{schedule['id']}/trigger")
+    assert triggered.status_code == 202, triggered.text
+
+    worker = TaskWorker(worker_container)
+    occurrences = None
+    for _ in range(8):
+        assert worker._run_once_sync() is True
+        occurrences = worker_client.get(
+            f"/api/v1/flow-run-schedules/{schedule['id']}/occurrences?page=1&page_size=10"
+        )
+        if occurrences.json()["items"][0]["flow_run"] is not None:
+            break
+    assert occurrences is not None
+    assert occurrences.status_code == 200, occurrences.text
+    record = occurrences.json()["items"][0]["flow_run"]
+    assert record["run_mode"] == "AUTOMATIC"
+    assert record["parent_flow_run_id"] == parent["id"]
+    assert record["schedule_id"] == schedule["id"]
+    assert record["schedule_name"] == "每小时检查"
+    nested = worker_client.get(f"/api/v1/flow-runs/{parent['id']}/automatic-runs").json()
+    assert record["id"] in {item["id"] for item in nested}
+    assert record["id"] not in {
+        item["id"] for item in worker_client.get("/api/v1/flow-runs").json()
+    }
 
 
 def test_automatic_run_draft_rejects_unknown_frozen_nodes(client):

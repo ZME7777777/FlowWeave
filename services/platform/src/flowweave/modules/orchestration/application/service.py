@@ -2099,16 +2099,23 @@ def list_flow_run_schedule_templates(db: Session) -> list[dict[str, Any]]:
     runs = list(
         db.scalars(
             select(FlowRun)
-            .where(FlowRun.run_mode == "AUTOMATIC")
+            .where(
+                FlowRun.run_mode == "AUTOMATIC",
+                FlowRun.parent_flow_run_id.is_not(None),
+            )
             .order_by(FlowRun.started_at.desc(), FlowRun.id.desc())
         )
     )
     records: list[dict[str, Any]] = []
     for run in runs:
+        parent = db.get(FlowRun, run.parent_flow_run_id) if run.parent_flow_run_id else None
         plan = dict(run.automation_plan_json or {})
         readiness = cast(dict[str, Any], plan.get("readiness") or {})
         if (
-            not readiness.get("ready")
+            parent is None
+            or parent.run_mode != "MANUAL"
+            or parent.flow_definition_id != run.flow_definition_id
+            or not readiness.get("ready")
             or not run.active_snapshot_id
             or not run.environment_version_id
         ):
@@ -2126,9 +2133,7 @@ def list_flow_run_schedule_templates(db: Session) -> list[dict[str, Any]]:
     return records
 
 
-def _schedule_occurrence_dict(
-    db: Session, occurrence: FlowRunScheduleOccurrence
-) -> dict[str, Any]:
+def _schedule_occurrence_dict(db: Session, occurrence: FlowRunScheduleOccurrence) -> dict[str, Any]:
     run = db.get(FlowRun, occurrence.flow_run_id) if occurrence.flow_run_id else None
     return {
         "id": occurrence.id,
@@ -2180,11 +2185,14 @@ def list_flow_run_schedule_occurrences(
     schedule = db.get(FlowRunSchedule, schedule_id)
     if schedule is None:
         raise not_found("flow_run_schedule", schedule_id)
-    total = db.scalar(
-        select(func.count(FlowRunScheduleOccurrence.id)).where(
-            FlowRunScheduleOccurrence.schedule_id == schedule.id
+    total = (
+        db.scalar(
+            select(func.count(FlowRunScheduleOccurrence.id)).where(
+                FlowRunScheduleOccurrence.schedule_id == schedule.id
+            )
         )
-    ) or 0
+        or 0
+    )
     occurrences = list(
         db.scalars(
             select(FlowRunScheduleOccurrence)
@@ -2208,9 +2216,16 @@ def list_flow_run_schedule_occurrences(
 
 def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict[str, Any]:
     source = _run(db, payload.source_flow_run_id)
+    parent = db.get(FlowRun, source.parent_flow_run_id) if source.parent_flow_run_id else None
     plan = copy.deepcopy(dict(source.automation_plan_json or {}))
     readiness = cast(dict[str, Any], plan.get("readiness") or {})
-    if source.run_mode != "AUTOMATIC" or not readiness.get("ready"):
+    if (
+        source.run_mode != "AUTOMATIC"
+        or parent is None
+        or parent.run_mode != "MANUAL"
+        or parent.flow_definition_id != source.flow_definition_id
+        or not readiness.get("ready")
+    ):
         raise DomainError(
             "SCHEDULE_TEMPLATE_NOT_READY",
             "Schedule source must be a ready continuous-run record",
@@ -2432,11 +2447,22 @@ def process_flow_run_schedule_occurrence(
 def _materialize_scheduled_run(
     db: Session, schedule: FlowRunSchedule, occurrence: FlowRunScheduleOccurrence
 ) -> FlowRun:
-    """Create one independent FlowRun strictly from the frozen schedule master."""
+    """Create one continuous record under the source record's parent FlowRun."""
 
     if not schedule.source_flow_run_id:
         raise DomainError("SCHEDULE_TEMPLATE_REQUIRED", "Schedule has no execution master", 409)
     source = _run(db, schedule.source_flow_run_id)
+    parent = db.get(FlowRun, source.parent_flow_run_id) if source.parent_flow_run_id else None
+    if (
+        parent is None
+        or parent.run_mode != "MANUAL"
+        or parent.flow_definition_id != schedule.flow_definition_id
+    ):
+        raise DomainError(
+            "SCHEDULE_TEMPLATE_PARENT_INVALID",
+            "Schedule execution master is not attached to its original FlowRun",
+            409,
+        )
     template = dict(schedule.plan_json or {})
     plan = copy.deepcopy(cast(dict[str, Any], template.get("automation_plan") or {}))
     snapshot_template = cast(dict[str, Any], template.get("snapshot") or {})
@@ -2458,6 +2484,7 @@ def _materialize_scheduled_run(
         run_mode="AUTOMATIC",
         state=FlowRunState.DRAFT,
         environment_version_id=schedule.environment_version_id,
+        parent_flow_run_id=parent.id,
         schedule_id=schedule.id,
         schedule_occurrence_id=occurrence.id,
     )
@@ -5972,64 +5999,183 @@ def _record_workspace_paths_for_deletion(attempts: list[NodeAttempt]) -> set[Pat
     return paths
 
 
-def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
-    """Delete a manual execution that has not reached Runtime execution, or has stopped.
+def _node_run_artifacts(db: Session, attempts: list[NodeAttempt]) -> list[ArtifactVersion]:
+    attempt_ids = [attempt.id for attempt in attempts]
+    return (
+        list(
+            db.scalars(
+                select(ArtifactVersion).where(ArtifactVersion.producer_attempt_id.in_(attempt_ids))
+            )
+        )
+        if attempt_ids
+        else []
+    )
 
-    ``WAITING_INPUT`` and chat-only ``WAITING_START_CONFIRMATION`` Attempts
-    have not claimed a Runtime phase. They are draft execution records, so
-    requiring a cancel round-trip makes deletion appear to do nothing. Their
-    FlowRun-owned Conversation persistence is still retained below, exactly
-    as it is for a cancelled record.
-    """
+
+def _assert_node_run_artifacts_unreferenced(
+    db: Session, attempts: list[NodeAttempt], artifacts: list[ArtifactVersion]
+) -> None:
+    attempt_ids = [attempt.id for attempt in attempts]
+    artifact_ids = [item.id for item in artifacts]
+    if artifact_ids and db.scalar(
+        select(AttemptInputBinding.id)
+        .where(
+            AttemptInputBinding.artifact_version_id.in_(artifact_ids),
+            AttemptInputBinding.attempt_id.not_in(attempt_ids),
+        )
+        .limit(1)
+    ):
+        raise DomainError(
+            "NODE_RUN_DELETE_HAS_DOWNSTREAM_REFERENCES",
+            "该逐步运行记录的产物仍被其他执行引用，不能删除",
+            409,
+        )
+
+
+def _cancel_attempt_for_record_delete(
+    db: Session, run: FlowRun, node_run: NodeRun, attempt: NodeAttempt
+) -> None:
+    if attempt.state in {
+        AttemptState.ACCEPTED,
+        AttemptState.REJECTED,
+        AttemptState.CANCELLED,
+    }:
+        return
+    targets = _runtime_cancel_targets(db, attempt)
+    attempt.state = AttemptState.CANCELLED
+    attempt.state_version += 1
+    for confirmation in db.scalars(
+        select(RuntimeConfirmationApproval).where(
+            RuntimeConfirmationApproval.attempt_id == attempt.id,
+            RuntimeConfirmationApproval.state.in_(["PENDING", "DECIDING"]),
+        )
+    ):
+        confirmation.state = "CANCELLED"
+        confirmation.state_version += 1
+    if targets:
+        attempt.runtime_phase = "CANCELLING"
+        enqueue(
+            db,
+            task_type="CANCEL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=attempt.id,
+            idempotency_key=f"delete-cancel-runtime:{attempt.id}:v{attempt.state_version}",
+        ).max_attempts = 20
+    else:
+        attempt.runtime_phase = "CANCELLED"
+    _event(
+        db,
+        run.id,
+        "ATTEMPT_CANCELLED",
+        {"reason": "RECORD_DELETE_REQUESTED"},
+        node_run.id,
+        attempt.id,
+    )
+
+
+def _enqueue_record_delete(
+    db: Session,
+    *,
+    task_type: str,
+    aggregate_type: str,
+    aggregate_id: str,
+    payload: dict[str, Any],
+) -> None:
+    task = enqueue(
+        db,
+        task_type=task_type,
+        aggregate_type=aggregate_type,
+        aggregate_id=aggregate_id,
+        idempotency_key=f"{task_type.lower()}:{aggregate_id}",
+        payload=payload,
+    )
+    if task.state in {TaskState.DEAD, TaskState.SUCCEEDED}:
+        task.state = TaskState.RETRY
+        task.attempts = 0
+        task.available_at = datetime.now(UTC)
+        task.last_error = None
+    task.max_attempts = max(task.max_attempts, 20)
+
+
+def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
+    """Accept durable deletion of one manual record, cancelling it if active."""
 
     run = _locked_run(db, flow_run_id)
     if run.run_mode != "MANUAL":
         raise illegal("automatic execution records are deleted through their automatic run")
-    node_run = _node_run(db, node_run_id)
-    if node_run.flow_run_id != run.id:
+    node_run = db.scalar(select(NodeRun).where(NodeRun.id == node_run_id).with_for_update())
+    if node_run is None or node_run.flow_run_id != run.id:
         raise not_found("node_run", node_run_id)
     attempts = list(
         db.scalars(
             select(NodeAttempt)
             .where(NodeAttempt.node_run_id == node_run.id)
             .order_by(NodeAttempt.attempt_no)
+            .with_for_update()
         )
     )
-    latest = attempts[-1] if attempts else None
-    terminal_states = {
-        AttemptState.ACCEPTED,
-        AttemptState.REJECTED,
-        AttemptState.CANCELLED,
-    }
-    cancelled_and_stopped = (
-        node_run.state == NodeRunState.CANCELLED
-        and latest is not None
-        and latest.state == AttemptState.CANCELLED
-        and latest.runtime_phase == "CANCELLED"
-        and all(attempt.state in terminal_states for attempt in attempts)
+    artifacts = _node_run_artifacts(db, attempts)
+    _assert_node_run_artifacts_unreferenced(db, attempts, artifacts)
+    _record_workspace_paths_for_deletion(attempts)
+    for attempt in attempts:
+        _cancel_attempt_for_record_delete(db, run, node_run, attempt)
+    if any(attempt.state == AttemptState.CANCELLED for attempt in attempts):
+        node_run.state = NodeRunState.CANCELLED
+    run.state = FlowRunState.ACTIVE
+    run.completion_mode = None
+    run.finished_at = None
+    run.row_version += 1
+    _event(db, run.id, "NODE_RUN_DELETE_REQUESTED", {}, node_run.id)
+    _enqueue_record_delete(
+        db,
+        task_type="DELETE_NODE_RUN_RECORD",
+        aggregate_type="NODE_RUN",
+        aggregate_id=node_run.id,
+        payload={"flow_run_id": run.id},
     )
-    accepted_and_stopped = (
-        node_run.state == NodeRunState.ACCEPTED
-        and latest is not None
-        and latest.state == AttemptState.ACCEPTED
-        and latest.runtime_phase in {"COMPLETED", "MANUAL_OUTPUTS_SUBMITTED"}
-        and all(attempt.state in terminal_states for attempt in attempts)
-    )
-    waiting_before_runtime = (
-        node_run.state == NodeRunState.ACTIVE
-        and latest is not None
-        and latest.state
-        in {AttemptState.WAITING_INPUT, AttemptState.WAITING_START_CONFIRMATION}
-        and latest.runtime_phase is None
-        and all(attempt.state in terminal_states for attempt in attempts[:-1])
-    )
-    if not (cancelled_and_stopped or accepted_and_stopped or waiting_before_runtime):
-        raise DomainError(
-            "NODE_RUN_DELETE_REQUIRES_CANCELLED",
-            "运行中的单节点记录请先取消，并等待运行时停止后再删除",
-            409,
-        )
+    finish(db)
 
+
+def process_delete_node_run_record(
+    db: Session, node_run_id: str, flow_run_id: str, *, commit: bool = True
+) -> None:
+    node_run = db.scalar(select(NodeRun).where(NodeRun.id == node_run_id).with_for_update())
+    if node_run is None:
+        _finish_transaction(db, commit)
+        return
+    run = _locked_run(db, flow_run_id)
+    if run.run_mode != "MANUAL" or node_run.flow_run_id != run.id:
+        raise DomainError("NODE_RUN_DELETE_SCOPE_INVALID", "Record delete scope changed", 409)
+    attempts = list(
+        db.scalars(
+            select(NodeAttempt)
+            .where(NodeAttempt.node_run_id == node_run.id)
+            .order_by(NodeAttempt.attempt_no)
+            .with_for_update()
+        )
+    )
+    if any(
+        attempt.state
+        not in {
+            AttemptState.ACCEPTED,
+            AttemptState.REJECTED,
+            AttemptState.CANCELLED,
+        }
+        or attempt.runtime_phase in {"CANCELLING", "CANCEL_FAILED"}
+        for attempt in attempts
+    ):
+        raise RuntimeError("record Runtime cancellation is not confirmed")
+    _delete_node_run_records(db, run, node_run, attempts, commit=commit)
+
+
+def _delete_node_run_records(
+    db: Session,
+    run: FlowRun,
+    node_run: NodeRun,
+    attempts: list[NodeAttempt],
+    *,
+    commit: bool,
+) -> None:
     workspace_paths = _record_workspace_paths_for_deletion(attempts)
     attempt_ids = [attempt.id for attempt in attempts]
     bindings = list(
@@ -6042,11 +6188,12 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
         )
     )
     for binding in bindings:
-        # The OpenHands conversation remains in the FlowRun-owned persistence
-        # root until the parent FlowRun is deleted. Remove only FlowWeave's
-        # locator/projection graph so no product record points at a deleted
-        # NodeRun or Attempt.
-        agent_sessions.delete_binding_records(db, binding.id)
+        agent_sessions.flow_node_conversations.delete_flow_node_conversation_for_record_cleanup(
+            db,
+            flow_run_id=run.id,
+            binding_id=binding.id,
+            expected_node_run_id=node_run.id,
+        )
 
     work_directories = (
         list(
@@ -6086,29 +6233,9 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
     if work_directory_ids:
         db.execute(delete(AgentWorkDirectory).where(AgentWorkDirectory.id.in_(work_directory_ids)))
 
-    artifacts = (
-        list(
-            db.scalars(
-                select(ArtifactVersion).where(ArtifactVersion.producer_attempt_id.in_(attempt_ids))
-            )
-        )
-        if attempt_ids
-        else []
-    )
+    artifacts = _node_run_artifacts(db, attempts)
     artifact_ids = [item.id for item in artifacts]
-    if artifact_ids and db.scalar(
-        select(AttemptInputBinding.id)
-        .where(
-            AttemptInputBinding.artifact_version_id.in_(artifact_ids),
-            AttemptInputBinding.attempt_id.not_in(attempt_ids),
-        )
-        .limit(1)
-    ):
-        raise DomainError(
-            "NODE_RUN_DELETE_HAS_DOWNSTREAM_REFERENCES",
-            "该逐步运行记录的产物仍被其他执行引用，不能删除",
-            409,
-        )
+    _assert_node_run_artifacts_unreferenced(db, attempts, artifacts)
 
     if attempt_ids:
         db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id.in_(attempt_ids)))
@@ -6141,7 +6268,7 @@ def delete_node_run(db: Session, flow_run_id: str, node_run_id: str) -> None:
         # The path was constrained to the managed workspace root and verified
         # before deleting rows. Reclaim it only after a successful commit.
         register_commit_action(db, lambda path=path: shutil.rmtree(path, ignore_errors=True))
-    finish(db)
+    _finish_transaction(db, commit)
 
 
 def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -> None:
@@ -7086,16 +7213,9 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
     return run_detail(db, run.id)
 
 
-def _delete_run_records(db: Session, run_id: str) -> None:
-    """Permanently remove a run and all durable execution data it owns.
-
-    The Runtime Provider owns physical cleanup. The application explicitly
-    removes Conversation bindings and their children before the FlowRun row.
-    """
-
-    run = _run(db, run_id)
+def _assert_run_not_schedule_template(db: Session, run_id: str) -> None:
     template_schedule_ids = list(
-        db.scalars(select(FlowRunSchedule.id).where(FlowRunSchedule.source_flow_run_id == run.id))
+        db.scalars(select(FlowRunSchedule.id).where(FlowRunSchedule.source_flow_run_id == run_id))
     )
     if template_schedule_ids:
         raise DomainError(
@@ -7104,6 +7224,97 @@ def _delete_run_records(db: Session, run_id: str) -> None:
             409,
             {"schedule_ids": template_schedule_ids},
         )
+
+
+def delete_nested_automatic_run_record(db: Session, parent_run_id: str, run_id: str) -> None:
+    """Accept durable deletion of one continuous record, cancelling it if active."""
+
+    parent = _locked_run(db, parent_run_id)
+    run = db.scalar(select(FlowRun).where(FlowRun.id == run_id).with_for_update())
+    if run is None or run.parent_flow_run_id != parent.id or run.run_mode != "AUTOMATIC":
+        raise not_found("flow_run", run_id)
+    _assert_run_not_schedule_template(db, run.id)
+    node_runs = list(
+        db.scalars(
+            select(NodeRun)
+            .where(NodeRun.flow_run_id == run.id)
+            .order_by(NodeRun.sequence_no)
+            .with_for_update()
+        )
+    )
+    attempts = (
+        list(
+            db.scalars(
+                select(NodeAttempt)
+                .where(NodeAttempt.node_run_id.in_([item.id for item in node_runs]))
+                .order_by(NodeAttempt.created_at, NodeAttempt.id)
+                .with_for_update()
+            )
+        )
+        if node_runs
+        else []
+    )
+    attempts_by_node: dict[str, list[NodeAttempt]] = {}
+    for attempt in attempts:
+        attempts_by_node.setdefault(attempt.node_run_id, []).append(attempt)
+    for node_run in node_runs:
+        for attempt in attempts_by_node.get(node_run.id, []):
+            _cancel_attempt_for_record_delete(db, run, node_run, attempt)
+        if node_run.state == NodeRunState.ACTIVE:
+            node_run.state = NodeRunState.CANCELLED
+    run.state = FlowRunState.CANCELLED
+    run.finished_at = now()
+    run.row_version += 1
+    _event(db, run.id, "AUTOMATIC_RUN_DELETE_REQUESTED", {})
+    _enqueue_record_delete(
+        db,
+        task_type="DELETE_AUTOMATIC_RUN_RECORD",
+        aggregate_type="FLOW_RUN",
+        aggregate_id=run.id,
+        payload={"parent_flow_run_id": parent.id},
+    )
+    finish(db)
+
+
+def process_delete_automatic_run_record(
+    db: Session, run_id: str, parent_flow_run_id: str, *, commit: bool = True
+) -> None:
+    run = db.scalar(select(FlowRun).where(FlowRun.id == run_id).with_for_update())
+    if run is None:
+        _finish_transaction(db, commit)
+        return
+    if run.parent_flow_run_id != parent_flow_run_id or run.run_mode != "AUTOMATIC":
+        raise DomainError("AUTOMATIC_RUN_DELETE_SCOPE_INVALID", "Record delete scope changed", 409)
+    node_run_ids = list(db.scalars(select(NodeRun.id).where(NodeRun.flow_run_id == run.id)))
+    attempts = (
+        list(db.scalars(select(NodeAttempt).where(NodeAttempt.node_run_id.in_(node_run_ids))))
+        if node_run_ids
+        else []
+    )
+    if any(
+        attempt.state
+        not in {
+            AttemptState.ACCEPTED,
+            AttemptState.REJECTED,
+            AttemptState.CANCELLED,
+        }
+        or attempt.runtime_phase in {"CANCELLING", "CANCEL_FAILED"}
+        for attempt in attempts
+    ):
+        raise RuntimeError("record Runtime cancellation is not confirmed")
+    _delete_run_records(db, run.id)
+    _finish_transaction(db, commit)
+
+
+def _delete_run_records(db: Session, run_id: str) -> None:
+    """Permanently remove a run and all durable execution data it owns.
+
+    The Runtime Provider owns physical cleanup. The application explicitly
+    removes Conversation bindings and their children before the FlowRun row.
+    """
+
+    run = _run(db, run_id)
+    _assert_run_not_schedule_template(db, run.id)
     child_run_ids = list(
         db.scalars(
             select(FlowRun.id)
@@ -7124,14 +7335,15 @@ def _delete_run_records(db: Session, run_id: str) -> None:
         if attempt_ids
         else []
     )
-    conversation_ids = list(
+    conversations = list(
         db.scalars(
-            select(AgentConversationBinding.id).where(
+            select(AgentConversationBinding).where(
                 AgentConversationBinding.host_kind == "FLOW_NODE",
                 AgentConversationBinding.flow_run_id == run.id,
             )
         )
     )
+    conversation_ids = [item.id for item in conversations]
     work_directory_ids = list(
         db.scalars(select(AgentWorkDirectory.id).where(AgentWorkDirectory.flow_run_id == run.id))
     )
@@ -7150,14 +7362,14 @@ def _delete_run_records(db: Session, run_id: str) -> None:
         db.scalars(select(ArtifactVersion).where(ArtifactVersion.flow_run_id == run.id))
     )
     storage_keys = [item.storage_key for item in artifacts if item.storage_key]
-    workspace_root = Path(get_settings().workspace_root).resolve()
-    workspace_paths: set[Path] = set()
-    for attempt in attempts:
-        if not attempt.workspace_ref:
-            continue
-        path = Path(attempt.workspace_ref).resolve()
-        if path != workspace_root and path.is_relative_to(workspace_root):
-            workspace_paths.add(path)
+    workspace_paths = _record_workspace_paths_for_deletion(attempts)
+    for binding in conversations:
+        agent_sessions.flow_node_conversations.delete_flow_node_conversation_for_record_cleanup(
+            db,
+            flow_run_id=run.id,
+            binding_id=binding.id,
+            expected_node_run_id=binding.node_run_id,
+        )
     # Remove every physical generation while the NodeAttempt-owned Runtime
     # Sessions still identify this FlowRun.  The reconciler intentionally
     # never TTL-reaps these persistent OpenHands Runtimes, so permanent Run
@@ -7443,6 +7655,7 @@ def node_run_detail(db: Session, node_run_id: str) -> dict[str, Any]:
 
 def run_detail(db: Session, run_id: str) -> dict[str, Any]:
     run = _run(db, run_id)
+    schedule = db.get(FlowRunSchedule, run.schedule_id) if run.schedule_id else None
     environment = (
         db.get(EnvironmentVersion, run.environment_version_id)
         if run.environment_version_id
@@ -7481,6 +7694,9 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
         "run_mode": run.run_mode,
         "automation_plan": run.automation_plan_json,
         "parent_flow_run_id": run.parent_flow_run_id,
+        "schedule_id": run.schedule_id,
+        "schedule_name": schedule.name if schedule else None,
+        "schedule_occurrence_id": run.schedule_occurrence_id,
         "state": run.state,
         "row_version": run.row_version,
         "completion_mode": run.completion_mode,
