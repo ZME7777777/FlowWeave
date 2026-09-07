@@ -35,6 +35,7 @@ from flowweave.modules.environments.public import (
     lock_referenceable_version,
     validate_runtime_manifest,
 )
+from flowweave.modules.event_automations.application.service import enqueue_matching_deliveries
 from flowweave.modules.flows.public import describe_flow, load_flow
 from flowweave.modules.gates.public import (
     GateExecutionPlan,
@@ -180,15 +181,16 @@ def _event(
     node_run_id: str | None = None,
     attempt_id: str | None = None,
 ) -> None:
-    db.add(
-        RunEvent(
-            flow_run_id=run_id,
-            node_run_id=node_run_id,
-            attempt_id=attempt_id,
-            event_type=event_type,
-            payload_json=payload or {},
-        )
+    event = RunEvent(
+        flow_run_id=run_id,
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
+        event_type=event_type,
+        payload_json=payload or {},
     )
+    db.add(event)
+    db.flush()
+    enqueue_matching_deliveries(db, event)
 
 
 def _action(

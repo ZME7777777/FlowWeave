@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-207`
+> 下一可执行切片：`FR-208`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2972,6 +2972,20 @@ version_no` 唯一键，过滤条件作为不可变 JSON 快照；动作使用�
 OpenAPI 路由可导入，`git diff --check` 与任务状态唯一性通过。完成后提交独立 Git commit 并停止；下一切片
 `FR-207` 接入事件投影到 Outbox 的可靠投递边界。
 
+### FR-207 运行事件到 Outbox 的可靠投递边界 — DONE
+
+依赖：`FR-206`。
+
+目标：在统一 `RunEvent` 投影入口完成事件触发器匹配，并为每个命中的动作创建持久 Outbox 投递意图。投递
+记录使用触发器版本、动作位置和正式事件身份生成稳定幂等键，允许后续 Worker 实现至少一次投递；载荷只保留
+FlowRun/NodeRun/Attempt、Conversation 及 OpenHands 正式关联字段和脱敏故障分类，不复制原始错误正文、推理或
+Secret。未知来源和非法触发器快照 fail closed。本切片不发送 Webhook/通知、不执行恢复/暂停/转人工动作，且
+直接构造旧 `RunEvent` 的兼容路径不纳入自动投影，后续统一事件入口切片处理。
+
+验收：新增 Outbox ORM 与 Alembic `0101` 迁移；统一编排事件写入后可生成匹配投递且重复事件幂等；受影响
+Ruff/Pyright/`py_compile`、Alembic head、路由/元数据导入和 `git diff --check` 通过。完成后提交独立 Git commit
+并停止；下一切片 `FR-208` 实现 Outbox Worker 的领取、重试和死信状态机。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2987,6 +3001,7 @@ OpenAPI 路由可导入，`git diff --check` 与任务状态唯一性通过。�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-207 | Outbox ORM／迁移与事件投影 `py_compile`；受影响 Ruff check/format；定向 Pyright（新增服务 0 errors）；Alembic head；路由/元数据导入；`git diff --check` | PASS：统一编排 `_event` 写入后按启用触发器匹配并生成 `event_trigger_deliveries`，同一触发器版本、动作位置和正式事件身份使用稳定幂等键；载荷只保留关联 ID 和脱敏故障分类，未知来源 fail closed。未发送外部请求、未执行动作或恢复。完整 Pyright 仍包含编排服务既有诊断；新增 Outbox 路径无新增诊断。唯一 Alembic head 为 `0101_event_trigger_deliveries`，无 `CURRENT`。 |
 | 2026-09-08 | FR-206 | 触发器请求模型／服务／路由 `py_compile`；受影响 Ruff check/format、定向 Pyright（0 errors）；路由导入与 Pydantic 无数据库直接断言；`git diff --check` 与任务状态唯一性 | PASS：用户可创建首个触发器版本、读取当前版本并按相同 key 追加不可变版本；服务端按租户读取、有序投影动作，拒绝路径 key 不一致。请求限制过滤值与动作数量，递归拒绝 Secret 字段；无更新、删除、Outbox、事件消费或 Runtime 副作用。pytest 收集到 3 条新请求模型回归，但因本机 Docker daemon 不可用被统一 PostgreSQL autouse fixture 阻断，未伪记为通过。唯一 Alembic head 为 `0100_event_trigger_versions`，无 `CURRENT`。 |
 | 2026-09-08 | FR-205 | 事件自动化 ORM／迁移 `py_compile`；受影响 Ruff check/format、定向 Pyright（0 errors）；Alembic `heads`；元数据导入；`git diff --check` | PASS：新增 `event_trigger_versions` 与 `event_trigger_actions` 两张用户拥有表，触发器版本按 owner/key/version 唯一，动作按 owner/version/position 有序且受允许类型约束；过滤快照和动作配置独立保存，未引入外键、CRUD、Outbox 或 Runtime 副作用。唯一 Alembic head 为 `0100_event_trigger_versions`，无 `CURRENT`。 |
 | 2026-09-07 | FR-204 | 受影响 Python `py_compile`；领域模块 `ruff format --check`、定向 Pyright；无数据库直接断言（匹配、故障分类、未知故障 fail-closed、禁用触发器、动作幂等键）；`git diff --check` 与任务状态唯一性 | PASS：新增平台事件触发器契约保留 OpenHands 正式事件身份及 FlowRun/NodeRun/Attempt 关联；普通观察事件与状态驱动事件分类明确。网络／超时／不可用故障可作为恢复候选，鉴权／额度／策略／上下文／参数及未知故障均不自动恢复；动作仅允许平台治理类型，幂等键由触发器版本、正式事件 ID 和动作位置稳定生成。pytest 收集后因本机 Docker daemon 不可用被统一 PostgreSQL autouse fixture 阻断，未伪记为通过。唯一 Alembic head 为 `0099_remove_ws_default_model`，无 `CURRENT`。 |

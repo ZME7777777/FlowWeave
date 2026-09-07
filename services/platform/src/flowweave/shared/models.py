@@ -50,6 +50,7 @@ from flowweave.modules.environments.infrastructure.models import (
 )
 from flowweave.modules.event_automations.infrastructure.models import (
     EventTriggerAction,
+    EventTriggerDelivery,
     EventTriggerVersion,
 )
 from flowweave.modules.flows.infrastructure.models import (
@@ -124,6 +125,7 @@ __all__ = (
     "EnvironmentSetupSession",
     "EnvironmentVersion",
     "EventTriggerAction",
+    "EventTriggerDelivery",
     "EventTriggerVersion",
     "FlowDefinition",
     "FlowEdge",
