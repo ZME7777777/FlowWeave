@@ -432,6 +432,20 @@ export interface OpenHandsConversationEventBatch {
   next_cursor?: string | null;
   result?: { status?: string; final_message?: string | null; error?: string | null } | null;
   task_usage?: RuntimeTaskUsageSnapshot[];
+  task_control?: RuntimeTaskControlSnapshot[];
+}
+export interface RuntimeTaskControlSnapshot {
+  action_event_id: string;
+  tool_call_id: string;
+  identity_digest: string;
+  task_type: string;
+  state: string;
+  control_state: string;
+  requested_at?: string | null;
+  deadline_at?: string | null;
+  updated_at?: string | null;
+  attempts: number;
+  last_error?: string | null;
 }
 export interface RuntimeTaskUsageSnapshot {
   task_id: string;

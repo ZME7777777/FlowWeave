@@ -15,7 +15,7 @@ import { useEscapeClose } from '../useEscapeClose';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskUsageSnapshot } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -86,6 +86,7 @@ interface RuntimeTaskProjection {
   lastEventAt?: string;
   lastEventSummary?: string;
   usage?: RuntimeTaskUsageSnapshot;
+  control?: RuntimeTaskControlSnapshot;
 }
 
 /**
@@ -93,7 +94,7 @@ interface RuntimeTaskProjection {
  * The action/observation relationship is always the formal action_id or
  * tool_call_id; event order and text are deliberately never used as a join.
  */
-function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnapshots: RuntimeTaskUsageSnapshot[] = []): RuntimeTaskProjection[] {
+function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnapshots: RuntimeTaskUsageSnapshot[] = [], controlSnapshots: RuntimeTaskControlSnapshot[] = []): RuntimeTaskProjection[] {
   const avatarSlots = subagentAvatarSlots(events);
   const tasks = new Map<string, RuntimeTaskProjection>();
   const byToolCall = new Map<string, RuntimeTaskProjection>();
@@ -147,12 +148,26 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnaps
     item.lastEventSummary = String(event.payload.content || '子智能体执行失败').trim().slice(0, 240);
   }
   const usageByTaskId = new Map(usageSnapshots.map(snapshot => [snapshot.task_id, snapshot]));
-  for (const item of tasks.values()) if (item.taskId) item.usage = usageByTaskId.get(item.taskId);
+  const controlByAction = new Map(controlSnapshots.map(snapshot => [snapshot.action_event_id, snapshot]));
+  const controlByTool = new Map(controlSnapshots.map(snapshot => [snapshot.tool_call_id, snapshot]));
+  for (const item of tasks.values()) {
+    if (item.taskId) item.usage = usageByTaskId.get(item.taskId);
+    item.control = controlByAction.get(item.actionEventId)
+      ?? (item.toolCallId ? controlByTool.get(item.toolCallId) : undefined);
+  }
   return [...tasks.values()].sort((left, right) => (right.startedAt || '').localeCompare(left.startedAt || ''));
 }
 
 function runtimeTaskStatus(task: RuntimeTaskProjection): string {
-  return task.status === 'RUNNING' ? '运行中' : task.status === 'COMPLETED' ? '已完成' : '失败';
+  if (task.status === 'COMPLETED') return '已完成';
+  if (task.status === 'ERROR') return '失败';
+  const control = task.control?.control_state;
+  if (control === 'INTERRUPT_CONFIRMING') return '正在确认中断';
+  if (control === 'RUNTIME_REPLACING') return 'Runtime 恢复中';
+  if (control === 'RECOVERY_FAILED' || control === 'WATCHDOG_FAILED' || control === 'INTERRUPT_CONFIRMATION_FAILED') return '处理失败';
+  if (control === 'TIMEOUT_CHECKED') return '疑似卡住';
+  if (task.control?.deadline_at && Date.parse(task.control.deadline_at) <= Date.now()) return '长时间无新事件';
+  return '运行中';
 }
 
 function RuntimeTaskGlyph({ task, size = 15 }: { task: RuntimeTaskProjection; size?: number }) {
@@ -205,7 +220,7 @@ function RuntimeTaskRecord({ task, definitions, onInterrupt, interrupting }: {
   const usage = task.usage;
   return <section className="agent-subagent-record" aria-label={`${task.subagentType} 任务详情`}>
       <header><div><span className="eyebrow">SUBAGENT</span><h2>{task.subagentType}</h2><p>{runtimeTaskStatus(task)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div></header>
-      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${task.status.toLowerCase()}`}>{runtimeTaskStatus(task)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>运行耗时</dt><dd>{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>工具摘要</dt><dd>{task.lastEventSummary}</dd></>}</dl></section>
+      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${task.status.toLowerCase()}`}>{runtimeTaskStatus(task)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>运行耗时</dt><dd>{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>最近事件摘要</dt><dd>{task.lastEventSummary}</dd></>}{task.control && <><dt>平台处理</dt><dd>{task.control.control_state}{task.control.updated_at ? ` · ${new Date(task.control.updated_at).toLocaleString('zh-CN')}` : ''}</dd>{task.control.deadline_at && <><dt>观察截止</dt><dd>{new Date(task.control.deadline_at).toLocaleString('zh-CN')}</dd></>}{task.control.last_error && <><dt>处理错误</dt><dd>{task.control.last_error}</dd></>}</>}</dl></section>
       {usage && <section><h3>用量</h3><dl><dt>模型</dt><dd><code>{usage.model_name}</code></dd><dt>累计 Token</dt><dd>{(usage.prompt_tokens + usage.completion_tokens + usage.cache_read_tokens + usage.cache_write_tokens + usage.reasoning_tokens).toLocaleString('zh-CN')}</dd><dt>输入 / 输出</dt><dd>{usage.prompt_tokens.toLocaleString('zh-CN')} / {usage.completion_tokens.toLocaleString('zh-CN')}</dd><dt>推理 Token</dt><dd>{usage.reasoning_tokens.toLocaleString('zh-CN')}</dd><dt>缓存读 / 写</dt><dd>{usage.cache_read_tokens.toLocaleString('zh-CN')} / {usage.cache_write_tokens.toLocaleString('zh-CN')}</dd><dt>当前轮 Token</dt><dd>{usage.per_turn_tokens.toLocaleString('zh-CN')}</dd><dt>上下文窗口</dt><dd>{usage.context_window.toLocaleString('zh-CN')}</dd><dt>累计费用</dt><dd>${usage.accumulated_cost.toFixed(6)}</dd></dl></section>}
       <section><h3>子智能体定义</h3>{nativeDefinition ? <p className="agent-subagent-note">这是 OpenHands 原生 <code>{task.subagentType}</code> 类型。当前正式事件未携带可版本化的 FlowWeave Agent Definition，因此不会把它伪装成自定义定义。</p> : <><p>{definition.description || '已发布的 FlowWeave Agent Definition。'}</p><dl><dt>已发布版本</dt><dd>{definition.version}</dd><dt>内容摘要</dt><dd><code>{definition.content_hash.slice(0, 16)}</code></dd>{tools.length > 0 && <><dt>允许工具</dt><dd>{tools.join('、')}</dd></>}{skills.length > 0 && <><dt>技能</dt><dd>{skills.join('、')}</dd></>}</dl><p className="agent-subagent-note">此处展示当前可读取的已发布定义。会话运行时使用的定义版本由 OpenHands 创建请求冻结，事件未提供版本 ID 时不据此声称两者相同。</p></>}</section>
       {task.status === 'RUNNING' && onInterrupt && <section><h3>停止</h3><p className="agent-subagent-note">OpenHands 原生 Task 不提供单独停止此子智能体的公开接口。此操作会立即中断父 Agent 的当前等待；平台随后通过 Runtime 隔离保证子智能体物理终止，不会自动恢复被手动暂停的父 Agent。</p><button type="button" className="agent-subagent-stop" disabled={interrupting} onClick={onInterrupt}>{interrupting ? '正在停止当前 Agent…' : '停止当前 Agent'}</button></section>}
@@ -1956,8 +1971,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       .filter(event => !hiddenEventIds.has(event.id));
   }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, liveEvents, optimisticBootstrapTurn, selected?.id]);
   const runtimeTasks = useMemo(
-    () => runtimeTasksFromEvents(displayedEvents, eventsQuery.data?.task_usage ?? []),
-    [displayedEvents, eventsQuery.data?.task_usage],
+    () => runtimeTasksFromEvents(displayedEvents, eventsQuery.data?.task_usage ?? [], eventsQuery.data?.task_control ?? []),
+    [displayedEvents, eventsQuery.data?.task_control, eventsQuery.data?.task_usage],
   );
   const sessionAttachments = useMemo(() => {
     const byPath = new Map<string, AgentAttachment>();

@@ -2868,6 +2868,18 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 点击后继续使用冻结提示词调用既有节点启动 API。新增浏览器回归覆盖自动交接不出现手动启动入口；既有连续运行
 持久 Worker 调度与恢复路径未变。
 
+### FR-199 子智能体 watchdog 控制状态投影 — DONE
+
+依赖：`FR-197`、`FR-191`。
+
+目标：在不修改 OpenHands 或复制 Conversation 状态的前提下，将 FlowWeave watchdog 的观察、超时确认、Runtime
+恢复和失败事实投影到 Agent Workspace 与 FlowRun 节点会话事件响应；前端不得把未收到 Observation 的 Task 直接
+显示为已取消或已完成。
+
+完成：事件响应新增按正式 `action_event_id`／`tool_call_id` 关联的 `task_control` 投影，包含截止时间、后台任务
+状态、控制阶段、重试次数和脱敏错误；子智能体面板区分运行中、长时间无新事件、正在确认中断、Runtime 恢复中、
+处理失败和已完成，并保留最近正式事件与平台处理时间。未暴露 Prompt、reasoning、容器身份或原始日志。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2883,6 +2895,7 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-199 | Agent Task watchdog 定向 pytest（9 passed）；受影响 Python `py_compile`；Web TypeScript typecheck；`git diff --check` | PASS：watchdog 控制阶段通过事件响应投影给 Agent Workspace 与 FlowRun 节点会话，前端可区分观察、超时、确认中断、Runtime 恢复和处理失败；未修改 OpenHands，未声称子 Agent 已被单独取消。 |
 | 2026-09-07 | FR-198 | Web ESLint、TypeScript typecheck、production build；新增连续运行自动交接定向 Playwright；`git diff --check` 与任务状态唯一性 | PASS：连续 Attempt 在 `WAITING_START_CONFIRMATION` 显示自动启动提示且不暴露逐步运行人工启动文案／按钮；逐步运行既有保存配置后左侧启动回归通过。整份工作台 Playwright 套件另有 2 条既有断言漂移（请求现含 `force_advance: false`、会话删除按钮使模糊角色选择器不再唯一），与本切片无关，未伪记为通过。 |
 | 2026-09-07 | FR-197 | Web ESLint、TypeScript typecheck、production build；受影响 Python `py_compile`；`git diff --check` | PASS：事件批次向 Agent Workspace 与 FlowRun 节点会话返回受治理 Task usage；子智能体面板展示动态耗时、最近正式事件、摘要和 Task usage 指标；未暴露 Prompt/reasoning/原始日志。Ruff、pytest 在本机不可用（命令不存在），未伪记为通过。 |
 | 2026-09-07 | FR-196 | watchdog／控制 lane 无 Docker 直接回归（9 passed）；受影响 Python Ruff check、`py_compile`；Docker Runtime `--init` 启动命令契约；Alembic head、任务状态唯一性与 `git diff --check` | PASS（代码与直接回归）：读取 lane 饱和时保留独立控制线程、连接和槽位；事件失响应／读取饱和触发正式 generation replacement；手动暂停对 RECONNECTING 幂等且 fences WATCH／CONFIRM／RESUME，冻结 Conversation identity 后禁止父会话自动续跑；Task interrupt pending 或事件不可用时有界 replacement；受管 Runtime 启动命令包含 `--init`。本机 Docker daemon 不可用，数据库 fixture 与真实容器／公网部署验证留待 commit 绑定远端发布；全量 Pyright 仍仅报告仓库既有诊断。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |

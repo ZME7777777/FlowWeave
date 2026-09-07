@@ -38,6 +38,88 @@ RESUME_TASK_TYPE = "RESUME_AGENT_TASK_TIMEOUT"
 TaskOutcome = Literal["PENDING", "INACTIVE", "OBSERVATION", "AGENT_ERROR"]
 
 
+def task_control_projection(db: Session, binding_id: str) -> list[dict[str, Any]]:
+    """Expose watchdog control facts without copying OpenHands conversation state."""
+
+    tasks = db.scalars(
+        select(BackgroundTask)
+        .where(
+            BackgroundTask.owner_user_id == current_user_id(),
+            BackgroundTask.aggregate_id == binding_id,
+            BackgroundTask.task_type.in_([WATCH_TASK_TYPE, CONFIRM_TASK_TYPE, RESUME_TASK_TYPE]),
+        )
+        .order_by(BackgroundTask.updated_at.desc())
+    )
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    control_by_type = {
+        WATCH_TASK_TYPE: {
+            "PENDING": "WATCHING",
+            "RUNNING": "WATCHING",
+            "SUCCEEDED": "TIMEOUT_CHECKED",
+            "RETRY": "WATCHING",
+            "DEAD": "WATCHDOG_FAILED",
+        },
+        CONFIRM_TASK_TYPE: {
+            "PENDING": "INTERRUPT_CONFIRMING",
+            "RUNNING": "INTERRUPT_CONFIRMING",
+            "SUCCEEDED": "INTERRUPT_CONFIRMED",
+            "RETRY": "INTERRUPT_CONFIRMING",
+            "DEAD": "INTERRUPT_CONFIRMATION_FAILED",
+        },
+        RESUME_TASK_TYPE: {
+            "PENDING": "RUNTIME_REPLACING",
+            "RUNNING": "RUNTIME_REPLACING",
+            "SUCCEEDED": "RECOVERED",
+            "RETRY": "RUNTIME_REPLACING",
+            "DEAD": "RECOVERY_FAILED",
+        },
+    }
+    for task in tasks:
+        payload = dict(task.payload_json or {})
+        action_event_id = payload.get("action_event_id")
+        tool_call_id = payload.get("tool_call_id")
+        digest = payload.get("identity_digest")
+        if not all(
+            isinstance(value, str) and value
+            for value in (action_event_id, tool_call_id, digest)
+        ):
+            continue
+        key = str(digest)
+        if key in seen:
+            continue
+        seen.add(key)
+        requested_at = payload.get("requested_at")
+        timeout_seconds = payload.get("timeout_seconds")
+        deadline_at = None
+        if isinstance(requested_at, str) and isinstance(timeout_seconds, (int, float)):
+            try:
+                deadline_at = (
+                    datetime.fromisoformat(requested_at.replace("Z", "+00:00"))
+                    + timedelta(seconds=float(timeout_seconds))
+                ).isoformat()
+            except ValueError:
+                deadline_at = None
+        result.append(
+            {
+                "action_event_id": action_event_id,
+                "tool_call_id": tool_call_id,
+                "identity_digest": digest,
+                "task_type": task.task_type,
+                "state": task.state,
+                "control_state": control_by_type.get(task.task_type, {}).get(
+                    task.state, "UNKNOWN"
+                ),
+                "requested_at": requested_at,
+                "deadline_at": deadline_at,
+                "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+                "attempts": task.attempts,
+                "last_error": task.last_error,
+            }
+        )
+    return result
+
+
 def _lease_still_owned(db: Session, lease: Lease | None) -> bool:
     """Fence a claimed watchdog after a concurrent manual interrupt."""
 
@@ -559,4 +641,5 @@ __all__ = (
     "process_task_timeout_resume",
     "process_task_timeout_watchdog",
     "task_outcome",
+    "task_control_projection",
 )

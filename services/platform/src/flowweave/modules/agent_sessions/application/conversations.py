@@ -1327,6 +1327,7 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
     # copied into FlowWeave.
     from flowweave.modules.agent_workspaces.application.task_watchdog import (
         observe_task_watchdogs,
+        task_control_projection,
     )
 
     observe_task_watchdogs(db, binding, batch.events)
@@ -1513,6 +1514,7 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
             }
             for usage in batch.task_usage
         ],
+        "task_control": task_control_projection(db, binding.id),
     }
 
 

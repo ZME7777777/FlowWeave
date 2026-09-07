@@ -1489,6 +1489,10 @@ def _event_batch_dict(
     read just as it does for ordinary Agent Workspace conversations.
     """
 
+    from flowweave.modules.agent_workspaces.application.task_watchdog import (
+        task_control_projection,
+    )
+
     event_ids = [event.cursor for event in batch.events if event.event_type == "MESSAGE"]
     stored = (
         list(
@@ -1573,6 +1577,7 @@ def _event_batch_dict(
             }
             for usage in batch.task_usage
         ],
+        "task_control": task_control_projection(db, binding.id),
     }
 
 
