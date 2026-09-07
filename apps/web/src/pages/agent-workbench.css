@@ -77,7 +77,8 @@
    owns its own scrolling surface, so the global page never scrolls the shared
    navigation and conversation header out of view. */
 .agent-workbench-shell{display:flex;flex-direction:column;height:100dvh;min-height:0;overflow:hidden}
-.agent-workspace-conversation-delete{right:4px}
+.agent-workspace-conversation-delete{right:5px;display:none}
+.agent-workspace-conversation:hover .agent-workspace-conversation-delete{display:grid}
 .agent-workbench-shell>.topbar{flex:0 0 64px}
 .agent-workbench-shell>.agent-workbench-page{height:auto;min-height:0;flex:1 1 auto;overflow:hidden}
 .agent-workbench-shell .agent-workbench-rail,.agent-workbench-shell .agent-workbench-main,.agent-workbench-shell .agent-workspace-drawer{height:100%;min-height:0;overflow:hidden}
