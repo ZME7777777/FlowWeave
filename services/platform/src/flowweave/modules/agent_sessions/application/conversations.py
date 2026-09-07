@@ -1256,6 +1256,7 @@ def delete_conversation(
         if existing.state == "SUCCEEDED":
             return
         raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话删除仍在处理中", 409)
+    assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
     item.lifecycle = "DELETE_PENDING"
     command = AgentConversationCommand(
         workspace_id=workspace.id,
@@ -1289,6 +1290,30 @@ def delete_conversation(
     agent_workspace_host.delete_session_attachment_files(db, workspace.id, item.id)
     delete_binding_records(db, item.id)
     db.flush()
+
+
+def assert_conversation_stopped(
+    db: Session, workspace_id: str, binding_id: str, *, lock: bool = True
+) -> None:
+    """Reject destructive operations while OpenHands is executing a turn."""
+
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id, lock=lock)
+    readiness = get_runtime().input_readiness(_handle(db, workspace, binding))
+    if readiness.execution_status.strip().lower() in {
+        "starting",
+        "running",
+        "executing",
+        "stopping",
+        "waiting_for_confirmation",
+        "pausing",
+        "resuming",
+    }:
+        raise DomainError(
+            "AGENT_CONVERSATION_RUNNING",
+            "会话正在运行，请先停止当前回复后再删除",
+            409,
+        )
 
 
 def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) -> dict[str, Any]:

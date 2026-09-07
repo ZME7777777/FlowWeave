@@ -507,6 +507,13 @@ def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str
                 .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
             )
         )
+        # Preflight the complete cascade before deleting anything.  A running
+        # Conversation must be stopped first, otherwise a later rejection
+        # could leave the work-directory only partially deleted.
+        for binding_id in binding_ids:
+            conversations.assert_conversation_stopped(
+                db, workspace_id, binding_id, lock=False
+            )
         for binding_id in binding_ids:
             conversations.delete_conversation(
                 db,

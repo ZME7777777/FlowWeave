@@ -1700,7 +1700,12 @@ def send_node_message(
     )
     validate_attachment_owners(binding.id, attachments)
     prompt, image_urls = message_payload(content, attachments, references)
-    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    handle = _node_handle(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+    )
     runtime = get_runtime()
     readiness = runtime.input_readiness(handle)
     queued_during_turn = not readiness.ready
@@ -2000,9 +2005,23 @@ def delete_node_conversation(
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
-    get_runtime().delete_conversation(
-        _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    )
+    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    readiness = get_runtime().input_readiness(handle)
+    if readiness.execution_status.strip().lower() in {
+        "starting",
+        "running",
+        "executing",
+        "stopping",
+        "waiting_for_confirmation",
+        "pausing",
+        "resuming",
+    }:
+        raise DomainError(
+            "AGENT_CONVERSATION_RUNNING",
+            "会话正在运行，请先停止当前回复后再删除",
+            409,
+        )
+    get_runtime().delete_conversation(handle)
     delete_binding_records(db, binding.id)
     finish(db)
 
