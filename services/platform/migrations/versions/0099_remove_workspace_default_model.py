@@ -30,8 +30,14 @@ def upgrade() -> None:
     )
     op.drop_table("agent_workspace_preferences")
     op.drop_index("ix_agent_workspaces_default_model_provider_id", table_name="agent_workspaces")
-    op.drop_constraint(
-        "fk_agent_workspaces_default_model_provider", "agent_workspaces", type_="foreignkey"
+    # Some pre-0099 deployments lost this constraint during an earlier
+    # partially-applied migration. PostgreSQL's IF EXISTS keeps this cleanup
+    # migration idempotent while the column/index drops below remain strict.
+    op.execute(
+        sa.text(
+            "ALTER TABLE agent_workspaces "
+            "DROP CONSTRAINT IF EXISTS fk_agent_workspaces_default_model_provider"
+        )
     )
     op.drop_column("agent_workspaces", "default_model_provider_id")
 
