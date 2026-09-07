@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
@@ -691,6 +691,27 @@ def delete_flow_run_runtimes_now(db: Session, flow_run_id: str) -> None:
     )
     for sandbox_id in sandbox_ids:
         delete_sandbox_now(db, sandbox_id)
+    db.flush()
+    # Historical cleanup may have lost the ManagedSandbox ledger row while
+    # leaving the immutable generation reference behind.  Such a reference is
+    # not live compute and must not block terminal FlowRun deletion; real rows
+    # remain protected by delete_flow_run_runtime_session below.
+    runtime_session_ids = select(FlowRunRuntime.id).where(
+        FlowRunRuntime.flow_run_id == flow_run_id
+    )
+    db.execute(
+        update(RuntimeGeneration)
+        .where(
+            RuntimeGeneration.runtime_session_id.in_(runtime_session_ids),
+            RuntimeGeneration.managed_runtime_id.is_not(None),
+            ~exists(
+                select(ManagedSandbox.id).where(
+                    ManagedSandbox.id == RuntimeGeneration.managed_runtime_id
+                )
+            ),
+        )
+        .values(managed_runtime_id=None)
+    )
     db.flush()
     delete_flow_run_runtime_session(db, flow_run_id)
 

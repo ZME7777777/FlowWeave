@@ -1772,6 +1772,44 @@ def test_explicit_flow_run_delete_cleans_up_node_attempt_runtime(
     assert deleted == [resource_id]
 
 
+def test_flow_run_delete_clears_orphaned_generation_reference(
+    settings, db_session_factory
+):
+    configured = _docker_settings(settings)
+    flow_run_id = "11111111-1111-4111-8111-111111111111"
+    with db_session_factory() as db:
+        session = FlowRunRuntime(
+            flow_run_id=flow_run_id,
+            node_attempt_id="22222222-2222-4222-8222-222222222222",
+            environment_version_id="33333333-3333-4333-8333-333333333333",
+            runtime_image_digest="runtime:locked",
+            workspace_allocation_id="44444444-4444-4444-8444-444444444444",
+            active_generation=1,
+            status="DEGRADED",
+        )
+        db.add(session)
+        db.flush()
+        generation = RuntimeGeneration(
+            runtime_session_id=session.id,
+            generation=1,
+            managed_runtime_id="55555555-5555-4555-8555-555555555555",
+            runtime_image_digest="runtime:locked",
+            state="DELETED",
+            fence_token="66666666-6666-4666-8666-666666666666",
+        )
+        db.add(generation)
+        db.commit()
+        session_id = session.id
+
+    with settings_context(configured), db_session_factory() as db:
+        delete_flow_run_runtimes_now(db, flow_run_id)
+        db.commit()
+
+    with db_session_factory() as db:
+        assert db.get(FlowRunRuntime, session_id) is None
+        assert db.get(RuntimeGeneration, generation.id) is None
+
+
 def test_reconciler_drains_legacy_attempt_runtime_owner(settings, db_session_factory, monkeypatch):
     configured = _docker_settings(settings)
     now = datetime.now(UTC)
