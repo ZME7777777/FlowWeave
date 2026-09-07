@@ -4640,11 +4640,13 @@ def _runtime_input_upload_handle(request: StartAttemptRequest) -> RuntimeHandle:
             conversation_id=conversation_id,
             runtime_resource_id=request.runtime_sandbox_id,
             runtime_resource_name=request.runtime_resource_name,
+            workspace_root=request.workspace_root,
         )
     if get_settings().runtime_adapter == "mock":
         return RuntimeHandle(
             job_id=f"mock-job-{request.attempt_id}",
             conversation_id=conversation_id,
+            workspace_root=request.workspace_root,
         )
     raise DomainError(
         "RUNTIME_SANDBOX_REQUIRED",
