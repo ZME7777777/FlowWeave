@@ -1417,6 +1417,7 @@ function WorkspaceDrawer({
     if (!api.createFile) return;
     const name = await dialog.prompt({ title: `新建${kind === 'DIRECTORY' ? '目录' : '文件'}`, message: '名称不能包含路径分隔符、隐藏前缀或上级目录。', inputLabel: '名称', placeholder: kind === 'DIRECTORY' ? '例如：assets' : '例如：notes.md', confirmLabel: '创建' });
     if (!name) return;
+    setPanelError('');
     try {
       await api.createFile(workspaceId, parentPath, name, kind, { bindingId, workDirectoryId });
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
@@ -2544,6 +2545,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (turnState === 'paused') resume.mutate();
   };
   const workDirectories = workDirectoriesQuery.data?.items ?? [];
+  const runningConversationId = selected && (
+    isGenerating
+    || ['running', 'executing'].includes((inputReadinessQuery.data?.execution_status ?? '').toLowerCase())
+  ) ? selected.id : undefined;
+  const conversationRow = (item: AgentConversation) => {
+    const running = item.id === runningConversationId;
+    return <div key={item.id} className="agent-workspace-conversation">
+      <button type="button" className={`agent-workspace-conversation-select${item.id === selected?.id ? ' active' : ''}`} onClick={() => selectConversation(item.id)}>
+        <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
+      </button>
+      {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
+      {features.conversationDeletion && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title="删除会话" disabled={!runtimeWritable || remove.isPending} onClick={() => remove.mutate(item.id)}><Trash2 size={13}/></button>}
+    </div>;
+  };
   const openCurrentDirectoryDraft = () => {
     const directory = selected?.work_directory_id
       ? workDirectories.find(item => item.id === selected.work_directory_id)
@@ -2567,10 +2582,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
     if (!api.deleteWorkDirectory || !await dialog.confirm({ title: `删除工作区“${directory.display_name}”？`, message: '这会永久删除该工作区及其中所有会话、附件和冻结目录版本，无法恢复。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    setOperationError(undefined);
     try {
       await api.deleteWorkDirectory(workspace!.id, directory.id);
       if (conversationDraft?.workDirectoryId === directory.id) setConversationDraft(undefined);
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace!.id) });
+      setOperationError(undefined);
     } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
   };
 
@@ -2580,11 +2597,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <div className="agent-workbench-list">
         <WorkspaceConversationGroup groupId="root" label="根工作区" canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
           {pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}
-          {rootConversations.map(item => <div key={item.id} className="agent-workspace-conversation"><button type="button" className={`agent-workspace-conversation-select${item.id === selected?.id ? ' active' : ''}`} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b></span></button>{features.conversationDeletion && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title="删除会话" disabled={!runtimeWritable || remove.isPending} onClick={() => remove.mutate(item.id)}><Trash2 size={13}/></button>}</div>)}
+          {rootConversations.map(conversationRow)}
         </WorkspaceConversationGroup>
         {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
           {pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}
-          {conversationsForDirectory(directory.id).map(item => <div key={item.id} className="agent-workspace-conversation"><button type="button" className={`agent-workspace-conversation-select${item.id === selected?.id ? ' active' : ''}`} onClick={() => selectConversation(item.id)}><CircleDot size={13}/><span><b>{conversationName(item)}</b></span></button>{features.conversationDeletion && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title="删除会话" disabled={!runtimeWritable || remove.isPending} onClick={() => remove.mutate(item.id)}><Trash2 size={13}/></button>}</div>)}
+          {conversationsForDirectory(directory.id).map(conversationRow)}
         </WorkspaceConversationGroup>)}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={!runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>能力</b><small>{selected ? '管理当前会话能力' : '为新会话选择能力'}</small></span><ChevronRight size={14}/></button></footer>}
