@@ -1996,6 +1996,7 @@ def delete_flow_node_conversation_for_record_cleanup(
     flow_run_id: str,
     binding_id: str,
     expected_node_run_id: str | None = None,
+    allow_inactive_runtime: bool = False,
 ) -> None:
     """Delete one native node Conversation during durable record cleanup.
 
@@ -2017,7 +2018,16 @@ def delete_flow_node_conversation_for_record_cleanup(
     try:
         get_runtime().delete_conversation(_handle(db, binding.id))
     except DomainError as exc:
-        if exc.code != "RUNTIME_CONVERSATION_MISSING":
+        # A historical Attempt may retain its locator after the Runtime
+        # generation has already disappeared.  Terminal FlowRun deletion also
+        # removes the owned Runtime and workspace, so there is no reachable
+        # native Conversation left for this cleanup step to delete.  A single
+        # NodeRun deletion does not remove that Runtime, so it remains
+        # fail-closed when the session is merely unavailable.
+        tolerated = {"RUNTIME_CONVERSATION_MISSING"}
+        if allow_inactive_runtime:
+            tolerated.add("RUNTIME_SESSION_NOT_ACTIVE")
+        if exc.code not in tolerated:
             raise
     delete_binding_records(db, binding.id)
 

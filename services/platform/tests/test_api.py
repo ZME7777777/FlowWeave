@@ -2730,6 +2730,61 @@ def test_hard_delete_uses_flow_run_runtime_lifecycle_not_attempt_cancel(
     assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
 
 
+def test_hard_delete_ignores_stale_node_conversation_without_active_runtime(
+    client, skill_capability, db_session_factory, monkeypatch
+):
+    asset = create_asset(client, skill_capability, "失效会话删除节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "flow_node_key": "design_a",
+            "environment_version_id": client.environment_version_id,
+        },
+    ).json()
+    attempt = run["node_runs"][0]["attempts"][0]
+
+    with db_session_factory() as db:
+        runtime_session_id = db.scalar(
+            select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
+        )
+        assert runtime_session_id is not None
+        binding = AgentConversationBinding(
+            runtime_session_id=runtime_session_id,
+            host_kind="FLOW_NODE",
+            host_id=run["id"],
+            conversation_scope_id=attempt["id"],
+            flow_run_id=run["id"],
+            node_run_id=attempt["node_run_id"],
+            node_attempt_id=attempt["id"],
+            openhands_conversation_id=str(uuid4()),
+            lifecycle="ACTIVE",
+            create_idempotency_key=f"stale-runtime-binding:{attempt['id']}",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+
+    def stale_runtime(*_args, **_kwargs):
+        raise DomainError(
+            "RUNTIME_SESSION_NOT_ACTIVE",
+            "The Node Attempt has no active Agent Server generation",
+            409,
+        )
+
+    monkeypatch.setattr(
+        "flowweave.modules.agent_sessions.application.flow_node_conversations.active_runtime_handle",
+        stale_runtime,
+    )
+
+    deleted = client.delete(f"/api/v1/flow-runs/{run['id']}")
+
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/flow-runs/{run['id']}").status_code == 404
+    with db_session_factory() as db:
+        assert db.get(AgentConversationBinding, binding_id) is None
+
+
 def test_cancelled_manual_node_run_keeps_parent_active_and_allows_fresh_same_node(
     client, skill_capability
 ):

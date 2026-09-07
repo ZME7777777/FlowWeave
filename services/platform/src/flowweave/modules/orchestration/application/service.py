@@ -7404,6 +7404,7 @@ def _delete_run_records(db: Session, run_id: str) -> None:
             flow_run_id=run.id,
             binding_id=binding.id,
             expected_node_run_id=binding.node_run_id,
+            allow_inactive_runtime=True,
         )
     # Remove every physical generation while the NodeAttempt-owned Runtime
     # Sessions still identify this FlowRun.  The reconciler intentionally
