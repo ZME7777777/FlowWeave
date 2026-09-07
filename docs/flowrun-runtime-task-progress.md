@@ -2,7 +2,7 @@
 
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
-> 当前执行切片：`无`
+> 当前执行切片：无
 > 下一可执行切片：`无`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
@@ -2911,6 +2911,25 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 中移除，显示“会话已停止，结果未返回”，并在子智能体面板展示会话级提示。后端既有实现仍按正式未完成
 TaskAction 身份为全部任务安排中断确认／Runtime 隔离，不新增私有子 Agent 控制协议。
 
+### FR-203 连续运行自动启动自愈、进度可见性与节点上下文装配展示 — DONE
+
+依赖：`FR-202`。
+
+目标：修复连续运行的下游 Attempt 已进入 `WAITING_START_CONFIRMATION`，但 FlowRun 被中间状态汇总为
+`WAITING_HUMAN` 后，`START_AUTOMATIC_ATTEMPT` 每次成功领取却因只接受 `ACTIVE` 而无操作返回，维护扫描又
+持续恢复同一任务形成无限“正在自动启动”的问题。自动机器驱动阶段必须保持运行态；已受该问题影响的记录应在
+下一次持久任务处理时自愈并继续使用冻结配置启动，不能要求用户修改数据库或重建运行。
+
+节点执行侧栏必须展示当前连续运行所处的机器阶段、后台任务状态、尝试次数、最近处理时间、下次重试与脱敏错误，
+让用户能区分排队、处理中、重试、异常和已交接 Runtime。节点上下文区域同时展示节点自定义提示词与本轮冻结的
+Skill／MCP／Plugin／Context／Agent 等能力装配；Context 能力仍可查看冻结文本，其余能力只展示不可变类型、名称和
+digest，不伪装为文本 Context。未应用的节点定义上下文必须明确标记，不得冒充本轮已冻结事实。
+
+验收：平台自动运行定向 pytest 覆盖下游 `WAITING_HUMAN` 自愈、无重复 Conversation 和机器阶段状态；API 投影
+测试覆盖任务进度及冻结能力；Web 定向 Playwright 覆盖自动启动进度、重试／异常提示和两类节点上下文；运行受影响
+Python Ruff／Pyright、Web ESLint／TypeScript typecheck／production build、Alembic head、任务状态唯一性与
+`git diff --check`。完成后提交独立 Git commit 并停止，不进入部署。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2926,6 +2945,7 @@ TaskAction 身份为全部任务安排中断确认／Runtime 隔离，不新增�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-203 | 自动运行自愈／进度／冻结上下文定向 pytest（3 passed）；受影响 Python Ruff format/check、`compileall`；Web ESLint、TypeScript typecheck、production build；工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动机器阶段不再被汇总为人工等待，历史 `WAITING_HUMAN + WAITING_START_CONFIRMATION` 会在下一次持久任务处理时按不可变 Snapshot／计划自愈；API 投影七阶段进度、后台重试次数／时间、脱敏错误和未推进提醒。节点上下文同时显示节点自定义内容的本轮应用状态、冻结 Context 文本及 Skill／MCP／Plugin／Agent 等能力身份。唯一 Alembic head 为 `0099_remove_ws_default_model`，无 `CURRENT`。常规空库迁移链仍被既有 `0003_runs` 与 `0092_node_run_names` 重复创建 `node_runs.name` 阻断；本次 3 条行为回归使用隔离远端 PostgreSQL 和仅测试的当前 ORM schema bootstrap，未修改已发布迁移。完整 Pyright 仍有仓库既有诊断，本切片新增路径未发现对应新增诊断。 |
 | 2026-09-07 | FR-202 | Web ESLint、TypeScript typecheck；`git diff --check` | PASS：子智能体界面不再提供停止按钮；会话暂停时所有未完成子智能体均不计入运行中，并显示会话级停止提醒。 |
 | 2026-09-07 | FR-201 | Web ESLint、TypeScript typecheck；`git diff --check` | PASS：中断关联错误事件显示用户主动停止提醒并隐藏底层异常详情；非中断错误渲染路径保持不变。 |
 | 2026-09-07 | FR-200 | Web TypeScript typecheck；`git diff --check` | PASS：中断确认后的子任务不再显示为运行中、不再显示停止按钮或继续累加耗时；未修改 OpenHands。 |

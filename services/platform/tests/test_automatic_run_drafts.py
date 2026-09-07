@@ -1,3 +1,6 @@
+import base64
+from datetime import timedelta
+
 from sqlalchemy import delete, select
 
 from flowweave.modules.orchestration.application import service as orchestration_service
@@ -12,7 +15,7 @@ from flowweave.shared.models import (
 )
 
 
-def _create_flow(client):
+def _create_flow(client, *, context_prompt: str = ""):
     asset = client.post(
         "/api/v1/node-assets",
         json={
@@ -31,7 +34,10 @@ def _create_flow(client):
                     "data_type": "URL",
                 }
             ],
-            "executor": {"startup_prompt": "处理当前节点"},
+            "executor": {
+                "startup_prompt": "处理当前节点",
+                "context_prompt": context_prompt,
+            },
         },
     )
     assert asset.status_code == 201, asset.text
@@ -141,18 +147,23 @@ def _node_plan(
     capability_version_ids: list[str] | None = None,
     model_provider_id: str | None = None,
     model_name: str | None = None,
+    node_context_enabled: bool = False,
+    node_context_prompt: str | None = None,
 ):
     if not model_provider_id or not model_name:
         model_provider_id = _automatic_model_provider_id(client)
         model_name = "gpt-auto"
+    preset = {
+        "capability_version_ids": capability_version_ids or [],
+        "model_provider_id": model_provider_id,
+        "model_name": model_name,
+        "node_context_enabled": node_context_enabled,
+    }
+    if node_context_prompt is not None:
+        preset["node_context_prompt"] = node_context_prompt
     return {
         "startup_prompt": prompt,
-        "agent_preset": {
-            "capability_version_ids": capability_version_ids or [],
-            "model_provider_id": model_provider_id,
-            "model_name": model_name,
-            "node_context_enabled": False,
-        },
+        "agent_preset": preset,
         "gates": [],
         "artifact_ids": {"source": artifact_id} if artifact_id else {},
         "input_urls": {"source": input_url} if input_url else {},
@@ -365,15 +376,11 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     assert copied["artifacts"] == []
     assert copied["automation_plan"]["status"] == "DRAFT"
     assert copied["automation_plan"]["node_plans"] == updated["automation_plan"]["node_plans"]
-    nested_after_copy = worker_client.get(
-        f"/api/v1/flow-runs/{parent['id']}/automatic-runs"
-    )
+    nested_after_copy = worker_client.get(f"/api/v1/flow-runs/{parent['id']}/automatic-runs")
     assert nested_after_copy.status_code == 200, nested_after_copy.text
     assert {item["id"] for item in nested_after_copy.json()} == {updated["id"], copied["id"]}
 
-    wrong_parent = worker_client.get(
-        f"/api/v1/flow-runs/{draft['id']}/automatic-runs"
-    )
+    wrong_parent = worker_client.get(f"/api/v1/flow-runs/{draft['id']}/automatic-runs")
     assert wrong_parent.status_code == 200, wrong_parent.text
     assert wrong_parent.json() == []
     cross_parent_update = worker_client.put(
@@ -450,9 +457,10 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     assert worker_client.get(f"/api/v1/flow-runs/{parent['id']}").status_code == 200
     with db_session_factory() as db:
         assert db.get(FlowRun, disposable["id"]) is None
-        assert db.scalar(
-            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"])
-        ) is not None
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
+            is not None
+        )
 
 
 def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
@@ -697,6 +705,198 @@ def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
     assert again.status_code == 409, again.text
 
 
+def _import_context_capability(client) -> dict:
+    validated = client.post(
+        "/api/v1/capability-imports/validate",
+        json={
+            "capability_type": "CONTEXT",
+            "filename": "automatic-context.md",
+            "content_base64": base64.b64encode("自动运行冻结 Context".encode()).decode(),
+        },
+    )
+    assert validated.status_code == 200, validated.text
+    imported = client.post(
+        "/api/v1/capability-imports",
+        json={"import_token": validated.json()["import_token"]},
+    )
+    assert imported.status_code == 201, imported.text
+    return imported.json()["capabilities"][0]
+
+
+def test_automatic_attempt_self_heals_legacy_human_wait_and_projects_frozen_context(
+    worker_client,
+    worker_container,
+    db_session_factory,
+    worker_skill_capability,
+    monkeypatch,
+):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    context_capability = _import_context_capability(worker_client)
+    flow = _create_flow(worker_client, context_prompt="节点快照中的专属上下文")
+    created = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan(
+                    worker_client,
+                    "启动受损自动节点",
+                    input_url="https://example.com/input",
+                    capability_version_ids=[
+                        worker_skill_capability["capability_id"],
+                        context_capability["capability_id"],
+                    ],
+                    node_context_enabled=True,
+                    node_context_prompt="",
+                ),
+                "second": _node_plan(worker_client, "后继节点"),
+            },
+        },
+    ).json()
+    started = worker_client.post(
+        f"/api/v1/automatic-runs/{created['id']}/start",
+        json={"expected_row_version": created["row_version"]},
+        headers={"Idempotency-Key": f"self-heal:{created['id']}"},
+    ).json()
+    worker = TaskWorker(worker_container)
+    for _ in range(6):
+        assert worker._run_once_sync() is True
+        detail = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+        projected = detail["node_runs"][0]["attempts"][0]
+        if projected["state"] == "WAITING_START_CONFIRMATION":
+            break
+    else:
+        raise AssertionError("automatic attempt did not reach start handoff")
+
+    assert detail["state"] == "ACTIVE"
+    assert projected["context_ids"] == ["__node_context_prompt__"]
+    assert projected["agent_preset"]["node_context_prompt"] == "节点快照中的专属上下文"
+    capabilities = {
+        item["capability_type"]: item for item in projected["frozen_agent_capabilities"]
+    }
+    assert capabilities["SKILL"]["capability_key"] == worker_skill_capability["capability_key"]
+    assert "text" not in capabilities["SKILL"]
+    assert capabilities["CONTEXT"]["text"] == "自动运行冻结 Context"
+    assert projected["frozen_session_contexts"] == [
+        {
+            "id": context_capability["capability_id"],
+            "capability_key": "automatic-context",
+            "digest": context_capability["normalized_config"]["digest"],
+            "text": "自动运行冻结 Context",
+        }
+    ]
+    assert projected["automatic_progress"]["stage"] == "START_HANDOFF"
+
+    attempt_id = projected["id"]
+    with db_session_factory() as db:
+        run = db.get(FlowRun, started["id"])
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert run is not None and attempt is not None
+        run.state = "WAITING_HUMAN"
+        attempt.context_ids_json = []
+        attempt.agent_preset_json = {
+            **attempt.agent_preset_json,
+            "node_context_prompt": "",
+        }
+        db.commit()
+
+    confirmed: list[str] = []
+
+    def confirm_without_runtime(db, observed_attempt_id, payload, idempotency_key):
+        del payload, idempotency_key
+        repaired = db.get(NodeAttempt, observed_attempt_id)
+        assert repaired is not None
+        repaired.state = "EXECUTING"
+        repaired.runtime_phase = "STARTING"
+        repaired.state_version += 1
+        repaired_run = db.get(FlowRun, started["id"])
+        assert repaired_run is not None
+        repaired_run.state = "ACTIVE"
+        confirmed.append(observed_attempt_id)
+        return {}
+
+    monkeypatch.setattr(orchestration_service, "confirm_start", confirm_without_runtime)
+    # The durable start handler now encounters the historical bad aggregate
+    # state. Stub only the Runtime handoff after the handler guard so this
+    # regression stays focused on orchestration self-healing.
+    with db_session_factory() as db:
+        orchestration_service.process_start_automatic_attempt(db, attempt_id)
+    healed = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
+    healed_attempt = healed["node_runs"][0]["attempts"][0]
+    assert healed["state"] == "ACTIVE"
+    assert healed_attempt["state"] == "EXECUTING"
+    assert healed_attempt["context_ids"] == ["__node_context_prompt__"]
+    assert healed_attempt["agent_preset"]["node_context_prompt"] == ("节点快照中的专属上下文")
+    assert confirmed == [attempt_id]
+    with db_session_factory() as db:
+        orchestration_service.process_start_automatic_attempt(db, attempt_id)
+        db.commit()
+    assert confirmed == [attempt_id]
+
+
+def test_automatic_progress_projects_retry_and_succeeded_noop_without_raw_error(
+    worker_client, worker_container, db_session_factory
+):
+    _worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        run = db.get(FlowRun, run_id)
+        assert attempt is not None and run is not None
+        attempt.state = "WAITING_START_CONFIRMATION"
+        run.state = "ACTIVE"
+        db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id == attempt_id))
+        db.commit()
+
+    with db_session_factory() as db:
+        assert orchestration_service.recover_runtime_tasks(db) >= 1
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "START_AUTOMATIC_ATTEMPT",
+            )
+        )
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert task is not None and attempt is not None
+        task.state = TaskState.RETRY
+        task.attempts = 2
+        task.max_attempts = 5
+        task.last_error = "provider secret detail must not escape"
+        task.available_at = attempt.updated_at + timedelta(minutes=1)
+        task.updated_at = attempt.updated_at + timedelta(seconds=1)
+        db.commit()
+
+    retry = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][0][
+        "automatic_progress"
+    ]
+    assert retry["stage"] == "START_HANDOFF"
+    assert retry["task_state"] == "RETRY"
+    assert retry["attempts"] == 2
+    assert retry["max_attempts"] == 5
+    assert retry["next_retry_at"] is not None
+    assert retry["task_error"] == "后台任务执行失败，平台将按重试策略继续处理。"
+    assert "secret" not in str(retry)
+
+    with db_session_factory() as db:
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "START_AUTOMATIC_ATTEMPT",
+            )
+        )
+        assert task is not None
+        task.state = TaskState.SUCCEEDED
+        task.last_error = None
+        db.commit()
+
+    succeeded = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
+        0
+    ]["automatic_progress"]
+    assert succeeded["task_state"] == "SUCCEEDED"
+    assert succeeded["needs_attention"] is True
+
+
 def test_automatic_run_rejects_start_when_required_unmapped_input_is_missing(client):
     flow = _create_flow(client)
     created = client.post(
@@ -759,6 +959,20 @@ def _started_automatic_attempt(worker_client, worker_container, *, fanout: bool 
     assert worker._run_once_sync() is True
     detail = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
     return worker, detail["id"], detail["node_runs"][0]["attempts"][0]["id"]
+
+
+def test_automatic_start_handoff_is_recomputed_as_machine_driven(
+    worker_client, worker_container, db_session_factory
+):
+    _worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    with db_session_factory() as db:
+        run = db.get(FlowRun, run_id)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert run is not None and attempt is not None
+        run.state = "WAITING_HUMAN"
+        attempt.state = "WAITING_START_CONFIRMATION"
+        orchestration_service._recompute_run(db, run)
+        assert run.state == "ACTIVE"
 
 
 def test_automatic_transition_fans_out_without_a_gate_agent(

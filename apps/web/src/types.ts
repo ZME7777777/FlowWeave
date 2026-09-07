@@ -279,6 +279,15 @@ export interface NodeAttempt {
   context_ids?: string[] | null;
   /** Context versions actually frozen on this Attempt's first Agent session. */
   frozen_session_contexts?: Array<{ id: string; capability_key: string; digest: string; text: string }>;
+  /** Immutable launch capabilities configured for this node execution. */
+  frozen_agent_capabilities?: Array<{
+    id: string; capability_type: string; capability_key: string; digest: string; text?: string;
+  }>;
+  automatic_progress?: {
+    stage: string; task_type?: string | null; task_state?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD' | null;
+    attempts: number; max_attempts: number; last_processed_at?: string | null; next_retry_at?: string | null;
+    task_error?: string | null; needs_attention: boolean;
+  } | null;
   agent_preset?: AgentPreset | null;
   gate_policies: GatePolicy[];
   output_targets?: Record<string, { artifact_type: 'URL' | 'FILE'; display_name?: string; description?: string; title?: string }>;

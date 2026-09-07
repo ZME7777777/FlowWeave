@@ -205,15 +205,48 @@ test('step configuration is saved before start and direct launch has its own tab
 });
 
 test('continuous records never ask users to manually start an auto-ready successor', async ({ page }) => {
+  const frozenContext = {
+    id: 'context-version-1', capability_type: 'CONTEXT', capability_key: 'delivery-rules',
+    digest: 'c'.repeat(64), text: '已冻结的交付规则',
+  };
+  const contextAsset = {
+    ...asset,
+    id: 'asset-2',
+    name: '测试节点2',
+    executor: { ...asset.executor, context_prompt: '节点自定义的执行约束' },
+    context_capabilities: [{
+      id: frozenContext.id, capability_key: frozenContext.capability_key,
+      digest: frozenContext.digest, content_hash: 'd'.repeat(64), text: frozenContext.text,
+    }],
+  };
+  const contextDefinition = {
+    ...definition,
+    nodes: [definition.nodes[0], { ...definition.nodes[1], asset: contextAsset }],
+  };
+  const contextSnapshot = { ...snapshot, definition: contextDefinition };
   const autoReadyAttempt = {
     ...attempt,
     id: 'automatic-ready-attempt',
     node_run_id: 'automatic-ready-node-run',
     state: 'WAITING_START_CONFIRMATION',
     runtime_phase: null,
+    context_ids: [frozenContext.id],
+    frozen_session_contexts: [frozenContext],
+    frozen_agent_capabilities: [
+      frozenContext,
+      { id: 'skill-version-1', capability_type: 'SKILL', capability_key: 'release-check', digest: 'a'.repeat(64) },
+      { id: 'mcp-version-1', capability_type: 'MCP', capability_key: 'observability', digest: 'b'.repeat(64) },
+    ],
+    automatic_progress: {
+      stage: 'START_HANDOFF', task_type: 'START_AUTOMATIC_ATTEMPT', task_state: 'RETRY',
+      attempts: 2, max_attempts: 5, last_processed_at: now, next_retry_at: '2026-09-01T00:01:00Z',
+      task_error: '后台任务执行失败，平台将按重试策略继续处理。', needs_attention: false,
+    },
   };
   const autoReadyRecord = {
     ...frozenAutomaticBase,
+    active_snapshot_id: contextSnapshot.id,
+    snapshots: [contextSnapshot],
     state: 'ACTIVE',
     runtime_status: 'ACTIVE',
     runtime_write_available: true,
@@ -234,6 +267,26 @@ test('continuous records never ask users to manually start an auto-ready success
       readiness: { ready: true, issues: [] },
     },
   };
+  const attentionAttempt = {
+    ...autoReadyAttempt,
+    id: 'automatic-attention-attempt',
+    node_run_id: 'automatic-attention-node-run',
+    automatic_progress: {
+      ...autoReadyAttempt.automatic_progress,
+      task_state: 'SUCCEEDED', next_retry_at: null, task_error: null, needs_attention: true,
+    },
+  };
+  const attentionRecord = {
+    ...autoReadyRecord,
+    id: 'automatic-attention',
+    name: '自动记录 2',
+    node_runs: [{
+      ...autoReadyRecord.node_runs[0],
+      id: 'automatic-attention-node-run',
+      flow_run_id: 'automatic-attention',
+      attempts: [attentionAttempt],
+    }],
+  };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -245,7 +298,7 @@ test('continuous records never ask users to manually start an auto-ready success
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([autoReadyRecord]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([autoReadyRecord, attentionRecord]);
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
   });
 
@@ -256,9 +309,28 @@ test('continuous records never ask users to manually start an auto-ready success
   await page.getByRole('button', { name: '自动记录 1 运行中' }).click();
 
   const panel = page.locator('.attempt-control');
-  await expect(panel).toContainText('正在自动启动');
-  await expect(panel).toContainText('连续运行已通过启动条件；平台正在启动当前节点');
+  const progress = panel.getByTestId('automatic-progress');
+  await expect(progress).toContainText('启动节点');
+  await expect(progress).toContainText('等待重试');
+  await expect(progress).toContainText('后台尝试2 次 / 上限 5');
+  await expect(progress).toContainText('下次重试');
+  await expect(progress.getByRole('alert')).toContainText('平台将按重试策略继续处理');
+  await expect(panel).not.toContainText('正在自动启动');
   await expect(panel).not.toContainText('请在左侧逐步运行记录中点击“启动”');
+  const context = panel.locator('.node-context-summary');
+  await expect(context).toContainText('节点自定义上下文');
+  await expect(context.locator('.node-context-owned')).toContainText('本轮未应用');
+  await expect(context.locator('.node-context-repository')).toContainText('本轮已应用');
+  await expect(context).toContainText('本轮装配能力2 项');
+  await expect(context).toContainText('release-checkSKILL');
+  await expect(context).toContainText('observabilityMCP');
+  await context.getByRole('button', { name: '查看 delivery-rules' }).click();
+  await expect(page.getByRole('dialog', { name: '查看 Context delivery-rules' })).toContainText('已冻结的交付规则');
+  await page.getByRole('dialog', { name: '查看 Context delivery-rules' }).getByRole('button', { name: '完成' }).click();
+
+  await page.getByRole('button', { name: '自动记录 2 运行中' }).click();
+  await expect(panel.getByTestId('automatic-progress')).toContainText('状态未推进，平台正在自愈');
+  await expect(panel.getByRole('status')).toContainText('不需要反复刷新或重新创建运行');
   await expect(page.getByRole('button', { name: /启动连续运行/ })).toHaveCount(0);
 });
 

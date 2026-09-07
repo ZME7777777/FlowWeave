@@ -2660,6 +2660,8 @@ def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True
     start_node_key = str(plan.get("start_node_key") or "")
     node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
     first_plan = _automatic_node_plan(node_plans, start_node_key)
+    first_node = _node(snapshot, start_node_key)
+    first_preset = _automatic_attempt_preset(first_node, first_plan)
     artifact_ids = _automatic_plan_artifacts(db, run, start_node_key, first_plan)
     node_run, attempt = _create_node_run(
         db,
@@ -2668,8 +2670,8 @@ def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True
         artifact_ids,
         "AUTOMATIC_START",
         cast(list[dict[str, Any]], first_plan.get("gates") or []),
-        context_ids=[],
-        agent_preset=cast(dict[str, Any], first_plan.get("agent_preset") or {}),
+        context_ids=_automatic_context_ids(first_preset),
+        agent_preset=first_preset,
         startup_prompt=str(first_plan.get("startup_prompt") or ""),
     )
     _event(
@@ -2695,15 +2697,29 @@ def process_start_automatic_attempt(db: Session, attempt_id: str, *, commit: boo
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
+    plan_root: dict[str, Any] = dict(run.automation_plan_json or {})
+    node_plans = cast(dict[str, Any], plan_root.get("node_plans") or {})
+    node_plan = _automatic_node_plan(node_plans, node_run.flow_node_snapshot_key)
+    node = _node(_snapshot(db, attempt.snapshot_id), node_run.flow_node_snapshot_key)
+    frozen_preset = _automatic_attempt_preset(node, node_plan)
+    frozen_context_ids = _automatic_context_ids(frozen_preset)
+    if attempt.state == AttemptState.WAITING_START_CONFIRMATION:
+        # FR-203 repairs Attempts created before automatic node context was
+        # projected from the frozen plan. The source remains the immutable
+        # Snapshot and plan; no mutable node definition is consulted.
+        attempt.agent_preset_json = frozen_preset
+        attempt.context_ids_json = frozen_context_ids
+        if run.state == FlowRunState.WAITING_HUMAN:
+            # Older aggregation classified this machine-driven handoff as a
+            # human wait. Recompute before the guard so the next durable task
+            # heals the record instead of succeeding as a no-op forever.
+            _recompute_run(db, run)
     if (
         run.run_mode != "AUTOMATIC"
         or run.state != FlowRunState.ACTIVE
         or attempt.state != AttemptState.WAITING_START_CONFIRMATION
     ):
         return
-    plan_root: dict[str, Any] = dict(run.automation_plan_json or {})
-    node_plans = cast(dict[str, Any], plan_root.get("node_plans") or {})
-    node_plan = _automatic_node_plan(node_plans, node_run.flow_node_snapshot_key)
     confirm_start(
         db,
         attempt.id,
@@ -3568,6 +3584,34 @@ def _automatic_node_plan(node_plans: dict[str, Any], node_key: str) -> dict[str,
             {"node_key": node_key},
         )
     return dict(cast(dict[str, Any], raw_plan))
+
+
+def _automatic_attempt_preset(node: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """Return the exact launch preset frozen for an automatic Attempt.
+
+    Enabling node-owned context means using the launch override when it has
+    content, otherwise the context frozen in the Run Snapshot. Disabling it is
+    the only way to deliberately omit node prose.
+    """
+
+    preset = copy.deepcopy(cast(dict[str, Any], plan.get("agent_preset") or {}))
+    if not preset.get("node_context_enabled"):
+        return preset
+    override = str(preset.get("node_context_prompt") or "").strip()
+    if override:
+        return preset
+    asset = cast(dict[str, Any], node.get("asset") or {})
+    executor = cast(dict[str, Any], asset.get("executor") or {})
+    frozen_prompt = str(executor.get("context_prompt") or "").strip()
+    if frozen_prompt:
+        preset["node_context_prompt"] = frozen_prompt
+    return preset
+
+
+def _automatic_context_ids(preset: dict[str, Any]) -> list[str]:
+    if preset.get("node_context_enabled") and str(preset.get("node_context_prompt") or "").strip():
+        return [_MANUAL_NODE_CONTEXT_ID]
+    return []
 
 
 def process_provision_flow_run_runtime(
@@ -5949,19 +5993,24 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
                 select(NodeAttempt).where(NodeAttempt.node_run_id.in_([x.id for x in node_runs]))
             )
         )
-        if any(
-            x.state
-            in {
-                AttemptState.WAITING_INPUT,
-                AttemptState.WAITING_START_CONFIRMATION,
-                AttemptState.WAITING_ACCEPTANCE,
-                AttemptState.WAITING_HUMAN,
-                AttemptState.WAITING_CONFIRMATION,
-                AttemptState.START_BLOCKED,
-                AttemptState.END_BLOCKED,
-            }
-            for x in attempts
-        ):
+        human_wait_states = {
+            AttemptState.WAITING_HUMAN,
+            AttemptState.WAITING_CONFIRMATION,
+            AttemptState.START_BLOCKED,
+            AttemptState.END_BLOCKED,
+        }
+        if run.run_mode == "MANUAL":
+            human_wait_states.update(
+                {
+                    AttemptState.WAITING_INPUT,
+                    AttemptState.WAITING_START_CONFIRMATION,
+                    AttemptState.WAITING_ACCEPTANCE,
+                }
+            )
+        needs_human = any(x.state in human_wait_states for x in attempts) or any(
+            x.state == AttemptState.WAITING_INPUT and x.error_code is not None for x in attempts
+        )
+        if needs_human:
             run.state = FlowRunState.WAITING_HUMAN
         else:
             run.state = FlowRunState.ACTIVE
@@ -6458,6 +6507,8 @@ def _advance_automatic_targets(
             explicit = _automatic_plan_artifacts(db, run, target_key, target_plan)
             # A mapped source is authoritative for its frozen target port.
             explicit.update(mapped)
+            target_node = _node(snapshot, target_key)
+            target_preset = _automatic_attempt_preset(target_node, target_plan)
             created, created_attempt = _create_node_run(
                 db,
                 run,
@@ -6465,8 +6516,8 @@ def _advance_automatic_targets(
                 explicit,
                 "AUTOMATIC_TRANSITION",
                 cast(list[dict[str, Any]], target_plan.get("gates") or []),
-                context_ids=[],
-                agent_preset=cast(dict[str, Any], target_plan.get("agent_preset") or {}),
+                context_ids=_automatic_context_ids(target_preset),
+                agent_preset=target_preset,
                 startup_prompt=str(target_plan.get("startup_prompt") or ""),
             )
             # Keep the mapped fields auditable as platform-owned port flow;
@@ -7503,6 +7554,197 @@ def delete_run(db: Session, run_id: str) -> None:
     finish(db)
 
 
+_AUTOMATIC_PROGRESS_STAGES: dict[str, tuple[str, tuple[str, ...]]] = {
+    AttemptState.WAITING_INPUT: ("INPUT_READINESS", ("EVALUATE_READINESS",)),
+    AttemptState.START_GATES: ("START_GATES", ("RUN_GATE_POLICY",)),
+    AttemptState.WAITING_START_CONFIRMATION: (
+        "START_HANDOFF",
+        ("START_AUTOMATIC_ATTEMPT",),
+    ),
+    AttemptState.WAITING_CONFIRMATION: (
+        "RUNTIME_CONFIRMATION",
+        ("RESPOND_RUNTIME_CONFIRMATION",),
+    ),
+    AttemptState.END_GATES: ("END_GATES", ("RUN_GATE_POLICY",)),
+    AttemptState.WAITING_ACCEPTANCE: (
+        "FLOW_ADVANCE",
+        ("ADVANCE_AUTOMATIC_ATTEMPT",),
+    ),
+}
+
+
+def _automatic_progress(db: Session, attempt: NodeAttempt, run: FlowRun) -> dict[str, Any] | None:
+    if run.run_mode != "AUTOMATIC":
+        return None
+    if attempt.state == AttemptState.EXECUTING:
+        if attempt.runtime_phase == "STARTING":
+            stage, task_types = "RUNTIME_START", ("START_RUNTIME",)
+        else:
+            stage, task_types = "AGENT_RUNNING", ("WAIT_RUNTIME_WAKEUP", "POLL_RUNTIME")
+    elif attempt.state == AttemptState.PAUSED:
+        stage, task_types = "PAUSED", ()
+    elif attempt.state in {AttemptState.START_BLOCKED, AttemptState.END_BLOCKED}:
+        stage, task_types = "NEEDS_ATTENTION", ()
+    elif attempt.state in {AttemptState.ACCEPTED, AttemptState.REJECTED, AttemptState.CANCELLED}:
+        stage, task_types = "FINISHED", ()
+    else:
+        stage, task_types = _AUTOMATIC_PROGRESS_STAGES.get(attempt.state, ("WAITING_HUMAN", ()))
+
+    task = None
+    if task_types:
+        aggregate_ids = [attempt.id]
+        if stage == "RUNTIME_CONFIRMATION":
+            confirmation_id = db.scalar(
+                select(RuntimeConfirmationApproval.id)
+                .where(RuntimeConfirmationApproval.attempt_id == attempt.id)
+                .order_by(
+                    RuntimeConfirmationApproval.created_at.desc(),
+                    RuntimeConfirmationApproval.id.desc(),
+                )
+                .limit(1)
+            )
+            if confirmation_id is not None:
+                aggregate_ids.append(confirmation_id)
+        candidates = db.scalars(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.aggregate_id.in_(aggregate_ids),
+                BackgroundTask.task_type.in_(task_types),
+            )
+            .order_by(BackgroundTask.updated_at.desc(), BackgroundTask.created_at.desc())
+        )
+        expected_gate_stage = (
+            "START" if stage == "START_GATES" else "END" if stage == "END_GATES" else None
+        )
+        task = next(
+            (
+                candidate
+                for candidate in candidates
+                if expected_gate_stage is None
+                or str((candidate.payload_json or {}).get("stage") or "") == expected_gate_stage
+            ),
+            None,
+        )
+    task_error: str | None = None
+    if task is not None and task.last_error:
+        if task.last_error == "LEASE_EXPIRED":
+            task_error = "后台任务租约已过期，平台正在重新领取。"
+        elif task.last_error != "STARTUP_RECOVERY":
+            task_error = "后台任务执行失败，平台将按重试策略继续处理。"
+    needs_attention = bool(
+        task is not None
+        and task.state == TaskState.SUCCEEDED
+        and task.updated_at > attempt.updated_at
+        and attempt.state
+        in {
+            AttemptState.WAITING_INPUT,
+            AttemptState.START_GATES,
+            AttemptState.WAITING_START_CONFIRMATION,
+            AttemptState.END_GATES,
+            AttemptState.WAITING_ACCEPTANCE,
+        }
+    )
+    return {
+        "stage": stage,
+        "task_type": task.task_type if task is not None else None,
+        "task_state": task.state if task is not None else None,
+        "attempts": task.attempts if task is not None else 0,
+        "max_attempts": task.max_attempts if task is not None else 0,
+        "last_processed_at": task.updated_at.isoformat() if task is not None else None,
+        "next_retry_at": (
+            task.available_at.isoformat()
+            if task is not None and task.state == TaskState.RETRY
+            else None
+        ),
+        "task_error": task_error,
+        "needs_attention": needs_attention,
+    }
+
+
+def _attempt_launch_capabilities(
+    db: Session,
+    attempt: NodeAttempt,
+    session_binding: AgentConversationBinding | None,
+) -> list[dict[str, Any]]:
+    preset = attempt.agent_preset_json or {}
+    raw_frozen = preset.get("capabilities")
+    identities: list[dict[str, str]] = []
+    if isinstance(raw_frozen, list):
+        for raw_value in cast(list[object], raw_frozen):
+            if not isinstance(raw_value, dict):
+                continue
+            raw = cast(dict[str, Any], raw_value)
+            version_id = str(raw.get("version_id") or "")
+            capability_type = str(raw.get("capability_type") or "")
+            capability_key = str(raw.get("capability_key") or "")
+            digest = str(raw.get("digest") or "")
+            if version_id and capability_type and capability_key and digest:
+                identities.append(
+                    {
+                        "id": version_id,
+                        "capability_type": capability_type,
+                        "capability_key": capability_key,
+                        "digest": digest,
+                    }
+                )
+    elif session_binding is not None:
+        identities = [
+            {
+                "id": item.capability_version_id,
+                "capability_type": item.capability_type,
+                "capability_key": item.capability_key,
+                "digest": item.digest,
+            }
+            for item in db.scalars(
+                select(AgentConversationCapability)
+                .where(AgentConversationCapability.binding_id == session_binding.id)
+                .order_by(AgentConversationCapability.position)
+            )
+        ]
+    else:
+        for version_id in cast(list[str], preset.get("capability_version_ids") or []):
+            published = resolve_version(db, str(version_id), include_retired=True)
+            identities.append(
+                {
+                    "id": published.version.id,
+                    "capability_type": published.package.capability_type,
+                    "capability_key": published.package.capability_key,
+                    "digest": published.version.digest,
+                }
+            )
+
+    projected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for identity in identities:
+        if identity["id"] in seen:
+            continue
+        seen.add(identity["id"])
+        item: dict[str, Any] = dict(identity)
+        if identity["capability_type"] == "CONTEXT":
+            published = resolve_version(db, identity["id"], include_retired=True)
+            if (
+                published.package.capability_type != identity["capability_type"]
+                or published.package.capability_key != identity["capability_key"]
+                or published.version.digest != identity["digest"]
+            ):
+                raise DomainError(
+                    "AGENT_CONVERSATION_CAPABILITY_IDENTITY_DRIFT",
+                    "会话冻结能力身份校验失败",
+                    409,
+                )
+            text = str(published.runtime_config().get("text") or "").strip()
+            if not text:
+                raise DomainError(
+                    "AGENT_CONTEXT_CAPABILITY_INVALID",
+                    "已冻结的 Context 内容缺失",
+                    409,
+                    {"capability_version_id": identity["id"]},
+                )
+            item["text"] = text
+        projected.append(item)
+    return projected
+
+
 def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
@@ -7515,6 +7757,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         )
         .order_by(AgentConversationBinding.created_at.desc())
     )
+    launch_capabilities = _attempt_launch_capabilities(db, attempt, session_binding)
     frozen_session_contexts: list[dict[str, str]] = []
     if session_binding is not None:
         for reference in db.scalars(
@@ -7552,6 +7795,19 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
                     "text": text,
                 }
             )
+    known_contexts = {item["id"] for item in frozen_session_contexts}
+    frozen_session_contexts.extend(
+        {
+            "id": str(item["id"]),
+            "capability_key": str(item["capability_key"]),
+            "digest": str(item["digest"]),
+            "text": str(item["text"]),
+        }
+        for item in launch_capabilities
+        if item["capability_type"] == "CONTEXT"
+        and item["id"] not in known_contexts
+        and item.get("text")
+    )
     bindings = _bindings(db, attempt.id)
     artifacts = list(
         db.scalars(
@@ -7589,11 +7845,13 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         "startup_prompt": attempt.startup_prompt,
         "context_ids": attempt.context_ids_json,
         "frozen_session_contexts": frozen_session_contexts,
+        "frozen_agent_capabilities": launch_capabilities,
         "agent_preset": attempt.agent_preset_json,
         "gate_policies": attempt.gate_policies_json,
         "output_targets": attempt.output_targets_json,
         "error_code": attempt.error_code,
         "error_detail": attempt.error_detail,
+        "automatic_progress": _automatic_progress(db, attempt, _run(db, node_run.flow_run_id)),
         "runtime_cancel_recovery_modes": _runtime_cancel_recovery_modes(db, attempt),
         "input_bindings": [
             {

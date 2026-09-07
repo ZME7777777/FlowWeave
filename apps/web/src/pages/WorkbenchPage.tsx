@@ -535,54 +535,69 @@ function GateDraftEditor({ gates, onChange }: { gates: GatePolicy[]; onChange: (
 
 const MANUAL_NODE_CONTEXT_ID = '__node_context_prompt__';
 
-type NodeContextItem = { id: string; title: string; meta: string; text: string; source: 'NODE' | 'REPOSITORY' | 'SESSION' };
+type NodeContextItem = { id: string; title: string; meta: string; text: string; source: 'NODE' | 'REPOSITORY' | 'SESSION'; applied: boolean };
 
-function nodeContextItems(node: SnapshotFlowNode, frozenSessionContexts: NonNullable<NodeAttempt['frozen_session_contexts']> = []): NodeContextItem[] {
+function nodeContextItems(node: SnapshotFlowNode, contextIds: string[] | null, frozenSessionContexts: NonNullable<NodeAttempt['frozen_session_contexts']> = [], agentPreset?: AgentPreset | null): NodeContextItem[] {
+  const selected = contextIds === null ? null : new Set(contextIds);
   const manual = node.asset.executor?.context_prompt?.trim();
-  const nodeItems = [
-    ...(manual ? [{ id: MANUAL_NODE_CONTEXT_ID, title: '专属上下文', meta: '节点专属 · 自由文本 Context', text: manual, source: 'NODE' as const }] : []),
+  const frozenManual = agentPreset?.node_context_enabled ? agentPreset.node_context_prompt?.trim() || manual : manual;
+  const nodeItems: NodeContextItem[] = [
+    ...(frozenManual ? [{ id: MANUAL_NODE_CONTEXT_ID, title: '节点自定义上下文', meta: manual ? '节点定义 · 自由文本' : '本轮冻结 · 自由文本', text: frozenManual, source: 'NODE' as const, applied: selected === null || selected.has(MANUAL_NODE_CONTEXT_ID) }] : []),
     ...node.asset.context_capabilities.map(item => ({
       id: item.id,
       title: item.capability_key,
-      meta: `Context 管理 · ${item.digest.slice(0, 12)}`,
+      meta: `节点 Context 能力 · ${item.digest.slice(0, 12)}`,
       text: item.text,
       source: 'REPOSITORY' as const,
+      applied: selected === null || selected.has(item.id),
     })),
   ];
-  const known = new Set(nodeItems.map(item => item.id));
-  return [
-    ...nodeItems,
-    ...frozenSessionContexts.filter(item => !known.has(item.id)).map(item => ({
+  const byId = new Map(nodeItems.map(item => [item.id, item]));
+  frozenSessionContexts.forEach(item => {
+    const existing = byId.get(item.id);
+    if (existing) {
+      existing.applied = true;
+      existing.text = item.text;
+      return;
+    }
+    byId.set(item.id, {
       id: item.id,
       title: item.capability_key,
-      meta: `首会话 Agent 配置 · ${item.digest.slice(0, 12)}`,
+      meta: `本轮 Context 能力 · ${item.digest.slice(0, 12)}`,
       text: item.text,
-      source: 'SESSION' as const,
-    })),
-  ];
+      source: 'SESSION',
+      applied: true,
+    });
+  });
+  return [...byId.values()];
 }
 
-function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], editable = false, onChange, mode }: {
+function NodeContextSummary({ node, contextIds, frozenSessionContexts = [], frozenAgentCapabilities = [], agentPreset, editable = false, onChange, mode }: {
   node: SnapshotFlowNode; contextIds: string[] | null; editable?: boolean;
   frozenSessionContexts?: NonNullable<NodeAttempt['frozen_session_contexts']>;
+  frozenAgentCapabilities?: NonNullable<NodeAttempt['frozen_agent_capabilities']>;
+  agentPreset?: AgentPreset | null;
   onChange?: (ids: string[]) => void; mode?: 'PROMPT' | 'CHAT';
 }) {
   const [viewing, setViewing] = useState<NodeContextItem>();
   useEscapeClose(() => setViewing(undefined), Boolean(viewing));
-  const items = nodeContextItems(node, frozenSessionContexts);
+  const items = nodeContextItems(node, contextIds, frozenSessionContexts, agentPreset);
   const selected = contextIds === null ? new Set(items.map(item => item.id)) : new Set(contextIds);
-  const frozenSessionIds = new Set(frozenSessionContexts.map(item => item.id));
-  const visible = editable ? items : items.filter(item => selected.has(item.id) || frozenSessionIds.has(item.id));
+  const visible = items;
+  const configuredCapabilities = frozenAgentCapabilities.filter(item => item.capability_type !== 'CONTEXT');
+  const capabilitySignature = configuredCapabilities.map(item => item.id).join(':');
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(configuredCapabilities.length <= 8);
+  useEffect(() => setCapabilitiesOpen(configuredCapabilities.length <= 8), [capabilitySignature, configuredCapabilities.length]);
   const toggle = (id: string) => {
     if (!onChange) return;
     onChange(selected.has(id) ? [...selected].filter(item => item !== id) : [...selected, id]);
   };
-  const empty = mode === 'CHAT' && frozenSessionContexts.length === 0
+  const empty = mode === 'CHAT' && frozenSessionContexts.length === 0 && configuredCapabilities.length === 0
     ? '仅创建会话不会应用节点上下文；进入会话后由你自行决定是否补充上下文。'
     : items.length === 0
-      ? '该节点没有可用的 Context。'
-      : '本次未选择节点上下文。';
-  return <section className="attempt-side-section node-context-summary"><header><div><h4>节点上下文</h4><small>{editable ? '可多选；创建后会冻结为本次运行上下文。' : contextIds === null ? '历史执行按当时节点定义的全部 Context 展示。' : '仅展示本次运行实际冻结的 Context。'}</small></div>{editable && <span className="context-selection-count">已选 {selected.size}</span>}</header>{visible.length ? <div className="node-context-list">{visible.map(item => <article key={item.id} className={`${item.source === 'NODE' ? 'node-context-owned' : 'node-context-repository'}${editable && selected.has(item.id) ? ' selected' : ''}`}>{editable ? <button type="button" className="node-context-toggle" aria-pressed={selected.has(item.id)} onClick={() => toggle(item.id)}><i className="context-checkbox" aria-hidden="true">{selected.has(item.id) ? '✓' : ''}</i><span><b>{item.title}</b><small>{item.meta}</small></span></button> : <span className="node-context-label"><b>{item.title}</b><small>{item.meta}</small></span>}<button type="button" className="ghost context-detail-button" aria-label={`查看 ${item.title}`} onClick={() => setViewing(item)}><Eye size={14}/>查看</button></article>)}</div> : <p className="field-hint">{empty}</p>}{viewing && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewing.title}`}><header><div><span className="eyebrow">FROZEN CONTEXT</span><h2>{viewing.title}</h2></div><button className="ghost" onClick={() => setViewing(undefined)}><X size={15}/>关闭</button></header><p>{viewing.meta}</p><pre>{viewing.text}</pre><footer><button className="primary" onClick={() => setViewing(undefined)}>完成</button></footer></section></div>}</section>;
+      ? '该节点没有配置自定义上下文或能力。'
+      : '本轮未应用节点文本 Context。';
+  return <section className="attempt-side-section node-context-summary"><header><div><h4>节点上下文</h4><small>{editable ? '可多选；创建后会冻结为本次运行上下文。' : '同时展示节点自定义内容、本轮是否应用，以及冻结的 Agent 能力装配。'}</small></div>{editable && <span className="context-selection-count">已选 {selected.size}</span>}</header>{visible.length ? <div className="node-context-list">{visible.map(item => <article key={item.id} className={`${item.source === 'NODE' ? 'node-context-owned' : 'node-context-repository'}${item.applied ? ' selected' : ' not-applied'}`}>{editable ? <button type="button" className="node-context-toggle" aria-pressed={selected.has(item.id)} onClick={() => toggle(item.id)}><i className="context-checkbox" aria-hidden="true">{selected.has(item.id) ? '✓' : ''}</i><span><b>{item.title}</b><small>{item.meta}</small></span></button> : <span className="node-context-label"><b>{item.title}</b><small>{item.meta}</small></span>}<span className={`context-application-state ${item.applied ? 'applied' : ''}`}>{item.applied ? '本轮已应用' : '本轮未应用'}</span><button type="button" className="ghost context-detail-button" aria-label={`查看 ${item.title}`} onClick={() => setViewing(item)}><Eye size={14}/>查看</button></article>)}</div> : <p className="field-hint">{empty}</p>}{!editable && configuredCapabilities.length > 0 && <details className="node-capability-context" open={capabilitiesOpen} onToggle={event => setCapabilitiesOpen(event.currentTarget.open)}><summary><span>本轮装配能力</span><b>{configuredCapabilities.length} 项</b></summary><div>{configuredCapabilities.map(item => <article key={item.id}><span><b>{item.capability_key}</b><small>{item.capability_type} · {item.digest.slice(0, 12)}</small></span><em>已冻结</em></article>)}</div></details>}{viewing && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewing.title}`}><header><div><span className="eyebrow">FROZEN CONTEXT</span><h2>{viewing.title}</h2></div><button className="ghost" onClick={() => setViewing(undefined)}><X size={15}/>关闭</button></header><p>{viewing.meta} · {viewing.applied ? '本轮已应用' : '本轮未应用'}</p><pre>{viewing.text}</pre><footer><button className="primary" onClick={() => setViewing(undefined)}>完成</button></footer></section></div>}</section>;
 }
 
 function CapabilityPresetDialog({ selectedIds, onClose, onSave }: { selectedIds: string[]; onClose: () => void; onSave: (ids: string[]) => void }) {
@@ -741,6 +756,22 @@ function NodeConsole({ run, node, startupMode, pendingNodeRun, initialBindings, 
   return <><NodeConfigurationPanel title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(pendingAttempt || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入；可继续补充本节点配置，保存后再从左侧启动。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="保存配置后会随记录冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
+const AUTOMATIC_STAGE_ORDER = ['INPUT_READINESS', 'START_GATES', 'START_HANDOFF', 'RUNTIME_START', 'AGENT_RUNNING', 'END_GATES', 'FLOW_ADVANCE'];
+const AUTOMATIC_STAGE_LABELS: Record<string, string> = {
+  INPUT_READINESS: '校验输入', START_GATES: '检查开始门禁', START_HANDOFF: '启动节点', RUNTIME_START: '启动运行环境',
+  AGENT_RUNNING: 'Agent 执行', RUNTIME_CONFIRMATION: '等待操作确认', END_GATES: '检查完成门禁', FLOW_ADVANCE: '流转后继节点',
+  PAUSED: '执行已暂停', NEEDS_ATTENTION: '需要人工处理', WAITING_HUMAN: '等待人工输入', FINISHED: '本轮已结束',
+};
+const TASK_STATE_LABELS: Record<string, string> = { PENDING: '等待处理', RUNNING: '处理中', RETRY: '等待重试', SUCCEEDED: '本次处理完成', DEAD: '处理失败' };
+
+function AutomaticProgressPanel({ progress }: { progress: NonNullable<NodeAttempt['automatic_progress']> }) {
+  const currentIndex = AUTOMATIC_STAGE_ORDER.indexOf(progress.stage);
+  const title = progress.needs_attention ? '状态未推进，平台正在自愈' : AUTOMATIC_STAGE_LABELS[progress.stage] ?? '连续运行处理中';
+  const processedAt = progress.last_processed_at ? new Date(progress.last_processed_at).toLocaleString() : undefined;
+  const retryAt = progress.next_retry_at ? new Date(progress.next_retry_at).toLocaleString() : undefined;
+  return <section className={`automatic-progress-panel${progress.needs_attention || progress.task_state === 'DEAD' ? ' attention' : ''}`} data-testid="automatic-progress"><header><span><b>{title}</b><small>{progress.task_state ? TASK_STATE_LABELS[progress.task_state] ?? progress.task_state : '状态已持久化'}</small></span>{currentIndex >= 0 && <em>第 {currentIndex + 1}/{AUTOMATIC_STAGE_ORDER.length} 步</em>}</header>{currentIndex >= 0 && <ol>{AUTOMATIC_STAGE_ORDER.map((stage, index) => <li key={stage} className={index < currentIndex ? 'done' : index === currentIndex ? 'current' : ''}><i aria-hidden="true"/><span>{AUTOMATIC_STAGE_LABELS[stage]}</span></li>)}</ol>}<dl>{progress.attempts > 0 && <><dt>后台尝试</dt><dd>{progress.attempts} 次{progress.max_attempts ? ` / 上限 ${progress.max_attempts}` : ''}</dd></>}{processedAt && <><dt>最近处理</dt><dd>{processedAt}</dd></>}{retryAt && <><dt>下次重试</dt><dd>{retryAt}</dd></>}</dl>{progress.task_error && <p role="alert">{progress.task_error}</p>}{progress.needs_attention && <p role="status">任务已被领取但业务状态没有前进；平台会按持久记录自动重新计算并继续，不需要反复刷新或重新创建运行。</p>}</section>;
+}
+
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string } }) {
   const dialog = useProductDialog();
   const [text, setText] = useState('');
@@ -825,9 +856,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     'AUTOMATIC_TRANSITION_DELIVERY_FAILED',
     'AUTOMATIC_TRANSITION_INVALID',
   ].includes(attempt.error_code);
-  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={inputArtifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
+  return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button></nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{automaticAttempt && attempt.automatic_progress && <AutomaticProgressPanel progress={attempt.automatic_progress}/>} {attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} frozenAgentCapabilities={attempt.frozen_agent_capabilities} agentPreset={attempt.agent_preset} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={inputArtifacts}/>{editableInputs && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Play size={14}/>编辑本轮输入</button>}{!editableInputs && <p className="field-hint">输入已随本轮启动冻结，仅供查看。</p>}
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
-    {!terminal && (attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? automaticAttempt ? <section className="terminal-run-panel"><h4>正在自动启动</h4><p>连续运行已通过启动条件；平台正在启动当前节点，并会在完成后自动流转至后继节点。</p></section> : <section className="terminal-run-panel"><h4>配置已保存</h4><p>请在左侧逐步运行记录中点击“启动”。启动后才会创建并执行节点 Agent 会话。</p></section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>)}
+    {!terminal && (attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? automaticAttempt ? !attempt.automatic_progress && <section className="terminal-run-panel"><h4>正在自动启动</h4><p>连续运行已通过启动条件；平台正在启动当前节点，并会在完成后自动流转至后继节点。</p></section> : <section className="terminal-run-panel"><h4>配置已保存</h4><p>请在左侧逐步运行记录中点击“启动”。启动后才会创建并执行节点 Agent 会话。</p></section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>)}
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
       {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>运行已进入只读终态，历史记录继续保留。流程级操作位于上方“流程运行态管理”。</p></section> : <>
       {(attempt.startup_mode === 'CHAT' && attempt.state === 'WAITING_START_CONFIRMATION' || automaticOutputOverrideRequired) && <section className="manual-session-outputs"><h4>{automaticOutputOverrideRequired ? '补填输出并强制流转' : '提交会话产出'}</h4><p>{automaticOutputOverrideRequired ? '自动修订已停止。你可以继续节点会话修改，也可以按输出字段补填 URL 或共享工作区文件；提交后将记录人工降级决定并直接流转。' : '会话回复不会自动成为节点输出。请按冻结输出合同填写 URL 或共享工作区文件路径，平台校验并复制为候选产物后再运行完成门禁。'}</p>{manualOutputFields.map(field => <label key={field.field_key}>{field.display_name || field.field_key} · {field.data_type}<input aria-label={`提交输出 ${field.display_name || field.field_key}`} value={manualOutputs[field.field_key] ?? ''} onChange={event => setManualOutputs(current => ({ ...current, [field.field_key]: event.target.value }))} placeholder={field.data_type === 'FILE' ? '/runtime/workspace/project/...' : 'https://...'}/></label>)}<button className="danger full" disabled={!manualOutputsReady || mutation.isPending} onClick={() => automaticOutputOverrideRequired ? void dialog.confirm({ title: '确认降级并强制流转？', message: '将按你填写的输出创建正式产物，跳过本节点后续自动修订与完成校验，并记录本次人工降级决定。', confirmLabel: '确认强制流转', tone: 'danger' }).then(ok => ok && act('force-manual-outputs', manualOutputsPayload)) : act('manual-outputs', manualOutputsPayload)}>{mutation.isPending ? '提交中…' : automaticOutputOverrideRequired ? '确认降级并强制流转' : '提交候选输出并运行完成门禁'}</button></section>}
