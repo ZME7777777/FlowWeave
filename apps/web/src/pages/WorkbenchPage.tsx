@@ -632,8 +632,9 @@ function PromptConfigurationTabs({ active, onChange }: { active: PromptConfigura
   return <nav className="attempt-detail-tabs node-console-subtabs" aria-label="提示词执行配置"><button className={active === 'inputs' ? 'active' : ''} onClick={() => onChange('inputs')}>输入与上下文</button><button className={active === 'agent' ? 'active' : ''} onClick={() => onChange('agent')}>Agent 配置</button><button className={active === 'gates' ? 'active' : ''} onClick={() => onChange('gates')}>门禁配置</button><button className={active === 'history' ? 'active' : ''} onClick={() => onChange('history')}>执行记录</button></nav>;
 }
 
-function StartupPromptSummary({ prompt, freezeHint, editable = true, onEdit }: { prompt: string; freezeHint: string; editable?: boolean; onEdit: () => void }) {
-  return <section className="attempt-side-section startup-prompt-summary"><header><div><h4>启动提示词</h4><small>{freezeHint}</small></div></header><p title={prompt.trim() || undefined}>{prompt.trim() || '尚未填写启动提示词。'}</p>{editable && <footer><button type="button" className="secondary" onClick={onEdit}>编辑</button></footer>}</section>;
+function StartupPromptSummary({ prompt, freezeHint, editable = true, onEdit }: { prompt?: string | null; freezeHint: string; editable?: boolean; onEdit: () => void }) {
+  const text = typeof prompt === 'string' ? prompt.trim() : '';
+  return <section className="attempt-side-section startup-prompt-summary"><header><div><h4>启动提示词</h4><small>{freezeHint}</small></div></header><p title={text || undefined}>{text || '尚未填写启动提示词。'}</p>{editable && <footer><button type="button" className="secondary" onClick={onEdit}>编辑</button></footer>}</section>;
 }
 
 function StartupPromptDialog({ prompt, label = '节点启动提示词', onChange, onClose }: { prompt: string; label?: string; onChange: (prompt: string) => void; onClose: () => void }) {
@@ -810,7 +811,12 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     && attempt.error_code === 'AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED';
   const manualOutputFields = attemptNode?.asset.outputs ?? [];
   const manualOutputsReady = manualOutputFields.every(field => Boolean(manualOutputs[field.field_key]?.trim()));
-  const manualOutputsPayload = Object.fromEntries(manualOutputFields.map(field => [field.field_key, field.data_type === 'FILE' ? { artifact_type: 'FILE' as const, path: manualOutputs[field.field_key].trim() } : { artifact_type: 'URL' as const, uri: manualOutputs[field.field_key].trim() }]));
+  const manualOutputsPayload = Object.fromEntries(manualOutputFields.map(field => {
+    const value = manualOutputs[field.field_key]?.trim() ?? '';
+    return [field.field_key, field.data_type === 'FILE'
+      ? { artifact_type: 'FILE' as const, path: value }
+      : { artifact_type: 'URL' as const, uri: value }];
+  }));
   const retryableAutomaticFailure = !attempt.error_code || [
     'GATE_CONFIG_INVALID',
     'AUTOMATIC_GATE_DELIVERY_FAILED',
