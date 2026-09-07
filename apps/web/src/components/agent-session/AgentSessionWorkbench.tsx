@@ -158,7 +158,8 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnaps
   return [...tasks.values()].sort((left, right) => (right.startedAt || '').localeCompare(left.startedAt || ''));
 }
 
-function runtimeTaskStatus(task: RuntimeTaskProjection): string {
+function runtimeTaskStatus(task: RuntimeTaskProjection, sessionStopped = false): string {
+  if (sessionStopped && task.status === 'RUNNING') return '会话已停止，结果未返回';
   if (task.status === 'COMPLETED') return '已完成';
   if (task.status === 'ERROR') return '失败';
   const control = task.control?.control_state;
@@ -172,17 +173,18 @@ function runtimeTaskStatus(task: RuntimeTaskProjection): string {
   return '运行中';
 }
 
-function runtimeTaskIsActive(task: RuntimeTaskProjection): boolean {
+function runtimeTaskIsActive(task: RuntimeTaskProjection, sessionStopped = false): boolean {
   if (task.status !== 'RUNNING') return false;
+  if (sessionStopped) return false;
   return !['INTERRUPT_CONFIRMED', 'RECOVERED', 'RECOVERY_FAILED', 'WATCHDOG_FAILED', 'INTERRUPT_CONFIRMATION_FAILED'].includes(
     task.control?.control_state ?? '',
   );
 }
 
-function RuntimeTaskGlyph({ task, size = 15 }: { task: RuntimeTaskProjection; size?: number }) {
+function RuntimeTaskGlyph({ task, size = 15, sessionStopped = false }: { task: RuntimeTaskProjection; size?: number; sessionStopped?: boolean }) {
   const status = task.status === 'COMPLETED'
     ? 'completed'
-    : runtimeTaskIsActive(task) ? 'running' : 'error';
+    : runtimeTaskIsActive(task, sessionStopped) ? 'running' : 'error';
   return <SubagentAvatar slot={task.avatarSlot} status={status} size={size}/>;
 }
 
@@ -205,8 +207,8 @@ function taskOutcomeText(value: unknown): string | undefined {
   }).filter(Boolean).join('\n').slice(0, 1_000) || undefined;
 }
 
-function RuntimeTaskRecord({ task, definitions, onInterrupt, interrupting }: {
-  task: RuntimeTaskProjection; definitions: CapabilityAsset[]; onInterrupt?: () => void; interrupting?: boolean;
+function RuntimeTaskRecord({ task, definitions, sessionStopped }: {
+  task: RuntimeTaskProjection; definitions: CapabilityAsset[]; sessionStopped?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -222,7 +224,7 @@ function RuntimeTaskRecord({ task, definitions, onInterrupt, interrupting }: {
   const outcome = taskOutcomeText(task.outcome);
   const nativeDefinition = !definition;
   const startedAt = task.startedAt ? Date.parse(task.startedAt) : NaN;
-  const controlStopsClock = ['INTERRUPT_CONFIRMED', 'RECOVERED', 'RECOVERY_FAILED', 'WATCHDOG_FAILED', 'INTERRUPT_CONFIRMATION_FAILED'].includes(task.control?.control_state ?? '');
+  const controlStopsClock = sessionStopped || ['INTERRUPT_CONFIRMED', 'RECOVERED', 'RECOVERY_FAILED', 'WATCHDOG_FAILED', 'INTERRUPT_CONFIRMATION_FAILED'].includes(task.control?.control_state ?? '');
   const finishedAt = task.finishedAt
     ? Date.parse(task.finishedAt)
     : controlStopsClock && task.control?.updated_at
@@ -236,24 +238,24 @@ function RuntimeTaskRecord({ task, definitions, onInterrupt, interrupting }: {
     : `${Math.floor(elapsedSeconds / 60)}分 ${String(elapsedSeconds % 60).padStart(2, '0')}秒`;
   const usage = task.usage;
   return <section className="agent-subagent-record" aria-label={`${task.subagentType} 任务详情`}>
-      <header><div><span className="eyebrow">SUBAGENT</span><h2>{task.subagentType}</h2><p>{runtimeTaskStatus(task)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div></header>
-      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${task.status.toLowerCase()}`}>{runtimeTaskStatus(task)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>运行耗时</dt><dd>{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>最近事件摘要</dt><dd>{task.lastEventSummary}</dd></>}{task.control && <><dt>平台处理</dt><dd>{task.control.control_state}{task.control.updated_at ? ` · ${new Date(task.control.updated_at).toLocaleString('zh-CN')}` : ''}</dd>{task.control.deadline_at && <><dt>观察截止</dt><dd>{new Date(task.control.deadline_at).toLocaleString('zh-CN')}</dd></>}{task.control.last_error && <><dt>处理错误</dt><dd>{task.control.last_error}</dd></>}</>}</dl></section>
+      <header><div><span className="eyebrow">SUBAGENT</span><h2>{task.subagentType}</h2><p>{runtimeTaskStatus(task, sessionStopped)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div></header>
+      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${runtimeTaskIsActive(task, sessionStopped) ? 'running' : task.status.toLowerCase()}`}>{runtimeTaskStatus(task, sessionStopped)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>运行耗时</dt><dd>{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>最近事件摘要</dt><dd>{task.lastEventSummary}</dd></>}{task.control && <><dt>平台处理</dt><dd>{task.control.control_state}{task.control.updated_at ? ` · ${new Date(task.control.updated_at).toLocaleString('zh-CN')}` : ''}</dd>{task.control.deadline_at && <><dt>观察截止</dt><dd>{new Date(task.control.deadline_at).toLocaleString('zh-CN')}</dd></>}{task.control.last_error && <><dt>处理错误</dt><dd>{task.control.last_error}</dd></>}</>}</dl></section>
       {usage && <section><h3>用量</h3><dl><dt>模型</dt><dd><code>{usage.model_name}</code></dd><dt>累计 Token</dt><dd>{(usage.prompt_tokens + usage.completion_tokens + usage.cache_read_tokens + usage.cache_write_tokens + usage.reasoning_tokens).toLocaleString('zh-CN')}</dd><dt>输入 / 输出</dt><dd>{usage.prompt_tokens.toLocaleString('zh-CN')} / {usage.completion_tokens.toLocaleString('zh-CN')}</dd><dt>推理 Token</dt><dd>{usage.reasoning_tokens.toLocaleString('zh-CN')}</dd><dt>缓存读 / 写</dt><dd>{usage.cache_read_tokens.toLocaleString('zh-CN')} / {usage.cache_write_tokens.toLocaleString('zh-CN')}</dd><dt>当前轮 Token</dt><dd>{usage.per_turn_tokens.toLocaleString('zh-CN')}</dd><dt>上下文窗口</dt><dd>{usage.context_window.toLocaleString('zh-CN')}</dd><dt>累计费用</dt><dd>${usage.accumulated_cost.toFixed(6)}</dd></dl></section>}
       <section><h3>子智能体定义</h3>{nativeDefinition ? <p className="agent-subagent-note">这是 OpenHands 原生 <code>{task.subagentType}</code> 类型。当前正式事件未携带可版本化的 FlowWeave Agent Definition，因此不会把它伪装成自定义定义。</p> : <><p>{definition.description || '已发布的 FlowWeave Agent Definition。'}</p><dl><dt>已发布版本</dt><dd>{definition.version}</dd><dt>内容摘要</dt><dd><code>{definition.content_hash.slice(0, 16)}</code></dd>{tools.length > 0 && <><dt>允许工具</dt><dd>{tools.join('、')}</dd></>}{skills.length > 0 && <><dt>技能</dt><dd>{skills.join('、')}</dd></>}</dl><p className="agent-subagent-note">此处展示当前可读取的已发布定义。会话运行时使用的定义版本由 OpenHands 创建请求冻结，事件未提供版本 ID 时不据此声称两者相同。</p></>}</section>
-      {runtimeTaskIsActive(task) && onInterrupt && <section><h3>停止</h3><p className="agent-subagent-note">OpenHands 原生 Task 不提供单独停止此子智能体的公开接口。此操作会立即中断父 Agent 的当前等待；平台随后通过 Runtime 隔离保证子智能体物理终止，不会自动恢复被手动暂停的父 Agent。</p><button type="button" className="agent-subagent-stop" disabled={interrupting} onClick={onInterrupt}>{interrupting ? '正在停止当前 Agent…' : '停止当前 Agent'}</button></section>}
       {outcome && <section><h3>执行结果</h3><pre>{outcome}</pre></section>}
     </section>
 }
 
-function RuntimeTaskTab({ tasks, definitions, selectedTaskId, onSelect, onInterrupt, interrupting }: {
-  tasks: RuntimeTaskProjection[]; definitions: CapabilityAsset[]; selectedTaskId?: string; onSelect: (taskId: string) => void; onInterrupt?: () => void; interrupting?: boolean;
+function RuntimeTaskTab({ tasks, definitions, selectedTaskId, onSelect, sessionStopped = false }: {
+  tasks: RuntimeTaskProjection[]; definitions: CapabilityAsset[]; selectedTaskId?: string; onSelect: (taskId: string) => void; sessionStopped?: boolean;
 }) {
-  const running = tasks.filter(runtimeTaskIsActive).length;
+  const running = tasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length;
   const selectedTask = tasks.find(task => task.id === selectedTaskId) ?? tasks[0];
   if (!selectedTask) return <div className="agent-drawer-empty"><b>暂无子智能体记录</b><span>本会话出现 OpenHands TaskAction 后，记录会显示在这里。</span></div>;
   return <section className="agent-subagent-tab" aria-label="子智能体记录">
-    <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><RuntimeTaskGlyph task={task} size={13}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
-    <RuntimeTaskRecord task={selectedTask} definitions={definitions} onInterrupt={onInterrupt} interrupting={interrupting}/>
+    {sessionStopped && <div className="agent-subagent-session-notice" role="status"><Check size={15}/><span><b>会话已暂停</b><small>本次会话中的子智能体均已停止等待，尚未返回的结果不会继续生成。</small></span></div>}
+    <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><RuntimeTaskGlyph task={task} size={13} sessionStopped={sessionStopped}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task, sessionStopped)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
+    <RuntimeTaskRecord task={selectedTask} definitions={definitions} sessionStopped={sessionStopped}/>
   </section>;
 }
 
@@ -1409,9 +1411,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, sources, attachmentRequest, candidatePreviewRequest, runtimeAvailable, runtimeTasks, agentDefinitions, onInterrupt, interrupting,
+  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, attachments, sources, attachmentRequest, candidatePreviewRequest, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; onInterrupt?: () => void; interrupting?: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -1687,7 +1689,7 @@ function WorkspaceDrawer({
   const summary = details && <section className="agent-workspace-overview">
     <article><FolderOpen size={16}/><div><small>当前工作区</small><b>{details.scope.display_name}</b><code>{details.working_directory}</code></div></article>
     <article><MonitorCog size={16}/><div><small>运行环境</small><b>{details.runtime.container_id || (details.runtime.write_available ? '运行中' : '恢复中')}</b><p>所有会话共用此 Workspace Runtime；每个终端保留独立会话。</p></div></article>
-    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(runtimeTaskIsActive).length ? `${runtimeTasks.filter(runtimeTaskIsActive).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 5).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task}/></button>)}{runtimeTasks.length > 5 && <button type="button" className="agent-subagent-overflow" aria-label={`查看其余 ${runtimeTasks.length - 5} 个子智能体任务`} onClick={() => openRuntimeTasks()}>+{runtimeTasks.length - 5}</button>}</div></div></article>}
+    {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 5).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task, sessionStopped)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task} sessionStopped={sessionStopped}/></button>)}{runtimeTasks.length > 5 && <button type="button" className="agent-subagent-overflow" aria-label={`查看其余 ${runtimeTasks.length - 5} 个子智能体任务`} onClick={() => openRuntimeTasks()}>+{runtimeTasks.length - 5}</button>}</div></div></article>}
     {/*
       Git 仓库概览暂时隐藏：当前仅罗列工作区中的仓库路径、分支、提交与远端地址，
       对用户的下一步操作帮助有限。保留原始实现，待补充状态、差异和常用 Git 操作后再恢复。
@@ -1722,7 +1724,7 @@ function WorkspaceDrawer({
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <pre>{previewQuery.data}</pre> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
-          {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} onInterrupt={onInterrupt} interrupting={interrupting}/></div>}
+          {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
         </div>)}
       </div>
@@ -2050,6 +2052,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const canWrite = Boolean(runtimeWritable && selected);
   const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));
   const selectedConversationRunning = conversationIsRunning(inputReadinessQuery.data?.execution_status);
+  const sessionStopped = turnState === 'pausing' || turnState === 'paused'
+    || inputReadinessQuery.data?.execution_status?.toLowerCase() === 'paused';
   const confirmationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace?.id, selected?.id),
     queryFn: () => api.pendingConfirmation(workspace!.id, selected!.id),
@@ -2863,7 +2867,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} runtimeAvailable={Boolean(runtime?.write_available && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} onInterrupt={turnState === 'running' ? () => interrupt.mutate() : undefined} interrupting={interrupt.isPending}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} runtimeAvailable={Boolean(runtime?.write_available && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} sessionStopped={sessionStopped}/>
     {workDirectoryCreatorOpen && <WorkDirectoryCreator workspaceId={workspace.id} onClose={() => setWorkDirectoryCreatorOpen(false)} onCreated={directory => {
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });

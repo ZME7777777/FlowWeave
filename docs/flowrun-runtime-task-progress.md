@@ -2900,6 +2900,17 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 完成：新增绿色中性“本轮已按你的操作停止”提醒，说明部分子智能体结果尚未返回；普通 LLM、工具和网络错误仍按
 原错误卡片展示，避免把真实故障误归因于用户停止。
 
+### FR-202 会话级暂停与全体子智能体状态 — DONE
+
+依赖：`FR-201`。
+
+目标：停止控制只属于父会话；不得在单个子智能体卡片上提供会误导为“单独停止”的按钮。父会话进入暂停时，所有
+尚未收到正式结果的子智能体必须同时显示停止状态和一致说明。
+
+完成：移除子智能体停止入口，仅保留 Composer 的会话暂停按钮；暂停提交后立即将全部未完成子智能体从运行计数
+中移除，显示“会话已停止，结果未返回”，并在子智能体面板展示会话级提示。后端既有实现仍按正式未完成
+TaskAction 身份为全部任务安排中断确认／Runtime 隔离，不新增私有子 Agent 控制协议。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2915,6 +2926,7 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-202 | Web ESLint、TypeScript typecheck；`git diff --check` | PASS：子智能体界面不再提供停止按钮；会话暂停时所有未完成子智能体均不计入运行中，并显示会话级停止提醒。 |
 | 2026-09-07 | FR-201 | Web ESLint、TypeScript typecheck；`git diff --check` | PASS：中断关联错误事件显示用户主动停止提醒并隐藏底层异常详情；非中断错误渲染路径保持不变。 |
 | 2026-09-07 | FR-200 | Web TypeScript typecheck；`git diff --check` | PASS：中断确认后的子任务不再显示为运行中、不再显示停止按钮或继续累加耗时；未修改 OpenHands。 |
 | 2026-09-07 | FR-199 | Agent Task watchdog 定向 pytest（9 passed）；受影响 Python `py_compile`；Web TypeScript typecheck；`git diff --check` | PASS：watchdog 控制阶段通过事件响应投影给 Agent Workspace 与 FlowRun 节点会话，前端可区分观察、超时、确认中断、Runtime 恢复和处理失败；未修改 OpenHands，未声称子 Agent 已被单独取消。 |
