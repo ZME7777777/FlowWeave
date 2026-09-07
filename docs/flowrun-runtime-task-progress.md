@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`无`
+> 下一可执行切片：`FR-205`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2930,6 +2930,22 @@ digest，不伪装为文本 Context。未应用的节点定义上下文必须明
 Python Ruff／Pyright、Web ESLint／TypeScript typecheck／production build、Alembic head、任务状态唯一性与
 `git diff --check`。完成后提交独立 Git commit 并停止，不进入部署。
 
+### FR-204 运行事件触发器领域契约与故障分类 — DONE
+
+依赖：`FR-203`。
+
+目标：为节点会话和 FlowRun 运行事件冻结一个平台拥有的增强回调契约。事件信封必须保留 OpenHands 正式
+`event_id`、`parent_id`、`action_id`、`tool_call_id` 及 FlowRun/NodeRun/Attempt 关联；普通消息、思考和工具
+观察事件只能作为可选动作输入，错误、完成、人工输入要求和平台状态变化才属于可驱动编排的状态事实。故障
+分类必须保守区分网络、超时、不可用等可恢复瞬态与鉴权、额度、策略、上下文超限、参数错误等不可自动恢复
+故障；未知故障不得自动恢复。动作仅允许平台治理的恢复会话、Webhook、通知、创建待办、暂停和转人工类型，
+并提供基于触发器版本、正式事件身份和动作位置的稳定幂等键。此切片只实现无框架领域匹配与分类，不接入
+数据库、Outbox、Worker、外部回调或 Conversation 恢复。
+
+验收：受影响 Python 文件通过 `py_compile`；新增领域回归覆盖过滤匹配、瞬态分类边界、未知故障 fail-closed、
+禁用触发器和动作幂等键；`git diff --check` 与任务状态唯一性通过。完成后提交独立 Git commit 并停止；下一切片
+`FR-205` 实现触发器版本与动作策略的持久化模型。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2945,6 +2961,7 @@ Python Ruff／Pyright、Web ESLint／TypeScript typecheck／production build、A
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-204 | 受影响 Python `py_compile`；领域模块 `ruff format --check`、定向 Pyright；无数据库直接断言（匹配、故障分类、未知故障 fail-closed、禁用触发器、动作幂等键）；`git diff --check` 与任务状态唯一性 | PASS：新增平台事件触发器契约保留 OpenHands 正式事件身份及 FlowRun/NodeRun/Attempt 关联；普通观察事件与状态驱动事件分类明确。网络／超时／不可用故障可作为恢复候选，鉴权／额度／策略／上下文／参数及未知故障均不自动恢复；动作仅允许平台治理类型，幂等键由触发器版本、正式事件 ID 和动作位置稳定生成。pytest 收集后因本机 Docker daemon 不可用被统一 PostgreSQL autouse fixture 阻断，未伪记为通过。唯一 Alembic head 为 `0099_remove_ws_default_model`，无 `CURRENT`。 |
 | 2026-09-07 | FR-203 | 自动运行自愈／进度／冻结上下文定向 pytest（3 passed）；受影响 Python Ruff format/check、`compileall`；Web ESLint、TypeScript typecheck、production build；工作台定向 Playwright（1 passed）；Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动机器阶段不再被汇总为人工等待，历史 `WAITING_HUMAN + WAITING_START_CONFIRMATION` 会在下一次持久任务处理时按不可变 Snapshot／计划自愈；API 投影七阶段进度、后台重试次数／时间、脱敏错误和未推进提醒。节点上下文同时显示节点自定义内容的本轮应用状态、冻结 Context 文本及 Skill／MCP／Plugin／Agent 等能力身份。唯一 Alembic head 为 `0099_remove_ws_default_model`，无 `CURRENT`。常规空库迁移链仍被既有 `0003_runs` 与 `0092_node_run_names` 重复创建 `node_runs.name` 阻断；本次 3 条行为回归使用隔离远端 PostgreSQL 和仅测试的当前 ORM schema bootstrap，未修改已发布迁移。完整 Pyright 仍有仓库既有诊断，本切片新增路径未发现对应新增诊断。 |
 | 2026-09-07 | FR-202 | Web ESLint、TypeScript typecheck；`git diff --check` | PASS：子智能体界面不再提供停止按钮；会话暂停时所有未完成子智能体均不计入运行中，并显示会话级停止提醒。 |
 | 2026-09-07 | FR-201 | Web ESLint、TypeScript typecheck；`git diff --check` | PASS：中断关联错误事件显示用户主动停止提醒并隐藏底层异常详情；非中断错误渲染路径保持不变。 |
