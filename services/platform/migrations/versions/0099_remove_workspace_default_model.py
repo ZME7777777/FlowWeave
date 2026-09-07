@@ -1,6 +1,6 @@
 """Remove the deprecated workspace-level model fallback.
 
-Revision ID: 0099_remove_workspace_default_model
+Revision ID: 0099_remove_ws_default_model
 Revises: 0098_schedule_templates_cron
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0099_remove_workspace_default_model"
+revision = "0099_remove_ws_default_model"
 down_revision = "0098_schedule_templates_cron"
 branch_labels = None
 depends_on = None
