@@ -2808,6 +2808,16 @@ Git commit 并停止，不进入后续切片。
 表单并在二次确认后强制流转；提交值、版本、强制标记与幂等键会以 `AUTOMATIC_OUTPUT_OVERRIDE` 写入审计，
 并以 `HUMAN_OVERRIDE` 产物来源保留。
 
+### FR-195 定时任务全宽布局回归修复 — DONE
+
+依赖：`FR-194`。
+
+目标：定时任务页必须复用产品全宽页面布局，不能保留独立的 1280px 宽度上限并在宽屏右侧留下空白。仅修复
+页面容器 CSS，不改变定时任务、FlowRun、运行记录或 OpenHands 契约。
+
+完成：移除了定时任务页遗留的独立宽度上限，页面继续继承统一 `.page` 的全宽与响应式内边距；浏览器回归断言
+定时任务容器宽度与视口一致，防止后续样式覆盖再次压缩页面。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2823,6 +2833,7 @@ Git commit 并停止，不进入后续切片。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-195 | 定时任务页面全宽浏览器回归（2 passed）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：定时任务容器在 1440px 浏览器视口下与视口同宽，不再受独立 1280px 上限压缩；现有新建提示、整行展开和立即运行反馈回归均通过。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |
 | 2026-09-07 | FR-194 | 自动修订 Fork／提示词／第三次 Fork／第四次人工接管的无 Docker 直接回归（5 项）；强制输出 schema probe；受影响 Python Ruff／`py_compile`；Web ESLint、TypeScript typecheck、production build；Alembic heads、任务状态唯一性与 `git diff --check` | PASS（静态、构建与直接回归）：修订链严格基于上一次失败会话，第三次仍 Fork，第四次将 NodeRun 置为 `FAILED`、Run 置为 `WAITING_HUMAN`，保留可继续会话和填写输出后的审计化强制流转。唯一 Alembic head 为 `0099_remove_ws_default_model`。同一组 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而在断言前报 5 个 setup errors，未伪记为通过。 |
 | 2026-09-07 | FR-193 | 受影响 Python `compileall`、Ruff；Web TypeScript typecheck、ESLint、production build；Alembic heads、任务状态唯一性与 `git diff --check`；自动运行定向 pytest | PASS（静态与构建）：自动流转只按冻结控制边扇出，端口映射由平台绑定，已删除流转 Agent/sidecar 路径；唯一 Alembic head 为 `0099_remove_ws_default_model`。14 项自动运行 pytest 均在断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 setup errors，未伪记为通过。 |
 | 2026-09-07 | FR-192 | Python `compileall`、Ruff check；Web ESLint、TypeScript typecheck、production build；Alembic heads、任务状态唯一性与 `git diff --check` | PASS：工作区默认模型 API／ORM／偏好表与运行时 fallback 已删除；节点会话和门禁模型改为显式必选；Web 构建与静态检查通过，唯一 Alembic head 为 `0099_remove_ws_default_model`。Docker daemon 不可用，未运行迁移实跑或依赖 PostgreSQL 的集成测试。 |

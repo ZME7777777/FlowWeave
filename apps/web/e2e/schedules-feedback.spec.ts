@@ -62,6 +62,8 @@ test('schedule rows expand across their full width and immediate trigger reports
 
   await page.goto('/');
   await page.getByRole('button', { name: '定时任务', exact: true }).click();
+  const schedulesPageBox = await page.locator('.schedules-page').boundingBox();
+  expect(schedulesPageBox?.width).toBeGreaterThanOrEqual((page.viewportSize()?.width ?? 0) - 1);
   const flowToggle = page.locator('.schedule-flow-group > header .schedule-tree-toggle');
   const flowHeader = page.locator('.schedule-flow-group > header');
   await expect(flowToggle).toHaveAttribute('aria-expanded', 'false');
