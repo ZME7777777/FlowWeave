@@ -217,9 +217,7 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
         orchestration_service.process_poll_runtime(None, "attempt-1", 1, commit=False)
 
     assert run.state == "ACTIVE"
-    assert events == [
-        ("ATTEMPT_RESUMED", {"reason": "NATIVE_COMPLETION_AFTER_BLOCKED_PROJECTION"})
-    ]
+    assert events == [("ATTEMPT_RESUMED", {"reason": "NATIVE_COMPLETION_AFTER_BLOCKED_PROJECTION"})]
     assert applied == [
         (
             resumed,
@@ -383,13 +381,150 @@ def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
     ]
 
 
-def test_third_automatic_end_gate_failure_waits_for_human(monkeypatch):
-    """The third failed gate round is retained, but never auto-messages again."""
+def test_automatic_repairs_fork_from_the_latest_failed_conversation(monkeypatch):
+    """Each repair branches from the prior repair, preserving every history node."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        state=AttemptState.END_BLOCKED,
+        state_version=8,
+        error_code=None,
+        conversation_id="original-conversation",
+    )
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
+    run = SimpleNamespace(id="run-1", run_mode="AUTOMATIC", state="ACTIVE")
+    source_conversation_ids: list[str] = []
+    fork_count = 0
+
+    class NativeRuntime:
+        def can_accept_input(self, _handle):
+            return True
+
+        def reload_conversation(self, _handle):
+            return SimpleNamespace(event_id="completed-event")
+
+    def source_binding(_db, *, openhands_conversation_id, **_kwargs):
+        source_conversation_ids.append(openhands_conversation_id)
+        return SimpleNamespace(
+            id=f"binding-{openhands_conversation_id}",
+            openhands_conversation_id=openhands_conversation_id,
+        )
+
+    def fork(_db, **_kwargs):
+        nonlocal fork_count
+        fork_count += 1
+        return {
+            "id": f"binding-repair-{fork_count}",
+            "openhands_conversation_id": f"repair-{fork_count}",
+        }
+
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions.flow_node_locator,
+        "conversation_binding",
+        source_binding,
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_active_attempt_runtime_handle",
+        lambda *_args: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_gate_remediation_prompt", lambda *_args: ("请修订输出", ["gate-1"])
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_automatic_gate_remediation_round",
+        lambda *_args: fork_count + 1,
+    )
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions.flow_node_conversations,
+        "fork_node_conversation",
+        fork,
+    )
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions.flow_node_conversations,
+        "send_node_message",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(orchestration_service, "_event", lambda *_args, **_kwargs: None)
+
+    with runtime_context(NativeRuntime()):
+        orchestration_service._remediate_gate_failure(
+            None,
+            attempt,
+            node_run,
+            run,
+            expected_state_version=8,
+            idempotency_key="repair-1",
+            automatic=True,
+        )
+        orchestration_service._remediate_gate_failure(
+            None,
+            attempt,
+            node_run,
+            run,
+            expected_state_version=8,
+            idempotency_key="repair-2",
+            automatic=True,
+        )
+
+    assert source_conversation_ids == ["original-conversation", "repair-1"]
+    assert attempt.conversation_id == "repair-2"
+
+
+def test_gate_remediation_prompt_only_contains_actionable_output_corrections(monkeypatch):
+    """A repair Conversation receives missing-output details, not process narration."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1", state=AttemptState.END_BLOCKED, snapshot_id="snapshot-1"
+    )
+    node_run = SimpleNamespace(flow_node_snapshot_key="node-1")
+    evaluation = SimpleNamespace(
+        id="evaluation-1",
+        result_json={
+            "summary": "平台门禁未通过",
+            "reasons": ["缺少 report.md 文件", "输出类型应为 FILE"],
+        },
+    )
+
+    class Db:
+        def scalar(self, _statement):
+            return 1
+
+        def scalars(self, _statement):
+            return [evaluation]
+
+    monkeypatch.setattr(orchestration_service, "_snapshot", lambda *_args: {})
+    monkeypatch.setattr(
+        orchestration_service,
+        "_node",
+        lambda *_args: {
+            "asset": {
+                "outputs": [{"field_key": "report", "display_name": "报告", "data_type": "FILE"}]
+            }
+        },
+    )
+
+    prompt, evaluation_ids = orchestration_service._gate_remediation_prompt(Db(), attempt, node_run)
+
+    assert evaluation_ids == ["evaluation-1"]
+    assert "缺少 report.md 文件" in prompt
+    assert "输出类型应为 FILE" in prompt
+    assert "报告（FILE）" in prompt
+    assert "平台" not in prompt
+    assert "门禁" not in prompt
+    assert "FlowWeave" not in prompt
+    assert "Fork" not in prompt
+
+
+def test_third_automatic_end_gate_failure_forks_a_third_repair_conversation(monkeypatch):
+    """The third failed gate round is still repaired from its latest Conversation."""
 
     attempt = SimpleNamespace(id="attempt-1", node_run_id="node-run-1", state_version=8)
     node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
     run = SimpleNamespace(id="run-1", run_mode="AUTOMATIC", state="ACTIVE")
     events: list[tuple[str, dict[str, object]]] = []
+    remediation_calls: list[dict[str, object]] = []
 
     class Db:
         def add(self, _item):
@@ -403,7 +538,7 @@ def test_third_automatic_end_gate_failure_waits_for_human(monkeypatch):
     monkeypatch.setattr(
         orchestration_service,
         "_remediate_gate_failure",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not auto-remediate")),
+        lambda *_args, **kwargs: remediation_calls.append(kwargs),
     )
     monkeypatch.setattr(
         orchestration_service,
@@ -421,15 +556,78 @@ def test_third_automatic_end_gate_failure_waits_for_human(monkeypatch):
     )
 
     assert attempt.state == AttemptState.END_BLOCKED
+    assert run.state == "ACTIVE"
+    assert remediation_calls == [
+        {
+            "expected_state_version": 8,
+            "idempotency_key": "automatic-gate-remediation:attempt-1:round3",
+            "automatic": True,
+        }
+    ]
+    assert events == [
+        ("GATE_STAGE_FINISHED", {"stage": "END", "state": AttemptState.END_BLOCKED}),
+    ]
+
+
+def test_fourth_automatic_end_gate_failure_stops_automation_for_human_override(monkeypatch):
+    """After three repair Conversations, the node remains available to a user."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state_version=8,
+        error_code=None,
+        error_detail=None,
+    )
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1", state="ACTIVE")
+    run = SimpleNamespace(
+        id="run-1", run_mode="AUTOMATIC", state="ACTIVE", row_version=4, finished_at=None
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class Db:
+        def add(self, _item):
+            pass
+
+    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service, "_automatic_gate_remediation_round", lambda *_args: 4
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+
+    orchestration_service._record_gate_results(
+        Db(),
+        attempt,
+        "END",
+        {},
+        [],
+        AttemptState.END_BLOCKED,
+    )
+
+    assert attempt.state == AttemptState.END_BLOCKED
+    assert attempt.error_code == "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED"
+    assert attempt.error_detail == "节点输出连续 3 次修订后仍不符合要求，连续运行已停止。"
+    assert attempt.state_version == 9
+    assert node_run.state == "FAILED"
     assert run.state == "WAITING_HUMAN"
+    assert run.row_version == 5
+    assert run.finished_at is None
     assert events == [
         ("GATE_STAGE_FINISHED", {"stage": "END", "state": AttemptState.END_BLOCKED}),
         (
-            "AUTOMATIC_GATE_REMEDIATION_LIMIT_REACHED",
-            {"stage": "END", "max_failed_rounds": 3},
+            "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
+            {
+                "max_remediation_rounds": 3,
+                "error_code": "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
+            },
         ),
         (
-            "AUTOMATIC_GATE_REVIEW_REQUIRED",
-            {"stage": "END", "state": AttemptState.END_BLOCKED},
+            "AUTOMATIC_OUTPUT_REMEDIATION_REQUIRES_HUMAN",
+            {"reason": "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED"},
         ),
     ]

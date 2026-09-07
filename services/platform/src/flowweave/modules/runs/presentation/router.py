@@ -481,10 +481,19 @@ async def human_input(
 
 @router.post("/node-attempts/{attempt_id}/manual-outputs")
 async def submit_manual_outputs(
-    attempt_id: str, payload: ManualAttemptOutputsWrite, db: Db
+    attempt_id: str,
+    payload: ManualAttemptOutputsWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     return await run_sync(
-        db, lambda session: service.submit_manual_outputs(session, attempt_id, payload)
+        db,
+        lambda session: service.submit_manual_outputs(
+            session,
+            attempt_id,
+            payload,
+            _key(idempotency_key, "manual-outputs", attempt_id),
+        ),
     )
 
 

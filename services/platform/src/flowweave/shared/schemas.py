@@ -522,6 +522,7 @@ class ManualAttemptOutputWrite(ApiModel):
 
 class ManualAttemptOutputsWrite(AttemptVersionWrite):
     outputs: dict[str, ManualAttemptOutputWrite] = Field(max_length=100)
+    force_advance: bool = False
 
 
 class RuntimeCancelRecoveryWrite(AttemptVersionWrite):

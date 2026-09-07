@@ -42,6 +42,7 @@ class FlowRunState(StrEnum):
 class NodeRunState(StrEnum):
     ACTIVE = "ACTIVE"
     ACCEPTED = "ACCEPTED"
+    FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
 

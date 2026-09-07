@@ -2788,6 +2788,26 @@ Gate Agent；平台持久任务仍保留，以支持 Worker 重启后的可恢�
 `AUTOMATIC_PORT_MAPPING` 绑定同一上游 Artifact，并在任何流转阶段 Gate 调用时失败。历史
 `AUTOMATIC_TRANSITION_INVALID` 仅保留重试兼容，不再以“流转 Agent”向用户描述。
 
+### FR-194 自动输出修订 Fork 与失败终态 — DONE
+
+依赖：`FR-193`。
+
+目标：自动／连续运行的完成输出不符合要求时，从本次未通过的节点会话完成边界 Fork 一条修订会话；每一轮失败
+继续从上一次修订会话 Fork，而不修改任一历史会话或原始输出。修订会话收到的消息只包含具体输出缺口和本轮输出
+类型，不说明平台流程、门禁或校验机制。最多执行 3 次修订；第 4 次仍失败时，节点标记 `FAILED`，自动流转停止并
+转为人工处置，但会话与产物继续可写可查看。用户可继续该会话，或按冻结输出字段补填 URL／FILE 并明确确认降级，
+由平台记录人工决定后直接流转；不再自动创建更多修订会话。
+
+验收：自动输出修订链、第三次 Fork 与第四次失败终态定向回归；受影响 Python `py_compile`、Ruff；Web
+ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check`。完成后提交独立
+Git commit 并停止，不进入后续切片。
+
+完成：每次完成输出失败均从当前失败会话 Fork；三次修订分别形成连续分支，第四次失败后仅将当前
+`NodeRun` 标记为 `FAILED`，运行保持 `WAITING_HUMAN`，既不关闭也不只读会话。修订消息只列出待补齐或
+类型不匹配的输出和冻结输出字段，不包含平台、门禁或流程叙述。人工可继续最后一条会话，或填写冻结输出
+表单并在二次确认后强制流转；提交值、版本、强制标记与幂等键会以 `AUTOMATIC_OUTPUT_OVERRIDE` 写入审计，
+并以 `HUMAN_OVERRIDE` 产物来源保留。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2803,6 +2823,7 @@ Gate Agent；平台持久任务仍保留，以支持 Worker 重启后的可恢�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-194 | 自动修订 Fork／提示词／第三次 Fork／第四次人工接管的无 Docker 直接回归（5 项）；强制输出 schema probe；受影响 Python Ruff／`py_compile`；Web ESLint、TypeScript typecheck、production build；Alembic heads、任务状态唯一性与 `git diff --check` | PASS（静态、构建与直接回归）：修订链严格基于上一次失败会话，第三次仍 Fork，第四次将 NodeRun 置为 `FAILED`、Run 置为 `WAITING_HUMAN`，保留可继续会话和填写输出后的审计化强制流转。唯一 Alembic head 为 `0099_remove_workspace_default_model`。同一组 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而在断言前报 5 个 setup errors，未伪记为通过。 |
 | 2026-09-07 | FR-193 | 受影响 Python `compileall`、Ruff；Web TypeScript typecheck、ESLint、production build；Alembic heads、任务状态唯一性与 `git diff --check`；自动运行定向 pytest | PASS（静态与构建）：自动流转只按冻结控制边扇出，端口映射由平台绑定，已删除流转 Agent/sidecar 路径；唯一 Alembic head 为 `0099_remove_workspace_default_model`。14 项自动运行 pytest 均在断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 setup errors，未伪记为通过。 |
 | 2026-09-07 | FR-192 | Python `compileall`、Ruff check；Web ESLint、TypeScript typecheck、production build；Alembic heads、任务状态唯一性与 `git diff --check` | PASS：工作区默认模型 API／ORM／偏好表与运行时 fallback 已删除；节点会话和门禁模型改为显式必选；Web 构建与静态检查通过，唯一 Alembic head 为 `0099_remove_workspace_default_model`。Docker daemon 不可用，未运行迁移实跑或依赖 PostgreSQL 的集成测试。 |
 | 2026-09-07 | FR-191 | watchdog 身份／竞态／lease fencing 定向 pytest（9 passed）；受影响 Python Ruff format/check、`py_compile`、watchdog 定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：消息服务端发送成功后和 bootstrap 路径立即登记 Task deadline，事件读取保留补偿扫描；手动暂停不会误触发已 claim watchdog 或自动恢复父会话；超时在正式错误确认后调度 generation replacement、原 ID reload 和父会话续跑。唯一 Alembic head 为 `0098_schedule_templates_cron`。本机 Docker daemon 不可用，未运行依赖 Testcontainers PostgreSQL 的业务集成测试，未伪记为通过。 |

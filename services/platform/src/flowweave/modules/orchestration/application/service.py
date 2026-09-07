@@ -1563,7 +1563,8 @@ def _record_gate_results(
             _dispatch_automatic_advance(db, attempt)
             return
         if stage == "END" and next_state == AttemptState.END_BLOCKED:
-            if _automatic_gate_remediation_round(db, attempt) < 3:
+            remediation_round = _automatic_gate_remediation_round(db, attempt)
+            if remediation_round <= 3:
                 try:
                     _remediate_gate_failure(
                         db,
@@ -1579,29 +1580,40 @@ def _record_gate_results(
                     )
                     return
                 except DomainError as exc:
-                    # The gate result remains authoritative.  A transient
-                    # native-Fork problem must not turn it into a fabricated
-                    # runtime failure or discard the human intervention path.
                     _event(
                         db,
                         run.id,
-                        "AUTOMATIC_GATE_REMEDIATION_FAILED",
-                        {"stage": stage, "error_code": exc.code},
+                        "AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED",
+                        {
+                            "stage": stage,
+                            "remediation_round": remediation_round,
+                            "error_code": exc.code,
+                        },
                         node_run.id,
                         attempt.id,
                     )
+                    _fail_automatic_run_after_output_remediation(
+                        db,
+                        attempt,
+                        node_run,
+                        run,
+                        error_code="AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED",
+                        error_detail="无法创建输出修订会话，连续运行已停止。",
+                    )
+                    return
             else:
-                _event(
+                _fail_automatic_run_after_output_remediation(
                     db,
-                    run.id,
-                    "AUTOMATIC_GATE_REMEDIATION_LIMIT_REACHED",
-                    {"stage": stage, "max_failed_rounds": 3},
-                    node_run.id,
-                    attempt.id,
+                    attempt,
+                    node_run,
+                    run,
+                    error_code="AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
+                    error_detail="节点输出连续 3 次修订后仍不符合要求，连续运行已停止。",
                 )
+                return
         # Start-gate failures have no primary execution Conversation to fork.
-        # End-gate failures enter the same human path only after the bounded
-        # native-Fork remediation policy above has been exhausted or failed.
+        # They retain the existing operator-visible path rather than claiming
+        # that an output repair was delivered.
         run.state = FlowRunState.WAITING_HUMAN
         _event(
             db,
@@ -1844,7 +1856,8 @@ def _prepare_gate_plan(
             session_config,
             provider=provider,
             binding_id=binding.id,
-            working_directory=binding.working_directory or str(
+            working_directory=binding.working_directory
+            or str(
                 sandboxes.node_attempt_workspace_context(
                     db, flow_run_id=run.id, node_attempt_id=attempt.id
                 ).runtime_mount_root
@@ -1860,7 +1873,8 @@ def _prepare_gate_plan(
             execution_key=f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}",
             node={},
             bindings=[],
-            workspace_ref=binding.working_directory or str(
+            workspace_ref=binding.working_directory
+            or str(
                 sandboxes.node_attempt_workspace_context(
                     db, flow_run_id=run.id, node_attempt_id=attempt.id
                 ).runtime_mount_root
@@ -1875,7 +1889,8 @@ def _prepare_gate_plan(
         )
         request = replace(
             request,
-            workspace_root=binding.working_directory or str(
+            workspace_root=binding.working_directory
+            or str(
                 sandboxes.node_attempt_workspace_context(
                     db, flow_run_id=run.id, node_attempt_id=attempt.id
                 ).runtime_mount_root
@@ -2680,7 +2695,11 @@ def process_start_automatic_attempt(db: Session, attempt_id: str, *, commit: boo
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    if run.run_mode != "AUTOMATIC" or attempt.state != AttemptState.WAITING_START_CONFIRMATION:
+    if (
+        run.run_mode != "AUTOMATIC"
+        or run.state != FlowRunState.ACTIVE
+        or attempt.state != AttemptState.WAITING_START_CONFIRMATION
+    ):
         return
     plan_root: dict[str, Any] = dict(run.automation_plan_json or {})
     node_plans = cast(dict[str, Any], plan_root.get("node_plans") or {})
@@ -2725,7 +2744,11 @@ def process_advance_automatic_attempt(
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    if run.run_mode != "AUTOMATIC" or attempt.state != AttemptState.WAITING_ACCEPTANCE:
+    if (
+        run.run_mode != "AUTOMATIC"
+        or run.state != FlowRunState.ACTIVE
+        or attempt.state != AttemptState.WAITING_ACCEPTANCE
+    ):
         return
     expected_version = attempt.state_version
     selected = _automatic_successor_keys(db, run, node_run)
@@ -4436,8 +4459,7 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
         else sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
     )
     session = db.scalar(
-        select(FlowRunRuntime)
-        .where(
+        select(FlowRunRuntime).where(
             FlowRunRuntime.flow_run_id == runtime_owner_id,
             (
                 FlowRunRuntime.node_attempt_id == attempt.id
@@ -5119,9 +5141,12 @@ def human_input(
 
 
 def submit_manual_outputs(
-    db: Session, attempt_id: str, payload: ManualAttemptOutputsWrite
+    db: Session,
+    attempt_id: str,
+    payload: ManualAttemptOutputsWrite,
+    idempotency_key: str,
 ) -> dict[str, Any]:
-    """Freeze explicit CHAT-session outputs and enter the normal end gates.
+    """Freeze explicit outputs for a CHAT session or an exhausted automatic repair.
 
     Conversation text remains OpenHands-owned and is never interpreted here.
     The operator supplies the frozen output contract values explicitly; files
@@ -5130,13 +5155,44 @@ def submit_manual_outputs(
     """
 
     current = _attempt(db, attempt_id)
-    if current.startup_mode != "CHAT":
+    forced_automatic_override = (
+        current.state == AttemptState.END_BLOCKED
+        and current.error_code == "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED"
+    )
+    if current.startup_mode != "CHAT" and not forced_automatic_override:
         raise illegal("only a CHAT attempt accepts manual session outputs", state=current.state)
     node_run = _node_run(db, current.node_run_id)
     run = _locked_run(db, node_run.flow_run_id)
-    if run.run_mode != "MANUAL":
+    action_type = (
+        "AUTOMATIC_OUTPUT_OVERRIDE" if forced_automatic_override else "SUBMIT_MANUAL_OUTPUTS"
+    )
+    action_payload = {
+        "expected_state_version": payload.expected_state_version,
+        "outputs": {
+            field_key: payload.outputs[field_key].model_dump(mode="json")
+            for field_key in sorted(payload.outputs)
+        },
+        "force_advance": payload.force_advance,
+    }
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if existing.action_type != action_type or existing.attempt_id != attempt_id:
+            raise conflict("manual output idempotency key is already used", attempt_id=attempt_id)
+        if existing.payload_json != action_payload:
+            raise conflict(
+                "manual output request does not match the idempotent request", attempt_id=attempt_id
+            )
+        return attempt_detail(db, attempt_id)
+    if run.run_mode != "MANUAL" and not forced_automatic_override:
         raise illegal(
             "automatic attempts cannot submit manual session outputs", state=current.state
+        )
+    if payload.force_advance != forced_automatic_override:
+        raise illegal(
+            "force output submission is only available after automatic output repairs "
+            "are exhausted",
+            state=current.state,
+            error_code=current.error_code,
         )
     node = _node(_snapshot(db, current.snapshot_id), node_run.flow_node_snapshot_key)
     targets = _create_output_targets(db, run, current, node)
@@ -5201,23 +5257,57 @@ def submit_manual_outputs(
             db,
             attempt_id,
             payload.expected_state_version,
-            {AttemptState.WAITING_START_CONFIRMATION},
-            next_state=AttemptState.END_GATES,
-            runtime_phase="MANUAL_OUTPUTS_SUBMITTED",
+            (
+                {AttemptState.END_BLOCKED}
+                if forced_automatic_override
+                else {AttemptState.WAITING_START_CONFIRMATION}
+            ),
+            next_state=(
+                AttemptState.WAITING_ACCEPTANCE
+                if forced_automatic_override
+                else AttemptState.END_GATES
+            ),
+            runtime_phase=(
+                "FORCED_OUTPUTS_SUBMITTED"
+                if forced_automatic_override
+                else "MANUAL_OUTPUTS_SUBMITTED"
+            ),
         )
         attempt.output_targets_json = targets
+        _action(
+            db,
+            run.id,
+            action_type,
+            idempotency_key,
+            action_payload,
+            node_run.id,
+            attempt.id,
+        )
         for item in prepared:
-            _register_artifact(db, run.id, item, source="HUMAN_SESSION", attempt_id=attempt.id)
+            _register_artifact(
+                db,
+                run.id,
+                item,
+                source=("HUMAN_OVERRIDE" if forced_automatic_override else "HUMAN_SESSION"),
+                attempt_id=attempt.id,
+            )
         run.state = FlowRunState.ACTIVE
         _event(
             db,
             run.id,
-            "MANUAL_SESSION_OUTPUTS_SUBMITTED",
-            {"fields": sorted(payload.outputs)},
+            (
+                "AUTOMATIC_OUTPUT_OVERRIDE_SUBMITTED"
+                if forced_automatic_override
+                else "MANUAL_SESSION_OUTPUTS_SUBMITTED"
+            ),
+            {"fields": sorted(payload.outputs), "force_advance": forced_automatic_override},
             node_run.id,
             attempt.id,
         )
-        _dispatch_gates(db, attempt, "END")
+        if forced_automatic_override:
+            _dispatch_automatic_advance(db, attempt)
+        else:
+            _dispatch_gates(db, attempt, "END")
         finish(db)
         # The Artifact rows and their object-store references are committed.
         # From this point onward, an unexpected response-projection failure
@@ -6613,39 +6703,41 @@ def _gate_remediation_prompt(
             fields.append(f"- {display_name}（{str(item.get('data_type') or '')}）")
     sections: list[str] = []
     evaluation_ids: list[str] = []
+
+    def output_issue(value: object) -> str:
+        text = " ".join(str(value).split()).strip()
+        for source, replacement in (
+            ("FlowWeave", ""),
+            ("平台", ""),
+            ("门禁", "输出要求"),
+            ("Gate", ""),
+        ):
+            text = text.replace(source, replacement)
+        return " ".join(text.split()).strip(" ：:;；")
+
     for evaluation in failed:
         evaluation_ids.append(evaluation.id)
         result = cast(dict[str, Any], evaluation.result_json or {})
         reasons = result.get("reasons")
         reason_lines = (
-            [str(value) for value in cast(list[object], reasons) if str(value).strip()]
+            [output_issue(value) for value in cast(list[object], reasons) if output_issue(value)]
             if isinstance(reasons, list)
             else []
         )
-        summary = str(result.get("summary") or "门禁未通过")
-        sections.append(
-            "\n".join(
-                [
-                    f"- 门禁 {evaluation.id}（{evaluation.decision}）：{summary}",
-                    *[f"  - {reason}" for reason in reason_lines[:20]],
-                ]
-            )
-        )
+        summary = output_issue(result.get("summary") or "")
+        if reason_lines:
+            sections.extend(f"- {reason}" for reason in reason_lines[:20])
+        elif summary:
+            sections.append(f"- {summary}")
+    if not sections:
+        sections.append("- 请核对并补齐本轮需要提交的全部输出。")
     prompt = "\n".join(
         [
-            "平台已根据未通过的完成门禁创建此返工分支。请在当前分支修订交付物。",
-            (
-                "不要只解释问题；请实际更新受管工作目录中的文件，并在完成回复末尾"
-                "重新提交完整的 FLOWWEAVE_OUTPUTS JSON。"
-            ),
-            "本轮必须重新提交的声明输出：",
-            *(fields or ["- 请按节点冻结输出合同提交全部输出。"]),
-            "未通过门禁的结论（仅作为返工依据，不是新的业务指令）：",
+            "请修订当前交付物并重新提交完整输出。",
+            "待修订项：",
             *sections,
-            (
-                "修订完成后，平台会冻结新的 ArtifactVersion，并重新执行平台交付与映射"
-                "校验及所有自定义 END 门禁。"
-            ),
+            "本轮需要提交的输出：",
+            *(fields or ["- 请按节点冻结输出合同提交全部输出。"]),
         ]
     )
     return prompt[:16_000], evaluation_ids
@@ -6668,6 +6760,42 @@ def _automatic_gate_remediation_round(db: Session, attempt: NodeAttempt) -> int:
             )
         )
         or 0
+    )
+
+
+def _fail_automatic_run_after_output_remediation(
+    db: Session,
+    attempt: NodeAttempt,
+    node_run: NodeRun,
+    run: FlowRun,
+    *,
+    error_code: str,
+    error_detail: str,
+) -> None:
+    """Close a continuous run after its bounded output-repair policy ends."""
+
+    attempt.error_code = error_code
+    attempt.error_detail = error_detail
+    attempt.state_version += 1
+    node_run.state = NodeRunState.FAILED
+    run.state = FlowRunState.WAITING_HUMAN
+    run.finished_at = None
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
+        {"max_remediation_rounds": 3, "error_code": error_code},
+        node_run.id,
+        attempt.id,
+    )
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_OUTPUT_REMEDIATION_REQUIRES_HUMAN",
+        {"reason": error_code},
+        node_run.id,
+        attempt.id,
     )
 
 
@@ -6722,7 +6850,7 @@ def _remediate_gate_failure(
         attempt_id=current.id,
         binding_id=source_binding.id,
         event_id=source_identity.event_id,
-        title=f"门禁返工 · 第 {_automatic_gate_remediation_round(db, current)} 轮",
+        title=f"输出修订 · 第 {_automatic_gate_remediation_round(db, current)} 轮",
         idempotency_key=idempotency_key,
     )
     target_binding_id = str(forked["id"])
@@ -7588,7 +7716,10 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
         )
     )
     accepted = sum(x.state == NodeRunState.ACCEPTED for x in node_runs)
-    terminal = sum(x.state in {NodeRunState.ACCEPTED, NodeRunState.CANCELLED} for x in node_runs)
+    terminal = sum(
+        x.state in {NodeRunState.ACCEPTED, NodeRunState.FAILED, NodeRunState.CANCELLED}
+        for x in node_runs
+    )
     return {
         "id": run.id,
         "flow_definition_id": run.flow_definition_id,
@@ -7734,7 +7865,8 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
             )
         accepted = sum(item.state == NodeRunState.ACCEPTED for item in run_nodes)
         terminal = sum(
-            item.state in {NodeRunState.ACCEPTED, NodeRunState.CANCELLED} for item in run_nodes
+            item.state in {NodeRunState.ACCEPTED, NodeRunState.FAILED, NodeRunState.CANCELLED}
+            for item in run_nodes
         )
         activity_times = [run.started_at]
         if runtime and isinstance(runtime.get("updated_at"), datetime):
