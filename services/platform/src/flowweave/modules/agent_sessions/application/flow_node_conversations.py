@@ -1556,6 +1556,23 @@ def _event_batch_dict(
         "events": [project(event) for event in batch.events],
         "next_cursor": batch.cursor,
         "result": batch.result.as_dict() if batch.result is not None else None,
+        "task_usage": [
+            {
+                "task_id": usage.task_id,
+                "source_cursor": usage.source_cursor,
+                "digest": usage.digest,
+                "model_name": usage.model_name,
+                "accumulated_cost": usage.accumulated_cost,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_write_tokens": usage.cache_write_tokens,
+                "reasoning_tokens": usage.reasoning_tokens,
+                "context_window": usage.context_window,
+                "per_turn_tokens": usage.per_turn_tokens,
+            }
+            for usage in batch.task_usage
+        ],
     }
 
 

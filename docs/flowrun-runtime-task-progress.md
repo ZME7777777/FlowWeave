@@ -2842,6 +2842,18 @@ Agent Workspace Runtime 标记为不可写并通过既有 generation N→N+1 路
 Conversation/Event 身份，原生 Task 中断未形成正式结果时直接走有界 generation replacement；所有受管 Docker
 Runtime 启用 `--init` 回收孤儿进程。
 
+### FR-197 子智能体运行观测投影 — DONE
+
+依赖：`FR-196`。
+
+目标：在不暴露 OpenHands Task Prompt、内部 reasoning 或原始日志的前提下，向 Agent 工作台提供受治理的子智能体
+运行状态、动态耗时、最近正式事件、工具／任务摘要和 OpenHands 正式 Task usage 快照。不得持久化新的
+Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
+
+完成：事件批次新增临时 `task_usage` 投影；子智能体详情按正式 TaskAction/TaskObservation/AgentErrorEvent
+显示最近事件、摘要和动态运行耗时，并展示模型、输入／输出／推理／缓存 Token、当前轮 Token、上下文窗口与累计
+费用。OpenHands 私有 Prompt、reasoning、stdout/stderr 和独立消息树仍不进入 API 或页面。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2857,6 +2869,7 @@ Runtime 启用 `--init` 回收孤儿进程。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-197 | Web ESLint、TypeScript typecheck、production build；受影响 Python `py_compile`；`git diff --check` | PASS：事件批次向 Agent Workspace 与 FlowRun 节点会话返回受治理 Task usage；子智能体面板展示动态耗时、最近正式事件、摘要和 Task usage 指标；未暴露 Prompt/reasoning/原始日志。Ruff、pytest 在本机不可用（命令不存在），未伪记为通过。 |
 | 2026-09-07 | FR-196 | watchdog／控制 lane 无 Docker 直接回归（9 passed）；受影响 Python Ruff check、`py_compile`；Docker Runtime `--init` 启动命令契约；Alembic head、任务状态唯一性与 `git diff --check` | PASS（代码与直接回归）：读取 lane 饱和时保留独立控制线程、连接和槽位；事件失响应／读取饱和触发正式 generation replacement；手动暂停对 RECONNECTING 幂等且 fences WATCH／CONFIRM／RESUME，冻结 Conversation identity 后禁止父会话自动续跑；Task interrupt pending 或事件不可用时有界 replacement；受管 Runtime 启动命令包含 `--init`。本机 Docker daemon 不可用，数据库 fixture 与真实容器／公网部署验证留待 commit 绑定远端发布；全量 Pyright 仍仅报告仓库既有诊断。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |
 | 2026-09-07 | FR-195 | 定时任务页面全宽浏览器回归（2 passed）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：定时任务容器在 1440px 浏览器视口下与视口同宽，不再受独立 1280px 上限压缩；现有新建提示、整行展开和立即运行反馈回归均通过。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |
 | 2026-09-07 | FR-194 | 自动修订 Fork／提示词／第三次 Fork／第四次人工接管的无 Docker 直接回归（5 项）；强制输出 schema probe；受影响 Python Ruff／`py_compile`；Web ESLint、TypeScript typecheck、production build；Alembic heads、任务状态唯一性与 `git diff --check` | PASS（静态、构建与直接回归）：修订链严格基于上一次失败会话，第三次仍 Fork，第四次将 NodeRun 置为 `FAILED`、Run 置为 `WAITING_HUMAN`，保留可继续会话和填写输出后的审计化强制流转。唯一 Alembic head 为 `0099_remove_ws_default_model`。同一组 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而在断言前报 5 个 setup errors，未伪记为通过。 |

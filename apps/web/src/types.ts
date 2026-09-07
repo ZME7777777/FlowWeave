@@ -431,6 +431,21 @@ export interface OpenHandsConversationEventBatch {
   events: OpenHandsConversationEvent[];
   next_cursor?: string | null;
   result?: { status?: string; final_message?: string | null; error?: string | null } | null;
+  task_usage?: RuntimeTaskUsageSnapshot[];
+}
+export interface RuntimeTaskUsageSnapshot {
+  task_id: string;
+  source_cursor?: string | null;
+  digest: string;
+  model_name: string;
+  accumulated_cost: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  context_window: number;
+  per_turn_tokens: number;
 }
 /**
  * Host-neutral data consumed by the shared Agent session workbench. A host
