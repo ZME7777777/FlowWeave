@@ -66,20 +66,20 @@ Git 提交审计（强制）：
 
 ## 脚本接口
 
-脚本位于 [verify-hst-ai-tags-gate.py](/Users/zhengmengen/WorkSpace/FlowWeave/scripts/verify-hst-ai-tags-gate.py)。它只读 Git 数据；其基线记录每个仓库开始时的 `HEAD`，然后只检查从该 `HEAD` 到当前 `HEAD` 的新增提交。
+脚本位于 [verify-hst-ai-tags-gate.py](/Users/zhengmengen/WorkSpace/FlowWeave/gates/hst-ai-tag/verify-hst-ai-tags-gate.py)。它只读 Git 数据；其基线记录每个仓库开始时的 `HEAD`，然后只检查从该 `HEAD` 到当前 `HEAD` 的新增提交。
 
 ```bash
 # 节点开始前
-python3 scripts/verify-hst-ai-tags-gate.py snapshot \
+python3 gates/hst-ai-tag/verify-hst-ai-tags-gate.py snapshot \
   --scope "$WORKSPACE_ROOT" --output /tmp/hst-ai-tag-baseline.json
 
 # 节点结束时；默认无论 PASS/FAIL 都返回 0，以便 Agent 上传完整报告
-python3 scripts/verify-hst-ai-tags-gate.py verify \
+python3 gates/hst-ai-tag/verify-hst-ai-tags-gate.py verify \
   --scope "$WORKSPACE_ROOT" --baseline /tmp/hst-ai-tag-baseline.json \
   --output /tmp/git-tag-report.json
 
 # 本地 CI 如需让 FAIL/ERROR 直接失败，可加 --strict
-python3 scripts/verify-hst-ai-tags-gate.py verify \
+python3 gates/hst-ai-tag/verify-hst-ai-tags-gate.py verify \
   --scope "$WORKSPACE_ROOT" --baseline /tmp/hst-ai-tag-baseline.json --strict
 ```
 

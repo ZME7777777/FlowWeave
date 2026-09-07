@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and verify a Git-commit provenance baseline for a FlowWeave node.
+"""Create and verify a Git-commit provenance baseline for the HST AI Tag gate.
 
 The script is intentionally read-only with respect to every Git repository it
 inspects.  A node calls ``snapshot`` before editing, then ``verify`` after its
