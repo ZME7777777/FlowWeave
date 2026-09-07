@@ -47,6 +47,21 @@ class Database:
         self.blocking_sessions = sessionmaker(
             self.blocking_engine, expire_on_commit=False, autoflush=False
         )
+        # Runtime control commands must remain available when every ordinary
+        # read worker is blocked on an unhealthy Agent Server.  A separate
+        # single-connection lane prevents read saturation from denying the
+        # interrupt/recovery operation that can release those resources.
+        self.control_engine: Engine = create_engine(
+            settings.database_url,
+            pool_pre_ping=True,
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout=settings.blocking_pool_timeout_seconds,
+            connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
+        )
+        self.control_sessions = sessionmaker(
+            self.control_engine, expire_on_commit=False, autoflush=False
+        )
 
     def uow(self) -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(self.sessions)
@@ -63,3 +78,4 @@ class Database:
     async def dispose(self) -> None:
         await self.engine.dispose()
         await asyncio.to_thread(self.blocking_engine.dispose)
+        await asyncio.to_thread(self.control_engine.dispose)

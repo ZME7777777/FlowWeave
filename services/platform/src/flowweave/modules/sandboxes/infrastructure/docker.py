@@ -849,6 +849,7 @@ chmod 0700 "$target"
             self.settings.docker_binary,
             "run",
             "--detach",
+            "--init",
             "--name",
             resource.backend_resource_name,
             "--log-driver",

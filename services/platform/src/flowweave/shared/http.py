@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import logging
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, TypeVar
 
 from fastapi import Depends, Header, WebSocketException
@@ -110,21 +111,63 @@ async def run_blocking(container: Container, operation: Callable[[Session], T]) 
     connections have a hard process-local ceiling.
     """
 
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.blocking_executor,
+        slots=container.blocking_io_slots,
+        session_factory=container.database.blocking_sessions,
+        saturation_code="RUNTIME_READ_SATURATED",
+        saturation_message="Agent Runtime reads are busy; retry shortly",
+        lane_name="read",
+        active_limit=container.settings.blocking_pool_size,
+    )
+
+
+async def run_blocking_control(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run an Agent Runtime control command on its reserved recovery lane."""
+
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.blocking_control_executor,
+        slots=container.blocking_control_slots,
+        session_factory=container.database.control_sessions,
+        saturation_code="RUNTIME_CONTROL_SATURATED",
+        saturation_message="Agent Runtime recovery is already in progress",
+        lane_name="control",
+        active_limit=1,
+    )
+
+
+async def _run_blocking_lane(
+    container: Container,
+    operation: Callable[[Session], T],
+    *,
+    executor: ThreadPoolExecutor,
+    slots: asyncio.Semaphore,
+    session_factory: Callable[[], Session],
+    saturation_code: str,
+    saturation_message: str,
+    lane_name: str,
+    active_limit: int,
+) -> T:
     try:
-        await asyncio.wait_for(container.blocking_io_slots.acquire(), timeout=0.25)
+        await asyncio.wait_for(slots.acquire(), timeout=0.25)
     except TimeoutError as exc:
         logger.warning(
-            "blocking Runtime read pool saturated active_limit=%d",
-            container.settings.blocking_pool_size,
+            "blocking Runtime %s pool saturated active_limit=%d",
+            lane_name,
+            active_limit,
         )
         raise DomainError(
-            "RUNTIME_READ_SATURATED",
-            "Agent Runtime reads are busy; retry shortly",
+            saturation_code,
+            saturation_message,
             503,
         ) from exc
 
     def execute() -> T:
-        with container.database.blocking_sessions() as session:
+        with session_factory() as session:
             mark_uow_owned(session)
             try:
                 result = operation(session)
@@ -139,14 +182,14 @@ async def run_blocking(container: Container, operation: Callable[[Session], T]) 
     context = contextvars.copy_context()
     worker = asyncio.ensure_future(
         asyncio.get_running_loop().run_in_executor(
-            container.blocking_executor,
+            executor,
             context.run,
             execute,
         )
     )
 
     def release_slot(completed: asyncio.Future[T]) -> None:
-        container.blocking_io_slots.release()
+        slots.release()
         # A disconnected HTTP client cancels the request coroutine, but Python
         # cannot stop an already-running thread. Consume its eventual exception
         # and release capacity only after its bounded Runtime call has exited.

@@ -1474,6 +1474,39 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
     }
 
 
+def isolate_unresponsive_runtime(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    failure_code: str = "AGENT_RUNTIME_UNRESPONSIVE",
+    failure_summary: str = "The Agent Runtime control plane stopped responding",
+) -> None:
+    """Fence one unresponsive direct-session Runtime through generation recovery."""
+
+    workspace = _workspace(db, workspace_id)
+    _binding(db, workspace_id, binding_id)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime)
+        .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        .with_for_update()
+    )
+    if runtime is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    if runtime.status == "RECONNECTING":
+        return
+    if runtime.status != "ACTIVE" or runtime.active_generation is None:
+        return
+    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    agent_workspace_host.mark_agent_workspace_runtime_lost(
+        db,
+        workspace.id,
+        handle.runtime_resource_id,
+        failure_code=failure_code,
+        failure_summary=failure_summary,
+    )
+
+
 def pending_confirmation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     pending = get_runtime().get_pending_confirmation(
@@ -2506,20 +2539,58 @@ def migrate_streaming_conversation(
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
-    handle = _handle(db, workspace, binding)
     runtime = db.scalar(
-        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        select(AgentWorkspaceRuntime)
+        .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        .with_for_update()
     )
-    if runtime is None or runtime.active_generation is None:
-        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
-    native = get_runtime()
-    events = native.read_active_events(handle).events
     from flowweave.modules.agent_workspaces.application.task_watchdog import (
+        fence_manual_interrupt_recovery,
         prepare_manual_interrupt,
     )
 
-    prepare_manual_interrupt(db, binding, events, generation=int(runtime.active_generation))
-    native.interrupt(handle)
+    if runtime is not None and runtime.status == "RECONNECTING":
+        fence_manual_interrupt_recovery(db, binding)
+        return
+    if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    handle = _handle(db, workspace, binding)
+    native = get_runtime()
+    try:
+        events = native.read_active_events(handle).events
+        expected = native.reload_conversation(handle)
+    except DomainError as exc:
+        if exc.code != "EXECUTOR_UNAVAILABLE":
+            raise
+        fence_manual_interrupt_recovery(db, binding)
+        agent_workspace_host.mark_agent_workspace_runtime_lost(
+            db,
+            workspace.id,
+            handle.runtime_resource_id,
+            failure_code="AGENT_MANUAL_INTERRUPT_UNRESPONSIVE",
+            failure_summary="The Agent Runtime did not respond to a manual interrupt",
+        )
+        return
+
+    prepare_manual_interrupt(
+        db,
+        binding,
+        events,
+        generation=int(runtime.active_generation),
+        expected=expected,
+    )
+    try:
+        native.interrupt(handle)
+    except DomainError as exc:
+        if exc.code != "EXECUTOR_UNAVAILABLE":
+            raise
+        agent_workspace_host.mark_agent_workspace_runtime_lost(
+            db,
+            workspace.id,
+            handle.runtime_resource_id,
+            failure_code="AGENT_MANUAL_INTERRUPT_UNRESPONSIVE",
+            failure_summary="The Agent Runtime did not respond to a manual interrupt",
+        )
 
 
 def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str, bool | str]:

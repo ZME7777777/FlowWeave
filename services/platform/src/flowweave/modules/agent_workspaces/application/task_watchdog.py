@@ -183,6 +183,7 @@ def _enqueue_confirmation(
     tool_call_id: str,
     digest: str,
     failed_generation: int,
+    expected: RuntimeConversationIdentity,
     resume_parent: bool,
 ) -> None:
     task = enqueue(
@@ -196,15 +197,50 @@ def _enqueue_confirmation(
             "tool_call_id": tool_call_id,
             "identity_digest": digest,
             "failed_generation": failed_generation,
+            "expected_identity": asdict(expected),
             "resume_parent": resume_parent,
         },
         available_at=datetime.now(UTC) + timedelta(seconds=1),
     )
+    task.payload_json = {
+        **dict(task.payload_json or {}),
+        "expected_identity": asdict(expected),
+    }
     if not resume_parent:
         # A user interrupt wins a race with an automatic timeout confirmation:
         # recovery may hard-stop the Task, but must not restart its parent.
         task.payload_json = {**dict(task.payload_json or {}), "resume_parent": False}
     task.max_attempts = max(task.max_attempts, 20)
+
+
+def fence_manual_interrupt_recovery(
+    db: Session,
+    binding: AgentConversationBinding,
+) -> None:
+    """Prevent already-scheduled watchdog work from resuming a user-paused parent."""
+
+    owner_user_id = current_user_id()
+    tasks = list(
+        db.scalars(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.owner_user_id == owner_user_id,
+                BackgroundTask.aggregate_id == binding.id,
+                BackgroundTask.task_type.in_(
+                    [WATCH_TASK_TYPE, CONFIRM_TASK_TYPE, RESUME_TASK_TYPE]
+                ),
+                BackgroundTask.state.in_([TaskState.PENDING, TaskState.RETRY, TaskState.RUNNING]),
+            )
+            .with_for_update()
+        )
+    )
+    for task in tasks:
+        if task.task_type == WATCH_TASK_TYPE:
+            task.state = TaskState.SUCCEEDED
+            task.lease_owner = None
+            task.lease_until = None
+            continue
+        task.payload_json = {**dict(task.payload_json or {}), "resume_parent": False}
 
 
 def prepare_manual_interrupt(
@@ -213,10 +249,11 @@ def prepare_manual_interrupt(
     events: tuple[RuntimeEvent, ...],
     *,
     generation: int,
+    expected: RuntimeConversationIdentity,
 ) -> None:
     """Cancel automatic deadlines and isolate manually interrupted Tasks."""
 
-    owner_user_id = current_user_id()
+    fence_manual_interrupt_recovery(db, binding)
     for event in events:
         runtime_task = event.payload.get("runtime_task")
         if not isinstance(runtime_task, dict):
@@ -238,22 +275,6 @@ def prepare_manual_interrupt(
         ):
             continue
         digest = _identity_digest(binding.id, action_event_id, tool_call_id)
-        watchdog = db.scalar(
-            select(BackgroundTask)
-            .where(
-                BackgroundTask.owner_user_id == owner_user_id,
-                BackgroundTask.idempotency_key == _task_key("watch", digest),
-            )
-            .with_for_update()
-        )
-        if watchdog is not None and watchdog.state in {
-            TaskState.PENDING,
-            TaskState.RETRY,
-            TaskState.RUNNING,
-        }:
-            watchdog.state = TaskState.SUCCEEDED
-            watchdog.lease_owner = None
-            watchdog.lease_until = None
         _enqueue_confirmation(
             db,
             binding_id=binding.id,
@@ -261,6 +282,7 @@ def prepare_manual_interrupt(
             tool_call_id=tool_call_id,
             digest=digest,
             failed_generation=generation,
+            expected=expected,
             resume_parent=False,
         )
 
@@ -300,15 +322,14 @@ def _begin_generation_replacement(
     *,
     binding_id: str,
     workspace_id: str,
-    runtime_handle: RuntimeHandle,
     generation: int,
     sandbox_id: str,
     action_event_id: str,
     tool_call_id: str,
     digest: str,
+    expected: RuntimeConversationIdentity,
     resume_parent: bool,
 ) -> None:
-    expected = get_runtime().reload_conversation(runtime_handle)
     mark_agent_workspace_runtime_lost(
         db,
         workspace_id,
@@ -344,19 +365,21 @@ def process_task_timeout_watchdog(
     if outcome in {"INACTIVE", "OBSERVATION"}:
         return
     if outcome == "AGENT_ERROR":
+        expected = get_runtime().reload_conversation(handle)
         _begin_generation_replacement(
             db,
             binding_id=binding_id,
             workspace_id=workspace_id,
-            runtime_handle=handle,
             generation=generation,
             sandbox_id=sandbox_id,
             action_event_id=action_event_id,
             tool_call_id=tool_call_id,
             digest=digest,
+            expected=expected,
             resume_parent=True,
         )
         return
+    expected = get_runtime().reload_conversation(handle)
     get_runtime().interrupt(handle)
     _enqueue_confirmation(
         db,
@@ -365,6 +388,7 @@ def process_task_timeout_watchdog(
         tool_call_id=tool_call_id,
         digest=digest,
         failed_generation=generation,
+        expected=expected,
         resume_parent=True,
     )
 
@@ -372,7 +396,7 @@ def process_task_timeout_watchdog(
 def process_task_timeout_confirmation(
     db: Session, binding_id: str, payload: dict[str, Any], _lease: Lease
 ) -> None:
-    """Wait for the formal interrupt error before killing the old generation."""
+    """Bound native interrupt confirmation, then isolate a residual Task worker."""
 
     if not _lease_still_owned(db, _lease):
         return
@@ -388,7 +412,30 @@ def process_task_timeout_confirmation(
             "子智能体超时恢复期间 Runtime generation 已变化",
             503,
         )
-    events = get_runtime().read_active_events(handle).events
+    expected = _expected_identity(payload.get("expected_identity"))
+    if generation > failed_generation:
+        if resume_parent:
+            get_runtime().reload_conversation(handle, expected=expected)
+            get_runtime().run(handle)
+        return
+    try:
+        events = get_runtime().read_active_events(handle).events
+    except DomainError as exc:
+        if exc.code != "EXECUTOR_UNAVAILABLE":
+            raise
+        _begin_generation_replacement(
+            db,
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            generation=generation,
+            sandbox_id=sandbox_id,
+            action_event_id=action_event_id,
+            tool_call_id=tool_call_id,
+            digest=digest,
+            expected=expected,
+            resume_parent=resume_parent,
+        )
+        return
     outcome = task_outcome(events, action_event_id=action_event_id, tool_call_id=tool_call_id)
     if outcome in {"INACTIVE", "OBSERVATION"}:
         # Natural completion won the interrupt race. The parent may have been
@@ -397,28 +444,29 @@ def process_task_timeout_confirmation(
             get_runtime().run(handle)
         return
     if outcome == "PENDING":
-        get_runtime().interrupt(handle)
-        raise DomainError(
-            "AGENT_TASK_INTERRUPT_PENDING",
-            "OpenHands 尚未持久化子智能体中断结果",
-            503,
+        _begin_generation_replacement(
+            db,
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            generation=generation,
+            sandbox_id=sandbox_id,
+            action_event_id=action_event_id,
+            tool_call_id=tool_call_id,
+            digest=digest,
+            expected=expected,
+            resume_parent=resume_parent,
         )
-    if generation > failed_generation:
-        # A concurrent timeout in the shared Agent Workspace already removed
-        # this physical Task worker with the old generation.
-        if resume_parent:
-            get_runtime().run(handle)
         return
     _begin_generation_replacement(
         db,
         binding_id=binding_id,
         workspace_id=workspace_id,
-        runtime_handle=handle,
         generation=generation,
         sandbox_id=sandbox_id,
         action_event_id=action_event_id,
         tool_call_id=tool_call_id,
         digest=digest,
+        expected=expected,
         resume_parent=resume_parent,
     )
 

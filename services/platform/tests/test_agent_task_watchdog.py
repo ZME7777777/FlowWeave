@@ -71,7 +71,20 @@ def _payload() -> dict[str, Any]:
         "tool_call_id": "task-call-1",
         "identity_digest": "a" * 64,
         "failed_generation": 4,
+        "expected_identity": asdict(_identity()),
     }
+
+
+def _identity() -> RuntimeConversationIdentity:
+    return RuntimeConversationIdentity(
+        conversation_id="10000000-0000-4000-8000-000000000002",
+        workspace_working_dir="/runtime/workspace/project",
+        persistence_dir="/runtime/state/conversations/10000000000040008000000000000002",
+        event_id="task-error-1",
+        parent_id="task-action-1",
+        action_id=None,
+        tool_call_id="task-call-1",
+    )
 
 
 class _Runtime:
@@ -94,15 +107,7 @@ class _Runtime:
         self, _handle: object, *, expected: RuntimeConversationIdentity | None = None
     ) -> RuntimeConversationIdentity:
         self.reloads.append(expected)
-        return expected or RuntimeConversationIdentity(
-            conversation_id="10000000-0000-4000-8000-000000000002",
-            workspace_working_dir="/runtime/workspace/project",
-            persistence_dir=("/runtime/state/conversations/10000000000040008000000000000002"),
-            event_id="task-error-1",
-            parent_id="task-action-1",
-            action_id=None,
-            tool_call_id="task-call-1",
-        )
+        return expected or _identity()
 
 
 def _target(monkeypatch: Any, runtime: _Runtime, *, generation: int = 4) -> Any:
@@ -195,6 +200,7 @@ def test_watchdog_interrupts_pending_task_and_schedules_formal_confirmation(
             "tool_call_id": "task-call-1",
             "digest": "a" * 64,
             "failed_generation": 4,
+            "expected": _identity(),
             "resume_parent": True,
         }
     ]
@@ -208,11 +214,27 @@ def test_manual_interrupt_cancels_deadline_and_never_auto_resumes_parent(
     state: task_watchdog.TaskState,
 ) -> None:
     watchdog = SimpleNamespace(
+        task_type=task_watchdog.WATCH_TASK_TYPE,
         state=state,
         lease_owner="worker-1",
         lease_until=datetime.now(UTC),
+        payload_json={},
     )
-    db = SimpleNamespace(scalar=lambda _query: watchdog)
+    confirmation = SimpleNamespace(
+        task_type=task_watchdog.CONFIRM_TASK_TYPE,
+        state=state,
+        lease_owner="worker-1",
+        lease_until=datetime.now(UTC),
+        payload_json={"resume_parent": True},
+    )
+    resume = SimpleNamespace(
+        task_type=task_watchdog.RESUME_TASK_TYPE,
+        state=state,
+        lease_owner="worker-1",
+        lease_until=datetime.now(UTC),
+        payload_json={"resume_parent": True},
+    )
+    db = SimpleNamespace(scalars=lambda _query: (watchdog, confirmation, resume))
     confirmations: list[dict[str, Any]] = []
     monkeypatch.setattr(task_watchdog, "current_user_id", lambda: "user-1")
     monkeypatch.setattr(
@@ -222,13 +244,20 @@ def test_manual_interrupt_cancels_deadline_and_never_auto_resumes_parent(
     )
 
     task_watchdog.prepare_manual_interrupt(
-        cast(Any, db), SimpleNamespace(id="binding-1"), (_task_action(),), generation=4
+        cast(Any, db),
+        SimpleNamespace(id="binding-1"),
+        (_task_action(),),
+        generation=4,
+        expected=_identity(),
     )
 
     assert watchdog.state == task_watchdog.TaskState.SUCCEEDED
     assert watchdog.lease_owner is None
     assert watchdog.lease_until is None
+    assert confirmation.payload_json["resume_parent"] is False
+    assert resume.payload_json["resume_parent"] is False
     assert confirmations[0]["resume_parent"] is False
+    assert confirmations[0]["expected"] == _identity()
 
 
 def test_manual_interrupt_fences_claimed_watchdog_before_runtime_action(monkeypatch: Any) -> None:
@@ -260,10 +289,12 @@ def test_manual_confirmation_overrides_existing_auto_resume(monkeypatch: Any) ->
         tool_call_id="task-call-1",
         digest="a" * 64,
         failed_generation=4,
+        expected=_identity(),
         resume_parent=False,
     )
 
     assert task.payload_json["resume_parent"] is False
+    assert task.payload_json["expected_identity"] == asdict(_identity())
     assert task.max_attempts == 20
 
 

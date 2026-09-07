@@ -191,6 +191,13 @@ def _runtime_resource(workspace_relative: str = "nodes/node-1") -> ManagedSandbo
     )
 
 
+def test_managed_runtime_launch_uses_docker_init_for_child_reaping(settings) -> None:
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    command = provider._common_run_command(_runtime_resource())
+
+    assert command[command.index("--detach") + 1] == "--init"
+
+
 def test_provider_refuses_to_delete_a_name_owned_by_another_resource(settings, monkeypatch):
     provider = DockerSandboxProvider(_docker_settings(settings))
     resource = _resource(desired_state="DELETED")

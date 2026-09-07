@@ -39,12 +39,19 @@ class Container:
     audit_writer: AuditWriter
     blocking_executor: ThreadPoolExecutor
     blocking_io_slots: asyncio.Semaphore
+    blocking_control_executor: ThreadPoolExecutor
+    blocking_control_slots: asyncio.Semaphore
 
     async def close(self) -> None:
         await self.audit_writer.close()
         await self.http.aclose()
         await asyncio.to_thread(
             self.blocking_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.blocking_control_executor.shutdown,
             wait=True,
             cancel_futures=True,
         )
@@ -64,6 +71,10 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         max_workers=settings.blocking_pool_size,
         thread_name_prefix=f"flowweave-{role}-blocking",
     )
+    blocking_control_executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix=f"flowweave-{role}-runtime-control",
+    )
     return Container(
         settings=settings,
         role=role,
@@ -78,4 +89,6 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
         blocking_io_slots=asyncio.Semaphore(settings.blocking_pool_size),
+        blocking_control_executor=blocking_control_executor,
+        blocking_control_slots=asyncio.Semaphore(1),
     )

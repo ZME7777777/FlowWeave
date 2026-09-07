@@ -2818,6 +2818,30 @@ Git commit 并停止，不进入后续切片。
 完成：移除了定时任务页遗留的独立宽度上限，页面继续继承统一 `.page` 的全宽与响应式内边距；浏览器回归断言
 定时任务容器宽度与视口一致，防止后续样式覆盖再次压缩页面。
 
+### FR-196 Agent Runtime 失响应隔离与进程资源回收 — DONE
+
+依赖：`FR-195`。
+
+目标：直接 Agent 会话的 OpenHands 事件读取或手动暂停在 Agent Server 默认线程池耗尽时，必须自动将失响应的
+Agent Workspace Runtime 标记为不可写并通过既有 generation N→N+1 路径恢复，不能持续占满 API 的阻塞读取
+槽位。暂停控制必须使用独立于普通读取的有界线程、数据库连接和并发槽位，即使全部读取槽位被卡住也能进入
+故障隔离；暂停过程中已登记的 Task watchdog 不得在恢复后擅自续跑父会话。Task 超时的正式 interrupt 已接受但
+原生 Task 仍未终止，或事件控制面已失响应时，watchdog 必须使用中断前冻结的正式 Conversation/Event 身份执行
+有界的 generation replacement，不能无限重试并最终遗留失控进程。所有受管 Runtime 容器必须启用 Docker init
+进程回收孤儿子进程，避免长期运行积累僵尸 `tmux`／shell 并耗尽 PID 配额；不得修改 OpenHands 源码或伪造事件。
+
+验收：不依赖 Docker 的控制通道隔离、事件失响应自动恢复、手动暂停幂等恢复、watchdog 有界 replacement 与身份
+恢复定向测试；Docker 启动命令 `--init` 契约；受影响 Python Ruff／`py_compile`、Alembic head、任务状态唯一性
+与 `git diff --check`。完成后提交独立 Git commit，再按 commit 绑定的平台发布流程更新
+`migration/runtime-provider/api/stream-api/worker`，替换默认 Agent Runtime 并验证原会话事件、暂停、服务健康及
+公网入口。
+
+完成：普通 Runtime 读取使用独立有界线程／连接池，Agent 暂停与失响应隔离使用保留的控制 lane；事件读取或
+手动暂停遇到 `EXECUTOR_UNAVAILABLE`／读取槽位耗尽时，通过正式 Runtime replacement 将工作区置为
+`RECONNECTING`，并对已登记 watchdog 做 lease fencing，禁止人工暂停后父会话自动续跑。超时确认冻结
+Conversation/Event 身份，原生 Task 中断未形成正式结果时直接走有界 generation replacement；所有受管 Docker
+Runtime 启用 `--init` 回收孤儿进程。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2833,6 +2857,7 @@ Git commit 并停止，不进入后续切片。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-196 | watchdog／控制 lane 无 Docker 直接回归（9 passed）；受影响 Python Ruff check、`py_compile`；Docker Runtime `--init` 启动命令契约；Alembic head、任务状态唯一性与 `git diff --check` | PASS（代码与直接回归）：读取 lane 饱和时保留独立控制线程、连接和槽位；事件失响应／读取饱和触发正式 generation replacement；手动暂停对 RECONNECTING 幂等且 fences WATCH／CONFIRM／RESUME，冻结 Conversation identity 后禁止父会话自动续跑；Task interrupt pending 或事件不可用时有界 replacement；受管 Runtime 启动命令包含 `--init`。本机 Docker daemon 不可用，数据库 fixture 与真实容器／公网部署验证留待 commit 绑定远端发布；全量 Pyright 仍仅报告仓库既有诊断。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |
 | 2026-09-07 | FR-195 | 定时任务页面全宽浏览器回归（2 passed）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：定时任务容器在 1440px 浏览器视口下与视口同宽，不再受独立 1280px 上限压缩；现有新建提示、整行展开和立即运行反馈回归均通过。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |
 | 2026-09-07 | FR-194 | 自动修订 Fork／提示词／第三次 Fork／第四次人工接管的无 Docker 直接回归（5 项）；强制输出 schema probe；受影响 Python Ruff／`py_compile`；Web ESLint、TypeScript typecheck、production build；Alembic heads、任务状态唯一性与 `git diff --check` | PASS（静态、构建与直接回归）：修订链严格基于上一次失败会话，第三次仍 Fork，第四次将 NodeRun 置为 `FAILED`、Run 置为 `WAITING_HUMAN`，保留可继续会话和填写输出后的审计化强制流转。唯一 Alembic head 为 `0099_remove_ws_default_model`。同一组 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而在断言前报 5 个 setup errors，未伪记为通过。 |
 | 2026-09-07 | FR-193 | 受影响 Python `compileall`、Ruff；Web TypeScript typecheck、ESLint、production build；Alembic heads、任务状态唯一性与 `git diff --check`；自动运行定向 pytest | PASS（静态与构建）：自动流转只按冻结控制边扇出，端口映射由平台绑定，已删除流转 Agent/sidecar 路径；唯一 Alembic head 为 `0099_remove_ws_default_model`。14 项自动运行 pytest 均在断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 setup errors，未伪记为通过。 |

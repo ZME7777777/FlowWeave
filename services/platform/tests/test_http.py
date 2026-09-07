@@ -12,7 +12,7 @@ import pytest
 
 from flowweave.bootstrap import api as api_module
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import run_blocking
+from flowweave.shared.http import run_blocking, run_blocking_control
 
 
 class _Session:
@@ -31,6 +31,10 @@ class _Database:
     def blocking_sessions(self):
         yield _Session()
 
+    @contextmanager
+    def control_sessions(self):
+        yield _Session()
+
 
 @pytest.mark.asyncio
 async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> None:
@@ -42,10 +46,15 @@ async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> N
         assert release.wait(timeout=2)
         return "finished"
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with (
+        ThreadPoolExecutor(max_workers=1) as executor,
+        ThreadPoolExecutor(max_workers=1) as control_executor,
+    ):
         container = SimpleNamespace(
             blocking_executor=executor,
             blocking_io_slots=asyncio.Semaphore(1),
+            blocking_control_executor=control_executor,
+            blocking_control_slots=asyncio.Semaphore(1),
             database=_Database(),
             settings=SimpleNamespace(blocking_pool_size=1),
         )
@@ -65,6 +74,12 @@ async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> N
         with pytest.raises(DomainError) as caught:
             await run_blocking(container, lambda _session: "must not run")
         assert caught.value.code == "RUNTIME_READ_SATURATED"
+
+        # Recovery commands have an independent worker, semaphore and DB
+        # connection, so a wedged Runtime read cannot deny its own isolation.
+        assert await run_blocking_control(container, lambda _session: "control-ready") == (
+            "control-ready"
+        )
 
         release.set()
         for _ in range(100):

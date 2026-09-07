@@ -31,6 +31,7 @@ from flowweave.shared.http import (
     command_key,
     get_container,
     run_blocking,
+    run_blocking_control,
     run_sync,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -553,10 +554,27 @@ async def agent_events(
     container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
-    return await run_blocking(
-        container,
-        lambda session: conversations.events(session, workspace_id, binding_id, cursor),
-    )
+    try:
+        return await run_blocking(
+            container,
+            lambda session: conversations.events(session, workspace_id, binding_id, cursor),
+        )
+    except DomainError as exc:
+        if exc.code not in {"EXECUTOR_UNAVAILABLE", "RUNTIME_READ_SATURATED"}:
+            raise
+        await run_blocking_control(
+            container,
+            lambda session: conversations.isolate_unresponsive_runtime(
+                session,
+                workspace_id,
+                binding_id,
+            ),
+        )
+        raise DomainError(
+            "AGENT_RUNTIME_RECOVERING",
+            "Agent 运行环境正在恢复，数据已保留",
+            503,
+        ) from exc
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation")
@@ -745,8 +763,13 @@ async def agent_fork_conversation(
 @router.post(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/interrupt", status_code=202
 )
-async def agent_interrupt(workspace_id: str, binding_id: str, db: Db) -> dict[str, bool]:
-    await run_sync(db, lambda session: conversations.interrupt(session, workspace_id, binding_id))
+async def agent_interrupt(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, bool]:
+    await run_blocking_control(
+        container,
+        lambda session: conversations.interrupt(session, workspace_id, binding_id),
+    )
     return {"accepted": True}
 
 
