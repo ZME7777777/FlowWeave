@@ -24,18 +24,18 @@
 
 ## 节点执行提示词附加段
 
-将以下文字附加到会修改代码的节点执行提示词中。`/runtime/capabilities/...` 必须替换为发布到当前 Environment 的受治理 Skill 内脚本实际路径。
+将以下文字附加到会修改代码的节点执行提示词中。`/runtime/capabilities/<manifest-digest>/gates/hst-ai-tag/verify-hst-ai-tags-gate.py` 必须替换为当前 Environment 中该门禁包的实际冻结路径。
 
 ```text
 Git 提交审计（强制）：
 
 1. 在第一次修改任何代码或 Git 元数据之前，确定本节点的工作区根目录 WORKSPACE_ROOT，并执行：
-   python3 /runtime/capabilities/<manifest-digest>/skills/hst-ai-tag/scripts/verify-hst-ai-tags-gate.py \
+   python3 /runtime/capabilities/<manifest-digest>/gates/hst-ai-tag/verify-hst-ai-tags-gate.py \
      snapshot --scope "$WORKSPACE_ROOT" --output /tmp/hst-ai-tag-baseline.json
 2. 仅当确实需要提交时，所有由你创建的受控仓库提交信息必须包含精确标签
    `[HST_AI_Tag: AI_Generated]`。不要使用 Manual 或 AI_Assisted，也不要使用 --no-verify 绕过本机 Hook。
 3. 完成所有代码修改、测试和提交后，执行：
-   python3 /runtime/capabilities/<manifest-digest>/skills/hst-ai-tag/scripts/verify-hst-ai-tags-gate.py \
+   python3 /runtime/capabilities/<manifest-digest>/gates/hst-ai-tag/verify-hst-ai-tags-gate.py \
      verify --scope "$WORKSPACE_ROOT" --baseline /tmp/hst-ai-tag-baseline.json \
      --output /tmp/git-tag-report.json
 4. 将 `/tmp/git-tag-report.json` 原样上传为本节点 `git_tag_report` 输出产物。不得伪造、删改或用摘要替代报告。
