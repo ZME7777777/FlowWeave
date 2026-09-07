@@ -233,6 +233,61 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
     ]
 
 
+def test_inspect_completion_does_not_replay_old_outputs_after_gate_block(monkeypatch):
+    """An inspect-only terminal snapshot is not a new native completion."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        state=AttemptState.END_BLOCKED,
+        runtime_phase="COMPLETED",
+        conversation_id="conversation-1",
+        state_version=7,
+    )
+    claims: list[object] = []
+
+    class HistoricalCompletionRuntime:
+        def read_events(self, _handle):
+            return RuntimeEventBatch(events=(), cursor="finish-1", result=None)
+
+        def inspect(self, _handle):
+            return RuntimeResult(
+                status="COMPLETED",
+                outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+            )
+
+        def input_readiness(self, _handle):
+            return RuntimeInputReadiness(ready=True, execution_status="finished")
+
+    monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: attempt)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_active_attempt_runtime_handle",
+        lambda *_args: SimpleNamespace(cursor=None),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_ensure_attempt_runtime_for_native_observation",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_release_worker_read_transaction", lambda *_args: None
+    )
+    monkeypatch.setattr(orchestration_service, "_require_current_lease", lambda *_args: None)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_claim_runtime_phase",
+        lambda *_args, **_kwargs: claims.append(True),
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_finish_transaction", lambda *_args, **_kwargs: None
+    )
+
+    with runtime_context(HistoricalCompletionRuntime()):
+        orchestration_service.process_poll_runtime(None, "attempt-1", 1, commit=False)
+
+    assert claims == []
+
+
 def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
     """A failed automatic END gate repairs on a native child Conversation."""
 

@@ -2729,7 +2729,12 @@ def process_advance_automatic_attempt(
     expected_version = attempt.state_version
     allowed = _automatic_successor_keys(db, run, node_run)
     prepared: GateExecutionPlan | None = None
-    if allowed:
+    if len(allowed) == 1:
+        # A single frozen successor has no decision to delegate. Requiring a
+        # model here makes a successful automatic run depend on unrelated
+        # Gate Agent configuration.
+        selected, error = allowed, None
+    elif allowed:
         prepared = _prepare_automatic_transition_plan(db, run, node_run, attempt, allowed)
         # Persist the isolated Conversation locator/configuration before slow
         # Runtime I/O. A retry reuses the same idempotent binding.
@@ -5021,7 +5026,13 @@ def process_poll_runtime(
     _release_worker_read_transaction(db, lease)
     runtime = get_runtime()
     batch = runtime.read_events(handle)
-    result = batch.result or runtime.inspect(replace(handle, cursor=batch.cursor or handle.cursor))
+    # ``inspect`` reports the current terminal state and may replay the
+    # previous completion forever; it cannot prove a new turn while an
+    # Attempt is already END_BLOCKED.
+    observed_result = batch.result
+    result = observed_result or runtime.inspect(
+        replace(handle, cursor=batch.cursor or handle.cursor)
+    )
     native_execution_status = (
         runtime.input_readiness(handle).execution_status.lower()
         if observing_blocked_attempt
@@ -5048,7 +5059,7 @@ def process_poll_runtime(
         # the ordinary Artifact and END-gate path. An old result is not
         # accepted here: the native active branch returns FAILED while its
         # error remains terminal, until a later FinishAction supersedes it.
-        if result.status == "COMPLETED":
+        if result.status == "COMPLETED" and observed_result is not None:
             resumed = _claim_runtime_phase(
                 db,
                 current_attempt_id,

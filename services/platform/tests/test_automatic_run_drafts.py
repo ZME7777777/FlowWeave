@@ -714,6 +714,33 @@ def test_automatic_transition_rejects_unauthorized_agent_selection(
         )
 
 
+def test_automatic_transition_with_one_successor_does_not_require_gate_agent(
+    worker_client, worker_container, monkeypatch
+):
+    worker, run_id, _attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    for _ in range(12):
+        detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+        if detail["node_runs"][0]["attempts"][0]["state"] == "WAITING_ACCEPTANCE":
+            break
+        assert worker._run_once_sync() is True
+    else:
+        raise AssertionError("automatic attempt did not reach transition decision")
+
+    monkeypatch.setattr(
+        orchestration_service,
+        "execute_gate_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("single-successor transitions must not invoke a Gate Agent")
+        ),
+    )
+    assert worker._run_once_sync() is True
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    assert [item["flow_node_snapshot_key"] for item in detail["node_runs"]] == [
+        "first",
+        "second",
+    ]
+
+
 def test_automatic_attempt_delivery_recovery_covers_every_scheduler_stage(
     worker_client, worker_container, db_session_factory
 ):
