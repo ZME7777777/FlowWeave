@@ -2880,6 +2880,16 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 状态、控制阶段、重试次数和脱敏错误；子智能体面板区分运行中、长时间无新事件、正在确认中断、Runtime 恢复中、
 处理失败和已完成，并保留最近正式事件与平台处理时间。未暴露 Prompt、reasoning、容器身份或原始日志。
 
+### FR-200 中断确认后的子智能体状态修正 — DONE
+
+依赖：`FR-199`。
+
+目标：父会话已暂停且 watchdog 已返回 `INTERRUPT_CONFIRMED` 时，前端不得继续把没有
+`TaskObservation` 的子智能体计入“运行中”或持续累加墙钟耗时。
+
+完成：`INTERRUPT_CONFIRMED`、`RECOVERED` 和恢复失败阶段不再计入活动任务；耗时在平台控制阶段结束时冻结，
+页面明确显示“中断已确认，结果未返回”或对应恢复状态，保留 OpenHands 结果未确认的事实边界。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2895,6 +2905,7 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-200 | Web TypeScript typecheck；`git diff --check` | PASS：中断确认后的子任务不再显示为运行中、不再显示停止按钮或继续累加耗时；未修改 OpenHands。 |
 | 2026-09-07 | FR-199 | Agent Task watchdog 定向 pytest（9 passed）；受影响 Python `py_compile`；Web TypeScript typecheck；`git diff --check` | PASS：watchdog 控制阶段通过事件响应投影给 Agent Workspace 与 FlowRun 节点会话，前端可区分观察、超时、确认中断、Runtime 恢复和处理失败；未修改 OpenHands，未声称子 Agent 已被单独取消。 |
 | 2026-09-07 | FR-198 | Web ESLint、TypeScript typecheck、production build；新增连续运行自动交接定向 Playwright；`git diff --check` 与任务状态唯一性 | PASS：连续 Attempt 在 `WAITING_START_CONFIRMATION` 显示自动启动提示且不暴露逐步运行人工启动文案／按钮；逐步运行既有保存配置后左侧启动回归通过。整份工作台 Playwright 套件另有 2 条既有断言漂移（请求现含 `force_advance: false`、会话删除按钮使模糊角色选择器不再唯一），与本切片无关，未伪记为通过。 |
 | 2026-09-07 | FR-197 | Web ESLint、TypeScript typecheck、production build；受影响 Python `py_compile`；`git diff --check` | PASS：事件批次向 Agent Workspace 与 FlowRun 节点会话返回受治理 Task usage；子智能体面板展示动态耗时、最近正式事件、摘要和 Task usage 指标；未暴露 Prompt/reasoning/原始日志。Ruff、pytest 在本机不可用（命令不存在），未伪记为通过。 |
