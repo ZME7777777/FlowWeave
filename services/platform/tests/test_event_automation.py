@@ -10,7 +10,6 @@ from flowweave.shared.domain.event_automation import (
     TriggerFilter,
     action_idempotency_key,
     classify_failure,
-    is_auto_recovery_eligible,
 )
 
 
@@ -40,7 +39,7 @@ def test_filter_matches_formal_identity_and_failure_class():
             failure_classes=frozenset({FailureClass.TRANSIENT_NETWORK}),
             node_run_ids=frozenset({"node-1"}),
         ),
-        actions=(TriggerAction(ActionType.RESUME_CONVERSATION),),
+        actions=(TriggerAction(ActionType.NOTIFY),),
     )
 
     assert trigger.matches(_event())
@@ -48,14 +47,11 @@ def test_filter_matches_formal_identity_and_failure_class():
     assert not trigger.matches(_event(node_run_id="node-2"))
 
 
-def test_failure_classification_is_conservative_and_recovery_is_transient_only():
+def test_failure_classification_is_conservative():
     assert classify_failure("LLMRateLimitError", "too many requests") == FailureClass.QUOTA
     assert classify_failure("ReadTimeout", "upstream timed out") == FailureClass.TRANSIENT_TIMEOUT
     assert classify_failure("BadRequest", "invalid request") == FailureClass.INVALID_REQUEST
     assert classify_failure("Unexpected", "something happened") == FailureClass.UNKNOWN
-    assert is_auto_recovery_eligible(FailureClass.TRANSIENT_NETWORK)
-    assert not is_auto_recovery_eligible(FailureClass.QUOTA)
-    assert not is_auto_recovery_eligible(FailureClass.UNKNOWN)
 
 
 def test_action_idempotency_key_is_stable_per_event_and_action_position():

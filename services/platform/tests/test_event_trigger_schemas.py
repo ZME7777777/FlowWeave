@@ -12,15 +12,15 @@ def test_event_trigger_schema_accepts_governed_actions_and_filters():
         failure_classes=["TRANSIENT_TIMEOUT"],
         actions=[
             {
-                "action_type": "RESUME_CONVERSATION",
-                "config": {"max_attempts": 3, "backoff_seconds": 15},
+                "action_type": "WEBHOOK",
+                "config": {"url": "https://example.invalid/event"},
             },
             {"action_type": "NOTIFY", "config": {"target_ref": "ops-oncall"}},
         ],
     )
     assert payload.trigger_key == "runtime.failure"
     assert [action.action_type for action in payload.actions] == [
-        "RESUME_CONVERSATION",
+        "WEBHOOK",
         "NOTIFY",
     ]
 

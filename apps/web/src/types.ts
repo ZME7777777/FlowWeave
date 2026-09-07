@@ -442,6 +442,28 @@ export interface OpenHandsConversationEventBatch {
   result?: { status?: string; final_message?: string | null; error?: string | null } | null;
   task_usage?: RuntimeTaskUsageSnapshot[];
   task_control?: RuntimeTaskControlSnapshot[];
+  monitoring?: AgentActivitySummary;
+}
+export interface AgentActivitySummary {
+  last_event_id?: string | null;
+  last_event_type?: string | null;
+  last_event_at?: string | null;
+  seconds_since_event?: number | null;
+  stale_after_seconds: number;
+  possibly_stuck: boolean;
+  subagent_count: number;
+  active_subagents: Array<{
+    action_event_id: string;
+    tool_call_id?: string | null;
+    task_id?: string | null;
+    subagent_type: string;
+    status: 'RUNNING' | 'COMPLETED' | 'ERROR';
+    last_event_id?: string | null;
+    last_event_type?: string | null;
+    last_event_at?: string | null;
+    seconds_since_event?: number | null;
+    possibly_stuck?: boolean;
+  }>;
 }
 export interface RuntimeTaskControlSnapshot {
   action_event_id: string;

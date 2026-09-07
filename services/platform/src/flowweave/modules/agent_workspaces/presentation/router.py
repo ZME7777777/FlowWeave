@@ -562,17 +562,9 @@ async def agent_events(
     except DomainError as exc:
         if exc.code not in {"EXECUTOR_UNAVAILABLE", "RUNTIME_READ_SATURATED"}:
             raise
-        await run_blocking_control(
-            container,
-            lambda session: conversations.isolate_unresponsive_runtime(
-                session,
-                workspace_id,
-                binding_id,
-            ),
-        )
         raise DomainError(
-            "AGENT_RUNTIME_RECOVERING",
-            "Agent 运行环境正在恢复，数据已保留",
+            "AGENT_RUNTIME_UNAVAILABLE",
+            "Agent 运行环境暂时不可读取，请稍后重试；FlowWeave 未自动修改会话或运行环境",
             503,
         ) from exc
 

@@ -195,6 +195,10 @@ def enqueue_matching_deliveries(db: Session, run_event: RunEvent) -> int:
         )
         for index, action in enumerate(actions):
             key = action_idempotency_key(trigger, event, index)
+            if action.action_type not in {item.value for item in ActionType}:
+                # Historical mutating action rows are fail-closed.  They are
+                # never executed by this control plane.
+                continue
             if db.scalar(
                 select(EventTriggerDelivery.id).where(EventTriggerDelivery.idempotency_key == key)
             ):

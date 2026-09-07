@@ -1329,6 +1329,7 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
         observe_task_watchdogs,
         task_control_projection,
     )
+    from flowweave.shared.domain.event_monitoring import build_activity_summary
 
     observe_task_watchdogs(db, binding, batch.events)
     # OpenHands 1.44 persists a Condensation when compaction finishes, but an
@@ -1515,6 +1516,7 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
             for usage in batch.task_usage
         ],
         "task_control": task_control_projection(db, binding.id),
+        "monitoring": build_activity_summary(batch.events),
     }
 
 
@@ -2588,53 +2590,24 @@ def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
         .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
         .with_for_update()
     )
-    from flowweave.modules.agent_workspaces.application.task_watchdog import (
-        fence_manual_interrupt_recovery,
-        prepare_manual_interrupt,
-    )
-
     if runtime is not None and runtime.status == "RECONNECTING":
-        fence_manual_interrupt_recovery(db, binding)
-        return
+        raise DomainError(
+            "AGENT_RUNTIME_UNAVAILABLE", "Agent 运行环境暂时不可写入，请稍后重试", 503
+        )
     if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
         raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
     handle = _handle(db, workspace, binding)
     native = get_runtime()
     try:
-        events = native.read_active_events(handle).events
-        expected = native.reload_conversation(handle)
-    except DomainError as exc:
-        if exc.code != "EXECUTOR_UNAVAILABLE":
-            raise
-        fence_manual_interrupt_recovery(db, binding)
-        agent_workspace_host.mark_agent_workspace_runtime_lost(
-            db,
-            workspace.id,
-            handle.runtime_resource_id,
-            failure_code="AGENT_MANUAL_INTERRUPT_UNRESPONSIVE",
-            failure_summary="The Agent Runtime did not respond to a manual interrupt",
-        )
-        return
-
-    prepare_manual_interrupt(
-        db,
-        binding,
-        events,
-        generation=int(runtime.active_generation),
-        expected=expected,
-    )
-    try:
         native.interrupt(handle)
     except DomainError as exc:
         if exc.code != "EXECUTOR_UNAVAILABLE":
             raise
-        agent_workspace_host.mark_agent_workspace_runtime_lost(
-            db,
-            workspace.id,
-            handle.runtime_resource_id,
-            failure_code="AGENT_MANUAL_INTERRUPT_UNRESPONSIVE",
-            failure_summary="The Agent Runtime did not respond to a manual interrupt",
-        )
+        raise DomainError(
+            "AGENT_RUNTIME_UNAVAILABLE",
+            "Agent 运行环境未响应暂停请求，未自动修改会话或运行环境",
+            503,
+        ) from exc
 
 
 def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str, bool | str]:

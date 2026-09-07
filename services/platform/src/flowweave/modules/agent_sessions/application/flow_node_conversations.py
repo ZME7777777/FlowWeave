@@ -1492,6 +1492,7 @@ def _event_batch_dict(
     from flowweave.modules.agent_workspaces.application.task_watchdog import (
         task_control_projection,
     )
+    from flowweave.shared.domain.event_monitoring import build_activity_summary
 
     event_ids = [event.cursor for event in batch.events if event.event_type == "MESSAGE"]
     stored = (
@@ -1578,6 +1579,7 @@ def _event_batch_dict(
             for usage in batch.task_usage
         ],
         "task_control": task_control_projection(db, binding.id),
+        "monitoring": build_activity_summary(batch.events),
     }
 
 

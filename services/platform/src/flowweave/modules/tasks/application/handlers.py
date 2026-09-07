@@ -5,11 +5,6 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_workspaces.application.task_watchdog import (
-    process_task_timeout_confirmation,
-    process_task_timeout_resume,
-    process_task_timeout_watchdog,
-)
 from flowweave.modules.agent_workspaces.public import (
     process_agent_conversation_title,
     process_agent_workspace_runtime,
@@ -96,19 +91,19 @@ def _generate_agent_conversation_title(
 def _watch_agent_task_timeout(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
-    process_task_timeout_watchdog(db, aggregate_id, payload, lease)
+    """Retire historical Task watchdog jobs without touching OpenHands."""
 
 
 def _confirm_agent_task_timeout(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
-    process_task_timeout_confirmation(db, aggregate_id, payload, lease)
+    """Retire historical Task interruption jobs without touching OpenHands."""
 
 
 def _resume_agent_task_timeout(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
-    process_task_timeout_resume(db, aggregate_id, payload, lease)
+    """Retire historical Task recovery jobs without touching OpenHands."""
 
 
 def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:

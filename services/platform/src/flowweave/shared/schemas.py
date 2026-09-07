@@ -38,12 +38,9 @@ def _empty_event_trigger_actions() -> list[EventTriggerActionWrite]:
 
 class EventTriggerActionWrite(ApiModel):
     action_type: Literal[
-        "RESUME_CONVERSATION",
         "WEBHOOK",
         "NOTIFY",
         "CREATE_TASK",
-        "PAUSE_ATTEMPT",
-        "HANDOFF_HUMAN",
     ]
     config: dict[str, Any] = Field(default_factory=_empty_any_dict)
     description: str = Field(default="", max_length=2_000)

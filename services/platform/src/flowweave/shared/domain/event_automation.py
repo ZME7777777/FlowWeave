@@ -36,14 +36,11 @@ class EventSource(StrEnum):
 
 
 class ActionType(StrEnum):
-    """Platform-owned actions; values are not arbitrary Runtime commands."""
+    """Side-effect adapters; none may mutate an Agent or Runtime state."""
 
-    RESUME_CONVERSATION = "RESUME_CONVERSATION"
     WEBHOOK = "WEBHOOK"
     NOTIFY = "NOTIFY"
     CREATE_TASK = "CREATE_TASK"
-    PAUSE_ATTEMPT = "PAUSE_ATTEMPT"
-    HANDOFF_HUMAN = "HANDOFF_HUMAN"
 
 
 _TRANSIENT_ERROR_TERMS: dict[FailureClass, tuple[str, ...]] = {
@@ -165,16 +162,6 @@ def classify_failure(error_code: str | None, message: str | None) -> FailureClas
     return FailureClass.UNKNOWN
 
 
-def is_auto_recovery_eligible(failure_class: FailureClass | None) -> bool:
-    """Only transient infrastructure failures may feed resume automation."""
-
-    return failure_class in {
-        FailureClass.TRANSIENT_NETWORK,
-        FailureClass.TRANSIENT_TIMEOUT,
-        FailureClass.TRANSIENT_UNAVAILABLE,
-    }
-
-
 def action_idempotency_key(trigger: EventTrigger, event: TriggerEvent, action_index: int) -> str:
     """Return a stable key for an outbox row, independent of delivery retries."""
 
@@ -238,5 +225,4 @@ __all__ = (
     "TriggerFilter",
     "action_idempotency_key",
     "classify_failure",
-    "is_auto_recovery_eligible",
 )

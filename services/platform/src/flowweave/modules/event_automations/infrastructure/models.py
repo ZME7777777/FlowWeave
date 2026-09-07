@@ -55,8 +55,7 @@ class EventTriggerAction(Base):
         ),
         CheckConstraint("position >= 0", name="ck_event_trigger_action_position_nonnegative"),
         CheckConstraint(
-            "action_type IN ('RESUME_CONVERSATION', 'WEBHOOK', 'NOTIFY', 'CREATE_TASK', "
-            "'PAUSE_ATTEMPT', 'HANDOFF_HUMAN')",
+            "action_type IN ('WEBHOOK', 'NOTIFY', 'CREATE_TASK')",
             name="ck_event_trigger_action_type",
         ),
     )
