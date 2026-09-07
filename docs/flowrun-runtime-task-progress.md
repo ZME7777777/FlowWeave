@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：`无`
-> 下一可执行切片：`FR-193`
+> 下一可执行切片：`无`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -2770,6 +2770,24 @@ Alembic head、任务状态唯一性与 `git diff --check`。完成后提交独�
 数据结构且提供可逆 downgrade。节点会话创建、节点自动执行预设和自定义门禁均要求显式供应商／模型；标题、
 压缩和分叉继续使用当前会话 binding 的冻结模型。
 
+### FR-193 平台确定性自动流转与流转 Agent 删除 — DONE
+
+依赖：`FR-192`。
+
+目标：删除自动运行中为多后继节点创建的 `automatic-transition` 门禁 sidecar／流转 Agent。完成门禁通过后，
+平台只按冻结流程定义的控制边枚举全部后继，并由既有端口映射与输入输出类型校验绑定产物、创建或合并下游
+等待记录；不调用模型、不创建流转 Conversation，也不从文本或 Agent 输出选择后继。保留可恢复的
+`ADVANCE_AUTOMATIC_ATTEMPT` 平台任务，因其负责持久化调度而非 Agent 决策。
+
+验收：自动流转定向回归、受影响 Python `py_compile`、Ruff；Web TypeScript typecheck；Alembic head、
+任务状态唯一性与 `git diff --check`。完成后提交独立 Git commit，并停止，不进入后续切片。
+
+完成：`ADVANCE_AUTOMATIC_ATTEMPT` 现在直接按冻结控制边接受当前 Attempt，并将全部后继交给平台端口映射、
+输入输出合同和幂等下游记录逻辑处理。多后继不再创建 `automatic-transition` sidecar Conversation，不调用模型或
+Gate Agent；平台持久任务仍保留，以支持 Worker 重启后的可恢复调度。回归新增扇出流程，断言两个后继都以
+`AUTOMATIC_PORT_MAPPING` 绑定同一上游 Artifact，并在任何流转阶段 Gate 调用时失败。历史
+`AUTOMATIC_TRANSITION_INVALID` 仅保留重试兼容，不再以“流转 Agent”向用户描述。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2785,6 +2803,7 @@ Alembic head、任务状态唯一性与 `git diff --check`。完成后提交独�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-193 | 受影响 Python `compileall`、Ruff；Web TypeScript typecheck、ESLint、production build；Alembic heads、任务状态唯一性与 `git diff --check`；自动运行定向 pytest | PASS（静态与构建）：自动流转只按冻结控制边扇出，端口映射由平台绑定，已删除流转 Agent/sidecar 路径；唯一 Alembic head 为 `0099_remove_workspace_default_model`。14 项自动运行 pytest 均在断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 setup errors，未伪记为通过。 |
 | 2026-09-07 | FR-192 | Python `compileall`、Ruff check；Web ESLint、TypeScript typecheck、production build；Alembic heads、任务状态唯一性与 `git diff --check` | PASS：工作区默认模型 API／ORM／偏好表与运行时 fallback 已删除；节点会话和门禁模型改为显式必选；Web 构建与静态检查通过，唯一 Alembic head 为 `0099_remove_workspace_default_model`。Docker daemon 不可用，未运行迁移实跑或依赖 PostgreSQL 的集成测试。 |
 | 2026-09-07 | FR-191 | watchdog 身份／竞态／lease fencing 定向 pytest（9 passed）；受影响 Python Ruff format/check、`py_compile`、watchdog 定向 Pyright（0 errors）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：消息服务端发送成功后和 bootstrap 路径立即登记 Task deadline，事件读取保留补偿扫描；手动暂停不会误触发已 claim watchdog 或自动恢复父会话；超时在正式错误确认后调度 generation replacement、原 ID reload 和父会话续跑。唯一 Alembic head 为 `0098_schedule_templates_cron`。本机 Docker daemon 不可用，未运行依赖 Testcontainers PostgreSQL 的业务集成测试，未伪记为通过。 |
 | 2026-09-07 | FR-190 | 受影响 Python Ruff、`py_compile`；Web ESLint、TypeScript typecheck、production build；定时任务与 FlowRun 工作台定向 Playwright（14 passed）；目标 pytest 收集（6 collected）；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态、构建与浏览器）：整行展开、立即运行反馈、父 FlowRun 连续记录恢复、派生目录、活跃记录删除、连续 Attempt 取消和错误反馈均通过浏览器回归；唯一 Alembic head 为 `0098_schedule_templates_cron`。6 项数据库定向 pytest 在断言前因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 无法启动而报 setup errors，未伪记为通过。受影响的 4 个 Python 文件 Ruff format check 命中提交前已存在的格式基线，本切片未扩大无关格式化。 |

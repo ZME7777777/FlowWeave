@@ -1,6 +1,5 @@
 from sqlalchemy import delete, select
 
-from flowweave.modules.gates.public import GateResult
 from flowweave.modules.orchestration.application import service as orchestration_service
 from flowweave.shared.models import (
     BackgroundTask,
@@ -59,7 +58,82 @@ def _create_flow(client):
     return flow.json()
 
 
+def _create_fanout_flow(client):
+    asset = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "自动扇出节点",
+            "inputs": [
+                {
+                    "field_key": "source",
+                    "display_name": "来源",
+                    "data_type": "URL",
+                }
+            ],
+            "outputs": [
+                {
+                    "field_key": "result",
+                    "display_name": "结果",
+                    "data_type": "URL",
+                }
+            ],
+            "executor": {"startup_prompt": "处理当前节点"},
+        },
+    )
+    assert asset.status_code == 201, asset.text
+    flow = client.post(
+        "/api/v1/flows",
+        json={
+            "name": "自动运行扇出流程",
+            "nodes": [
+                {"instance_key": "first", "node_asset_id": asset.json()["id"]},
+                {"instance_key": "second", "node_asset_id": asset.json()["id"]},
+                {"instance_key": "third", "node_asset_id": asset.json()["id"]},
+            ],
+            "edges": [
+                {"source_instance_key": "first", "target_instance_key": "second"},
+                {"source_instance_key": "first", "target_instance_key": "third"},
+            ],
+            "port_mappings": [
+                {
+                    "source_instance_key": "first",
+                    "source_output_key": "result",
+                    "target_instance_key": "second",
+                    "target_input_key": "source",
+                },
+                {
+                    "source_instance_key": "first",
+                    "source_output_key": "result",
+                    "target_instance_key": "third",
+                    "target_input_key": "source",
+                },
+            ],
+        },
+    )
+    assert flow.status_code == 201, flow.text
+    return flow.json()
+
+
+def _automatic_model_provider_id(client) -> str:
+    existing = getattr(client, "automatic_model_provider_id", None)
+    if isinstance(existing, str):
+        return existing
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "自动运行测试模型",
+            "base_url": "https://models.example.test/v1",
+            "models": [{"model_name": "gpt-auto", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    provider_id = str(provider.json()["id"])
+    client.automatic_model_provider_id = provider_id
+    return provider_id
+
+
 def _node_plan(
+    client,
     prompt: str,
     *,
     input_url: str | None = None,
@@ -68,6 +142,9 @@ def _node_plan(
     model_provider_id: str | None = None,
     model_name: str | None = None,
 ):
+    if not model_provider_id or not model_name:
+        model_provider_id = _automatic_model_provider_id(client)
+        model_name = "gpt-auto"
     return {
         "startup_prompt": prompt,
         "agent_preset": {
@@ -93,7 +170,9 @@ def test_automatic_run_draft_freezes_snapshot_without_runtime_or_node_runs(
             "environment_version_id": client.environment_version_id,
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan("执行第一个节点", input_url="https://example.com/source")
+                "first": _node_plan(
+                    client, "执行第一个节点", input_url="https://example.com/source"
+                )
             },
         },
     )
@@ -146,7 +225,7 @@ def test_automatic_run_draft_can_be_edited_but_not_manually_activated(client, db
         json={
             "environment_version_id": client.environment_version_id,
             "start_node_key": "first",
-            "node_plans": {"first": _node_plan("执行第一个节点")},
+            "node_plans": {"first": _node_plan(client, "执行第一个节点")},
         },
     )
     assert created.status_code == 201, created.text
@@ -159,8 +238,10 @@ def test_automatic_run_draft_can_be_edited_but_not_manually_activated(client, db
             "name": "已补全自动编排",
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan("执行第一个节点", input_url="https://example.com/source"),
-                "second": _node_plan("执行第二个节点"),
+                "first": _node_plan(
+                    client, "执行第一个节点", input_url="https://example.com/source"
+                ),
+                "second": _node_plan(client, "执行第二个节点"),
             },
         },
     )
@@ -234,7 +315,7 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
             "name": "内部自动记录",
             "environment_version_id": worker_client.environment_version_id,
             "start_node_key": "first",
-            "node_plans": {"first": _node_plan("先执行起点")},
+            "node_plans": {"first": _node_plan(worker_client, "先执行起点")},
         },
     )
     assert created_response.status_code == 201, created_response.text
@@ -260,9 +341,9 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
             "start_node_key": "first",
             "node_plans": {
                 "first": _node_plan(
-                    "执行起点", input_url="https://example.com/nested-input"
+                    worker_client, "执行起点", input_url="https://example.com/nested-input"
                 ),
-                "second": _node_plan("执行下游"),
+                "second": _node_plan(worker_client, "执行下游"),
             },
         },
     )
@@ -303,9 +384,9 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
             "start_node_key": "first",
             "node_plans": {
                 "first": _node_plan(
-                    "执行起点", input_url="https://example.com/nested-input"
+                    worker_client, "执行起点", input_url="https://example.com/nested-input"
                 ),
-                "second": _node_plan("执行下游"),
+                "second": _node_plan(worker_client, "执行下游"),
             },
         },
     )
@@ -394,8 +475,10 @@ def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
             "environment_version_id": worker_client.environment_version_id,
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan("执行起点", input_url="https://example.com/scheduled-input"),
-                "second": _node_plan("执行下游"),
+                "first": _node_plan(
+                    worker_client, "执行起点", input_url="https://example.com/scheduled-input"
+                ),
+                "second": _node_plan(worker_client, "执行下游"),
             },
         },
     ).json()
@@ -454,7 +537,7 @@ def test_automatic_run_draft_rejects_unknown_frozen_nodes(client):
         json={
             "environment_version_id": client.environment_version_id,
             "start_node_key": "first",
-            "node_plans": {"missing": _node_plan("非法节点")},
+            "node_plans": {"missing": _node_plan(client, "非法节点")},
         },
     )
     assert unknown_plan.status_code == 422, unknown_plan.text
@@ -498,6 +581,7 @@ def test_automatic_run_draft_freezes_artifact_and_capability_references(client, 
             "start_node_key": "first",
             "node_plans": {
                 "first": _node_plan(
+                    client,
                     "执行第一个节点",
                     artifact_id=artifact.json()["id"],
                     capability_version_ids=[skill_capability["capability_id"]],
@@ -534,10 +618,12 @@ def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
             "environment_version_id": worker_client.environment_version_id,
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan("自动执行第一个节点", input_url="https://example.com/input"),
+                "first": _node_plan(
+                    worker_client, "自动执行第一个节点", input_url="https://example.com/input"
+                ),
                 # `second.source` is supplied exclusively through the frozen
                 # first.result -> second.source port mapping.
-                "second": _node_plan("自动执行第二个节点"),
+                "second": _node_plan(worker_client, "自动执行第二个节点"),
             },
         },
     )
@@ -619,8 +705,8 @@ def test_automatic_run_rejects_start_when_required_unmapped_input_is_missing(cli
             "environment_version_id": client.environment_version_id,
             "start_node_key": "first",
             "node_plans": {
-                "first": _node_plan("缺输入的起点"),
-                "second": _node_plan("下游"),
+                "first": _node_plan(client, "缺输入的起点"),
+                "second": _node_plan(client, "下游"),
             },
         },
     )
@@ -644,19 +730,24 @@ def test_automatic_run_rejects_start_when_required_unmapped_input_is_missing(cli
     assert start.json()["error"]["code"] == "AUTOMATION_PLAN_NOT_READY"
 
 
-def _started_automatic_attempt(worker_client, worker_container):
+def _started_automatic_attempt(worker_client, worker_container, *, fanout: bool = False):
     from flowweave.bootstrap.worker import TaskWorker
 
-    flow = _create_flow(worker_client)
+    flow = _create_fanout_flow(worker_client) if fanout else _create_flow(worker_client)
+    node_plans = {
+        "first": _node_plan(
+            worker_client, "自动执行第一个节点", input_url="https://example.com/input"
+        ),
+        "second": _node_plan(worker_client, "自动执行第二个节点"),
+    }
+    if fanout:
+        node_plans["third"] = _node_plan(worker_client, "自动执行第三个节点")
     created = worker_client.post(
         f"/api/v1/flows/{flow['id']}/automatic-runs",
         json={
             "environment_version_id": worker_client.environment_version_id,
             "start_node_key": "first",
-            "node_plans": {
-                "first": _node_plan("自动执行第一个节点", input_url="https://example.com/input"),
-                "second": _node_plan("自动执行第二个节点"),
-            },
+            "node_plans": node_plans,
         },
     ).json()
     started = worker_client.post(
@@ -670,10 +761,12 @@ def _started_automatic_attempt(worker_client, worker_container):
     return worker, detail["id"], detail["node_runs"][0]["attempts"][0]["id"]
 
 
-def test_automatic_transition_rejects_unauthorized_agent_selection(
-    worker_client, worker_container, db_session_factory, monkeypatch
+def test_automatic_transition_fans_out_without_a_gate_agent(
+    worker_client, worker_container, monkeypatch
 ):
-    worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    worker, run_id, attempt_id = _started_automatic_attempt(
+        worker_client, worker_container, fanout=True
+    )
     for _ in range(12):
         detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
         if detail["node_runs"][0]["attempts"][0]["state"] == "WAITING_ACCEPTANCE":
@@ -685,33 +778,31 @@ def test_automatic_transition_rejects_unauthorized_agent_selection(
     monkeypatch.setattr(
         orchestration_service,
         "execute_gate_plan",
-        lambda _plan, _context: GateResult(
-            "PASS",
-            "unauthorized",
-            [],
-            [],
-            {"selected_node_keys": ["outside-frozen-topology"]},
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("automatic transitions must not invoke a Gate Agent")
         ),
     )
     assert worker._run_once_sync() is True
 
     detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
-    assert detail["state"] == "WAITING_HUMAN"
-    assert [item["flow_node_snapshot_key"] for item in detail["node_runs"]] == ["first"]
-    attempt = detail["node_runs"][0]["attempts"][0]
-    assert attempt["id"] == attempt_id
-    assert attempt["state"] == "END_BLOCKED"
-    assert attempt["error_code"] == "AUTOMATIC_TRANSITION_INVALID"
-    with db_session_factory() as db:
-        assert (
-            db.scalar(
-                select(NodeRun.id).where(
-                    NodeRun.flow_run_id == run_id,
-                    NodeRun.flow_node_snapshot_key == "second",
-                )
-            )
-            is None
-        )
+    node_runs = {item["flow_node_snapshot_key"]: item for item in detail["node_runs"]}
+    assert set(node_runs) == {"first", "second", "third"}
+    assert node_runs["first"]["attempts"][0]["id"] == attempt_id
+    first_output = node_runs["first"]["attempts"][0]["artifacts"][0]["id"]
+    for node_key in ("second", "third"):
+        bindings = node_runs[node_key]["attempts"][0]["input_bindings"]
+        assert [
+            {
+                key: bindings[0][key]
+                for key in ("input_field_key", "artifact_version_id", "binding_source")
+            }
+        ] == [
+            {
+                "input_field_key": "source",
+                "artifact_version_id": first_output,
+                "binding_source": "AUTOMATIC_PORT_MAPPING",
+            }
+        ]
 
 
 def test_automatic_transition_with_one_successor_does_not_require_gate_agent(

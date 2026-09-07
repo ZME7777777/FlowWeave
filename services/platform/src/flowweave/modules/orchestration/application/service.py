@@ -2713,12 +2713,13 @@ def process_advance_automatic_attempt(
     *,
     commit: bool = True,
 ) -> None:
-    """Accept one automatic node and apply a governed transition decision.
+    """Accept one automatic node and deterministically advance its topology.
 
-    A distinct, capability-free Agent sees only the frozen successor action
-    package. External I/O runs outside a database transaction. The returned
-    node keys are advisory until the platform validates the task lease, the
-    Attempt CAS version, and the immutable Snapshot topology.
+    This durable platform task owns the acceptance CAS and downstream record
+    creation.  The frozen control edges determine every successor; port
+    mappings and frozen input/output contracts determine every binding.  It
+    never creates a sidecar Conversation or delegates route selection to a
+    model.
     """
 
     attempt = _attempt(db, attempt_id)
@@ -2727,23 +2728,8 @@ def process_advance_automatic_attempt(
     if run.run_mode != "AUTOMATIC" or attempt.state != AttemptState.WAITING_ACCEPTANCE:
         return
     expected_version = attempt.state_version
-    allowed = _automatic_successor_keys(db, run, node_run)
-    prepared: GateExecutionPlan | None = None
-    if len(allowed) == 1:
-        # A single frozen successor has no decision to delegate. Requiring a
-        # model here makes a successful automatic run depend on unrelated
-        # Gate Agent configuration.
-        selected, error = allowed, None
-    elif allowed:
-        prepared = _prepare_automatic_transition_plan(db, run, node_run, attempt, allowed)
-        # Persist the isolated Conversation locator/configuration before slow
-        # Runtime I/O. A retry reuses the same idempotent binding.
-        db.commit()
-        result = execute_gate_plan(prepared, {})
-        _require_current_lease(db, lease)
-        selected, error = _automatic_transition_selection(result, allowed)
-    else:
-        selected, error = [], None
+    selected = _automatic_successor_keys(db, run, node_run)
+    _require_current_lease(db, lease)
 
     claimed_id = db.scalar(
         update(NodeAttempt)
@@ -2753,10 +2739,10 @@ def process_advance_automatic_attempt(
             NodeAttempt.state_version == expected_version,
         )
         .values(
-            state=AttemptState.END_BLOCKED if error else AttemptState.ACCEPTED,
+            state=AttemptState.ACCEPTED,
             state_version=NodeAttempt.state_version + 1,
-            error_code="AUTOMATIC_TRANSITION_INVALID" if error else None,
-            error_detail=error,
+            error_code=None,
+            error_detail=None,
         )
         .returning(NodeAttempt.id)
         .execution_options(synchronize_session=False)
@@ -2768,20 +2754,6 @@ def process_advance_automatic_attempt(
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
     run = _locked_run(db, node_run.flow_run_id)
-    if prepared is not None and prepared.sidecar_binding_id:
-        agent_sessions.delete_binding_records(db, prepared.sidecar_binding_id)
-    if error:
-        run.state = FlowRunState.WAITING_HUMAN
-        _event(
-            db,
-            run.id,
-            "AUTOMATIC_TRANSITION_REVIEW_REQUIRED",
-            {"error": error, "allowed_node_keys": allowed},
-            node_run.id,
-            attempt.id,
-        )
-        _finish_transaction(db, commit)
-        return
     node_run.state = NodeRunState.ACCEPTED
     node_run.accepted_attempt_id = attempt.id
     _action(
@@ -2815,82 +2787,6 @@ def _automatic_successor_keys(db: Session, run: FlowRun, node_run: NodeRun) -> l
             if edge.get("source_instance_key") == node_run.flow_node_snapshot_key
         }
     )
-
-
-def _prepare_automatic_transition_plan(
-    db: Session,
-    run: FlowRun,
-    node_run: NodeRun,
-    attempt: NodeAttempt,
-    allowed: list[str],
-) -> GateExecutionPlan:
-    plan = dict(run.automation_plan_json or {})
-    node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
-    source_plan = _automatic_node_plan(node_plans, node_run.flow_node_snapshot_key)
-    preset = dict(cast(dict[str, Any], source_plan.get("agent_preset") or {}))
-    context = {
-        "schema_version": 1,
-        "source_node_key": node_run.flow_node_snapshot_key,
-        "allowed_node_keys": allowed,
-        "allowed_actions": [{"action": "SELECT_SUCCESSOR", "node_key": key} for key in allowed],
-        "outputs": [
-            _gate_artifact(item)
-            for item in db.scalars(
-                select(ArtifactVersion)
-                .where(ArtifactVersion.producer_attempt_id == attempt.id)
-                .order_by(ArtifactVersion.field_key, ArtifactVersion.version_no)
-            )
-        ],
-        "port_mappings": [
-            mapping
-            for mapping in _active_snapshot(db, run).definition_json.get("port_mappings", [])
-            if mapping.get("source_instance_key") == node_run.flow_node_snapshot_key
-            and mapping.get("target_instance_key") in allowed
-        ],
-    }
-    policy = {
-        "id": "automatic-transition",
-        "gate_type": "PROMPT",
-        "position": 0,
-        "timeout_seconds": 60,
-        "agent_preset": preset,
-        "config": {
-            "prompt": (
-                "You are an isolated workflow transition Agent. Select one or more "
-                "successors only from allowed_node_keys. Return PASS with "
-                "details.selected_node_keys as a non-empty JSON array. Do not invent "
-                "nodes and do not perform platform writes."
-            )
-        },
-    }
-    return _prepare_gate_plan(
-        db,
-        attempt=attempt,
-        node_run=node_run,
-        policy=policy,
-        context=context,
-        execution_no=attempt.state_version,
-    )
-
-
-def _automatic_transition_selection(
-    result: GateResult, allowed: list[str]
-) -> tuple[list[str], str | None]:
-    raw = result.details.get("selected_node_keys")
-    if result.decision != "PASS":
-        return [], result.summary or "流转 Agent 未形成通过决定"
-    if not isinstance(raw, list) or not raw:
-        return [], "流转 Agent 未选择任何冻结后继节点"
-    raw_items = cast(list[object], raw)
-    if any(not isinstance(item, str) or not item for item in raw_items):
-        return [], "流转 Agent 返回了无效节点标识"
-    selected = [str(item) for item in raw_items]
-    if len(selected) != len(set(selected)):
-        return [], "流转 Agent 重复选择了同一节点"
-    unauthorized = sorted(set(selected) - set(allowed))
-    if unauthorized:
-        return [], f"流转 Agent 选择了未授权节点：{', '.join(unauthorized)}"
-    return sorted(selected), None
 
 
 def _create_node_run(

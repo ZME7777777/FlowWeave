@@ -94,7 +94,7 @@ const chatRun = {
 const automaticAttempt = {
   ...attempt, id: 'automatic-attempt-1', node_run_id: 'automatic-node-run-1', state: 'END_BLOCKED',
   state_version: 4, error_code: 'AUTOMATIC_TRANSITION_INVALID',
-  error_detail: '流转 Agent 选择了未授权节点',
+  error_detail: '历史自动流转状态无效',
 };
 const automaticNodeRun = {
   ...nodeRun, id: 'automatic-node-run-1', flow_run_id: automaticBase.id, attempts: [automaticAttempt],
@@ -647,7 +647,7 @@ test('FR-130 running automatic records show execution facts and chat attempts su
   await expect(page.locator('.automatic-record-editor')).toHaveCount(0);
   await expect(page.getByTestId('attempt-state')).toHaveText('END_BLOCKED');
   await expect(page.locator('.attempt-control')).toContainText('连续运行需要人工处理');
-  await expect(page.locator('.attempt-control')).toContainText('流转 Agent 选择了未授权节点');
+  await expect(page.locator('.attempt-control')).toContainText('历史自动流转状态无效');
   await expect(page.locator('.run-graph-node.failed')).toContainText('完成条件未通过');
   await expect(page.locator('.run-graph-node.failed')).toHaveCSS('border-top-color', 'rgb(184, 72, 72)');
   await expect(page.locator('.run-graph-node.automatic-locked')).toContainText('测试节点2');
