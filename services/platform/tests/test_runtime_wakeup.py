@@ -81,10 +81,13 @@ def test_native_running_event_recovers_an_end_blocked_native_conversation(monkey
     ensured: list[str] = []
 
     class NativeRunningRuntime:
-        def read_events(self, _handle):
+        def read_active_events(self, _handle):
             return RuntimeEventBatch(
                 events=(), cursor="native-event", result=RuntimeResult(status="RUNNING")
             )
+
+        def read_events(self, _handle):
+            raise AssertionError("execution polling must use the active native HEAD")
 
         def input_readiness(self, _handle):
             return RuntimeInputReadiness(ready=False, execution_status="running")
@@ -162,7 +165,7 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
     applied: list[tuple[object, RuntimeResult, object]] = []
 
     class NativeCompletedRuntime:
-        def read_events(self, _handle):
+        def read_active_events(self, _handle):
             return RuntimeEventBatch(
                 events=(),
                 cursor="finish-2",
@@ -171,6 +174,9 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
                     outputs={"report": ("FILE", "/runtime/workspace/report.md")},
                 ),
             )
+
+        def read_events(self, _handle):
+            raise AssertionError("execution polling must use the active native HEAD")
 
         def input_readiness(self, _handle):
             return RuntimeInputReadiness(ready=True, execution_status="finished")

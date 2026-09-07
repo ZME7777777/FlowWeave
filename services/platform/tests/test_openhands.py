@@ -1595,6 +1595,41 @@ def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
     assert inspected.final_message is None
 
 
+def test_openhands_active_head_does_not_replay_prior_error_after_new_user_turn(
+    openhands_settings,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    result = runtime._result_from_events(
+        _handle(),
+        [
+            {
+                "kind": "MessageEvent",
+                "id": "old-user",
+                "parent_id": "__root__",
+                "source": "user",
+                "llm_message": {"role": "user", "content": "first"},
+            },
+            {
+                "kind": "AgentErrorEvent",
+                "id": "old-error",
+                "parent_id": "old-user",
+                "source": "agent",
+                "error": "A prior turn failed",
+            },
+            {
+                "kind": "MessageEvent",
+                "id": "new-user",
+                "parent_id": "old-error",
+                "source": "user",
+                "llm_message": {"role": "user", "content": "retry"},
+            },
+        ],
+        "new-user",
+    )
+
+    assert result is None
+
+
 def test_openhands_rejects_missing_persisted_event_anchor(openhands_settings, monkeypatch):
     """Event correlation must fail closed instead of guessing across missing anchors."""
 

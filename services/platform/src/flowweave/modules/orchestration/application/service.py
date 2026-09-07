@@ -4943,7 +4943,15 @@ def process_poll_runtime(
     handle = _active_attempt_runtime_handle(db, attempt)
     _release_worker_read_transaction(db, lease)
     runtime = get_runtime()
-    batch = runtime.read_events(handle)
+    # Execution reconciliation must follow the native OpenHands HEAD.  The
+    # full event history can contain a prior FinishAction/ERROR from a blocked
+    # turn; projecting that stale terminal event would flip the Attempt back
+    # to END_BLOCKED on every wake-up while a later native turn is running.
+    read_active_events = getattr(runtime, "read_active_events", None)
+    if callable(read_active_events):
+        batch = read_active_events(handle)
+    else:
+        batch = runtime.read_events(handle)
     # ``inspect`` reports the current terminal state and may replay the
     # previous completion forever; it cannot prove a new turn while an
     # Attempt is already END_BLOCKED.

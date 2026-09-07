@@ -2323,7 +2323,33 @@ class OpenHandsRuntime:
         *,
         assistant_message_is_final: bool = False,
     ) -> RuntimeResult | None:
-        for index in range(len(items) - 1, -1, -1):
+        # A native Conversation keeps every ancestor in its active HEAD
+        # branch.  Once a blocked turn is followed by a new user message, the
+        # previous turn's terminal event is still present and must not be
+        # replayed as the result of the new turn.  Restrict reconciliation to
+        # events after the latest user message when one is available.  Event
+        # batches anchored after that message have no user item, so they retain
+        # the existing whole-batch behavior.
+        latest_user_index = next(
+            (
+                index
+                for index in range(len(items) - 1, -1, -1)
+                if str(items[index].get("kind") or "") == "MessageEvent"
+                and (
+                    (
+                        isinstance(items[index].get("llm_message"), dict)
+                        and str(
+                            cast(dict[str, Any], items[index]["llm_message"]).get("role") or ""
+                        ).lower()
+                        == "user"
+                    )
+                    or str(items[index].get("source") or "").lower() == "user"
+                )
+            ),
+            None,
+        )
+        start_index = latest_user_index + 1 if latest_user_index is not None else 0
+        for index in range(len(items) - 1, start_index - 1, -1):
             item = items[index]
             if self._event_type(item) == "COMPLETED":
                 text = self._event_text(item)
