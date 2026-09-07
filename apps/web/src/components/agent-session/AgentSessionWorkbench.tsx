@@ -2309,19 +2309,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refresh();
   }, onError: error => reportOperationError(selected?.id, error) });
   const confirmDeletion = async (kind: '会话' | '工作区', name: string): Promise<boolean> => {
-    if (!await dialog.confirm({
+    return dialog.confirm({
       title: `删除${kind}“${name}”？`,
       message: kind === '会话'
         ? '会永久删除该会话及其附件和事件记录，无法恢复。'
         : '会永久删除该工作区、其中的会话、附件和冻结目录版本，无法恢复。',
-      confirmLabel: '继续删除',
-      tone: 'danger',
-    })) return false;
-    return dialog.confirm({
-      title: '再次确认删除',
-      message: kind === '会话'
-        ? `会永久删除会话“${name}”及其附件和事件记录，无法恢复。`
-        : `会永久删除工作区“${name}”及其中的会话、附件和冻结目录版本，无法恢复。`,
       confirmLabel: '确认删除',
       tone: 'danger',
     });
