@@ -20,7 +20,6 @@ from flowweave.shared.application.transactions import finish
 from flowweave.shared.errors import conflict, not_found
 from flowweave.shared.models import (
     AgentConversationBinding,
-    AgentWorkspace,
     FlowRun,
     ModelProvider,
     ProviderModel,
@@ -65,14 +64,7 @@ def _automatic_run_provider_models(run: FlowRun, provider_id: str) -> set[str]:
 
 
 def _provider_references(db: Session, provider_id: str) -> list[dict[str, str]]:
-    references = [
-        {"id": workspace.id, "name": workspace.display_name}
-        for workspace in db.scalars(
-            select(AgentWorkspace)
-            .where(AgentWorkspace.default_model_provider_id == provider_id)
-            .order_by(AgentWorkspace.display_name, AgentWorkspace.id)
-        )
-    ]
+    references: list[dict[str, str]] = []
     references.extend(
         {"id": binding.id, "name": binding.display_title or binding.id}
         for binding in db.scalars(

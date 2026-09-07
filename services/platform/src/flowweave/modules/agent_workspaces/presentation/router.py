@@ -43,10 +43,6 @@ class _Write(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class AgentWorkspaceSettingsWrite(_Write):
-    default_model_provider_id: str | None = Field(default=None, max_length=36)
-
-
 class AgentWorkspaceCapabilitiesWrite(_Write):
     capability_version_ids: list[str] = Field(default_factory=list)
 
@@ -261,18 +257,6 @@ async def get_default_agent_workspace(db: Db) -> dict[str, Any]:
 @router.get("/agent-workspaces/{workspace_id}")
 async def get_agent_workspace(workspace_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: conversations.get_workspace(session, workspace_id))
-
-
-@router.patch("/agent-workspaces/{workspace_id}/settings")
-async def patch_agent_workspace_settings(
-    workspace_id: str, payload: AgentWorkspaceSettingsWrite, db: Db
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: conversations.update_workspace_settings(
-            session, workspace_id, payload.default_model_provider_id
-        ),
-    )
 
 
 @router.get("/agent-workspaces/{workspace_id}/capabilities")

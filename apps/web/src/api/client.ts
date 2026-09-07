@@ -191,8 +191,6 @@ export const api = {
   logout: () => request<void>('/auth/logout', json('POST')),
   defaultAgentWorkspace: () => request<AgentWorkspace>('/agent-workspaces/default'),
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
-  updateAgentWorkspaceSettings: (id: string, default_model_provider_id: string | null) =>
-    request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}/settings`, json('PATCH', { default_model_provider_id })),
   agentWorkspaceCapabilities: (id: string) =>
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`),
   replaceAgentWorkspaceCapabilities: (id: string, capability_version_ids: string[]) =>
@@ -658,8 +656,8 @@ export const nodeSessionApi = {
   host: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionHostDetails>(`${nodeSessionBase(flowRunId, attemptId)}/host`),
   runtime: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionRuntime>(`${nodeSessionBase(flowRunId, attemptId)}/runtime`),
   conversations: (flowRunId: string, attemptId: string) => request<import('../types').AgentConversation[]>(nodeSessionBase(flowRunId, attemptId)),
-  create: (flowRunId: string, attemptId: string, title?: string, model_name?: string, reasoning_effort?: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
-    request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
+  create: (flowRunId: string, attemptId: string, title: string | undefined, model_provider_id: string, model_name: string, reasoning_effort: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
+    request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
   bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], work_directory_id?: string, idempotencyKey = randomId()) =>
     request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>

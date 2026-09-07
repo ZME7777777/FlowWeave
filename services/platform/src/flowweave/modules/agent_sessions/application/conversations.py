@@ -26,7 +26,6 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
-from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkspacePreference
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.model_providers.public import has_connected_default_model
@@ -200,32 +199,10 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
     }
 
 
-def _workspace_preference(
-    db: Session, workspace: AgentWorkspace, *, create: bool = False
-) -> AgentWorkspacePreference | None:
-    preference = db.scalar(
-        select(AgentWorkspacePreference).where(
-            AgentWorkspacePreference.workspace_id == workspace.id
-        )
-    )
-    if preference is None and create:
-        preference = AgentWorkspacePreference(
-            workspace_id=workspace.id,
-            default_model_provider_id=workspace.default_model_provider_id,
-        )
-        db.add(preference)
-        db.flush()
-    return preference
-
-
 def _workspace_dict(db: Session, workspace: AgentWorkspace) -> dict[str, Any]:
-    preference = _workspace_preference(db, workspace)
     return {
         "id": workspace.id,
         "display_name": workspace.display_name,
-        "default_model_provider_id": (
-            preference.default_model_provider_id if preference is not None else None
-        ),
         "desired_state": workspace.desired_state,
         "updated_at": workspace.updated_at.isoformat(),
     }
@@ -426,27 +403,6 @@ def default_workspace(db: Session) -> dict[str, Any]:
 
 def get_workspace(db: Session, workspace_id: str) -> dict[str, Any]:
     return _workspace_dict(db, _workspace(db, workspace_id))
-
-
-def update_workspace_settings(
-    db: Session, workspace_id: str, default_model_provider_id: str | None
-) -> dict[str, Any]:
-    workspace = _workspace(db, workspace_id)
-    preference = _workspace_preference(db, workspace, create=True)
-    assert preference is not None
-    if default_model_provider_id is None:
-        preference.default_model_provider_id = None
-    else:
-        if not has_connected_default_model(db, default_model_provider_id):
-            raise DomainError(
-                "AGENT_MODEL_CONFIGURATION_INVALID",
-                "默认模型必须是已测试成功且存在启用默认模型的配置",
-                409,
-            )
-        preference.default_model_provider_id = default_model_provider_id
-    preference.updated_at = now()
-    db.flush()
-    return _workspace_dict(db, workspace)
 
 
 def runtime_status(db: Session, workspace_id: str) -> dict[str, Any]:

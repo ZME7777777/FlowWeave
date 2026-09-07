@@ -440,7 +440,6 @@ export interface OpenHandsConversationEventBatch {
 export interface AgentSessionHostDetails {
   id: string;
   display_name: string;
-  default_model_provider_id?: string | null;
   desired_state: 'RUNNING' | 'MAINTENANCE';
   updated_at: string;
 }

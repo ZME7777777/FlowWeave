@@ -399,7 +399,6 @@ def node_host_details(db: Session, *, flow_run_id: str, attempt_id: str) -> dict
     return {
         "id": flow_run_id,
         "display_name": node_name or "节点会话",
-        "default_model_provider_id": None,
         # Host resolution has already fenced this specific Attempt to its
         # active generation. Do not project FlowRun-level Runtime status here:
         # a FlowRun may now have several independent Attempt Runtimes.

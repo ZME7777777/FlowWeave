@@ -39,7 +39,6 @@ class AgentWorkspace(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     scope_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(160), default="Agent 工作区")
-    default_model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     desired_state: Mapped[str] = mapped_column(String(20), default="RUNNING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -146,23 +145,6 @@ class AgentWorkspaceRuntimeGeneration(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-
-
-class AgentWorkspacePreference(Base):
-    """Per-user configuration for the shared default Agent Runtime host."""
-
-    __tablename__ = "agent_workspace_preferences"
-    __table_args__ = (
-        UniqueConstraint(
-            "owner_user_id", "workspace_id", name="uq_agent_workspace_preference_owner"
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
-    default_model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -280,7 +262,6 @@ class AgentWorkspaceCapability(Base):
 
 __all__ = (
     "AgentWorkspace",
-    "AgentWorkspacePreference",
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentWorkspaceCapability",

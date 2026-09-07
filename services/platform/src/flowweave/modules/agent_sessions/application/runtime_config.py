@@ -15,7 +15,6 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
-from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkspacePreference
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.runtime.base import (
     RuntimeAgentContext,
@@ -104,37 +103,27 @@ def resolve_session_config(
     reasoning_effort: str | None = None,
     capability_version_ids: tuple[str, ...] | None = None,
 ) -> FrozenSessionConfig:
-    """Resolve the one default Agent configuration used by every host."""
+    """Resolve an explicitly selected Agent configuration.
+
+    Model identity is part of the session contract.  It must be supplied by
+    the caller and is never inferred from an Agent Workspace preference.
+    """
 
     workspace = default_workspace(db)
-    preference = (
-        db.scalar(
-            select(AgentWorkspacePreference).where(
-                AgentWorkspacePreference.workspace_id == workspace.id
-            )
-        )
-        if workspace is not None
-        else None
-    )
-    provider_id = model_provider_id or (
-        preference.default_model_provider_id if preference is not None else None
-    )
+    provider_id = model_provider_id
     selected_model: str | None
     selected_effort: str | None
-    if provider_id:
+    if provider_id and model_name:
         selected_model, selected_effort = resolve_runtime_selection(
             db,
             {"asset": {"executor": {"model_provider_id": provider_id}}},
             model_name,
             reasoning_effort,
         )
-    elif get_settings().runtime_adapter == "mock":
-        selected_model = None
-        selected_effort = None
     else:
         raise DomainError(
             "AGENT_MODEL_CONFIGURATION_REQUIRED",
-            "请先配置 Agent 工作区的默认模型供应商",
+            "必须显式选择会话模型供应商和模型",
             409,
         )
 
@@ -221,6 +210,12 @@ def reserve_flow_node_binding(
 ) -> AgentConversationBinding:
     """Reserve and freeze one FlowNode Conversation before Runtime I/O."""
 
+    if config is None or not config.model_provider_id or not config.model_name:
+        raise DomainError(
+            "AGENT_MODEL_CONFIGURATION_REQUIRED",
+            "节点会话必须显式选择模型供应商和模型",
+            409,
+        )
     existing = db.scalar(
         select(AgentConversationBinding).where(
             AgentConversationBinding.create_idempotency_key == create_idempotency_key
@@ -239,7 +234,6 @@ def reserve_flow_node_binding(
                 409,
             )
         return existing
-    config = config or resolve_session_config(db)
     binding = AgentConversationBinding(
         id=binding_id or str(uuid4()),
         workspace_id=None,
@@ -332,7 +326,7 @@ def provider_for_config(db: Session, config: FrozenSessionConfig) -> RuntimeProv
     if config.model_provider_id is None:
         if get_settings().runtime_adapter == "mock":
             return None
-        raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "Agent 默认模型不可用", 409)
+        raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "会话缺少冻结模型", 409)
     return runtime_provider(
         db,
         {"asset": {"executor": {"model_provider_id": config.model_provider_id}}},

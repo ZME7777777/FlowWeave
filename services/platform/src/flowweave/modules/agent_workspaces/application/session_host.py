@@ -18,7 +18,6 @@ from flowweave.modules.agent_sessions.public import (
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspace,
-    AgentWorkspacePreference,
     AgentWorkspaceRuntime,
 )
 from flowweave.modules.users.application.security import user_runtime_project_root
@@ -66,22 +65,13 @@ def resolve_agent_workspace_session_host(
     permissions: frozenset[AgentSessionPermission] = _READ_PERMISSIONS
     if writable:
         permissions = _READ_PERMISSIONS | _WRITE_PERMISSIONS
-    preference = db.scalar(
-        select(AgentWorkspacePreference).where(
-            AgentWorkspacePreference.workspace_id == workspace.id
-        )
-    )
     return AgentSessionHostContext.create(
         host_kind="AGENT_WORKSPACE",
         host_id=workspace.id,
         conversation_scope_id=workspace.id,
         runtime_session_id=runtime.id,
         working_directory=user_runtime_project_root(workspace.id),
-        model_policy={
-            "default_model_provider_id": (
-                preference.default_model_provider_id if preference is not None else None
-            )
-        },
+        model_policy={},
         permissions=permissions,
     )
 

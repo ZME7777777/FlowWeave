@@ -54,6 +54,9 @@ class _Write(BaseModel):
 
 class NodeSessionCreateWrite(_Write):
     title: str | None = Field(default=None, max_length=160)
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
@@ -302,6 +305,12 @@ async def create_node_session(
             title=payload.title,
             work_directory_id=payload.work_directory_id,
             idempotency_key=_key(idempotency_key, "create-node-agent-session", attempt_id),
+            session_config=resolve_session_config(
+                session,
+                model_provider_id=payload.model_provider_id,
+                model_name=payload.model_name,
+                reasoning_effort=payload.reasoning_effort,
+            ),
         )
         return agent_sessions.flow_node_conversations.get_node_session_view(
             session,
