@@ -2854,6 +2854,20 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 显示最近事件、摘要和动态运行耗时，并展示模型、输入／输出／推理／缓存 Token、当前轮 Token、上下文窗口与累计
 费用。OpenHands 私有 Prompt、reasoning、stdout/stderr 和独立消息树仍不进入 API 或页面。
 
+### FR-198 连续／逐步运行启动语义可见性 — DONE
+
+依赖：`FR-193`。
+
+目标：连续运行的下游节点在通过启动门禁后必须由既有持久 Worker 自动启动，页面不得把其短暂的
+`WAITING_START_CONFIRMATION` 状态误导为需要在逐步运行记录中人工点击。逐步运行保持在同一状态停住，并在左侧
+对应记录显示“启动”按钮，由用户点击后启动当前节点。不得新增人工旁路、改变冻结配置或绕过自动运行的持久任务／
+恢复机制。
+
+完成：连续记录在自动启动任务交接期间显示“正在自动启动”，说明平台会启动当前节点并在完成后继续流转；不再错误
+提示用户到逐步运行记录点击启动。逐步记录仍只在左侧记录的 `WAITING_START_CONFIRMATION` 状态显示“启动”按钮，
+点击后继续使用冻结提示词调用既有节点启动 API。新增浏览器回归覆盖自动交接不出现手动启动入口；既有连续运行
+持久 Worker 调度与恢复路径未变。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -2869,6 +2883,7 @@ Conversation 状态，不改变 Task Action/Observation 的正式身份关联。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-07 | FR-198 | Web ESLint、TypeScript typecheck、production build；新增连续运行自动交接定向 Playwright；`git diff --check` 与任务状态唯一性 | PASS：连续 Attempt 在 `WAITING_START_CONFIRMATION` 显示自动启动提示且不暴露逐步运行人工启动文案／按钮；逐步运行既有保存配置后左侧启动回归通过。整份工作台 Playwright 套件另有 2 条既有断言漂移（请求现含 `force_advance: false`、会话删除按钮使模糊角色选择器不再唯一），与本切片无关，未伪记为通过。 |
 | 2026-09-07 | FR-197 | Web ESLint、TypeScript typecheck、production build；受影响 Python `py_compile`；`git diff --check` | PASS：事件批次向 Agent Workspace 与 FlowRun 节点会话返回受治理 Task usage；子智能体面板展示动态耗时、最近正式事件、摘要和 Task usage 指标；未暴露 Prompt/reasoning/原始日志。Ruff、pytest 在本机不可用（命令不存在），未伪记为通过。 |
 | 2026-09-07 | FR-196 | watchdog／控制 lane 无 Docker 直接回归（9 passed）；受影响 Python Ruff check、`py_compile`；Docker Runtime `--init` 启动命令契约；Alembic head、任务状态唯一性与 `git diff --check` | PASS（代码与直接回归）：读取 lane 饱和时保留独立控制线程、连接和槽位；事件失响应／读取饱和触发正式 generation replacement；手动暂停对 RECONNECTING 幂等且 fences WATCH／CONFIRM／RESUME，冻结 Conversation identity 后禁止父会话自动续跑；Task interrupt pending 或事件不可用时有界 replacement；受管 Runtime 启动命令包含 `--init`。本机 Docker daemon 不可用，数据库 fixture 与真实容器／公网部署验证留待 commit 绑定远端发布；全量 Pyright 仍仅报告仓库既有诊断。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |
 | 2026-09-07 | FR-195 | 定时任务页面全宽浏览器回归（2 passed）；Web ESLint、TypeScript typecheck、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：定时任务容器在 1440px 浏览器视口下与视口同宽，不再受独立 1280px 上限压缩；现有新建提示、整行展开和立即运行反馈回归均通过。唯一 Alembic head 为 `0099_remove_ws_default_model`。 |

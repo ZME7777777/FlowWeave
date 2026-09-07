@@ -204,6 +204,64 @@ test('step configuration is saved before start and direct launch has its own tab
   await expect(page.getByRole('button', { name: '启动节点会话' })).toBeVisible();
 });
 
+test('continuous records never ask users to manually start an auto-ready successor', async ({ page }) => {
+  const autoReadyAttempt = {
+    ...attempt,
+    id: 'automatic-ready-attempt',
+    node_run_id: 'automatic-ready-node-run',
+    state: 'WAITING_START_CONFIRMATION',
+    runtime_phase: null,
+  };
+  const autoReadyRecord = {
+    ...frozenAutomaticBase,
+    state: 'ACTIVE',
+    runtime_status: 'ACTIVE',
+    runtime_write_available: true,
+    current_node_key: 'second',
+    current_node_name: '测试节点2',
+    current_attempt_state: 'WAITING_START_CONFIRMATION',
+    progress: { accepted: 1, terminal: 1, active: 1 },
+    node_runs: [{
+      ...nodeRun,
+      id: 'automatic-ready-node-run',
+      flow_run_id: frozenAutomaticBase.id,
+      flow_node_snapshot_key: 'second',
+      attempts: [autoReadyAttempt],
+    }],
+    automation_plan: {
+      ...frozenAutomaticBase.automation_plan,
+      status: 'FROZEN',
+      readiness: { ready: true, issues: [] },
+    },
+  };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([autoReadyRecord]);
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.getByRole('button', { name: '自动记录 1 运行中' }).click();
+
+  const panel = page.locator('.attempt-control');
+  await expect(panel).toContainText('正在自动启动');
+  await expect(panel).toContainText('连续运行已通过启动条件；平台正在启动当前节点');
+  await expect(panel).not.toContainText('请在左侧逐步运行记录中点击“启动”');
+  await expect(page.getByRole('button', { name: /启动连续运行/ })).toHaveCount(0);
+});
+
 test('a completed step selects its sole downstream configuration with mapped outputs', async ({ page }) => {
   const transitionDefinition = {
     ...definition,
