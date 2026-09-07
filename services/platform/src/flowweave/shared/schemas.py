@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -16,6 +16,90 @@ def _empty_str_dict() -> dict[str, str]:
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+_EVENT_TRIGGER_SOURCES = {"OPENHANDS", "RUNTIME", "ORCHESTRATION"}
+_EVENT_TRIGGER_FAILURE_CLASSES = {
+    "TRANSIENT_NETWORK",
+    "TRANSIENT_TIMEOUT",
+    "TRANSIENT_UNAVAILABLE",
+    "AUTHENTICATION",
+    "QUOTA",
+    "CONTENT_POLICY",
+    "CONTEXT_LIMIT",
+    "INVALID_REQUEST",
+    "UNKNOWN",
+}
+
+
+def _empty_event_trigger_actions() -> list[EventTriggerActionWrite]:
+    return []
+
+
+class EventTriggerActionWrite(ApiModel):
+    action_type: Literal[
+        "RESUME_CONVERSATION",
+        "WEBHOOK",
+        "NOTIFY",
+        "CREATE_TASK",
+        "PAUSE_ATTEMPT",
+        "HANDOFF_HUMAN",
+    ]
+    config: dict[str, Any] = Field(default_factory=_empty_any_dict)
+    description: str = Field(default="", max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_config(self) -> EventTriggerActionWrite:
+        if len(str(self.config)) > 20_000:
+            raise ValueError("event trigger action config is too large")
+        forbidden = {"api_key", "apikey", "authorization", "password", "secret", "token"}
+
+        def scan(value: object) -> None:
+            if isinstance(value, dict):
+                for key, nested in cast(dict[object, object], value).items():
+                    if str(key).casefold() in forbidden:
+                        raise ValueError("event trigger action config cannot contain secrets")
+                    scan(nested)
+            elif isinstance(value, list):
+                for nested in cast(list[object], value):
+                    scan(nested)
+
+        scan(self.config)
+        return self
+
+
+class EventTriggerWrite(ApiModel):
+    trigger_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,119}$")
+    name: str = Field(min_length=1, max_length=200)
+    enabled: bool = True
+    event_types: list[str] = Field(default_factory=list, max_length=20)
+    sources: list[str] = Field(default_factory=list, max_length=3)
+    failure_classes: list[str] = Field(default_factory=list, max_length=9)
+    flow_run_ids: list[str] = Field(default_factory=list, max_length=100)
+    node_run_ids: list[str] = Field(default_factory=list, max_length=100)
+    actions: list[EventTriggerActionWrite] = Field(
+        default_factory=_empty_event_trigger_actions, min_length=1, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def validate_filter_values(self) -> EventTriggerWrite:
+        if len(self.event_types) != len(set(self.event_types)):
+            raise ValueError("event trigger event_types must be unique")
+        if any(not item or item != item.upper() for item in self.event_types):
+            raise ValueError("event trigger event_types must use uppercase names")
+        if len(self.sources) != len(set(self.sources)):
+            raise ValueError("event trigger sources must be unique")
+        if any(item not in _EVENT_TRIGGER_SOURCES for item in self.sources):
+            raise ValueError("event trigger sources contain an unsupported value")
+        if len(self.failure_classes) != len(set(self.failure_classes)):
+            raise ValueError("event trigger failure_classes must be unique")
+        if any(item not in _EVENT_TRIGGER_FAILURE_CLASSES for item in self.failure_classes):
+            raise ValueError("event trigger failure_classes contain an unsupported value")
+        if len(self.flow_run_ids) != len(set(self.flow_run_ids)):
+            raise ValueError("event trigger flow_run_ids must be unique")
+        if len(self.node_run_ids) != len(set(self.node_run_ids)):
+            raise ValueError("event trigger node_run_ids must be unique")
+        return self
 
 
 def _http_url(value: str, label: str) -> str:
