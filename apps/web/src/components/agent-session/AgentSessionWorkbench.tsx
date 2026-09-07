@@ -2281,15 +2281,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       confirmLabel: '继续删除',
       tone: 'danger',
     })) return false;
-    const typed = await dialog.prompt({
+    return dialog.confirm({
       title: '再次确认删除',
-      message: `请输入${kind}名称“${name}”以确认删除。`,
-      inputLabel: `${kind}名称`,
-      placeholder: name,
+      message: kind === '会话'
+        ? `会永久删除会话“${name}”及其附件和事件记录，无法恢复。`
+        : `会永久删除工作区“${name}”及其中的会话、附件和冻结目录版本，无法恢复。`,
       confirmLabel: '确认删除',
       tone: 'danger',
     });
-    return typed === name;
   };
   const remove = useMutation({ mutationFn: (bindingId: string) => api.deleteConversation(workspace!.id, bindingId), onSuccess: (_value, bindingId) => {
     if (selected?.id === bindingId) {
