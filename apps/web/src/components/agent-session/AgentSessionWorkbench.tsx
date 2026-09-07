@@ -204,6 +204,35 @@ function sessionQueryKey(host: AgentSessionHost, resource: string, ...identifier
   return host.queryKey(resource, ...identifiers);
 }
 
+function conversationIsRunning(executionStatus: string | null | undefined): boolean {
+  return ['running', 'executing'].includes(executionStatus?.trim().toLowerCase() ?? '');
+}
+
+function unreadConversationStorageKey(hostId: string, workspaceId: string): string {
+  return `flowweave:agent-workspace-unread:${hostId}:${workspaceId}`;
+}
+
+function readUnreadConversationIds(storageKey: string | undefined): Set<string> {
+  if (!storageKey) return new Set();
+  try {
+    const stored = window.localStorage.getItem(storageKey);
+    const values: unknown = stored ? JSON.parse(stored) : [];
+    return new Set(Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeUnreadConversationIds(storageKey: string | undefined, conversationIds: Set<string>) {
+  if (!storageKey) return;
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify([...conversationIds]));
+  } catch {
+    // Unread markers are deliberately browser-local presentation state. A
+    // storage failure must not affect the OpenHands conversation itself.
+  }
+}
+
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 
 const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
@@ -231,6 +260,78 @@ function WorkspaceConversationGroup({ groupId, label, children, canCreateConvers
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>{children}</div>
   </section>;
+}
+
+function ConversationStreamObserver({
+  workspaceId, bindingId, activeBindingId, enabled, onActiveEvent, onActiveStatus,
+}: {
+  workspaceId: string;
+  bindingId: string;
+  activeBindingId?: string;
+  enabled: boolean;
+  onActiveEvent: (event: { type: 'delta' | 'event' | 'message_complete'; content?: string; event?: OpenHandsConversationEvent }) => void;
+  onActiveStatus: (status: StreamStatus) => void;
+}) {
+  const { subscribe } = useAgentSessionGateway();
+  const activeBindingIdRef = useRef(activeBindingId);
+  const onActiveEventRef = useRef(onActiveEvent);
+  const onActiveStatusRef = useRef(onActiveStatus);
+  const lastStatusRef = useRef<StreamStatus>('disabled');
+  activeBindingIdRef.current = activeBindingId;
+  onActiveEventRef.current = onActiveEvent;
+  onActiveStatusRef.current = onActiveStatus;
+
+  useEffect(() => {
+    if (activeBindingId === bindingId) onActiveStatusRef.current(lastStatusRef.current);
+  }, [activeBindingId, bindingId]);
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribe(workspaceId, bindingId, event => {
+      if (activeBindingIdRef.current === bindingId) onActiveEventRef.current(event);
+    }, status => {
+      lastStatusRef.current = status;
+      if (activeBindingIdRef.current === bindingId) onActiveStatusRef.current(status);
+    });
+  }, [bindingId, enabled, subscribe, workspaceId]);
+  return null;
+}
+
+function WorkspaceConversationRow({
+  workspaceId, item, selectedBindingId, unread, runtimeWritable, removing, onSelect, onDelete, onActivityObserved,
+}: {
+  workspaceId: string;
+  item: AgentConversation;
+  selectedBindingId?: string;
+  unread: boolean;
+  runtimeWritable: boolean;
+  removing: boolean;
+  onSelect: () => void;
+  onDelete?: () => void;
+  onActivityObserved: (bindingId: string, running: boolean) => void;
+}) {
+  const { api } = useAgentSessionGateway();
+  const host = useAgentSessionHost();
+  const readinessQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspaceId, item.id),
+    queryFn: () => api.inputReadiness(workspaceId, item.id),
+    // The sidebar must use OpenHands' execution status for every listed
+    // conversation. Local composer state belongs only to the active pane.
+    refetchInterval: 1500,
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
+  const running = conversationIsRunning(readinessQuery.data?.execution_status);
+  useEffect(() => {
+    if (readinessQuery.data) onActivityObserved(item.id, running);
+  }, [item.id, onActivityObserved, readinessQuery.data, running]);
+
+  return <div className="agent-workspace-conversation">
+    <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} onClick={onSelect}>
+      <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
+    </button>
+    {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
+    {!running && unread && <span className="agent-workspace-conversation-unread" role="img" aria-label="有未读回复"/>}
+    {onDelete && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title="删除会话" disabled={!runtimeWritable || removing} onClick={onDelete}><Trash2 size={13}/></button>}
+  </div>;
 }
 
 function readBootstrapRecovery(storageKey: string): BootstrapRecovery | undefined {
@@ -1589,7 +1690,7 @@ export function AgentSessionWorkbench({
 }
 
 function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, hideDraftTitle = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
-  const { api, subscribe, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
+  const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
   const dialog = useProductDialog();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
@@ -1646,6 +1747,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
   const previousComposerScope = useRef<string | undefined>(undefined);
+  const activityBaseline = useRef<Map<string, boolean>>(new Map());
+  const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
   // A FlowRun may briefly report a recoverable 409 while its Attempt and
   // Runtime records are being published.  Do not leave the node workbench
   // permanently stuck on the first transient response.
@@ -1657,6 +1760,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: true,
   });
   const workspace = workspaceQuery.data;
+  const unreadStorageKey = workspace ? unreadConversationStorageKey(host.id, workspace.id) : undefined;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => host.id.startsWith('flow-node:') && query.state.data?.write_available ? 1200 : query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const conversationsQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversations', workspace?.id),
@@ -1674,6 +1778,47 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
   const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const selected = useMemo(() => conversations.find(item => item.id === selectedBindingId), [conversations, selectedBindingId]);
+  const updateUnreadConversationIds = useCallback((update: (current: Set<string>) => Set<string>) => {
+    setUnreadConversationIds(current => {
+      const next = update(current);
+      writeUnreadConversationIds(unreadStorageKey, next);
+      return next;
+    });
+  }, [unreadStorageKey]);
+  const markConversationRead = useCallback((bindingId: string) => {
+    updateUnreadConversationIds(current => {
+      if (!current.has(bindingId)) return current;
+      const next = new Set(current);
+      next.delete(bindingId);
+      return next;
+    });
+  }, [updateUnreadConversationIds]);
+  const observeConversationActivity = useCallback((bindingId: string, running: boolean) => {
+    const previous = activityBaseline.current.get(bindingId);
+    activityBaseline.current.set(bindingId, running);
+    // A browser opening an existing finished conversation must not create an
+    // unread marker. Only a witnessed OpenHands running -> stopped transition
+    // is a new reply, and the currently viewed conversation is already read.
+    if (previous !== true || running || bindingId === selectedBindingId) return;
+    updateUnreadConversationIds(current => current.has(bindingId) ? current : new Set([...current, bindingId]));
+  }, [selectedBindingId, updateUnreadConversationIds]);
+  useEffect(() => {
+    activityBaseline.current = new Map();
+    setUnreadConversationIds(readUnreadConversationIds(unreadStorageKey));
+  }, [unreadStorageKey]);
+  useEffect(() => {
+    if (selectedBindingId) markConversationRead(selectedBindingId);
+  }, [markConversationRead, selectedBindingId]);
+  useEffect(() => {
+    const present = new Set(conversations.map(item => item.id));
+    for (const bindingId of activityBaseline.current.keys()) {
+      if (!present.has(bindingId)) activityBaseline.current.delete(bindingId);
+    }
+    updateUnreadConversationIds(current => {
+      const next = new Set([...current].filter(bindingId => present.has(bindingId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [conversations, updateUnreadConversationIds]);
   const composerCapabilityReferences = useMemo(() => {
     if (selected?.capabilities) return selected.capabilities;
     if (!conversationDraft) return [];
@@ -1905,7 +2050,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!conversationDraft && !selectedBindingId && conversations.length) onNavigate(host.conversationPath(conversations[0].id), true);
     if (selectedBindingId && conversations.length && !selected && pendingCreatedId !== selectedBindingId && !conversationsQuery.isFetching) onNavigate(host.rootPath, true);
   }, [conversationDraft, conversations, conversationsQuery.isFetching, host, onNavigate, pendingCreatedId, selected, selectedBindingId]);
-  useEffect(() => { if (!workspace || !selected || !runtime?.write_available) { setStreamStatus('disabled'); return; } return subscribe(workspace.id, selected.id, onStreamEvent, setStreamStatus); }, [onStreamEvent, runtime?.write_available, selected, subscribe, workspace]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useEffect(() => {
     if (previousComposerScope.current === composerScope) return;
@@ -2545,19 +2689,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (turnState === 'paused') resume.mutate();
   };
   const workDirectories = workDirectoriesQuery.data?.items ?? [];
-  const runningConversationId = selected && (
-    isGenerating
-    || ['running', 'executing'].includes((inputReadinessQuery.data?.execution_status ?? '').toLowerCase())
-  ) ? selected.id : undefined;
   const conversationRow = (item: AgentConversation) => {
-    const running = item.id === runningConversationId;
-    return <div key={item.id} className="agent-workspace-conversation">
-      <button type="button" className={`agent-workspace-conversation-select${item.id === selected?.id ? ' active' : ''}`} onClick={() => selectConversation(item.id)}>
-        <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
-      </button>
-      {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
-      {features.conversationDeletion && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title="删除会话" disabled={!runtimeWritable || remove.isPending} onClick={() => remove.mutate(item.id)}><Trash2 size={13}/></button>}
-    </div>;
+    return <WorkspaceConversationRow key={item.id} workspaceId={workspace!.id} item={item} selectedBindingId={selectedBindingId} unread={unreadConversationIds.has(item.id)} runtimeWritable={runtimeWritable} removing={remove.isPending} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion ? () => remove.mutate(item.id) : undefined} onActivityObserved={observeConversationActivity}/>;
   };
   const openCurrentDirectoryDraft = () => {
     const directory = selected?.work_directory_id
@@ -2576,6 +2709,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     item => item.work_directory_id === workDirectoryId,
   );
   const selectConversation = (bindingId: string) => {
+    markConversationRead(bindingId);
     setConversationDraft(undefined);
     clearConversationDraft();
     onNavigate(host.conversationPath(bindingId));
@@ -2592,6 +2726,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
 
   return <main className="agent-workbench-page">
+    {conversations.map(item => <ConversationStreamObserver key={item.id} workspaceId={workspace.id} bindingId={item.id} activeBindingId={selectedBindingId} enabled={Boolean(runtime?.write_available)} onActiveEvent={onStreamEvent} onActiveStatus={setStreamStatus}/>)}
     <aside className="agent-workbench-rail">
       <header>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}<div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : features.workDirectories ? 'AGENT WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : features.workDirectories ? 'Agent 会话' : '节点会话'}</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
