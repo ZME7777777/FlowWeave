@@ -344,7 +344,7 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
         const needsNextPage = visibleCount >= conversationCount;
         setVisibleCount(current => current + 5);
         if (needsNextPage) onLoadMore();
-      }}>{loadingMore ? '正在加载…' : '展开显示 5 个会话'}</button>}
+      }}>{loadingMore ? '正在加载…' : '展开显示'}</button>}
     </div>
   </section>;
 }
