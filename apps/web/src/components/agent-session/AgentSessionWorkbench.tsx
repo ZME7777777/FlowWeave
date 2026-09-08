@@ -264,9 +264,6 @@ interface WorkspaceConversationGroupProps {
   label: string;
   children: (visibleCount: number) => ReactNode;
   conversationCount: number;
-  hasMore: boolean;
-  loadingMore: boolean;
-  onLoadMore: () => void;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
   onDelete?: () => void;
@@ -321,16 +318,16 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore, loadingMore, onLoadMore, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(5);
+  const [visibleCount, setVisibleCount] = useState(3);
   const contentId = `agent-workspace-group-${groupId}`;
-  const canLoadMore = visibleCount < conversationCount || hasMore;
+  const canLoadMore = visibleCount < conversationCount;
 
   return <section className={`agent-workspace-group${collapsed ? ' collapsed' : ''}`}>
     <header>
       <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => {
-        if (!current) setVisibleCount(5);
+        if (!current) setVisibleCount(3);
         return !current;
       })}>
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
@@ -340,11 +337,7 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>
       {children(visibleCount)}
-      {canLoadMore && <button type="button" className="agent-workspace-group-more" disabled={loadingMore} onClick={() => {
-        const needsNextPage = visibleCount >= conversationCount;
-        setVisibleCount(current => current + 5);
-        if (needsNextPage) onLoadMore();
-      }}>{loadingMore ? '正在加载…' : '展开显示'}</button>}
+      {canLoadMore && <button type="button" className="agent-workspace-group-more" onClick={() => setVisibleCount(current => current + 3)}>展开显示</button>}
     </div>
   </section>;
 }
@@ -1837,6 +1830,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return pageVisible ? 10_000 : false;
     },
   });
+  useEffect(() => {
+    if (!workspace || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
+    void conversationsQuery.fetchNextPage();
+  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isFetchingNextPage, workspace]);
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
@@ -2877,11 +2874,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationsForDirectory = (workDirectoryId: string) => conversations.filter(
     item => item.work_directory_id === workDirectoryId,
   );
-  const loadMoreConversations = () => {
-    if (conversationsQuery.hasNextPage && !conversationsQuery.isFetchingNextPage) {
-      void conversationsQuery.fetchNextPage();
-    }
-  };
   const selectConversation = (bindingId: string) => {
     setConversationDraft(undefined);
     clearConversationDraft();
@@ -2902,10 +2894,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     <aside className="agent-workbench-rail">
       <header>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}<div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : features.workDirectories ? 'AGENT WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : features.workDirectories ? 'Agent 会话' : '节点会话'}</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
-        <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationsQuery.hasNextPage)} loadingMore={conversationsQuery.isFetchingNextPage} onLoadMore={loadMoreConversations} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
+        <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
           {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}{rootConversations.slice(0, visibleCount).map(conversationRow)}</>}
         </WorkspaceConversationGroup>
-        {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationsQuery.hasNextPage)} loadingMore={conversationsQuery.isFetchingNextPage} onLoadMore={loadMoreConversations} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+        {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
           {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}{conversationsForDirectory(directory.id).slice(0, visibleCount).map(conversationRow)}</>}
         </WorkspaceConversationGroup>)}
       </div>
