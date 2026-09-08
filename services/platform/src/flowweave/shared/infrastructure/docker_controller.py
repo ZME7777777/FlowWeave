@@ -21,7 +21,7 @@ from flowweave.shared.infrastructure.docker_control import (
 )
 from flowweave.shared.infrastructure.http_transport import (
     HttpTransportPool,
-    shared_http_transport,
+    registered_http_transport,
 )
 
 
@@ -177,13 +177,29 @@ class DockerControllerClient:
         self.base_url = settings.docker_controller_url.rstrip("/")
         self.api_key = settings.docker_controller_api_key
         self.manager_scope = settings.sandbox_manager_scope
-        self._http_transport = http_transport or shared_http_transport(settings)
+        # The long-lived application Container injects/registers the shared
+        # pool. Keep a private, lazy fallback for isolated tools and tests so
+        # they do not inherit an unrelated already-open global transport.
+        self._http_transport = http_transport or registered_http_transport(settings)
+        self._owns_http_transport = self._http_transport is None
+
+    def _transport(self) -> HttpTransportPool:
+        if self._http_transport is None:
+            self._http_transport = HttpTransportPool.build()
+        return self._http_transport
+
+    async def aclose(self) -> None:
+        """Close only a private fallback transport created outside Container."""
+
+        if self._owns_http_transport and self._http_transport is not None:
+            await self._http_transport.aclose()
+            self._http_transport = None
 
     def _request(
         self, path: str, payload: dict[str, Any], *, timeout: float = 60
     ) -> dict[str, Any]:
         try:
-            response = self._http_transport.control.post(
+            response = self._transport().control.post(
                 f"{self.base_url}{path}",
                 json={"manager_scope": self.manager_scope, **payload},
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -310,7 +326,7 @@ class DockerControllerClient:
             "timeout_seconds": timeout_seconds,
         }
         try:
-            async with self._http_transport.async_control.stream(
+            async with self._transport().async_control.stream(
                 "POST",
                 f"{self.base_url}/v1/runtimes/events",
                 json=payload,
@@ -365,7 +381,7 @@ class DockerControllerClient:
             "timeout_seconds": timeout_seconds,
         }
         try:
-            with self._http_transport.control.stream(
+            with self._transport().control.stream(
                 "POST",
                 f"{self.base_url}/v1/runtimes/events",
                 json=payload,

@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
-> 当前执行切片：无
-> 下一可执行切片：`FR-220`（资源泄漏、故障恢复与性能最终门禁）
+> 当前执行切片：`FR-220`（资源泄漏、故障恢复与性能最终门禁）
+> 下一可执行切片：无
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3106,11 +3106,22 @@ Runtime Provider 导出 Relay Hub/订阅者及终端附件/tmux session 水位�
 窗口并导出 backend 标签。新增 Redis 依赖锁定、Compose 限流环境变量、Prometheus 告警规则和 Grafana 概览面板，
 覆盖 API p95、数据库池/Relay 容量、分布式限流失效及拒绝率。指标绝不使用用户、会话、请求或消息内容作为标签。
 
-### FR-220 资源泄漏、故障恢复与性能最终门禁 — PENDING
+### FR-220 资源泄漏、故障恢复与性能最终门禁 — CURRENT
 
 依赖：`FR-210`–`FR-219`。执行分页、事件增量、断连/重连/部署、Relay、SSE、tmux、Worker、HTTP/DB pool、
 服务限额和长时间 soak/load 的综合验收；冻结 p95/p99 和资源水位基线，证明回收后回到基线且单个 Runtime
 故障不拖慢控制面。
+
+当前进展：修复 FR-217 的验证回归。`OpenHandsRuntime` 与 `DockerControllerClient` 在应用 `Container`
+生命周期中继续使用并复用其注册的进程级 HTTP pool；在容器外的单测或一次性工具中改为惰性私有 pool，并提供
+显式 `aclose()`，不会继承其他测试或已关闭容器的全局 client。该调整恢复了对 MockTransport 与流响应关闭的
+验证，且不改变生产池的连接上限或关闭所有权。
+
+当前阻塞：本机 Docker daemon 不可用，Testcontainers PostgreSQL fixture 在业务断言前失败；本机也没有
+Redis/Valkey、Prometheus 抓取端或可执行的固定 OpenHands Runtime。因此尚不能执行数据库/SSE、跨进程限流、
+真实 Runtime 重连/替换、容器资源水位、p95/p99、长时间 soak/load 与部署恢复门禁。完整 Pyright 同时仍有
+既有跨模块类型基线诊断，不能作为本切片新增失败。FR-220 必须保持 `CURRENT`，待以上依赖可用后才可冻结基线或
+标记完成。
 
 ## 7. 恢复工作检查表
 
@@ -3127,6 +3138,7 @@ Runtime Provider 导出 Relay Hub/订阅者及终端附件/tmux session 水位�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-220 | FR-217 HTTP transport 回归：`test_openhands.py`；受影响 Ruff、`py_compile`、`git diff --check`、Alembic head；资源治理定向 pytest 与 Docker 可用性探针 | PARTIAL：修复独立 `OpenHandsRuntime`/`DockerControllerClient` 错误复用进程全局 client、绕过 MockTransport 的回归。`test_openhands.py` 为 `107 passed`，其中包含 Container 注册 pool 复用与流 response 关闭回归。组合资源测试为 `107 passed, 6 errors`；6 个错误均发生在 Testcontainers 创建 PostgreSQL 前，根因是 `unix:///Users/zhengmengen/.docker/run/docker.sock` 不存在，无业务断言失败。Ruff、语法、whitespace 与唯一 Alembic head `0102_event_trigger_observers` 通过。完整 Pyright 仍被既有跨模块/解释器解析诊断阻断，未归因于本切片。Redis/Valkey、Prometheus、固定 OpenHands Runtime、Docker/PostgreSQL、真实部署和 soak/load 未执行；FR-220 保持 CURRENT。 |
 | 2026-09-08 | FR-219 | 进程内限流/Prometheus 渲染直接 smoke、Compose/YAML/JSON 解析；受影响 Python `py_compile`、Ruff、定向 Pyright；`uv lock --check`、Alembic head、`git diff --check`、任务状态唯一性 | PASS：API 与 Runtime Provider 暴露低基数资源指标；Redis/Valkey 配置可提供跨进程固定窗口限流，缺失或故障时清晰降级为进程内限制；告警和 Grafana 概览覆盖慢请求、数据库、Relay 与限流。Redis 服务、Prometheus 抓取和跨进程压测留待 FR-220 实测；唯一 Alembic head 为 `0102_event_trigger_observers`，FR-220 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-218 | 受影响 Python `py_compile`、Ruff；Compose 资源/环境字段静态核对；Alembic head、`git diff --check`、任务状态唯一性 | PASS：数据库 async、blocking、control 与同步兼容引擎均禁用隐式 overflow 并设置 pool timeout；控制面服务具备 init、CPU、内存、PID 上限，API/stream-api/worker 使用 8/4/8 业务连接预算；SSE/Relay 配额改为可配置。未运行依赖 Docker/PostgreSQL 的业务测试。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-219 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-217 | 受影响 Python `py_compile`、Ruff；Alembic head、`git diff --check`、任务状态唯一性 | PASS：新增有界进程级 sync/async HTTP transport，普通与控制/流式池分别复用并由 Container 关闭；OpenHands 与 Docker Controller 高频调用不再每请求创建 client。未运行依赖 Docker/PostgreSQL 的业务测试。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-218 已 PENDING；无 CURRENT。 |

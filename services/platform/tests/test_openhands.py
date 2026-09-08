@@ -39,6 +39,11 @@ from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure import docker_controller as docker_controller_module
 from flowweave.shared.infrastructure.docker_controller import DockerControllerClient
+from flowweave.shared.infrastructure.http_transport import (
+    HttpTransportPool,
+    register_http_transport,
+    unregister_http_transport,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -268,6 +273,20 @@ def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_set
     )
 
     assert runtime._request_workspace_path(request) == request.workspace_ref
+
+
+@pytest.mark.asyncio
+async def test_openhands_uses_the_container_owned_http_transport(openhands_settings):
+    transport = HttpTransportPool.build()
+    register_http_transport(openhands_settings, transport)
+    try:
+        runtime = OpenHandsRuntime(openhands_settings)
+        assert runtime._transport() is transport
+        await runtime.aclose()
+        assert runtime._transport() is transport
+    finally:
+        unregister_http_transport(openhands_settings, transport)
+        await transport.aclose()
 
 
 @pytest.mark.parametrize(
@@ -2169,6 +2188,7 @@ async def test_controller_event_stream_closes_httpx_response(openhands_settings,
 
     assert await anext(stream) == {"kind": "StreamingDeltaEvent", "content": "visible"}
     await stream.aclose()
+    await client.aclose()
 
     assert response_closed.is_set()
 

@@ -64,7 +64,7 @@ from flowweave.shared.infrastructure.docker_controller import (
 )
 from flowweave.shared.infrastructure.http_transport import (
     HttpTransportPool,
-    shared_http_transport,
+    registered_http_transport,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,25 @@ class OpenHandsRuntime:
         self.workspace_root = settings.workspace_root.resolve()
         self.openhands_workspace_root = settings.openhands_workspace_root
         self._contracts: dict[str, list[dict[str, str]]] = {}
-        self._http_transport = http_transport or shared_http_transport(settings)
+        # Production construction always injects the Container-owned pool. A
+        # runtime created outside that lifecycle (for example a one-shot tool
+        # or a unit test) gets a lazy private pool instead of registering an
+        # immortal process-global client. This also keeps the legacy httpx
+        # transport seam available to those callers.
+        self._http_transport = http_transport or registered_http_transport(settings)
+        self._owns_http_transport = self._http_transport is None
+
+    def _transport(self) -> HttpTransportPool:
+        if self._http_transport is None:
+            self._http_transport = HttpTransportPool.build()
+        return self._http_transport
+
+    async def aclose(self) -> None:
+        """Close only a private fallback transport created outside Container."""
+
+        if self._owns_http_transport and self._http_transport is not None:
+            await self._http_transport.aclose()
+            self._http_transport = None
 
     @staticmethod
     def _environment_route(job_id: str) -> tuple[str, bool] | None:
@@ -159,7 +177,7 @@ class OpenHandsRuntime:
         started_at = time.monotonic()
         outcome = "error"
         try:
-            response = self._http_transport.regular.request(
+            response = self._transport().regular.request(
                 method,
                 f"{base_url.rstrip('/')}{path}",
                 headers={"X-Session-API-Key": session_api_key},
@@ -552,7 +570,7 @@ class OpenHandsRuntime:
         try:
             if controller_is_remote(self.settings):
                 response = DockerControllerClient(
-                    self.settings, http_transport=self._http_transport
+                    self.settings, http_transport=self._transport()
                 ).post(
                     "/v1/runtimes/validate-plugin",
                     {
@@ -2849,7 +2867,7 @@ class OpenHandsRuntime:
                     409,
                 )
             stream = DockerControllerClient(
-                self.settings, http_transport=self._http_transport
+                self.settings, http_transport=self._transport()
             ).stream_runtime_events(
                 resource_name=handle.runtime_resource_name,
                 resource_id=handle.runtime_resource_id,
@@ -2914,7 +2932,7 @@ class OpenHandsRuntime:
                     409,
                 )
             return DockerControllerClient(
-                self.settings, http_transport=self._http_transport
+                self.settings, http_transport=self._transport()
             ).wait_runtime_event(
                 resource_name=handle.runtime_resource_name,
                 resource_id=handle.runtime_resource_id,
@@ -3216,7 +3234,7 @@ class OpenHandsRuntime:
         workspace_root = self._validated_workspace_root(handle.workspace_root)
         target = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--{safe_name}"
         try:
-            response = self._http_transport.regular.post(
+            response = self._transport().regular.post(
                 f"{self._base_url_for_handle(handle)}/api/file/upload",
                 headers={"X-Session-API-Key": self._session_key_for_handle(handle)},
                 params={"path": target},
@@ -3241,7 +3259,7 @@ class OpenHandsRuntime:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_resource(handle.runtime_resource_name)
         try:
-            response = self._http_transport.regular.get(
+            response = self._transport().regular.get(
                 f"{base_url}/api/file/archive",
                 headers={"X-Session-API-Key": session_api_key},
                 params={"path": path, "format": "tar.gz", "use_default_excludes": "true"},
@@ -3306,7 +3324,7 @@ class OpenHandsRuntime:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_resource(handle.runtime_resource_name)
         try:
-            response = self._http_transport.regular.get(
+            response = self._transport().regular.get(
                 f"{base_url}/api/file/download",
                 headers={"X-Session-API-Key": session_api_key},
                 params={"path": path},
@@ -3597,7 +3615,7 @@ class OpenHandsRuntime:
             None,
         )
         try:
-            response = self._http_transport.regular.post(
+            response = self._transport().regular.post(
                 f"{base_url}/api/conversations/{handle.conversation_id}/ask_agent",
                 headers={"X-Session-API-Key": session_api_key},
                 json={"question": question},

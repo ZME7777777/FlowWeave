@@ -77,14 +77,12 @@ def _settings_key(settings: object) -> tuple[str, str, str]:
     )
 
 
-def shared_http_transport(settings: object) -> HttpTransportPool:
+def registered_http_transport(settings: object) -> HttpTransportPool | None:
+    """Return an application-owned transport pool when one is registered."""
+
     key = _settings_key(settings)
     with _pools_lock:
-        pool = _pools.get(key)
-        if pool is None:
-            pool = HttpTransportPool.build()
-            _pools[key] = pool
-        return pool
+        return _pools.get(key)
 
 
 def register_http_transport(settings: object, pool: HttpTransportPool) -> None:
