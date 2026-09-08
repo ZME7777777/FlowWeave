@@ -187,6 +187,12 @@ class ArtifactVersion(Base):
         UniqueConstraint(
             "flow_run_id", "field_key", "version_no", name="uq_artifact_field_version"
         ),
+        UniqueConstraint(
+            "producer_attempt_id",
+            "field_key",
+            "runtime_completion_event_id",
+            name="uq_runtime_artifact_completion",
+        ),
         CheckConstraint(
             "inline_content IS NOT NULL OR uri IS NOT NULL OR storage_key IS NOT NULL",
             name="ck_artifact_has_content",
@@ -202,6 +208,10 @@ class ArtifactVersion(Base):
     consumer_node_key: Mapped[str | None] = mapped_column(String(100), index=True)
     field_key: Mapped[str] = mapped_column(String(100))
     version_no: Mapped[int] = mapped_column(Integer)
+    # Runtime outputs are append-only only across formal OpenHands completion
+    # identities. The same completed event must never create another version.
+    # ``NULL`` keeps legacy and non-Runtime Artifact creation unaffected.
+    runtime_completion_event_id: Mapped[str | None] = mapped_column(String(200), index=True)
     artifact_type: Mapped[str] = mapped_column(String(80))
     storage_key: Mapped[str | None] = mapped_column(Text)
     uri: Mapped[str | None] = mapped_column(Text)

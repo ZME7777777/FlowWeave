@@ -322,6 +322,90 @@ def test_historical_gate_without_id_is_a_controlled_configuration_error(monkeypa
     assert exc_info.value.code == "GATE_POLICY_ID_MISSING"
 
 
+def test_runtime_output_registration_reuses_the_same_formal_completion(monkeypatch):
+    payload = SimpleNamespace(field_key="report", artifact_type="URL")
+    prepared = SimpleNamespace(
+        payload=payload,
+        storage_key="artifacts/versions/duplicate",
+        content_hash="same-content",
+        byte_size=12,
+    )
+    existing = SimpleNamespace(content_hash="same-content", artifact_type="URL")
+    deleted: list[object] = []
+
+    class Db:
+        def scalar(self, _statement):
+            return existing
+
+    monkeypatch.setattr(
+        orchestration_service, "discard_prepared_artifacts", lambda items: deleted.extend(items)
+    )
+
+    item = orchestration_service._register_artifact(
+        Db(),
+        "run-1",
+        prepared,
+        source="RUNTIME",
+        attempt_id="attempt-1",
+        runtime_completion_event_id="formal-finish-1",
+    )
+
+    assert item is existing
+    assert deleted == [prepared]
+
+
+def test_runtime_output_growth_limit_blocks_before_registering_more_artifacts(monkeypatch):
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state=AttemptState.EXECUTING,
+        runtime_phase="RUNNING",
+        state_version=7,
+    )
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
+    run = SimpleNamespace(id="run-1", state="ACTIVE")
+    prepared = [SimpleNamespace(payload=SimpleNamespace(field_key="report"))]
+    events: list[tuple[str, dict[str, object]]] = []
+    deleted: list[object] = []
+
+    class Db:
+        def scalar(self, _statement):
+            return 4
+
+    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service, "discard_prepared_artifacts", lambda items: deleted.extend(items)
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+
+    with settings_context(Settings(runtime_output_version_limit=4)):
+        violations = orchestration_service._runtime_output_growth_violations(
+            Db(), attempt, prepared
+        )
+
+    assert violations == [{"field_key": "report", "existing_versions": 4, "limit": 4}]
+
+    orchestration_service._block_runtime_output_growth(None, attempt, prepared, violations)
+
+    assert deleted == prepared
+    assert attempt.state == AttemptState.END_BLOCKED
+    assert attempt.runtime_phase == "FAILED"
+    assert attempt.error_code == "RUNTIME_OUTPUT_VERSION_LIMIT_EXCEEDED"
+    assert attempt.state_version == 8
+    assert run.state == "WAITING_HUMAN"
+    assert events == [
+        (
+            "RUNTIME_OUTPUT_VERSION_GROWTH_BLOCKED",
+            {"violations": [{"field_key": "report", "existing_versions": 4, "limit": 4}]},
+        )
+    ]
+
+
 def test_inspect_completion_does_not_replay_old_outputs_after_gate_block(monkeypatch):
     """An inspect-only terminal snapshot is not a new native completion."""
 

@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     artifact_s3_secret_key: str = ""
     workspace_root: Path = Path("./var/workspaces")
     inline_artifact_limit: int = Field(default=65_536, ge=0)
+    # An automatic output repair may legitimately produce the initial output
+    # plus three remediated revisions. More Runtime versions for one Attempt
+    # field inside this bounded window indicate a projection loop, not new
+    # user work, and must stop before growing the append-only Artifact log.
+    runtime_output_version_window_seconds: int = Field(default=600, ge=60, le=86_400)
+    runtime_output_version_limit: int = Field(default=4, ge=1, le=50)
 
     capability_import_ttl_seconds: int = Field(default=900, ge=60)
     seed_demo: bool = False

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-222`（输出登记幂等与异常增长熔断）
+> 下一可执行切片：`FR-223`（自动门禁失败语义与操作反馈）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3140,7 +3140,7 @@ Attempt 与同一正式完成身份，输出准备、Artifact 登记和 END Gate
 新完成事件可恢复投影的定向回归；受影响 Python Ruff／`py_compile`、Alembic head、任务状态唯一性与
 `git diff --check`。完成后独立 Git commit 并停止；后续 `FR-222` 建立输出版本异常增长熔断。
 
-### FR-222 输出登记幂等与异常增长熔断 — PENDING
+### FR-222 输出登记幂等与异常增长熔断 — DONE
 
 依赖：`FR-221`。
 
@@ -3189,6 +3189,7 @@ Attempt 级重复传输。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-222 | Runtime Artifact completion ID 幂等与增长熔断定向回归；受影响 Python／迁移 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：迁移 `0103_runtime_artifact_projection_idempotency` 为 Runtime Artifact 新增正式 completion event ID 和 `(producer_attempt_id, field_key, completion_event_id)` 唯一约束；相同 completion ID 只复用既有版本并清理本次预准备文件，内容漂移 fail closed。默认十分钟内每个 Attempt/输出字段最多 4 个 Runtime 版本（初始输出加 3 轮正常自动修订）；达到上限即保留历史、清理本轮预准备文件、进入 `END_BLOCKED/RUNTIME_OUTPUT_VERSION_LIMIT_EXCEEDED` 并记录诊断事件。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `13 passed`；常规 pytest 仍会受 Testcontainers 前置条件和本机 Docker socket 缺失阻断。唯一 Alembic head 为 `0103_runtime_artifact_projection_idempotency`。 |
 | 2026-09-08 | FR-221 | 自动 Gate 冻结与终态投影定向回归；受影响 Python Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动计划冻结为每条 Gate 写入 UUID policy ID；历史缺失 ID 的冻结计划在分配 Runtime、写入 URL Artifact 或创建 NodeAttempt 前转入 `WAITING_HUMAN` 并记录可诊断事件，已存在的缺失 ID Attempt 也以 `GATE_POLICY_ID_MISSING` 受控失败。每次 Runtime 完成投影记录正式 OpenHands completion event ID；`END_BLOCKED` 再次读到同一 ID 时不恢复 Attempt、不准备输出、不写 Artifact、不派发 Gate，新的完成 ID 只有在已有完成投影审计后才可恢复。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `11 passed`；常规 pytest 受 Testcontainers 前置条件阻断（本机 Docker socket 不存在），未伪记为业务失败。唯一 Alembic head 为 `0102_event_trigger_observers`。 |
 | 2026-09-08 | FR-220 | 用户授权的远端 platform 发布与基础运行验证：commit 绑定源码包 SHA-256、linux/amd64 镜像、migration、服务健康、页面/深链/静态资源、指标与日志扫描 | DONE（以部署基础验证收口）：commit `7f5673f` 已发布到 `root@192.168.91.154:/opt/flowweave`；migration `Exited (0)`，API、stream-api、Runtime Provider healthy，Worker Up，所有共享平台进程运行新镜像 `594f0af…`。FlowWeave 页面、`/flowweave/agent`、静态资源与 FastGPT 登录均返回 200；三个 `/metrics` 端点均为 200，近期平台日志未见 ERROR/CRITICAL/traceback。未认证 API 的 401 为正常鉴权行为。Redis/Valkey、长压、真实 Runtime 故障矩阵与 p95/p99 转为运行中持续观测。 |
 | 2026-09-08 | FR-220 | FR-217 HTTP transport 回归：`test_openhands.py`；受影响 Ruff、`py_compile`、`git diff --check`、Alembic head；资源治理定向 pytest 与 Docker 可用性探针 | PARTIAL：修复独立 `OpenHandsRuntime`/`DockerControllerClient` 错误复用进程全局 client、绕过 MockTransport 的回归。`test_openhands.py` 为 `107 passed`，其中包含 Container 注册 pool 复用与流 response 关闭回归。组合资源测试为 `107 passed, 6 errors`；6 个错误均发生在 Testcontainers 创建 PostgreSQL 前，根因是 `unix:///Users/zhengmengen/.docker/run/docker.sock` 不存在，无业务断言失败。Ruff、语法、whitespace 与唯一 Alembic head `0102_event_trigger_observers` 通过。完整 Pyright 仍被既有跨模块/解释器解析诊断阻断，未归因于本切片。Redis/Valkey、Prometheus、固定 OpenHands Runtime、Docker/PostgreSQL、真实部署和 soak/load 未执行；随后按用户决定以远端基础验证收口。 |

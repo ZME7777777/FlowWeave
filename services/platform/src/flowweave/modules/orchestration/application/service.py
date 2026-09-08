@@ -675,8 +675,32 @@ def _register_artifact(
     source: str = "HUMAN",
     attempt_id: str | None = None,
     consumer_node_key: str | None = None,
+    runtime_completion_event_id: str | None = None,
 ) -> ArtifactVersion:
     payload = prepared.payload
+    if runtime_completion_event_id is not None:
+        existing = db.scalar(
+            select(ArtifactVersion).where(
+                ArtifactVersion.producer_attempt_id == attempt_id,
+                ArtifactVersion.field_key == payload.field_key,
+                ArtifactVersion.runtime_completion_event_id == runtime_completion_event_id,
+            )
+        )
+        if existing is not None:
+            # Preparing a FILE output already copied it to the Artifact store.
+            # This duplicate formal completion owns no second version or blob.
+            discard_prepared_artifacts([prepared])
+            if (
+                existing.content_hash != prepared.content_hash
+                or existing.artifact_type != payload.artifact_type
+            ):
+                raise DomainError(
+                    "RUNTIME_OUTPUT_PROJECTION_DRIFT",
+                    "The same OpenHands completion event returned different output content",
+                    409,
+                    {"field": payload.field_key},
+                )
+            return existing
     if prepared.storage_key is not None:
         key = prepared.storage_key
         register_rollback_action(db, lambda key=key: get_artifact_store().delete(key))
@@ -696,6 +720,7 @@ def _register_artifact(
         consumer_node_key=consumer_node_key,
         field_key=payload.field_key,
         version_no=version,
+        runtime_completion_event_id=runtime_completion_event_id,
         artifact_type=payload.artifact_type,
         storage_key=prepared.storage_key,
         uri=payload.uri,
@@ -716,6 +741,67 @@ def _register_artifact(
         attempt_id=attempt_id,
     )
     return item
+
+
+def _runtime_output_growth_violations(
+    db: Session,
+    attempt: NodeAttempt,
+    prepared_outputs: list[PreparedArtifact],
+) -> list[dict[str, int | str]]:
+    """Detect a bounded-window Artifact projection loop before writing rows."""
+
+    settings = get_settings()
+    cutoff = datetime.now(UTC) - timedelta(seconds=settings.runtime_output_version_window_seconds)
+    violations: list[dict[str, int | str]] = []
+    for prepared in prepared_outputs:
+        field_key = prepared.payload.field_key
+        count = int(
+            db.scalar(
+                select(func.count(ArtifactVersion.id)).where(
+                    ArtifactVersion.producer_attempt_id == attempt.id,
+                    ArtifactVersion.field_key == field_key,
+                    ArtifactVersion.source == "RUNTIME",
+                    ArtifactVersion.created_at >= cutoff,
+                )
+            )
+            or 0
+        )
+        if count >= settings.runtime_output_version_limit:
+            violations.append(
+                {
+                    "field_key": field_key,
+                    "existing_versions": count,
+                    "limit": settings.runtime_output_version_limit,
+                }
+            )
+    return violations
+
+
+def _block_runtime_output_growth(
+    db: Session,
+    attempt: NodeAttempt,
+    prepared_outputs: list[PreparedArtifact],
+    violations: list[dict[str, int | str]],
+) -> None:
+    """Keep the append-only history and expose a projection-loop failure."""
+
+    discard_prepared_artifacts(prepared_outputs)
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    attempt.state = AttemptState.END_BLOCKED
+    attempt.runtime_phase = "FAILED"
+    attempt.error_code = "RUNTIME_OUTPUT_VERSION_LIMIT_EXCEEDED"
+    attempt.error_detail = "Runtime output versions exceeded the bounded projection limit."
+    attempt.state_version += 1
+    run.state = FlowRunState.WAITING_HUMAN
+    _event(
+        db,
+        run.id,
+        "RUNTIME_OUTPUT_VERSION_GROWTH_BLOCKED",
+        {"violations": violations},
+        node_run.id,
+        attempt.id,
+    )
 
 
 def create_artifact(db: Session, run_id: str, prepared: PreparedArtifact) -> dict[str, Any]:
@@ -4986,6 +5072,11 @@ def _apply_runtime_result(
                 "OpenHands completed without a formal completion event identity",
                 502,
             )
+        growth_violations = _runtime_output_growth_violations(db, attempt, prepared_outputs)
+        if growth_violations:
+            _block_runtime_output_growth(db, attempt, prepared_outputs, growth_violations)
+            _finish_transaction(db, commit)
+            return attempt_detail(db, attempt.id)
         for prepared in prepared_outputs:
             _register_artifact(
                 db,
@@ -4993,6 +5084,7 @@ def _apply_runtime_result(
                 prepared,
                 source="RUNTIME",
                 attempt_id=attempt.id,
+                runtime_completion_event_id=completion_event_id,
             )
         attempt.state = AttemptState.END_GATES
         attempt.runtime_phase = "COMPLETED"
