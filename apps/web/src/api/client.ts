@@ -236,11 +236,17 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
-  agentConversations: (workspaceId: string) => request<AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`),
+  agentConversations: (workspaceId: string, cursor?: string) => {
+    const query = new URLSearchParams({ limit: '5' });
+    if (cursor) query.set('cursor', cursor);
+    return request<import('../types').AgentConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations?${query}`);
+  },
   addAgentConversationCapability: (workspaceId: string, bindingId: string, capability_version_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], work_directory_id?: string, capability_version_ids: string[] = [], idempotencyKey = conversation_id) =>
     request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references, work_directory_id, capability_version_ids }, idempotencyKey)),
+  agentConversation: (workspaceId: string, bindingId: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
@@ -655,11 +661,17 @@ function nodeSessionBase(flowRunId: string, attemptId: string): string {
 export const nodeSessionApi = {
   host: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionHostDetails>(`${nodeSessionBase(flowRunId, attemptId)}/host`),
   runtime: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionRuntime>(`${nodeSessionBase(flowRunId, attemptId)}/runtime`),
-  conversations: (flowRunId: string, attemptId: string) => request<import('../types').AgentConversation[]>(nodeSessionBase(flowRunId, attemptId)),
+  conversations: (flowRunId: string, attemptId: string, cursor?: string) => {
+    const query = new URLSearchParams({ limit: '5' });
+    if (cursor) query.set('cursor', cursor);
+    return request<import('../types').AgentConversationPage>(`${nodeSessionBase(flowRunId, attemptId)}?${query}`);
+  },
   create: (flowRunId: string, attemptId: string, title: string | undefined, model_provider_id: string, model_name: string, reasoning_effort: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
     request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
   bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], work_directory_id?: string, idempotencyKey = randomId()) =>
     request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
+  get: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string) =>

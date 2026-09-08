@@ -452,9 +452,17 @@ async def delete_agent_work_directory(
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations")
-async def list_agent_conversations(workspace_id: str, db: Db) -> list[dict[str, Any]]:
+async def list_agent_conversations(
+    workspace_id: str,
+    db: Db,
+    cursor: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=5, ge=1, le=5),
+) -> dict[str, Any]:
     return await run_sync(
-        db, lambda session: conversations.list_conversations(session, workspace_id)
+        db,
+        lambda session: conversations.list_conversation_page(
+            session, workspace_id, cursor=cursor, limit=limit
+        ),
     )
 
 

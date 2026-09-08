@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-210`（会话列表 cursor 分页与批量读取）
+> 下一可执行切片：`FR-211`（OpenHands 事件窗口与 cursor 增量读取）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3017,13 +3017,13 @@ Runtime Provider、Worker、PostgreSQL 与 Compose 的统一资源治理边界�
 验收：设计明确资源所有者、上限、取消/空闲回收、指标、失败语义和最终 load/soak 验收；任务状态唯一性与
 `git diff --check` 通过。完成后独立提交并停止。
 
-### FR-210 会话列表 cursor 分页、批量读取与五条渐进展示 — READY
+### FR-210 会话列表 cursor 分页、批量读取与五条渐进展示 — DONE
 
 依赖：`FR-209`。服务端为 Agent Workspace 与 FlowRun 节点会话列表增加稳定 cursor、`limit <= 5` 与批量 DTO
 读取，删除工作目录/能力/活动摘要 N+1；Web 每组首次显示 5 条、展开每次追加 5 条、折叠后重置。不得以客户端
 截断替代服务端分页。
 
-### FR-211 OpenHands 事件窗口、官方 cursor 增量与历史按需读取 — PENDING
+### FR-211 OpenHands 事件窗口、官方 cursor 增量与历史按需读取 — READY
 
 依赖：`FR-209`。停止从游标起点分页至末尾；以固定 OpenHands 正式 cursor/事件身份读取当前活动分支窗口与
 增量，历史由显式分页触发。若上游无反向/窗口契约，保持只读降级并记录缺口，不建立 FlowWeave 事件副本。
@@ -3089,6 +3089,7 @@ SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 Postg
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-210 | 受影响 Python `py_compile`、Ruff check/format、Pyright；Web ESLint/TypeScript typecheck；`git diff --check`、任务状态唯一性 | PASS：Agent Workspace 与节点会话列表均改为 `limit <= 5` 的稳定 cursor 页；列表 DTO 用批量工作目录和能力查询替代逐条 N+1。共享 Workbench 使用按页加载、每组显示 5 条、显式“展开显示 5 个会话”，折叠后重置显示数；深层会话 URL 额外按 ID 读取，不会因其不在首屏而重定向。新增分页顺序/无重复回归。定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 在断言前失败，未伪记为通过。FR-211 已 READY；无 CURRENT。 |
 | 2026-09-08 | FR-209 | 完整读取 Runtime 设计与进度；现有会话、SSE、Relay、tmux、Worker、HTTP、Compose 资源边界审计；任务状态唯一性；`git diff --check` | PASS：新增资源治理与会话性能设计，冻结按需 WebSocket 及 5 分钟空闲宽限、5 条 cursor 列表分页、OpenHands 官方 cursor 历史窗口、保持一 FlowRun 一 Runtime 的 Relay Hub、共享 LISTEN fanout、tmux TTL、真实 Worker 并发、HTTP 池、服务资源/数据库预算、指标和分布式限流前置条件。FR-210 已 READY；无 CURRENT。 |
 | 2026-09-08 | FR-208 | 只读监控纯函数直接断言；受影响 Python Ruff check/format、`py_compile`；Web TypeScript typecheck；Alembic head；`git diff --check` | PASS：主 Agent 与子 Agent 的最近正式事件、墙钟无事件时长和“可能卡住”提示通过 REST 投影进入工作台；提示不控制 OpenHands。已退役 Task 超时 watchdog 的中断／Runtime replacement／父会话续跑执行入口，Runtime 读取失败不再触发自动恢复。触发器新版本仅接受无会话副作用动作，`0102` 将既有约束同步收紧。pytest 因本机 Docker daemon 不可用、Testcontainers fixture 在断言前失败，未伪记为通过。唯一 Alembic head 为 `0102_event_trigger_observers`，无 `CURRENT`。 |
 | 2026-09-08 | FR-207 | Outbox ORM／迁移与事件投影 `py_compile`；受影响 Ruff check/format；定向 Pyright（新增服务 0 errors）；Alembic head；路由/元数据导入；`git diff --check` | PASS：统一编排 `_event` 写入后按启用触发器匹配并生成 `event_trigger_deliveries`，同一触发器版本、动作位置和正式事件身份使用稳定幂等键；载荷只保留关联 ID 和脱敏故障分类，未知来源 fail closed。未发送外部请求、未执行动作或恢复。完整 Pyright 仍包含编排服务既有诊断；新增 Outbox 路径无新增诊断。唯一 Alembic head 为 `0101_event_trigger_deliveries`，无 `CURRENT`。 |

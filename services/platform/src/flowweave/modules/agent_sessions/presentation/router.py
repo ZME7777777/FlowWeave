@@ -280,11 +280,21 @@ async def add_node_session_capability(
 
 
 @router.get(_BASE)
-async def list_node_sessions(flow_run_id: str, attempt_id: str, db: Db) -> list[dict[str, Any]]:
+async def list_node_sessions(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    cursor: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=5, ge=1, le=5),
+) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: agent_sessions.flow_node_conversations.list_node_session_views(
-            session, flow_run_id=flow_run_id, attempt_id=attempt_id
+        lambda session: agent_sessions.flow_node_conversations.list_node_session_page(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            cursor=cursor,
+            limit=limit,
         ),
     )
 

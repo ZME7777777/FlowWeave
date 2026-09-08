@@ -941,6 +941,24 @@ def test_node_session_list_orders_recent_activity_first(
             oldest.id,
         ]
 
+        first = conversation_service.list_node_session_page(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, limit=2
+        )
+        second = conversation_service.list_node_session_page(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            cursor=first["next_cursor"],
+            limit=2,
+        )
+
+        assert [item["id"] for item in first["items"]] == [
+            oldest_but_recently_active.id,
+            newest.id,
+        ]
+        assert [item["id"] for item in second["items"]] == [oldest.id]
+        assert second["next_cursor"] is None
+
 
 def test_node_workspace_projection_shares_project_across_node_attempts(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch

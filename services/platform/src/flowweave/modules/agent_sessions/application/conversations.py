@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import re
 import shutil
 import time
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
@@ -197,6 +199,96 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
         "updated_at": item.updated_at.isoformat(),
         "last_connected_at": item.last_connected_at.isoformat() if item.last_connected_at else None,
     }
+
+
+def _conversation_page_cursor(item: AgentConversationBinding) -> str:
+    """Return an opaque cursor for the stable conversation-list ordering."""
+
+    payload = json.dumps(
+        [item.updated_at.isoformat(), item.created_at.isoformat(), item.id],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_conversation_page_cursor(cursor: str) -> tuple[datetime, datetime, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        updated_at, created_at, binding_id = value
+        if (
+            not isinstance(updated_at, str)
+            or not isinstance(created_at, str)
+            or not isinstance(binding_id, str)
+        ):
+            raise ValueError("invalid cursor values")
+        return datetime.fromisoformat(updated_at), datetime.fromisoformat(created_at), binding_id
+    except (TypeError, ValueError, binascii.Error, json.JSONDecodeError) as exc:
+        raise DomainError("AGENT_CONVERSATION_CURSOR_INVALID", "会话列表游标无效", 422) from exc
+
+
+def _page_dicts(db: Session, items: list[AgentConversationBinding]) -> list[dict[str, Any]]:
+    """Build list DTOs with two batch queries instead of per-row lookups."""
+
+    version_ids = {
+        item.work_directory_version_id
+        for item in items
+        if item.work_directory_version_id is not None
+    }
+    work_directory_by_version = (
+        {
+            version_id: work_directory_id
+            for version_id, work_directory_id in db.execute(
+                select(
+                    AgentWorkDirectoryVersion.id,
+                    AgentWorkDirectoryVersion.work_directory_id,
+                ).where(AgentWorkDirectoryVersion.id.in_(version_ids))
+            )
+        }
+        if version_ids
+        else {}
+    )
+    capabilities_by_binding: dict[str, list[dict[str, str]]] = {item.id: [] for item in items}
+    if items:
+        capabilities = db.scalars(
+            select(AgentConversationCapability)
+            .where(AgentConversationCapability.binding_id.in_(capabilities_by_binding))
+            .order_by(
+                AgentConversationCapability.binding_id,
+                AgentConversationCapability.position,
+            )
+        )
+        for capability in capabilities:
+            capabilities_by_binding[capability.binding_id].append(
+                {
+                    "id": capability.capability_version_id,
+                    "capability_type": capability.capability_type,
+                    "capability_key": capability.capability_key,
+                    "digest": capability.digest,
+                }
+            )
+    return [
+        {
+            "id": item.id,
+            "display_title": item.display_title,
+            "title_state": item.title_state,
+            "model_provider_id": item.model_provider_id,
+            "model_name": item.model_name,
+            "reasoning_effort": item.reasoning_effort,
+            "work_directory_version_id": item.work_directory_version_id,
+            "work_directory_id": work_directory_by_version.get(item.work_directory_version_id),
+            "working_directory": item.working_directory,
+            "capabilities": capabilities_by_binding[item.id],
+            "streaming_callback_ready": item.streaming_callback_ready,
+            "lifecycle": item.lifecycle,
+            "created_at": item.created_at.isoformat(),
+            "updated_at": item.updated_at.isoformat(),
+            "last_connected_at": item.last_connected_at.isoformat()
+            if item.last_connected_at
+            else None,
+        }
+        for item in items
+    ]
 
 
 def _workspace_dict(db: Session, workspace: AgentWorkspace) -> dict[str, Any]:
@@ -502,6 +594,51 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             )
         )
     ]
+
+
+def list_conversation_page(
+    db: Session, workspace_id: str, *, cursor: str | None = None, limit: int = 5
+) -> dict[str, Any]:
+    """Read one bounded, stable page of direct Agent conversations."""
+
+    _workspace(db, workspace_id)
+    query = select(AgentConversationBinding).where(
+        AgentConversationBinding.workspace_id == workspace_id,
+        AgentConversationBinding.lifecycle == "ACTIVE",
+    )
+    if cursor:
+        updated_at, created_at, binding_id = _decode_conversation_page_cursor(cursor)
+        query = query.where(
+            or_(
+                AgentConversationBinding.updated_at < updated_at,
+                and_(
+                    AgentConversationBinding.updated_at == updated_at,
+                    AgentConversationBinding.created_at < created_at,
+                ),
+                and_(
+                    AgentConversationBinding.updated_at == updated_at,
+                    AgentConversationBinding.created_at == created_at,
+                    AgentConversationBinding.id < binding_id,
+                ),
+            )
+        )
+    items = list(
+        db.scalars(
+            query.order_by(
+                AgentConversationBinding.updated_at.desc(),
+                AgentConversationBinding.created_at.desc(),
+                AgentConversationBinding.id.desc(),
+            ).limit(limit + 1)
+        )
+    )
+    has_more = len(items) > limit
+    page_items = items[:limit]
+    return {
+        "items": _page_dicts(db, page_items),
+        "next_cursor": _conversation_page_cursor(page_items[-1])
+        if has_more and page_items
+        else None,
+    }
 
 
 def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:

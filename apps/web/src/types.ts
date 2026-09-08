@@ -574,6 +574,10 @@ export interface AgentConversation {
   updated_at: string;
   last_connected_at?: string | null;
 }
+export interface AgentConversationPage {
+  items: AgentConversation[];
+  next_cursor?: string | null;
+}
 export interface AgentSessionWorkDirectory {
   id: string;
   display_name: string;

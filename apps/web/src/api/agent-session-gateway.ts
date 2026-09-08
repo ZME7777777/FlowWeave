@@ -10,6 +10,7 @@ import {
 import type {
   AgentAttachment,
   AgentConversation,
+  AgentConversationPage,
   AgentConversationContext,
   AgentConversationInputReadiness,
   AgentConversationReference,
@@ -69,7 +70,8 @@ const fullSessionFeatures: AgentSessionFeatures = {
 export interface AgentSessionApi {
   readonly defaultHost: () => Promise<AgentSessionHostDetails>;
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
-  readonly conversations: (hostId: AgentSessionHostId) => Promise<AgentConversation[]>;
+  readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
+  readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
   readonly providers: () => Promise<ModelProvider[]>;
   readonly capabilities: () => Promise<CapabilityAsset[]>;
@@ -127,6 +129,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     defaultHost: api.defaultAgentWorkspace,
     runtime: api.agentWorkspaceRuntime,
     conversations: api.agentConversations,
+    conversation: api.agentConversation,
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
     capabilities: api.capabilities,
@@ -183,7 +186,8 @@ export function flowNodeSessionGateway(
     api: {
       defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
-      conversations: () => nodeSessionApi.conversations(flowRunId, attemptId),
+      conversations: (_hostId, cursor) => nodeSessionApi.conversations(flowRunId, attemptId, cursor),
+      conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
       capabilities: api.capabilities,
