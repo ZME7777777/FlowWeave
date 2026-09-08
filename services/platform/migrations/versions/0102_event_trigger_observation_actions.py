@@ -1,6 +1,6 @@
 """restrict event trigger actions to non-mutating observers
 
-Revision ID: 0102_event_trigger_observation_actions
+Revision ID: 0102_event_trigger_observers
 Revises: 0101_event_trigger_deliveries
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0102_event_trigger_observation_actions"
+revision = "0102_event_trigger_observers"
 down_revision = "0101_event_trigger_deliveries"
 branch_labels = None
 depends_on = None
