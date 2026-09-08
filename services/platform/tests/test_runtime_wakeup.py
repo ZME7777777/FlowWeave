@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from flowweave.modules.gates.public import GateResult
 from flowweave.modules.orchestration.application import service as orchestration_service
 from flowweave.runtime.base import (
     RuntimeEventBatch,
@@ -804,5 +805,68 @@ def test_fourth_automatic_end_gate_failure_stops_automation_for_human_override(m
         (
             "AUTOMATIC_OUTPUT_REMEDIATION_REQUIRES_HUMAN",
             {"reason": "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED"},
+        ),
+    ]
+
+
+def test_automatic_gate_execution_error_stops_without_output_remediation(monkeypatch):
+    """A technical gate error is not evidence that the output contract failed."""
+
+    attempt = SimpleNamespace(id="attempt-1", node_run_id="node-run-1", state_version=8)
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
+    run = SimpleNamespace(id="run-1", run_mode="AUTOMATIC", state="ACTIVE")
+    events: list[tuple[str, dict[str, object]]] = []
+    remediation_calls: list[object] = []
+    prepared = SimpleNamespace(
+        policy={"id": "gate-1", "position": 0},
+        execution_no=1,
+        plan=SimpleNamespace(sidecar_binding_id=None),
+    )
+    result = GateResult(
+        "ERROR",
+        "Gate Agent configuration is unavailable",
+        ["Gate Agent configuration is unavailable"],
+        [],
+        {},
+        error_code="GATE_CONFIG_INVALID",
+    )
+
+    class Db:
+        def add(self, _item):
+            pass
+
+    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_remediate_gate_failure",
+        lambda *_args, **_kwargs: remediation_calls.append(True),
+    )
+
+    orchestration_service._record_gate_results(
+        Db(),
+        attempt,
+        "END",
+        {},
+        [(prepared, result)],
+        AttemptState.END_BLOCKED,
+    )
+
+    assert attempt.state == AttemptState.END_BLOCKED
+    assert attempt.error_code == "AUTOMATIC_GATE_EXECUTION_FAILED"
+    assert attempt.error_detail == "自动完成门禁执行失败，请检查门禁配置或稍后重试。"
+    assert attempt.state_version == 9
+    assert run.state == "WAITING_HUMAN"
+    assert remediation_calls == []
+    assert events == [
+        ("GATE_STAGE_FINISHED", {"stage": "END", "state": AttemptState.END_BLOCKED}),
+        (
+            "AUTOMATIC_GATE_EXECUTION_FAILED",
+            {"stage": "END", "gate_error_codes": ["GATE_CONFIG_INVALID"]},
         ),
     ]

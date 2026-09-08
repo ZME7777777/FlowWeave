@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-223`（自动门禁失败语义与操作反馈）
+> 下一可执行切片：`FR-224`（连续运行记录摘要 API）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3163,11 +3163,16 @@ Attempt 与同一正式完成身份，输出准备、Artifact 登记和 END Gate
 
 完成：共享工作台首次取得 `history_cursor` 后，以浏览器 `setTimeout(0)` 在首屏绘制后仅请求一页更早记录，并把该页与最新活动窗口合并显示。同一会话仅自动预取一次；仍有更早历史时继续显示逐页加载入口。该行为不读取或改变 Fork 输入，后端 Fork 仍只向 OpenHands 查询选中的正式事件及其执行边界。
 
-### FR-223 自动门禁失败语义与操作反馈 — PENDING
+### FR-223 自动门禁失败语义与操作反馈 — DONE
 
 依赖：`FR-221`。
 
 目标：将自动门禁执行／投递故障与真实输出合同或 Gate `FAIL` 区分展示，避免把平台异常错误呈现为“节点输出不符合要求”。
+
+完成：Gate `ERROR` 保留原始审计记录并进入 `AUTOMATIC_GATE_EXECUTION_FAILED`／`WAITING_HUMAN`，不再自动
+Fork 输出修订会话、消耗修订轮次或允许接受为输出风险；自动门禁投递失败、执行失败、输出修订投递失败、启动
+Gate `FAIL` 与完成 Gate `FAIL` 在工作台分别展示。只有真实完成 Gate `FAIL` 才会触发自动输出修订；技术故障
+可重试当前阶段。
 
 ### FR-224 连续运行记录摘要 API — PENDING
 
@@ -3205,6 +3210,7 @@ Attempt 级重复传输。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-223 | 自动 Gate `ERROR` 与 `FAIL` 语义、自动返工与工作台操作反馈定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web TypeScript typecheck/ESLint、Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动 Gate 执行或配置错误保留 `ERROR` 审计，进入 `AUTOMATIC_GATE_EXECUTION_FAILED`、`END_BLOCKED/START_BLOCKED` 与 `WAITING_HUMAN`，不再被误判为输出不符合要求、触发 Fork 或计入三次输出修订。自动 Gate 投递故障与输出修订投递故障也有独立标题和可重试操作；只有真实 `FAIL` 可接受为 Gate 风险或自动修订。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `14 passed`，Web `typecheck` 与 `lint` 通过；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-222 | Runtime Artifact completion ID 幂等与增长熔断定向回归；受影响 Python／迁移 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：迁移 `0103_runtime_artifact_proj_idem`（31 字符，兼容生产 `alembic_version.version_num VARCHAR(32)`）为 Runtime Artifact 新增正式 completion event ID 和 `(producer_attempt_id, field_key, completion_event_id)` 唯一约束；相同 completion ID 只复用既有版本并清理本次预准备文件，内容漂移 fail closed。默认十分钟内每个 Attempt/输出字段最多 4 个 Runtime 版本（初始输出加 3 轮正常自动修订）；达到上限即保留历史、清理本轮预准备文件、进入 `END_BLOCKED/RUNTIME_OUTPUT_VERSION_LIMIT_EXCEEDED` 并记录诊断事件。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `13 passed`；常规 pytest 仍会受 Testcontainers 前置条件和本机 Docker socket 缺失阻断。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-221 | 自动 Gate 冻结与终态投影定向回归；受影响 Python Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动计划冻结为每条 Gate 写入 UUID policy ID；历史缺失 ID 的冻结计划在分配 Runtime、写入 URL Artifact 或创建 NodeAttempt 前转入 `WAITING_HUMAN` 并记录可诊断事件，已存在的缺失 ID Attempt 也以 `GATE_POLICY_ID_MISSING` 受控失败。每次 Runtime 完成投影记录正式 OpenHands completion event ID；`END_BLOCKED` 再次读到同一 ID 时不恢复 Attempt、不准备输出、不写 Artifact、不派发 Gate，新的完成 ID 只有在已有完成投影审计后才可恢复。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `11 passed`；常规 pytest 受 Testcontainers 前置条件阻断（本机 Docker socket 不存在），未伪记为业务失败。唯一 Alembic head 为 `0102_event_trigger_observers`。 |
 | 2026-09-08 | FR-220 | 用户授权的远端 platform 发布与基础运行验证：commit 绑定源码包 SHA-256、linux/amd64 镜像、migration、服务健康、页面/深链/静态资源、指标与日志扫描 | DONE（以部署基础验证收口）：commit `7f5673f` 已发布到 `root@192.168.91.154:/opt/flowweave`；migration `Exited (0)`，API、stream-api、Runtime Provider healthy，Worker Up，所有共享平台进程运行新镜像 `594f0af…`。FlowWeave 页面、`/flowweave/agent`、静态资源与 FastGPT 登录均返回 200；三个 `/metrics` 端点均为 200，近期平台日志未见 ERROR/CRITICAL/traceback。未认证 API 的 401 为正常鉴权行为。Redis/Valkey、长压、真实 Runtime 故障矩阵与 p95/p99 转为运行中持续观测。 |

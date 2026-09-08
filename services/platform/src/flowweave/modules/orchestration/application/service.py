@@ -1731,6 +1731,31 @@ def _record_gate_results(
     )
     run = _run(db, node_run.flow_run_id)
     if run.run_mode == "AUTOMATIC":
+        execution_errors = [
+            result for _prepared, result in evaluations if result.decision == "ERROR"
+        ]
+        if execution_errors:
+            # A Gate ERROR means that FlowWeave could not execute or obtain a
+            # trustworthy judgement.  It is not evidence that the primary
+            # Agent's output is wrong, so never turn it into an output-repair
+            # fork or consume one of the bounded repair rounds.
+            error_codes = sorted(
+                {result.error_code for result in execution_errors if result.error_code}
+            )
+            gate_stage_label = "启动" if stage == "START" else "完成"
+            attempt.error_code = "AUTOMATIC_GATE_EXECUTION_FAILED"
+            attempt.error_detail = f"自动{gate_stage_label}门禁执行失败，请检查门禁配置或稍后重试。"
+            attempt.state_version += 1
+            run.state = FlowRunState.WAITING_HUMAN
+            _event(
+                db,
+                run.id,
+                "AUTOMATIC_GATE_EXECUTION_FAILED",
+                {"stage": stage, "gate_error_codes": error_codes},
+                node_run.id,
+                attempt.id,
+            )
+            return
         if next_state == AttemptState.WAITING_START_CONFIRMATION:
             _dispatch_automatic_start(db, attempt)
             return
@@ -6894,7 +6919,7 @@ def accept_gate_risk(
         .where(
             GateEvaluation.attempt_id == attempt_id,
             GateEvaluation.stage == "END",
-            GateEvaluation.decision.in_(("FAIL", "ERROR")),
+            GateEvaluation.decision == "FAIL",
         )
         .order_by(
             GateEvaluation.created_at.desc(),
@@ -6968,7 +6993,7 @@ def _gate_remediation_prompt(
         select(func.max(GateEvaluation.evaluation_attempt)).where(
             GateEvaluation.attempt_id == attempt.id,
             GateEvaluation.stage == "END",
-            GateEvaluation.decision.in_(("FAIL", "ERROR")),
+            GateEvaluation.decision == "FAIL",
         )
     )
     failed = list(
@@ -6977,7 +7002,7 @@ def _gate_remediation_prompt(
             .where(
                 GateEvaluation.attempt_id == attempt.id,
                 GateEvaluation.stage == "END",
-                GateEvaluation.decision.in_(("FAIL", "ERROR")),
+                GateEvaluation.decision == "FAIL",
                 GateEvaluation.evaluation_attempt == latest_failed_round,
             )
             .order_by(GateEvaluation.policy_position, GateEvaluation.evaluation_attempt)
@@ -7047,7 +7072,7 @@ def _automatic_gate_remediation_round(db: Session, attempt: NodeAttempt) -> int:
             select(func.max(GateEvaluation.evaluation_attempt)).where(
                 GateEvaluation.attempt_id == attempt.id,
                 GateEvaluation.stage == "END",
-                GateEvaluation.decision.in_(("FAIL", "ERROR")),
+                GateEvaluation.decision == "FAIL",
             )
         )
         or 0
@@ -7346,6 +7371,7 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
     retryable_error_codes = {
         None,
         "GATE_CONFIG_INVALID",
+        "AUTOMATIC_GATE_EXECUTION_FAILED",
         "AUTOMATIC_GATE_DELIVERY_FAILED",
         "AUTOMATIC_START_DELIVERY_FAILED",
         "AUTOMATIC_TRANSITION_DELIVERY_FAILED",
