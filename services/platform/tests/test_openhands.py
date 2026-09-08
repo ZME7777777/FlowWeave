@@ -2679,7 +2679,7 @@ def test_openhands_resolves_visible_finish_to_executed_fork_boundary(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
-    requests: list[tuple[str, str]] = []
+    requests: list[tuple[str, str, object | None]] = []
     finish_action = {
         "kind": "ActionEvent",
         "id": "finish-action",
@@ -2699,8 +2699,7 @@ def test_openhands_resolves_visible_finish_to_executed_fork_boundary(
     }
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
-        del kwargs
-        requests.append((method, path))
+        requests.append((method, path, kwargs.get("params")))
         if path.endswith("/events/finish-action"):
             return finish_action
         return {"items": [finish_action, finish_observation]}
@@ -2717,10 +2716,16 @@ def test_openhands_resolves_visible_finish_to_executed_fork_boundary(
         (
             "GET",
             "/api/conversations/10000000-0000-4000-8000-000000000002/events/finish-action",
+            None,
         ),
         (
             "GET",
             "/api/conversations/10000000-0000-4000-8000-000000000002/events/search",
+            {
+                "limit": 100,
+                "sort_order": "TIMESTAMP",
+                "page_id": "finish-action",
+            },
         ),
     ]
 

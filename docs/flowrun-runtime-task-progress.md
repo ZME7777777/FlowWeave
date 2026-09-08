@@ -3147,6 +3147,14 @@ Attempt 与同一正式完成身份，输出准备、Artifact 登记和 END Gate
 目标：为 Runtime 输出登记建立持久幂等边界，并在同一 Attempt／输出字段短时间异常增长时停止后续写入、保留
 诊断并进入可见故障态；不删除或静默合并历史 Artifact。
 
+### FR-227 Fork 完成边界分页定位修复 — DONE
+
+依赖：`FR-220`。修复长会话中 Fork 从全量事件历史第一页读取 FinishObservation、导致已持久化的完成边界被误判为缺失的问题。必须从用户选择的正式 FinishAction ID 作为 OpenHands 原生 `page_id` 锚点读取后续事件，并按既有 `action_id` / `tool_call_id` 正式关联唯一的 FinishObservation；不得扫描、猜测或重写历史事件。
+
+验收：OpenHands 适配器定向回归覆盖目标事件游标；受影响 Python Ruff／`py_compile`、定向 pytest、`git diff --check`、Alembic head 与任务状态唯一性通过。完成后提交独立 commit 并停止。
+
+完成：Fork 先按正式事件 ID 读取目标 FinishAction，再以同一 ID 作为 OpenHands 原生事件搜索锚点，仅在其后的窗口内按 `action_id` 与 `tool_call_id` 寻找唯一 FinishObservation。长会话不再受最早 100 条历史事件窗口限制；已持久化完成边界可正常传入原生 Fork，事件身份和历史数据均不改写。
+
 ### FR-223 自动门禁失败语义与操作反馈 — PENDING
 
 依赖：`FR-221`。

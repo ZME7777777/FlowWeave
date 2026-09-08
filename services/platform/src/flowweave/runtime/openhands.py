@@ -3728,9 +3728,15 @@ class OpenHandsRuntime:
         # fork still receives a complete, writable native branch.
         deadline = time.monotonic() + 2.0
         while True:
+            # Event search is paginated from the oldest event.  A long-lived
+            # conversation can therefore have the selected FinishAction and
+            # its formal observation far beyond the first page.  Anchor the
+            # search on the selected formal id so this loop examines only its
+            # following native events, rather than mistaking an older page for
+            # an unpersisted execution boundary.
             items, _ = self._events(
                 handle.conversation_id,
-                None,
+                event_id,
                 base_url=base_url,
                 session_api_key=session_api_key,
             )
