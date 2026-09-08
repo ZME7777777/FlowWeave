@@ -2052,9 +2052,7 @@ def add_node_conversation_capability(
 ) -> dict[str, Any]:
     """Load a governed capability through the same native marketplace lifecycle."""
 
-    attempt = _assert_node_session_writable(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id
-    )
+    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
@@ -2128,49 +2126,8 @@ def add_node_conversation_capability(
         )
     )
     binding.updated_at = now()
-    _sync_attempt_relaunch_preset(db, attempt, binding)
     db.flush()
     return _node_session_dict(db, binding)
-
-
-def _sync_attempt_relaunch_preset(
-    db: Session, attempt: NodeAttempt, binding: AgentConversationBinding
-) -> None:
-    """Carry live node-session choices into a later fresh Attempt.
-
-    ``agent_preset_json`` begins as the node launch snapshot, but rejecting a
-    failed Attempt intentionally creates a fresh Conversation from it.  The
-    active binding is the authority once a user changes the model or loads a
-    capability in that Conversation, so project those choices back into the
-    Attempt-local relaunch preset.  Node Definition and Flow Snapshot remain
-    immutable; this only affects a user-requested subsequent Attempt.
-    """
-
-    preset = dict(attempt.agent_preset_json or {})
-    preset["model_provider_id"] = binding.model_provider_id
-    preset["model_name"] = binding.model_name
-    if binding.reasoning_effort is None:
-        preset.pop("reasoning_effort", None)
-    else:
-        preset["reasoning_effort"] = binding.reasoning_effort
-    capabilities = list(
-        db.scalars(
-            select(AgentConversationCapability)
-            .where(AgentConversationCapability.binding_id == binding.id)
-            .order_by(AgentConversationCapability.position)
-        )
-    )
-    preset["capability_version_ids"] = [item.capability_version_id for item in capabilities]
-    preset["capabilities"] = [
-        {
-            "version_id": item.capability_version_id,
-            "capability_type": item.capability_type,
-            "capability_key": item.capability_key,
-            "digest": item.digest,
-        }
-        for item in capabilities
-    ]
-    attempt.agent_preset_json = preset
 
 
 def node_pending_confirmation(
@@ -2511,9 +2468,7 @@ def switch_node_conversation_model(
 ) -> dict[str, str | None]:
     """Apply and freeze a selected model for one scoped FlowRun session."""
 
-    attempt = _assert_node_session_writable(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id
-    )
+    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     binding = _binding_for_attempt(
         db,
         flow_run_id=flow_run_id,
@@ -2542,7 +2497,6 @@ def switch_node_conversation_model(
     binding.model_name = provider.model
     binding.reasoning_effort = provider.reasoning_effort
     binding.updated_at = now()
-    _sync_attempt_relaunch_preset(db, attempt, binding)
     finish(db)
     return {
         "model_provider_id": provider.provider_id,

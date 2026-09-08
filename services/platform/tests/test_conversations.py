@@ -18,10 +18,7 @@ from flowweave.modules.agent_sessions.application import (
     flow_node_workspace,
 )
 from flowweave.modules.agent_sessions.application.host import CREATE_SESSIONS, READ_SESSIONS
-from flowweave.modules.agent_sessions.public import (
-    AgentConversationBinding,
-    AgentConversationCapability,
-)
+from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.conversations.application import locator
 from flowweave.modules.conversations.application import service as conversation_service
@@ -203,80 +200,6 @@ def test_binding_accepts_record_scoped_runtime_workspace(
         )
         db.add(binding)
         db.flush()
-
-
-def test_node_attempt_relaunch_preset_tracks_live_model_and_capabilities(
-    db_session_factory: sessionmaker[Session],
-) -> None:
-    """A later Attempt must use session changes, not the node's initial preset."""
-
-    with db_session_factory() as db:
-        flow_run_id, runtime_session_id = _runtime_context(db)
-        binding = AgentConversationBinding(
-            workspace_id=None,
-            runtime_session_id=runtime_session_id,
-            host_kind="FLOW_NODE",
-            host_id=flow_run_id,
-            conversation_scope_id="attempt-1",
-            flow_run_id=flow_run_id,
-            node_run_id="node-run-1",
-            node_attempt_id="attempt-1",
-            working_directory="/runtime/workspace/project",
-            model_provider_id="market-provider",
-            model_name="market-model",
-            reasoning_effort="high",
-            openhands_conversation_id=str(uuid4()),
-            lifecycle="ACTIVE",
-            create_idempotency_key="attempt-runtime:attempt-1",
-        )
-        db.add(binding)
-        db.flush()
-        db.add(
-            AgentConversationCapability(
-                binding_id=binding.id,
-                capability_version_id="market-skill-version",
-                capability_type="SKILL",
-                capability_key="market-skill",
-                digest="a" * 64,
-                position=0,
-            )
-        )
-        db.flush()
-        attempt = SimpleNamespace(
-            agent_preset_json={
-                "model_provider_id": "hst",
-                "model_name": "hst-model",
-                "reasoning_effort": "low",
-                "capability_version_ids": ["hst-skill-version"],
-                "capabilities": [
-                    {
-                        "version_id": "hst-skill-version",
-                        "capability_type": "SKILL",
-                        "capability_key": "hst-skill",
-                        "digest": "b" * 64,
-                    }
-                ],
-                "node_context_enabled": True,
-            }
-        )
-
-        flow_node_conversations._sync_attempt_relaunch_preset(db, attempt, binding)
-
-        assert attempt.agent_preset_json == {
-            "model_provider_id": "market-provider",
-            "model_name": "market-model",
-            "reasoning_effort": "high",
-            "capability_version_ids": ["market-skill-version"],
-            "capabilities": [
-                {
-                    "version_id": "market-skill-version",
-                    "capability_type": "SKILL",
-                    "capability_key": "market-skill",
-                    "digest": "a" * 64,
-                }
-            ],
-            "node_context_enabled": True,
-        }
 
 
 def test_unbound_conversation_fails_closed(
