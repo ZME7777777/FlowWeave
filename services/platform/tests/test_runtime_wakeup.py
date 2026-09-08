@@ -810,6 +810,54 @@ def test_fourth_automatic_end_gate_failure_stops_automation_for_human_override(m
     ]
 
 
+def test_automatic_gate_pass_dispatches_the_durable_advance(monkeypatch):
+    """A successful END gate progresses through the durable worker boundary."""
+
+    attempt = SimpleNamespace(id="attempt-1", node_run_id="node-run-1", state_version=8)
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
+    run = SimpleNamespace(id="run-1", run_mode="AUTOMATIC", state="ACTIVE")
+    advances: list[str] = []
+    events: list[tuple[str, dict[str, object]]] = []
+    prepared = SimpleNamespace(
+        policy={"id": "gate-1", "position": 0},
+        execution_no=1,
+        plan=SimpleNamespace(sidecar_binding_id=None),
+    )
+    result = GateResult("PASS", "输出符合要求", [], [], {})
+
+    class Db:
+        def add(self, _item):
+            pass
+
+    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_dispatch_automatic_advance",
+        lambda _db, item: advances.append(item.id),
+    )
+
+    orchestration_service._record_gate_results(
+        Db(),
+        attempt,
+        "END",
+        {},
+        [(prepared, result)],
+        AttemptState.WAITING_ACCEPTANCE,
+    )
+
+    assert attempt.state == AttemptState.WAITING_ACCEPTANCE
+    assert advances == ["attempt-1"]
+    assert events == [
+        ("GATE_STAGE_FINISHED", {"stage": "END", "state": AttemptState.WAITING_ACCEPTANCE})
+    ]
+
+
 def test_automatic_gate_execution_error_stops_without_output_remediation(monkeypatch):
     """A technical gate error is not evidence that the output contract failed."""
 
@@ -916,3 +964,48 @@ def test_automatic_run_summary_never_contains_execution_history():
         "gate_evaluations",
         "automation_plan",
     }.isdisjoint(summary)
+
+
+def test_lightweight_run_detail_skips_artifact_queries(monkeypatch):
+    """Automatic-record detail must not re-read historical Artifact rows."""
+
+    run = SimpleNamespace(
+        id="automatic-1",
+        flow_definition_id="flow-1",
+        run_no=2,
+        name="连续记录",
+        run_mode="AUTOMATIC",
+        automation_plan_json={},
+        parent_flow_run_id="parent-1",
+        schedule_id=None,
+        schedule_occurrence_id=None,
+        state="COMPLETED",
+        row_version=4,
+        completion_mode=None,
+        environment_version_id=None,
+        lark_folder_token=None,
+        lark_folder_url=None,
+        active_snapshot_id=None,
+        started_at=datetime(2026, 9, 8, 9, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 9, 8, 9, 1, tzinfo=UTC),
+    )
+    scalar_calls = 0
+
+    class Db:
+        def get(self, *_args):
+            return None
+
+        def scalars(self, _statement):
+            nonlocal scalar_calls
+            scalar_calls += 1
+            return ()
+
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+
+    detail = orchestration_service.run_detail(Db(), run.id, include_artifacts=False)
+
+    assert detail["artifacts"] == []
+    assert detail["node_runs"] == []
+    # Snapshots and NodeRuns are the only list projections. A third query
+    # would be the prohibited run-level Artifact history read.
+    assert scalar_calls == 2

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-225`（连续运行详情按需加载与 Artifact 分页）
+> 下一可执行切片：`FR-230`（历史重复数据只读审计与受确认清理方案）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3205,12 +3205,30 @@ Attempt 级重复传输。
 自动运行的输出页读取当前 Attempt 的一页元数据；草稿编辑仅按已绑定 Artifact ID 读取所需输入元数据。预览和
 下载继续走已有的单 Artifact content 端点。
 
-### FR-226 自动运行回归与历史重复数据处置 — PENDING
+### FR-226 自动运行回归验收 — DONE
 
 依赖：`FR-222`–`FR-225`。
 
-目标：完成自动门禁、终态恢复、列表轮询和性能回归；为已受影响运行输出只读审计与受确认的精确清理方案，禁止
-未经确认删除历史 Artifact 或工作区数据。
+目标：完成自动门禁、终态恢复、摘要列表轮询、按需详情和 Artifact 分页的端到端回归；验证历史 Artifact
+不会因读路径、轮询或失败恢复被重复投影、重复写入或隐式删除。
+
+验收：覆盖 Gate `PASS`／`FAIL`／`ERROR`、自动终态恢复、摘要响应边界、按需详情、分页 Artifact 作用域以及
+历史 Artifact 保留；禁止本切片调用任何删除 Artifact、工作区或自动记录的写路径。
+
+完成：补齐自动 Gate `PASS` 的持久推进断言，并回归 `FAIL` 的第三次修订与第四次转人工、`ERROR` 的受控
+阻断、原生运行及完成事件对 `END_BLOCKED` 的恢复，以及同一正式完成身份的幂等保护。摘要 DTO、按需轻量详情
+和分页 Artifact 元数据只经读取路径验证；测试不调用 Artifact、工作区或自动记录删除接口，历史 Artifact 保持不变。
+
+### FR-230 历史重复数据只读审计与受确认清理方案 — READY
+
+依赖：`FR-226`。
+
+目标：为受历史重复 Artifact 影响的自动运行提供只读、可分页且作用域受限的审计报告，精确列出候选重复项、
+引用关系、工作区影响和不可自动删除原因；仅生成待用户确认的清理计划，禁止该切片删除 Artifact、工作区、
+Attempt 或 FlowRun。
+
+验收：审计不写入业务数据、不读取 Artifact 内容、不触发 Runtime、取消或删除；跨 FlowRun／Attempt 作用域
+请求 fail closed。实际清理必须另建依赖本计划且要求用户显式确认的独立切片。
 
 ## 7. 恢复工作检查表
 
@@ -3227,6 +3245,7 @@ Attempt 级重复传输。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-226 | 自动 Gate `PASS`／`FAIL`／`ERROR`、终态恢复、完成身份幂等、摘要／轻量详情读取定向回归；受影响 Python Ruff format/check、`py_compile`；Web ESLint/TypeScript typecheck；Alembic head、任务状态唯一性与 `git diff --check` | PASS：`test_runtime_wakeup.py` 无 Docker fixture 模式 `17 passed`。Gate `PASS` 仅跨越持久 advance worker 边界；`FAIL` 仍只在三轮修订后转人工；`ERROR` 不伪装为输出失败或触发修订。旧终态不会重放输出或新增 Artifact，新正式事件才会恢复投影。连续记录 Rail 仍只读取摘要，详情及 Artifact 元数据均按需读取；本切片未调用 Artifact、工作区或自动记录删除路径。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-225 | 自动运行轻量详情／Artifact 分页静态回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web ESLint/TypeScript typecheck；Alembic heads、任务状态唯一性与 `git diff --check` | PASS：连续运行 Rail 仅轮询摘要，选中后才请求受父 FlowRun 约束的详情；详情不再返回运行级或 Attempt 级完整 Artifact 数组。新增受父运行、Attempt 和可选精确 Artifact ID 作用域验证的分页元数据端点，元数据不返回 `storage_key`/`inline_content`，内容仍仅按单 Artifact 显式读取。自动运行输出页按当前 Attempt 分页，草稿编辑仅按已绑定 ID 读取输入元数据。`test_runtime_wakeup.py` 无 Docker 模式 15 passed，Web ESLint/typecheck 通过；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-229 | Web TypeScript typecheck/ESLint；OpenHands 运行列表分页定向 pytest；Ruff format/check；`git diff --check` 与任务状态唯一性 | PASS：每条已加载会话均由原生 `execution_status` 驱动旋转圆环，悬停不再隐藏；运行时不显示删除按钮。运行列表继续通过单个 OpenHands `status=running` 分页快照标记全部 ID，不恢复逐会话轮询。Web typecheck/ESLint 通过，`test_openhands.py` 为 `108 passed`。 |
 | 2026-09-08 | FR-224 | 连续运行摘要 DTO 定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web ESLint、Alembic head、任务状态唯一性与 `git diff --check` | PASS：新增 `/flow-runs/{parent_run_id}/automatic-runs/summaries`，仅返回运行标识、状态、定时信息、计划/就绪计数和 NodeRun 进度计数；聚合查询不加载 Artifact、Snapshot、NodeRun 详情、Attempt 或 Gate 记录，原文 `automation_plan` 不进入摘要。`test_runtime_wakeup.py` 无 Docker 模式 `15 passed`，Web ESLint 通过。Web TypeScript typecheck 仍被既有 `AgentSessionWorkbench.tsx:2776` 缺少 `running` 属性诊断阻断；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
