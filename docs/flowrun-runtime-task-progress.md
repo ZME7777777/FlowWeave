@@ -3157,11 +3157,17 @@ Attempt 与同一正式完成身份，输出准备、Artifact 登记和 END Gate
 
 ### FR-228 Agent 会话首屏与空闲历史预取 — DONE
 
-依赖：`FR-211`、`FR-227`。共享 Agent 工作台必须优先展示 OpenHands 最新活动分支窗口；浏览器在首屏绘制后仅空闲请求一页更早正式事件，并继续保留用户触发的逐页“加载更早记录”。事件全量与历史唯一保留在 OpenHands，FlowWeave 不在后台补写、缓存或重建会话。运行中、直接会话与节点会话均适用。UI 的加载窗口不得参与 Fork 边界判断；Fork 只使用用户选择的正式事件 ID 和 OpenHands 正式关联字段。
+依赖：`FR-211`、`FR-227`。共享 Agent 工作台必须优先展示 OpenHands 最新活动分支窗口；浏览器在首屏绘制后异步读取全部更早正式事件页，不显示用户触发的“加载更早记录”。事件全量与历史唯一保留在 OpenHands，FlowWeave 不在后台补写、缓存或重建会话。运行中、直接会话与节点会话均适用。UI 的加载窗口不得参与 Fork 边界判断；Fork 只使用用户选择的正式事件 ID 和 OpenHands 正式关联字段。
 
 验收：Web TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性通过；不改变 Runtime 事件身份或任何 OpenHands 历史数据。
 
-完成：共享工作台首次取得 `history_cursor` 后，以浏览器 `setTimeout(0)` 在首屏绘制后仅请求一页更早记录，并把该页与最新活动窗口合并显示。同一会话仅自动预取一次；仍有更早历史时继续显示逐页加载入口。该行为不读取或改变 Fork 输入，后端 Fork 仍只向 OpenHands 查询选中的正式事件及其执行边界。
+完成：共享工作台首次取得 `history_cursor` 后，以浏览器 `setTimeout(0)` 在首屏绘制后逐页读取全部更早记录，并在每页间让出浏览器事件循环；不会建立服务端历史副本，也不显示人工加载入口。该行为不读取或改变 Fork 输入，后端 Fork 仍只向 OpenHands 查询选中的正式事件及其执行边界。
+
+### FR-229 会话列表原生运行态圆环修复 — DONE
+
+依赖：`FR-210`、`FR-212`。每个已加载列表项均按 OpenHands 原生运行状态显示持续旋转的圆环，不能只依赖当前选中会话的本地发送状态。圆环在悬停时必须继续可见；运行会话不显示删除入口，避免替代或遮挡运行提示。运行状态读取继续为一条原生分页 `status=running` 列表快照，不能恢复逐会话 readiness 轮询。
+
+完成：列表项复用全量运行态归一化判断，当前会话仅在一次发送/暂停操作与下一次列表快照之间使用本地状态过渡。OpenHands 运行列表的分页回归覆盖全部运行 conversation ID；页面在可见时继续以 10 秒边界刷新该单个快照。
 
 ### FR-223 自动门禁失败语义与操作反馈 — DONE
 
@@ -3214,6 +3220,7 @@ Attempt 级重复传输。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-229 | Web TypeScript typecheck/ESLint；OpenHands 运行列表分页定向 pytest；Ruff format/check；`git diff --check` 与任务状态唯一性 | PASS：每条已加载会话均由原生 `execution_status` 驱动旋转圆环，悬停不再隐藏；运行时不显示删除按钮。运行列表继续通过单个 OpenHands `status=running` 分页快照标记全部 ID，不恢复逐会话轮询。Web typecheck/ESLint 通过，`test_openhands.py` 为 `108 passed`。 |
 | 2026-09-08 | FR-224 | 连续运行摘要 DTO 定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web ESLint、Alembic head、任务状态唯一性与 `git diff --check` | PASS：新增 `/flow-runs/{parent_run_id}/automatic-runs/summaries`，仅返回运行标识、状态、定时信息、计划/就绪计数和 NodeRun 进度计数；聚合查询不加载 Artifact、Snapshot、NodeRun 详情、Attempt 或 Gate 记录，原文 `automation_plan` 不进入摘要。`test_runtime_wakeup.py` 无 Docker 模式 `15 passed`，Web ESLint 通过。Web TypeScript typecheck 仍被既有 `AgentSessionWorkbench.tsx:2776` 缺少 `running` 属性诊断阻断；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-223 | 自动 Gate `ERROR` 与 `FAIL` 语义、自动返工与工作台操作反馈定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web TypeScript typecheck/ESLint、Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动 Gate 执行或配置错误保留 `ERROR` 审计，进入 `AUTOMATIC_GATE_EXECUTION_FAILED`、`END_BLOCKED/START_BLOCKED` 与 `WAITING_HUMAN`，不再被误判为输出不符合要求、触发 Fork 或计入三次输出修订。自动 Gate 投递故障与输出修订投递故障也有独立标题和可重试操作；只有真实 `FAIL` 可接受为 Gate 风险或自动修订。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `14 passed`，Web `typecheck` 与 `lint` 通过；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-222 | Runtime Artifact completion ID 幂等与增长熔断定向回归；受影响 Python／迁移 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：迁移 `0103_runtime_artifact_proj_idem`（31 字符，兼容生产 `alembic_version.version_num VARCHAR(32)`）为 Runtime Artifact 新增正式 completion event ID 和 `(producer_attempt_id, field_key, completion_event_id)` 唯一约束；相同 completion ID 只复用既有版本并清理本次预准备文件，内容漂移 fail closed。默认十分钟内每个 Attempt/输出字段最多 4 个 Runtime 版本（初始输出加 3 轮正常自动修订）；达到上限即保留历史、清理本轮预准备文件、进入 `END_BLOCKED/RUNTIME_OUTPUT_VERSION_LIMIT_EXCEEDED` 并记录诊断事件。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `13 passed`；常规 pytest 仍会受 Testcontainers 前置条件和本机 Docker socket 缺失阻断。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |

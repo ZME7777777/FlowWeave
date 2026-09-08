@@ -363,7 +363,7 @@ function WorkspaceConversationRow({
       <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
     </button>
     {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
-    {onDelete && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!runtimeWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
+    {onDelete && !running && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!runtimeWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
   </div>;
 }
 
@@ -2781,7 +2781,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const workDirectories = workDirectoriesQuery.data?.items ?? [];
   const conversationRow = (item: AgentConversation) => {
-    const running = item.execution_status === 'running' || (item.id === selected?.id && (selectedConversationRunning || isGenerating));
+    // The list projection is the native OpenHands running snapshot for every
+    // visible conversation. Local state only bridges the selected row between
+    // a send/interrupt action and the next bounded list refresh.
+    const running = conversationIsRunning(item.execution_status)
+      || (item.id === selected?.id && (selectedConversationRunning || isGenerating));
     return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} runtimeWritable={runtimeWritable} removing={remove.isPending} deleteDisabled={running} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const openCurrentDirectoryDraft = () => {

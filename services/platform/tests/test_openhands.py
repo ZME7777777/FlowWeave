@@ -260,6 +260,46 @@ def test_openhands_input_readiness_returns_atomic_native_execution_state(
     assert snapshot.execution_status == execution_status
 
 
+def test_openhands_lists_every_native_running_conversation(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[dict[str, str | int]] = []
+    pages = iter(
+        (
+            {
+                "items": [{"id": "conversation-running-1"}],
+                "next_page_id": "next-running-page",
+            },
+            {
+                "items": [
+                    {"id": "conversation-running-2"},
+                    {"id": "conversation-running-3"},
+                ],
+                "next_page_id": None,
+            },
+        )
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        assert method == "GET"
+        assert path == "/api/conversations"
+        params = kwargs.get("params")
+        assert isinstance(params, dict)
+        requests.append(params)
+        return next(pages)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    assert runtime.running_conversation_ids(_handle()) == {
+        "conversation-running-1",
+        "conversation-running-2",
+        "conversation-running-3",
+    }
+    assert requests == [
+        {"status": "running", "limit": 100},
+        {"status": "running", "limit": 100, "page_id": "next-running-page"},
+    ]
+
+
 def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_settings):
     runtime = OpenHandsRuntime(openhands_settings)
     request = replace(
