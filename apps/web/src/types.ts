@@ -386,6 +386,10 @@ export interface FlowRun extends FlowRunSummary {
   schedule_occurrence_id?: string | null;
   environment_version?: EnvironmentVersion | null;
   lark_folder_token: string | null; lark_folder_url: string | null;
+  automatic_block?: {
+    code: 'AUTOMATIC_PLAN_GATE_ID_MISSING';
+    gates: Array<{ node_key: string; position: number }>;
+  } | null;
   progress: { accepted: number; terminal: number; active: number };
   snapshots: RunSnapshot[]; node_runs: NodeRun[]; artifacts: ArtifactVersion[];
 }

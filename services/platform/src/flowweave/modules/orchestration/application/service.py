@@ -109,6 +109,7 @@ from flowweave.shared.schemas import (
     AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
+    AutomaticRunLegacyPlanRecoveryWrite,
     AutomaticRunStartWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
@@ -1487,6 +1488,34 @@ def _automatic_plan_gate_id_issues(node_plans: dict[str, Any]) -> list[dict[str,
             ):
                 issues.append({"node_key": str(node_key), "position": position})
     return issues
+
+
+def _upgrade_legacy_automatic_plan_gate_ids(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Add IDs only to mutable copies of legacy frozen automatic plans.
+
+    Gate identity is immutable once execution or sidecar audit exists. This
+    helper is consequently used only for a newly copied draft or for the
+    explicit zero-NodeRun recovery command below.
+    """
+
+    upgraded: list[dict[str, Any]] = []
+    node_plans = plan.get("node_plans")
+    if not isinstance(node_plans, dict):
+        return upgraded
+    for node_key, node_plan in node_plans.items():
+        if not isinstance(node_plan, dict):
+            continue
+        gates = node_plan.get("gates")
+        if not isinstance(gates, list):
+            continue
+        for position, gate in enumerate(gates):
+            if not isinstance(gate, dict):
+                continue
+            if isinstance(gate.get("id"), str) and gate["id"].strip():
+                continue
+            gate["id"] = str(uuid4())
+            upgraded.append({"node_key": str(node_key), "position": position})
+    return upgraded
 
 
 def _completion_event_id(result: RuntimeResult, batch_cursor: str | None = None) -> str | None:
@@ -4035,6 +4064,7 @@ def copy_automatic_run_draft(
         plan["artifact_ids"] = copied_ids
         node_plans[str(node_key)] = plan
     source_plan["node_plans"] = node_plans
+    upgraded_gate_ids = _upgrade_legacy_automatic_plan_gate_ids(source_plan)
     source_plan["status"] = "DRAFT"
     copied.automation_plan_json = source_plan
     hold_snapshot_memory_references(
@@ -4046,6 +4076,13 @@ def copy_automatic_run_draft(
         "AUTOMATIC_RUN_DRAFT_COPIED",
         {"source_run_id": source.id, "snapshot_version": snapshot.version},
     )
+    if upgraded_gate_ids:
+        _event(
+            db,
+            copied.id,
+            "AUTOMATIC_RUN_COPY_GATE_IDS_UPGRADED",
+            {"gates": upgraded_gate_ids, "source_run_id": source.id},
+        )
     finish(db)
     return run_detail(db, copied.id)
 
@@ -4170,6 +4207,101 @@ def start_automatic_run(
         run.id,
         "AUTOMATIC_RUN_PLAN_FROZEN",
         {"start_node_key": plan.get("start_node_key"), "row_version": run.row_version},
+    )
+    finish(db)
+    return run_detail(db, run.id)
+
+
+def upgrade_legacy_automatic_run_plan(
+    db: Session,
+    run_id: str,
+    payload: AutomaticRunLegacyPlanRecoveryWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Repair the one legacy plan shape that FR-221 intentionally blocked.
+
+    The command is deliberately unavailable for ordinary human-blocked
+    records. A pre-FR-221 missing-ID event plus an untouched frozen plan proves
+    that generating stable policy IDs cannot rewrite existing execution audit.
+    """
+
+    run = _locked_run(db, run_id)
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if (
+            existing.flow_run_id != run.id
+            or existing.action_type != "UPGRADE_LEGACY_AUTOMATIC_PLAN"
+        ):
+            raise conflict(
+                "automatic legacy-plan recovery idempotency key is already used",
+                flow_run_id=existing.flow_run_id,
+            )
+        if existing.payload_json.get("expected_row_version") != payload.expected_row_version:
+            raise conflict(
+                "automatic legacy-plan recovery request does not match the idempotent request",
+                flow_run_id=run.id,
+            )
+        return run_detail(db, run.id)
+    if run.run_mode != "AUTOMATIC" or run.state != FlowRunState.WAITING_HUMAN:
+        raise illegal("only a blocked automatic run can upgrade a legacy plan", state=run.state)
+    if run.row_version != payload.expected_row_version:
+        raise conflict(
+            "automatic run was modified",
+            expected=payload.expected_row_version,
+            actual=run.row_version,
+        )
+    plan = copy.deepcopy(dict(run.automation_plan_json or {}))
+    if plan.get("status") != "FROZEN":
+        raise illegal("only a frozen automatic plan can be upgraded", state=run.state)
+    if db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1)) is not None:
+        raise illegal(
+            "legacy plan upgrade is unavailable after node execution starts", state=run.state
+        )
+    blocked_event = db.scalar(
+        select(RunEvent.cursor)
+        .where(
+            RunEvent.flow_run_id == run.id,
+            RunEvent.node_run_id.is_(None),
+            RunEvent.attempt_id.is_(None),
+            RunEvent.event_type == "AUTOMATIC_PLAN_GATE_ID_MISSING",
+        )
+        .limit(1)
+    )
+    if blocked_event is None:
+        raise illegal("automatic run was not blocked by a legacy gate identity", state=run.state)
+    upgraded_gate_ids = _upgrade_legacy_automatic_plan_gate_ids(plan)
+    remaining_issues = _automatic_plan_gate_id_issues(
+        cast(dict[str, Any], plan.get("node_plans") or {})
+    )
+    if not upgraded_gate_ids or remaining_issues:
+        raise DomainError(
+            "AUTOMATIC_LEGACY_PLAN_RECOVERY_UNAVAILABLE",
+            "The frozen automatic plan cannot be safely upgraded",
+            409,
+            {"remaining_gates": remaining_issues},
+        )
+    _action(
+        db,
+        run.id,
+        "UPGRADE_LEGACY_AUTOMATIC_PLAN",
+        idempotency_key,
+        {"expected_row_version": payload.expected_row_version, "gates": upgraded_gate_ids},
+    )
+    run.automation_plan_json = plan
+    run.state = FlowRunState.ACTIVE
+    run.row_version += 1
+    enqueue(
+        db,
+        task_type="START_AUTOMATIC_RUN",
+        aggregate_type="FLOW_RUN",
+        aggregate_id=run.id,
+        idempotency_key=f"start-automatic-run:{run.id}:v{run.row_version}",
+    )
+    _event(
+        db,
+        run.id,
+        "AUTOMATIC_PLAN_GATE_IDS_UPGRADED",
+        {"gates": upgraded_gate_ids, "row_version": run.row_version},
     )
     finish(db)
     return run_detail(db, run.id)
@@ -8696,6 +8828,38 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         x.state in {NodeRunState.ACCEPTED, NodeRunState.FAILED, NodeRunState.CANCELLED}
         for x in node_runs
     )
+    automatic_block = None
+    if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.WAITING_HUMAN:
+        blocked_event = db.scalar(
+            select(RunEvent)
+            .where(
+                RunEvent.flow_run_id == run.id,
+                RunEvent.node_run_id.is_(None),
+                RunEvent.attempt_id.is_(None),
+            )
+            .order_by(RunEvent.cursor.desc())
+            .limit(1)
+        )
+        if (
+            blocked_event is not None
+            and blocked_event.event_type == "AUTOMATIC_PLAN_GATE_ID_MISSING"
+        ):
+            raw_gates = blocked_event.payload_json.get("gates")
+            gates = (
+                [
+                    {"node_key": str(item["node_key"]), "position": int(item["position"])}
+                    for item in raw_gates
+                    if isinstance(item, dict)
+                    and isinstance(item.get("node_key"), str)
+                    and isinstance(item.get("position"), int)
+                ]
+                if isinstance(raw_gates, list)
+                else []
+            )
+            automatic_block = {
+                "code": "AUTOMATIC_PLAN_GATE_ID_MISSING",
+                "gates": gates,
+            }
     return {
         "id": run.id,
         "flow_definition_id": run.flow_definition_id,
@@ -8712,6 +8876,7 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         "schedule_name": schedule.name if schedule else None,
         "schedule_occurrence_id": run.schedule_occurrence_id,
         "state": run.state,
+        "automatic_block": automatic_block,
         "row_version": run.row_version,
         "completion_mode": run.completion_mode,
         "environment_version_id": run.environment_version_id,

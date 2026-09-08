@@ -519,6 +519,12 @@ class AutomaticRunStartWrite(ApiModel):
     expected_row_version: int = Field(ge=1)
 
 
+class AutomaticRunLegacyPlanRecoveryWrite(ApiModel):
+    """Authorize the narrow repair of a pre-FR-221 frozen automatic plan."""
+
+    expected_row_version: int = Field(ge=1)
+
+
 class AutomaticRunCopyWrite(ApiModel):
     """Name an independent draft copied from one frozen automatic run."""
 

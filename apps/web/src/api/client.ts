@@ -434,6 +434,8 @@ export const api = {
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/copy`, json('POST', { name }))),
   startAutomaticRecord: async (runId: string, recordId: string, expected_row_version: number) =>
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/start`, json('POST', { expected_row_version }, true))),
+  upgradeAutomaticRecordLegacyPlan: async (runId: string, recordId: string, expected_row_version: number) =>
+    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/upgrade-legacy-plan`, json('POST', { expected_row_version }, true))),
   deleteAutomaticRecord: (runId: string, recordId: string) =>
     request<void>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   deleteRun: (id: string) => request<void>(`/flow-runs/${id}`, json('DELETE')),

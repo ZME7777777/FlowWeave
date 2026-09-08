@@ -3244,6 +3244,12 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 
 完成：服务端列表和分页 cursor 改为 `created_at DESC, id DESC`，前端在已加载页面合并后按同一稳定键显示。运行圆环和未读点均位于会话行左侧状态位，互斥呈现；删除按钮仍仅在闲置会话悬停时显示。
 
+### FR-232 历史连续运行门禁标识恢复 — DONE
+
+依赖：`FR-221`。修复 FR-221 对旧冻结计划的安全阻断缺少用户恢复闭环的问题。复制任何旧连续运行计划时，新的可编辑草稿必须补齐缺失 Gate ID；已因 `AUTOMATIC_PLAN_GATE_ID_MISSING` 阻断的历史记录，只有仍为冻结计划、`WAITING_HUMAN`、零 NodeRun 且版本匹配时，才能显式补齐 ID 并重新投递启动任务。完整记录详情必须投影 FlowRun 级阻断代码及节点／门禁位置；工作台针对该精确阻断显示原因和“升级计划并重新启动”，不得将其他人工处理状态误导为可恢复。
+
+完成：复制草稿和受审计恢复命令均只添加缺失 Gate ID，不改写已存在的执行、会话或产物。恢复命令记录 `UPGRADE_LEGACY_AUTOMATIC_PLAN` 人工操作与升级事件，按新的行版本重新投递 `START_AUTOMATIC_RUN`；任何已有 NodeRun、非历史缺失 ID 事件、非冻结或非阻断状态均 fail closed。连续运行详情新增轻量 `automatic_block` 投影，前端显示具体节点和第几条门禁，并要求确认后执行受父 FlowRun 作用域限制的恢复命令。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3259,6 +3265,7 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-232 | 历史 Gate ID 复制／阻断／受控恢复定向 pytest；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck、ESLint；`git diff --check`、Alembic head 与任务状态唯一性 | PASS（静态）：旧计划复制会补齐 Gate ID；仅历史缺失 ID、冻结、零 NodeRun 的 `WAITING_HUMAN` 记录可经版本化命令重新投递启动；详情和工作台显示 FlowRun 级原因与节点／门禁位置。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-231 | Web TypeScript typecheck、ESLint；受影响 Python Ruff check、`py_compile` 与 `git diff --check`；会话列表创建时间顺序定向 pytest | PASS（静态）：新消息更新 `updated_at` 后仍不改变会话列表与分页次序；运行态和完成未读态在同一左侧状态位互斥显示。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。 |
 | 2026-09-08 | FR-230 | 历史 Runtime Artifact 候选只读审计与受确认清理计划定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest；Alembic head、任务状态唯一性与 `git diff --check` | PASS：新增嵌套 `artifact-audit` 分页读取端点，仅投影候选 Artifact 元数据、Attempt 输入绑定、冻结计划引用和工作区计数；不读取内容或存储键、不触发 Runtime、任务、取消或删除。相同正式 completion identity 仅作为重放审计证据，仍输出 `CONFIRMATION_REQUIRED` 与 `NO_ACTION_IN_THIS_RELEASE`，内容哈希相同但 completion identity 不同／缺失时仅标为历史核验线索。跨 FlowRun Attempt 关联受限并 fail closed。`test_runtime_wakeup.py` 无 Docker fixture 模式 `18 passed`；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-226 | 自动 Gate `PASS`／`FAIL`／`ERROR`、终态恢复、完成身份幂等、摘要／轻量详情读取定向回归；受影响 Python Ruff format/check、`py_compile`；Web ESLint/TypeScript typecheck；Alembic head、任务状态唯一性与 `git diff --check` | PASS：`test_runtime_wakeup.py` 无 Docker fixture 模式 `17 passed`。Gate `PASS` 仅跨越持久 advance worker 边界；`FAIL` 仍只在三轮修订后转人工；`ERROR` 不伪装为输出失败或触发修订。旧终态不会重放输出或新增 Artifact，新正式事件才会恢复投影。连续记录 Rail 仍只读取摘要，详情及 Artifact 元数据均按需读取；本切片未调用 Artifact、工作区或自动记录删除路径。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |

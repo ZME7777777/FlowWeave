@@ -73,6 +73,7 @@ from flowweave.modules.orchestration.application.service import (
     sync_snapshot,
     trigger_flow_run_schedule,
     update_automatic_run_draft,
+    upgrade_legacy_automatic_run_plan,
 )
 
 recover_runtime_deliveries = recover_runtime_tasks
@@ -152,4 +153,5 @@ __all__ = (
     "sync_snapshot",
     "submit_manual_outputs",
     "update_automatic_run_draft",
+    "upgrade_legacy_automatic_run_plan",
 )

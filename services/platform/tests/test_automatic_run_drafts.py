@@ -12,6 +12,7 @@ from flowweave.shared.models import (
     FlowRunRuntimeAllocation,
     NodeAttempt,
     NodeRun,
+    RunEvent,
     TaskState,
 )
 
@@ -266,6 +267,116 @@ def test_automatic_run_draft_freezes_a_stable_identity_for_each_gate(client):
     frozen_gate = response.json()["automation_plan"]["node_plans"]["first"]["gates"][0]
     assert UUID(frozen_gate["id"])
     assert frozen_gate["stage"] == "END"
+
+
+def test_legacy_automatic_gate_plan_copy_and_controlled_restart(client, db_session_factory):
+    flow = _create_flow(client)
+    provider_id = _automatic_model_provider_id(client)
+    first_plan = _node_plan(
+        client,
+        "执行第一个节点",
+        input_url="https://example.com/source",
+        model_provider_id=provider_id,
+        model_name="gpt-auto",
+    )
+    first_plan["gates"] = [
+        {
+            "stage": "END",
+            "position": 0,
+            "gate_type": "PROMPT",
+            "config": {"prompt": "检查输出是否符合要求"},
+            "agent_preset": {
+                "model_provider_id": provider_id,
+                "model_name": "gpt-auto",
+            },
+        }
+    ]
+    created = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": first_plan,
+                "second": _node_plan(client, "执行第二个节点"),
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()
+    started = client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/start",
+        json={"expected_row_version": draft["row_version"]},
+        headers={"Idempotency-Key": "legacy-gate-start"},
+    )
+    assert started.status_code == 200, started.text
+
+    with db_session_factory() as db:
+        run = db.get(FlowRun, draft["id"])
+        assert run is not None
+        plan = dict(run.automation_plan_json or {})
+        gate = plan["node_plans"]["first"]["gates"][0]
+        gate.pop("id")
+        run.automation_plan_json = plan
+        db.commit()
+
+    with db_session_factory() as db:
+        orchestration_service.process_start_automatic_run(db, draft["id"])
+
+    blocked = client.get(f"/api/v1/flow-runs/{draft['id']}")
+    assert blocked.status_code == 200, blocked.text
+    blocked_detail = blocked.json()
+    assert blocked_detail["state"] == "WAITING_HUMAN"
+    assert blocked_detail["node_runs"] == []
+    assert blocked_detail["automatic_block"] == {
+        "code": "AUTOMATIC_PLAN_GATE_ID_MISSING",
+        "gates": [{"node_key": "first", "position": 0}],
+    }
+
+    copied = client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/copy",
+        json={"name": "旧计划副本"},
+    )
+    assert copied.status_code == 201, copied.text
+    copied_gate = copied.json()["automation_plan"]["node_plans"]["first"]["gates"][0]
+    assert UUID(copied_gate["id"])
+
+    recovered = client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/upgrade-legacy-plan",
+        json={"expected_row_version": blocked_detail["row_version"]},
+        headers={"Idempotency-Key": "recover-legacy-gate"},
+    )
+    assert recovered.status_code == 200, recovered.text
+    recovered_detail = recovered.json()
+    assert recovered_detail["state"] == "ACTIVE"
+    assert recovered_detail["automatic_block"] is None
+    assert UUID(recovered_detail["automation_plan"]["node_plans"]["first"]["gates"][0]["id"])
+
+    with db_session_factory() as db:
+        tasks = list(
+            db.scalars(
+                select(BackgroundTask).where(
+                    BackgroundTask.aggregate_id == draft["id"],
+                    BackgroundTask.task_type == "START_AUTOMATIC_RUN",
+                )
+            )
+        )
+        assert {task.idempotency_key for task in tasks} >= {
+            f"start-automatic-run:{draft['id']}:v{recovered_detail['row_version']}"
+        }
+        events = list(db.scalars(select(RunEvent).where(RunEvent.flow_run_id == draft["id"])))
+        assert "AUTOMATIC_PLAN_GATE_IDS_UPGRADED" in {event.event_type for event in events}
+        orchestration_service.process_start_automatic_run(db, draft["id"])
+
+    restarted = client.get(f"/api/v1/flow-runs/{draft['id']}").json()
+    assert restarted["state"] == "ACTIVE"
+    assert [item["flow_node_snapshot_key"] for item in restarted["node_runs"]] == ["first"]
+
+    rejected = client.post(
+        f"/api/v1/automatic-runs/{draft['id']}/upgrade-legacy-plan",
+        json={"expected_row_version": recovered_detail["row_version"]},
+    )
+    assert rejected.status_code == 409, rejected.text
 
 
 def test_automatic_run_draft_can_be_edited_but_not_manually_activated(client, db_session_factory):

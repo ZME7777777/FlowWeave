@@ -20,6 +20,7 @@ from flowweave.shared.schemas import (
     AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
+    AutomaticRunLegacyPlanRecoveryWrite,
     AutomaticRunStartWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
@@ -223,6 +224,28 @@ async def start_nested_automatic_run(
     )
 
 
+@router.post("/flow-runs/{parent_run_id}/automatic-runs/{run_id}/upgrade-legacy-plan")
+async def upgrade_nested_automatic_run_legacy_plan(
+    parent_run_id: str,
+    run_id: str,
+    payload: AutomaticRunLegacyPlanRecoveryWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: (
+            service.nested_automatic_run(session, parent_run_id, run_id),
+            service.upgrade_legacy_automatic_run_plan(
+                session,
+                run_id,
+                payload,
+                _key(idempotency_key, "upgrade-nested-automatic-plan", run_id),
+            ),
+        )[1],
+    )
+
+
 @router.delete(
     "/flow-runs/{parent_run_id}/automatic-runs/{run_id}",
     status_code=202,
@@ -278,6 +301,24 @@ async def start_automatic_run(
         db,
         lambda session: service.start_automatic_run(
             session, run_id, payload, _key(idempotency_key, "start-automatic-run", run_id)
+        ),
+    )
+
+
+@router.post("/automatic-runs/{run_id}/upgrade-legacy-plan")
+async def upgrade_automatic_run_legacy_plan(
+    run_id: str,
+    payload: AutomaticRunLegacyPlanRecoveryWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.upgrade_legacy_automatic_run_plan(
+            session,
+            run_id,
+            payload,
+            _key(idempotency_key, "upgrade-automatic-plan", run_id),
         ),
     )
 
