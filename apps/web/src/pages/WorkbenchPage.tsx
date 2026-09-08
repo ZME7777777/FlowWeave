@@ -2,7 +2,7 @@ import { Background, Controls, Handle, Position, ReactFlow, useNodesState, type 
 import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { ConversationSurface } from '../components/ConversationSurface';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
@@ -769,7 +769,12 @@ function AutomaticProgressPanel({ progress }: { progress: NonNullable<NodeAttemp
   const title = progress.needs_attention ? '状态未推进，平台正在自愈' : AUTOMATIC_STAGE_LABELS[progress.stage] ?? '连续运行处理中';
   const processedAt = progress.last_processed_at ? new Date(progress.last_processed_at).toLocaleString() : undefined;
   const retryAt = progress.next_retry_at ? new Date(progress.next_retry_at).toLocaleString() : undefined;
-  return <section className={`automatic-progress-panel${progress.needs_attention || progress.task_state === 'DEAD' ? ' attention' : ''}`} data-testid="automatic-progress"><header><span><b>{title}</b><small>{progress.task_state ? TASK_STATE_LABELS[progress.task_state] ?? progress.task_state : '状态已持久化'}</small></span>{currentIndex >= 0 && <em>第 {currentIndex + 1}/{AUTOMATIC_STAGE_ORDER.length} 步</em>}</header>{currentIndex >= 0 && <ol>{AUTOMATIC_STAGE_ORDER.map((stage, index) => <li key={stage} className={index < currentIndex ? 'done' : index === currentIndex ? 'current' : ''}><i aria-hidden="true"/><span>{AUTOMATIC_STAGE_LABELS[stage]}</span></li>)}</ol>}<dl>{progress.attempts > 0 && <><dt>后台尝试</dt><dd>{progress.attempts} 次{progress.max_attempts ? ` / 上限 ${progress.max_attempts}` : ''}</dd></>}{processedAt && <><dt>最近处理</dt><dd>{processedAt}</dd></>}{retryAt && <><dt>下次重试</dt><dd>{retryAt}</dd></>}</dl>{progress.task_error && <p role="alert">{progress.task_error}</p>}{progress.needs_attention && <p role="status">任务已被领取但业务状态没有前进；平台会按持久记录自动重新计算并继续，不需要反复刷新或重新创建运行。</p>}</section>;
+  const runtimeTasks = [
+    ['事件监听', progress.runtime_wakeup],
+    ['状态对账', progress.runtime_poll],
+  ] as const;
+  const hasRuntimeTaskDetails = runtimeTasks.some(([, task]) => task != null);
+  return <section className={`automatic-progress-panel${progress.needs_attention || progress.task_state === 'DEAD' ? ' attention' : ''}`} data-testid="automatic-progress"><header><span><b>{title}</b><small>{progress.task_state ? TASK_STATE_LABELS[progress.task_state] ?? progress.task_state : '状态已持久化'}</small></span>{currentIndex >= 0 && <em>第 {currentIndex + 1}/{AUTOMATIC_STAGE_ORDER.length} 步</em>}</header>{currentIndex >= 0 && <ol>{AUTOMATIC_STAGE_ORDER.map((stage, index) => <li key={stage} className={index < currentIndex ? 'done' : index === currentIndex ? 'current' : ''}><i aria-hidden="true"/><span>{AUTOMATIC_STAGE_LABELS[stage]}</span></li>)}</ol>}<dl>{hasRuntimeTaskDetails ? runtimeTasks.map(([label, task]) => task && <Fragment key={label}><dt>{label}</dt><dd>{task.attempts} 次 / 上限 {task.max_attempts} · {TASK_STATE_LABELS[task.task_state] ?? task.task_state}</dd></Fragment>) : <>{progress.attempts > 0 && <><dt>后台尝试</dt><dd>{progress.attempts} 次{progress.max_attempts ? ` / 上限 ${progress.max_attempts}` : ''}</dd></>}{processedAt && <><dt>最近处理</dt><dd>{processedAt}</dd></>}{retryAt && <><dt>下次重试</dt><dd>{retryAt}</dd></>}</>}</dl>{progress.task_error && <p role="alert">{progress.task_error}</p>}{progress.needs_attention && <p role="status">任务已被领取但业务状态没有前进；平台会按持久记录自动重新计算并继续，不需要反复刷新或重新创建运行。</p>}</section>;
 }
 
 function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string } }) {

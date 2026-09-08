@@ -287,6 +287,14 @@ export interface NodeAttempt {
     stage: string; task_type?: string | null; task_state?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD' | null;
     attempts: number; max_attempts: number; last_processed_at?: string | null; next_retry_at?: string | null;
     task_error?: string | null; needs_attention: boolean;
+    runtime_wakeup?: {
+      task_state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD';
+      attempts: number; max_attempts: number; last_processed_at?: string | null; next_retry_at?: string | null;
+    } | null;
+    runtime_poll?: {
+      task_state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD';
+      attempts: number; max_attempts: number; last_processed_at?: string | null; next_retry_at?: string | null;
+    } | null;
   } | null;
   agent_preset?: AgentPreset | null;
   gate_policies: GatePolicy[];

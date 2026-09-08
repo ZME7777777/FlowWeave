@@ -897,6 +897,62 @@ def test_automatic_progress_projects_retry_and_succeeded_noop_without_raw_error(
     assert succeeded["needs_attention"] is True
 
 
+def test_automatic_progress_separates_runtime_listener_and_reconciliation(
+    worker_client, worker_container, db_session_factory
+):
+    _worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "EXECUTING"
+        attempt.runtime_phase = "RUNNING"
+        db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id == attempt_id))
+        db.add_all(
+            [
+                BackgroundTask(
+                    task_type="WAIT_RUNTIME_WAKEUP",
+                    aggregate_type="ATTEMPT",
+                    aggregate_id=attempt_id,
+                    idempotency_key=f"listener:{attempt_id}",
+                    state=TaskState.RETRY,
+                    attempts=3,
+                    max_attempts=100,
+                ),
+                BackgroundTask(
+                    task_type="POLL_RUNTIME",
+                    aggregate_type="ATTEMPT",
+                    aggregate_id=attempt_id,
+                    idempotency_key=f"reconcile:{attempt_id}",
+                    state=TaskState.RUNNING,
+                    attempts=1,
+                    max_attempts=10,
+                ),
+            ]
+        )
+        db.commit()
+
+    progress = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()["node_runs"][0]["attempts"][
+        0
+    ]["automatic_progress"]
+
+    assert progress["stage"] == "AGENT_RUNNING"
+    assert progress["runtime_wakeup"] == {
+        "task_state": "RETRY",
+        "attempts": 3,
+        "max_attempts": 100,
+        "last_processed_at": progress["runtime_wakeup"]["last_processed_at"],
+        "next_retry_at": progress["runtime_wakeup"]["next_retry_at"],
+    }
+    assert progress["runtime_wakeup"]["next_retry_at"] is not None
+    assert progress["runtime_poll"] == {
+        "task_state": "RUNNING",
+        "attempts": 1,
+        "max_attempts": 10,
+        "last_processed_at": progress["runtime_poll"]["last_processed_at"],
+        "next_retry_at": None,
+    }
+
+
 def test_automatic_run_rejects_start_when_required_unmapped_input_is_missing(client):
     flow = _create_flow(client)
     created = client.post(

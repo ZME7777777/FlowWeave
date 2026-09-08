@@ -7595,6 +7595,8 @@ def _automatic_progress(db: Session, attempt: NodeAttempt, run: FlowRun) -> dict
         stage, task_types = _AUTOMATIC_PROGRESS_STAGES.get(attempt.state, ("WAITING_HUMAN", ()))
 
     task = None
+    runtime_wakeup_task = None
+    runtime_poll_task = None
     if task_types:
         aggregate_ids = [attempt.id]
         if stage == "RUNTIME_CONFIRMATION":
@@ -7609,13 +7611,15 @@ def _automatic_progress(db: Session, attempt: NodeAttempt, run: FlowRun) -> dict
             )
             if confirmation_id is not None:
                 aggregate_ids.append(confirmation_id)
-        candidates = db.scalars(
-            select(BackgroundTask)
-            .where(
-                BackgroundTask.aggregate_id.in_(aggregate_ids),
-                BackgroundTask.task_type.in_(task_types),
+        candidates = list(
+            db.scalars(
+                select(BackgroundTask)
+                .where(
+                    BackgroundTask.aggregate_id.in_(aggregate_ids),
+                    BackgroundTask.task_type.in_(task_types),
+                )
+                .order_by(BackgroundTask.updated_at.desc(), BackgroundTask.created_at.desc())
             )
-            .order_by(BackgroundTask.updated_at.desc(), BackgroundTask.created_at.desc())
         )
         expected_gate_stage = (
             "START" if stage == "START_GATES" else "END" if stage == "END_GATES" else None
@@ -7629,6 +7633,19 @@ def _automatic_progress(db: Session, attempt: NodeAttempt, run: FlowRun) -> dict
             ),
             None,
         )
+        if stage == "AGENT_RUNNING":
+            runtime_wakeup_task = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.task_type == "WAIT_RUNTIME_WAKEUP"
+                ),
+                None,
+            )
+            runtime_poll_task = next(
+                (candidate for candidate in candidates if candidate.task_type == "POLL_RUNTIME"),
+                None,
+            )
     task_error: str | None = None
     if task is not None and task.last_error:
         if task.last_error == "LEASE_EXPIRED":
@@ -7662,6 +7679,20 @@ def _automatic_progress(db: Session, attempt: NodeAttempt, run: FlowRun) -> dict
         ),
         "task_error": task_error,
         "needs_attention": needs_attention,
+        "runtime_wakeup": _automatic_task_progress(runtime_wakeup_task),
+        "runtime_poll": _automatic_task_progress(runtime_poll_task),
+    }
+
+
+def _automatic_task_progress(task: BackgroundTask | None) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    return {
+        "task_state": task.state,
+        "attempts": task.attempts,
+        "max_attempts": task.max_attempts,
+        "last_processed_at": task.updated_at.isoformat(),
+        "next_retry_at": task.available_at.isoformat() if task.state == TaskState.RETRY else None,
     }
 
 
