@@ -1,6 +1,6 @@
 """make Runtime Artifact completion projections idempotent
 
-Revision ID: 0103_runtime_artifact_projection_idempotency
+Revision ID: 0103_runtime_artifact_proj_idem
 Revises: 0102_event_trigger_observers
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0103_runtime_artifact_projection_idempotency"
+revision = "0103_runtime_artifact_proj_idem"
 down_revision = "0102_event_trigger_observers"
 branch_labels = None
 depends_on = None
