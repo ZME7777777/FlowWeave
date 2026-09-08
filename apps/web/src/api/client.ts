@@ -251,8 +251,12 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
-  agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string) =>
-    request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+  agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string) => {
+    const query = new URLSearchParams();
+    if (cursor) query.set('cursor', cursor);
+    if (historyCursor) query.set('history_cursor', historyCursor);
+    return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
+  },
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
@@ -478,8 +482,12 @@ export const api = {
     request<FlowRunConversation>(`/flow-runs/${runId}/conversations`, json('POST', { node_attempt_id: nodeAttemptId, title, ...runtime }, true)),
   conversation: (runId: string, conversationId: string) =>
     request<FlowRunConversation>(`/flow-runs/${runId}/conversations/${conversationId}`),
-  conversationEvents: (runId: string, conversationId: string, cursor?: string) =>
-    request<OpenHandsConversationEventBatch>(`/flow-runs/${runId}/conversations/${conversationId}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+  conversationEvents: (runId: string, conversationId: string, cursor?: string, historyCursor?: string) => {
+    const query = new URLSearchParams();
+    if (cursor) query.set('cursor', cursor);
+    if (historyCursor) query.set('history_cursor', historyCursor);
+    return request<OpenHandsConversationEventBatch>(`/flow-runs/${runId}/conversations/${conversationId}/events${query.size ? `?${query}` : ''}`);
+  },
   sendConversationQuestion: (runId: string, conversationId: string, content: string, attachments: MessageAttachmentInput[] = [], clientQuestionId = randomId()) =>
     request<{ accepted: boolean }>(`/flow-runs/${runId}/conversations/${conversationId}/questions`, json('POST', {
       client_question_id: clientQuestionId,
@@ -674,8 +682,12 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
-  events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string) =>
-    request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+  events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string, historyCursor?: string) => {
+    const query = new URLSearchParams();
+    if (cursor) query.set('cursor', cursor);
+    if (historyCursor) query.set('history_cursor', historyCursor);
+    return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
+  },
   inputReadiness: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<AgentConversationInputReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/input-readiness`),
   context: (flowRunId: string, attemptId: string, bindingId: string) =>

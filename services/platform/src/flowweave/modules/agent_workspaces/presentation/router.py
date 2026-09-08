@@ -561,11 +561,14 @@ async def agent_events(
     binding_id: str,
     container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
+    history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
     try:
         return await run_blocking(
             container,
-            lambda session: conversations.events(session, workspace_id, binding_id, cursor),
+            lambda session: conversations.events(
+                session, workspace_id, binding_id, cursor, history_cursor
+            ),
         )
     except DomainError as exc:
         if exc.code not in {"EXECUTOR_UNAVAILABLE", "RUNTIME_READ_SATURATED"}:

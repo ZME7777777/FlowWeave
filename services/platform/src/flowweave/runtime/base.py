@@ -392,6 +392,9 @@ class RuntimeHandle:
     # Preserve the server-derived workspace boundary across reloads, uploads,
     # polling and native forks.
     workspace_root: str = ""
+    # Explicit, read-only continuation for an older active-branch window.
+    # It is an OpenHands event identity, never a FlowWeave-persisted cursor.
+    history_cursor: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -560,6 +563,9 @@ class RuntimeEventBatch:
     cursor_anchor_found: bool = True
     task_usage: tuple[RuntimeTaskUsageSnapshot, ...] = field(default_factory=_empty_task_usage)
     usage: tuple[RuntimeUsageSnapshot, ...] = field(default_factory=_empty_usage)
+    # The next older formal event identity on the current native HEAD branch.
+    # Clients use it only after an explicit "load older" action.
+    history_cursor: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

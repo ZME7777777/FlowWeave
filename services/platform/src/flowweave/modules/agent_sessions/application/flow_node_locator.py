@@ -191,6 +191,7 @@ def active_runtime_handle(
     flow_run_id: str,
     openhands_conversation_id: str,
     cursor: str | None,
+    history_cursor: str | None = None,
     route_kind: str,
 ) -> RuntimeHandle:
     """Route a Conversation through its FlowRun's current active generation."""
@@ -232,6 +233,7 @@ def active_runtime_handle(
         runtime_resource_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         workspace_root=str(workspace.runtime_mount_root),
+        history_cursor=history_cursor,
     )
 
 

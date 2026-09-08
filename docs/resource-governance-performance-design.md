@@ -20,7 +20,7 @@
 | 会话 WebSocket | 仅在一轮消息实际发送后为该会话建立流；历史列表和仅浏览会话不建流。回合结束后，对仍有订阅者的会话保留 5 分钟空闲宽限，到期关闭。 | 每会话/通道一个共享上游，订阅者、队列和空闲 Hub 均有上限；浏览器断开立即减少引用。 |
 | 1.5 秒全列表轮询 | 删除每个侧栏会话的轮询。仅当前会话在运行时做低频 readiness 兜底；列表状态来自列表快照、当前流和显式刷新。 | 单页面最多一个 readiness 兜底定时器，采用退避与页面不可见暂停。 |
 | 会话列表慢与 N+1 | 服务端 cursor 分页、批量加载目录/能力/最近活动摘要；客户端每工作区首屏 5 条，“展开”每次追加 5 条，折叠后重置为 5。 | API 固定 `limit <= 5`，稳定 cursor、索引和批量查询；禁止逐行附加查询。 |
-| OpenHands 事件读取 | 首屏只读当前活动分支的最近窗口；更早历史由用户显式翻页，实时更新只从客户端持有的官方 cursor 增量读取。 | 禁止每次请求从 cursor 0 扫到末尾；若固定 OpenHands API 缺少反向/窗口 cursor，先补官方契约适配或明确降级，绝不新增 FlowWeave 事件库。 |
+| OpenHands 事件读取 | 首屏只读当前活动分支的最近窗口；更早历史由用户显式翻页，实时更新只从客户端持有的官方 cursor 增量读取。 | 固定 OpenHands 1.44 已提供正式 `TIMESTAMP_DESC`、`page_id` 和 `next_page_id`，但没有 HEAD 分支反向迭代器；适配层以 HEAD/父事件身份在单页中恢复窗口，并把缺失父事件原样返回为只读 `history_cursor`。禁止每次请求从 cursor 0 扫到末尾，绝不新增 FlowWeave 事件库。 |
 | Runtime Relay | 保持一 FlowRun 一容器。Provider 新建按 `{runtime_session,generation,conversation,channel}` 键控的 Relay Hub，多浏览器订阅共享一个 `docker exec` 上游。 | 上游、订阅者和队列均为有界；5 分钟空闲 grace 后终止；generation 变化、所有者失效和取消均强制清理。 |
 | FlowRun SSE 与 PostgreSQL | 不再一 SSE 客户端一 `LISTEN` 连接。每个 stream-api 进程仅保留一个受监控 LISTEN 连接，进程内向有界订阅队列扇出；跨进程扩展前先由专用 stream-api 角色/分片保证订阅覆盖。 | 慢消费者丢弃并要求用 cursor 重连，不能反压 PostgreSQL；LISTEN 连接计入数据库预算。 |
 | tmux | 记录 terminal session 的最后活动时间；默认空闲 30 分钟清理，绝对最长 8 小时；仍有受权附着连接时不清理。 | 关闭 tmux、PTY、WebSocket 和关联临时文件；不可跨 owner 清理。 |

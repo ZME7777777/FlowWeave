@@ -1488,13 +1488,20 @@ def record_attempt_input_attachments(
     record_message_attachments(db, binding, event_id, "", normalized)
 
 
-def _handle(db: Session, binding_id: str, *, cursor: str | None = None) -> RuntimeHandle:
+def _handle(
+    db: Session,
+    binding_id: str,
+    *,
+    cursor: str | None = None,
+    history_cursor: str | None = None,
+) -> RuntimeHandle:
     locator = binding_locator(db, binding_id)
     return active_runtime_handle(
         db,
         flow_run_id=locator.flow_run_id,
         openhands_conversation_id=locator.openhands_conversation_id,
         cursor=cursor,
+        history_cursor=history_cursor,
         route_kind="COLLABORATION",
     )
 
@@ -1505,9 +1512,10 @@ def _flow_run_handle(
     binding_id: str,
     *,
     cursor: str | None = None,
+    history_cursor: str | None = None,
 ) -> RuntimeHandle:
     _binding_for_run(db, flow_run_id, binding_id)
-    return _handle(db, binding_id, cursor=cursor)
+    return _handle(db, binding_id, cursor=cursor, history_cursor=history_cursor)
 
 
 def runtime_stream_details(db: Session, binding_id: str) -> tuple[str | None, RuntimeHandle]:
@@ -1563,12 +1571,18 @@ def flow_run_terminal_details(
 
 
 def read_conversation_events(
-    db: Session, binding_id: str, *, cursor: str | None = None
+    db: Session,
+    binding_id: str,
+    *,
+    cursor: str | None = None,
+    history_cursor: str | None = None,
 ) -> dict[str, Any]:
     """Read a node Conversation and project its product-owned attachments."""
 
     binding = _binding(db, binding_id)
-    batch = get_runtime().read_events(_handle(db, binding_id, cursor=cursor))
+    batch = get_runtime().read_active_events(
+        _handle(db, binding_id, cursor=cursor, history_cursor=history_cursor)
+    )
     return _event_batch_dict(db, binding, batch)
 
 
@@ -1578,9 +1592,12 @@ def read_flow_run_conversation_events(
     binding_id: str,
     *,
     cursor: str | None = None,
+    history_cursor: str | None = None,
 ) -> dict[str, Any]:
     binding = _binding_for_run(db, flow_run_id, binding_id)
-    batch = get_runtime().read_events(_flow_run_handle(db, flow_run_id, binding_id, cursor=cursor))
+    batch = get_runtime().read_active_events(
+        _flow_run_handle(db, flow_run_id, binding_id, cursor=cursor, history_cursor=history_cursor)
+    )
     return _event_batch_dict(db, binding, batch)
 
 
@@ -1591,9 +1608,16 @@ def read_node_conversation_events(
     attempt_id: str,
     binding_id: str,
     cursor: str | None = None,
+    history_cursor: str | None = None,
 ) -> dict[str, Any]:
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    return read_flow_run_conversation_events(db, flow_run_id, binding_id, cursor=cursor)
+    return read_flow_run_conversation_events(
+        db,
+        flow_run_id,
+        binding_id,
+        cursor=cursor,
+        history_cursor=history_cursor,
+    )
 
 
 def read_gate_sidecar_events(
@@ -1709,6 +1733,7 @@ def _event_batch_dict(
     return {
         "events": [project(event) for event in batch.events],
         "next_cursor": batch.cursor,
+        "history_cursor": batch.history_cursor,
         "result": batch.result.as_dict() if batch.result is not None else None,
         "task_usage": [
             {

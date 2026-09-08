@@ -446,8 +446,12 @@ async def delete_node_session_workspace_entries(
     deleted = await run_sync(
         db,
         lambda session: agent_sessions.flow_node_workspace.delete_entries(
-            session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
-            work_directory_id=work_directory_id, paths=tuple(payload.paths),
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+            paths=tuple(payload.paths),
         ),
     )
     return {"deleted_paths": deleted}
@@ -607,6 +611,7 @@ async def node_session_events(
     binding_id: str,
     container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
+    history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
     return await run_blocking(
         container,
@@ -616,6 +621,7 @@ async def node_session_events(
             attempt_id=attempt_id,
             binding_id=binding_id,
             cursor=cursor,
+            history_cursor=history_cursor,
         ),
     )
 

@@ -1453,11 +1453,19 @@ def assert_conversation_stopped(
         )
 
 
-def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) -> dict[str, Any]:
+def events(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    cursor: str | None,
+    history_cursor: str | None = None,
+) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
-    batch = get_runtime().read_active_events(replace(handle, cursor=cursor))
+    batch = get_runtime().read_active_events(
+        replace(handle, cursor=cursor, history_cursor=history_cursor)
+    )
     # A native Task blocks its parent and has no wall-clock timeout. Register
     # one durable watchdog from formal event identities while this normal REST
     # recovery read already owns a transaction. No Conversation state is
@@ -1635,6 +1643,7 @@ def events(db: Session, workspace_id: str, binding_id: str, cursor: str | None) 
     return {
         "events": [projected_event(event) for event in batch.events],
         "next_cursor": batch.cursor,
+        "history_cursor": batch.history_cursor,
         "task_usage": [
             {
                 "task_id": usage.task_id,

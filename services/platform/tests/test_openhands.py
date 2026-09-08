@@ -260,13 +260,9 @@ def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_set
     request = replace(
         _request(),
         workspace_ref=(
-            "/runtime/workspace/project/users/"
-            "6311561c-06e4-41ad-8afe-aac35cfa83ec/backend"
+            "/runtime/workspace/project/users/6311561c-06e4-41ad-8afe-aac35cfa83ec/backend"
         ),
-        workspace_root=(
-            "/runtime/workspace/project/users/"
-            "6311561c-06e4-41ad-8afe-aac35cfa83ec"
-        ),
+        workspace_root=("/runtime/workspace/project/users/6311561c-06e4-41ad-8afe-aac35cfa83ec"),
         runtime_sandbox_id="agent-runtime-1",
         runtime_resource_name="agent-workspace-runtime",
     )
@@ -1507,6 +1503,7 @@ def test_openhands_reads_only_the_native_active_head_branch(openhands_settings, 
     runtime = OpenHandsRuntime(openhands_settings)
     responses = iter(
         [
+            _state(leaf_event_id="new-answer"),
             {
                 "items": [
                     {
@@ -1532,7 +1529,6 @@ def test_openhands_reads_only_the_native_active_head_branch(openhands_settings, 
                     },
                 ]
             },
-            _state(leaf_event_id="new-answer"),
         ]
     )
     monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
@@ -1541,6 +1537,72 @@ def test_openhands_reads_only_the_native_active_head_branch(openhands_settings, 
 
     assert [event.cursor for event in batch.events] == ["user-1", "new-answer"]
     assert [event.payload["content"] for event in batch.events] == ["first", "new"]
+
+
+def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[dict[str, object] | None] = []
+    responses = iter(
+        [
+            _state(leaf_event_id="event-3"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "event-3",
+                        "parent_id": "event-2",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "latest"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "event-2",
+                        "parent_id": "event-1",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "recent"},
+                    },
+                ],
+                "next_page_id": "old-branch-event",
+            },
+            _state(leaf_event_id="event-3"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "event-1",
+                        "parent_id": "__root__",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "first"},
+                    }
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+
+    def fake_request(_method: str, _path: str, **kwargs: object) -> dict[str, object]:
+        requests.append(kwargs.get("params") if isinstance(kwargs.get("params"), dict) else None)
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    current = runtime.read_active_events(_handle())
+    older = runtime.read_active_events(replace(_handle(), history_cursor="event-1"))
+
+    assert [event.cursor for event in current.events] == ["event-2", "event-3"]
+    assert current.cursor == "event-3"
+    assert current.history_cursor == "event-1"
+    assert [event.cursor for event in older.events] == ["event-1"]
+    assert older.cursor == "event-3"
+    assert older.history_cursor is None
+    assert requests == [
+        None,
+        {"limit": 100, "sort_order": "TIMESTAMP_DESC", "page_id": "event-3"},
+        None,
+        {"limit": 100, "sort_order": "TIMESTAMP_DESC", "page_id": "event-1"},
+    ]
 
 
 def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
@@ -2027,9 +2089,7 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
 
 
 @pytest.mark.asyncio
-async def test_openhands_isolated_stream_closes_controller_stream(
-    openhands_settings, monkeypatch
-):
+async def test_openhands_isolated_stream_closes_controller_stream(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(
         openhands_settings.model_copy(
             update={

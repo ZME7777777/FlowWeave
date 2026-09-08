@@ -439,6 +439,7 @@ export interface OpenHandsConversationEvent {
 export interface OpenHandsConversationEventBatch {
   events: OpenHandsConversationEvent[];
   next_cursor?: string | null;
+  history_cursor?: string | null;
   result?: { status?: string; final_message?: string | null; error?: string | null } | null;
   task_usage?: RuntimeTaskUsageSnapshot[];
   task_control?: RuntimeTaskControlSnapshot[];

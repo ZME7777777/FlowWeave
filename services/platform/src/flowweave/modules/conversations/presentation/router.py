@@ -126,13 +126,18 @@ async def live_conversation_events(
     binding_id: str,
     db: Db,
     cursor: str | None = Query(default=None, max_length=200),
+    history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
     """Return live OpenHands events without persisting a platform cursor."""
 
     return await run_sync(
         db,
         lambda session: conversations.read_flow_run_conversation_events(
-            session, flow_run_id, binding_id, cursor=cursor
+            session,
+            flow_run_id,
+            binding_id,
+            cursor=cursor,
+            history_cursor=history_cursor,
         ),
     )
 

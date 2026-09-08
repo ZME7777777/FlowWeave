@@ -90,7 +90,7 @@ export interface AgentSessionApi {
   readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
-  readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string) => Promise<OpenHandsConversationEventBatch>;
+  readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string) => Promise<OpenHandsConversationEventBatch>;
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
   readonly conversationContext: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationContext>;
   readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
@@ -221,8 +221,8 @@ export function flowNodeSessionGateway(
       updateConversation: (_hostId, bindingId, title) =>
         nodeSessionApi.update(flowRunId, attemptId, bindingId, title),
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
-      conversationEvents: (_hostId, bindingId, cursor) =>
-        nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor),
+      conversationEvents: (_hostId, bindingId, cursor, historyCursor) =>
+        nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor),
       inputReadiness: (_hostId, bindingId) =>
         nodeSessionApi.inputReadiness(flowRunId, attemptId, bindingId),
       conversationContext: (_hostId, bindingId) =>
