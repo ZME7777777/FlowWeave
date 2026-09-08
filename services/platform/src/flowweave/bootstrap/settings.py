@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://flowweave:flowweave_dev@localhost:55432/flowweave"
     pool_size: int = Field(default=10, ge=1, le=100)
+    pool_max_overflow: int = Field(default=0, ge=0, le=20)
     database_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     blocking_pool_size: int = Field(default=4, ge=1, le=16)
     blocking_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
@@ -43,6 +44,10 @@ class Settings(BaseSettings):
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
     sse_max_subscribers: int = Field(default=256, ge=1, le=4096)
     sse_subscriber_queue_size: int = Field(default=8, ge=1, le=128)
+    runtime_relay_max_hubs: int = Field(default=128, ge=1, le=1024)
+    runtime_relay_max_subscribers: int = Field(default=8, ge=1, le=64)
+    runtime_relay_subscriber_queue_size: int = Field(default=32, ge=1, le=256)
+    runtime_relay_idle_grace_seconds: float = Field(default=300.0, gt=0, le=3600)
     openhands_session_api_key: str = "flowweave-internal"
     openhands_workspace_root: Path = Path("/workspaces")
     # Uploaded executable capability assets are mounted separately from the

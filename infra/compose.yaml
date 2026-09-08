@@ -22,6 +22,11 @@ x-platform-env: &platform-env
   INLINE_ARTIFACT_LIMIT: ${INLINE_ARTIFACT_LIMIT:-65536}
   CAPABILITY_IMPORT_TTL_SECONDS: ${CAPABILITY_IMPORT_TTL_SECONDS:-900}
   TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-30}
+  POOL_MAX_OVERFLOW: ${POOL_MAX_OVERFLOW:-0}
+  DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-2}
+  BLOCKING_POOL_TIMEOUT_SECONDS: ${BLOCKING_POOL_TIMEOUT_SECONDS:-2}
+  SSE_MAX_SUBSCRIBERS: ${SSE_MAX_SUBSCRIBERS:-256}
+  SSE_SUBSCRIBER_QUEUE_SIZE: ${SSE_SUBSCRIBER_QUEUE_SIZE:-8}
 
 x-docker-client-env: &docker-client-env
   DEPENDENCY_BUILDER_BACKEND: ${DEPENDENCY_BUILDER_BACKEND:-docker}
@@ -82,6 +87,10 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
+    init: true
+    cpus: "1.0"
+    mem_limit: 1g
+    pids_limit: 128
 
   runtime-provider:
     build: { context: .., dockerfile: services/platform/Dockerfile }
@@ -91,6 +100,9 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 256
+    init: true
+    cpus: "1.0"
+    mem_limit: 1536m
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     environment:
@@ -115,6 +127,10 @@ services:
       TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS: ${TERMINAL_ENVIRONMENT_MAX_ACTIVE_SESSIONS:-4}
       DOCKER_CONTROLLER_TERMINAL_IDLE_SECONDS: ${DOCKER_CONTROLLER_TERMINAL_IDLE_SECONDS:-1800}
       DOCKER_CONTROLLER_TERMINAL_HARD_TTL_SECONDS: ${DOCKER_CONTROLLER_TERMINAL_HARD_TTL_SECONDS:-28800}
+      RUNTIME_RELAY_MAX_HUBS: ${RUNTIME_RELAY_MAX_HUBS:-128}
+      RUNTIME_RELAY_MAX_SUBSCRIBERS: ${RUNTIME_RELAY_MAX_SUBSCRIBERS:-8}
+      RUNTIME_RELAY_SUBSCRIBER_QUEUE_SIZE: ${RUNTIME_RELAY_SUBSCRIBER_QUEUE_SIZE:-32}
+      RUNTIME_RELAY_IDLE_GRACE_SECONDS: ${RUNTIME_RELAY_IDLE_GRACE_SECONDS:-300}
       DOCKER_CONTROLLER_MODE: local
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
       DOCKER_CONTROLLER_WORKER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
@@ -144,14 +160,21 @@ services:
   api:
     build: { context: .., dockerfile: services/platform/Dockerfile }
     user: "10001:10001"
+    init: true
+    cpus: "2.0"
+    mem_limit: 2g
+    pids_limit: 256
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
       # Four independent REST workers prevent one process failure from taking
       # out the control plane. Keep each worker's async and blocking pools small
       # so the aggregate PostgreSQL and Runtime concurrency remains bounded.
-      POOL_SIZE: 5
+      POOL_SIZE: 8
+      POOL_MAX_OVERFLOW: 0
+      DATABASE_POOL_TIMEOUT_SECONDS: 2
       BLOCKING_POOL_SIZE: 2
+      BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
       flowweave.runtime-client: "true"
@@ -183,6 +206,10 @@ services:
   stream-api:
     build: { context: .., dockerfile: services/platform/Dockerfile }
     user: "10001:10001"
+    init: true
+    cpus: "2.0"
+    mem_limit: 1536m
+    pids_limit: 256
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
@@ -190,7 +217,10 @@ services:
       # WebSocket relay. Keep its per-process pool bounded even when many
       # browser sessions are connected. REST owns its separate API pool.
       POOL_SIZE: 4
+      POOL_MAX_OVERFLOW: 0
+      DATABASE_POOL_TIMEOUT_SECONDS: 2
       BLOCKING_POOL_SIZE: 1
+      BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
       flowweave.runtime-client: "true"
@@ -218,9 +248,21 @@ services:
   worker:
     build: { context: .., dockerfile: services/platform/Dockerfile }
     user: "10001:10001"
+    init: true
+    cpus: "2.0"
+    mem_limit: 2g
+    pids_limit: 256
     command: ["python", "-m", "flowweave.bootstrap.worker"]
     environment:
       <<: [*platform-env, *docker-client-env]
+      # One worker process owns a bounded 8-connection request pool plus
+      # separate blocking/control pools. Overflow remains disabled so the
+      # process cannot exceed its database connection budget under load.
+      POOL_SIZE: 8
+      POOL_MAX_OVERFLOW: 0
+      DATABASE_POOL_TIMEOUT_SECONDS: 2
+      BLOCKING_POOL_SIZE: 4
+      BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
     labels:
       flowweave.runtime-client: "true"
@@ -249,6 +291,10 @@ services:
 
   web:
     build: { context: .., dockerfile: apps/web/Dockerfile }
+    init: true
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 64
     ports: ["${FLOWWEAVE_BIND_ADDRESS:-127.0.0.1}:5173:80"]
     depends_on:
       api: { condition: service_healthy }

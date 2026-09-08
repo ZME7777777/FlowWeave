@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-218`（控制面资源限制、数据库连接预算与准入）
+> 下一可执行切片：`FR-219`（指标、告警与分布式限流闭环）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3083,10 +3083,17 @@ Container 在生命周期结束时统一关闭 sync/async client。OpenHandsRunt
 请求复用普通池；Docker Controller 的控制请求、Runtime SSE 和 wake-up 复用独立控制池，流式响应仍由上下文
 管理器在取消或断开时释放。未注入的遗留 DockerControllerClient 通过按端点/作用域共享注册表复用同一池。
 
-### FR-218 控制面资源限制、数据库连接预算与准入 — PENDING
+### FR-218 控制面资源限制、数据库连接预算与准入 — DONE
 
 依赖：`FR-214`、`FR-216`、`FR-217`。将 CPU/内存/PID、Docker init、DB pool/overflow/timeout、PgBouncer 边界和
 SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 PostgreSQL 上限复核容量。
+
+完成：Settings 增加 `pool_max_overflow`（默认 0）及 Relay Hub 容量/队列/空闲宽限配置；async、blocking、control
+和同步兼容数据库引擎统一使用显式 overflow 与 pool timeout，避免连接池在高峰隐式扩张。Compose 为
+`migration`、`runtime-provider`、`api`、`stream-api`、`worker` 和 `web` 写入 Docker init、CPU、内存及 PID
+上限；API/stream-api/worker 分别使用 8/4/8 条业务连接、无 overflow，blocking pool 按 2/1/4 配置，控制池
+固定单连接。SSE 与 Runtime Relay 的订阅者、队列和 Hub 上限通过环境变量下发，终端 TTL/并发继续由 Settings
+约束。该容量仍是首轮保护预算，待 FR-219/220 以指标和压测复核后调整。
 
 ### FR-219 指标、告警与分布式限流闭环 — PENDING
 
@@ -3114,6 +3121,7 @@ SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 Postg
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-218 | 受影响 Python `py_compile`、Ruff；Compose 资源/环境字段静态核对；Alembic head、`git diff --check`、任务状态唯一性 | PASS：数据库 async、blocking、control 与同步兼容引擎均禁用隐式 overflow 并设置 pool timeout；控制面服务具备 init、CPU、内存、PID 上限，API/stream-api/worker 使用 8/4/8 业务连接预算；SSE/Relay 配额改为可配置。未运行依赖 Docker/PostgreSQL 的业务测试。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-219 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-217 | 受影响 Python `py_compile`、Ruff；Alembic head、`git diff --check`、任务状态唯一性 | PASS：新增有界进程级 sync/async HTTP transport，普通与控制/流式池分别复用并由 Container 关闭；OpenHands 与 Docker Controller 高频调用不再每请求创建 client。未运行依赖 Docker/PostgreSQL 的业务测试。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-218 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-216 | Worker lane 直接回归（完整 handler 分区、无重叠、`worker_concurrency=1/4` 总槽位）；受影响 Python `py_compile`、Ruff、定向 Pyright；Alembic head、`git diff --check`、任务状态唯一性 | PASS：`worker_concurrency` 现在同时决定 Worker 任务线程池和实际 lane 数，默认 4 分为 2 Runtime、1 投递、1 维护槽；任务领取以 lane 类型过滤，所有 handler 恰好归属一类。同步 task handler 在独立有界 session/executor 执行，失败仍按 lease 条件回写，优雅停机等待已领取任务与 heartbeat 收束。新增 pytest 回归可被收集，但仓库全局 Testcontainers PostgreSQL fixture 在本机 Docker daemon 不可用时会于断言前阻断，未伪记为通过；无 Docker 的直接 lane 回归和静态检查通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-217 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-215 | tmux TTL 直接单元 smoke（附着保护、绝对 TTL、显式回收、持久账本扫描范围）；受影响 Python `py_compile`、Ruff、定向 Pyright；Compose 解析、`git diff --check`、Alembic head、任务状态唯一性 | PASS：tmux 在自身持久 options 保存创建和最近活动时间；Provider 账本将活跃附件作为回收保护。空闲 30 分钟或绝对 8 小时后，只有当前 scope 的 owned `agent-runtime` 容器内 `flowweave-*` tmux 被关闭；Provider 重启只关闭 PTY 附件，不删除持久 tmux。新增 pytest 回归可被收集，但仓库全局 Testcontainers PostgreSQL fixture 在本机 Docker daemon 不可用时会于断言前阻断，未伪记为通过；不依赖 Docker 的直接 smoke 与静态检查通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-216 已 PENDING；无 CURRENT。 |

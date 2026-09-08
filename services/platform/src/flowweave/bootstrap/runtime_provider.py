@@ -1193,16 +1193,28 @@ class _RuntimeEventRelayHubs:
         self,
         settings: Settings,
         *,
-        max_hubs: int = _RELAY_MAX_HUBS,
-        max_subscribers: int = _RELAY_MAX_SUBSCRIBERS_PER_HUB,
-        subscriber_queue_size: int = _RELAY_SUBSCRIBER_QUEUE_SIZE,
-        idle_grace_seconds: float = _RELAY_IDLE_GRACE_SECONDS,
+        max_hubs: int | None = None,
+        max_subscribers: int | None = None,
+        subscriber_queue_size: int | None = None,
+        idle_grace_seconds: float | None = None,
     ) -> None:
         self.settings = settings
-        self._max_hubs = max_hubs
-        self._max_subscribers = max_subscribers
-        self._subscriber_queue_size = subscriber_queue_size
-        self._idle_grace_seconds = idle_grace_seconds
+        self._max_hubs = max_hubs if max_hubs is not None else settings.runtime_relay_max_hubs
+        self._max_subscribers = (
+            max_subscribers
+            if max_subscribers is not None
+            else settings.runtime_relay_max_subscribers
+        )
+        self._subscriber_queue_size = (
+            subscriber_queue_size
+            if subscriber_queue_size is not None
+            else settings.runtime_relay_subscriber_queue_size
+        )
+        self._idle_grace_seconds = (
+            idle_grace_seconds
+            if idle_grace_seconds is not None
+            else settings.runtime_relay_idle_grace_seconds
+        )
         self._hubs: dict[_RuntimeEventRelayKey, _RuntimeEventRelay] = {}
         self._lock = asyncio.Lock()
 

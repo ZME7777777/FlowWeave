@@ -167,6 +167,8 @@ def create_sync_engine(settings: Settings) -> Engine:
         settings.database_url,
         pool_pre_ping=True,
         pool_size=settings.pool_size,
+        max_overflow=settings.pool_max_overflow,
+        pool_timeout=settings.database_pool_timeout_seconds,
         connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
     )
 

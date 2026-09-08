@@ -27,7 +27,7 @@ class Database:
             settings.database_url,
             pool_pre_ping=True,
             pool_size=settings.pool_size,
-            max_overflow=0,
+            max_overflow=settings.pool_max_overflow,
             pool_timeout=settings.database_pool_timeout_seconds,
             connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
         )
@@ -40,7 +40,7 @@ class Database:
             settings.database_url,
             pool_pre_ping=True,
             pool_size=settings.blocking_pool_size,
-            max_overflow=0,
+            max_overflow=settings.pool_max_overflow,
             pool_timeout=settings.blocking_pool_timeout_seconds,
             connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
         )
@@ -55,7 +55,7 @@ class Database:
             settings.database_url,
             pool_pre_ping=True,
             pool_size=1,
-            max_overflow=0,
+            max_overflow=settings.pool_max_overflow,
             pool_timeout=settings.blocking_pool_timeout_seconds,
             connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
         )
