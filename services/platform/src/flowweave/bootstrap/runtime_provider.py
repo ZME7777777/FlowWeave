@@ -56,9 +56,12 @@ from flowweave.shared.settings import bind_settings, reset_settings
 _MAX_REQUEST_BYTES = 2 * 1024 * 1024
 _RELAY_CONTROL_KEY = "_flowweave_runtime_event_relay_v2"
 _RELAY_MARKER = "FLOWWEAVE_EVENT_RELAY_V2"
-_RELAY_MAX_ACTIVE_PER_CHANNEL = 4
 _RELAY_HEARTBEAT_SECONDS = 10.0
 _RELAY_MAX_LIFETIME_SECONDS = 300.0
+_RELAY_IDLE_GRACE_SECONDS = 300.0
+_RELAY_MAX_HUBS = 128
+_RELAY_MAX_SUBSCRIBERS_PER_HUB = 8
+_RELAY_SUBSCRIBER_QUEUE_SIZE = 32
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +69,9 @@ logger = logging.getLogger(__name__)
 def _configure_runtime_provider_logging(level: str) -> None:
     """Emit provider lifecycle diagnostics independently of Uvicorn's logger tree."""
 
-    if not any(
-        handler.get_name() == "flowweave-runtime-provider" for handler in logger.handlers
-    ):
+    if not any(handler.get_name() == "flowweave-runtime-provider" for handler in logger.handlers):
         handler = logging.StreamHandler()
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
         handler.set_name("flowweave-runtime-provider")
         logger.addHandler(handler)
     logger.setLevel(level.upper())
@@ -547,7 +546,7 @@ from websockets.exceptions import ConnectionClosed
 
 MARKER = "FLOWWEAVE_EVENT_RELAY_V2"
 CONTROL_KEY = "_flowweave_runtime_event_relay_v2"
-MAX_ACTIVE_PER_CHANNEL = 4
+MAX_ACTIVE_PER_CHANNEL = 1
 HEARTBEAT_SECONDS = 10.0
 MAX_LIFETIME_SECONDS = 300.0
 
@@ -827,9 +826,10 @@ async def _runtime_event_stream(
                 if isinstance(raw_control, dict):
                     control = cast(dict[str, Any], raw_control)
                     if control.get("relay_id") != relay_id:
-                        yield json.dumps(
-                            value, ensure_ascii=False, separators=(",", ":")
-                        ).encode() + b"\n"
+                        yield (
+                            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+                            + b"\n"
+                        )
                         continue
                     kind = control.get("kind")
                     if kind == "started":
@@ -919,6 +919,264 @@ async def _runtime_event_stream(
             )
 
 
+@dataclass(frozen=True)
+class _RuntimeEventRelayKey:
+    """One physical Runtime generation plus one native OpenHands channel."""
+
+    resource_name: str
+    resource_id: str
+    container_id: str
+    conversation_id: str
+    channel: Literal["CONVERSATION", "BASH"]
+
+
+_RELAY_SUBSCRIPTION_CLOSED = object()
+
+
+@dataclass(eq=False)
+class _RuntimeEventRelaySubscription:
+    queue: asyncio.Queue[dict[str, Any] | object]
+    closed: bool = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        # A waiting consumer needs a wake-up. A full queue is already sufficient:
+        # it will observe ``closed`` before attempting its next read.
+        if not self.queue.full():
+            self.queue.put_nowait(_RELAY_SUBSCRIPTION_CLOSED)
+
+    async def events(self) -> AsyncIterator[dict[str, Any]]:
+        while True:
+            if self.closed:
+                return
+            item = await self.queue.get()
+            if item is _RELAY_SUBSCRIPTION_CLOSED or self.closed:
+                return
+            if isinstance(item, dict):
+                yield item
+
+
+class _RuntimeEventRelay:
+    """Fan one owned ``docker exec`` relay out to bounded local subscribers."""
+
+    def __init__(
+        self,
+        registry: _RuntimeEventRelayHubs,
+        key: _RuntimeEventRelayKey,
+        *,
+        timeout_seconds: float,
+        idle_grace_seconds: float,
+        max_subscribers: int,
+        subscriber_queue_size: int,
+    ) -> None:
+        self._registry = registry
+        self.key = key
+        self._timeout_seconds = timeout_seconds
+        self._idle_grace_seconds = idle_grace_seconds
+        self._max_subscribers = max_subscribers
+        self._subscriber_queue_size = subscriber_queue_size
+        self._subscribers: set[_RuntimeEventRelaySubscription] = set()
+        self._idle_handle: asyncio.TimerHandle | None = None
+        self._task = asyncio.create_task(self._fan_out())
+
+    @property
+    def finished(self) -> bool:
+        return self._task.done()
+
+    def subscribe(self) -> _RuntimeEventRelaySubscription:
+        if self.finished:
+            raise RuntimeError("cannot subscribe to a stopped Runtime relay")
+        if len(self._subscribers) >= self._max_subscribers:
+            raise DomainError(
+                "RUNTIME_EVENT_RELAY_SUBSCRIBERS_EXHAUSTED",
+                "The Runtime event stream has reached its subscriber limit",
+                503,
+                {"max_subscribers": self._max_subscribers},
+            )
+        if self._idle_handle is not None:
+            self._idle_handle.cancel()
+            self._idle_handle = None
+        subscription = _RuntimeEventRelaySubscription(
+            queue=asyncio.Queue(maxsize=self._subscriber_queue_size)
+        )
+        self._subscribers.add(subscription)
+        return subscription
+
+    def unsubscribe(self, subscription: _RuntimeEventRelaySubscription) -> None:
+        subscription.close()
+        self._subscribers.discard(subscription)
+        self._schedule_idle_stop()
+
+    def _schedule_idle_stop(self) -> None:
+        if self._subscribers or self.finished or self._idle_handle is not None:
+            return
+        self._idle_handle = asyncio.get_running_loop().call_later(
+            self._idle_grace_seconds, self._stop_if_idle
+        )
+
+    def _stop_if_idle(self) -> None:
+        self._idle_handle = None
+        if not self._subscribers and not self.finished:
+            self._task.cancel()
+
+    def _publish(self, event: dict[str, Any]) -> None:
+        for subscription in tuple(self._subscribers):
+            if subscription.closed:
+                self._subscribers.discard(subscription)
+                continue
+            try:
+                subscription.queue.put_nowait(event)
+            except asyncio.QueueFull:
+                # A slow consumer must reconnect from its official cursor. It
+                # may never hold the shared relay or every other browser hostage.
+                subscription.close()
+                self._subscribers.discard(subscription)
+        self._schedule_idle_stop()
+
+    async def _fan_out(self) -> None:
+        try:
+            async for raw_event in _runtime_event_stream(
+                self._registry.settings,
+                self.key.container_id,
+                self.key.channel,
+                self.key.conversation_id,
+                self._timeout_seconds,
+            ):
+                try:
+                    value = cast(object, json.loads(raw_event))
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    self._publish(cast(dict[str, Any], value))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Runtime event relay hub stopped after upstream failure resource=%s "
+                "conversation=%s channel=%s",
+                self.key.resource_id,
+                self.key.conversation_id,
+                self.key.channel,
+                exc_info=True,
+            )
+        finally:
+            if self._idle_handle is not None:
+                self._idle_handle.cancel()
+                self._idle_handle = None
+            for subscription in tuple(self._subscribers):
+                subscription.close()
+            self._subscribers.clear()
+            await self._registry.discard(self)
+
+    async def close(self) -> None:
+        self.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+
+    def cancel(self) -> None:
+        if self._idle_handle is not None:
+            self._idle_handle.cancel()
+            self._idle_handle = None
+        for subscription in tuple(self._subscribers):
+            subscription.close()
+        self._subscribers.clear()
+        self._task.cancel()
+
+
+class _RuntimeEventRelayHubs:
+    """Provider-local, generation-keyed relay registry with hard capacity limits."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        max_hubs: int = _RELAY_MAX_HUBS,
+        max_subscribers: int = _RELAY_MAX_SUBSCRIBERS_PER_HUB,
+        subscriber_queue_size: int = _RELAY_SUBSCRIBER_QUEUE_SIZE,
+        idle_grace_seconds: float = _RELAY_IDLE_GRACE_SECONDS,
+    ) -> None:
+        self.settings = settings
+        self._max_hubs = max_hubs
+        self._max_subscribers = max_subscribers
+        self._subscriber_queue_size = subscriber_queue_size
+        self._idle_grace_seconds = idle_grace_seconds
+        self._hubs: dict[_RuntimeEventRelayKey, _RuntimeEventRelay] = {}
+        self._lock = asyncio.Lock()
+
+    async def subscribe(
+        self, key: _RuntimeEventRelayKey, *, timeout_seconds: float
+    ) -> tuple[_RuntimeEventRelay, _RuntimeEventRelaySubscription]:
+        async with self._lock:
+            # A replacement generation must never retain a relay for the
+            # previous container. The old subscriber sockets are closed and
+            # recover through their official REST cursor against the new
+            # generation; the cancelled task performs its shielded remote
+            # process cleanup before disappearing from the registry.
+            for existing_key, existing_relay in tuple(self._hubs.items()):
+                if (
+                    existing_key != key
+                    and existing_key.resource_name == key.resource_name
+                    and existing_key.resource_id == key.resource_id
+                    and existing_key.conversation_id == key.conversation_id
+                    and existing_key.channel == key.channel
+                    and existing_key.container_id != key.container_id
+                ):
+                    self._hubs.pop(existing_key, None)
+                    existing_relay.cancel()
+            relay = self._hubs.get(key)
+            if relay is not None and relay.finished:
+                self._hubs.pop(key, None)
+                relay = None
+            if relay is None:
+                if len(self._hubs) >= self._max_hubs:
+                    raise DomainError(
+                        "RUNTIME_EVENT_RELAY_CAPACITY_EXHAUSTED",
+                        "The Runtime event relay capacity is exhausted",
+                        503,
+                        {"max_hubs": self._max_hubs},
+                    )
+                relay = _RuntimeEventRelay(
+                    self,
+                    key,
+                    timeout_seconds=timeout_seconds,
+                    idle_grace_seconds=self._idle_grace_seconds,
+                    max_subscribers=self._max_subscribers,
+                    subscriber_queue_size=self._subscriber_queue_size,
+                )
+                self._hubs[key] = relay
+            return relay, relay.subscribe()
+
+    async def stream(
+        self, key: _RuntimeEventRelayKey, *, timeout_seconds: float
+    ) -> AsyncIterator[bytes]:
+        """Compatibility helper for internal callers without HTTP status semantics."""
+
+        relay, subscription = await self.subscribe(key, timeout_seconds=timeout_seconds)
+        async for chunk in self.stream_subscription(relay, subscription):
+            yield chunk
+
+    async def stream_subscription(
+        self, relay: _RuntimeEventRelay, subscription: _RuntimeEventRelaySubscription
+    ) -> AsyncIterator[bytes]:
+        try:
+            async for event in subscription.events():
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+        finally:
+            relay.unsubscribe(subscription)
+
+    async def discard(self, relay: _RuntimeEventRelay) -> None:
+        async with self._lock:
+            if self._hubs.get(relay.key) is relay:
+                self._hubs.pop(relay.key, None)
+
+    async def close(self) -> None:
+        async with self._lock:
+            relays = tuple(self._hubs.values())
+            self._hubs.clear()
+        await asyncio.gather(*(relay.close() for relay in relays), return_exceptions=True)
+
+
 def _observation_dict(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
@@ -981,6 +1239,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if configured.docker_controller_worker_api_key == configured.docker_controller_api_key:
         raise ValueError("Docker controller API and Worker keys must be different")
     terminals = _TerminalManager(idle_seconds=configured.docker_controller_terminal_idle_seconds)
+    relay_hubs = _RuntimeEventRelayHubs(configured)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -995,6 +1254,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            await relay_hubs.close()
             await asyncio.to_thread(terminals.close_all)
 
     app = FastAPI(title="FlowWeave Runtime Provider", version="1.0.0", lifespan=lifespan)
@@ -1382,14 +1642,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "The Runtime container no longer exists",
                 409,
             )
+        relay_key = _RuntimeEventRelayKey(
+            resource_name=payload.resource_name,
+            resource_id=str(payload.resource_id),
+            container_id=container_id,
+            conversation_id=payload.conversation_id,
+            channel=payload.channel,
+        )
+        relay, subscription = await relay_hubs.subscribe(
+            relay_key, timeout_seconds=payload.timeout_seconds
+        )
         return StreamingResponse(
-            _runtime_event_stream(
-                configured,
-                container_id,
-                payload.channel,
-                payload.conversation_id,
-                payload.timeout_seconds,
-            ),
+            relay_hubs.stream_subscription(relay, subscription),
             media_type="application/x-ndjson",
             headers={
                 "Cache-Control": "no-store",
@@ -1465,11 +1729,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload.session_name,
                 payload.rows,
                 payload.columns,
-                working_dir=(
-                    None
-                    if payload.environment_id is not None
-                    else payload.working_dir
-                ),
+                working_dir=(None if payload.environment_id is not None else payload.working_dir),
             )
 
         return {"terminal_id": await asyncio.to_thread(start)}

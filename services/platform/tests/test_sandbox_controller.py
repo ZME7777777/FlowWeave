@@ -991,9 +991,143 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
     assert captured["limit"] == 2 * 1024 * 1024
     assert records == [payload]
     assert cleanup_calls == 1
-    assert "MAX_ACTIVE_PER_CHANNEL = 4" in controller_module._RUNTIME_EVENT_RELAY
+    assert "MAX_ACTIVE_PER_CHANNEL = 1" in controller_module._RUNTIME_EVENT_RELAY
     assert "MAX_LIFETIME_SECONDS = 300.0" in controller_module._RUNTIME_EVENT_RELAY
     assert "HEARTBEAT_SECONDS = 10.0" in controller_module._RUNTIME_EVENT_RELAY
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_relay_hub_shares_one_upstream_and_reaps_after_idle_grace(
+    settings, monkeypatch
+):
+    started = asyncio.Event()
+    emit = asyncio.Event()
+    calls = 0
+
+    async def upstream(*_args):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await emit.wait()
+        yield b'{"kind":"StreamingDeltaEvent","content":"shared"}\n'
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(controller_module, "_runtime_event_stream", upstream)
+    hubs = controller_module._RuntimeEventRelayHubs(
+        _settings(settings),
+        max_hubs=2,
+        max_subscribers=2,
+        subscriber_queue_size=2,
+        idle_grace_seconds=0.01,
+    )
+    key = controller_module._RuntimeEventRelayKey(
+        resource_name="fw-sbx-agent-12345678123442349234123456789abc",
+        resource_id=_RESOURCE_ID,
+        container_id="generation-one-container",
+        conversation_id="conversation-1",
+        channel="CONVERSATION",
+    )
+
+    relay, first = await hubs.subscribe(key, timeout_seconds=10)
+    same_relay, second = await hubs.subscribe(key, timeout_seconds=10)
+    await started.wait()
+    emit.set()
+
+    assert await anext(first.events()) == {"kind": "StreamingDeltaEvent", "content": "shared"}
+    assert await anext(second.events()) == {"kind": "StreamingDeltaEvent", "content": "shared"}
+    assert calls == 1
+
+    assert same_relay is relay
+    relay.unsubscribe(first)
+    relay.unsubscribe(second)
+    await asyncio.sleep(0.05)
+    assert key not in hubs._hubs
+    await hubs.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_relay_hub_drops_slow_subscriber_without_blocking_fast_one(
+    settings, monkeypatch
+):
+    emit = asyncio.Event()
+    emit_second = asyncio.Event()
+
+    async def upstream(*_args):
+        await emit.wait()
+        yield b'{"sequence":1}\n'
+        await emit_second.wait()
+        yield b'{"sequence":2}\n'
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(controller_module, "_runtime_event_stream", upstream)
+    hubs = controller_module._RuntimeEventRelayHubs(
+        _settings(settings),
+        max_hubs=1,
+        max_subscribers=2,
+        subscriber_queue_size=1,
+        idle_grace_seconds=0.01,
+    )
+    key = controller_module._RuntimeEventRelayKey(
+        resource_name="fw-sbx-agent-12345678123442349234123456789abc",
+        resource_id=_RESOURCE_ID,
+        container_id="generation-one-container",
+        conversation_id="conversation-1",
+        channel="CONVERSATION",
+    )
+
+    relay, slow = await hubs.subscribe(key, timeout_seconds=10)
+    same_relay, fast = await hubs.subscribe(key, timeout_seconds=10)
+    emit.set()
+    assert await anext(fast.events()) == {"sequence": 1}
+    emit_second.set()
+    assert await anext(fast.events()) == {"sequence": 2}
+    assert slow.closed is True
+    assert same_relay is relay
+    relay.unsubscribe(fast)
+    await asyncio.sleep(0.05)
+    await hubs.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_relay_hub_closes_stale_generation_subscribers(settings, monkeypatch):
+    started = asyncio.Event()
+
+    async def upstream(*_args):
+        started.set()
+        await asyncio.Event().wait()
+        yield b""
+
+    monkeypatch.setattr(controller_module, "_runtime_event_stream", upstream)
+    hubs = controller_module._RuntimeEventRelayHubs(
+        _settings(settings), max_hubs=2, idle_grace_seconds=0.01
+    )
+    current_key = controller_module._RuntimeEventRelayKey(
+        resource_name="fw-sbx-agent-12345678123442349234123456789abc",
+        resource_id=_RESOURCE_ID,
+        container_id="generation-one-container",
+        conversation_id="conversation-1",
+        channel="CONVERSATION",
+    )
+    original_relay, original_subscription = await hubs.subscribe(current_key, timeout_seconds=10)
+    await started.wait()
+    replacement_key = controller_module._RuntimeEventRelayKey(
+        resource_name=current_key.resource_name,
+        resource_id=current_key.resource_id,
+        container_id="generation-two-container",
+        conversation_id=current_key.conversation_id,
+        channel=current_key.channel,
+    )
+
+    replacement_relay, replacement_subscription = await hubs.subscribe(
+        replacement_key, timeout_seconds=10
+    )
+    await asyncio.sleep(0)
+
+    assert original_subscription.closed is True
+    assert original_relay.finished is True
+    assert replacement_relay is not original_relay
+    replacement_relay.unsubscribe(replacement_subscription)
+    await hubs.close()
 
 
 def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, monkeypatch):
