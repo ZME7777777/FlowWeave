@@ -43,6 +43,7 @@ class Container:
     blocking_control_slots: asyncio.Semaphore
 
     async def close(self) -> None:
+        await self.run_event_listener.close()
         await self.audit_writer.close()
         await self.http.aclose()
         await asyncio.to_thread(
@@ -85,7 +86,11 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         dependency_builder=build_dependency_builder(settings),
         plugin_resolver=build_plugin_resolver(settings),
         sandbox=build_sandbox(settings),
-        run_event_listener=RunEventListener(settings.database_url),
+        run_event_listener=RunEventListener(
+            settings.database_url,
+            max_subscribers=settings.sse_max_subscribers,
+            subscriber_queue_size=settings.sse_subscriber_queue_size,
+        ),
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
         blocking_io_slots=asyncio.Semaphore(settings.blocking_pool_size),

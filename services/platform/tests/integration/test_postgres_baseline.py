@@ -71,7 +71,7 @@ async def test_run_event_trigger_notifies_after_commit(container, db_session_fac
         db.commit()
         run_id = run.id
 
-    async with container.run_event_listener.subscribe() as subscription:
+    async with container.run_event_listener.subscribe(run_id) as subscription:
         with db_session_factory() as db:
             db.add(
                 RunEvent(
@@ -82,9 +82,9 @@ async def test_run_event_trigger_notifies_after_commit(container, db_session_fac
             )
             db.flush()
             # PostgreSQL delivers NOTIFY only when the inserting transaction commits.
-            assert await subscription.wait(run_id, 0.05) is False
+            assert await subscription.wait(0.05) is False
             db.commit()
-        assert await subscription.wait(run_id, 2.0) is True
+        assert await subscription.wait(2.0) is True
 
 
 def test_run_event_cursor_compensation_and_bounded_batches(db_session_factory) -> None:
@@ -134,7 +134,7 @@ def test_run_event_cursor_compensation_and_bounded_batches(db_session_factory) -
 async def test_slow_sse_consumer_does_not_block_fast_cursor_compensation(
     container, db_session_factory
 ) -> None:
-    """Independent LISTEN connections isolate backpressure and cursors close every gap."""
+    """Shared LISTEN fan-out isolates backpressure and cursors close every gap."""
 
     import asyncio
     from functools import partial
@@ -183,7 +183,7 @@ async def test_slow_sse_consumer_does_not_block_fast_cursor_compensation(
         cursor = 0
         indexes: list[int] = []
         batch_sizes: list[int] = []
-        async with container.run_event_listener.subscribe() as subscription:
+        async with container.run_event_listener.subscribe(run_id) as subscription:
             while len(indexes) < event_count:
                 read_batch = partial(
                     run_events_after,
@@ -194,7 +194,7 @@ async def test_slow_sse_consumer_does_not_block_fast_cursor_compensation(
                 async with container.database.session() as session:
                     rows = await session.run_sync(read_batch)
                 if not rows:
-                    await subscription.wait(run_id, 1.0)
+                    await subscription.wait(1.0)
                     continue
                 batch_sizes.append(len(rows))
                 indexes.extend(int(row["payload"]["index"]) for row in rows)

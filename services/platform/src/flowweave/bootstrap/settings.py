@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0, le=120)
+    sse_max_subscribers: int = Field(default=256, ge=1, le=4096)
+    sse_subscriber_queue_size: int = Field(default=8, ge=1, le=128)
     openhands_session_api_key: str = "flowweave-internal"
     openhands_workspace_root: Path = Path("/workspaces")
     # Uploaded executable capability assets are mounted separately from the

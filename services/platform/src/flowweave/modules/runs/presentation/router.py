@@ -708,8 +708,13 @@ def event_stream(
 
     async def stream():
         nonlocal cursor
-        async with container.run_event_listener.subscribe() as subscription:
+        async with container.run_event_listener.subscribe(run_id) as subscription:
             while not await request.is_disconnected():
+                # A saturated local recipient is intentionally disconnected. The
+                # next EventSource connection resumes from Last-Event-ID, and
+                # the cursor query below remains the authoritative event source.
+                if subscription.dropped:
+                    return
                 rows = await read_batch(cursor)
                 if rows:
                     for row in rows:
@@ -721,10 +726,9 @@ def event_stream(
                     if len(rows) == container.settings.sse_event_batch_size:
                         await asyncio.sleep(0)
                         continue
-                notified = await subscription.wait(
-                    run_id,
-                    container.settings.sse_heartbeat_seconds,
-                )
+                notified = await subscription.wait(container.settings.sse_heartbeat_seconds)
+                if subscription.dropped:
+                    return
                 if not notified:
                     yield ": heartbeat\n\n"
 
