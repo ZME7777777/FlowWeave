@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.ext.asyncio import (
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import QueuePool
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.shared.application.uow import SqlAlchemyUnitOfWork
@@ -79,3 +81,18 @@ class Database:
         await self.engine.dispose()
         await asyncio.to_thread(self.blocking_engine.dispose)
         await asyncio.to_thread(self.control_engine.dispose)
+
+    def pool_metrics(self) -> dict[str, dict[str, int]]:
+        pools = {
+            "async": cast(QueuePool, self.engine.sync_engine.pool),
+            "blocking": cast(QueuePool, self.blocking_engine.pool),
+            "control": cast(QueuePool, self.control_engine.pool),
+        }
+        return {
+            name: {
+                "size": pool.size(),
+                "checked_out": pool.checkedout(),
+                "overflow": pool.overflow(),
+            }
+            for name, pool in pools.items()
+        }

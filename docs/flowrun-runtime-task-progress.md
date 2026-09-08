@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-219`（指标、告警与分布式限流闭环）
+> 下一可执行切片：`FR-220`（资源泄漏、故障恢复与性能最终门禁）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3095,10 +3095,16 @@ SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 Postg
 固定单连接。SSE 与 Runtime Relay 的订阅者、队列和 Hub 上限通过环境变量下发，终端 TTL/并发继续由 Settings
 约束。该容量仍是首轮保护预算，待 FR-219/220 以指标和压测复核后调整。
 
-### FR-219 指标、告警与分布式限流闭环 — PENDING
+### FR-219 指标、告警与分布式限流闭环 — DONE
 
 依赖：`FR-212`–`FR-218`。增加 Prometheus 指标、仪表盘/告警与 Redis/Valkey 支持下的跨进程用户/会话限流和
 并发租约；没有分布式后端时明确降级为进程内保护。
+
+完成：新增依赖无关的 Prometheus 文本指标端点；API 导出低基数路由耗时/状态、数据库池水位和限流决策，
+Runtime Provider 导出 Relay Hub/订阅者及终端附件/tmux session 水位。用户请求与会话消息使用固定一分钟窗口；
+配置 `RATE_LIMIT_REDIS_URL` 时通过 Redis/Valkey pipeline 协调跨进程计数，未配置或不可用时明确降级为进程内
+窗口并导出 backend 标签。新增 Redis 依赖锁定、Compose 限流环境变量、Prometheus 告警规则和 Grafana 概览面板，
+覆盖 API p95、数据库池/Relay 容量、分布式限流失效及拒绝率。指标绝不使用用户、会话、请求或消息内容作为标签。
 
 ### FR-220 资源泄漏、故障恢复与性能最终门禁 — PENDING
 
@@ -3121,6 +3127,7 @@ SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 Postg
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-219 | 进程内限流/Prometheus 渲染直接 smoke、Compose/YAML/JSON 解析；受影响 Python `py_compile`、Ruff、定向 Pyright；`uv lock --check`、Alembic head、`git diff --check`、任务状态唯一性 | PASS：API 与 Runtime Provider 暴露低基数资源指标；Redis/Valkey 配置可提供跨进程固定窗口限流，缺失或故障时清晰降级为进程内限制；告警和 Grafana 概览覆盖慢请求、数据库、Relay 与限流。Redis 服务、Prometheus 抓取和跨进程压测留待 FR-220 实测；唯一 Alembic head 为 `0102_event_trigger_observers`，FR-220 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-218 | 受影响 Python `py_compile`、Ruff；Compose 资源/环境字段静态核对；Alembic head、`git diff --check`、任务状态唯一性 | PASS：数据库 async、blocking、control 与同步兼容引擎均禁用隐式 overflow 并设置 pool timeout；控制面服务具备 init、CPU、内存、PID 上限，API/stream-api/worker 使用 8/4/8 业务连接预算；SSE/Relay 配额改为可配置。未运行依赖 Docker/PostgreSQL 的业务测试。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-219 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-217 | 受影响 Python `py_compile`、Ruff；Alembic head、`git diff --check`、任务状态唯一性 | PASS：新增有界进程级 sync/async HTTP transport，普通与控制/流式池分别复用并由 Container 关闭；OpenHands 与 Docker Controller 高频调用不再每请求创建 client。未运行依赖 Docker/PostgreSQL 的业务测试。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-218 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-216 | Worker lane 直接回归（完整 handler 分区、无重叠、`worker_concurrency=1/4` 总槽位）；受影响 Python `py_compile`、Ruff、定向 Pyright；Alembic head、`git diff --check`、任务状态唯一性 | PASS：`worker_concurrency` 现在同时决定 Worker 任务线程池和实际 lane 数，默认 4 分为 2 Runtime、1 投递、1 维护槽；任务领取以 lane 类型过滤，所有 handler 恰好归属一类。同步 task handler 在独立有界 session/executor 执行，失败仍按 lease 条件回写，优雅停机等待已领取任务与 heartbeat 收束。新增 pytest 回归可被收集，但仓库全局 Testcontainers PostgreSQL fixture 在本机 Docker daemon 不可用时会于断言前阻断，未伪记为通过；无 Docker 的直接 lane 回归和静态检查通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-217 已 PENDING；无 CURRENT。 |

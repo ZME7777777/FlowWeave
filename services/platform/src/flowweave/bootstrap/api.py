@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from time import monotonic
@@ -10,7 +11,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.exc import IntegrityError
 
 from flowweave.bootstrap.container import Container, build_container
@@ -44,6 +45,9 @@ from flowweave.shared.settings import bind_settings, reset_settings
 
 logger = logging.getLogger(__name__)
 _SLOW_REQUEST_SECONDS = 1.0
+_MESSAGE_BINDING_PATH = re.compile(
+    r"^/api/v1/(?:agent-workspaces/[^/]+/conversations|flow-runs/[^/]+/node-attempts/[^/]+/agent-sessions)/(?P<binding_id>[^/]+)/messages(?:/|$)"
+)
 
 
 def error_body(code: str, message: str, request_id: str, details: object = None) -> dict[str, Any]:
@@ -61,6 +65,11 @@ def _request_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", "") or uuid4())
 
 
+def _metric_route(request: Request) -> str:
+    route = request.scope.get("route")
+    return str(getattr(route, "path", "") or "unmatched")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     configured = settings or Settings()
     container = build_container(configured, role="api")
@@ -68,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container = container
+        await container.rate_limiter.start()
         async with container.database.session() as session:
             await session.run_sync(
                 lambda db: users.ensure_builtin_users(
@@ -106,6 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "/api/v1/auth/login",
             "/api/v1/auth/logout",
             "/api/v1/auth/me",
+            "/metrics",
         }
         if principal is None and not is_public:
             return JSONResponse(
@@ -113,6 +124,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 content=error_body("AUTHENTICATION_REQUIRED", "请先登录", request_id),
                 headers={"X-Request-ID": request_id},
             )
+        if principal is not None:
+            user_decision = await container.rate_limiter.allow(
+                "user",
+                principal.user_id,
+                limit=container.settings.rate_limit_user_requests_per_minute,
+                window_seconds=60,
+            )
+            if not user_decision.allowed:
+                return JSONResponse(
+                    status_code=429,
+                    content=error_body("RATE_LIMITED", "请求过于频繁，请稍后重试", request_id),
+                    headers={"Retry-After": "60", "X-Request-ID": request_id},
+                )
+            message_match = _MESSAGE_BINDING_PATH.match(request.url.path)
+            if message_match is not None:
+                message_decision = await container.rate_limiter.allow(
+                    "conversation",
+                    f"{principal.user_id}:{message_match.group('binding_id')}",
+                    limit=container.settings.rate_limit_conversation_messages_per_minute,
+                    window_seconds=60,
+                )
+                if not message_decision.allowed:
+                    return JSONResponse(
+                        status_code=429,
+                        content=error_body(
+                            "CONVERSATION_RATE_LIMITED",
+                            "该会话发送过于频繁，请稍后重试",
+                            request_id,
+                        ),
+                        headers={"Retry-After": "60", "X-Request-ID": request_id},
+                    )
         principal_token = bind_principal(principal)
         settings_token = bind_settings(container.settings)
         runtime_token = bind_runtime(container.runtime)
@@ -206,6 +248,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    async def metrics(request: Request) -> PlainTextResponse:
+        active: Container = request.app.state.container
+        for pool_name, values in active.database.pool_metrics().items():
+            for metric_name, value in values.items():
+                active.metrics.gauge(
+                    "flowweave_database_pool_connections",
+                    value,
+                    pool=pool_name,
+                    state=metric_name,
+                )
+        return PlainTextResponse(active.metrics.render(), media_type="text/plain; version=0.0.4")
+
     async def slow_request_logging(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
@@ -217,6 +271,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return response
         finally:
             duration = monotonic() - started_at
+            container.metrics.increment(
+                "flowweave_http_requests_total",
+                method=request.method,
+                route=_metric_route(request),
+                status=status_code,
+            )
+            container.metrics.observe_request(
+                request.method,
+                _metric_route(request),
+                status_code,
+                duration,
+            )
             if duration >= _SLOW_REQUEST_SECONDS:
                 route = request.scope.get("route")
                 route_path = route.path if route is not None else request.url.path
@@ -237,6 +303,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route("/health/live", liveness, methods=["GET"])
     app.add_api_route("/health/ready", readiness, methods=["GET"])
     app.add_api_route("/health", health, methods=["GET"])
+    app.add_api_route("/metrics", metrics, methods=["GET"])
     app.include_router(users_router, prefix="/api/v1")
 
     app.include_router(

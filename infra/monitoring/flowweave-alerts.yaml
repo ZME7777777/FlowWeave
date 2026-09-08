@@ -1,0 +1,38 @@
+groups:
+  - name: flowweave-resource-governance
+    rules:
+      - alert: FlowWeaveApiSlowRequests
+        expr: histogram_quantile(0.95, sum by (le) (rate(flowweave_http_request_duration_seconds_bucket{route=~"/api/v1/.*"}[5m]))) > 3
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: FlowWeave API p95 latency exceeds 3 seconds
+          runbook: Inspect route/status labels, database pool watermarks, Relay capacity, and Runtime health.
+      - alert: FlowWeaveDatabasePoolSaturated
+        expr: max by (pool) (flowweave_database_pool_connections{state="checked_out"} / clamp_min(flowweave_database_pool_connections{state="size"}, 1)) > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: FlowWeave database pool is above 80 percent utilization
+          runbook: Check slow routes and held transactions; do not increase overflow before capacity review.
+      - alert: FlowWeaveRelayCapacityNearLimit
+        expr: flowweave_runtime_relay_hubs / clamp_min(flowweave_runtime_relay_hub_capacity, 1) > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Runtime Relay Hub capacity is above 80 percent
+          runbook: Inspect disconnected clients and generation cleanup before changing the configured cap.
+      - alert: FlowWeaveRateLimitDistributedBackendUnavailable
+        expr: max(flowweave_rate_limit_backend{backend="local_fallback"}) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: FlowWeave is using process-local rate limiting after Redis/Valkey failure
+          runbook: Restore RATE_LIMIT_REDIS_URL connectivity; local fallback is not globally coordinated.
+      - alert: FlowWeaveRateLimitRejectingRequests
+        expr: sum(rate(flowweave_rate_limit_decisions_total{outcome="rejected"}[5m])) / clamp_min(sum(rate(flowweave_rate_limit_decisions_total[5m])), 0.001) > 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 10 percent of FlowWeave requests are rate limited
+          runbook: Identify the affected bounded scope before adjusting user or conversation limits.

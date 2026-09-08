@@ -27,6 +27,7 @@ from flowweave.shared.infrastructure.http_transport import (
 )
 from flowweave.shared.infrastructure.plugin_resolver import build_plugin_resolver
 from flowweave.shared.infrastructure.sandbox import build_sandbox
+from flowweave.shared.observability import Metrics, RateLimiter
 
 
 @dataclass(slots=True)
@@ -36,6 +37,8 @@ class Container:
     database: Database
     http: httpx.AsyncClient
     http_transport: HttpTransportPool
+    metrics: Metrics
+    rate_limiter: RateLimiter
     runtime: RuntimePort
     artifact_store: ArtifactStorePort
     dependency_builder: DependencyBuilderPort
@@ -51,6 +54,7 @@ class Container:
     async def close(self) -> None:
         await self.run_event_listener.close()
         await self.audit_writer.close()
+        await self.rate_limiter.close()
         await self.http_transport.aclose()
         unregister_http_transport(self.settings, self.http_transport)
         await asyncio.to_thread(
@@ -76,6 +80,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     else:
         raise ValueError(f"Unsupported runtime adapter: {settings.runtime_adapter}")
     database = Database(settings)
+    metrics = Metrics()
     blocking_workers = (
         settings.worker_concurrency if role == "worker" else settings.blocking_pool_size
     )
@@ -93,6 +98,8 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         database=database,
         http=http_transport.async_regular,
         http_transport=http_transport,
+        metrics=metrics,
+        rate_limiter=RateLimiter(settings, metrics),
         runtime=runtime,
         artifact_store=build_artifact_store(settings),
         dependency_builder=build_dependency_builder(settings),

@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     runtime_relay_max_subscribers: int = Field(default=8, ge=1, le=64)
     runtime_relay_subscriber_queue_size: int = Field(default=32, ge=1, le=256)
     runtime_relay_idle_grace_seconds: float = Field(default=300.0, gt=0, le=3600)
+    rate_limit_redis_url: str = ""
+    rate_limit_user_requests_per_minute: int = Field(default=120, ge=1, le=10_000)
+    rate_limit_conversation_messages_per_minute: int = Field(default=20, ge=1, le=1_000)
     openhands_session_api_key: str = "flowweave-internal"
     openhands_workspace_root: Path = Path("/workspaces")
     # Uploaded executable capability assets are mounted separately from the
@@ -133,9 +136,7 @@ class Settings(BaseSettings):
     docker_controller_api_key: str = ""
     docker_controller_worker_api_key: str = ""
     docker_controller_terminal_idle_seconds: int = Field(default=1800, ge=60, le=86_400)
-    docker_controller_terminal_hard_ttl_seconds: int = Field(
-        default=28_800, ge=300, le=604_800
-    )
+    docker_controller_terminal_hard_ttl_seconds: int = Field(default=28_800, ge=300, le=604_800)
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> Settings:
@@ -190,6 +191,10 @@ class Settings(BaseSettings):
                 )
         if self.runtime_adapter not in {"openhands", "mock"}:
             raise ValueError("RUNTIME_ADAPTER must be openhands or mock")
+        if self.rate_limit_redis_url and not self.rate_limit_redis_url.startswith(
+            ("redis://", "rediss://")
+        ):
+            raise ValueError("RATE_LIMIT_REDIS_URL must be a redis:// or rediss:// URL")
         if self.artifact_backend not in {"local", "s3"}:
             raise ValueError("ARTIFACT_BACKEND must be local or s3")
         if self.artifact_backend == "s3" and not self.artifact_s3_bucket:

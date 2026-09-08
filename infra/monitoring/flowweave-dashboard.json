@@ -1,0 +1,27 @@
+{
+  "title": "FlowWeave Resource Governance",
+  "schemaVersion": 39,
+  "editable": true,
+  "panels": [
+    {
+      "title": "API p95 latency",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(flowweave_http_request_duration_seconds_bucket{route=~\"/api/v1/.*\"}[5m])))"}]
+    },
+    {
+      "title": "Database pool utilization",
+      "type": "timeseries",
+      "targets": [{"expr": "flowweave_database_pool_connections{state=\"checked_out\"} / clamp_min(flowweave_database_pool_connections{state=\"size\"}, 1)"}]
+    },
+    {
+      "title": "Relay Hub utilization",
+      "type": "timeseries",
+      "targets": [{"expr": "flowweave_runtime_relay_hubs / clamp_min(flowweave_runtime_relay_hub_capacity, 1)"}]
+    },
+    {
+      "title": "Rate-limit decisions",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (scope, outcome, backend) (rate(flowweave_rate_limit_decisions_total[5m]))"}]
+    }
+  ]
+}

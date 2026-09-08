@@ -20,7 +20,7 @@ from uuid import UUID
 
 from anyio import CancelScope
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from flowweave.bootstrap.settings import Settings
@@ -51,6 +51,7 @@ from flowweave.shared.infrastructure.plugin_resolver import (
     configured_plugin_hosts,
 )
 from flowweave.shared.infrastructure.sandbox import DockerSandbox
+from flowweave.shared.observability import Metrics
 from flowweave.shared.settings import bind_settings, reset_settings
 
 _MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -504,9 +505,7 @@ class _TerminalManager:
                     self.sessions[session_key] = session
                 session.last_activity = now
                 session.attachments += 1
-            self.attachments[terminal_id] = _TerminalAttachment(
-                master, process, now, session_key
-            )
+            self.attachments[terminal_id] = _TerminalAttachment(master, process, now, session_key)
         return terminal_id
 
     def get(self, terminal_id: str) -> _TerminalAttachment:
@@ -617,6 +616,10 @@ class _TerminalManager:
             self.close(terminal_id)
         with self._lock:
             self.sessions.clear()
+
+    def counts(self) -> tuple[int, int]:
+        with self._lock:
+            return len(self.attachments), len(self.sessions)
 
     def destroy_session(self, container_id: str, session_name: str) -> None:
         """Close attachments and destroy one exact ledger-owned tmux session."""
@@ -1087,6 +1090,10 @@ class _RuntimeEventRelay:
     def finished(self) -> bool:
         return self._task.done()
 
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)
+
     def subscribe(self) -> _RuntimeEventRelaySubscription:
         if self.finished:
             raise RuntimeError("cannot subscribe to a stopped Runtime relay")
@@ -1284,6 +1291,10 @@ class _RuntimeEventRelayHubs:
             if self._hubs.get(relay.key) is relay:
                 self._hubs.pop(relay.key, None)
 
+    async def counts(self) -> tuple[int, int]:
+        async with self._lock:
+            return len(self._hubs), sum(hub.subscriber_count for hub in self._hubs.values())
+
     async def close(self) -> None:
         async with self._lock:
             relays = tuple(self._hubs.values())
@@ -1357,6 +1368,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hard_ttl_seconds=configured.docker_controller_terminal_hard_ttl_seconds,
     )
     relay_hubs = _RuntimeEventRelayHubs(configured)
+    metrics = Metrics()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -1383,7 +1395,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token = bind_settings(configured)
         try:
             role = authorize_controller_request(configured, request.headers.get("Authorization"))
-            if request.url.path != "/health" and role is None:
+            if request.url.path not in {"/health", "/metrics"} and role is None:
                 return JSONResponse(
                     status_code=401,
                     content={
@@ -1434,9 +1446,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/terminals/close": frozenset({"api"}),
                 "/v1/terminals/destroy-session": frozenset({"api"}),
             }
-            if request.url.path != "/health" and role not in allowed_roles_by_path.get(
-                request.url.path, frozenset()
-            ):
+            if request.url.path not in {
+                "/health",
+                "/metrics",
+            } and role not in allowed_roles_by_path.get(request.url.path, frozenset()):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -1500,6 +1513,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def metrics_endpoint() -> PlainTextResponse:  # pyright: ignore[reportUnusedFunction]
+        attachment_count, session_count = terminals.counts()
+        hub_count, subscriber_count = await relay_hubs.counts()
+        metrics.gauge("flowweave_terminal_attachments", attachment_count)
+        metrics.gauge("flowweave_terminal_sessions", session_count)
+        metrics.gauge("flowweave_runtime_relay_hubs", hub_count)
+        metrics.gauge("flowweave_runtime_relay_subscribers", subscriber_count)
+        metrics.gauge("flowweave_runtime_relay_hub_capacity", configured.runtime_relay_max_hubs)
+        return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
     @app.post("/v1/sandboxes/ensure")
     async def ensure(request: Request, payload: SandboxResourceWrite) -> dict[str, Any]:
